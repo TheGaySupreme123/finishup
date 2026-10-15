@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import replace
+from typing import Literal
 
 import pytest
 
@@ -19,7 +20,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
     SEMANTIC_REJECTED_REF_NOT_CARRIED,
     SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
@@ -28,13 +29,13 @@ from yoetz.application.check import (
     SemanticJudgmentReview,
     validate_semantic_judgment,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ResponseDisposition,
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     FindingOrigin,
@@ -42,14 +43,14 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.semantic import (
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.semantic import (
     PriorFindingVerdict,
     ReviewerChallenge,
     SemanticJudgment,
     VerifiedReviewItem,
 )
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "a" * 64
 _INVENTED = "clm_20000000-0000-4000-8000-000000000099"
@@ -627,9 +628,10 @@ def test_rulings_without_cited_material_or_a_rejection_to_accept_are_unassessabl
     assert [(str(item.finding_id), item.verdict) for item in review.verdicts] == [
         (str(fnd(1)), "unassessable"),
         (str(fnd(2)), "unassessable"),
-        # Issue #1020: fnd(3) was rejected with a reason; an unassessable ruling citing nothing
-        # newer is the standing disagreement, not another open round.
-        (str(fnd(3)), "disputed_after_rebuttal"),
+        # fnd(3) was rejected with a reason. tb4n5 follow-up of #1046 (amending #1020): an honest
+        # unassessable says the reviewer could not judge it, never that it disagrees, so it stays
+        # an open round instead of a standing disagreement.
+        (str(fnd(3)), "unassessable"),
     ]
     # Two reduced, one outside the fence; an honest unassessable is not counted.
     assert review.verdicts_unsupported == 3
@@ -813,7 +815,7 @@ def _restatement_case(
     """numba shape: one AI-powered finding on an obligation, recorded at sequence 5."""
 
     from builders.policy_cases import obligation_record
-    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+    from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
 
     obligation = obligation_record(
         ObligationPublishedPayload(
@@ -1023,7 +1025,7 @@ def test_a_narrower_challenge_is_its_own_item_not_a_restatement() -> None:
     """
 
     from builders.policy_cases import obligation_record
-    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+    from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
 
     obligations = {
         obl(number): obligation_record(
@@ -1119,7 +1121,7 @@ def test_a_challenge_replying_to_an_answered_finding_is_a_returned_linked_findin
 #
 # The tb4v1 provider responses were not retained, so the regressions below rebuild the exact shape
 # the run recorded (cited refs advertised but not sent, quotes read from JSON rows, a quote across
-# Yoetz's redaction marker) with the task content replaced by neutral text.
+# FinishUP's redaction marker) with the task content replaced by neutral text.
 
 
 def _json_row(statement: str) -> str:
@@ -1269,7 +1271,7 @@ def test_tb4v1_atrx_routine_review_mints_both_concerns() -> None:
 
 
 def test_tb4v1_data_anon_quote_across_the_redaction_marker_is_proven() -> None:
-    """data-anon item 108: the reviewer quoted a line around Yoetz's own redaction marker."""
+    """data-anon item 108: the reviewer quoted a line around FinishUP's own redaction marker."""
 
     case = make_case(extra_refs=(clm(1),))
     sent = "token = [REDACTED] + ':' + subject_id"
@@ -1402,7 +1404,7 @@ def _cargo_case(
     """
 
     from builders.policy_cases import obligation_record
-    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+    from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
 
     obligation = obligation_record(
         ObligationPublishedPayload(
@@ -1419,7 +1421,7 @@ def _cargo_case(
         )
         for number in range(1, 8)
     }
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+    from finishup.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
 
     rejected = ResponseRecordedPayload(
         finding_id=fnd(1),
@@ -1649,13 +1651,13 @@ def _formal_crypto_case(
     *, reason: str | None = "Sixteen known blocks suffice under fixed benchmark parameters."
 ) -> DeterministicCase:
     from builders.policy_cases import claim_record, obligation_record
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ClaimKind,
         ClaimRecordedPayload,
         ObligationPublishedPayload,
         ObligationStatus,
     )
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+    from finishup.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
 
     kind = FindingKind.TASK_REQUIREMENT_UNMET
     policy_id, policy_version = finding_policy_identity(kind)
@@ -1717,7 +1719,7 @@ def _formal_crypto_review(
     )
 
 
-@pytest.mark.parametrize("ruling", ["still_present", "answered_not_fixed", "unassessable"])
+@pytest.mark.parametrize("ruling", ["still_present", "answered_not_fixed"])
 def test_formal_crypto_held_open_ruling_over_a_rebuttal_is_a_standing_disagreement(
     ruling: str,
 ) -> None:
@@ -1730,6 +1732,92 @@ def test_formal_crypto_held_open_ruling_over_a_rebuttal_is_a_standing_disagreeme
         (str(fnd(1)), "disputed_after_rebuttal")
     ]
     assert review.verdicts_unsupported == 0
+
+
+@pytest.mark.parametrize(
+    "position", [ResponseDisposition.REJECTED, ResponseDisposition.ACKNOWLEDGED]
+)
+def test_an_unassessable_or_unsupported_fixed_over_a_position_is_never_a_dispute(
+    position: ResponseDisposition,
+) -> None:
+    """tb4n5 follow-up of #1046 (kv ``fnd_c96c2b9f``): over a reasoned rejection or a reasoned
+    acknowledgement (a standing position since #1030), the reviewer's own ``unassessable`` and a
+    ``fixed`` that cites nothing newer than the finding are recorded ``unassessable``: an open
+    round the next review can rule on, never a standing disagreement the agent can no longer
+    answer. A held-open ``still_present`` over the same position is still the dispute."""
+
+    base = _formal_crypto_case()
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(1),
+        finding_frontier=FRONTIER,
+        disposition=position,
+        reason="Repaired: the post-v2 throughput run is recorded.",
+    )
+    case = replace(
+        base,
+        projection=replace(base.projection, responses={fnd(1): record(answer, 8)}),
+    )
+    held = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "still_present", str(clm(1))),)
+        ),
+        case,
+    )
+    assert [verdict for _ref, verdict, _cited in _rulings(held)] == ["disputed_after_rebuttal"]
+    for ruling in (
+        _verdict(1, "unassessable", str(clm(1)), str(res(1))),
+        _verdict(1, "fixed"),
+        _verdict(1, "fixed", str(res(1))),  # recorded before the finding: not a repair
+    ):
+        review = _formal_crypto_review(
+            SemanticJudgment("no_material_discrepancy", (), (ruling,)), case
+        )
+        assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
+            (str(fnd(1)), "unassessable")
+        ], ruling
+
+
+@pytest.mark.parametrize(
+    "position", [ResponseDisposition.REJECTED, ResponseDisposition.ACKNOWLEDGED]
+)
+def test_a_fixed_ruling_citing_the_repair_results_event_is_supported(
+    position: ResponseDisposition,
+) -> None:
+    """tb4n5 follow-up of #1046 (kv ``fnd_c96c2b9f``): the reviewer cites the repair by the event
+    that recorded it (``evt_3318a99d`` for ``res_fc7a82cf``), as the packet offers it. That event
+    resolves to the result before the frontier test, so the ``fixed`` ruling is admitted with no
+    unsupported-ruling gap, even after the agent's reasoned answer cited the same repair."""
+
+    base = _formal_crypto_case()  # res(2), recorded at 12 by evt(12), is after the finding (5)
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(1),
+        finding_frontier=FRONTIER,
+        disposition=position,
+        reason="Repaired: the post-v2 throughput run is recorded.",
+        evidence_refs=(res(2),),
+    )
+    case = replace(
+        base,
+        projection=replace(base.projection, responses={fnd(1): record(answer, 14)}),
+        allowed_ids=base.allowed_ids | {evt(14)},
+        coverage_by_ref={**base.coverage_by_ref, evt(14): BASE_COVERAGE},
+    )
+    review = _formal_crypto_review(
+        SemanticJudgment(
+            "no_material_discrepancy", (), (_verdict(1, "fixed", str(clm(1)), str(evt(12))),)
+        ),
+        case,
+    )
+    assert _rulings(review) == [(str(fnd(1)), "fixed", tuple(sorted((str(clm(1)), str(evt(12))))))]
+    assert review.verdicts_unsupported == 0
+    # The event of anything but evidence or a result never supports ``fixed``: the finding's own
+    # event, the answer's event, or an old result's event are unassessable, never a dispute.
+    for cited in (str(evt(5)), str(evt(14)), str(evt(3))):
+        weak = _formal_crypto_review(
+            SemanticJudgment("no_material_discrepancy", (), (_verdict(1, "fixed", cited),)), case
+        )
+        assert [verdict for _ref, verdict, _cited in _rulings(weak)] == ["unassessable"], cited
+        assert weak.verdicts_unsupported == 1
 
 
 def test_a_cite_free_still_present_over_a_rebuttal_is_disputed_not_unassessable() -> None:
@@ -1863,13 +1951,13 @@ def test_payments_claim_churn_folds_one_concern_into_one_finding() -> None:
     changed the subject set. The same kind over the same obligation is one concern."""
 
     from builders.policy_cases import claim_record, obligation_record
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ClaimKind,
         ClaimRecordedPayload,
         ObligationPublishedPayload,
         ObligationStatus,
     )
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+    from finishup.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
 
     kind = FindingKind.TASK_REQUIREMENT_UNMET
     policy_id, policy_version = finding_policy_identity(kind)
@@ -1936,8 +2024,8 @@ def test_payments_claim_churn_folds_one_concern_into_one_finding() -> None:
 
 def test_pre_work_never_attempted_challenges_are_dropped_until_work_is_claimed() -> None:
     from builders.policy_cases import claim_record
-    from yoetz.application.check import SEMANTIC_REJECTED_ROUTINE_COMPLETENESS
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+    from finishup.application.check import SEMANTIC_REJECTED_ROUTINE_COMPLETENESS
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayload
 
     never = replace(
         _challenge(str(obl(1)), summary="Requested solver never attempted"),
@@ -2033,7 +2121,7 @@ def test_citing_the_event_of_a_republished_claim_is_not_new_material() -> None:
     """Codex review round 2: a claim's own event id is the claim, not new evidence."""
 
     from builders.policy_cases import claim_record
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayload
 
     base = _formal_crypto_case()
     republished = claim_record(
@@ -2074,7 +2162,7 @@ def test_a_withdrawn_contradicted_by_a_stale_restatement_is_the_dispute() -> Non
 
 def _with_republished_claim(case: DeterministicCase) -> DeterministicCase:
     from builders.policy_cases import claim_record
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayload
 
     republished = claim_record(
         ClaimRecordedPayload(clm(2), ClaimKind.COMPLETION, "solve.sage works", ()), 11
@@ -2124,7 +2212,7 @@ def test_a_historical_obligation_publication_event_is_not_new_material() -> None
     """Codex review round 3: an obligation event the projection no longer holds is still
     bookkeeping when the frozen history names it."""
 
-    from yoetz.kernel.deterministic_checks import FrozenHistoryEvent
+    from finishup.kernel.deterministic_checks import FrozenHistoryEvent
 
     base = _formal_crypto_case()
     historical = FrozenHistoryEvent(
@@ -2155,3 +2243,66 @@ def test_a_historical_obligation_publication_event_is_not_new_material() -> None
     assert [(ref, verdict) for ref, verdict, _cited in _rulings(review)] == [
         (str(fnd(1)), "disputed_after_rebuttal")
     ]
+
+
+_CUTOVER_LINE = (
+    "+    return URL.create('postgresql+psycopg',password=[REDACTED],"
+    "host=config.POSTGRES_HOST,port=DB_PORT)"
+)
+
+
+def _defect(summary: str, discrepancy: str, snippet: str) -> ReviewerChallenge:
+    return ReviewerChallenge(
+        FindingKind.CODE_DEFECT,
+        summary,
+        (str(clm(1)),),
+        discrepancy,
+        "The connection may fail at startup.",
+        "Main agent: repair the connection setup.",
+        "act",
+        "Only the shown diff was read.",
+        snippet,
+    )
+
+
+@pytest.mark.parametrize(
+    "discrepancy",
+    [
+        "DB_PORT is undefined and raises NameError at startup",
+        # Round-2 review of tb4n5: wording about the redaction beside a real defect in the
+        # surrounding readable code must never decide whether that defect survives.
+        "Beside the redacted password, DB_PORT is undefined and raises NameError at startup",
+        "Redacted password aside, DB_PORT is undefined and raises NameError at startup",
+        "The password is redacted; DB_PORT is undefined and raises NameError at startup",
+        "Not the [withheld-by-yoetz:possible-credential] value: DB_PORT is not defined anywhere",
+    ],
+)
+@pytest.mark.parametrize("phase", ["final", "routine"])
+def test_a_defect_beside_a_redaction_marker_stays_reviewable(
+    discrepancy: str, phase: Literal["final", "routine"]
+) -> None:
+    """tb4n5: no check-side filter reads the reviewer's words for a redaction-marker premise; a
+    concern about readable code on a line that holds a marker keeps its normal frame (a finding
+    in the final review, an advisory note in a routine one) whatever words surround it. The
+    reviewer instruction and the agent guidance carry the marker rule instead."""
+
+    case = make_case(extra_refs=(clm(1),))
+    sent = f"diff --git a/api/db.py b/api/db.py\n{_CUTOVER_LINE}\n"
+    challenge = _defect("Undefined database port", discrepancy, _CUTOVER_LINE)
+
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (challenge,)),
+        _provenance(),
+        expected_frontier=case.frontier,
+        citable_refs=frozenset({str(clm(1))}),
+        provider_input_text_by_ref={str(clm(1)): (sent,)},
+        review_phase=phase,
+    )
+
+    assert review.rejected_by_reason == ()
+    if phase == "final":
+        assert [candidate.summary for candidate in review.candidates] == ["Undefined database port"]
+    else:
+        assert review.candidates == () and review.advisory_notes == 1

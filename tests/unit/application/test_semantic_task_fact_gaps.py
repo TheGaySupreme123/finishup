@@ -14,21 +14,21 @@ from typing import Any, cast
 
 import pytest
 
+from finishup.application.check import (
+    _semantic_evaluation,  # pyright: ignore[reportPrivateUsage]
+)
+from finishup.application.service import Application
+from finishup.domain.privacy import ReviewContextProfile
+from finishup.kernel.deterministic_checks import REQUESTED_OUTPUT_ABSENT_FACT
+from finishup.kernel.task_facts import (
+    REQUESTED_OUTPUT_GIT_IGNORED_GAP,
+    REQUESTED_OUTPUT_UNVERIFIED_GAP,
+)
+from finishup.ports.diagnostics import RuntimeCapability
 from unit.application.test_semantic_case import (
     _build,  # pyright: ignore[reportPrivateUsage]
     _case_with_material,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.check import (
-    _semantic_evaluation,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.application.service import Application
-from yoetz.domain.privacy import ReviewContextProfile
-from yoetz.kernel.deterministic_checks import REQUESTED_OUTPUT_ABSENT_FACT
-from yoetz.kernel.task_facts import (
-    REQUESTED_OUTPUT_GIT_IGNORED_GAP,
-    REQUESTED_OUTPUT_UNVERIFIED_GAP,
-)
-from yoetz.ports.diagnostics import RuntimeCapability
 
 pytestmark = pytest.mark.anyio
 
@@ -205,7 +205,7 @@ def test_task_fact_gap_codes_reach_packet_known_gaps() -> None:
 async def test_a_round_stopped_after_one_retry_never_calls_the_reviewer() -> None:
     """tb4n1 D3: after two insufficient-packet reviews in a row, the check skips the reviewer."""
 
-    from yoetz.protocol.models import SemanticStatus
+    from finishup.protocol.models import SemanticStatus
 
     calls: list[object] = []
 
@@ -230,10 +230,10 @@ async def test_a_round_stopped_after_one_retry_never_calls_the_reviewer() -> Non
 async def test_the_round_stop_reads_the_frozen_ledger_prefix_and_spares_required_checks() -> None:
     """tb4n1 D3: the stop is decided from recorded checks; ``semantic_required`` always reviews."""
 
-    from unit.kernel.test_review_round import _check  # pyright: ignore[reportPrivateUsage]
-    from yoetz.application.check import (
+    from finishup.application.check import (
         _review_round_stopped_at,  # pyright: ignore[reportPrivateUsage]
     )
+    from unit.kernel.test_review_round import _check  # pyright: ignore[reportPrivateUsage]
 
     records = (_check("insufficient_packet"), _check("insufficient_packet"))
     seen: list[object] = []

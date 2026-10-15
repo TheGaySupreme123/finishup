@@ -7,28 +7,28 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.installation_recovery import (
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.installation_recovery import (
     InstallationRecoveryArtifact,
     InstallationRecoveryMetadata,
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
     unlock_installation_recovery_artifact,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
-from yoetz.ports.keys import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.adapters.keys.vault_passphrase import VaultRootEnvelope
+from finishup.ports.keys import (
     REPOSITORY_PRIVACY_MAC_DOMAIN,
     KeyStoreError,
     MacKeyPurpose,
 )
-from yoetz.ports.secret_memory import (
+from finishup.ports.secret_memory import (
     HumanAuthorizationProof,
     ProviderAttemptAuthBinding,
     SecretMemoryError,
     SecretPurpose,
 )
-from yoetz.service.vault import (
+from finishup.service.vault import (
     VaultError,
     VaultMode,
     VaultService,

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from yoetz.application.semantic_case import SemanticPacketView
-from yoetz.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
-from yoetz.ports.semantic import PriorFindingVerdict, SemanticJudgment
-from yoetz.service import ready_composition
+from finishup.application.semantic_case import SemanticPacketView
+from finishup.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
+from finishup.ports.semantic import PriorFindingVerdict, SemanticJudgment
+from finishup.service import ready_composition
 
 
 def test_a_trimmed_packet_view_adds_the_prior_findings_gap() -> None:

@@ -7,12 +7,12 @@ import json
 import pytest
 from mcp import types
 
-from yoetz.cli.render import render_human_error
-from yoetz.mcp.server import result_from_public_model
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_public_error
-from yoetz.protocol.errors import attach_reason_continuation
-from yoetz.protocol.models import StartResultModel
-from yoetz.protocol.start_recovery import start_recovery_guidance
+from finishup.cli.render import render_human_error
+from finishup.mcp.server import result_from_public_model
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_public_error
+from finishup.protocol.errors import attach_reason_continuation
+from finishup.protocol.models import StartResultModel
+from finishup.protocol.start_recovery import start_recovery_guidance
 
 
 @pytest.mark.parametrize(

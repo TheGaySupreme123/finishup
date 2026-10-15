@@ -1,7 +1,7 @@
 # Receipts and coverage
 
 A receipt says what was checked and how well. It is deliberately narrow, and reading it correctly
-matters more than any other single thing in Yoetz.
+matters more than any other single thing in FinishUP.
 
 The agent-facing rules are [`guidance/coverage-and-receipts.md`](../../guidance/coverage-and-receipts.md),
 which ships with the product. This page is the human's version.
@@ -26,7 +26,7 @@ returns.
 ## Getting one
 
 ```text
-yoetz receipt --request '{"request_id":"req_...","format":"markdown", ...}' --json
+finishup receipt --request '{"request_id":"req_...","format":"markdown", ...}' --json
 ```
 
 Formats are `json`, `markdown`, and `text`. All three project under the default agent-context
@@ -61,17 +61,17 @@ carries `"status": "historical"` and `cleared_at_frontier`; a gap row without a 
 
 Honest:
 
-> Yoetz found no local-check issue in the cooperatively published record at the stated frontier;
+> FinishUP found no local-check issue in the cooperatively published record at the stated frontier;
 > artifact observation remained published-only.
 
 Not honest:
 
-> Yoetz proved the implementation is complete and correct.
+> FinishUP proved the implementation is complete and correct.
 
 ## The trap: a clean local-only check
 
 A clean `deterministic_only` check is **not** an implementation review. A clean result means “no
-issue detected within deterministic coverage”, and a clean receipt says the same:
+issue detected within local coverage”, and a clean receipt says the same:
 `no_unresolved_deterministic_findings`. Where AI-powered review is required, a `deterministic_only`
 check records `semantic_review_not_requested` and that limitation keeps the receipt at
 `insufficient_coverage`. Where it is not required (it is optional or off, or the owner connected
@@ -81,7 +81,22 @@ that check's findings, the receipt notes that the check is current as of an earl
 note alone does not keep it from a clean conclusion. The receipt leads with its scope,
 review status and material limitations, followed by the finding count and frozen check totals.
 
-Omit `mode` to retain the configured verification default. Use `semantic_if_configured` only when
+**A task in local mode.** Where your setting starts tasks local (the recommended setup answer),
+a task that has not turned on AI-powered review checks with local checks only on a route that did
+not require review, so its receipt reaches a clean local conclusion and says that AI-powered review
+was not requested. The check, `status` and the receipt say which mode the task was in: whenever
+the applicable check recorded its mode, the receipt's limitations section ends with a sentence on
+how that check ran (for a local task, "ran local checks only (FinishUP); AI-powered review was not
+requested for this task"). When the task turned AI-powered review on or off, a sentence before it
+names each switch: its ledger sequence, its event id, the identity the ledger recorded for it (with
+how that identity was established) and the authority it declared. A check that recorded no mode
+(an installation that has not chosen a setting, in a task that never switched) adds nothing.
+Under "every task" an agent's switch to local is listed but changes nothing, and a task that used
+AI-powered review still gets its closing review before the receipt, even after going back to local
+checks.
+
+Omit `mode` to run in the task's review mode (the configured default where the task's mode was not
+recorded). Use `semantic_if_configured` only when
 review is known to be optional. If the user, policy, or acceptance requires AI-powered review,
 select `semantic_required` for the final check and subsequent final rechecks. Reserve
 `deterministic_only` for explicitly local or structural checks, or a user-authorized deliberate
@@ -117,7 +132,7 @@ Resolving the underlying gaps narrows the finding and lets the next review carry
 
 ## Completion scope is declared, not inferred
 
-Yoetz reads completion scope only from the effective plan chain. It never invents obligations from
+FinishUP reads completion scope only from the effective plan chain. It never invents obligations from
 the prompt, source tree, workspace, or completion prose.
 
 When a completion claim exists and the effective plan has zero declared obligations, the check is
@@ -147,7 +162,7 @@ Two findings stop a completion from reading clean until the agent answers them:
 - `task_requirement_unmet` — a task statement is recorded and the plan declares obligations, but
   none of them cites the statement, or the agent claims completion with no plan or an explicitly
   empty one. The agent decomposes your request into obligations that cite it, or, when your request
-  needs no material work and nothing was edited, records that decision with a reason. Yoetz checks
+  needs no material work and nothing was edited, records that decision with a reason. FinishUP checks
   only that link, not that every requirement was captured. Repeating your unchanged request when a
   session resumes does not count as a new request.
 - `claim_without_admissible_evidence` (observed-verification form) — the hooks saw the agent edit
@@ -171,11 +186,11 @@ Forbidden after a candidate read: "I checked and found nothing."
 - Installing a harness integration.
 - Firing a trigger-only hook. A proven trigger may prompt a bounded `status` re-grounding; it
   observes nothing and changes no coverage.
-- Storing imported evidence. Imported evidence never gains cooperative authorship because Yoetz
+- Storing imported evidence. Imported evidence never gains cooperative authorship because FinishUP
   stored it.
 - A digest. It records identity, not content inspection. A digest your agent publishes stays
   caller-asserted: it raises no finding, and the receipt's limitations say once, with a count,
-  how many cited evidence items carry caller-asserted digests Yoetz did not verify, keeping
+  how many cited evidence items carry caller-asserted digests FinishUP did not verify, keeping
   digest-only items (the bytes were not retained) apart from withheld items (your agent recorded
   the bytes as withheld). No response, recheck, or further publication changes that.
 - Constructing TOML, a path, or metadata. That is not proof of wire dispatch or AI-powered review.
@@ -238,7 +253,7 @@ when its own excerpt was shown. Cite your repair's evidence rather than only a r
 a result without evidence stays in a bounded review only while it is recent, while cited evidence
 is selected first. If it did not send them, the finding stays current and names
 `finding_material_outside_reduced_review_scope`. If the check also shows
-`semantic_included_refs_not_recorded`, Yoetz could not record what that review sent. Make sure the
+`semantic_included_refs_not_recorded`, FinishUP could not record what that review sent. Make sure the
 repair evidence is recorded and cited in your response, then run one new check. If it shows the
 same code again, stop rechecking, keep the finding open and disclose it. While a finding stays
 open, its explanation names the latest check that could have resolved it; a later check scoped to
@@ -267,21 +282,21 @@ request that you state a limit you cannot remove (a hidden evaluator, a withheld
 "not done" work: once you disclose it with one reasoned answer it is a settled limitation, and a
 repeat of the same concern is recorded on it rather than raised again.
 
-`self_verified` is the final state for a finding you repaired that Yoetz cannot prove repaired
-because of its own limits (a *Yoetz limit*: content it could not capture or had to redact, lost
+`self_verified` is the final state for a finding you repaired that FinishUP cannot prove repaired
+because of its own limits (a *FinishUP limit*: content it could not capture or had to redact, lost
 observations, a review packet that could not show the repair). You verify the repair yourself,
 record that evidence, and respond `self_verified` with how you verified it and the evidence ids.
-Yoetz accepts it only after a later check of the finding and only when that check no longer sees
+FinishUP accepts it only after a later check of the finding and only when that check no longer sees
 the issue itself (`finding_not_rechecked` and `finding_not_proof_limited` otherwise; the
 `finding_not_proof_limited` refusal lists the recorded reasons that disqualified it in
 `blocking_reasons` and says what to do next). The item stops
 being your work and never counts as receipt-blocking, but it is never resolved: closure readiness
 lists `finding_self_verified` as a standing limitation, the receipt names it in its own
-"Self-verified by the agent; Yoetz could not prove the repair" section, and the receipt's
-conclusion is at best `insufficient_coverage`. A Yoetz limit is never a `yoetz-blocker`.
+"Self-verified by the agent; FinishUP could not prove the repair" section, and the receipt's
+conclusion is at best `insufficient_coverage`. A FinishUP limit is never a `finishup-blocker`.
 
 Findings are advisory. When you disagree, respond `rejected` with your reasoning. If the review
-then repeats the finding without citing anything recorded after your answer, Yoetz records the
+then repeats the finding without citing anything recorded after your answer, FinishUP records the
 final state `disputed_after_rebuttal`: the reviewer and you disagree, it is not your work, nothing
 asks you about it again, and `respond` records nothing more on it. It is never clean either:
 closure readiness lists `finding_disputed_after_rebuttal` as a standing limitation, the receipt
@@ -304,7 +319,7 @@ Two more things decide what the receipt will say, and status tells you before yo
   `acknowledged` and say what cannot be verified. It is then final, the receipt lists it under
   "Verification limits", and the conclusion is at best `insufficient_coverage`; it never reads clean
   and it never reads `unresolved_findings_remain` for that item. A decision line
-  `yoetz-verification-limit:<obligation id>` covering the obligation the challenge concerns does the
+  `finishup-verification-limit:<obligation id>` covering the obligation the challenge concerns does the
   same. If you know the requirement is not met, answer `acknowledged_not_done` instead: the receipt
   then lists it with the requirements you acknowledged as not done and reads
   `unresolved_findings_remain`, exactly like any other requirement left undone. While the request is
@@ -314,7 +329,7 @@ Two more things decide what the receipt will say, and status tells you before yo
   verifier passes), the finding is `agent_criterion_unmet`, not a task requirement. You may fix it,
   or narrow the criterion by answering `acknowledged` with the reason: the receipt then lists it as
   a disclosed limitation and reads at best `insufficient_coverage`; it never blocks. Only your answer
-  narrows it; a `yoetz-verification-limit` decision does not. While it is open, the check's next
+  narrows it; a `finishup-verification-limit` decision does not. While it is open, the check's next
   step is `work_open_findings`, not `disclose_limitations`.
 
 While the work is in progress, the reviewer judges incomplete work only (something marked done that
@@ -336,8 +351,8 @@ Three more things the receipt discloses in their own sections, by id only:
 
 - **Assumptions and verification limits.** When you make a best-effort choice, or a check is
   inherently out of reach (a hidden verifier, a private trace), that is not a blocker: finish the
-  work and record a decision whose statement holds the line `yoetz-assumption:<obligation id>` or
-  `yoetz-verification-limit:<obligation id>`, with the assumption or limit as the rationale. Closure
+  work and record a decision whose statement holds the line `finishup-assumption:<obligation id>` or
+  `finishup-verification-limit:<obligation id>`, with the assumption or limit as the rationale. Closure
   readiness lists `assumption_disclosed` or `verification_limit_disclosed` as standing
   limitations, and the receipt names each one under "Assumptions and verification limits the agent
   disclosed". Nothing is blocked or resolved by it; supersede the decision to withdraw it.
@@ -356,20 +371,26 @@ Three more things the receipt discloses in their own sections, by id only:
   for the same file, does not clear it. Status, the Stop text and the receipt say why it fired:
   what the file held and at which check. A file created empty (an empty requirements list) never
   raises it; if the task really asked for that file to be empty whatever happens, record a
-  `yoetz-assumption` decision that names the file and run `check`.
-- **Deliverables that load undeclared files.** When a delivered source file loads a file you
+  `finishup-assumption` decision that names the file and run `check`.
+- **Deliverables that load undeclared files.** When a delivered source file may read a file you
   created but did not declare (a model, a word list, a data table), a grader that receives only the
-  declared files gets a program that cannot run. `deliverable_references_undeclared_file` asks you
-  at Stop to fix it and names the files, and the receipt names them (a `default_local_export` or
-  `redacted_share` receipt counts them instead) and stays below clean until you do. Embed the
-  content in the deliverable, rebuild it at run time, or declare the file as a delivered output (a
-  requested `file` item with role `output`; a file the task itself provides is role `input`), then
-  run `check`. Disclosing the dependency does not resolve it.
+  declared files gets a program that cannot run. A file the deliverable provably only writes does
+  not count. A bare file name that a declared file shares, or that nothing in the code ties to the
+  file's folder, is not treated as a dependency, and the receipt says how many such files there
+  were (`deliverable_references_ambiguous_name`), never which.
+  `deliverable_references_undeclared_file` asks you at Stop to fix it and names the files; when
+  your privacy settings withhold a name (FinishUP shows you only a name you published yourself), it
+  says so and asks you to list the files your change created yourself. The receipt names them (a `default_local_export`
+  or `redacted_share` receipt counts them instead) and stays below clean until you fix it. Embed
+  the content in the deliverable, rebuild it at run time, or declare the file, or the directory
+  holding it, as a delivered output (a requested `file` or `directory` item with role `output`; a
+  file the task itself provides is role `input`), then run `check`. Disclosing the dependency does
+  not resolve it.
 - **Planned commands that matched only in part.** A planned command counts as run when an
   observed run matches it exactly, or after dropping wrappers such as `timeout`, `env` and
   `nice` and the interpreter alias `python3`. A run that only began with the planned arguments,
   or carried its program and flags in another order, also counts, and the receipt lists
-  `planned_verification_matched_by_prefix` with the run it rests on: Yoetz cannot tell whether
+  `planned_verification_matched_by_prefix` with the run it rests on: FinishUP cannot tell whether
   that run is what you meant.
 - **Deliverables not reviewed.** When a review ran and a declared output is a file type the
   review never receives (a binary), the receipt lists `declared_output_not_reviewable`: the file
@@ -394,7 +415,7 @@ and the check discloses `semantic_restatements_suppressed`.
 The check result's `finding_checklist` and `status` with the `findings` view show each item's state
 and how many later reviews left it open, against the owner's budget
 (`verification.finding_attempt_budget`, default 5), for example `[ ] F-3 open (2/5)`. At the budget
-Yoetz asks for a decision: repair with new evidence; if you repaired it and only a Yoetz limit keeps
+FinishUP asks for a decision: repair with new evidence; if you repaired it and only a FinishUP limit keeps
 it unproven, verify it yourself and respond `self_verified`; respond `acknowledged_not_done` with
 the reason only if you truly will not or cannot do it. It never limits checks and never closes or acknowledges anything on anyone's behalf.
 
@@ -407,19 +428,19 @@ Neither case supports a clean completion receipt.
 Responding does not throw the check away. A recorded check still counts toward a later receipt when
 nothing after it can have changed the work the check read: responses to findings that check itself
 returned, acknowledgements of observation-authored non-actionable findings, and the records the
-host and Yoetz itself add around any tool call. Yoetz does not count your own `status`,
+host and FinishUP itself add around any tool call. FinishUP does not count your own `status`,
 `read_guidance`, `receipt` or `check` calls, read-only reads, the host's stream bookkeeping
 (messages, reasoning, token counts) or a receipt you save into the workspace, so checking and then
-asking for the receipt keeps a deterministic receipt clean.
+asking for the receipt keeps a local receipt clean.
 
-If something after the check might have changed the work and Yoetz cannot tell (a script run, a
+If something after the check might have changed the work and FinishUP cannot tell (a script run, a
 test or build, a tool it cannot attribute), the receipt folds the check's coverage, including
 `semantic_model_derived`, and carries the gap `check_current_as_of_earlier_frontier` naming the
 subject frontier that was tested and the first such record. The verdict is current as of that
 earlier frontier, not the receipt's, so the receipt is still coverage-incomplete. `status` keeps the
 code among the standing limitations and names the first such record. One new `check` before the
-receipt evaluates it; the code can return when the host observes the check itself in a way Yoetz
-cannot attribute (some Cursor profiles, Yoetz run through a shell), so do not repeat checks for
+receipt evaluates it; the code can return when the host observes the check itself in a way FinishUP
+cannot attribute (some Cursor profiles, FinishUP run through a shell), so do not repeat checks for
 it: the receipt discloses it.
 
 An observed edit to the deliverable or the workspace after the check is different: it changes

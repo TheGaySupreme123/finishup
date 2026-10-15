@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation_budget import (
     BUDGET_VALIDATION_STATUS,
     CURRENT_SERIALIZATION_CAP_BYTES,
     LARGER_CAPACITY,

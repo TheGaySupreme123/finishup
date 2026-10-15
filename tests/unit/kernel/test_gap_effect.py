@@ -1,6 +1,6 @@
 """One table of what each gap code does to a receipt (tb4n3 RC-3, issue #1026, ADR-046).
 
-The 180 unchanged rows must keep today's behaviour under both routes; the 38 changed rows are
+The 180 unchanged rows must keep today's behaviour under both routes; the 39 changed rows are
 named here, each with its rule, so a reviewer reads exactly which codes the round re-labels.
 tb4n4: ``deliverable_references_undeclared_file`` became agent work (#1044, changed);
 ``semantic_review_deferred_before_first_edit`` (issue #1046) follows the recorded route like the
@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
-from yoetz.kernel.finding_resolution import DETERMINISTIC_PROOF_TOLERATED_GAPS
-from yoetz.kernel.gap_effect import (
+from finishup.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+from finishup.kernel.finding_resolution import DETERMINISTIC_PROOF_TOLERATED_GAPS
+from finishup.kernel.gap_effect import (
     GAP_EFFECT_TABLE,
     GAP_EFFECT_WHY,
     PROOF_TOLERATED_GAPS,
@@ -97,6 +97,8 @@ _CHANGED = frozenset(
         "advice_semantic_deferred",
         "advice_semantic_output_invalid",
         "advice_semantic_pending",
+        # tb4n5 (#1019 r2): background advice skipped under a preview-required policy.
+        "advice_semantic_preview_required",
         "advice_semantic_text_truncated",
         "advice_semantic_unavailable",
         "observation_qualified_partial",
@@ -118,8 +120,10 @@ _CHANGED = frozenset(
         "semantic_review_not_configured",
         # tb4n4 (#1044): a disclosure that is now agent work (rule G0c).
         "deliverable_references_undeclared_file",
-        # tb4n4 (#1046, review): Yoetz's own deferral is disclosed where review is not required.
+        # tb4n4 (#1046, review): FinishUP's own deferral is disclosed where review is not required.
         "semantic_review_deferred_before_first_edit",
+        # tb4n5 (#1044 follow-up): a new disclosure, counted on the receipt, never agent work.
+        "deliverable_references_ambiguous_name",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -127,7 +131,11 @@ _CARRIED = frozenset(_GUARDED_AT_BASE)
 
 def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group() -> None:
     assert set(GAP_EFFECT_TABLE) == set(GAP_CLASSIFICATION)
-    assert len(GAP_EFFECT_TABLE) == 218  # the 215 recorded codes + 3 readiness-only finding tokens
+    # The 218 recorded codes (#1040 follow-up added check_time_change_unavailable_git_version_
+    # unsupported beside its G7 siblings; the #1044 follow-up added
+    # deliverable_references_ambiguous_name; #1019 r2 added advice_semantic_preview_required)
+    # + 3 readiness-only finding tokens.
+    assert len(GAP_EFFECT_TABLE) == 221
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -136,7 +144,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 38
+    assert len(changed) == 40
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])
@@ -218,7 +226,9 @@ def test_host_observation_gaps_are_disclosed_only_while_the_check_carried_them()
         assert gap_effect(code, incomplete).kind is GapEffectKind.STANDING_BOUNDING
 
 
-def test_a_yoetz_review_budget_bounds_only_when_the_reviewer_reported_it_could_not_assess() -> None:
+def test_a_finishup_review_budget_bounds_only_when_the_reviewer_reported_it_could_not_assess() -> (
+    None
+):
     for code in ("check_time_change_truncated", "semantic_reference_scope_reduced"):
         clean = GapContext(route_requires_review=True, review_succeeded=True)
         assert gap_effect(code, clean).kind is GapEffectKind.DISCLOSED

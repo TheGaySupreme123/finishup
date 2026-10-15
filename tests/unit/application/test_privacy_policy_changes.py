@@ -23,8 +23,8 @@ from builders.privacy_policies import (
     minimal_external_policy,
 )
 from builders.privacy_widenings import WIDENING_CASES, with_llm
-from yoetz.application.privacy_policy import is_privacy_tightening, privacy_policy_changes
-from yoetz.domain.privacy import (
+from finishup.application.privacy_policy import is_privacy_tightening, privacy_policy_changes
+from finishup.domain.privacy import (
     _CHANGE_IMPACT,  # pyright: ignore[reportPrivateUsage]
     MAX_PRIVACY_CHANGES,
     MAX_PRIVACY_LABEL_BYTES,
@@ -38,7 +38,7 @@ from yoetz.domain.privacy import (
     sort_privacy_changes,
     validate_privacy_change_set,
 )
-from yoetz.protocol.models import DataCategory
+from finishup.protocol.models import DataCategory
 
 
 def _external() -> PrivacyPolicy:

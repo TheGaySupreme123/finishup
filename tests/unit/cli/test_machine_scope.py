@@ -1,6 +1,6 @@
 """Machine-scope construction resolves the configured installation bundle (issue #517).
 
-``yoetz privacy show`` used to read the installation marker from the fixed platform state
+``finishup privacy show`` used to read the installation marker from the fixed platform state
 directory, so an explicit ``storage.data_dir`` bundle made the read miss, and the miss was
 converted into a ``ControlError`` reason the closed control vocabulary does not admit — the CLI
 then masked the constructor's own failure as a generic ``internal_error`` exit 70. These tests
@@ -18,11 +18,11 @@ from typing import cast
 
 import pytest
 
-from yoetz.cli import provider_status as module
-from yoetz.cli.provider_status import MachineScopeError, machine_scope_request
-from yoetz.config.models import ConfigError, StorageConfig, YoetzConfig
-from yoetz.config.paths import PathSafetyError
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.cli import provider_status as module
+from finishup.cli.provider_status import MachineScopeError, machine_scope_request
+from finishup.config.models import ConfigError, FinishUpConfig, StorageConfig
+from finishup.config.paths import PathSafetyError
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 _INSTALLATION_ID = "ins_50000000-0000-4000-8000-000000000001"
 
@@ -35,9 +35,9 @@ def _wire(
 ) -> tuple[Path, list[Path | None]]:
     """Bind config and bundle resolution to a test cell; return (bundle, observed data dirs)."""
 
-    config = YoetzConfig(profile="strict-local", storage=StorageConfig(data_dir=data_dir))
+    config = FinishUpConfig(profile="strict-local", storage=StorageConfig(data_dir=data_dir))
 
-    def _load(*_args: object) -> YoetzConfig:
+    def _load(*_args: object) -> FinishUpConfig:
         return config
 
     monkeypatch.setattr(module, "load_config", _load)
@@ -172,7 +172,7 @@ def test_unsafe_bundle_is_a_bounded_local_failure(
 def test_unloadable_config_is_a_bounded_local_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _refuse(*_args: object) -> YoetzConfig:
+    def _refuse(*_args: object) -> FinishUpConfig:
         raise ConfigError("config_unreadable")
 
     monkeypatch.setattr(module, "load_config", _refuse)
@@ -205,4 +205,4 @@ def test_failures_disclose_no_paths_and_carry_actionable_remediation(
     assert str(tmp_path) not in str(error)
     assert str(tmp_path) not in error.remediation
     assert error.remediation
-    assert "yoetz" in error.remediation
+    assert "finishup" in error.remediation

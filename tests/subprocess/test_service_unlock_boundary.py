@@ -21,7 +21,7 @@ _PASSPHRASE_CANARY = b"unlock-canary-value-2026"
 
 _VALIDATION_PROBE = r"""
 import base64, json, sys
-from yoetz.service.confidential_protocol import ConfidentialProtocolError, validate_passphrase_buffer
+from finishup.service.confidential_protocol import ConfidentialProtocolError, validate_passphrase_buffer
 
 cases = json.loads(sys.stdin.buffer.read())
 results = []
@@ -41,9 +41,9 @@ print(json.dumps({"results": results}, separators=(",", ":"), sort_keys=True))
 
 _ORDINARY_CONTROL_PROBE = r"""
 import json, os, sys
-from yoetz.domain.values import JsonObject
-from yoetz.protocol.canonical import strict_json_parse
-from yoetz.service.control_protocol import ControlProtocolError, parse_control_request
+from finishup.domain.values import JsonObject
+from finishup.protocol.canonical import strict_json_parse
+from finishup.service.control_protocol import ControlProtocolError, parse_control_request
 
 payload = bytearray(sys.stdin.buffer.read())
 try:
@@ -139,7 +139,7 @@ class _SecretTerminal:
 
 
 def _unlock_secret_reader() -> Callable[[object, object, object, object], bytearray]:
-    from yoetz.cli import unlock
+    from finishup.cli import unlock
 
     return cast(
         Callable[[object, object, object, object], bytearray],
@@ -148,7 +148,7 @@ def _unlock_secret_reader() -> Callable[[object, object, object, object], bytear
 
 
 def test_initialize_confirms_twice_locally_and_returns_only_first_buffer() -> None:
-    from yoetz.service.confidential_protocol import (
+    from finishup.service.confidential_protocol import (
         ConfidentialSecretPurpose,
         EmptyVaultTarget,
         HumanCeremonyKind,
@@ -174,7 +174,7 @@ def test_initialize_confirms_twice_locally_and_returns_only_first_buffer() -> No
 
 
 def test_rotate_replacement_uses_new_vault_passphrase_prompt() -> None:
-    from yoetz.service.confidential_protocol import (
+    from finishup.service.confidential_protocol import (
         ConfidentialSecretPurpose,
         EmptyVaultTarget,
         HumanCeremonyKind,
@@ -200,7 +200,7 @@ def test_rotate_replacement_uses_new_vault_passphrase_prompt() -> None:
 
 
 def test_initialize_mismatch_overwrites_both_and_reprompts() -> None:
-    from yoetz.service.confidential_protocol import (
+    from finishup.service.confidential_protocol import (
         ConfidentialSecretPurpose,
         EmptyVaultTarget,
         HumanCeremonyKind,
@@ -226,7 +226,7 @@ def test_initialize_mismatch_overwrites_both_and_reprompts() -> None:
 
 
 def test_initialize_invalid_passphrase_is_overwritten_and_reprompted() -> None:
-    from yoetz.service.confidential_protocol import (
+    from finishup.service.confidential_protocol import (
         ConfidentialSecretPurpose,
         EmptyVaultTarget,
         HumanCeremonyKind,
@@ -253,7 +253,7 @@ def test_initialize_invalid_passphrase_is_overwritten_and_reprompted() -> None:
 
 
 def test_unlock_reads_one_bounded_buffer_without_confirmation() -> None:
-    from yoetz.service.confidential_protocol import (
+    from finishup.service.confidential_protocol import (
         ConfidentialSecretPurpose,
         EmptyVaultTarget,
         HumanCeremonyKind,

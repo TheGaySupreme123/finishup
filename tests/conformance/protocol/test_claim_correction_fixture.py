@@ -6,10 +6,10 @@ from typing import Any, cast
 
 import pytest
 
+from finishup.domain.events import ClaimRecordedPayloadV1_1, EventSchema, decode_payload
+from finishup.domain.values import freeze_json
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 from fixture_loader import load_fixture_json
-from yoetz.domain.events import ClaimRecordedPayloadV1_1, EventSchema, decode_payload
-from yoetz.domain.values import freeze_json
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 
 def test_claim_correction_fixture_freezes_canonical_replacement_shape() -> None:

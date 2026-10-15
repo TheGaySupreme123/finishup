@@ -2,16 +2,16 @@
 
 Long tasks make a coding agent compact its context: the host replaces the working conversation
 with a summary and the agent carries on from that summary. The summary holds what the agent
-remembers of its own work. It does not reliably hold what Yoetz recorded about it: which
+remembers of its own work. It does not reliably hold what FinishUP recorded about it: which
 obligations are still open, which findings are waiting for an answer, what the last check
 concluded, which outputs the task declared.
 
-When the host starts the agent again after a compaction, Yoetz adds a short recap of that state to
+When the host starts the agent again after a compaction, FinishUP adds a short recap of that state to
 the context the agent is given. It is what `status` reports at that moment, written out once so the
 agent does not have to rediscover it:
 
 ```text
-Yoetz recap after context compaction. Each line below was read from the task ledger through
+FinishUP recap after context compaction. Each line below was read from the task ledger through
 status just now and names its source.
 ids: task tsk_..., session ses_..., writer wri_... [source hook mapping]; use these held ids ...
 frontier: 604 (sha256:c6a3f00ac6a3f00) [source status compact head frontier].
@@ -46,7 +46,7 @@ next: resolve the agent-actionable items above; status (held ids) lists each wit
 |---|---|
 | Codex | The recap is added to the re-ground text Codex shows its agent when the session starts again. |
 | Claude Code | The same, through Claude Code's session-start context. |
-| Cursor | Not shown. Cursor does not tell Yoetz when it compacts, so the agent re-grounds with `status` as before. |
+| Cursor | Not shown. Cursor does not tell FinishUP when it compacts, so the agent re-grounds with `status` as before. |
 
 A resumed session (as opposed to a compacted one) and a brand-new session are unchanged.
 

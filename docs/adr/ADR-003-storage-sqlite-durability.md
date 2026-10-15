@@ -2,8 +2,8 @@
 
 **Status:** Working decision for spec drafting (2026-07-13). Ratification requires the full
 fault/contention matrix on both advertised platforms.
-**Implemented by:** `docs/INTERFACES.md`, `src/yoetz/adapters/sqlite/`,
-`src/yoetz/ports/ledger.py`, `src/yoetz/ports/runtime.py`, root and packaged
+**Implemented by:** `docs/INTERFACES.md`, `src/finishup/adapters/sqlite/`,
+`src/finishup/ports/ledger.py`, `src/finishup/ports/runtime.py`, root and packaged
 `migrations/`, and the storage suites under `tests/integration/storage/` and `tests/subprocess/`.
 
 ## Decisions
@@ -28,14 +28,14 @@ fault/contention matrix on both advertised platforms.
 3. **Transactions:** `BEGIN IMMEDIATE` for every write path; the append transaction contains only
    bounded indexed reads/writes. All hashing, validation, encryption, object
    fsync, and network work happens outside. Acknowledge only after COMMIT returns.
-4. **Layout:** platform app-data `…/yoetz/` with `catalog.sqlite3` + `tasks/<task-id>/` bundles.
+4. **Layout:** platform app-data `…/finishup/` with `catalog.sqlite3` + `tasks/<task-id>/` bundles.
    One task per bundle database. Owner-only permissions; symlink/hardlink/
    traversal rejection; repo, cloud-synced, network, and world-readable paths unsupported and
    detected where practical (`STORAGE_UNSAFE`). "Network" includes the VM-boundary transports
-   `9p`, `drvfs`, and `virtiofs` (issue #723). Yoetz has not certified locking and crash durability
+   `9p`, `drvfs`, and `virtiofs` (issue #723). FinishUP has not certified locking and crash durability
    across these host/guest shares, so state inside WSL must live on the distribution's own disk,
    never under `/mnt/<letter>`. This is a conservative support boundary: virtiofs implementations
-   can support POSIX locks, but that alone is not Yoetz durability evidence.
+   can support POSIX locks, but that alone is not FinishUP durability evidence.
 5. **Schema:** migration `0001` is the canonical initial schema for both
    catalog and bundle (STRICT tables, WITHOUT ROWID where keyed by text, CHECK-enforced state
    machines). Structural columns never contain user plaintext.
@@ -88,7 +88,7 @@ writable ledger.
    and records a ticket containing only commitments, encrypted object IDs, source/session/cursor
    identity, the original source and content-authority generations, profile when applicable, and
    expected content groups/parts. For Codex, the ticket is fenced to the exact active consent
-   authority/generation, task, workspace commitment, Yoetz and host session, `codex_hook` source
+   authority/generation, task, workspace commitment, FinishUP and host session, `codex_hook` source
    identity and commitment, source generation, tool-call correlation, expected multipart
    groups/parts, object kinds, and object/content digests. No Codex content profile is inferred or
    accepted. The
@@ -216,7 +216,7 @@ fail closed before the migration journal or DDL is reached.
 
 ## Consequences
 
-Platform wheels (not pure-Python) on macOS arm64 + manylinux_2_28 x86_64; Yoetz owns security
+Platform wheels (not pure-Python) on macOS arm64 + manylinux_2_28 x86_64; FinishUP owns security
 patching for the shipped SQLite; every dependency bump reruns the storage matrix.
 
 ## 0.3 projection query execution (#747)

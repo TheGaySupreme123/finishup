@@ -7,7 +7,7 @@ accident, and a searchable picker must not steal digits from the query.
 
 from __future__ import annotations
 
-from yoetz.tui.widgets.views import ApprovalView, Option, SelectionView, TextEntryView
+from finishup.tui.widgets.views import ApprovalView, Option, SelectionView, TextEntryView
 
 ROWS = (
     Option("a", "Alpha"),

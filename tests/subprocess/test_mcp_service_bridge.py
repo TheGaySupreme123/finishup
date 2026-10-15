@@ -16,16 +16,16 @@ from mcp import types
 from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, FileUrl
 
-import yoetz.mcp.server as bridge
-from yoetz.config.models import LoggingConfig
-from yoetz.domain.closure import PREPARATION_REMEDIATIONS
-from yoetz.mcp.resources import GuidancePageAssembler, read_resource
-from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
-from yoetz.observability.logging import LogMode, configure_logging
-from yoetz.ports.control import ControlError, WorkspaceLocator
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+import finishup.mcp.server as bridge
+from finishup.config.models import LoggingConfig
+from finishup.domain.closure import PREPARATION_REMEDIATIONS
+from finishup.mcp.resources import GuidancePageAssembler, read_resource
+from finishup.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
+from finishup.observability.logging import LogMode, configure_logging
+from finishup.ports.control import ControlError, WorkspaceLocator
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     CheckResult,
     PublicRequestModel,
@@ -40,7 +40,9 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusResult,
 )
-from yoetz.service.client import _AcceptedServiceUnresponsive  # pyright: ignore[reportPrivateUsage]
+from finishup.service.client import (
+    _AcceptedServiceUnresponsive,  # pyright: ignore[reportPrivateUsage]
+)
 
 _PREFIXES = {
     "request": "req_",
@@ -280,8 +282,8 @@ _LEAK_TOKENS = (
     "Bearer ",
 )
 _ABSENT_SERVICE_MESSAGE = (
-    "The local Yoetz service is not running. On a local terminal run "
-    "'yoetz service run' under your selected user supervisor, then retry this "
+    "The local FinishUP service is not running. On a local terminal run "
+    "'finishup service run' under your selected user supervisor, then retry this "
     "operation with the same request_id."
 )
 _SERVICE_CORRELATION = "err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -323,7 +325,7 @@ async def test_exact_six_dispatchers_use_one_ordinary_client(
         "receipt",
     ]
     guidance = await bridge.dispatch_read_guidance(
-        {"uri": "yoetz://guidance/workflow.md"},
+        {"uri": "finishup://guidance/workflow.md"},
         runtime,
     )
     assert guidance.isError is False
@@ -607,14 +609,14 @@ async def test_read_guidance_reconstructs_oversized_text_without_the_service_cli
     runtime = bridge.build_bridge_runtime()
 
     result = await bridge.dispatch_read_guidance(
-        {"uri": "yoetz://guidance/workflow.md"},
+        {"uri": "finishup://guidance/workflow.md"},
         runtime,
     )
 
-    expected = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
+    expected = read_resource("finishup://guidance/workflow.md").decode("utf-8")
     assembler = GuidancePageAssembler()
     pages = 0
-    arguments: dict[str, object] = {"uri": "yoetz://guidance/workflow.md"}
+    arguments: dict[str, object] = {"uri": "finishup://guidance/workflow.md"}
     page_count: int | None = None
     while True:
         assert result.isError is False
@@ -941,7 +943,7 @@ async def test_closure_prepare_replay_rejects_malformed_selection_in_one_turn() 
 @pytest.mark.anyio
 async def test_read_guidance_rejects_unknown_uri_without_echoing_it() -> None:
     runtime = bridge.build_bridge_runtime()
-    unknown = "yoetz://guidance/not-a-real-document.md"
+    unknown = "finishup://guidance/not-a-real-document.md"
 
     result = await bridge.dispatch_read_guidance({"uri": unknown}, runtime)
 
@@ -962,7 +964,7 @@ async def test_read_guidance_rejects_extra_argument_keys() -> None:
     runtime = bridge.build_bridge_runtime()
 
     result = await bridge.dispatch_read_guidance(
-        {"uri": "yoetz://guidance/workflow.md", "request_id": "req_extra"},
+        {"uri": "finishup://guidance/workflow.md", "request_id": "req_extra"},
         runtime,
     )
 
@@ -1116,7 +1118,7 @@ async def test_write_timeout_preserves_unknown_outcome_and_same_request_remedy(
     }
     assert error["message"] == (
         "The local operation timed out and may still have committed. Retry with the same "
-        "request_id to recover the stored outcome; for an existing Yoetz session, status "
+        "request_id to recover the stored outcome; for an existing FinishUP session, status "
         "view=operation can inspect that request_id."
     )
     text = cast(str, cast(list[Any], result.content)[0].text)
@@ -1214,17 +1216,17 @@ def test_rpc_deadlines_are_configurable_per_tool_with_sane_defaults() -> None:
     assert deadline("respond", {}) == 50_000
     assert deadline("receipt", {}) == 50_000
     assert deadline("check", {}) == 300_000
-    env = {"YOETZ_MCP_DEADLINE_MS": "90000", "YOETZ_MCP_DEADLINE_MS_RECEIPT": " 45000 "}
+    env = {"FINISHUP_MCP_DEADLINE_MS": "90000", "FINISHUP_MCP_DEADLINE_MS_RECEIPT": " 45000 "}
     assert deadline("receipt", env) == 45_000
     assert deadline("respond", env) == 90_000
     # The global knob never shortens or lengthens check's semantic-review budget.
     assert deadline("check", env) == 300_000
-    assert deadline("check", {"YOETZ_MCP_DEADLINE_MS_CHECK": "600000"}) == 600_000
+    assert deadline("check", {"FINISHUP_MCP_DEADLINE_MS_CHECK": "600000"}) == 600_000
     # Clamped and fail-safe.
-    assert deadline("status", {"YOETZ_MCP_DEADLINE_MS": "5"}) == 1_000
-    assert deadline("status", {"YOETZ_MCP_DEADLINE_MS": "99999999"}) == 900_000
-    assert deadline("status", {"YOETZ_MCP_DEADLINE_MS": "-1"}) == 30_000
-    assert deadline("status", {"YOETZ_MCP_DEADLINE_MS": "1e5"}) == 30_000
+    assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "5"}) == 1_000
+    assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "99999999"}) == 900_000
+    assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "-1"}) == 30_000
+    assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "1e5"}) == 30_000
 
 
 @pytest.mark.anyio
@@ -1317,10 +1319,10 @@ def _reference_mirror_error() -> PublicOperationError:
     from typing import cast as _cast
 
     from builders.replay import replay_records
-    from yoetz.application.publish_work import Application, prepare_publication
-    from yoetz.domain.events import EventPayload, LedgerRecord, encode_payload
-    from yoetz.protocol.coverage import PublicationChannel
-    from yoetz.protocol.models import PublishWorkRequestModel
+    from finishup.application.publish_work import Application, prepare_publication
+    from finishup.domain.events import EventPayload, LedgerRecord, encode_payload
+    from finishup.protocol.coverage import PublicationChannel
+    from finishup.protocol.models import PublishWorkRequestModel
 
     class _App:
         def authorizes_import_publication(self, request: PublishWorkRequest) -> bool:
@@ -1394,7 +1396,7 @@ async def test_reference_mirror_correction_survives_the_bridge_round_trip(
     assert details["field"] == "/event_drafts/0/evidence_refs"
     message = cast(str, error["message"])
     assert "evidence_refs" in message
-    assert "yoetz://guidance/publication-policy.md" in message
+    assert "finishup://guidance/publication-policy.md" in message
     await bridge.close_bridge_runtime(runtime)
 
 
@@ -1598,7 +1600,7 @@ async def test_a_text_projection_failure_never_fails_a_committed_operation(
     the agent never saw a verdict (10 of 13 deterministic runs).
     """
 
-    from yoetz.mcp import summaries
+    from finishup.mcp import summaries
 
     client = _CommittedCheckClient()
     _install_clients(monkeypatch, [client])
@@ -1646,8 +1648,8 @@ def test_publish_work_validation_names_event_drafts_field() -> None:
     location. The r4 dogfood returned an empty pointer here, giving the agent nothing to fix.
     """
 
-    from yoetz.mcp.errors import safe_validation_locations
-    from yoetz.protocol.models import PublishWorkRequest
+    from finishup.mcp.errors import safe_validation_locations
+    from finishup.protocol.models import PublishWorkRequest
 
     def arguments(event_id: str) -> dict[str, object]:
         return {
@@ -1838,7 +1840,7 @@ async def test_transient_projection_failure_stays_retryable_service_unavailable(
 
 @pytest.fixture
 def diagnostic_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     return tmp_path
@@ -1873,7 +1875,7 @@ async def test_a_spawned_service_that_failed_to_start_is_named_on_the_start_resu
 ) -> None:
     """The conda-image ``start`` said only "not running; run it" after exit 70 (#1040)."""
 
-    from yoetz.service.startup_failure import record_startup_failure
+    from finishup.service.startup_failure import record_startup_failure
 
     try:
         raise NotImplementedError("chmod: follow_symlinks unavailable on this platform")
@@ -1902,13 +1904,13 @@ async def test_a_spawned_service_that_failed_to_start_is_named_on_the_start_resu
     assert details["phase"] == "activation"
     message = cast(str, error["message"])
     assert message.startswith(
-        "The local Yoetz service exited while starting "
+        "The local FinishUP service exited while starting "
         "(stage: activation; exception_not_implemented_error)"
     )
     assert message != _ABSENT_SERVICE_MESSAGE
     text = cast(types.TextContent, result.content[0]).text
     assert "Reason: service_start_failed (stage: activation)." in text
-    assert "Remedy: The local Yoetz service exited while starting" in text
+    assert "Remedy: The local FinishUP service exited while starting" in text
     assert _SERVICE_CORRELATION in text
     # One failure, one id: the bridge reuses the spawned service's record and adds none.
     (found,) = lookup_diagnostic_records(_SERVICE_CORRELATION, root=diagnostic_root)
@@ -1936,7 +1938,7 @@ async def test_connect_accepted_but_unresponsive_does_not_prescribe_service_run(
     message = cast(str, error["message"])
     assert message != _ABSENT_SERVICE_MESSAGE
     assert "under your selected user supervisor" not in message
-    assert "Do not run `yoetz service run`" in message
+    assert "Do not run `finishup service run`" in message
     assert (
         cast(dict[str, object], error["safe_details"])["reason_code"] == "accepted_but_unresponsive"
     )
@@ -1972,7 +1974,7 @@ async def test_connect_incompatible_holder_reuses_service_correlation_id(
     assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
     assert error["retryable"] is True
     assert error["correlation_id"] == _SERVICE_CORRELATION
-    assert "yoetz service restart" in str(error["message"])
+    assert "finishup service restart" in str(error["message"])
     assert cast(dict[str, object], error["safe_details"])["reason_code"] == "service_incompatible"
     found = lookup_diagnostic_records(_SERVICE_CORRELATION, root=diagnostic_root)
     assert len(found) == 1
@@ -2005,7 +2007,7 @@ async def test_connect_protocol_mismatch_is_distinct_and_ships_non_retryable(
     assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
     assert error["retryable"] is False
     assert error["correlation_id"] == _SERVICE_CORRELATION
-    assert "yoetz service restart" in str(error["message"])
+    assert "finishup service restart" in str(error["message"])
     assert cast(dict[str, object], error["safe_details"])["reason_code"] == "protocol_mismatch"
     found = lookup_diagnostic_records(_SERVICE_CORRELATION, root=diagnostic_root)
     assert len(found) == 1

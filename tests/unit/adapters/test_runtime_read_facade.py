@@ -19,9 +19,9 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters import runtime as runtime_module
-from yoetz.application import status as status_module
-from yoetz.ports.ledger import LedgerPort
+from finishup.adapters import runtime as runtime_module
+from finishup.application import status as status_module
+from finishup.ports.ledger import LedgerPort
 
 # ``execute_status`` is the read-routed entry point: it routes with ``RouteAccess.PAYLOAD_READ``
 # and therefore receives the facades below rather than the real ports. Write and import-review

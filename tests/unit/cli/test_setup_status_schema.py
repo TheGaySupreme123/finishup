@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.cli import setup
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.protocol.setup_status import SetupStatus
+from finishup.cli import setup
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.protocol.setup_status import SetupStatus
 
 
 def test_setup_status_golden_vector_matches_schema() -> None:
@@ -35,17 +35,19 @@ async def test_setup_status_output_is_validated_as_assembled_contract(
 ) -> None:
     """The CLI producer must keep its assembled report inside the published /2 contract."""
 
-    async def unavailable_service(*, start_if_absent: bool = False) -> dict[str, object]:
+    async def unavailable_service(
+        *, start_if_absent: bool = False
+    ) -> tuple[dict[str, object], str | None]:
         assert start_if_absent is False
-        return {"reachable": False, "state": None, "vault_mode": None}
+        return {"reachable": False, "state": None, "vault_mode": None}, None
 
-    from yoetz.cli import host_connection
+    from finishup.cli import host_connection
 
     def empty_installation_rows(_project: Path | None = None) -> list[JsonValue]:
         return []
 
     monkeypatch.setattr(setup, "discover_codex_binaries", lambda: ())
-    monkeypatch.setattr(setup, "_service_reachability", unavailable_service)
+    monkeypatch.setattr(setup, "_service_reachability_observed", unavailable_service)
     monkeypatch.setattr(setup, "setup_marker_present", lambda: False)
     monkeypatch.setattr(host_connection, "installation_rows", empty_installation_rows)
 

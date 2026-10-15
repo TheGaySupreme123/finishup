@@ -15,22 +15,22 @@ from types import SimpleNamespace
 import apsw
 import pytest
 
-from yoetz.adapters.approved_checks import (
+from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckCommand,
     ApprovedCheckRunner,
     approval_commitment,
 )
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.adapters.workspace_inspect import open_inspect_workspace
-from yoetz.application.observation_coordinator import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.adapters.workspace_inspect import open_inspect_workspace
+from finishup.application.observation_coordinator import (
     ObservationCoordinator,
     build_inspection_excerpt_manifest,
 )
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     MATERIALIZATION_MAPPING_VERSION,
     MaterializedObservationBatch,
     canonical_logical_identity,
@@ -38,8 +38,8 @@ from yoetz.application.observation_materialize import (
     observation_operation_digest,
     observation_writer_id,
 )
-from yoetz.application.observation_verification import ObservationVerificationJob
-from yoetz.domain.observation import (
+from finishup.application.observation_verification import ObservationVerificationJob
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationCursor,
@@ -50,13 +50,13 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.observability.privacy import PersistenceScanResult
-from yoetz.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
-from yoetz.ports.objects import ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.ports.workspace_inspect import InspectedArtifact
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.observability.privacy import PersistenceScanResult
+from finishup.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
+from finishup.ports.objects import ObjectMetadata, ObjectRef, ObjectSource
+from finishup.ports.workspace_inspect import InspectedArtifact
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 _TASK = "tsk_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 _DIGEST = "sha256:" + "ab" * 32
@@ -1226,7 +1226,7 @@ def test_changed_file_scanner_failure_stores_no_excerpt(monkeypatch: pytest.Monk
         return PersistenceScanResult(False, b"", True, ())
 
     monkeypatch.setattr(
-        "yoetz.application.observation_coordinator.prepare_persisted_plaintext",
+        "finishup.application.observation_coordinator.prepare_persisted_plaintext",
         _withhold,
     )
     encoded, unavailable, redacted, truncated = build_inspection_excerpt_manifest(
@@ -1332,7 +1332,7 @@ async def test_approved_check_persistence_withholds_when_scan_fails(
         return PersistenceScanResult(False, b"", True, ("canary",))
 
     monkeypatch.setattr(
-        "yoetz.application.observation_coordinator.prepare_persisted_plaintext",
+        "finishup.application.observation_coordinator.prepare_persisted_plaintext",
         _withhold,
     )
     db = apsw.Connection(":memory:")

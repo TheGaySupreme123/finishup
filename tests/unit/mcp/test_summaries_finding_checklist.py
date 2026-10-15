@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.mcp import summaries
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
+from finishup.mcp import summaries
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
 
 
 def _row(number: int, kind: str, state: str, rounds: str) -> dict[str, object]:

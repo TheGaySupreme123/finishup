@@ -26,8 +26,12 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.domain.check_totals import CHECK_TOTAL_KEYS, render_check_totals, validate_check_totals
-from yoetz.domain.events import (
+from finishup.domain.check_totals import (
+    CHECK_TOTAL_KEYS,
+    render_check_totals,
+    validate_check_totals,
+)
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EvidenceKind,
@@ -40,21 +44,25 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin
-from yoetz.domain.values import EvidenceId, ResultId, object_id, timestamp_from_string
-from yoetz.kernel.check_totals import build_check_totals
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin
+from finishup.domain.values import EvidenceId, ResultId, object_id, timestamp_from_string
+from finishup.kernel.check_totals import build_check_totals
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     DeterministicCase,
     build_deterministic_case,
     case_coverage,
 )
-from yoetz.kernel.deterministic_scope import deterministic_scope_is_clean
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.test_edit_visibility import PreExistingTestEdits
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.coverage import EvidenceImmutability, PublicationChannel, coverage_for_channel
+from finishup.kernel.deterministic_scope import deterministic_scope_is_clean
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.kernel.reducers import replay
+from finishup.kernel.test_edit_visibility import PreExistingTestEdits
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.coverage import (
+    EvidenceImmutability,
+    PublicationChannel,
+    coverage_for_channel,
+)
 
 type TotalsCase = tuple[DeterministicCase, tuple[Finding, ...], int]
 

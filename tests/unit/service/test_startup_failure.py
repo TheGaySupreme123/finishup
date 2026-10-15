@@ -3,7 +3,7 @@
 On ``condaforge/miniforge3:24.9.2-0`` the service exited 70 at startup with only
 ``internal_error: the command could not be completed`` on its log, and the agent's ``start`` was
 told the service was merely not running. These cases hold the typed record that replaces that:
-the stage, the reviewed exception-class token, the ``yoetz`` origin and one correlation id that the
+the stage, the reviewed exception-class token, the ``finishup`` origin and one correlation id that the
 foreground line, the durable ring and a spawning process all share.
 """
 
@@ -19,19 +19,19 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.observability.diagnostics as diagnostics
-import yoetz.service.daemon as daemon_module
-from yoetz.adapters.control.unix_socket import LocalControlTransportError
-from yoetz.adapters.sqlite.connection import StorageUnsafeError
-from yoetz.config.installation import InstanceIdentityError
-from yoetz.config.models import ConfigError, LoggingConfig, YoetzConfig
-from yoetz.config.paths import PathSafetyError
-from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
-from yoetz.observability.logging import LogMode
-from yoetz.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
-from yoetz.protocol.errors import SERVICE_STARTUP_PHASES, PublicErrorCode, PublicOperationError
-from yoetz.service.lifecycle import LifecycleError
-from yoetz.service.startup_failure import (
+import finishup.observability.diagnostics as diagnostics
+import finishup.service.daemon as daemon_module
+from finishup.adapters.control.unix_socket import LocalControlTransportError
+from finishup.adapters.sqlite.connection import StorageUnsafeError
+from finishup.config.installation import InstanceIdentityError
+from finishup.config.models import ConfigError, FinishUpConfig, LoggingConfig
+from finishup.config.paths import PathSafetyError
+from finishup.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
+from finishup.observability.logging import LogMode
+from finishup.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
+from finishup.protocol.errors import SERVICE_STARTUP_PHASES, PublicErrorCode, PublicOperationError
+from finishup.service.lifecycle import LifecycleError
+from finishup.service.startup_failure import (
     SERVICE_STARTUP_STAGES,
     ServiceStartupError,
     StartupFailure,
@@ -79,7 +79,7 @@ def test_unexpected_failure_is_recorded_under_the_spawner_id(ring: Path) -> None
     assert failure.stage == "activation"
     assert failure.reason == "exception_not_implemented_error"
     assert failure.reason_code is None
-    # Raised from test code: no ``yoetz`` frame, so no origin is claimed.
+    # Raised from test code: no ``finishup`` frame, so no origin is claimed.
     assert failure.origin is None
     (record,) = lookup_diagnostic_records(_SPAWN_ID, root=ring)
     assert record["component"] == "service.daemon"
@@ -122,14 +122,14 @@ def test_the_foreground_line_names_stage_class_origin_and_id() -> None:
         stage="activation",
         reason="exception_not_implemented_error",
         correlation_id=_SPAWN_ID,
-        origin="yoetz.adapters.control.unix_socket:434",
+        origin="finishup.adapters.control.unix_socket:434",
     )
 
     assert failure.line() == (
         "internal_error: the service could not start (stage: activation; "
-        "exception_not_implemented_error; at yoetz.adapters.control.unix_socket:434); "
+        "exception_not_implemented_error; at finishup.adapters.control.unix_socket:434); "
         f"correlation_id {_SPAWN_ID}; read it with "
-        f"'yoetz service diagnostics --correlation-id {_SPAWN_ID}'"
+        f"'finishup service diagnostics --correlation-id {_SPAWN_ID}'"
     )
     serving = StartupFailure(stage="serving", reason="exception_os_error", correlation_id=_SPAWN_ID)
     assert serving.line().startswith(
@@ -185,11 +185,11 @@ def _patch_run_service(
 ) -> None:
     def default_load(
         overrides: Mapping[str, str], env: Mapping[str, str], path: Path | None
-    ) -> YoetzConfig:
+    ) -> FinishUpConfig:
         del overrides, env, path
-        return YoetzConfig()
+        return FinishUpConfig()
 
-    async def default_composition(*, _config: YoetzConfig) -> object:
+    async def default_composition(*, _config: FinishUpConfig) -> object:
         del _config
         return object()
 
@@ -236,11 +236,11 @@ async def test_run_service_names_the_stage_that_failed(
 ) -> None:
     def failing_load(
         overrides: Mapping[str, str], env: Mapping[str, str], path: Path | None
-    ) -> YoetzConfig:
+    ) -> FinishUpConfig:
         del overrides, env, path
         raise RuntimeError("configuration exploded")
 
-    async def failing_composition(*, _config: YoetzConfig) -> object:
+    async def failing_composition(*, _config: FinishUpConfig) -> object:
         del _config
         raise RuntimeError("composition exploded")
 
@@ -260,9 +260,9 @@ async def test_run_service_names_the_stage_that_failed(
     assert failure.stage == stage
     assert failure.reason == reason
     assert failure.correlation_id == _SPAWN_ID
-    # The innermost yoetz frame of a failure raised beneath run_service is run_service itself.
+    # The innermost finishup frame of a failure raised beneath run_service is run_service itself.
     assert failure.origin is not None
-    assert failure.origin.startswith("yoetz.service.daemon:")
+    assert failure.origin.startswith("finishup.service.daemon:")
     assert raised.value.__cause__ is not None
     (record,) = lookup_diagnostic_records(_SPAWN_ID, root=ring)
     assert record["phase"] == stage
@@ -284,7 +284,7 @@ async def test_run_service_names_the_stage_that_failed(
 async def test_typed_refusals_are_recorded_and_reraised_unchanged(
     refusal: Exception, token: str, ring: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def refuse(*, _config: YoetzConfig) -> object:
+    async def refuse(*, _config: FinishUpConfig) -> object:
         del _config
         raise refusal
 
@@ -303,7 +303,7 @@ async def test_typed_refusals_are_recorded_and_reraised_unchanged(
 async def test_invalid_transition_is_an_unexpected_failure(
     ring: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def refuse(*, _config: YoetzConfig) -> object:
+    async def refuse(*, _config: FinishUpConfig) -> object:
         del _config
         raise LifecycleError("invalid_transition")
 
@@ -375,7 +375,7 @@ async def test_refusals_the_cli_does_not_name_keep_their_token(
     assert failure.stage == "activation"
     assert failure.reason == reason
     assert failure.reason_code == token
-    assert f"(stage: activation; {reason}; {token}; at yoetz." in failure.line()
+    assert f"(stage: activation; {reason}; {token}; at finishup." in failure.line()
     assert failure.line().startswith("internal_error: the service could not start")
     (record,) = lookup_diagnostic_records(_SPAWN_ID, root=ring)
     assert record["reason"] == reason
@@ -389,7 +389,7 @@ def test_an_unexpected_record_with_a_token_logs_internal_error(
 ) -> None:
     """The structural stderr line agrees with the ``internal_error`` line the CLI prints."""
 
-    import yoetz.observability.logging as logging_module
+    import finishup.observability.logging as logging_module
 
     emitted: list[tuple[str, str, dict[str, object]]] = []
 
@@ -427,7 +427,7 @@ def test_an_unexpected_record_with_a_token_logs_internal_error(
 async def test_losing_the_singleton_race_is_not_a_startup_failure(
     ring: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def refuse(*, _config: YoetzConfig) -> object:
+    async def refuse(*, _config: FinishUpConfig) -> object:
         del _config
         raise LifecycleError("service_already_running")
 
@@ -444,8 +444,8 @@ def test_startup_module_stays_import_light() -> None:
     """The CLI records an import-stage failure with it before the daemon could load."""
 
     probe = (
-        "import sys, json, yoetz.service.startup_failure\n"
-        "print(json.dumps(sorted(m for m in sys.modules if m.startswith('yoetz.service.'))))"
+        "import sys, json, finishup.service.startup_failure\n"
+        "print(json.dumps(sorted(m for m in sys.modules if m.startswith('finishup.service.'))))"
     )
     completed = subprocess.run(  # noqa: S603 - fixed interpreter and probe
         (sys.executable, "-I", "-c", probe),
@@ -453,4 +453,4 @@ def test_startup_module_stays_import_light() -> None:
         check=True,
         timeout=60,
     )
-    assert json.loads(completed.stdout) == ["yoetz.service.startup_failure"]
+    assert json.loads(completed.stdout) == ["finishup.service.startup_failure"]

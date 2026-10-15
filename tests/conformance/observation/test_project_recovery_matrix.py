@@ -22,39 +22,39 @@ from builders.multi_agent import (
     multi_agent_service,
     private_service_root,
 )
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
-from yoetz.adapters.repository_identity import resolve_repository_privacy_context
-from yoetz.application.coordination import (
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.adapters.keys.vault_passphrase import VaultRootEnvelope
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.application.coordination import (
     CoordinationAdvice,
     CoordinationContextWriter,
     CoordinationDetection,
     CoordinationParticipant,
     CoordinationRuntime,
 )
-from yoetz.application.projects import (
+from finishup.application.projects import (
     LinkProjectCommand,
     ProjectCommandError,
     ProjectDissolveCommand,
     ProjectRevokeCommand,
 )
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.config.models import YoetzConfig
-from yoetz.domain.coordination import CoordinationErrorCode, MemberKind
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import RepositoryPrivacyContext, ServiceState, WorkspaceLocator
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.keys import MacKeyPurpose
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.config.models import FinishUpConfig
+from finishup.domain.coordination import CoordinationErrorCode, MemberKind
+from finishup.domain.findings import FindingKind
+from finishup.domain.values import JsonObject
+from finishup.ports.control import RepositoryPrivacyContext, ServiceState, WorkspaceLocator
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.keys import MacKeyPurpose
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -62,13 +62,13 @@ from yoetz.protocol.models import (
     StatusProjectPageModel,
     StatusRequest,
 )
-from yoetz.service.elevated_bootstrap import (
+from finishup.service.elevated_bootstrap import (
     load_pending,
     record_project_coordination_authorization,
 )
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.ready_composition import build_ready_application_factory
-from yoetz.service.vault import VaultMode, VaultService
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.ready_composition import build_ready_application_factory
+from finishup.service.vault import VaultMode, VaultService
 
 pytestmark = pytest.mark.anyio
 
@@ -167,7 +167,7 @@ class _RestartableReadyInstallation:
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(self.root),
             clock=self.clock,
             secret_memory=memory,
@@ -422,7 +422,7 @@ async def _start_pair(
 ) -> tuple[StartInternalResult, ...]:
     tasks = await _start_pair_application(service.app, workspace)
     observation = service.root / "state"
-    from yoetz.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
 
     store = LocalObservationStore(_state=observation)
     store.grant_consent(store.workspace_commitment(str(workspace)))
@@ -755,7 +755,7 @@ async def test_public_crash_after_first_ledger_delivery_restarts_and_redelivers_
         first = installation.running
         assert first is not None
         tasks = await _start_pair_application(first.app, workspace)
-        from yoetz.adapters.integrations.observation_local import LocalObservationStore
+        from finishup.adapters.integrations.observation_local import LocalObservationStore
 
         observation = LocalObservationStore(_state=installation.root / "state")
         observation.grant_consent(observation.workspace_commitment(str(workspace)))
@@ -858,7 +858,7 @@ async def test_public_dissolve_preserves_parent_manifest_and_receipt_replay_dige
 
     async with multi_agent_service(tmp_path / "state") as service:
         parent, sibling = await _start_pair_application(service.app, workspace)
-        from yoetz.adapters.integrations.observation_local import LocalObservationStore
+        from finishup.adapters.integrations.observation_local import LocalObservationStore
 
         observation = LocalObservationStore(_state=service.root / "state")
         observation.grant_consent(observation.workspace_commitment(str(workspace)))
@@ -981,7 +981,7 @@ async def test_public_optout_preserves_accepted_delegation_and_rejects_second_ge
 
     async with multi_agent_service(tmp_path / "state") as service:
         parent, sibling = await _start_pair_application(service.app, workspace)
-        from yoetz.adapters.integrations.observation_local import LocalObservationStore
+        from finishup.adapters.integrations.observation_local import LocalObservationStore
 
         observation = LocalObservationStore(_state=service.root / "state")
         observation.grant_consent(observation.workspace_commitment(str(workspace)))
@@ -1065,7 +1065,7 @@ async def test_public_ready_automatic_cross_repository_sweep_reports_coverage_wi
             WorkspaceLocator(str(workspace_b)), lookup
         )
         assert repository_a.commitment != repository_b.commitment
-        from yoetz.adapters.integrations.observation_local import LocalObservationStore
+        from finishup.adapters.integrations.observation_local import LocalObservationStore
 
         observation = LocalObservationStore(_state=service.root / "state")
         observation.grant_consent(observation.workspace_commitment(str(workspace_a)))

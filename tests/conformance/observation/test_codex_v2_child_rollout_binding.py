@@ -30,25 +30,24 @@ import pytest
 
 from builders.codex_rollout import encode_lines, function_call, function_call_output
 from builders.multi_agent import MultiAgentService, multi_agent_service
-from fixture_loader import build_fixture_loader
-from yoetz.adapters.integrations.codex_lifecycle import load_mapping, scoped_child_session_id
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.cli import observe as observe_cli
-from yoetz.cli.hooks import bind_start_mapping_outcome, with_transcript_child_identity
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.host_lineage import host_lineage_from_payload
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.codex_lifecycle import load_mapping, scoped_child_session_id
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.cli import observe as observe_cli
+from finishup.cli.hooks import bind_start_mapping_outcome, with_transcript_child_identity
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.host_lineage import host_lineage_from_payload
+from finishup.domain.observation import (
     ObservationIngestRequest,
     observation_ingest_request_to_json,
     observation_ingest_result_from_json,
 )
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -56,6 +55,7 @@ from yoetz.protocol.models import (
     StatusLineagePageModel,
     StatusRequest,
 )
+from fixture_loader import build_fixture_loader
 
 pytestmark = pytest.mark.anyio
 
@@ -159,7 +159,7 @@ async def _scenario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGen
     subprocess.run(["git", "init", "--quiet", str(workspace)], check=True, capture_output=True)
     workspace = workspace.resolve()
     async with multi_agent_service(tmp_path / "state") as service:
-        monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(service.root))
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(service.root))
         codex_home = service.root / "codex-home"
         sessions = codex_home / "sessions" / "2026" / "08" / "22"
         sessions.mkdir(parents=True)
@@ -199,7 +199,7 @@ async def _scenario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGen
             bind_start_mapping_outcome(
                 {
                     "session_id": _PARENT_THREAD,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": parent.as_wire()},
                 },
                 _state=state,
@@ -276,7 +276,7 @@ def _child_attach_callback(
         # v2 child callbacks carry the root session, never the child's own thread.
         "session_id": _PARENT_THREAD,
         "tool_use_id": "child-attach-call",
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {"structuredContent": attached.as_wire()},
     }
     if alias:
@@ -371,7 +371,7 @@ async def test_v2_child_binds_one_accepted_child_and_reconciles_its_own_rollout(
         callback = _child_attach_callback(
             attached, alias=alias, transcript=scenario.child_rollout if transcript else None
         )
-        # ``yoetz hooks post-tool-use`` resolves the transcript identity before binding.
+        # ``finishup hooks post-tool-use`` resolves the transcript identity before binding.
         bind_payload, conflict = with_transcript_child_identity(
             cast(Mapping[str, JsonValue], callback), event_name="PostToolUse"
         )

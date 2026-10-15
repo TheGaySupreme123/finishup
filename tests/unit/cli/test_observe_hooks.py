@@ -8,14 +8,14 @@ import json
 import os
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     acquire_session_lock,
     acquire_workspace_recovery_lock,
@@ -24,12 +24,12 @@ from yoetz.adapters.integrations.codex_lifecycle import (
     scoped_child_session_id,
     store_mapping,
 )
-from yoetz.adapters.integrations.hook_spool import HookSpool
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.recommendations import RecommendationState, store_recommendation_state
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.hook_io import MAX_HOOK_SKIM_BYTES, MAX_HOOK_STDIN_BYTES
-from yoetz.cli.observe_hooks import (
+from finishup.adapters.integrations.hook_spool import HookSpool
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.recommendations import RecommendationState, store_recommendation_state
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.hook_io import MAX_HOOK_SKIM_BYTES, MAX_HOOK_STDIN_BYTES
+from finishup.cli.observe_hooks import (
     SUPPORTED_HOOK_EVENTS,
     handle_claude_observe,
     handle_cursor_observe,
@@ -37,7 +37,7 @@ from yoetz.cli.observe_hooks import (
     handle_spool,
     map_hook_payload_to_envelope,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationEnvelope,
@@ -48,11 +48,38 @@ from yoetz.domain.observation import (
     ObservationStatusQuery,
     observation_ingest_result_to_json,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import StartRequest
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.protocol.models import StartRequest
 
 _KEY = b"k" * 32
+
+
+@pytest.fixture(autouse=True)
+def _no_real_service_start(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Fail a case whose hook reached the real on-demand service launcher.
+
+    Given the production connector (``connect=None``), a consented SessionStart primes the service
+    through ``connect_service_on_demand``, which spawns a detached ``finishup service run`` in its
+    own session under the ambient installation: the developer's own outside an isolated run. No
+    teardown stops it, and the hook swallows a launcher failure into an auto-attach reason, so the
+    case still passes while the service outlives it. Cases pass a test connector instead; one
+    that tests the launcher patches ``_spawn_service_process`` itself, which replaces this guard.
+    """
+
+    import finishup.service.client as service_client
+
+    attempts: list[None] = []
+
+    def refused() -> NoReturn:
+        attempts.append(None)
+        raise OSError("unit tests never start a real service")
+
+    monkeypatch.setattr(service_client, "_spawn_service_process", refused)
+    yield
+    assert not attempts, "a hook reached the real on-demand service launcher"
 
 
 def test_map_supported_hook_payloads_structural_only(tmp_path: Path) -> None:
@@ -210,7 +237,7 @@ def test_observation_lane_requires_a_validated_child_mapping(tmp_path: Path) -> 
     lane = observe_hooks_module._resolve_observation_lane(  # pyright: ignore[reportPrivateUsage]
         {
             "session_id": host_session,
-            "tool_name": "mcp__yoetz__publish_work",
+            "tool_name": "mcp__finishup__publish_work",
             "tool_response": {
                 "structuredContent": {
                     "ok": True,
@@ -251,7 +278,7 @@ def test_observation_lane_keeps_parent_but_marks_known_child_gap(tmp_path: Path)
     lane = observe_hooks_module._resolve_observation_lane(  # pyright: ignore[reportPrivateUsage]
         {
             "session_id": host_session,
-            "tool_name": "mcp__yoetz__publish_work",
+            "tool_name": "mcp__finishup__publish_work",
             "tool_response": {
                 "structuredContent": {
                     "ok": True,
@@ -317,7 +344,7 @@ def test_observation_lane_does_not_use_stale_host_alias_for_foreign_result(
         {
             "session_id": host_session,
             "agent_id": "native-child-a",
-            "tool_name": "mcp__yoetz__publish_work",
+            "tool_name": "mcp__finishup__publish_work",
             "tool_response": {
                 "structuredContent": {
                     "ok": True,
@@ -403,7 +430,7 @@ def test_observation_lane_routes_matching_result_through_task_alias_when_host_al
         {
             "session_id": host_session,
             "agent_id": "native-child-b",
-            "tool_name": "mcp__yoetz__publish_work",
+            "tool_name": "mcp__finishup__publish_work",
             "tool_response": {
                 "structuredContent": {
                     "ok": True,
@@ -778,7 +805,7 @@ def test_post_tool_hook_never_delivers_observation_only_frontier_motion(tmp_path
         assert context in (None, "")
 
 
-@pytest.mark.parametrize("tool_name", ["start", "mcp__yoetz__publish_work"])
+@pytest.mark.parametrize("tool_name", ["start", "mcp__finishup__publish_work"])
 def test_codex_owned_tool_does_not_lease_frontier_advice(tmp_path: Path, tool_name: str) -> None:
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -860,7 +887,7 @@ def test_runtime_disabled_skips_capture_but_session_start_surfaces_cached_recomm
     context = payload["hookSpecificOutput"]["additionalContext"]
     assert "Enable local observation" in context
     assert "workspace consent remains required" in context
-    assert "yoetz recommend accept observation-enabled" in context
+    assert "finishup recommend accept observation-enabled" in context
     assert store.pending_workspaces() == ()
     workspace_state = tmp_path / "observation/workspaces"
     assert not workspace_state.exists() or not list(workspace_state.glob("*.json"))
@@ -1170,7 +1197,7 @@ def test_observe_ingests_when_consented_and_pairs_pre_post(tmp_path: Path) -> No
     assert post == 0
     status = store.status(
         __import__(
-            "yoetz.domain.observation", fromlist=["ObservationStatusQuery"]
+            "finishup.domain.observation", fromlist=["ObservationStatusQuery"]
         ).ObservationStatusQuery(workspace)
     )
     assert status.source_coverage[ObservationSource.CODEX_HOOK] is True
@@ -1243,7 +1270,7 @@ def test_unpaired_post_records_gap(tmp_path: Path) -> None:
     )
     status = store.status(
         __import__(
-            "yoetz.domain.observation", fromlist=["ObservationStatusQuery"]
+            "finishup.domain.observation", fromlist=["ObservationStatusQuery"]
         ).ObservationStatusQuery(workspace)
     )
     assert ObservationGapCode.UNPAIRED_EVENT.value in status.gaps
@@ -1256,8 +1283,8 @@ def test_missing_codex_post_identity_is_retained_as_orphan_evidence(
 
     import uuid
 
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1382,8 +1409,8 @@ def test_codex_tool_use_id_wins_over_legacy_tool_call_id(tmp_path: Path) -> None
 def test_codex_field_names_materialize_linked_action_and_result(tmp_path: Path) -> None:
     import uuid
 
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
     store = LocalObservationStore(_state=tmp_path)
     session = store.session_commitment("codex-conformance")
@@ -1461,7 +1488,7 @@ def test_issue_607_all_host_hook_shapes_keep_pairing_honest(tmp_path: Path) -> N
 
     claude_common = {
         "session_id": "claude-607",
-        "tool_name": "mcp__plugin_yoetz_yoetz__status",
+        "tool_name": "mcp__plugin_finishup_finishup__status",
         "tool_use_id": "claude-call-607",
     }
     assert (
@@ -1931,7 +1958,7 @@ def test_issue_607_native_post_only_hooks_do_not_create_false_pairing_gaps(
     claude_payload = {
         "hook_event_name": "PostToolUse",
         "session_id": "claude-607",
-        "tool_name": "mcp__plugin_yoetz_yoetz__status",
+        "tool_name": "mcp__plugin_finishup_finishup__status",
         "tool_use_id": "claude-call-607",
     }
     assert (
@@ -2025,8 +2052,8 @@ def test_issue_607_post_only_materializes_evidence_without_a_fabricated_action(
 ) -> None:
     import uuid
 
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
     store = LocalObservationStore(_state=tmp_path)
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
@@ -2368,10 +2395,10 @@ def test_pairing_transaction_rolls_back_an_admitted_post_before_retry(
     )
 
 
-def test_yoetz_tool_still_ingests_but_skips_advice_loop(tmp_path: Path) -> None:
-    from yoetz.domain.observation import AdviceSnapshot
-    from yoetz.domain.values import finding_id
-    from yoetz.protocol.coverage import (
+def test_finishup_tool_still_ingests_but_skips_advice_loop(tmp_path: Path) -> None:
+    from finishup.domain.observation import AdviceSnapshot
+    from finishup.domain.values import finding_id
+    from finishup.protocol.coverage import (
         ArtifactObservation,
         AuthorshipAssurance,
         CheckType,
@@ -2407,7 +2434,7 @@ def test_yoetz_tool_still_ingests_but_skips_advice_loop(tmp_path: Path) -> None:
     code = handle_observe(
         event_name="PostToolUse",
         stdin_bytes=json.dumps(
-            {"session_id": "yoetz-tool", "tool_name": "mcp__yoetz__status"}
+            {"session_id": "finishup-tool", "tool_name": "mcp__finishup__status"}
         ).encode(),
         stdout=out,
         workspace=str(tmp_path),
@@ -2421,11 +2448,11 @@ def test_yoetz_tool_still_ingests_but_skips_advice_loop(tmp_path: Path) -> None:
 def test_skip_service_session_start_never_opens_service_connection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         mapping_from_start_ids,
         store_mapping,
     )
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.protocol.ids import IdKind, new_id
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -2494,16 +2521,16 @@ def test_session_start_stale_mapping_advisory_keeps_advice_delivery(
 
     import uuid
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         mapping_from_start_ids,
         store_mapping,
     )
-    from yoetz.adapters.integrations.observation_local import AdviceDelivery
-    from yoetz.cli import hooks as hooks_module
-    from yoetz.domain.observation import AdviceSnapshot
-    from yoetz.protocol.ids import IdKind, new_id
-    from yoetz.protocol.models import OperationFailureModel
+    from finishup.adapters.integrations.observation_local import AdviceDelivery
+    from finishup.cli import hooks as hooks_module
+    from finishup.domain.observation import AdviceSnapshot
+    from finishup.protocol.ids import IdKind, new_id
+    from finishup.protocol.models import OperationFailureModel
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -2655,13 +2682,13 @@ def test_session_start_status_read_carries_the_consented_locator(
     `SESSION_CONFLICT`, and every compaction reported a live mapping as `mapping_stale`.
     """
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         mapping_from_start_ids,
         store_mapping,
     )
-    from yoetz.ports.control import WorkspaceLocator
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.ports.control import WorkspaceLocator
+    from finishup.protocol.ids import IdKind, new_id
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -2725,13 +2752,13 @@ def test_legacy_bound_session_probe_carries_the_host_payload_cwd(
     commitment from the legacy session binding, and the status probe now carries a locator derived
     from the host payload's cwd instead of connecting bare."""
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         mapping_from_start_ids,
         store_mapping,
     )
-    from yoetz.ports.control import WorkspaceLocator
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.ports.control import WorkspaceLocator
+    from finishup.protocol.ids import IdKind, new_id
 
     project = tmp_path / "project"
     project.mkdir()
@@ -2813,14 +2840,14 @@ def test_session_start_repository_fence_refusal_is_a_distinct_diagnostic(
 
     import uuid
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         mapping_from_start_ids,
         store_mapping,
     )
-    from yoetz.cli import hooks as hooks_module
-    from yoetz.protocol.ids import IdKind, new_id
-    from yoetz.protocol.models import OperationFailureModel
+    from finishup.cli import hooks as hooks_module
+    from finishup.protocol.ids import IdKind, new_id
+    from finishup.protocol.models import OperationFailureModel
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -3016,7 +3043,7 @@ async def test_service_ingest_preserves_control_error_retryability(
 ) -> None:
     """#540: transport failures do not make terminal control errors immortal."""
 
-    from yoetz.ports.control import ControlError
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     envelope = _drain_envelope(store, "control-error", "hook:control-error", 1)
@@ -3154,7 +3181,7 @@ async def test_drain_budget_stops_without_advancing_unfinished_row(tmp_path: Pat
     )
     assert store.list_pending_outbox_rows(workspace)[0].attempts == 0
     diagnostics = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
-    assert '"reason":"drain_budget_exhausted"' in diagnostics
+    assert '"reason":"drain_pass_delivered_nothing"' in diagnostics
 
 
 @pytest.mark.anyio
@@ -3428,14 +3455,14 @@ async def test_drain_quarantines_mapping_missing_rows_of_an_ended_session(tmp_pa
 def test_later_hook_recovers_pending_mapping_before_delivery(tmp_path: Path) -> None:
     """A deferred start mapping is replayed before a later hook drains its lane (#509)."""
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         mapping_from_start_ids,
         queue_mapping_store,
     )
-    from yoetz.cli.hooks import recover_pending_start_mapping
-    from yoetz.domain.observation import ObservationSource
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.cli.hooks import recover_pending_start_mapping
+    from finishup.domain.observation import ObservationSource
+    from finishup.protocol.ids import IdKind, new_id
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -3524,12 +3551,12 @@ def test_later_hook_defers_delivery_while_pending_mapping_lock_is_busy(
 ) -> None:
     """A fenced pending mapping keeps the row local until its session lock clears (#509)."""
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         mapping_from_start_ids,
         queue_mapping_store,
     )
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.protocol.ids import IdKind, new_id
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -3612,14 +3639,14 @@ def test_later_hook_defers_delivery_while_pending_mapping_lock_is_busy(
 def test_pending_child_mapping_recovery_is_exact_session_scoped(tmp_path: Path) -> None:
     """A child alias cannot overwrite its parent's route or frontier (#509)."""
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         mapping_from_start_ids,
         queue_mapping_store,
         store_mapping,
     )
-    from yoetz.cli.hooks import recover_pending_start_mapping
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.cli.hooks import recover_pending_start_mapping
+    from finishup.protocol.ids import IdKind, new_id
 
     parent_session = "claude:parent-alias"
     child_session = "claude:parent-alias:child"
@@ -3897,7 +3924,8 @@ async def test_drain_budget_starts_after_a_slow_connect(
     """tb4n1 B4: the connect has its own preflight bound; delivery gets its whole budget.
 
     Before, a 0.9 s connect consumed the shared clock, so 94% of hooks recorded
-    ``drain_budget_exhausted`` without delivering a single row.
+    ``drain_pass_delivered_nothing`` (``drain_budget_exhausted`` before tb4n5) without delivering
+    a single row.
     """
 
     store = LocalObservationStore(_state=tmp_path)
@@ -3924,7 +3952,7 @@ async def test_drain_budget_starts_after_a_slow_connect(
     assert store.pending_outbox_count(workspace) == 0
     diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"
     if diagnostics_path.exists():
-        assert '"reason":"drain_budget_exhausted"' not in diagnostics_path.read_text()
+        assert '"reason":"drain_pass_delivered_nothing"' not in diagnostics_path.read_text()
 
 
 @pytest.mark.anyio
@@ -3960,7 +3988,7 @@ async def test_absolute_deadline_clamps_the_connect_and_the_delivery(
     assert connects == 0, "an expired deadline never opens a connection"
     assert store.pending_outbox_count(workspace) == 1
     diagnostic = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
-    assert '"reason":"drain_budget_exhausted"' in diagnostic
+    assert '"reason":"drain_pass_delivered_nothing"' in diagnostic
 
 
 @pytest.mark.anyio
@@ -4051,7 +4079,7 @@ async def test_drain_lease_prevents_concurrent_hooks_from_double_draining(
 async def test_budget_expiry_after_delivery_progress_is_a_silent_yield(tmp_path: Path) -> None:
     """A bounded slice that moved backlog and then yielded is working as designed (#351).
 
-    drain_budget_exhausted remains reserved for a pass that timed out before
+    drain_pass_delivered_nothing remains reserved for a pass that timed out before
     any progress; a capacity yield to the service sweeper is not a failure.
     """
 
@@ -4097,7 +4125,7 @@ async def test_budget_expiry_after_delivery_progress_is_a_silent_yield(tmp_path:
     assert store.pending_outbox_count(workspace) == 1, "two rows delivered before the yield"
     diagnostics = tmp_path / "observation/hook-diagnostics.jsonl"
     if diagnostics.exists():
-        assert '"reason":"drain_budget_exhausted"' not in diagnostics.read_text()
+        assert '"reason":"drain_pass_delivered_nothing"' not in diagnostics.read_text()
 
 
 @pytest.mark.anyio
@@ -4106,7 +4134,7 @@ async def test_operation_pending_deferral_keeps_row_without_gap_or_diagnostic(
 ) -> None:
     """An ADR-022 check-barrier deferral is expected back-pressure, not failure (#351)."""
 
-    from yoetz.domain.observation import OBSERVATION_BACKPRESSURE_REASON
+    from finishup.domain.observation import OBSERVATION_BACKPRESSURE_REASON
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -4206,11 +4234,11 @@ def _populate_realistic_store(
     assert state.dedup is not None
     from datetime import UTC, datetime
 
-    from yoetz.adapters.integrations.observation_local import (
+    from finishup.adapters.integrations.observation_local import (
         ObservationOutboxRow,
         _dedup_key,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.values import timestamp_from_datetime
+    from finishup.domain.values import timestamp_from_datetime
 
     quarantined_at = timestamp_from_datetime(datetime.now(UTC).replace(microsecond=0))
     for ordinal in range(1, envelopes + pending + quarantined + 1):
@@ -4295,8 +4323,8 @@ class _StartFailureClient(_InstantAckClient):
     async def start(self, request: object, *, deadline_ms: int | None = None) -> object:
         del deadline_ms
         self.requests.append(request)
-        from yoetz.protocol.ids import IdKind, new_id
-        from yoetz.protocol.models import OperationFailureModel
+        from finishup.protocol.ids import IdKind, new_id
+        from finishup.protocol.models import OperationFailureModel
 
         return OperationFailureModel.model_validate(
             {
@@ -4330,8 +4358,8 @@ class _WorkspaceConflictThenAttachClient(_InstantAckClient):
 
     async def start(self, request: object, *, deadline_ms: int | None = None) -> object:
         del deadline_ms
-        from yoetz.protocol.ids import IdKind, new_id
-        from yoetz.protocol.models import OperationFailureModel
+        from finishup.protocol.ids import IdKind, new_id
+        from finishup.protocol.models import OperationFailureModel
 
         assert isinstance(request, StartRequest)
         self.requests.append(request)
@@ -4403,7 +4431,7 @@ def test_auto_start_request_is_a_valid_paired_start_for_every_harness(
 ) -> None:
     """The real request construction validates through StartRequest with paired refs (#459)."""
 
-    from yoetz.protocol.models import StartRequest
+    from finishup.protocol.models import StartRequest
 
     client = _StartOkClient()
     locator = str(tmp_path.resolve())
@@ -5492,7 +5520,7 @@ def test_real_auto_start_connector_receives_the_canonical_workspace_locator(
 ) -> None:
     """Repository privacy context is bound by the hook's real control handshake."""
 
-    from yoetz.ports.control import WorkspaceLocator
+    from finishup.ports.control import WorkspaceLocator
 
     captured: list[WorkspaceLocator | None] = []
     client = _StartOkClient()
@@ -5544,7 +5572,7 @@ def test_auto_start_service_refusals_map_to_closed_diagnostic_reasons(
 
 
 def test_auto_start_error_classes_stay_closed_hook_diagnostic_reasons() -> None:
-    from yoetz.cli import hook_diagnostics
+    from finishup.cli import hook_diagnostics
 
     reasons = hook_diagnostics._REASONS  # pyright: ignore[reportPrivateUsage]
     classified = set(
@@ -5575,7 +5603,7 @@ def test_auto_start_error_classes_stay_closed_hook_diagnostic_reasons() -> None:
 def test_auto_start_transport_failures_map_to_closed_diagnostic_reasons(
     tmp_path: Path, control_reason: str, reason: str
 ) -> None:
-    from yoetz.ports.control import ControlError
+    from finishup.ports.control import ControlError
 
     async def connect(_kind: object):
         raise ControlError(control_reason)
@@ -5589,6 +5617,30 @@ def test_auto_start_transport_failures_map_to_closed_diagnostic_reasons(
     )
     assert outcome.mapping is None
     assert outcome.reason == reason
+
+
+@pytest.mark.parametrize("phase", ["handshake", "handshake_git_version"])
+def test_auto_start_names_a_handshake_its_own_service_failed(tmp_path: Path, phase: str) -> None:
+    """#1040 follow-up: not a service still to start, not another installation to replace."""
+
+    from finishup.cli.hook_diagnostics import (
+        _REASONS,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.ports.control import ControlError
+
+    async def connect(_kind: object):
+        raise ControlError("service_unavailable", retryable=False, phase=phase)
+
+    outcome = _auto_start(
+        "cursor",
+        "cursor:handshake",
+        _state=tmp_path,
+        workspace_locator=str(tmp_path.resolve()),
+        connect=connect,
+    )
+    assert outcome.mapping is None
+    assert outcome.reason == "service_handshake_failed"
+    assert outcome.reason in _REASONS
 
 
 def test_auto_start_malformed_success_is_result_invalid_not_a_mapping(tmp_path: Path) -> None:
@@ -5660,8 +5712,9 @@ def test_session_start_auto_attaches_maps_and_drains_for_every_host(
     assert "no ledger task is mapped yet" not in rendered
     assert "after guidance reads and tool/schema discovery" in rendered
     assert "before substantive material work" in rendered
-    assert rendered.index("call start with mode=attach") < rendered.index("Then call status")
-    assert "Then call status with the returned session/writer ids" in rendered
+    assert rendered.index("call start with mode=attach") < rendered.index("Then read status")
+    assert "Then read status with the returned session/writer ids" in rendered
+    assert "do not reread status between ordinary steps" in rendered
     assert "same-request recovery first" in rendered
     assert "ask the user for intro and guidance" in rendered
     diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"
@@ -5745,7 +5798,7 @@ def test_fresh_session_reattaches_the_ended_workspace_task_and_drains_without_ma
 def test_session_start_records_the_typed_cause_when_auto_attach_fails(
     tmp_path: Path, source: ObservationSource
 ) -> None:
-    from yoetz.ports.control import ControlError
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -5854,7 +5907,7 @@ def test_legacy_spool_hook_meets_slo_on_a_realistic_store(
 
     import time as time_module
 
-    from yoetz.adapters.integrations.codex_plugin import parse_hooks_json, render_plugin_tree
+    from finishup.adapters.integrations.codex_plugin import parse_hooks_json, render_plugin_tree
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -5900,7 +5953,7 @@ def test_legacy_spool_hook_meets_slo_on_a_realistic_store(
 
 
 def test_legacy_spool_diagnostics_identify_the_path_and_hard_breach(tmp_path: Path) -> None:
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary, record_hook_timing
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary, record_hook_timing
 
     record_hook_timing(
         "PostToolUse",
@@ -5926,7 +5979,7 @@ def test_legacy_spool_diagnostics_identify_the_path_and_hard_breach(tmp_path: Pa
 def _write_counter(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record the name of every file the store atomically writes."""
 
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     written: list[str] = []
     original = local_mod._atomic_write  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -6041,7 +6094,7 @@ def test_quarantine_pruning_still_runs_on_a_hook_whose_advice_refresh_no_ops(
 
     from datetime import UTC, datetime, timedelta
 
-    from yoetz.domain.values import timestamp_from_datetime
+    from finishup.domain.values import timestamp_from_datetime
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -6082,12 +6135,12 @@ def test_quarantine_pruning_still_runs_on_a_hook_whose_advice_refresh_no_ops(
 def _seed_standing_only_advice(store: LocalObservationStore, workspace: str) -> None:
     """Persist an advice snapshot whose every action is a standing machine condition."""
 
-    from yoetz.application.observation_advice import (
+    from finishup.application.observation_advice import (
         ObservationAdviceBuildInput,
         build_observation_advice_snapshot,
     )
-    from yoetz.domain.observation import ObservationLifecycle
-    from yoetz.kernel.policies.observation_advice import ObservationCompositionFact
+    from finishup.domain.observation import ObservationLifecycle
+    from finishup.kernel.policies.observation_advice import ObservationCompositionFact
 
     snapshot = build_observation_advice_snapshot(
         ObservationAdviceBuildInput(
@@ -6305,8 +6358,8 @@ def test_hook_total_budget_covers_the_budgets_nested_inside_one_pass() -> None:
 def test_healthy_pass_shapes_fit_under_the_total_budget(tmp_path: Path) -> None:
     """The two measured healthy drain shapes must not trip the diagnostic (#288)."""
 
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-    from yoetz.cli.observe_hooks import (
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+    from finishup.cli.observe_hooks import (
         _record_pass_timing,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -6331,7 +6384,7 @@ def test_end_to_end_hook_budget_is_recorded_and_exceeding_it_is_diagnosed(
 ) -> None:
     """The budget is an observability contract: over it, the hook still succeeds."""
 
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -6424,7 +6477,7 @@ def test_codex_explicit_locator_drops_record_typed_workspace_diagnostics(tmp_pat
 
 
 def test_mapping_rotation_keeps_hook_ordinals_and_generation_monotonic(tmp_path: Path) -> None:
-    """#560: a reattach rotates the mapped Yoetz session, never the host-session counters.
+    """#560: a reattach rotates the mapped FinishUP session, never the host-session counters.
 
     Hook ordinals, the session generation, and the host session commitment are
     keyed on the Codex session, so a second ``start`` in the same session (which
@@ -6434,8 +6487,8 @@ def test_mapping_rotation_keeps_hook_ordinals_and_generation_monotonic(tmp_path:
 
     import uuid
 
-    from yoetz.adapters.integrations.codex_lifecycle import load_mapping, store_mapping
-    from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+    from finishup.adapters.integrations.codex_lifecycle import load_mapping, store_mapping
+    from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -6479,7 +6532,7 @@ def test_retention_stress_matches_linear_removal_with_bounded_encodes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#689: the 700/176/700 shape preserves the reference removal outcome."""
-    from yoetz.adapters.integrations import observation_local as local
+    from finishup.adapters.integrations import observation_local as local
 
     store = LocalObservationStore(_state=tmp_path, _wall=lambda: 1_788_998_400.0)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -6553,8 +6606,8 @@ async def test_control_failure_stops_batch_without_fabricating_other_row_refusal
 ) -> None:
     from dataclasses import replace
 
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-    from yoetz.ports.control import ControlError
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -6654,14 +6707,14 @@ async def test_preflight_and_delivery_budgets_ignore_local_hydration(
     assert store.pending_outbox_count(workspace) == 0
     diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"
     diagnostic = diagnostics_path.read_text() if diagnostics_path.exists() else ""
-    assert '"reason":"drain_budget_exhausted"' not in diagnostic
+    assert '"reason":"drain_pass_delivered_nothing"' not in diagnostic
     assert "drain_preflight_failed" not in diagnostic
 
 
 def test_deferred_followup_records_stdout_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.cli import hook_io
+    from finishup.cli import hook_io
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = str(tmp_path.resolve())
@@ -6734,7 +6787,7 @@ def test_session_start_update_advice_without_observation_consent(
         if source is ObservationSource.CURSOR_HOOK
         else payload["hookSpecificOutput"]["additionalContext"]
     )
-    assert "Update Yoetz to 0.3.0" in context
+    assert "Update FinishUP to 0.3.0" in context
     assert "decline package-update --release-version 0.3.0" in context
     assert not store.pending_workspaces()
 
@@ -6876,7 +6929,7 @@ def test_oversized_claude_payload_names_its_host_instead_of_recording_nothing(
 def test_codex_post_tool_use_entry_point_routes_an_oversized_body_to_the_gap(
     tmp_path: Path,
 ) -> None:
-    from yoetz.cli import hooks
+    from finishup.cli import hooks
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -6941,8 +6994,8 @@ def test_nested_routine_outcome_survives_structural_mapping(
 def test_cold_session_start_primes_selected_service_and_maps_each_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: ObservationSource, session: str
 ) -> None:
-    import yoetz.service.client as service_client
-    from yoetz.ports.control import ControlError, WorkspaceLocator
+    import finishup.service.client as service_client
+    from finishup.ports.control import ControlError, WorkspaceLocator
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -7003,7 +7056,7 @@ def test_cold_session_start_primes_selected_service_and_maps_each_host(
 def test_startup_failure_context_exposes_only_trusted_recovery_tokens(
     tmp_path: Path, source: ObservationSource, reason: str, cue: str
 ) -> None:
-    from yoetz.ports.control import ControlError
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -7039,7 +7092,7 @@ def test_startup_failure_context_exposes_only_trusted_recovery_tokens(
 def test_bootstrap_backlog_keeps_pair_identity_and_missing_content_gap(
     tmp_path: Path, source: ObservationSource
 ) -> None:
-    from yoetz.domain.observation_profiles import (
+    from finishup.domain.observation_profiles import (
         CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
         CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
     )
@@ -7147,8 +7200,8 @@ def test_reachable_service_admission_conflict_has_distinct_native_context(
 async def test_hook_connector_cannot_supersede_an_answering_incompatible_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.service.client as service_client
-    from yoetz.ports.control import ControlError
+    import finishup.service.client as service_client
+    from finishup.ports.control import ControlError
 
     signals: list[bool] = []
     spawns: list[bool] = []
@@ -7176,7 +7229,7 @@ async def test_hook_connector_cannot_supersede_an_answering_incompatible_service
 async def test_hook_cold_connection_enforces_budget_when_transport_never_returns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.service.client as service_client
+    import finishup.service.client as service_client
 
     spawns: list[bool] = []
 
@@ -7214,7 +7267,7 @@ def test_non_attachment_hooks_never_spawn_a_service(
 ) -> None:
     """Only consented session/turn-boundary attachment may use the on-demand launcher."""
 
-    import yoetz.service.client as service_client
+    import finishup.service.client as service_client
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -7249,16 +7302,31 @@ def test_non_attachment_hooks_never_spawn_a_service(
 # --- #843: session end after capacity is lowered above the 1 MiB fallback ---
 
 
+async def _no_running_service(_kind: object) -> NoReturn:
+    """The connector when no service is running: what the production connector raises then.
+
+    These cases test local accounting, never a service. ``connect=None`` would select the
+    production connector, and a consented SessionStart primes the service with it through the
+    on-demand launcher: a real detached ``finishup service run`` under the ambient installation
+    (the developer's own outside an isolated run) that outlived the case and served its later
+    drains (``_no_real_service_start``).
+    """
+
+    from finishup.ports.control import ControlError
+
+    raise ControlError("service_unavailable", retryable=True)
+
+
 def _lowered_over_target_session(
     tmp_path: Path, source: ObservationSource, host_session: str
 ) -> tuple[LocalObservationStore, str, str, Callable[[str], int]]:
     """Start a real host session, accept a backlog under Largest, then revoke it."""
 
-    from yoetz.adapters.integrations.observation_local import ObservationOutboxRow
-    from yoetz.domain.observation import ObservationCursor
-    from yoetz.domain.observation_budget import LARGEST_CAPACITY
-    from yoetz.domain.observation_settings import ObservationDetailProfile, ObservationSelection
-    from yoetz.domain.values import JsonObject, Timestamp
+    from finishup.adapters.integrations.observation_local import ObservationOutboxRow
+    from finishup.domain.observation import ObservationCursor
+    from finishup.domain.observation_budget import LARGEST_CAPACITY
+    from finishup.domain.observation_settings import ObservationDetailProfile, ObservationSelection
+    from finishup.domain.values import JsonObject, Timestamp
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -7278,7 +7346,7 @@ def _lowered_over_target_session(
             stdout=io.BytesIO(),
             workspace=locator,
             _state=tmp_path,
-            connect=None,
+            connect=_no_running_service,
             source=source,
         )
 
@@ -7341,7 +7409,7 @@ def test_session_end_is_recorded_after_capacity_is_lowered_above_the_byte_ceilin
     source: ObservationSource,
     host_session: str,
 ) -> None:
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary
 
     store, workspace, session, observe = _lowered_over_target_session(
         tmp_path, source, host_session
@@ -7379,7 +7447,7 @@ def test_an_unpersisted_session_end_is_named_not_swallowed(
     host_session: str,
     failure: str,
 ) -> None:
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -7393,7 +7461,7 @@ def test_an_unpersisted_session_end_is_named_not_swallowed(
             stdout=io.BytesIO(),
             workspace=locator,
             _state=tmp_path,
-            connect=None,
+            connect=_no_running_service,
             source=source,
         )
 
@@ -7446,7 +7514,7 @@ def test_deferred_session_end_batch_failure_is_named(
 ) -> None:
     """A lock-contended end intent must not be swallowed by a failed batch."""
 
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -7461,7 +7529,7 @@ def test_deferred_session_end_batch_failure_is_named(
             stdout=io.BytesIO(),
             workspace=locator,
             _state=tmp_path,
-            connect=None,
+            connect=_no_running_service,
             source=ObservationSource.CODEX_HOOK,
         )
 
@@ -7495,7 +7563,7 @@ def test_deferred_session_end_pending_cap_is_named(
 ) -> None:
     """A full deferred-lifecycle queue leaves the missing end visible."""
 
-    from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
+    from finishup.cli.hook_diagnostics import hook_diagnostic_summary
 
     store = LocalObservationStore(_state=tmp_path)
     locator = str(tmp_path.resolve())
@@ -7523,7 +7591,7 @@ def test_deferred_session_end_pending_cap_is_named(
                 stdout=io.BytesIO(),
                 workspace=locator,
                 _state=tmp_path,
-                connect=None,
+                connect=_no_running_service,
                 source=ObservationSource.CODEX_HOOK,
             )
             == 0

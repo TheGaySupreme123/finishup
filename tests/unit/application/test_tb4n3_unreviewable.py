@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from yoetz.application import check
-from yoetz.domain.events import DeliverableState
-from yoetz.domain.values import obligation_id
-from yoetz.kernel.delivered_set import deliverable_lineage
-from yoetz.kernel.task_facts import DECLARED_OUTPUT_NOT_REVIEWABLE_GAP
+from finishup.application import check
+from finishup.domain.events import DeliverableState
+from finishup.domain.values import obligation_id
+from finishup.kernel.delivered_set import deliverable_lineage
+from finishup.kernel.task_facts import DECLARED_OUTPUT_NOT_REVIEWABLE_GAP
 
 _OBL = obligation_id("obl_00000000-0000-4000-8000-0000000000b1")
 

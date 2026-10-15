@@ -9,10 +9,10 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.inspection_text import inspection_text
-from yoetz.protocol.models import CheckInspectionModel, CheckRequest, CheckResult
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.inspection_text import inspection_text
+from finishup.protocol.models import CheckInspectionModel, CheckRequest, CheckResult
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 _FIXTURE = (
     Path(__file__).resolve().parents[3] / "fixtures/canonical/check-inspection-1.4.0.case.json"
@@ -83,6 +83,6 @@ def test_the_admitted_branch_discriminates_and_renders_without_text_from_the_cas
     rendered = "\n".join((*text.lead, *text.details))
     assert "What is left: readiness action_required" in rendered
     assert "requested items not attempted (#0) [you]" in rendered
-    assert "asserted command run has no linked hook observation (#1) [Yoetz]" in rendered
+    assert "asserted command run has no linked hook observation (#1) [FinishUP]" in rendered
     assert "evidence_off_declared_items" in rendered
-    assert "Yoetz records no command text" in rendered
+    assert "FinishUP records no command text" in rendered

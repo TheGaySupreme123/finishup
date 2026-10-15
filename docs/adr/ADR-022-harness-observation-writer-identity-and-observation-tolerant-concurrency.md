@@ -29,12 +29,12 @@ change-proportional critical sections, and non-overlapping sweep settlement, dec
 2026-09-30 for issue #915 (no hook delivers a notice for observation-authored frontier motion,
 decision 11); 2026-09-30 for issue #911 (observation-authored, non-actionable findings are
 disclosed limitations, not response work; see the section at the end).
-**Implemented by:** `src/yoetz/application/observation_materialize.py`,
-`src/yoetz/application/observation_coordinator.py`, `src/yoetz/cli/observe_hooks.py`,
-`src/yoetz/adapters/memory/ledger.py`,
-`src/yoetz/application/publish_work.py`, `src/yoetz/application/receipt.py`,
-`src/yoetz/kernel/policies/observation_advice.py`, `src/yoetz/service/ready_composition.py`, and
-`src/yoetz/adapters/integrations/observation_local.py`.
+**Implemented by:** `src/finishup/application/observation_materialize.py`,
+`src/finishup/application/observation_coordinator.py`, `src/finishup/cli/observe_hooks.py`,
+`src/finishup/adapters/memory/ledger.py`,
+`src/finishup/application/publish_work.py`, `src/finishup/application/receipt.py`,
+`src/finishup/kernel/policies/observation_advice.py`, `src/finishup/service/ready_composition.py`, and
+`src/finishup/adapters/integrations/observation_local.py`.
 **Relates to:** ADR-009, ADR-010, ADR-020, and
 issues #214, #216, #217, #223, #224, #225, #226, #227, #244, #302, #320, #322, #326, #331,
 #445, #494, #539, #540, #560, #577, and #607.
@@ -255,7 +255,8 @@ unsupported claims and unbounded duplicate findings.
     gap or a failure-shaped hook diagnostic, and the reason never projects into observation
     status, advice, coverage, or receipt inputs. Losing the nonblocking drain lease records
     nothing: the holder is a live hook or the service sweeper, and flock releases with a dead
-    process. Hook drain-budget expiry records `drain_budget_exhausted` only when the pass moved no
+    process. Hook drain-budget expiry records `drain_pass_delivered_nothing` (named
+    `drain_budget_exhausted` before 2026-10-13) only when the pass moved no
     backlog; a bounded slice that delivered or quarantined rows and then yielded to the sweeper is
     working as designed. Genuine `SERVICE_UNAVAILABLE`, vault, storage, and preflight failures
     keep their existing visibility (issues #346/#351).
@@ -364,23 +365,23 @@ unsupported claims and unbounded duplicate findings.
     is a defensive bound for future catch-all classification defects, not evidence that a retryable
     failure became successful (issues #539 and #540).
 
-18. Yoetz observing its own MCP workflow is delivered in proportion to distinct evidence (issue
-    #564). Every host hook (Codex, Claude Code, Cursor) and the Codex session stream record Yoetz's
+18. FinishUP observing its own MCP workflow is delivered in proportion to distinct evidence (issue
+    #564). Every host hook (Codex, Claude Code, Cursor) and the Codex session stream record FinishUP's
     own `start`, `publish_work`, `check`, `respond`, `status`, `receipt`, and `read_guidance` calls
     exactly like any other tool, and the hook process that records them is the same process that
     drains the outbox, so the prescribed workflow's own status/respond/check traffic produced two
     outbox rows plus a content capture per call and starved its own delivery. The service already
-    holds the authoritative record of every Yoetz-owned call it served, so the hook adapter and the
+    holds the authoritative record of every FinishUP-owned call it served, so the hook adapter and the
     stream reconciler ingest such envelopes into the bounded local observation store
     unconditionally but enqueue them for delivery only when they carry evidence the service cannot
-    know from serving the call: an explicit host failure or denial (any phase, any Yoetz tool), or
+    know from serving the call: an explicit host failure or denial (any phase, any FinishUP tool), or
     the post-event of a mutation (`start`, `publish_work`, `check`, `respond`). The pre-event of
-    every Yoetz-owned call and the post-event of a Yoetz-owned read (`status`, `receipt`,
+    every FinishUP-owned call and the post-event of a FinishUP-owned read (`status`, `receipt`,
     `read_guidance`) without a stated failure stay local; pairing bookkeeping is unaffected, so a
-    delivered post-event still materializes its action. Yoetz-owned tool arguments and results are
+    delivered post-event still materializes its action. FinishUP-owned tool arguments and results are
     never captured as tool input/output content: they are already durable in the ledger the call
     read or wrote. Tool identity derives from the one registry tuple rendered into every host
-    spelling; a name that merely resembles a Yoetz tool is ordinary. Like decision 10 this is a
+    spelling; a name that merely resembles a FinishUP tool is ordinary. Like decision 10 this is a
     delivery-volume policy, not a coverage limitation, so it records no gap. On the consumer side,
     the service sweeper yields with its partial summary on a budget under the daemon's sweep
     deadline, so progress made under a backlog is never discarded as a timeout. Its maintenance
@@ -398,9 +399,9 @@ unsupported claims and unbounded duplicate findings.
 18. `obs-ledger/1.5.0` keys the observation operation digest on the task, the canonical logical
     identity, the exact draft-role tuple, and the mapping version only. The stable event ids an
     operation commits are derived from the task and the source identity, never from the routed
-    Yoetz session or writer, so the operation that owns them must be findable from every later
+    FinishUP session or writer, so the operation that owns them must be findable from every later
     session of the same task. A workflow reattach in one host session (a second `start`) rotates
-    the mapped Yoetz session and therefore the derived observation writer; under the
+    the mapped FinishUP session and therefore the derived observation writer; under the
     session-bound `1.4.0`, `1.3.0`, and `1.2.0` digests the repeated envelope missed its committed
     operation, re-minted the same event ids, and was quarantined as `ledger_rejected` (#560).
     Before staging, the coordinator resolves the current identity task-wide through
@@ -507,7 +508,7 @@ limits remain in the host integration runbooks.
     rewrite or prune. If a hook cannot acquire that reservation, it captures the envelope and
     persists an explicit bounded lifecycle intent; READY and hook drains reconcile those intents
     before delivery. Observation-local schema `/10` carries the intents. Upgrading it is a
-    quiesced operation: stop older Yoetz services and host hooks, install the new runtime, then
+    quiesced operation: stop older FinishUP services and host hooks, install the new runtime, then
     restart all services and integrations before writing `/10`; mixed `/9` and `/10` writers are
     unsupported because the `/9` reader ignores the new field and can erase it on save. The
     retention bound protects pending and quarantined evidence, so protected rows may keep the
@@ -533,7 +534,7 @@ limits remain in the host integration runbooks.
     authenticates the request, it secret-scans and encrypts the eligible chunks, durably publishes
     their objects and manifests, and records a metadata-only capture ticket before the structural
     FIFO cursor advances. The ticket binds the encrypted object IDs to the exact
-    workspace/task/Yoetz session, host session and source cursor, content profile when applicable,
+    workspace/task/FinishUP session, host session and source cursor, content profile when applicable,
     original source generation, content-authority generation, and expected content groups/parts.
     For Codex, the source-qualified profileless arm additionally fences the exact active consent
     authority/generation, workspace commitment, `codex_hook` source identity and commitment,
@@ -550,7 +551,7 @@ limits remain in the host integration runbooks.
     observation back-pressure and carries no content-retention claim.
 
     A successor may consume a predecessor ticket only through the existing bounded, validated
-    route history for that mapped task and host session. The ticket's original Yoetz session stays
+    route history for that mapped task and host session. The ticket's original FinishUP session stays
     immutable; sharing a task alone does not authorize borrowing another session's content. New
     checks inspect outstanding tickets across the task, since their frozen projection includes
     predecessor work. Completed same-request replay remains independent of newer handoffs.
@@ -678,7 +679,7 @@ concurrency still conflicts. Check cases make progress by temporarily applying b
 outbox rather than weakening verdict binding. Observation can contribute evidence and bounded
 advice without impersonating the agent or minting the same standing finding indefinitely. Routine
 reads retain their local observation evidence without producing an unbounded task-ledger trail,
-Yoetz's own tool calls are observed without recursively feeding the outbox they are drained
+FinishUP's own tool calls are observed without recursively feeding the outbox they are drained
 from, and
 cooperative writers learn about frontier motion that actually invalidates a held frontier from the
 `frontier_conflict` response of their next state-sensitive operation; observation-authored motion,
@@ -808,7 +809,7 @@ answered, until a change adds it to the allowlist with its own rationale.
 4. Existing ledgers need no migration: replay applies the rule to their accepted history, so an
    advisory row written by an earlier build renders as disclosed history rather than as unanswered
    work after upgrade.
-5. The hook `refresh_observation` clause asks the agent to wait only while `yoetz observe status`
+5. The hook `refresh_observation` clause asks the agent to wait only while `finishup observe status`
    reports lag or a drain backlog, and says that a remaining gap is a standing limitation needing
    no response or recheck. Which observation conditions raise the advisory, and how the sticky
    `unpaired_event` surfaces, are decided in issue #917.
@@ -890,7 +891,8 @@ owner decided: start the clock after connecting, spool durably, and finish the d
    reconciliation, the ingest RPCs and the local commit after each. An optional absolute pass
    deadline clamps both stages. The ordinary per-hook slice is 0.20 s and at most eight rows; a
    content-bearing pass keeps 1.0 s and sixteen rows. Decision 13's rule is unchanged:
-   `drain_budget_exhausted` is recorded only when a pass moved nothing.
+   `drain_budget_exhausted` (renamed `drain_pass_delivered_nothing` on 2026-10-13, see below) is
+   recorded only when a pass moved nothing.
 2. **Transient content is staged even when another owner holds the drain lease.** A hook that
    loses the nonblocking lease still opens its own connection and sends its content chunks as
    `capture_only`. The service commits the encrypted manifests and the retry ticket before it
@@ -909,7 +911,7 @@ owner decided: start the clock after connecting, spool durably, and finish the d
    holds the lease itself and a retryable refusal delivers nothing,
    it stops at once and leaves the rows to the sweeper. Only rows that can still change this
    task's facts count: the host session's own rows and those of other host sessions mapped to
-   the same Yoetz session. Rows of other tasks in the workspace, and of unmapped sessions, do
+   the same FinishUP session. Rows of other tasks in the workspace, and of unmapped sessions, do
    not hold the decision. The outcome is a bounded diagnostic, `stop_drain_complete` or
    `stop_drain_incomplete`, and the closure gate receives `observation_pending` only when this
    task's rows remain (ADR-033 decision 5). Claude Code and Cursor ordinary profiles drain at
@@ -925,3 +927,28 @@ owner decided: start the clock after connecting, spool durably, and finish the d
 Not changed: `check` does not wait for hook rows (a mid-session check can still be current as
 of an earlier frontier); local content cannot be spooled when the service is unreachable,
 because the hook holds no vault key.
+
+## Amendment (2026-10-13, tb4n5): keep the drain budget, rename its counter, measure delivery lag
+
+tb4n5 recounted the per-hook drain diagnostic on the same nine tasks: no regression once attempts
+and hook volume are normalized (the S arm fell from 17.3 to 12.4 per attempt; an earlier 26.7
+compared seven old tasks with nine new ones), and rows still landed within about 1-2 s. The one
+row that landed 13 minutes late was a rollout item held for pairing, not drain latency (ADR-029
+tb4n5 amendment). The owner decided:
+
+1. **The 0.20 s ordinary per-hook delivery slice stays** (content-bearing passes keep 1.0 s).
+2. **The counter is renamed to say what it counts.** `drain_budget_exhausted` is now
+   `drain_pass_delivered_nothing`: one hook drain pass that delivered no row within its budget
+   (or whose connect preflight left none). The rows stay queued for the next pass or the
+   sweeper; it is not lost delivery and not lateness. The hook diagnostics reader reports rows
+   written under the old name under the new one, so one cause keeps one tally across an upgrade.
+   The reason is local-only (`hook-diagnostics.jsonl`, `observe status` `hook_diagnostics`), in
+   no schema or fixture.
+3. **Delivery lag is the measure.** Every outbox row records when it was enqueued
+   (`enqueued_at`, local wall clock; kept across retry attempts, not part of the row identity);
+   its acknowledgement after the service accepted it adds one enqueue-to-acceptance sample to a
+   per-workspace histogram (fixed bounds 100 ms to 900 s plus an overflow bucket, with count, sum,
+   maximum, last sample and the moment measurement began). `observe status` reports it as
+   `delivery_lag` with `p50_ms_at_most`/`p95_ms_at_most` bucket bounds. Rows enqueued before the
+   field existed are not measured. A rollout row held for pairing is enqueued when it is released,
+   so its hold time shows as `held_rollout_items`, not as delivery lag.

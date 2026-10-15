@@ -8,8 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from fixture_loader import load_fixture_json
-from yoetz.domain.events import (
+from finishup.domain.events import (
     PAYLOAD_TYPES,
     AcceptedEvent,
     EventSchema,
@@ -22,7 +21,7 @@ from yoetz.domain.events import (
     WriterChain,
     decode_payload,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     actor_id,
@@ -36,8 +35,8 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.projections import projection_digest
-from yoetz.kernel.reducers import (
+from finishup.kernel.projections import projection_digest
+from finishup.kernel.reducers import (
     EvidenceObjectSource,
     ReplayIndex,
     build_replay_index,
@@ -50,15 +49,16 @@ from yoetz.kernel.reducers import (
     replay_with_index,
     validate_replay_index,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import entry_digest
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     Coverage,
     LedgerFreshness,
     PublicationChannel,
     coverage_from_json,
 )
+from fixture_loader import load_fixture_json
 
 
 def _fixture(name: str) -> dict[str, Any]:
@@ -249,8 +249,8 @@ def test_finding_event_subject_ref_outside_prefix_does_not_overflow_projection_g
         if type(record) is AcceptedEvent and record.schema.name == "finding_recorded"
     )
     assert finding.payload is not None
-    from yoetz.domain.events import encode_payload
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
 
     phantom = event_id("evt_40000000-0000-4000-8000-0000000000aa")
     payload = replace(finding.payload, subject_refs=(phantom,))
@@ -552,8 +552,8 @@ def _check_with_partial_coverage(
     is what decides whether the fixture's later response supersedes it.
     """
 
-    from yoetz.domain.events import encode_payload
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
 
     rewritten: list[LedgerRecord] = []
     for record in records:

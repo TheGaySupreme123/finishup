@@ -7,22 +7,22 @@ import asyncio
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     current_schema_version,
     initialize_bundle,
     run_migrations,
 )
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationIngestDisposition,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 _WORKSPACE = "hmac-sha256:" + "a" * 64
 _SESSION = "hmac-sha256:" + "b" * 64

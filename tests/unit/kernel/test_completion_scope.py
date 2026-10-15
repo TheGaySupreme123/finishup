@@ -5,20 +5,20 @@ from dataclasses import replace
 import pytest
 
 from builders.policy_cases import clm, make_case, obl, obligation_record, plan_record, record
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.kernel.completion_scope import (
+from finishup.kernel.completion_scope import (
     CLAIM_OUTSIDE_PLAN,
     PLAN_NOT_CLAIMED,
     completion_scope_codes,
     completion_scope_differences,
 )
-from yoetz.kernel.projections import ProjectionState
+from finishup.kernel.projections import ProjectionState
 
 
 def state(refs: tuple[int, ...], *, kind: ClaimKind = ClaimKind.COMPLETION) -> ProjectionState:
@@ -169,9 +169,9 @@ def test_an_acknowledged_obligation_omitted_from_the_claim_is_not_plan_not_claim
 def test_a_claim_naming_an_acknowledged_obligation_still_raises_the_open_obligation_finding() -> (
     None
 ):
-    from yoetz.domain.findings import FindingKind
-    from yoetz.kernel.deterministic_checks import DETERMINISTIC_FINDING_TEMPLATES
-    from yoetz.kernel.policies.work_integrity import (
+    from finishup.domain.findings import FindingKind
+    from finishup.kernel.deterministic_checks import DETERMINISTIC_FINDING_TEMPLATES
+    from finishup.kernel.policies.work_integrity import (
         _completion_findings,  # pyright: ignore[reportPrivateUsage]
     )
 

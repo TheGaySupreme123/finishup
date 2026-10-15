@@ -1,11 +1,11 @@
 # ADR-014 — TOML as alternate settings surface and owner-declared OpenAI-compatible endpoints
 
 **Status:** Working decision — implementing against [issue
-#2](https://github.com/TheGaySupreme123/yoetz/issues/2) under explicit product authorization to ship
+#2](https://github.com/TheGaySupreme123/finishup/issues/2) under explicit product authorization to ship
 the filed design (maintainer ack recorded as implement-now). **Implemented by:**
-`src/yoetz/config/models.py`, `src/yoetz/config/privacy.py`, `src/yoetz/config/load.py`,
-`src/yoetz/config/write.py`, `src/yoetz/config/privacy_desired.py`,
-`src/yoetz/adapters/providers/openai_responses.py`, privacy-setup wizard contract, CLI setup/menu
+`src/finishup/config/models.py`, `src/finishup/config/privacy.py`, `src/finishup/config/load.py`,
+`src/finishup/config/write.py`, `src/finishup/config/privacy_desired.py`,
+`src/finishup/adapters/providers/openai_responses.py`, privacy-setup wizard contract, CLI setup/menu
 specs, plus amendments to ADR-006 decision 2 and ADR-009 policy-authority text. **Relates to:**
 ADR-006 (AI-powered review provider profiles), ADR-008 (vault), ADR-009 (egress/privacy), ADR-012
 (setup wizard), ADR-013 (interactive menu).
@@ -47,7 +47,7 @@ continuing disclosure authority.
    OpenAI remains the bundled preset host `api.openai.com`. Data-use facts for owner-declared hosts
    default to `unknown` and never inherit the upstream `assisted` recommendation badge.
 
-4. **Durable privacy policy gets a TOML desired-state path** (`yoetz privacy export-desired` /
+4. **Durable privacy policy gets a TOML desired-state path** (`finishup privacy export-desired` /
    `apply-desired`, schema `yoetz.privacy-desired/1`) that maps onto existing `propose` /
    `tighten` / `decide` gates. File edits alone never silently widen egress; tighten/equivalent
    classification is reported and routed to the existing tighten gate; widen always requires the
@@ -55,7 +55,7 @@ continuing disclosure authority.
    continuing disclosure authority.
 
 5. **Setup UX:** the ADR-012 wizard (interactive) and ADR-013 menu “LLM provider” offer Official
-   OpenAI vs Custom origin+model (nonsecret), write service TOML via `yoetz provider endpoint` /
+   OpenAI vs Custom origin+model (nonsecret), write service TOML via `finishup provider endpoint` /
    shared helpers, then point at the existing credential ceremony. Neither surface accepts secrets.
 
 ## Consequences

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     EventSchema,
     LedgerChain,
@@ -25,7 +25,7 @@ from yoetz.domain.events import (
     obligation_meaning_field_diffs,
     public_error_for_obligation_resolution_mismatch,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     actor_id,
@@ -39,15 +39,15 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.reducers import empty_replay_index, extend_replay_index, reduce_event, replay
-from yoetz.protocol.canonical import canonical_digest, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.reducers import empty_replay_index, extend_replay_index, reduce_event, replay
+from finishup.protocol.canonical import canonical_digest, entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     PublicationChannel,
     coverage_for_channel,
     coverage_to_json,
 )
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.protocol.errors import PublicErrorCode
 
 _OBL_ID = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 _EVD_ID = evidence_id("evd_00000000-0000-4000-8000-000000000001")

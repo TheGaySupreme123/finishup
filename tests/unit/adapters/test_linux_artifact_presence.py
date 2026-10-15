@@ -13,8 +13,8 @@ from typing import Self
 
 import pytest
 
-from yoetz.adapters.integrations import linux_artifact_presence as module
-from yoetz.adapters.integrations.linux_artifact_presence import (
+from finishup.adapters.integrations import linux_artifact_presence as module
+from finishup.adapters.integrations.linux_artifact_presence import (
     ConversationState,
     IsolatedPamAuthenticator,
     LinuxArtifactUserPresence,
@@ -23,12 +23,12 @@ from yoetz.adapters.integrations.linux_artifact_presence import (
     ResponseAllocator,
     converse,
 )
-from yoetz.cli.trusted_console import TrustedConsoleError
-from yoetz.ports.plugin_artifacts import ArtifactAuthority
+from finishup.cli.trusted_console import TrustedConsoleError
+from finishup.ports.plugin_artifacts import ArtifactAuthority
 
 _DIGEST = "sha256:" + "a" * 64
 _REVIEW_ID = "b" * 64
-_MODULE = "yoetz.adapters.integrations.linux_artifact_presence"
+_MODULE = "finishup.adapters.integrations.linux_artifact_presence"
 
 
 def _authority() -> ArtifactAuthority:
@@ -505,7 +505,7 @@ def test_pam_worker_does_not_import_workspace_or_pythonpath_modules(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     marker = tmp_path / "imported"
-    (tmp_path / "yoetz.py").write_text(
+    (tmp_path / "finishup.py").write_text(
         "from pathlib import Path; Path(" + repr(str(marker)) + ").touch()\n"
     )
     monkeypatch.chdir(tmp_path)

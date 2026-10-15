@@ -23,7 +23,7 @@ bridge rendering. It runs in the `sqlite-integration` CI job.
   rows carry a never-send credential shape (one hook-observed description, one agent-published
   reference), so the omission reasons mix `never_send_redacted` and
   `local_disclosure_not_authorized`. Regenerate only for an intended output change
-  (`YOETZ_STATUS_RENDER_GOLDEN=write`, see the module docstring).
+  (`FINISHUP_STATUS_RENDER_GOLDEN=write`, see the module docstring).
 - The cost tests never compare wall-clock time with a fixed threshold. They count deterministic
   work (stock JSON Schema validator constructions per valid page: 0; leaf-rule scans on a second
   page: 0) and compare CPU time only as a ratio to a baseline measured in the same run (ten

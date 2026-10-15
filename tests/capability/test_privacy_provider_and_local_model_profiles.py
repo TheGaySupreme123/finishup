@@ -22,13 +22,13 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.adapters.providers.fake import (
+from finishup.adapters.providers.fake import (
     FakeSemanticScript,
     ScriptedFakeSemanticEvaluator,
     scripted_success,
 )
-from yoetz.adapters.providers.local_model import InstalledLocalModelProfileRegistry
-from yoetz.domain.privacy import (
+from finishup.adapters.providers.local_model import InstalledLocalModelProfileRegistry
+from finishup.domain.privacy import (
     ApprovedOutboundCase,
     AuthorizationScope,
     AuthorizationScopeKind,
@@ -43,9 +43,9 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.ports.privacy import PolicyTransitionProposal
-from yoetz.ports.semantic import Deadline, SemanticJudgment, SemanticResultSuccess
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.ports.privacy import PolicyTransitionProposal
+from finishup.ports.semantic import Deadline, SemanticJudgment, SemanticResultSuccess
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _DIGEST = "sha256:" + "c" * 64

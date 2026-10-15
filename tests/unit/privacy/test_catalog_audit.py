@@ -16,33 +16,33 @@ import apsw
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.adapters.memory.privacy import (
+from finishup.adapters.memory.privacy import (
     MemoryPrivacyAudit,
     MemoryPrivacyCatalogState,
     MemoryPrivacyPolicyStore,
 )
-from yoetz.adapters.privacy.catalog import (  # pyright: ignore[reportPrivateUsage]
+from finishup.adapters.privacy.catalog import (  # pyright: ignore[reportPrivateUsage]
     _LOOKUP_DOMAIN,  # pyright: ignore[reportPrivateUsage]
     CatalogPrivacyAudit,
     CatalogPrivacyPolicyStore,
     _mac,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation_advice_semantic import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation_advice_semantic import (
     SqliteObservationAdviceSemanticRepository,
 )
-from yoetz.application.egress import (
+from finishup.application.egress import (
     PrivacyCoordinator,
     SemanticEgressAttemptUnknown,
     SemanticEgressAwaitingHuman,
 )
-from yoetz.application.observation_advice_semantic import (
+from finishup.application.observation_advice_semantic import (
     ObservationAdviceSemanticAttempt,
     ObservationAdviceSemanticOutcome,
     ObservationAdviceSemanticWorker,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     MAX_WITHHELD_ITEM_IDS,
     AuthorizationScope,
     AuthorizationScopeKind,
@@ -71,15 +71,15 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import format_rfc3339_millis
-from yoetz.ports.objects import (
+from finishup.domain.values import format_rfc3339_millis
+from finishup.ports.objects import (
     ObjectMetadata,
     ObjectRef,
     ObjectSource,
     ObjectStorePort,
     StagedObject,
 )
-from yoetz.ports.privacy import (
+from finishup.ports.privacy import (
     AgentProjectionRequest,
     CompletedAgentProjection,
     ConsumedAuthorization,
@@ -103,10 +103,10 @@ from yoetz.ports.privacy import (
     PrivacyReceiptQuery,
     PrivacyReceiptView,
 )
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
+from finishup.ports.semantic import Deadline
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 7, 19, tzinfo=UTC)
 _INSTALLATION = "ins_30000000-0000-4000-8000-000000000001"
@@ -1007,7 +1007,7 @@ def test_catalog_resume_rejects_replaced_active_route() -> None:
 def test_catalog_proposal_persists_redacted_value_lines_for_resume() -> None:
     """PL2-1 (issue #982): refs and lines survive the proposal round trip; absent stays absent."""
 
-    from yoetz.protocol.redacted_values import SemanticRedactedValue
+    from finishup.protocol.redacted_values import SemanticRedactedValue
 
     db = _database()
     _insert_task_route(db)
@@ -1500,7 +1500,7 @@ def test_unreadable_audit_keeps_the_cancelled_call_usage_unknown() -> None:
     that authority was never consumed): the cancelled advice row then keeps its provider marker.
     """
 
-    from yoetz.application.observation_advice_semantic import (
+    from finishup.application.observation_advice_semantic import (
         reconcile_cancelled_advice_request,
     )
 
@@ -1661,7 +1661,7 @@ def test_an_unreadable_row_is_skipped_counted_and_named_not_fatal_to_the_page(
 ) -> None:
     """Issue #921: one stored row that cannot be read back used to fail every receipt beside it."""
 
-    import yoetz.observability.diagnostics as diagnostics_module
+    import finishup.observability.diagnostics as diagnostics_module
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     db = _database()
@@ -1766,7 +1766,7 @@ def test_skipped_row_diagnostics_are_bounded_per_page_while_the_page_names_every
 ) -> None:
     """A heavily corrupt audit listed again and again must not flood the diagnostics ring."""
 
-    import yoetz.observability.diagnostics as diagnostics_module
+    import finishup.observability.diagnostics as diagnostics_module
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     db = _database()
@@ -1912,8 +1912,8 @@ def test_a_cursor_this_store_minted_with_a_non_text_position_is_a_store_fault() 
 def test_sqlite_status_reports_the_grant_a_pending_carry_forward_will_create() -> None:
     """Issue #982 review: the derivation matches what carry-forward then writes."""
 
-    from yoetz.application.privacy_policy import credential_heuristic_state
-    from yoetz.domain.privacy import CredentialHeuristic
+    from finishup.application.privacy_policy import credential_heuristic_state
+    from finishup.domain.privacy import CredentialHeuristic
 
     db = _database()
     store = CatalogPrivacyPolicyStore(db, _Clock())

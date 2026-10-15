@@ -14,8 +14,8 @@ from typing import cast
 
 import pytest
 
-from yoetz.mcp import server as bridge
-from yoetz.mcp.descriptors import (
+from finishup.mcp import server as bridge
+from finishup.mcp.descriptors import (
     CLAUDE_CODE_INITIALIZE_INSTRUCTIONS,
     COMPACT_INITIALIZE_INSTRUCTIONS,
     COMPACT_INSTRUCTIONS_BUDGET,
@@ -25,20 +25,21 @@ from yoetz.mcp.descriptors import (
     advertised_surface_metrics,
     server_instructions,
 )
-from yoetz.mcp.resources import GUIDANCE_RESOURCES, read_resource
-from yoetz.mcp.semantic_destination import (
+from finishup.mcp.resources import GUIDANCE_RESOURCES, read_resource
+from finishup.mcp.semantic_destination import (
     DISCLOSURE_PREFIX,
     MAX_DISCLOSURE_ENCODED_BYTES,
     SemanticDestinationDisclosure,
     disclose_semantic_destination,
 )
-from yoetz.ports.control import McpHostProfile
+from finishup.ports.control import McpHostProfile
 
 # The stated cap recorded on issue #918: the packaged compact body is at most 2 KB. The route tail
 # and the policy-route destination disclosure (#479) ride on top and are never trimmed to fit.
 COMPACT_BODY_CAP_BYTES = 2_048
-# The Claude body hash locks the current compact startup contract, including guidance recovery.
-CLAUDE_BODY_SHA256 = "sha256:126d3c3d59bc10c7c96ca87f8136ebfac90fe83ec4bd33ce00ae9928450cf86a"
+# The Claude body hash locks the current compact startup contract, including guidance recovery
+# (re-locked for the tb4n5 startup dedup: the cadence moved to the operating card).
+CLAUDE_BODY_SHA256 = "sha256:7560dd04123143464144f386c9abc2b1a679de9e11d92de81c405143b06de286"
 COMPACT_HOSTS: tuple[McpHostProfile, ...] = ("codex", "cursor")
 # The longer of the two route lines the bridge appends to every body.
 LONGEST_ROUTE_LINE = (
@@ -130,7 +131,7 @@ def test_the_route_and_disclosure_tail_is_composed_identically_for_every_body(
 
 def test_the_compact_body_says_when_to_call_start_and_never_to_claim_it_early() -> None:
     heading, _, body = COMPACT_INITIALIZE_INSTRUCTIONS.partition("\n\n")
-    assert heading == "# Yoetz: call start first"
+    assert heading == "# FinishUP: call start first"
     trigger = _collapsed(body.split("\n\n")[0])
     assert trigger.startswith(
         "If this session will edit files, run state-changing commands, or delegate, call "
@@ -153,11 +154,11 @@ def test_the_compact_body_names_every_guidance_document_and_how_to_read_it() -> 
     text = _collapsed(COMPACT_INITIALIZE_INSTRUCTIONS)
     # The compact body makes only the core mandatory before `start`; procedures are on demand.
     assert (
-        "Before the first `start`, call `read_guidance` on `yoetz://guidance/agent-instructions.md`"
+        "Before the first `start`, call `read_guidance` on `finishup://guidance/agent-instructions.md`"
         in text
     )
     assert "After `start`, read workflow" in text
-    assert "`yoetz://guidance/workflow.md`" in text
+    assert "`finishup://guidance/workflow.md`" in text
     for resource in GUIDANCE_RESOURCES:
         assert f"`{resource.uri}`" in text, resource.uri
         assert read_resource(resource.uri), resource.uri
@@ -166,17 +167,19 @@ def test_the_compact_body_names_every_guidance_document_and_how_to_read_it() -> 
     assert "before `publish_work`" not in text
     assert "before `check`" not in text
     assert "page and verify empty or clipped guidance" in text
+    # tb4n5: all 18 Codex attempts listed resources before their first guidance read.
+    assert "Do not list resources; read the named topics." in text
 
 
-def test_the_compact_body_keeps_cadence_consent_and_honesty_rules() -> None:
+def test_the_compact_body_keeps_consent_and_honesty_rules_and_leaves_cadence_to_the_card() -> None:
     text = _collapsed(COMPACT_INITIALIZE_INSTRUCTIONS)
-    # Ceremony unchanged: every cadence step stays named, in order; the per-step frequency
-    # (`start` once, `publish_work` per material transition, `receipt` last) is in the mandatory
-    # core the body sends the agent to before `start` (#961).
-    assert "Cadence: `start`, `publish_work`, `check`, `respond`, `receipt`." in text
+    # tb4n5 startup dedup (ADR-047): the cadence is stated once, in the operating card the body
+    # sends the agent to before `start` (#961), not here and again in every skill.
+    assert "Cadence" not in text
     core = " ".join(read_resource(INITIALIZE_GUIDANCE_URIS[0]).decode("utf-8").split())
     assert "Cadence: `start` once, `publish_work` per material transition; `receipt` last." in core
-    assert "`respond`" in text
+    assert "`check` after the plan and each milestone" in core
+    assert "Answer each open AI-powered finding with `respond`" in core
     assert "typed continuation" in text
     # Disclosure and consent boundaries.
     assert "Publish only material, state-bound facts" in text
@@ -185,7 +188,7 @@ def test_the_compact_body_keeps_cadence_consent_and_honesty_rules() -> None:
     assert "Recover through `status`" in text
     # Coverage-honest wording.
     assert (
-        "Yoetz records only what participants publish; a clean check does not mean the work is correct."
+        "FinishUP records only what participants publish; a clean check does not mean the work is correct."
         in text
     )
 

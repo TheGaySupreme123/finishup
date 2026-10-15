@@ -6,16 +6,16 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.observation import (
+from finishup.domain.findings import FindingKind
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationLifecycle,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.kernel.policies.observation_advice import (
     SEMANTIC_ATTENTION_TOKENS,
     STANDING_MACHINE_ACTIONS,
     ObservationAdviceCandidate,

@@ -23,10 +23,10 @@ from typing import cast
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope, workspace_relative_edit_path
-from yoetz.cli.runtime_facts import runtime_structural_facts
-from yoetz.domain.events import (
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope, workspace_relative_edit_path
+from finishup.cli.runtime_facts import runtime_structural_facts
+from finishup.domain.events import (
     DeliverableState,
     EventPayload,
     EventSchema,
@@ -38,12 +38,12 @@ from yoetz.domain.events import (
     RequestedItemRole,
     ResultOutcome,
 )
-from yoetz.domain.observation import ObservationEnvelope
-from yoetz.domain.shell_writes import shell_write_scope
-from yoetz.domain.values import JsonObject, event_id, evidence_id, obligation_id
-from yoetz.kernel.delivered_set import DeliverableSnapshot, emptied_declared_items
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.domain.observation import ObservationEnvelope
+from finishup.domain.shell_writes import shell_write_scope
+from finishup.domain.values import JsonObject, event_id, evidence_id, obligation_id
+from finishup.kernel.delivered_set import DeliverableSnapshot, emptied_declared_items
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     EDITED_AFTER_LAST_VERIFICATION_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_MATCHED_BY_PREFIX_GAP,
@@ -58,7 +58,7 @@ from yoetz.kernel.task_facts import (
     register_command_identity_key,
     task_fact_signals,
 )
-from yoetz.protocol.canonical import JsonValue
+from finishup.protocol.canonical import JsonValue
 
 _OBL = obligation_id("obl_00000000-0000-4000-8000-0000000000c1")
 
@@ -387,26 +387,26 @@ def test_c2f_a_shell_write_to_notes_counts_only_when_notes_are_declared_output()
 
 
 def test_c2g_a_command_writing_notes_and_a_declared_receipt_keeps_counting() -> None:
-    """Shell-write review (#1028): ``: > NOTES.md; : > yoetz_receipt.md`` once earned only
-    ``notes``, which the task's declared ``yoetz_receipt.md`` could not override; the receipt
+    """Shell-write review (#1028): ``: > NOTES.md; : > finishup_receipt.md`` once earned only
+    ``notes``, which the task's declared ``finishup_receipt.md`` could not override; the receipt
     write was exempt and the verification stayed fresh. A command that writes two non-counting
     classes now counts, as a mixed edit-tool call does."""
 
-    command = ": > NOTES.md; : > yoetz_receipt.md"
+    command = ": > NOTES.md; : > finishup_receipt.md"
     scope = shell_write_scope(command, workspace="/app", inside=lambda p: p.startswith("/app"))
     assert scope == "workspace"
-    declared = _ledger(_out("/app/yoetz_receipt.md"))
+    declared = _ledger(_out("/app/finishup_receipt.md"))
     declared.passes("pytest -q")
     declared.run(command, ResultOutcome.SUCCESS, exit_status=0, write_scope=scope)
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(declared)
     # One class alone stays non-counting unless its own declared output overrides it.
     alone = shell_write_scope(
-        ": > yoetz_receipt.md", workspace="/app", inside=lambda p: p.startswith("/app")
+        ": > finishup_receipt.md", workspace="/app", inside=lambda p: p.startswith("/app")
     )
     assert alone == "yoetz_owned"
     plain = _ledger()
     plain.passes("pytest -q")
-    plain.run(": > yoetz_receipt.md", ResultOutcome.SUCCESS, exit_status=0, write_scope=alone)
+    plain.run(": > finishup_receipt.md", ResultOutcome.SUCCESS, exit_status=0, write_scope=alone)
     assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(plain)
 
 

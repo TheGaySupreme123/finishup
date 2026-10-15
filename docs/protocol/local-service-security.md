@@ -1,6 +1,6 @@
 # Local service, vault, and confidential-input security
 
-This page explains what the persistent local Yoetz service protects, what its `locked`/`ready`
+This page explains what the persistent local FinishUP service protects, what its `locked`/`ready`
 states mean, which clients are untrusted surfaces, how a human unlocks it safely, and the limits of
 same-UID and process-memory protection. It is written to be understandable without any private
 architecture document.
@@ -16,7 +16,7 @@ never unlock the vault themselves.
 
 | Component | Trust and authority |
 |---|---|
-| Per-user local Yoetz service | Trusted local authority. Sole owner of vault keys, decrypted state, catalog/task writers, the provider gateway, and the application facade. |
+| Per-user local FinishUP service | Trusted local authority. Sole owner of vault keys, decrypted state, catalog/task writers, the provider gateway, and the application facade. |
 | Confidential human helper (`service unlock`, `service initialize-passphrase`, `service recovery`) | Narrowly trusted for one exact ceremony and, when required, delivery of one one-shot secret. It has no workflow, storage, provider-dispatch, or policy authority. |
 | CLI, MCP bridge, future ordinary UI | Untrusted control/rendering clients. They submit validated requests and receive bounded results; they cannot open storage, access key handles, unlock the vault, or weaken policy. |
 | Agent, LLM, plugin, repository, imported transcript, provider | Untrusted content or external execution. Never receives an unlock secret or vault capability. |
@@ -72,7 +72,7 @@ committed passphrase-backed vault never probes or falls back to the keyring at s
 stale keyring entries are ignored, not deleted. Later unlock of an existing passphrase vault uses
 the distinct `vault_unlock` purpose.
 An allowlisted first-party agent acting on an explicit current-chat instruction may instead prepare
-and authorize `vault_initialize`. That path carries only the bounded attestation: Yoetz generates
+and authorize `vault_initialize`. That path carries only the bounded attestation: FinishUP generates
 the high-entropy passphrase locally, verifies its scoped credential-store round trip, submits a
 mutable copy through confidential ingress, wipes process buffers, and returns structural state.
 No secret or caller-selected randomness crosses chat, MCP, argv, environment, config, or logs.
@@ -81,7 +81,7 @@ A ready passphrase vault can be changed with `service rotate-passphrase`: the cu
 reauthenticates the exact action, and the replacement is masked, confirmed, validated, and staged
 in the scoped credential store before the service atomically rewraps the unchanged IVK. An
 allowlisted agent with an exact prepared `vault_passphrase_rotate` authorization can request the
-same transition without receiving either secret; Yoetz loads the current value and generates the
+same transition without receiving either secret; FinishUP loads the current value and generates the
 staged replacement locally. After success it promotes the stage. After an ambiguous interruption,
 startup tries active and staged and keeps only the candidate that authenticates the envelope.
 **Initialization is never available as a reset or recovery path for an existing vault** — an
@@ -90,18 +90,18 @@ is never told to run initialization; that failure routes to
 [`../runbooks/key-recovery.md`](../runbooks/key-recovery.md) instead.
 
 When a ready vault previously provisioned ADR-024 installation recovery, loss of every ordinary
-unlock path routes to `yoetz service recovery status` and then its exact reported import/restore
+unlock path routes to `finishup service recovery status` and then its exact reported import/restore
 command, not initialization. Recovery authenticates the
 external set and human-held secret, restores the same IVK authority into a generated quarantined
 clean-profile target (or leaves the original encrypted vault byte-for-byte in place), stages a new
 envelope, proves catalog/vault/object/replay access, and switches only after close/reopen succeeds.
-Without valid provisioned material, Yoetz cannot recover the installation.
+Without valid provisioned material, FinishUP cannot recover the installation.
 MCP can never unlock the service. Agents can report bounded state and the exact trusted local
 command only; recovery artifacts, paths, and secrets remain outside agent-visible channels.
 
 The installed Cryptography Argon2id implementation is required before a passphrase-vault service
-can start. If that exact packaged KDF module is unavailable, `yoetz service run` fails closed before
-opening retained state, with `passphrase_kdf_unavailable` and the remedy to reinstall Yoetz. It does
+can start. If that exact packaged KDF module is unavailable, `finishup service run` fails closed before
+opening retained state, with `passphrase_kdf_unavailable` and the remedy to reinstall FinishUP. It does
 not substitute another KDF, initialize a replacement vault, or remove retained data.
 
 ### Existing-keyring vaults are a distinct case
@@ -128,7 +128,7 @@ or session unlock never itself changes the service back to `ready`. After idle, 
 suspend soft locks, the trusted service may re-apply the same scoped platform
 auto-unlock entry (passphrase mode) or OS-keyring load that restart uses, on the next ordinary
 control admission. Explicit `service lock`, monitor loss, and hard unlock failures still require
-the human/keyring ceremony (`yoetz service unlock`), which prefers the scoped platform entry when
+the human/keyring ceremony (`finishup service unlock`), which prefers the scoped platform entry when
 provisioned. Monitor loss is excluded because the capability that produces session-lock and
 suspend events is gone for the life of that process: re-readying automatically would leave the
 service running with session-lock relock silently no longer applying.
@@ -140,6 +140,18 @@ either a fresh OS user-presence assertion or, in passphrase mode, the distinct
 weaken this. The resulting exception applies only to the current service generation — restart
 always restores the 3600-second default — and disabling idle relock never disables explicit,
 session-lock, suspend, or monitor-loss relock.
+
+The owner's full receipt (`local_human_view`) uses the same channel: `finishup receipt --owner-view`
+opens an `owner_receipt_view` ceremony bound to that one receipt request and to the command's own
+control connection, which completes only with a fresh OS user-presence assertion or, in
+passphrase mode, the `privacy_reauthentication` purpose. The service obtains the presence itself:
+on macOS it raises an Apple LocalAuthentication dialog (Touch ID or the device password) through
+the fixed `/usr/bin/osascript` helper, and only that helper's exact approval for the bound
+challenge counts; Linux and WSL 2 have no presence provider. The service names each admitted control
+connection itself, refuses a connection whose hello nonce is live or was used before, holds one
+in-memory grant for 60 seconds under that admitted connection, consumes it only on the matching
+receipt call on that connection, and revokes it when the connection closes. A terminal, a
+pseudo-terminal, a client kind or a hello presentation field never substitutes for it.
 
 ## Forbidden secret surfaces
 
@@ -187,7 +199,7 @@ verified OS-keyring vault may unlock noninteractively; a pristine headless insta
 auto-select keyring mode without the exact verified presence cell described above, and a
 passphrase-locked headless service simply remains locked. Native `launchd`/`systemd-user`
 installation and autostart integration are deferred; an external per-user supervisor may run the
-documented foreground `yoetz service run` entrypoint without ever receiving a secret, and a
+documented foreground `finishup service run` entrypoint without ever receiving a secret, and a
 service-manager reporting "started" is never itself evidence that the vault is `ready`. The service
 vault runs in-process behind a swappable secret-memory abstraction in v0.1; it does not claim a
 native, memory-safe subprocess boundary.
@@ -208,10 +220,10 @@ policy — it is not a logging or support-bundle mode that exists today.
 | Existing vault reachable without presence prompt | (no error — `ready`, activation fenced) | Existing keyring data may load for local work | Not full external authority |
 | Vault locked after restart | (expected) | No valid scoped auto-unlock entry was available; keyring mode loads at restart when usable | MCP cannot unlock it for you |
 | Idle-relocked mid-session | (expected) | Default 3600s idle timer elapsed with no active work — no control calls and no observation rows resolved; next ordinary call re-applies scoped auto-unlock when provisioned | Not a crash; not a permanent lock when auto-unlock is healthy |
-| Hard-locked after soft lock | `passphrase_required` / `auto_unlock_*` / `keyring_locked` / `explicit_lock` | Auto-unlock missing, stale, keyring load refused, or human locked the service | Run `yoetz service unlock` or `yoetz service auto-unlock repair` on a local terminal |
-| Every ordinary unlock path lost, recovery was provisioned | `recovery_material_required` | The same encrypted installation may be recovered through ADR-024 | Run `yoetz service recovery status` locally and follow its reported next command; an agent may only hand off this command/prompt |
-| Every ordinary unlock path lost, no recovery generation exists | `permanently_unrecoverable` | Yoetz has no key path for the old encrypted installation | Preserve the old state; create only a clearly separate history |
-| Locked after losing the session monitor | `monitor_lost` | The session-event source became unavailable, so session-lock relock can no longer apply to this process | Run `yoetz service unlock` on a local terminal; `session_monitor` stays `lost` in status until restart |
+| Hard-locked after soft lock | `passphrase_required` / `auto_unlock_*` / `keyring_locked` / `explicit_lock` | Auto-unlock missing, stale, keyring load refused, or human locked the service | Run `finishup service unlock` or `finishup service auto-unlock repair` on a local terminal |
+| Every ordinary unlock path lost, recovery was provisioned | `recovery_material_required` | The same encrypted installation may be recovered through ADR-024 | Run `finishup service recovery status` locally and follow its reported next command; an agent may only hand off this command/prompt |
+| Every ordinary unlock path lost, no recovery generation exists | `permanently_unrecoverable` | FinishUP has no key path for the old encrypted installation | Preserve the old state; create only a clearly separate history |
+| Locked after losing the session monitor | `monitor_lost` | The session-event source became unavailable, so session-lock relock can no longer apply to this process | Run `finishup service unlock` on a local terminal; `session_monitor` stays `lost` in status until restart |
 
 Troubleshooting always uses these bounded reason codes — never a raw file path, account name, or
 internal exception string.

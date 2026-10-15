@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from yoetz.tui.models import (
+from finishup.tui.models import (
     Detection,
     DoctorEntry,
     DoctorReport,
@@ -39,14 +39,14 @@ CLI = HarnessOption(
 
 
 _DETECTION = Detection(
-    project_root="/srv/yoetz",
-    project_name="yoetz",
+    project_root="/srv/finishup",
+    project_name="finishup",
     is_git_repository=True,
     launched_from_subdirectory=False,
     harnesses=(DESKTOP,),
     secure_storage_available=True,
     already_connected=False,
-    cwd="/srv/yoetz",
+    cwd="/srv/finishup",
 )
 
 
@@ -59,16 +59,16 @@ _PLAN = IntegrationPlan(
     executable_path="/Applications/Codex.app/Contents/MacOS/codex",
     codex_home="/tmp/codex",
     reported_version="0.44",
-    project_root="/srv/yoetz",
+    project_root="/srv/finishup",
     route_profile="policy",
-    mcp_command="yoetz mcp serve",
-    mcp_server_name="yoetz",
+    mcp_command="finishup mcp serve",
+    mcp_server_name="finishup",
     policy_digest="7f8a92bd",
     planned_check_ids=("lint", "unit-tests"),
     planned_file_count=6,
     managed_paths=(
-        "/srv/yoetz/.agents/skills/yoetz",
-        "/srv/yoetz/.agents/plugins/yoetz",
+        "/srv/finishup/.agents/skills/finishup",
+        "/srv/finishup/.agents/plugins/finishup",
     ),
     state_before="absent",
     already_registered=False,
@@ -76,19 +76,19 @@ _PLAN = IntegrationPlan(
     preview_digest="sha256:abc123",
     skill_preview_digest="sha256:def456",
     activation_preview_digest="sha256:activation",
-    activation_marketplace_path="/srv/yoetz/.agents/plugins/marketplace.json",
+    activation_marketplace_path="/srv/finishup/.agents/plugins/marketplace.json",
     activation_config_path="/tmp/codex/config.toml",
-    activation_marketplace_text='{"name":"yoetz"}\n',
-    activation_config_block='[plugins."yoetz@yoetz"]\nenabled = true\n',
+    activation_marketplace_text='{"name":"finishup"}\n',
+    activation_config_block='[plugins."finishup@finishup"]\nenabled = true\n',
     activation_plugin_source_digest="sha256:plugin-tree",
     activation_inventory_verified=False,
-    activation_plugin_install_path="/tmp/codex/plugins/cache/yoetz/yoetz/0.1.0",
+    activation_plugin_install_path="/tmp/codex/plugins/cache/finishup/finishup/0.1.0",
     activation_plugin_install_digest="sha256:installed-plugin-tree",
     activation_executable_digest="sha256:codex-executable",
     activation_codex_version="0.148.0-alpha.6",
     activation_probe_command=("--version",),
-    activation_inventory_command=("plugin", "list", "--marketplace", "yoetz", "--json"),
-    activation_install_command=("plugin", "add", "yoetz@yoetz", "--json"),
+    activation_inventory_command=("plugin", "list", "--marketplace", "finishup", "--json"),
+    activation_install_command=("plugin", "add", "finishup@finishup", "--json"),
     activation_probe_environment="temporary_owner_private_home",
     activation_environment=(("CODEX_HOME", "/tmp/codex"), ("CODEX_TESTING_HOME", "/tmp/codex")),
     activation_marketplace_preimage_digest="sha256:marketplace-before",
@@ -146,7 +146,7 @@ LOCAL_ONLY = PrivacyPosture(
 
 def snapshot(**overrides: Any) -> StatusSnapshot:
     base = StatusSnapshot(
-        project_root="/srv/yoetz",
+        project_root="/srv/finishup",
         layers=layers(),
         privacy=LOCAL_ONLY,
         open_work=1,
@@ -197,7 +197,7 @@ def work_detail() -> WorkDetail:
         evidence_count=3,
         checks=("work-integrity/0.3.0",),
         coverage=("no AI-powered review",),
-        findings=("P2 unsupported_claim (deterministic): no evidence links the claim",),
+        findings=("P2 unsupported_claim (local): no evidence links the claim",),
         limitations=("semantic_review_unavailable",),
         receipt_available=True,
     )
@@ -221,13 +221,13 @@ def doctor() -> DoctorReport:
     return DoctorReport(
         entries=(
             DoctorEntry("runtime", "Python runtime", LayerState.VERIFIED, "3.14.6"),
-            DoctorEntry("package", "Yoetz version", LayerState.VERIFIED, "0.1.0"),
+            DoctorEntry("package", "FinishUP version", LayerState.VERIFIED, "0.1.0"),
             DoctorEntry(
                 "service_reachable",
                 "Local service reachable",
                 LayerState.BLOCKED,
                 "not running",
-                "start the service with 'yoetz service run'",
+                "start the service with 'finishup service run'",
             ),
             DoctorEntry(
                 "provider_binding",

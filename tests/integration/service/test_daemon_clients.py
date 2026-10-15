@@ -13,13 +13,13 @@ from typing import Any, cast
 
 import pytest
 
-import yoetz.service.daemon as daemon_module
+import finishup.service.daemon as daemon_module
 from builders.privacy_policies import INSTALLATION_ID, local_only_policy
-from yoetz.adapters.control.unix_socket import LocalControlTransportError
-from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
-from yoetz.application.observation_drain import ObservationDrainSummary
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import (
+from finishup.adapters.control.unix_socket import LocalControlTransportError
+from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+from finishup.application.observation_drain import ObservationDrainSummary
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import (
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectedControlBody,
@@ -27,9 +27,9 @@ from yoetz.application.service import (
     ProjectionRenderMode,
     resolve_client_disclosure_sink,
 )
-from yoetz.application.status import StatusInternalResult
-from yoetz.config.models import LoggingConfig, YoetzConfig
-from yoetz.domain.observation import (
+from finishup.application.status import StatusInternalResult
+from finishup.config.models import FinishUpConfig, LoggingConfig
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationCursor,
@@ -42,12 +42,12 @@ from yoetz.domain.observation import (
     observation_ingest_result_from_json,
     observation_ingest_result_to_json,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.privacy import LocalDisclosureSink
-from yoetz.domain.values import Frontier, JsonObject, Timestamp
-from yoetz.observability.diagnostics import lookup_diagnostic_records
-from yoetz.observability.logging import LogMode
-from yoetz.ports.control import (
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.privacy import LocalDisclosureSink
+from finishup.domain.values import Frontier, JsonObject, Timestamp
+from finishup.observability.diagnostics import lookup_diagnostic_records
+from finishup.observability.logging import LogMode
+from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
     ControlError,
@@ -56,12 +56,12 @@ from yoetz.ports.control import (
     RepositoryPrivacyContext,
     ServiceState,
 )
-from yoetz.ports.ledger import CheckAdmissionStage, check_admission_refused
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.ports.ledger import CheckAdmissionStage, check_admission_refused
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     CheckResult,
     OperationFailureModel,
@@ -79,8 +79,8 @@ from yoetz.protocol.models import (
     StatusResult,
     StatusSuccessModel,
 )
-from yoetz.service.client import _connected_client  # pyright: ignore[reportPrivateUsage]
-from yoetz.service.confidential_protocol import (
+from finishup.service.client import _connected_client  # pyright: ignore[reportPrivateUsage]
+from finishup.service.confidential_protocol import (
     ClientOpenEnvelope,
     ConfidentialSecretPurpose,
     EmptyVaultTarget,
@@ -96,16 +96,16 @@ from yoetz.service.confidential_protocol import (
     decode_human_frame,
     encode_human_frame,
 )
-from yoetz.service.control_protocol import (
+from finishup.service.control_protocol import (
     client_handshake,
     parse_control_result,
     read_control_frame,
     write_control_frame,
 )
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import LifecycleError, ServiceLifecycle
-from yoetz.service.session_routes import SessionRouteMemory
-from yoetz.service.vault import VaultMode, VaultService
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import LifecycleError, ServiceLifecycle
+from finishup.service.session_routes import SessionRouteMemory
+from finishup.service.vault import VaultMode, VaultService
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000001"
 _UUID = "00000000-0000-4000-8000-000000000002"
@@ -996,8 +996,8 @@ async def test_classified_receipt_storage_fault_is_ok_false_not_internal_error(
 ) -> None:
     """Receipt object-store classification must not become the #325 internal_error diagnostic."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    from yoetz.observability.logging import record_classified_exception_without_raising
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.observability.logging import record_classified_exception_without_raising
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1050,7 +1050,7 @@ async def test_unbound_receipt_storage_unsafe_is_ok_false_not_internal_error(
 ) -> None:
     """Even without a pre-bound id, receipt storage faults stay public_error, not internal_error."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1090,7 +1090,7 @@ async def test_runtime_value_error_through_dispatch_is_correlated_internal_error
 ) -> None:
     """Runtime ValueError after validation must not collapse into frame_invalid (#126 C9)."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1122,7 +1122,7 @@ async def test_runtime_value_error_through_dispatch_is_correlated_internal_error
 async def test_genuinely_malformed_control_request_is_still_frame_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.service.control_protocol import ControlProtocolError
+    from finishup.service.control_protocol import ControlProtocolError
 
     daemon, _application, _vault, _listener = _daemon()
     await daemon.start()
@@ -1234,7 +1234,7 @@ async def test_post_commit_projection_failure_returns_total_acceptance_envelope(
     id filed in the durable diagnostic sink.
     """
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1319,7 +1319,7 @@ async def test_check_response_projection_failure_correlation_resolves(
 ) -> None:
     """The correlation id on a check ControlError resolves to exactly one diagnostic record."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1353,7 +1353,7 @@ async def test_status_read_projection_failure_correlation_resolves(
 ) -> None:
     """The correlation id on a status ControlError resolves to exactly one diagnostic record."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1389,7 +1389,7 @@ async def test_status_projection_recovery_is_one_incident_with_bounded_attempts(
 ) -> None:
     """Fresh status retries retain the binding and report one bounded recovery incident."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1491,7 +1491,7 @@ async def test_status_handler_attribute_error_is_retryable_read_failure(
     with retryable:false. A pure read that changed nothing must present as read_projection_failed.
     """
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -1720,11 +1720,13 @@ async def test_dispatch_passes_trusted_human_projection_context() -> None:
 @pytest.mark.parametrize(
     ("client_kind", "render_mode", "controlling_tty", "expected_sink"),
     (
+        # ADR-009 round 3: the hello's terminal claim is presentation only, never owner
+        # authority; without a human-control grant the projection is agent context.
         (
             ControlClientKind.CLI,
             ProjectionRenderMode.HUMAN_READABLE,
             True,
-            LocalDisclosureSink.LOCAL_HUMAN_VIEW,
+            LocalDisclosureSink.AGENT_CONTEXT,
         ),
         (
             ControlClientKind.CLI,
@@ -2424,11 +2426,11 @@ async def test_production_composition_promote_failure_keeps_unlocked_vault(
 ) -> None:
     """Startup auto-unlock must leave a ready vault when staged promote fails (#492)."""
 
-    from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-    from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-    from yoetz.ports.secret_memory import SecretPurpose
-    from yoetz.service.unlock import UnlockThrottleStore
-    from yoetz.service.vault import VaultService
+    from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+    from finishup.adapters.keys.secret_memory import LocalSecretMemory
+    from finishup.ports.secret_memory import SecretPurpose
+    from finishup.service.unlock import UnlockThrottleStore
+    from finishup.service.vault import VaultService
 
     root = tmp_path / "data"
     metadata = tmp_path / "state"
@@ -2490,7 +2492,7 @@ async def test_production_composition_promote_failure_keeps_unlocked_vault(
         lambda: bind("human"),  # pyright: ignore[reportArgumentType]
     )
     composition = await daemon_module._production_composition(  # pyright: ignore[reportPrivateUsage]
-        _config=YoetzConfig(),
+        _config=FinishUpConfig(),
         _paths=paths,
         _binders=binders,
     )
@@ -3490,7 +3492,7 @@ async def test_production_composition_starts_locked_before_ready_only_state(
         lambda: bind("human"),  # pyright: ignore[reportArgumentType]
     )
     composition = await daemon_module._production_composition(  # pyright: ignore[reportPrivateUsage]
-        _config=YoetzConfig(),
+        _config=FinishUpConfig(),
         _paths=paths,
         _binders=binders,
     )
@@ -3551,15 +3553,15 @@ async def test_service_entry_point_installs_the_structural_log_sink(
         async def serve(self) -> None:
             return None
 
-    async def composition(*, _config: YoetzConfig) -> object:
-        assert type(_config) is YoetzConfig
+    async def composition(*, _config: FinishUpConfig) -> object:
+        assert type(_config) is FinishUpConfig
         return object()
 
     def load(
         overrides: Mapping[str, str], env: Mapping[str, str], path: Path | None
-    ) -> YoetzConfig:
+    ) -> FinishUpConfig:
         del overrides, env, path
-        return YoetzConfig()
+        return FinishUpConfig()
 
     def configure(config: LoggingConfig, mode: LogMode) -> None:
         del config
@@ -3936,7 +3938,7 @@ async def test_failed_response_write_is_a_recorded_transport_fact_not_frame_inva
     for the loop to report; the operation itself already ran.
     """
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     recorded: list[tuple[str, str, str, str]] = []
@@ -4145,7 +4147,7 @@ async def test_capture_refused_check_wakes_the_observation_sweep(
     caller's bounded replay; other refusals leave the cadence alone.
     """
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     daemon, application, _vault, _listener = _daemon()
@@ -4313,7 +4315,7 @@ async def test_observation_ingest_dispatch_arms_the_sweep_wake(
 async def test_store_contention_inside_a_deadlined_handler_stays_retryable() -> None:
     """#689: the closed wire vocabulary keeps a store lock timeout a retryable timeout."""
 
-    from yoetz.ports.observation import ObservationStoreLockTimeout
+    from finishup.ports.observation import ObservationStoreLockTimeout
 
     daemon, application, _vault, _listener = _daemon()
     await daemon.start()

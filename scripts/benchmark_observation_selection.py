@@ -32,22 +32,22 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.hook_spool import HookSpool
-from yoetz.adapters.integrations.observation_local import (
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.hook_spool import HookSpool
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     self_observation_deliverable,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationEnvelope,
     ObservationIngestDisposition,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, JsonValue, Timestamp
+from finishup.domain.values import JsonObject, JsonValue, Timestamp
 
 if TYPE_CHECKING:
-    from yoetz.domain.observation_settings import ObservationSelection
+    from finishup.domain.observation_settings import ObservationSelection
 
 BASELINE_REVISION: Final = "e56f7d0a873281ea05c95a0bcb8eb348d65cce4a"
 CANDIDATE_QUEUE_TARGETS: Final = (512, 2_048, 8_192)
@@ -185,11 +185,11 @@ def _call_shape(call_index: int) -> tuple[str, str, bool, int, dict[str, JsonVal
             },
         )
     if family == 18:
-        return "closure_routine", "mcp__yoetz__status", True, 0, {}
+        return "closure_routine", "mcp__finishup__status", True, 0, {}
     if family == 19:
         return (
             "closure_mutation",
-            "mcp__yoetz__check",
+            "mcp__finishup__check",
             True,
             0,
             {
@@ -365,9 +365,9 @@ def _selection_api() -> tuple[Any, Any, Any, Any, Any]:
     """Load the optional post-baseline selected-admission API on demand."""
 
     try:
-        from yoetz.adapters.integrations.observation_admission import build_routine_read_summary
-        from yoetz.domain.observation_selection import classify_observation
-        from yoetz.domain.observation_settings import (
+        from finishup.adapters.integrations.observation_admission import build_routine_read_summary
+        from finishup.domain.observation_selection import classify_observation
+        from finishup.domain.observation_settings import (
             ObservationCapacityProfile,
             ObservationDetailProfile,
             ObservationSelection,
@@ -447,7 +447,7 @@ def _safe_envelope(
     # service-owned routine marker and host-specific source identity as a real
     # adapter.  The mapper keeps prose out of the envelope and never reads the
     # synthetic workspace path.
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
 
     envelope = map_hook_payload_to_envelope(
         event.phase,

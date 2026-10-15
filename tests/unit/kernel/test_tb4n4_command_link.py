@@ -17,7 +17,7 @@ from collections.abc import Iterator
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EventSchema,
@@ -27,10 +27,10 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.values import EventId, ObligationId, ResultId, action_id, obligation_id
-from yoetz.kernel.command_attempts import closure_command_gaps, command_attempts
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.domain.values import EventId, ObligationId, ResultId, action_id, obligation_id
+from finishup.kernel.command_attempts import closure_command_gaps, command_attempts
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     PLANNED_VERIFICATION_AGENT_LINKED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     register_command_identity_key,

@@ -209,7 +209,7 @@ jobs:
       - name: Create canonical source manifest/tar export tied to tag/commit
         run: |
           mkdir -p "${{ runner.temp }}/source-export"
-          git archive --format=tar --prefix="yoetz-${{ steps.version.outputs.value }}/" HEAD \
+          git archive --format=tar --prefix="finishup-${{ steps.version.outputs.value }}/" HEAD \
             | (cd "${{ runner.temp }}/source-export" && tar -xf -)
           (cd "${{ runner.temp }}/source-export" && tar -czf "${{ runner.temp }}/source-export.tar.gz" .)
 
@@ -359,8 +359,8 @@ jobs:
           const match = pyproject.match(/^version = "([^"]+)"$/m);
           if (!match || launcher.version !== match[1]) throw new Error("npm/PyPI version drift");
           if (launcher.private !== false) throw new Error("npm launcher is not public");
-          if (launcher.name !== "yoetz") throw new Error("unexpected npm package name");
-          if (launcher.repository?.url !== "git+https://github.com/TheGaySupreme123/yoetz.git") {
+          if (launcher.name !== "finishup") throw new Error("unexpected npm package name");
+          if (launcher.repository?.url !== "git+https://github.com/TheGaySupreme123/finishup.git") {
             throw new Error("npm provenance repository does not match the release repository");
           }
           for (const field of ["dependencies", "devDependencies", "optionalDependencies", "scripts"]) {
@@ -375,7 +375,7 @@ jobs:
           npm pack ./support/npm-launcher \
             --pack-destination "${{ runner.temp }}/npm-dist" --json \
             > "${{ runner.temp }}/npm-pack.json"
-          tar -xzf "${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz" \
+          tar -xzf "${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz" \
             -C "${{ runner.temp }}/npm-inspect"
           python3 - <<'PY'
           import json
@@ -388,11 +388,11 @@ jobs:
               for path in root.rglob("*")
               if path.is_file()
           )
-          expected = ["README.md", "bin/yoetz.js", "package.json"]
+          expected = ["README.md", "bin/finishup.js", "package.json"]
           if members != expected:
               raise SystemExit(f"unexpected npm tarball members: {members}")
           package = json.loads((root / "package.json").read_text(encoding="utf-8"))
-          if package["name"] != "yoetz" or package["version"] != "${{ needs.validate-release-source.outputs.version }}":
+          if package["name"] != "finishup" or package["version"] != "${{ needs.validate-release-source.outputs.version }}":
               raise SystemExit("packed npm identity mismatch")
           PY
 
@@ -400,7 +400,7 @@ jobs:
         id: digest
         run: |
           set -euo pipefail
-          tgz="${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz"
+          tgz="${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz"
           digest=$(sha256sum "$tgz" | cut -d' ' -f1)
           (cd "${{ runner.temp }}/npm-dist" && sha256sum "$(basename "$tgz")" > NPM_SHA256SUMS)
           python3 - <<PY
@@ -425,6 +425,176 @@ jobs:
         with:
           name: npm-candidate-${{ needs.validate-release-source.outputs.version }}
           path: ${{ runner.temp }}/npm-dist
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------------------------
+  # build-transitional — the deprecated `yoetz` names (ADR-048): a PyPI distribution that depends
+  # on the exact same-version finishup and declares only the `yoetz` alias, and an npm launcher
+  # that delegates to it. Built once, smoke-tested against the exact finishup candidate, and
+  # published only after finishup itself is live.
+  # ---------------------------------------------------------------------------------------------
+  build-transitional:
+    name: build-transitional
+    needs: [validate-release-source, build-candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      transitional-digest: ${{ steps.digest.outputs.value }}
+      transitional-npm-digest: ${{ steps.npm-digest.outputs.value }}
+    steps:
+      - name: Checkout the exact release source (no persisted credentials)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.candidate_ref || github.ref }}
+
+      - name: Install uv (locked version)
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          python-version: "3.14.6"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: uv sync --locked
+        run: uv sync --locked --all-extras --group dev
+
+      - name: Verify the transitional sources are in lockstep with this release
+        run: uv run --locked python scripts/check_transitional_yoetz.py
+
+      - name: Build the transitional sdist/wheel twice from normalized clean exports
+        run: |
+          set -euo pipefail
+          for n in 1 2; do
+            rm -rf "${{ runner.temp }}/transitional-export-$n"
+            git worktree add --detach "${{ runner.temp }}/transitional-export-$n" HEAD
+            ( cd "${{ runner.temp }}/transitional-export-$n" \
+              && export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+              && uv build --no-sources release/transitional-yoetz/python \
+                --out-dir "${{ runner.temp }}/transitional-build-$n" )
+          done
+          mkdir -p "${{ runner.temp }}/transitional-dist"
+          : > "${{ runner.temp }}/transitional-dist/TRANSITIONAL_REPRODUCIBILITY.txt"
+          for f in "${{ runner.temp }}"/transitional-build-1/*; do
+            base=$(basename "$f")
+            if cmp -s "$f" "${{ runner.temp }}/transitional-build-2/$base"; then
+              echo "byte-identical: yes ($base)" >> "${{ runner.temp }}/transitional-dist/TRANSITIONAL_REPRODUCIBILITY.txt"
+            else
+              echo "byte-identical: no ($base)" >> "${{ runner.temp }}/transitional-dist/TRANSITIONAL_REPRODUCIBILITY.txt"
+            fi
+          done
+          cp "${{ runner.temp }}"/transitional-build-1/* "${{ runner.temp }}/transitional-dist/"
+
+      - name: Inspect the transitional wheel/sdist members, single alias script and exact pin
+        run: |
+          uv run --locked python scripts/check_transitional_yoetz.py \
+            --dist "${{ runner.temp }}/transitional-dist"
+
+      - name: Download the exact finishup candidate (never rebuild)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-${{ needs.validate-release-source.outputs.version }}
+          path: ${{ runner.temp }}/candidate
+
+      - name: Smoke the alias, python -m yoetz and the legacy runtime bootstrap against the candidate
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-release-source.outputs.version }}"
+          (cd "${{ runner.temp }}/candidate" && sha256sum --check SHA256SUMS)
+          venv="${{ runner.temp }}/transitional-venv"
+          uv venv --python 3.14.6 "$venv"
+          # Runtime dependencies resolve from the index; both FinishUP-owned wheels come only
+          # from the exact local candidate and transitional build.
+          uv pip install --python "$venv/bin/python" "${{ runner.temp }}/candidate/finishup-${version}-py3-none-any.whl"
+          uv pip install --python "$venv/bin/python" --no-index --no-deps \
+            --find-links "${{ runner.temp }}/transitional-dist" "yoetz==${version}"
+          [ "$("$venv/bin/yoetz" --version)" = "$version" ] || {
+            echo "::error::the yoetz alias did not print the bare release version"
+            exit 1
+          }
+          [ "$("$venv/bin/python" -m yoetz --version)" = "$version" ] || {
+            echo "::error::python -m yoetz did not print the bare release version"
+            exit 1
+          }
+          "$venv/bin/python" -I -c "from yoetz.adapters.release_runtime import adopt_release_lease; from yoetz.cli.entry import main"
+          [ -x "$venv/bin/finishup" ] || { echo "::error::finishup script missing beside the alias"; exit 1; }
+
+      - name: Record the transitional Python digest
+        id: digest
+        run: |
+          set -euo pipefail
+          (cd "${{ runner.temp }}/transitional-dist" \
+            && sha256sum ./*.whl ./*.tar.gz > TRANSITIONAL_SHA256SUMS \
+            && sha256sum --check TRANSITIONAL_SHA256SUMS)
+          digest=$(sha256sum "${{ runner.temp }}/transitional-dist/TRANSITIONAL_SHA256SUMS" | cut -d' ' -f1)
+          echo "value=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance for the transitional artifacts
+        if: github.event_name == 'push' || github.event.inputs.recovery == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: "${{ runner.temp }}/transitional-dist/*.whl,${{ runner.temp }}/transitional-dist/*.tar.gz"
+
+      - name: Install Node and npm (locked versions, no release cache)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26.5.0"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Install the locked npm CLI
+        run: npm install --global --ignore-scripts npm@12.0.1
+
+      - name: Pack the transitional npm launcher once and inspect its complete member set
+        id: npm-digest
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-release-source.outputs.version }}"
+          mkdir -p "${{ runner.temp }}/transitional-npm-dist" "${{ runner.temp }}/transitional-npm-inspect"
+          npm pack ./release/transitional-yoetz/npm \
+            --pack-destination "${{ runner.temp }}/transitional-npm-dist" --json \
+            > "${{ runner.temp }}/transitional-npm-pack.json"
+          tgz="${{ runner.temp }}/transitional-npm-dist/yoetz-${version}.tgz"
+          tar -xzf "$tgz" -C "${{ runner.temp }}/transitional-npm-inspect"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "transitional-npm-inspect" / "package"
+          members = sorted(
+              path.relative_to(root).as_posix()
+              for path in root.rglob("*")
+              if path.is_file()
+          )
+          expected = ["README.md", "bin/yoetz.js", "package.json"]
+          if members != expected:
+              raise SystemExit(f"unexpected transitional npm tarball members: {members}")
+          package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+          if package["name"] != "yoetz" or package["version"] != "${{ needs.validate-release-source.outputs.version }}":
+              raise SystemExit("packed transitional npm identity mismatch")
+          PY
+          (cd "${{ runner.temp }}/transitional-npm-dist" && sha256sum "$(basename "$tgz")" > TRANSITIONAL_NPM_SHA256SUMS)
+          echo "value=$(sha256sum "$tgz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the immutable transitional Python candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: transitional-candidate-${{ needs.validate-release-source.outputs.version }}
+          path: ${{ runner.temp }}/transitional-dist
+          retention-days: 7
+
+      - name: Upload the immutable transitional npm candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: transitional-npm-candidate-${{ needs.validate-release-source.outputs.version }}
+          path: ${{ runner.temp }}/transitional-npm-dist
           retention-days: 7
 
   # ---------------------------------------------------------------------------------------------
@@ -472,9 +642,9 @@ jobs:
         run: |
           uv venv "${{ runner.temp }}/verify-venv"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
+            --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            "yoetz[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
+            "finishup[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
           "${{ runner.temp }}/verify-venv/bin/python" -c "
           import apsw, platform, sys
           assert sys.version_info[:2] == (3, 14)
@@ -485,11 +655,11 @@ jobs:
 
       - name: version/startup, resource/schema/migration identity, strict-local six operations, MCP/CLI subprocess
         run: |
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
           uv sync --locked --group dev
           # Production vault tests must not use pytest's shared /tmp base or a repository path.
           # Resolve runner temp first so macOS aliases cannot enter the private state path.
-          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "yoetz-integration").resolve())')"
+          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "finishup-integration").resolve())')"
           uv run --locked pytest tests/packaging \
             --deselect tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
             --deselect tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
@@ -512,12 +682,12 @@ jobs:
             if [[ "$has_no_index" == false ]]; then
               set -- --no-index "$@"
             fi
-            exec "${YOETZ_REAL_UV:?}" pip install "$@"
+            exec "${FINISHUP_REAL_UV:?}" pip install "$@"
           fi
-          exec "${YOETZ_REAL_UV:?}" "$@"
+          exec "${FINISHUP_REAL_UV:?}" "$@"
           UV_WRAPPER
           chmod +x "$tagged_uv_wrapper/uv"
-          YOETZ_REAL_UV="$real_uv" \
+          FINISHUP_REAL_UV="$real_uv" \
           PATH="$tagged_uv_wrapper:$PATH" \
           UV_CACHE_DIR="${{ runner.temp }}/tagged-offline-cache" \
             .venv/bin/pytest \
@@ -525,12 +695,12 @@ jobs:
             tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -q --timeout=900
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/subprocess \
             -m "not fault and not soak and not live" -q --timeout=900
           # Linux approved-command execution remains a documented fail-closed alpha limitation.
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/integration \
             --basetemp "$release_test_root" \
             --deselect tests/integration/observation/test_acceptance_scenarios.py::test_approved_check_stale_when_digest_changes \
@@ -540,15 +710,15 @@ jobs:
       - name: Clean install/upgrade/rollback/uninstall/data-retention/offline reinstall, backup/restore, key backend states
         run: |
           "${{ runner.temp }}/verify-venv/bin/uv" --version >/dev/null 2>&1 || true
-          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y yoetz
+          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y finishup
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" --no-index \
-            --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+            --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
 
       - name: Installed-artifact boundary scan
         run: |
           installed_root=$("${{ runner.temp }}/verify-venv/bin/python" -c \
-            'import pathlib, yoetz; print(pathlib.Path(yoetz.__file__).parent)')
+            'import pathlib, finishup; print(pathlib.Path(finishup.__file__).parent)')
           uv run --locked python scripts/scan_public_boundary.py --runtime-tree "$installed_root"
 
   # ---------------------------------------------------------------------------------------------
@@ -596,9 +766,9 @@ jobs:
         run: |
           uv venv "${{ runner.temp }}/verify-venv"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
+            --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            "yoetz[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
+            "finishup[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
           "${{ runner.temp }}/verify-venv/bin/python" -c "
           import apsw, platform, sys
           assert sys.version_info[:2] == (3, 14)
@@ -609,11 +779,11 @@ jobs:
 
       - name: version/startup, resource/schema/migration identity, strict-local six operations, MCP/CLI subprocess
         run: |
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
           uv sync --locked --group dev
           # Production vault tests must not use pytest's shared /tmp base or a repository path.
           # Resolve runner temp first so macOS aliases cannot enter the private state path.
-          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "yoetz-integration").resolve())')"
+          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "finishup-integration").resolve())')"
           uv run --locked pytest tests/packaging \
             --deselect tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
             --deselect tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
@@ -636,12 +806,12 @@ jobs:
             if [[ "$has_no_index" == false ]]; then
               set -- --no-index "$@"
             fi
-            exec "${YOETZ_REAL_UV:?}" pip install "$@"
+            exec "${FINISHUP_REAL_UV:?}" pip install "$@"
           fi
-          exec "${YOETZ_REAL_UV:?}" "$@"
+          exec "${FINISHUP_REAL_UV:?}" "$@"
           UV_WRAPPER
           chmod +x "$tagged_uv_wrapper/uv"
-          YOETZ_REAL_UV="$real_uv" \
+          FINISHUP_REAL_UV="$real_uv" \
           PATH="$tagged_uv_wrapper:$PATH" \
           UV_CACHE_DIR="${{ runner.temp }}/tagged-offline-cache" \
             .venv/bin/pytest \
@@ -649,26 +819,26 @@ jobs:
             tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -q --timeout=900
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/subprocess \
             -m "not fault and not soak and not live" -q --timeout=900
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/integration \
             --basetemp "$release_test_root" \
             -m "not fault and not soak and not live" -q --timeout=900
 
       - name: Clean install/upgrade/rollback/uninstall/data-retention/offline reinstall, backup/restore, key backend states
         run: |
-          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y yoetz
+          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y finishup
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" --no-index \
-            --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+            --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
 
       - name: Installed-artifact boundary scan
         run: |
           installed_root=$("${{ runner.temp }}/verify-venv/bin/python" -c \
-            'import pathlib, yoetz; print(pathlib.Path(yoetz.__file__).parent)')
+            'import pathlib, finishup; print(pathlib.Path(finishup.__file__).parent)')
           uv run --locked python scripts/scan_public_boundary.py --runtime-tree "$installed_root"
 
   # ---------------------------------------------------------------------------------------------
@@ -816,7 +986,7 @@ jobs:
         run: |
           set -euo pipefail
           source="${{ runner.temp }}/inputs/security-dependency-evidence/sbom.cdx.json"
-          destination="${{ runner.temp }}/release-evidence/${{ needs.validate-release-source.outputs.version }}/yoetz-${{ needs.validate-release-source.outputs.version }}.sbom.cdx.json"
+          destination="${{ runner.temp }}/release-evidence/${{ needs.validate-release-source.outputs.version }}/finishup-${{ needs.validate-release-source.outputs.version }}.sbom.cdx.json"
           [ -f "$source" ] || { echo "::error::security workflow SBOM artifact is missing"; exit 1; }
           cp -- "$source" "$destination"
 
@@ -849,7 +1019,12 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   approve-publication:
     name: approve-publication
-    needs: [validate-release-source, build-candidate, build-npm-launcher, assemble-release-evidence]
+    needs:
+      - validate-release-source
+      - build-candidate
+      - build-npm-launcher
+      - build-transitional
+      - assemble-release-evidence
     if: github.event_name == 'push' || github.event.inputs.recovery == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -863,6 +1038,8 @@ jobs:
             echo "tag: ${{ needs.validate-release-source.outputs.tag }}"
             echo "Python candidate digest: ${{ needs.build-candidate.outputs.candidate-digest }}"
             echo "npm candidate digest: ${{ needs.build-npm-launcher.outputs.npm-digest }}"
+            echo "transitional yoetz Python digest: ${{ needs.build-transitional.outputs.transitional-digest }}"
+            echo "transitional yoetz npm digest: ${{ needs.build-transitional.outputs.transitional-npm-digest }}"
             echo "evidence digest: ${{ needs.assemble-release-evidence.outputs.evidence-digest }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -912,18 +1089,18 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           status=$(curl -s -o /dev/null -w '%{http_code}' \
-            "https://pypi.org/pypi/yoetz/${version}/json")
+            "https://pypi.org/pypi/finishup/${version}/json")
           case "$status" in
             404)
               echo "publish=true" >> "$GITHUB_OUTPUT"
               ;;
             200)
               [ "${{ github.event.inputs.recovery }}" = "true" ] || {
-                echo "::error::yoetz==${version} already exists on PyPI"
+                echo "::error::finishup==${version} already exists on PyPI"
                 exit 1
               }
               curl --fail --silent --show-error --location \
-                "https://pypi.org/pypi/yoetz/${version}/json" \
+                "https://pypi.org/pypi/finishup/${version}/json" \
                 --output "${{ runner.temp }}/pypi-existing.json"
               PYPI_METADATA="${{ runner.temp }}/pypi-existing.json" \
               PYPI_DIST="${{ runner.temp }}/pypi-dist" python3 - <<'PY'
@@ -989,7 +1166,7 @@ jobs:
       - name: Verify npm candidate digest before publication
         run: |
           set -euo pipefail
-          tgz="${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz"
+          tgz="${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz"
           digest=$(sha256sum "$tgz" | cut -d' ' -f1)
           [ "$digest" = "${{ needs.build-npm-launcher.outputs.npm-digest }}" ] || {
             echo "::error::npm candidate digest mismatch before publish"
@@ -1006,21 +1183,21 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           status=$(curl -s -o /dev/null -w '%{http_code}' \
-            "https://registry.npmjs.org/yoetz/${version}")
+            "https://registry.npmjs.org/finishup/${version}")
           case "$status" in
             404)
               echo "publish=true" >> "$GITHUB_OUTPUT"
               ;;
             200)
               [ "${{ github.event.inputs.recovery }}" = "true" ] || {
-                echo "::error::yoetz@${version} already exists on npm"
+                echo "::error::finishup@${version} already exists on npm"
                 exit 1
               }
-              tarball=$(npm view "yoetz@${version}" dist.tarball)
+              tarball=$(npm view "finishup@${version}" dist.tarball)
               curl --fail --silent --show-error --location "$tarball" \
                 --output "${{ runner.temp }}/npm-published.tgz"
               cmp -s "${{ runner.temp }}/npm-published.tgz" \
-                "${{ runner.temp }}/npm-dist/yoetz-${version}.tgz" || {
+                "${{ runner.temp }}/npm-dist/finishup-${version}.tgz" || {
                 echo "::error::published npm bytes differ from recovery candidate"
                 exit 1
               }
@@ -1034,7 +1211,7 @@ jobs:
 
       - name: Publish the exact tarball through npm Trusted Publishing
         if: steps.npm-state.outputs.publish == 'true'
-        run: npm publish "${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz" --access public
+        run: npm publish "${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz" --access public
 
   # ---------------------------------------------------------------------------------------------
   # publish-github-release
@@ -1045,6 +1222,7 @@ jobs:
       - validate-release-source
       - build-candidate
       - build-npm-launcher
+      - build-transitional
       - assemble-release-evidence
       - capability-release-profile
       - publish-pypi
@@ -1076,6 +1254,12 @@ jobs:
         with:
           name: npm-candidate-${{ needs.validate-release-source.outputs.version }}
           path: ${{ runner.temp }}/release-assets/npm
+
+      - name: Download the transitional yoetz candidates (never rebuild)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: transitional-*candidate-${{ needs.validate-release-source.outputs.version }}
+          path: ${{ runner.temp }}/release-assets/transitional
 
       - name: Download the release evidence (never regenerate)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1124,6 +1308,7 @@ jobs:
             ${{ runner.temp }}/release-assets/**/*.tgz
             ${{ runner.temp }}/release-assets/evidence/**/SHA256SUMS
             ${{ runner.temp }}/release-assets/**/NPM_SHA256SUMS
+            ${{ runner.temp }}/release-assets/transitional/**/TRANSITIONAL_*
             ${{ runner.temp }}/release-assets/**/REPRODUCIBILITY.txt
             ${{ runner.temp }}/release-assets/**/*.md
             ${{ runner.temp }}/release-assets/**/*.json
@@ -1191,17 +1376,17 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/yoetz/${version}/json")
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/finishup/${version}/json")
             [ "$code" = "200" ] && break
             sleep 20
           done
-          [ "$code" = "200" ] || { echo "::error::yoetz==${version} not visible on PyPI within bound"; exit 1; }
+          [ "$code" = "200" ] || { echo "::error::finishup==${version} not visible on PyPI within bound"; exit 1; }
 
       - name: Download published artifacts from PyPI by exact version/filename
         run: |
           set -euo pipefail
           mkdir -p "${{ runner.temp }}/published"
-          curl -sL "https://pypi.org/pypi/yoetz/${{ needs.validate-release-source.outputs.version }}/json" \
+          curl -sL "https://pypi.org/pypi/finishup/${{ needs.validate-release-source.outputs.version }}/json" \
             -o "${{ runner.temp }}/pypi-meta.json"
           python3 - <<'PY'
           import json, os, urllib.request
@@ -1243,19 +1428,19 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           venv="${{ runner.temp }}/published-venv"
-          wheel="${{ runner.temp }}/published/yoetz-${version}-py3-none-any.whl"
+          wheel="${{ runner.temp }}/published/finishup-${version}-py3-none-any.whl"
           [ -f "$wheel" ] || { echo "::error::published wheel is missing: $wheel"; exit 1; }
           uv python install 3.14
           uv venv --python 3.14 "$venv"
           # Resolve the wheel's pinned runtime dependencies while the registry is available, then
-          # remove Yoetz so the actual smoke installation is forced through the captured public wheel.
+          # remove FinishUP so the actual smoke installation is forced through the captured public wheel.
           uv pip install --python "$venv/bin/python" "$wheel"
-          uv pip uninstall --python "$venv/bin/python" yoetz
+          uv pip uninstall --python "$venv/bin/python" finishup
           uv pip install --python "${{ runner.temp }}/published-venv/bin/python" \
             --no-index --no-deps --find-links "${{ runner.temp }}/published" \
-            "yoetz==${version}"
-          "$venv/bin/yoetz" version --json
-          "$venv/bin/python" -c "import yoetz"
+            "finishup==${version}"
+          "$venv/bin/finishup" version --json
+          "$venv/bin/python" -c "import finishup"
 
   # ---------------------------------------------------------------------------------------------
   # verify-npm-published
@@ -1291,15 +1476,15 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/yoetz/${version}")
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/finishup/${version}")
             [ "$code" = "200" ] && break
             sleep 20
           done
           [ "$code" = "200" ] || {
-            echo "::error::yoetz@${version} not visible on npm within bound"
+            echo "::error::finishup@${version} not visible on npm within bound"
             exit 1
           }
-          curl -sL "https://registry.npmjs.org/yoetz/${version}" -o "${{ runner.temp }}/npm-meta.json"
+          curl -sL "https://registry.npmjs.org/finishup/${version}" -o "${{ runner.temp }}/npm-meta.json"
           python3 - <<'PY'
           import json
           import os
@@ -1314,7 +1499,7 @@ jobs:
       - name: Verify public npm bytes and exact-version delegation
         run: |
           set -euo pipefail
-          candidate="${{ runner.temp }}/npm-candidate/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz"
+          candidate="${{ runner.temp }}/npm-candidate/finishup-${{ needs.validate-release-source.outputs.version }}.tgz"
           cmp -s "${{ runner.temp }}/npm-published.tgz" "$candidate" || {
             echo "::error::published npm tarball differs from the approved candidate"
             exit 1
@@ -1330,15 +1515,308 @@ jobs:
             > "${{ runner.temp }}/shims/uvx"
           chmod +x "${{ runner.temp }}/shims/uv" "${{ runner.temp }}/shims/uvx"
           PATH="${{ runner.temp }}/shims:$PATH" \
-            node "${{ runner.temp }}/npm-published/package/bin/yoetz.js" version --json
+            node "${{ runner.temp }}/npm-published/package/bin/finishup.js" version --json
           expected_uv="$(printf '%s\n%s' "--version" \
-            "tool install --quiet --python 3.14 yoetz==${{ needs.validate-release-source.outputs.version }}")"
+            "tool install --quiet --python 3.14 finishup==${{ needs.validate-release-source.outputs.version }}")"
           [ "$(cat "${{ runner.temp }}/uv-args")" = "$expected_uv" ] || {
             echo "::error::published npm launcher did not install the exact PyPI version as a uv tool"
             exit 1
           }
-          [ "$(cat "${{ runner.temp }}/uvx-args")" = "--python 3.14 yoetz version --json" ] || {
+          [ "$(cat "${{ runner.temp }}/uvx-args")" = "--python 3.14 finishup version --json" ] || {
             echo "::error::published npm launcher did not run the installed tool through uvx"
+            exit 1
+          }
+
+  # ---------------------------------------------------------------------------------------------
+  # publish-transitional-pypi — the deprecated `yoetz` distribution (ADR-048), after finishup is
+  # live because it pins finishup==<version>. PyPI Trusted Publishing must list this workflow and
+  # the pypi environment for the `yoetz` project as well as for `finishup`.
+  # ---------------------------------------------------------------------------------------------
+  publish-transitional-pypi:
+    name: publish-transitional-pypi
+    needs: [validate-release-source, build-transitional, approve-publication, publish-pypi]
+    if: github.event_name == 'push' || github.event.inputs.recovery == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      id-token: write # Trusted Publishing only; no long-lived package token
+      contents: read
+    steps:
+      - name: Download the built transitional candidate (never rebuild)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: transitional-candidate-${{ needs.validate-release-source.outputs.version }}
+          path: ${{ runner.temp }}/transitional-dist
+
+      - name: Verify the transitional digest before publication
+        run: |
+          set -euo pipefail
+          (cd "${{ runner.temp }}/transitional-dist" && sha256sum --check TRANSITIONAL_SHA256SUMS)
+          digest=$(sha256sum "${{ runner.temp }}/transitional-dist/TRANSITIONAL_SHA256SUMS" | cut -d' ' -f1)
+          [ "$digest" = "${{ needs.build-transitional.outputs.transitional-digest }}" ] || \
+            { echo "::error::transitional digest mismatch before publish"; exit 1; }
+
+      - name: Stage only the transitional Python distribution files for the publisher
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          version="${{ needs.validate-release-source.outputs.version }}"
+          artifacts=("${{ runner.temp }}/transitional-dist/yoetz-${version}-py3-none-any.whl" \
+            "${{ runner.temp }}/transitional-dist/yoetz-${version}.tar.gz")
+          for artifact in "${artifacts[@]}"; do
+            [ -f "$artifact" ] || { echo "::error::missing transitional artifact: $artifact"; exit 1; }
+          done
+          mkdir -p "${{ runner.temp }}/transitional-pypi-dist"
+          cp -- "${artifacts[@]}" "${{ runner.temp }}/transitional-pypi-dist/"
+
+      - name: Verify the yoetz version is absent on PyPI or exactly reconciled for recovery
+        id: transitional-pypi-state
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-release-source.outputs.version }}"
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/yoetz/${version}/json")
+          case "$status" in
+            404)
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            200)
+              [ "${{ github.event.inputs.recovery }}" = "true" ] || {
+                echo "::error::yoetz==${version} already exists on PyPI"
+                exit 1
+              }
+              curl --fail --silent --show-error --location \
+                "https://pypi.org/pypi/yoetz/${version}/json" \
+                --output "${{ runner.temp }}/transitional-pypi-existing.json"
+              PYPI_METADATA="${{ runner.temp }}/transitional-pypi-existing.json" \
+              PYPI_DIST="${{ runner.temp }}/transitional-pypi-dist" python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          metadata = json.loads(Path(os.environ["PYPI_METADATA"]).read_text(encoding="utf-8"))
+          remote = {entry["filename"]: entry["digests"]["sha256"] for entry in metadata["urls"]}
+          local_files = sorted(Path(os.environ["PYPI_DIST"]).iterdir())
+          local = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in local_files}
+          if local != remote:
+              raise SystemExit(f"published transitional PyPI bytes differ from recovery candidate: {local} != {remote}")
+          PY
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::PyPI preflight returned HTTP ${status}"
+              exit 1
+              ;;
+          esac
+
+      - name: Publish the prebuilt transitional sdist/wheel via PyPI Trusted Publishing
+        if: steps.transitional-pypi-state.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
+          packages-dir: ${{ runner.temp }}/transitional-pypi-dist
+          skip-existing: false
+          verify-metadata: true
+          print-hash: true
+
+  # ---------------------------------------------------------------------------------------------
+  # publish-transitional-npm — after the yoetz distribution it delegates to is on PyPI. npm
+  # Trusted Publishing must list this workflow and the npm environment for the `yoetz` package.
+  # ---------------------------------------------------------------------------------------------
+  publish-transitional-npm:
+    name: publish-transitional-npm
+    needs: [validate-release-source, build-transitional, approve-publication, publish-transitional-pypi]
+    if: github.event_name == 'push' || github.event.inputs.recovery == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      id-token: write # npm Trusted Publishing only; no long-lived package token
+      contents: read
+    steps:
+      - name: Install Node and npm for trusted publication
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26.5.0"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Install the locked npm CLI
+        run: npm install --global --ignore-scripts npm@12.0.1
+
+      - name: Download the prebuilt transitional npm candidate (never rebuild)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: transitional-npm-candidate-${{ needs.validate-release-source.outputs.version }}
+          path: ${{ runner.temp }}/transitional-npm-dist
+
+      - name: Verify the transitional npm digest before publication
+        run: |
+          set -euo pipefail
+          tgz="${{ runner.temp }}/transitional-npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz"
+          digest=$(sha256sum "$tgz" | cut -d' ' -f1)
+          [ "$digest" = "${{ needs.build-transitional.outputs.transitional-npm-digest }}" ] || {
+            echo "::error::transitional npm digest mismatch before publish"
+            exit 1
+          }
+          [ "$(npm --version)" = "12.0.1" ] || {
+            echo "::error::expected npm 12.0.1, got $(npm --version)"
+            exit 1
+          }
+
+      - name: Verify the yoetz version is absent on npm or exactly reconciled for recovery
+        id: transitional-npm-state
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-release-source.outputs.version }}"
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://registry.npmjs.org/yoetz/${version}")
+          case "$status" in
+            404)
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            200)
+              [ "${{ github.event.inputs.recovery }}" = "true" ] || {
+                echo "::error::yoetz@${version} already exists on npm"
+                exit 1
+              }
+              tarball=$(npm view "yoetz@${version}" dist.tarball)
+              curl --fail --silent --show-error --location "$tarball" \
+                --output "${{ runner.temp }}/transitional-npm-published.tgz"
+              cmp -s "${{ runner.temp }}/transitional-npm-published.tgz" \
+                "${{ runner.temp }}/transitional-npm-dist/yoetz-${version}.tgz" || {
+                echo "::error::published transitional npm bytes differ from recovery candidate"
+                exit 1
+              }
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::npm registry preflight returned HTTP ${status}"
+              exit 1
+              ;;
+          esac
+
+      - name: Publish the exact transitional tarball through npm Trusted Publishing
+        if: steps.transitional-npm-state.outputs.publish == 'true'
+        run: npm publish "${{ runner.temp }}/transitional-npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz" --access public
+
+  # ---------------------------------------------------------------------------------------------
+  # verify-transitional-published — public yoetz bytes equal the approved candidates, and the
+  # published alias resolves to the published finishup of the same version.
+  # ---------------------------------------------------------------------------------------------
+  verify-transitional-published:
+    name: verify-transitional-published
+    needs:
+      - validate-release-source
+      - build-transitional
+      - publish-transitional-pypi
+      - publish-transitional-npm
+    if: github.event_name == 'push' || github.event.inputs.recovery == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Download the approved transitional candidates
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: transitional-*candidate-${{ needs.validate-release-source.outputs.version }}
+          path: ${{ runner.temp }}/transitional-candidate
+
+      - name: Wait for registry availability and compare public bytes with the candidates
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-release-source.outputs.version }}"
+          for i in $(seq 1 30); do
+            pypi=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/yoetz/${version}/json")
+            npm=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/yoetz/${version}")
+            [ "$pypi" = "200" ] && [ "$npm" = "200" ] && break
+            sleep 20
+          done
+          [ "$pypi" = "200" ] && [ "$npm" = "200" ] || {
+            echo "::error::yoetz ${version} not visible on PyPI and npm within bound"
+            exit 1
+          }
+          mkdir -p "${{ runner.temp }}/transitional-published"
+          curl -sL "https://pypi.org/pypi/yoetz/${version}/json" -o "${{ runner.temp }}/transitional-pypi-meta.json"
+          curl -sL "https://registry.npmjs.org/yoetz/${version}" -o "${{ runner.temp }}/transitional-npm-meta.json"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          published = root / "transitional-published"
+          for entry in json.loads((root / "transitional-pypi-meta.json").read_text())["urls"]:
+              urllib.request.urlretrieve(entry["url"], published / entry["filename"])
+          npm = json.loads((root / "transitional-npm-meta.json").read_text())
+          urllib.request.urlretrieve(npm["dist"]["tarball"], root / "transitional-npm-published.tgz")
+          PY
+          candidate="${{ runner.temp }}/transitional-candidate"
+          for f in "${{ runner.temp }}"/transitional-published/*; do
+            base=$(basename "$f")
+            cmp -s "$f" "$candidate/transitional-candidate-${version}/$base" || \
+              { echo "::error::published $base differs from the transitional candidate"; exit 1; }
+          done
+          cmp -s "${{ runner.temp }}/transitional-npm-published.tgz" \
+            "$candidate/transitional-npm-candidate-${version}/yoetz-${version}.tgz" || {
+            echo "::error::published yoetz npm tarball differs from the approved candidate"
+            exit 1
+          }
+
+      - name: Install the locked uv release tool
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          enable-cache: false
+
+      - name: Install the public yoetz distribution; the alias reports the same finishup version
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-release-source.outputs.version }}"
+          venv="${{ runner.temp }}/transitional-published-venv"
+          uv python install 3.14
+          uv venv --python 3.14 "$venv"
+          uv pip install --python "$venv/bin/python" "yoetz==${version}"
+          [ "$("$venv/bin/yoetz" --version)" = "$version" ] || {
+            echo "::error::published yoetz alias did not report ${version}"
+            exit 1
+          }
+          [ "$("$venv/bin/finishup" --version)" = "$version" ] || {
+            echo "::error::published yoetz did not install finishup ${version}"
+            exit 1
+          }
+
+      - name: Install the release Node version
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26.5.0"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Verify the public yoetz npm launcher delegates to the same yoetz version
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate-release-source.outputs.version }}"
+          mkdir -p "${{ runner.temp }}/transitional-npm-published" "${{ runner.temp }}/transitional-shims"
+          tar -xzf "${{ runner.temp }}/transitional-npm-published.tgz" \
+            -C "${{ runner.temp }}/transitional-npm-published"
+          printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$RUNNER_TEMP/transitional-uv-args"\nexit 0\n' \
+            > "${{ runner.temp }}/transitional-shims/uv"
+          printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "$RUNNER_TEMP/transitional-uvx-args"\nexit 0\n' \
+            > "${{ runner.temp }}/transitional-shims/uvx"
+          chmod +x "${{ runner.temp }}/transitional-shims/uv" "${{ runner.temp }}/transitional-shims/uvx"
+          PATH="${{ runner.temp }}/transitional-shims:$PATH" \
+            node "${{ runner.temp }}/transitional-npm-published/package/bin/yoetz.js" status
+          expected_uv="$(printf '%s\n%s' "--version" "tool install --quiet --python 3.14 yoetz==${version}")"
+          [ "$(cat "${{ runner.temp }}/transitional-uv-args")" = "$expected_uv" ] || {
+            echo "::error::published yoetz npm launcher did not install the exact yoetz version"
+            exit 1
+          }
+          [ "$(cat "${{ runner.temp }}/transitional-uvx-args")" = "--python 3.14 yoetz status" ] || {
+            echo "::error::published yoetz npm launcher did not run the installed tool through uvx"
             exit 1
           }
 
@@ -1364,6 +1842,10 @@ jobs:
       - verify-schema-site
       - verify-published
       - verify-npm-published
+      - build-transitional
+      - publish-transitional-pypi
+      - publish-transitional-npm
+      - verify-transitional-published
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -1377,6 +1859,7 @@ jobs:
             [validate-release-source]="${{ needs.validate-release-source.result }}"
             [build-candidate]="${{ needs.build-candidate.result }}"
             [build-npm-launcher]="${{ needs.build-npm-launcher.result }}"
+            [build-transitional]="${{ needs.build-transitional.result }}"
             [verify-linux-x86_64]="${{ needs.verify-linux-x86_64.result }}"
             [verify-macos-arm64]="${{ needs.verify-macos-arm64.result }}"
             [fault-release-profile]="${{ needs.fault-release-profile.result }}"
@@ -1403,6 +1886,9 @@ jobs:
               [publish-github-release]="${{ needs.publish-github-release.result }}"
               [verify-published]="${{ needs.verify-published.result }}"
               [verify-npm-published]="${{ needs.verify-npm-published.result }}"
+              [publish-transitional-pypi]="${{ needs.publish-transitional-pypi.result }}"
+              [publish-transitional-npm]="${{ needs.publish-transitional-npm.result }}"
+              [verify-transitional-published]="${{ needs.verify-transitional-published.result }}"
             )
             for job in "${!publish_required[@]}"; do
               outcome="${publish_required[$job]}"

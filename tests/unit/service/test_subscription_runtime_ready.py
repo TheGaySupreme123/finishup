@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import UTC, datetime
@@ -9,35 +10,21 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.providers import codex_app_server as runtime_module
-from yoetz.adapters.providers.codex_app_server import (
-    CODEX_APP_SERVER_SCHEMA_SHA256,
-    CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
-    CODEX_EVALUATOR_CAPABILITY_PROFILE,
-    CODEX_EVALUATOR_CONFIG_SHA256,
-    CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-    CodexAppServerProfile,
+from builders.codex_capability import (
+    binding_for,
+    plain_digest,
+    record_for,
+    retained_runtime,
+    write_home,
 )
-from yoetz.config.models import ExternalRuntimeProfileConfig
-from yoetz.config.write import codex_subscription_runtime
-from yoetz.service.ready_composition import subscription_runtime_structurally_ready
+from finishup.adapters.providers import codex_app_server as runtime_module
+from finishup.adapters.providers.codex_app_server import CodexAppServerProfile
+from finishup.config.models import ExternalRuntimeProfileConfig
+from finishup.service.ready_composition import subscription_runtime_structurally_ready
 
 
 def _binding(executable: Path, home: Path) -> ExternalRuntimeProfileConfig:
-    return codex_subscription_runtime(
-        executable_path=str(executable),
-        executable_sha256="sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-        runtime_version="0.157.1",
-        source_identity="openai-codex-npm-darwin-arm64-0.157.1",
-        app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-        capability_cell_sha256=CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
-        isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-        capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-        codex_home=str(home),
-        model="gpt-5.6-sol",
-        reasoning_effort="high",
-    )
+    return binding_for(record_for(_EXE, _HOST), executable, home)
 
 
 @pytest.mark.parametrize(
@@ -76,12 +63,12 @@ def test_ready_credential_presence_is_binding_digest_and_home(
 
 # -- structural readiness memo (#881) ------------------------------------------------------------
 
-_EXE = b"admitted codex bytes"
-_HOST = b"admitted code-mode host bytes"
+_EXE = b"retained codex bytes"
+_HOST = b"retained code-mode host bytes"
 
 
 class _Hashes:
-    """Stand the synthetic bytes in for the macOS cell digests and record every hash."""
+    """Record every hash the launch fence takes (and the thread it ran on)."""
 
     def __init__(self) -> None:
         self.paths: list[str] = []
@@ -92,21 +79,15 @@ class _Hashes:
 
         self.paths.append(path.name)
         self.threads.add(threading.get_ident())
-        data = path.read_bytes()
-        cell = runtime_module.codex_evaluator_cell_for_platform("darwin", "arm64")
-        if data == _EXE:
-            return cell.executable_sha256
-        if data == _HOST:
-            return cell.code_mode_host_sha256
-        return "sha256:" + "0" * 64
+        return plain_digest(path.read_bytes())
 
 
 @pytest.fixture
 def retained(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> tuple[ExternalRuntimeProfileConfig, _Hashes]:
-    monkeypatch.setattr(runtime_module.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime_module.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
 
     def allow_private(_path: Path) -> None:
         return None
@@ -114,18 +95,9 @@ def retained(
     monkeypatch.setattr(runtime_module, "verify_private_local_bundle", allow_private)
     hashes = _Hashes()
     monkeypatch.setattr(runtime_module, "_sha256_file", hashes)
-    store = tmp_path / "store"
-    store.mkdir()
-    executable = store / "codex"
-    executable.write_bytes(_EXE)
-    host = store / "codex-code-mode-host"
-    host.write_bytes(_HOST)
-    for path in (executable, host):
-        path.chmod(0o500)
-    home = tmp_path / "home"
-    home.mkdir(mode=0o700)
-    (home / "config.toml").write_bytes(runtime_module.CODEX_EVALUATOR_CONFIG.encode())
-    return _binding(executable, home), hashes
+    executable, record = retained_runtime(tmp_path / "bundle", executable=_EXE, host=_HOST)
+    home = write_home(tmp_path / "home")
+    return binding_for(record, executable, home), hashes
 
 
 _NOW = datetime(2026, 9, 27, tzinfo=UTC)
@@ -166,7 +138,7 @@ async def test_repeated_structural_readiness_hashes_once_off_the_event_loop(
 ) -> None:
     import threading
 
-    from yoetz.service.ready_composition import SubscriptionReadinessMemo
+    from finishup.service.ready_composition import SubscriptionReadinessMemo
 
     binding, hashes = retained
     memo = SubscriptionReadinessMemo()
@@ -182,11 +154,13 @@ async def test_repeated_structural_readiness_hashes_once_off_the_event_loop(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("change", ["replace_host", "rewrite_executable", "touch", "config"])
+@pytest.mark.parametrize(
+    "change", ["replace_host", "rewrite_executable", "touch", "config", "record"]
+)
 async def test_a_changed_retained_file_forces_a_rehash(
     retained: tuple[ExternalRuntimeProfileConfig, _Hashes], change: str
 ) -> None:
-    from yoetz.service.ready_composition import SubscriptionReadinessMemo
+    from finishup.service.ready_composition import SubscriptionReadinessMemo
 
     binding, hashes = retained
     memo = SubscriptionReadinessMemo()
@@ -207,12 +181,19 @@ async def test_a_changed_retained_file_forces_a_rehash(
         expected = False
     elif change == "touch":
         os.utime(host, ns=(1, 1))
+    elif change == "record":
+        # A record committed for other bytes never vouches for the bound ones.
+        record = executable.parent / "capability.json"
+        record.chmod(0o600)
+        record.write_text(json.dumps(record_for(b"other codex", _HOST).to_json()), encoding="utf-8")
+        expected = False
     else:
         config.write_bytes(b"changed = true\n")
         expected = False
 
     assert await memo.ready(binding, now=_NOW) is expected
-    assert len(hashes.paths) > 2
+    # A replaced record is refused before any byte is hashed; every other change re-hashes.
+    assert len(hashes.paths) > 2 or change == "record"
 
 
 def test_the_launch_fence_still_hashes_both_files_every_time(

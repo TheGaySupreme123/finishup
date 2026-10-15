@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.cli.runtime_facts import runtime_structural_facts
-from yoetz.domain.command_segments import (
+from finishup.cli.runtime_facts import runtime_structural_facts
+from finishup.domain.command_segments import (
     CANONICAL_KINDS,
     MAX_CANONICAL_COMMITMENTS,
     MAX_COMMAND_COMMITMENTS,
@@ -25,12 +25,12 @@ from yoetz.domain.command_segments import (
     command_structure,
     planned_segments,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     _MAX_COMMAND_SEGMENT_COMMITMENTS,  # pyright: ignore[reportPrivateUsage]
     normalize_observed_command,
 )
-from yoetz.domain.shell_writes import shell_write_paths, shell_write_scope
-from yoetz.domain.write_scope import classify_write_path, edit_write_scope, notes_artifact_name
+from finishup.domain.shell_writes import shell_write_paths, shell_write_scope
+from finishup.domain.write_scope import classify_write_path, edit_write_scope, notes_artifact_name
 
 _KEY = b"k" * 32
 

@@ -12,10 +12,10 @@ from uuid import uuid4
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationContentChunk,
     ObservationContentKind,
@@ -28,11 +28,11 @@ from yoetz.domain.observation import (
     ObservationIngestResult,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import TaskRuntime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
 
 _COMMITMENT = "hmac-sha256:" + "c" * 64
 _DIGEST = "sha256:" + "d" * 64
@@ -190,8 +190,8 @@ def _reservation_ticket(
 def test_partial_capture_retry_deduplicates_parts_before_global_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
-    import yoetz.application.observation_coordinator as coordinator_mod
+    import finishup.adapters.integrations.observation_local as local_mod
+    import finishup.application.observation_coordinator as coordinator_mod
 
     monkeypatch.setattr(local_mod, "_MAX_CAPTURE_CONTENT_BYTES", 10)
     monkeypatch.setattr(coordinator_mod, "_MAX_CAPTURE_CONTENT_BYTES", 10)

@@ -5,7 +5,7 @@ The 2026-07-27 Codex dogfood could not author a `start` request from the install
 discovery failed, so the agent fell back to reading product source. Guidance that names a file the
 installed agent cannot open is worse than no guidance -- it sends the reader somewhere empty.
 
-These cases read only the *packaged* tree under ``src/yoetz/resources`` plus the resource registry,
+These cases read only the *packaged* tree under ``src/finishup/resources`` plus the resource registry,
 never the repository-root working copy, so they fail exactly the way a real installation would.
 """
 
@@ -17,20 +17,20 @@ from typing import Final
 
 import pytest
 
-from yoetz.adapters.integrations.claude_code_integration import render_claude_code_plugin
-from yoetz.adapters.integrations.codex_skill import load_packaged_skill_members
-from yoetz.adapters.integrations.cursor_integration import render_cursor_plugin
-from yoetz.adapters.integrations.portable_plugin import build_portable_plugin_plan
-from yoetz.mcp.resources import GUIDANCE_RESOURCES, read_resource
-from yoetz.ports.plugin_artifacts import PluginFormatProfile
-from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
+from finishup.adapters.integrations.claude_code_integration import render_claude_code_plugin
+from finishup.adapters.integrations.codex_skill import load_packaged_skill_members
+from finishup.adapters.integrations.cursor_integration import render_cursor_plugin
+from finishup.adapters.integrations.portable_plugin import build_portable_plugin_plan
+from finishup.mcp.resources import GUIDANCE_RESOURCES, read_resource
+from finishup.ports.plugin_artifacts import PluginFormatProfile
+from finishup.protocol.guidance_uris import ALL_GUIDANCE_URIS
 
-_PACKAGED_ROOT: Final = Path(__file__).resolve().parents[2] / "src" / "yoetz" / "resources"
-_PACKAGED_SKILL: Final = _PACKAGED_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md"
+_PACKAGED_ROOT: Final = Path(__file__).resolve().parents[2] / "src" / "finishup" / "resources"
+_PACKAGED_SKILL: Final = _PACKAGED_ROOT / "skills" / "codex" / "finishup" / "SKILL.md"
 
 # `[text](target)` where target is not an absolute URL to somewhere off-product.
 _MARKDOWN_LINK: Final = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-_YOETZ_URI: Final = re.compile(r"`(yoetz://[^`]+)`")
+_FINISHUP_URI: Final = re.compile(r"`(finishup://[^`]+)`")
 
 
 def _skill_text() -> str:
@@ -63,16 +63,26 @@ def test_step_zero_stops_on_an_empty_guidance_read() -> None:
     # clipped body is re-read through ``read_guidance`` (same URI, verified text and byte counts),
     # then the installed reference, and the skill itself says to page and verify before ``start``.
     assert "If a body is empty or clipped, call `read_guidance` with the same URI" in combined
-    assert "verify the text and byte counts" in combined
-    assert "`page_size` is 4 to 16,384 UTF-8 bytes" in combined
-    assert "use installed `references/<name>.md`" in combined
+    # #1054 moved the byte-count verification and the page-size range out of the card into the
+    # focused `page-delivery.md` topic the card routes a clipped page to (re-pinned in tb4n5, P11).
+    assert "clipped page `page-delivery.md`" in combined
+    page_delivery = " ".join(
+        (_PACKAGED_ROOT / "guidance" / "page-delivery.md").read_text(encoding="utf-8").split()
+    )
+    assert "Its usable `page_size` range is **4 through 16,384" in page_delivery
+    assert "markers and byte counts match" in page_delivery
+    assert "Only if that result is also empty, use installed `references/<name>.md`" in combined
     assert "page and verify empty or clipped guidance" in collapsed
     assert "The first workflow operation is `start`" in collapsed
-    assert "do not work without a task" in collapsed
+    # tb4n5 startup dedup (ADR-047): the skill states failed-start recovery once, in its
+    # description; "do not work without a task" is the initialize body's (tests/unit/mcp).
+    assert "ask for intro and guidance if startup remains blocked" in collapsed
     # The skill routes to the compact core; it does not claim that any full document is already in
-    # the host context. Other procedures remain addressable through the topic catalog.
-    assert "yoetz://guidance/agent-instructions.md" in collapsed
-    assert "yoetz://guidance/workflow.md#start-and-resume" in collapsed
+    # the host context. Other procedures remain addressable through the topic catalog, and the
+    # card, not the skill, names the workflow page for resume, recovery and delegation.
+    assert "finishup://guidance/agent-instructions.md" in collapsed
+    assert "that core is the operating card" in collapsed
+    assert "resume/recovery/delegation/capacity `finishup://guidance/workflow.md`" in safety_floor
     assert "already include `agent-instructions.md`" not in collapsed
     assert "Both are already in initialize `instructions`" not in collapsed
 
@@ -85,13 +95,15 @@ def test_step_zero_does_not_use_resources_list_for_discovery() -> None:
     )
     collapsed = " ".join(text.split())
     assert "Do not call `resources/list` or `list_mcp_resources`" in collapsed
-    assert "The five index URIs are the complete legacy catalog" in collapsed
+    # #1054 dropped "The five index URIs are the complete legacy catalog" from the card; the
+    # initialize bodies name every URI and say not to list resources (re-pinned in tb4n5, P11).
+    assert "Focused topics by trigger:" in collapsed
     assert "a list failure is not a missing server or reason to read product source" in collapsed
 
 
-def test_every_yoetz_uri_the_skill_names_is_a_registered_readable_resource() -> None:
+def test_every_finishup_uri_the_skill_names_is_a_registered_readable_resource() -> None:
     registered = set(ALL_GUIDANCE_URIS)
-    named = set(_YOETZ_URI.findall(_skill_text()))
+    named = set(_FINISHUP_URI.findall(_skill_text()))
     assert named, "the skill names no guidance resources"
     unregistered = sorted(named - registered)
     assert unregistered == [], f"skill names unregistered resource URIs: {unregistered}"
@@ -104,7 +116,7 @@ def test_every_yoetz_uri_the_skill_names_is_a_registered_readable_resource() -> 
 def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_path: Path) -> None:
     # Render the actual installed artifact. Checking only source links misses a renderer that
     # selects another host's skill or forgets to ship one of its relative references.
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     launcher.chmod(0o700)
     if host == "codex":
@@ -112,14 +124,14 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
     elif host == "portable":
         members = dict(build_portable_plugin_plan().members)
     elif host == "claude-code":
-        members = dict(render_claude_code_plugin(yoetz_launcher=launcher).members)
+        members = dict(render_claude_code_plugin(finishup_launcher=launcher).members)
     else:
         members = dict(
             render_cursor_plugin(
                 PluginFormatProfile.AGENT_PLUGINS_1
                 if host == "cursor-portable"
                 else PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-                yoetz_launcher=launcher,
+                finishup_launcher=launcher,
             ).members
         )
     documents = {
@@ -127,7 +139,7 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
     }
     for name, text in documents.items():
         for target in _MARKDOWN_LINK.findall(text):
-            if target.startswith(("http://", "https://", "yoetz://", "mailto:")):
+            if target.startswith(("http://", "https://", "finishup://", "mailto:")):
                 continue
             relative, _, anchor = target.partition("#")
             resolved = str(Path(name).parent / relative) if relative else name
@@ -164,9 +176,9 @@ def test_skill_routes_to_the_readable_cadence_owner() -> None:
     # The compact skill names the operations it directs (`start`, `check`, `receipt`) and routes to
     # the safety floor plus the workflow owner; the one-line cadence naming `publish_work` lives in
     # the floor the skill tells the agent to read first.
-    assert "yoetz://guidance/workflow.md" in skill
-    assert "yoetz://guidance/agent-instructions.md" in skill
-    workflow = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
+    assert "finishup://guidance/workflow.md" in skill
+    assert "finishup://guidance/agent-instructions.md" in skill
+    workflow = read_resource("finishup://guidance/workflow.md").decode("utf-8")
     combined = f"{skill} {safety_floor}"
     for operation in ("start", "publish_work", "check", "receipt"):
         assert f"`{operation}`" in combined
@@ -191,9 +203,9 @@ def test_start_is_authorable_from_guidance_without_reading_product_source() -> N
     and a guessed mode. Both are answerable from guidance alone.
     """
 
-    workflow = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
+    workflow = read_resource("finishup://guidance/workflow.md").decode("utf-8")
     combined = (
-        workflow + read_resource("yoetz://guidance/agent-instructions.md").decode("utf-8")
+        workflow + read_resource("finishup://guidance/agent-instructions.md").decode("utf-8")
     ).lower()
     for token in ("start", "request_id", "mode"):
         assert token in combined, f"guidance never mentions {token}"

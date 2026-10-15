@@ -8,23 +8,23 @@ from typing import NoReturn, cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     load_mapping,
     mapping_from_start_ids,
     store_mapping,
 )
-from yoetz.adapters.integrations.observation_local import AdviceDelivery, LocalObservationStore
-from yoetz.cli import observe_hooks
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import AdviceDelivery, LocalObservationStore
+from finishup.cli import observe_hooks
+from finishup.domain.observation import (
     AdviceSnapshot,
     ObservationControlCommand,
     ObservationRevokeCommand,
     ObservationSource,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.kernel.policies.observation_advice import ObservationCompositionFact
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.kernel.policies.observation_advice import ObservationCompositionFact
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.ids import IdKind, new_id
 
 
 def test_claude_hook_ingress_retains_only_closed_structural_mcp_fields(
@@ -33,7 +33,7 @@ def test_claude_hook_ingress_retains_only_closed_structural_mcp_fields(
 ) -> None:
     inherited = tmp_path / "inherited"
     inherited.mkdir(mode=0o700)
-    monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(inherited))
+    monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(inherited))
     local_state = tmp_path / "local-state"
     captured: dict[str, object] = {}
 
@@ -48,7 +48,7 @@ def test_claude_hook_ingress_retains_only_closed_structural_mcp_fields(
         "permission_mode": "bypassPermissions",
         "session_id": "session-1",
         "tool_input": {"secret": "private prompt"},
-        "tool_name": "mcp__plugin_yoetz_yoetz__start",
+        "tool_name": "mcp__plugin_finishup_finishup__start",
         "tool_response": {"content": "private output"},
         "tool_use_id": "tool-1",
         "transcript_path": "/private/transcript.jsonl",
@@ -73,7 +73,7 @@ def test_claude_hook_ingress_retains_only_closed_structural_mcp_fields(
         "pairing_mode": "post_only",
         "session_id": "claude:session-1",
         "success": True,
-        "tool_name": "mcp__plugin_yoetz_yoetz__start",
+        "tool_name": "mcp__plugin_finishup_finishup__start",
         "tool_use_id": "tool-1",
     }
     assert captured["source"] is ObservationSource.CLAUDE_HOOK
@@ -125,11 +125,17 @@ def test_claude_native_child_ingress_keeps_child_identity_without_parent_tool(
     assert captured["source"] is ObservationSource.CLAUDE_HOOK
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    # The legacy plugin scope a 0.1-0.2.5 plugin still installs binds alike (ADR-048).
+    ["mcp__plugin_finishup_finishup__start", "mcp__plugin_yoetz_yoetz__start"],
+)
 @pytest.mark.parametrize("response_shape", ["structured", "content_blocks", "json_string"])
 def test_claude_successful_start_binds_only_structural_mapping(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     response_shape: str,
+    tool_name: str,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -157,7 +163,7 @@ def test_claude_successful_start_binds_only_structural_mapping(
     payload: dict[str, JsonValue] = {
         "hook_event_name": "PostToolUse",
         "session_id": "session-bind",
-        "tool_name": "mcp__plugin_yoetz_yoetz__start",
+        "tool_name": tool_name,
         "tool_response": tool_response,
         "tool_use_id": "tool-bind",
     }
@@ -196,9 +202,9 @@ def test_claude_failed_or_non_start_result_creates_no_mapping(
     monkeypatch.setattr(observe_hooks, "handle_observe", fake_handle_observe)
     for index, (tool_name, response) in enumerate(
         (
-            ("mcp__plugin_yoetz_yoetz__start", {"structuredContent": {"ok": False}}),
+            ("mcp__plugin_finishup_finishup__start", {"structuredContent": {"ok": False}}),
             (
-                "mcp__plugin_yoetz_yoetz__status",
+                "mcp__plugin_finishup_finishup__status",
                 {
                     "structuredContent": {
                         "ok": True,
@@ -251,7 +257,7 @@ def test_claude_live_2_1_251_start_tool_response_binds(
                 {
                     "hook_event_name": "PostToolUse",
                     "session_id": "session-live",
-                    "tool_name": "mcp__plugin_yoetz_yoetz__start",
+                    "tool_name": "mcp__plugin_finishup_finishup__start",
                     "tool_response": CLAUDE_2_1_251_START_TOOL_RESPONSE,
                     "tool_use_id": "toolu_01Axu9wAQ7QBfVTEdkWoorSK",
                 }
@@ -288,7 +294,7 @@ def test_claude_unbound_start_result_records_typed_diagnostic(
                 {
                     "hook_event_name": "PostToolUse",
                     "session_id": "session-unbound",
-                    "tool_name": "mcp__plugin_yoetz_yoetz__start",
+                    "tool_name": "mcp__plugin_finishup_finishup__start",
                     "tool_response": tool_response,
                     "tool_use_id": "tool-unbound",
                 }
@@ -361,7 +367,7 @@ def test_claude_read_guidance_calls_survive_the_scoped_ingress_allowlist(
     payload: dict[str, JsonValue] = {
         "hook_event_name": "PostToolUse",
         "session_id": "session-guidance",
-        "tool_name": "mcp__plugin_yoetz_yoetz__read_guidance",
+        "tool_name": "mcp__plugin_finishup_finishup__read_guidance",
         "tool_use_id": "tool-guidance",
     }
     assert (
@@ -372,7 +378,7 @@ def test_claude_read_guidance_calls_survive_the_scoped_ingress_allowlist(
         )
         == 0
     )
-    assert captured[0]["tool_name"] == "mcp__plugin_yoetz_yoetz__read_guidance"
+    assert captured[0]["tool_name"] == "mcp__plugin_finishup_finishup__read_guidance"
 
 
 def test_claude_failure_discards_raw_error_and_bare_mcp_names_are_negative_control(
@@ -392,7 +398,7 @@ def test_claude_failure_discards_raw_error_and_bare_mcp_names_are_negative_contr
         "hook_event_name": "PostToolUseFailure",
         "session_id": "session-2",
         "tool_input": {"prompt": "private"},
-        "tool_name": "mcp__plugin_yoetz_yoetz__publish_work",
+        "tool_name": "mcp__plugin_finishup_finishup__publish_work",
         "tool_use_id": "tool-2",
     }
     assert (
@@ -407,7 +413,7 @@ def test_claude_failure_discards_raw_error_and_bare_mcp_names_are_negative_contr
     assert captured[0]["success"] is False
     assert "error" not in captured[0]
 
-    bare = {**failure, "tool_name": "mcp__yoetz__publish_work"}
+    bare = {**failure, "tool_name": "mcp__finishup__publish_work"}
     assert (
         observe_hooks.handle_claude_observe(
             event_name="PostToolUseFailure",
@@ -645,14 +651,14 @@ def test_claude_received_clear_does_not_reopen_service_or_advisory(tmp_path: Pat
 def test_claude_failure_advice_preserves_raw_event_and_commits_after_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The host sees PostToolUseFailure even though Yoetz uses PostToolUse cadence internally."""
+    """The host sees PostToolUseFailure even though FinishUP uses PostToolUse cadence internally."""
 
     store, commitment = _consented_store(tmp_path)
     advice = AdviceDelivery(
         snapshot=cast(AdviceSnapshot, object()),
         item=None,
         delivery_identity="failure-advice-1",
-        text="Review the failed Yoetz operation before continuing.",
+        text="Review the failed FinishUP operation before continuing.",
     )
     commits: list[str] = []
 
@@ -704,10 +710,10 @@ def test_claude_failure_advice_preserves_raw_event_and_commits_after_output(
     specific = cast(Mapping[str, JsonValue], emitted["hookSpecificOutput"])
     assert specific["hookEventName"] == "PostToolUseFailure"
     context = cast(str, specific["additionalContext"])
-    assert context.startswith("Review the failed Yoetz operation before continuing.")
+    assert context.startswith("Review the failed FinishUP operation before continuing.")
     # The paired ordinary profile saw no pre for this call. The orphan remains a
     # standing coverage record and is not injected into hook context (#974).
-    assert "Yoetz notice (no response needed)" not in context
+    assert "FinishUP notice (no response needed)" not in context
     assert commits == ["failure-advice-1"]
     envelope = store.list_envelopes(commitment)[0]
     assert envelope.structural_payload["hook_name"] == "PostToolUse"
@@ -747,7 +753,7 @@ def test_claude_plugin_tool_does_not_lease_frontier_advice_for_its_own_call(
                 {
                     "hook_event_name": "PostToolUse",
                     "session_id": "plugin-self-advice",
-                    "tool_name": "mcp__plugin_yoetz_yoetz__publish_work",
+                    "tool_name": "mcp__plugin_finishup_finishup__publish_work",
                     "tool_use_id": "tool-plugin-self-advice",
                     "tool_response": {},
                 }
@@ -913,7 +919,7 @@ def test_claude_ingress_records_a_typed_diagnostic_when_nothing_is_ingested(
                 {
                     "session_id": "claude-dropped",
                     "hook_event_name": "PostToolUse",
-                    "tool_name": "mcp__plugin_yoetz_yoetz__status",
+                    "tool_name": "mcp__plugin_finishup_finishup__status",
                     "cwd": "/private/CWD_CANARY",
                 }
             ),
@@ -974,16 +980,19 @@ def test_claude_ingress_names_paused_consent_distinctly(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("tool_name", "source", "expected"),
     [
+        ("mcp__finishup__check", "auto_mode", "host_auto_review_denied"),
+        ("mcp__plugin_finishup_finishup__check", None, "host_auto_review_denied"),
+        ("mcp__finishup__check", "permission_rule", "host_permission_rule_denied"),
+        ("mcp__plugin_finishup_finishup__check", "hook", "host_permission_rule_denied"),
+        # The legacy server scopes a 0.1-0.2.5 registration still carries (ADR-048).
         ("mcp__yoetz__check", "auto_mode", "host_auto_review_denied"),
-        ("mcp__plugin_yoetz_yoetz__check", None, "host_auto_review_denied"),
-        ("mcp__yoetz__check", "permission_rule", "host_permission_rule_denied"),
-        ("mcp__plugin_yoetz_yoetz__check", "hook", "host_permission_rule_denied"),
+        ("mcp__plugin_yoetz_yoetz__check", "permission_rule", "host_permission_rule_denied"),
     ],
 )
 def test_claude_permission_denied_on_a_scoped_check_records_one_payload_free_diagnostic(
     tmp_path: Path, tool_name: str, source: str | None, expected: str
 ) -> None:
-    """A host reviewer held the check before Yoetz saw it (issue #467).
+    """A host reviewer held the check before FinishUP saw it (issue #467).
 
     The typed reason is the separate representation #187 asked for: it is host tool-call
     authorization, never an AI-powered review status, and nothing from the host payload survives.
@@ -1025,7 +1034,7 @@ def test_claude_permission_denied_on_a_scoped_check_records_one_payload_free_dia
     context = emitted["systemMessage"]
     assert isinstance(context, str)
     if source in {"permission_rule", "hook"}:
-        assert context.startswith("Yoetz: the owner's own Claude Code permission rule")
+        assert context.startswith("FinishUP: the owner's own Claude Code permission rule")
         advisory_diagnostic = "host_denial_retry_exhausted"
     else:
         assert "could not confirm a repository grant" in context
@@ -1090,7 +1099,7 @@ def _run_denied_hook(
     payload: dict[str, object] = {
         "session_id": session_id,
         "hook_event_name": "PermissionDenied",
-        "tool_name": "mcp__plugin_yoetz_yoetz__check",
+        "tool_name": "mcp__plugin_finishup_finishup__check",
         "tool_input": {"claim": "CLAIM_CANARY"},
         "tool_use_id": "toolu_CANARY",
         "reason": reason,
@@ -1138,16 +1147,16 @@ def test_claude_permission_denied_with_a_confirmed_grant_offers_exactly_one_retr
     context = first["systemMessage"]
     assert isinstance(context, str)
     assert context.startswith(
-        "Yoetz confirms: the repository owner already authorized external AI-powered review"
+        "FinishUP confirms: the repository owner already authorized external AI-powered review"
     )
     assert "Retry the identical check exactly once now" in context
     assert "no provider dispatch occurred" in context
     assert "do not switch to deterministic_only" in context
-    assert "yoetz integrate claude admission grant" in context  # admission is absent here
+    assert "finishup integrate claude admission grant" in context  # admission is absent here
     assert len(context) <= 2_000
     shown = first["systemMessage"]
     assert isinstance(shown, str)
-    assert shown.startswith("Yoetz confirms:")
+    assert shown.startswith("FinishUP confirms:")
     assert "decision" not in specific and "permissionDecision" not in specific
     assert client.closed
     assert client.deadlines == [2_500]
@@ -1160,7 +1169,7 @@ def test_claude_permission_denied_with_a_confirmed_grant_offers_exactly_one_retr
     assert again["retry"] is False
     repeat_context = second["systemMessage"]
     assert isinstance(repeat_context, str)
-    assert repeat_context.startswith("Yoetz confirms:")
+    assert repeat_context.startswith("FinishUP confirms:")
     assert "Do not retry on your own" in repeat_context
 
     other, _ = _run_denied_hook(
@@ -1195,7 +1204,7 @@ def test_claude_permission_denied_never_retries_on_the_owners_rule_or_without_a_
     assert isinstance(ruled_specific, Mapping)
     assert ruled_specific["retry"] is False
     assert str(ruled["systemMessage"]).startswith(
-        "Yoetz: the owner's own Claude Code permission rule"
+        "FinishUP: the owner's own Claude Code permission rule"
     )
     assert not (tmp_path / "observation/host-hold-retries.json").exists()
 
@@ -1258,10 +1267,10 @@ def test_claude_permission_denied_without_a_confirmed_grant_tells_the_agent_to_a
     assert isinstance(specific, Mapping)
     assert specific["retry"] is False
     context = str(emitted["systemMessage"])
-    assert context.startswith("Yoetz could not confirm a repository grant")
+    assert context.startswith("FinishUP could not confirm a repository grant")
     assert f"(reason: {expected_reason})" in context
     assert "Authorization remains unconfirmed" in context
-    assert ("yoetz --privacy" in context) == (expected_reason == "grant_absent")
+    assert ("finishup --privacy" in context) == (expected_reason == "grant_absent")
     assert f"(reason: {expected_reason})" in str(emitted["systemMessage"])
     assert b"boom" not in raw
     assert _recorded_diagnostics(tmp_path) == [
@@ -1274,7 +1283,7 @@ def test_claude_permission_denied_without_a_confirmed_grant_tells_the_agent_to_a
 def test_claude_permission_denied_maps_control_refusals_to_closed_grant_reasons(
     tmp_path: Path,
 ) -> None:
-    from yoetz.ports.control import ControlError
+    from finishup.ports.control import ControlError
 
     _consented_store(tmp_path)
     for control_reason, expected in (
@@ -1293,7 +1302,7 @@ def test_claude_permission_denied_maps_control_refusals_to_closed_grant_reasons(
 
 def test_claude_permission_denied_for_any_other_tool_records_nothing(tmp_path: Path) -> None:
     _consented_store(tmp_path)
-    for tool_name in ("mcp__plugin_yoetz_yoetz__start", "Bash", "mcp__other__check"):
+    for tool_name in ("mcp__plugin_finishup_finishup__start", "Bash", "mcp__other__check"):
         stdout = io.BytesIO()
         assert (
             observe_hooks.handle_claude_observe(
@@ -1317,7 +1326,11 @@ def test_claude_permission_denied_for_any_other_tool_records_nothing(tmp_path: P
     assert not (tmp_path / "observation/hook-diagnostics.jsonl").exists()
 
 
-def test_claude_scoped_yoetz_calls_follow_the_self_observation_policy(tmp_path: Path) -> None:
+# The legacy plugin scope a 0.1-0.2.5 plugin still installs is read alike (ADR-048).
+@pytest.mark.parametrize("prefix", ["mcp__plugin_finishup_finishup__", "mcp__plugin_yoetz_yoetz__"])
+def test_claude_scoped_finishup_calls_follow_the_self_observation_policy(
+    tmp_path: Path, prefix: str
+) -> None:
     """#564 on Claude Code: reads stay local, mutations and failures ship one row each."""
 
     store = LocalObservationStore(_state=tmp_path)
@@ -1346,21 +1359,21 @@ def test_claude_scoped_yoetz_calls_follow_the_self_observation_policy(tmp_path: 
             == 0
         )
 
-    hook("PostToolUse", "mcp__plugin_yoetz_yoetz__status", "claude-status-1")
-    hook("PostToolUse", "mcp__plugin_yoetz_yoetz__receipt", "claude-receipt-1")
-    hook("PostToolUse", "mcp__plugin_yoetz_yoetz__read_guidance", "claude-guidance-1")
-    hook("PostToolUse", "mcp__plugin_yoetz_yoetz__respond", "claude-respond-1")
-    hook("PostToolUse", "mcp__plugin_yoetz_yoetz__check", "claude-check-1")
-    hook("PostToolUseFailure", "mcp__plugin_yoetz_yoetz__status", "claude-status-2")
+    hook("PostToolUse", f"{prefix}status", "claude-status-1")
+    hook("PostToolUse", f"{prefix}receipt", "claude-receipt-1")
+    hook("PostToolUse", f"{prefix}read_guidance", "claude-guidance-1")
+    hook("PostToolUse", f"{prefix}respond", "claude-respond-1")
+    hook("PostToolUse", f"{prefix}check", "claude-check-1")
+    hook("PostToolUseFailure", f"{prefix}status", "claude-status-2")
 
     rows = store.list_pending_outbox_rows(commitment)
     assert [
         (row.envelope.structural_payload["tool_name"], row.envelope.structural_payload["action"])
         for row in rows
     ] == [
-        ("mcp__plugin_yoetz_yoetz__respond", "claude_mcp_success"),
-        ("mcp__plugin_yoetz_yoetz__check", "claude_mcp_success"),
-        ("mcp__plugin_yoetz_yoetz__status", "claude_mcp_failure"),
+        (f"{prefix}respond", "claude_mcp_success"),
+        (f"{prefix}check", "claude_mcp_success"),
+        (f"{prefix}status", "claude_mcp_failure"),
     ]
     # Every call remains in the bounded local store as structural-only evidence.
     assert len(store.list_envelopes(commitment)) == 6
@@ -1371,7 +1384,7 @@ def test_claude_unknown_version_keeps_untested_token_and_paired_contract() -> No
     ingest under the conservative paired contract as ``untested``; it is never aliased to the
     proven 2.1.241 profile, and an omitted version takes the legacy post-only path."""
 
-    from yoetz.ports.integrations import observation_pairing_contract
+    from finishup.ports.integrations import observation_pairing_contract
 
     mapper = observe_hooks._claude_capability_profile_id  # pyright: ignore[reportPrivateUsage]
     assert mapper("2.1.241") == "claude-code-cli-local-project-2.1.241"
@@ -1406,7 +1419,7 @@ def test_claude_ordinary_profile_keeps_denial_observation_and_returns_supported_
     )
     assert len(captured) == 1 and captured[0]["event_name"] == "PermissionDecision"
     assert emitted["hookSpecificOutput"] == {"hookEventName": "PermissionDenied", "retry": True}
-    assert "Yoetz confirms" in str(emitted["systemMessage"])
+    assert "FinishUP confirms" in str(emitted["systemMessage"])
     assert len(raw.splitlines()) == 1
 
 
@@ -1424,7 +1437,7 @@ def test_claude_local_only_check_does_not_get_a_semantic_retry_notice(
     payload: dict[str, JsonValue] = {
         "session_id": "local-check",
         "hook_event_name": "PermissionDenied",
-        "tool_name": "mcp__yoetz__check",
+        "tool_name": "mcp__finishup__check",
         "tool_input": {"mode": mode},
         "reason": "[Rule]",
     }

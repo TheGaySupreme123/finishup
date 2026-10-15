@@ -16,7 +16,7 @@ import pytest
 
 from builders.ledger_adapters import FixedIds
 from builders.policy_cases import evt, make_case, obl, obligation_record, record
-from yoetz.application.coordination import (
+from finishup.application.coordination import (
     CoordinationDetector,
     CoordinationRuntime,
     InMemoryCoordinationStore,
@@ -24,17 +24,17 @@ from yoetz.application.coordination import (
     RoutedCoordinationContextWriter,
     coordination_generation_superseded,
 )
-from yoetz.application.projects import InMemoryProjectCatalog, ProjectApplication
-from yoetz.domain.coordination import CoordinationError, CoordinationGapCode, OverlapKind
-from yoetz.domain.events import (
+from finishup.application.projects import InMemoryProjectCatalog, ProjectApplication
+from finishup.domain.coordination import CoordinationError, CoordinationGapCode, OverlapKind
+from finishup.domain.events import (
     CoordinationContextRecordedPayload,
     CoordinationObligationDeclaredPayload,
     ObligationPublishedPayload,
     ObligationStatus,
 )
-from yoetz.domain.findings import FindingKind
-from yoetz.kernel.deterministic_checks import DeterministicAssessment, DeterministicCase
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.findings import FindingKind
+from finishup.kernel.deterministic_checks import DeterministicAssessment, DeterministicCase
+from finishup.protocol.ids import IdKind, new_id
 
 _TASK_ONE = "tsk_20000000-0000-4000-8000-000000000001"
 _TASK_TWO = "tsk_20000000-0000-4000-8000-000000000002"

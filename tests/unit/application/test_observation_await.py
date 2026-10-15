@@ -6,12 +6,12 @@ from collections.abc import Iterator
 
 import pytest
 
-from yoetz.application.observation_await import (
+from finishup.application.observation_await import (
     AWAIT_OBSERVATIONS_BOUND_SECONDS,
     await_observations_bound,
     await_task_observations,
 )
-from yoetz.ports.ledger import CheckObservationsAwaited
+from finishup.ports.ledger import CheckObservationsAwaited
 
 _SESSION = "ses_00000000-0000-4000-8000-000000000001"
 

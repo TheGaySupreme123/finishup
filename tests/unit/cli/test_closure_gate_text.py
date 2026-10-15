@@ -1,7 +1,7 @@
 """Stop-gate wording against the gate texts tb4n1 agents actually received (F1, #984, #985).
 
 In tb4n1, 38 of 40 gate firings were for receipt-blocking findings the agent could not clear
-because of Yoetz's own limits, and the old text offered `yoetz-blocker` as the exit; 35 firings
+because of FinishUP's own limits, and the old text offered `finishup-blocker` as the exit; 35 firings
 were answered with a blocker. The cases below are the "Remaining:" lines the agents received
 (rollout `hook_prompt` texts, wheel 91e57aaf). For the readiness those attempts had, the new text
 must push repair or self-verification first, name `self_verified`, keep `acknowledged_not_done`
@@ -17,14 +17,14 @@ from typing import Any
 import pytest
 
 from builders.gate_readiness import ack_recheck, blocker_recheck, obligation_id, premise_recheck
-from yoetz.cli import closure_gate as gate_module
-from yoetz.cli.closure_gate import closure_gate_from_readiness
+from finishup.cli import closure_gate as gate_module
+from finishup.cli.closure_gate import closure_gate_from_readiness
 
 _DIGEST = "sha256:" + "e" * 64
 
 # Verbatim from cad-model semantic (rollout hook_prompt, ledger frontier 465).
 _OLD_CAD_MODEL_TEXT = (
-    "Yoetz closure gate (shown once for ledger frontier 465): closure still requires action"
+    "FinishUP closure gate (shown once for ledger frontier 465): closure still requires action"
     " before you stop. Remaining: 2 receipt-blocking finding(s) not repaired; the closing review"
     " has not run since your last change: run `check` with `final_review: true` (a recorded"
     " blocker does not waive it). Finish the work: run each planned verification after your last"
@@ -34,7 +34,7 @@ _OLD_CAD_MODEL_TEXT = (
     " receipt-blocking findings, then check and request the receipt. Stop without that only for a"
     " blocker outside your control (authority, consent, credentials, a dependency you cannot"
     " obtain): publish decision_recorded with affected_obligation_ids and the statement line"
-    " yoetz-blocker:<authority|consent|credential|dependency_unavailable>, then say so in your"
+    " finishup-blocker:<authority|consent|credential|dependency_unavailable>, then say so in your"
     " final answer. Data the task says is recoverable is not such a blocker. (Hook observations"
     " were still draining; observed-run facts were not used.)"
 )
@@ -108,7 +108,7 @@ def _text(frontier: str, remaining: str, *, pending: bool = True) -> str:
 def test_the_old_text_invited_a_blocker_for_findings_only() -> None:
     """The regression being fixed: a findings-only gate advertised the blocker exit."""
 
-    assert "yoetz-blocker:<" in _OLD_CAD_MODEL_TEXT
+    assert "finishup-blocker:<" in _OLD_CAD_MODEL_TEXT
     assert "self_verified" not in _OLD_CAD_MODEL_TEXT
 
 
@@ -118,17 +118,17 @@ def test_findings_only_gate_pushes_repair_and_self_verification(
 ) -> None:
     text = _text(frontier, remaining)
     assert f"Remaining: {remaining}." in text, trial
-    # No blocker invitation: a Yoetz limit is never a blocker and findings are not obligations.
-    assert "yoetz-blocker:<" not in text
+    # No blocker invitation: a FinishUP limit is never a blocker and findings are not obligations.
+    assert "finishup-blocker:<" not in text
     assert "publish decision_recorded" not in text
-    assert "A Yoetz limit is never a `yoetz-blocker`" in text
-    # Repair first, then self-verify a Yoetz-limit finding, acknowledgement last.
+    assert "A FinishUP limit is never a `finishup-blocker`" in text
+    # Repair first, then self-verify a FinishUP-limit finding, acknowledgement last.
     repair = text.index("repair what you can")
     verify = text.index("respond `self_verified` with how you verified it and the evidence ids")
     acknowledge = text.index("Respond `acknowledged_not_done` only if you truly cannot or will")
     assert repair < verify < acknowledge
     assert "redaction, observation loss or a review-packet limit" in text
-    assert "Do not reshape your work for Yoetz" in text
+    assert "Do not reshape your work for FinishUP" in text
     # The drain note appears only when it changed the decision; it did not here.
     assert "draining" not in text
     assert len(text) <= 2000
@@ -140,14 +140,14 @@ def test_open_obligations_keep_the_blocker_sentence_but_never_the_confirmation(
 ) -> None:
     text = _text(frontier, remaining)
     assert f"Remaining: {remaining}." in text, trial
-    assert "yoetz-blocker:<authority|consent|credential|dependency_unavailable>" in text
+    assert "finishup-blocker:<authority|consent|credential|dependency_unavailable>" in text
     assert "Data the task says is recoverable is not such a blocker." in text
-    assert "Yoetz will ask you about it once." in text
+    assert "FinishUP will ask you about it once." in text
     # How to confirm a blocker is told only after the challenge (the re-check): publishing the
     # line twice up front must never skip it (#985).
-    assert "same yoetz-blocker line again" not in text
+    assert "same finishup-blocker line again" not in text
     assert "same line again" not in text
-    assert "A Yoetz limit is never a `yoetz-blocker`" in text
+    assert "A FinishUP limit is never a `finishup-blocker`" in text
     if "receipt-blocking" in remaining:
         assert "`self_verified`" in text
     assert len(text) <= 2000
@@ -249,7 +249,7 @@ def test_worst_case_text_stays_within_the_host_bound_and_keeps_the_recheck(
     assert len(gate.text) <= 2000, len(gate.text)
     if rows:
         assert "Blocker re-check (asked once)" in gate.text
-        assert "same yoetz-blocker line again" in gate.text
+        assert "same finishup-blocker line again" in gate.text
         if rows > 3:
             assert f"and {rows - 3} more" in gate.text
 
@@ -323,7 +323,7 @@ def test_every_stop_gate_token_with_rechecks_never_reports_a_clipped_recheck_as_
         assert whole in gate.text
     blocker_keys = [key for key in gate.blocker_keys if key.endswith(":dependency_unavailable")]
     if blocker_keys:
-        assert "same yoetz-blocker line again" in gate.text
+        assert "same finishup-blocker line again" in gate.text
 
 
 def test_the_recheck_only_gate_never_reports_a_clipped_acknowledgement_as_asked() -> None:
@@ -356,6 +356,6 @@ def test_the_recheck_only_gate_never_reports_a_clipped_acknowledgement_as_asked(
     else:
         assert "Acknowledgement re-check" not in gate.text
     if any(key.endswith(":dependency_unavailable") for key in gate.blocker_keys):
-        assert "same yoetz-blocker line again" in gate.text
+        assert "same finishup-blocker line again" in gate.text
     # The blocker re-check has priority and always fits on its own.
     assert "Blocker re-check (asked once)" in gate.text

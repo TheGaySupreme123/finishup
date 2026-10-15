@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from builders.observed_runs import ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EventSchema,
@@ -17,10 +17,10 @@ from yoetz.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
 )
-from yoetz.domain.values import ObligationId, action_id, evidence_id, obligation_id
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.domain.values import ObligationId, action_id, evidence_id, obligation_id
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
     REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP,
@@ -292,7 +292,7 @@ def test_acknowledged_not_done_projects_and_last_effective_status_wins() -> None
 
 
 def test_the_status_obligations_row_carries_the_acknowledgement_reason() -> None:
-    from yoetz.adapters.memory import ledger as memory_ledger
+    from finishup.adapters.memory import ledger as memory_ledger
 
     ledger = ObservedLedger()
     ledger.append(_V1_0, _obligation(_A), observed=False)

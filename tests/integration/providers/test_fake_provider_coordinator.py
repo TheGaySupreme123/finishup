@@ -1,8 +1,8 @@
 """Prove the scripted fake provider drives the application through the full AI-powered review matrix.
 
 These tests exercise the real, production AI-powered review post-validation fence
-(:func:`yoetz.application.check.validate_semantic_judgment`) against results produced by
-:class:`yoetz.adapters.providers.fake.ScriptedFakeSemanticEvaluator`, without any network access.
+(:func:`finishup.application.check.validate_semantic_judgment`) against results produced by
+:class:`finishup.adapters.providers.fake.ScriptedFakeSemanticEvaluator`, without any network access.
 The fake is never asked to interpret case content; it only proves that whatever it returns is
 carried through the same fences a live adapter's output would face.
 """
@@ -18,7 +18,7 @@ from typing import Literal, cast
 import pytest
 
 from builders.policy_cases import BASE_COVERAGE, clm, make_case
-from yoetz.adapters.providers.fake import (
+from finishup.adapters.providers.fake import (
     FakeSemanticScript,
     ScriptedFakeSemanticEvaluator,
     scripted_invalid,
@@ -27,19 +27,19 @@ from yoetz.adapters.providers.fake import (
     scripted_success,
     scripted_timeout,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
     SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
     SemanticJudgmentRejected,
     validate_semantic_judgment,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FindingKind,
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
-from yoetz.ports.semantic import (
+from finishup.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
+from finishup.ports.semantic import (
     Deadline,
     ProviderAttemptProvenance,
     ReviewerChallenge,
@@ -50,8 +50,8 @@ from yoetz.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultTimeout,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _CASE_ID = "cas_30000000-0000-4000-8000-000000000001"
 _REQUEST_ID = "req_30000000-0000-4000-8000-000000000001"

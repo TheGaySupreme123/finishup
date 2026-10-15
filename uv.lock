@@ -247,6 +247,74 @@ wheels = [
 ]
 
 [[package]]
+name = "finishup"
+version = "0.3.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anyio" },
+    { name = "apsw" },
+    { name = "argon2-cffi" },
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "keyring" },
+    { name = "mcp" },
+    { name = "openai" },
+    { name = "packaging" },
+    { name = "platformdirs" },
+    { name = "pydantic" },
+    { name = "textual" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+portable-recovery = [
+    { name = "argon2-cffi" },
+]
+semantic-openai = [
+    { name = "httpx" },
+    { name = "openai" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "hypothesis" },
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyio", specifier = "==4.14.2" },
+    { name = "apsw", specifier = "==3.53.3.1" },
+    { name = "argon2-cffi", specifier = "==25.1.0" },
+    { name = "argon2-cffi", marker = "extra == 'portable-recovery'", specifier = "==25.1.0" },
+    { name = "cryptography", specifier = "==50.0.0" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "httpx", marker = "extra == 'semantic-openai'", specifier = "==0.28.1" },
+    { name = "jsonschema", specifier = "==4.26.0" },
+    { name = "keyring", specifier = "==25.7.0" },
+    { name = "mcp", specifier = "==1.28.1" },
+    { name = "openai", specifier = "==2.46.0" },
+    { name = "openai", marker = "extra == 'semantic-openai'", specifier = "==2.46.0" },
+    { name = "packaging", specifier = "==26.2" },
+    { name = "platformdirs", specifier = "==4.10.0" },
+    { name = "pydantic", specifier = "==2.13.4" },
+    { name = "textual", specifier = "==8.2.8" },
+    { name = "typer", specifier = "==0.27.0" },
+]
+provides-extras = ["portable-recovery", "semantic-openai"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "hypothesis", specifier = "==6.156.6" },
+    { name = "pytest", specifier = "==9.1.1" },
+    { name = "pytest-timeout", specifier = "==2.4.0" },
+    { name = "ruff", specifier = "==0.15.22" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1002,72 +1070,4 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a2/65/b7c6c443ccc58678c91e1e973bbe2a878591538655d6e1d47f24ba1c51f3/uvicorn-0.51.0.tar.gz", hash = "sha256:f6f4b69b657c312f516dd2d268ab9ae6f254b11e4bac504f37b2ab58b24dd0b0", size = 94412, upload-time = "2026-07-08T10:59:05.962Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/45/ec/dbb7e5a6b91f86bfb9eb7d2988a2730907b6a729875b949c7f022e8b88fa/uvicorn-0.51.0-py3-none-any.whl", hash = "sha256:5d38af6cd620f2ae3849fb44fd4879e0890aa1febe8d47eb355fb45d93fe6a5b", size = 73219, upload-time = "2026-07-08T10:59:04.44Z" },
-]
-
-[[package]]
-name = "yoetz"
-version = "0.3.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anyio" },
-    { name = "apsw" },
-    { name = "argon2-cffi" },
-    { name = "cryptography" },
-    { name = "httpx" },
-    { name = "jsonschema" },
-    { name = "keyring" },
-    { name = "mcp" },
-    { name = "openai" },
-    { name = "packaging" },
-    { name = "platformdirs" },
-    { name = "pydantic" },
-    { name = "textual" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-portable-recovery = [
-    { name = "argon2-cffi" },
-]
-semantic-openai = [
-    { name = "httpx" },
-    { name = "openai" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "hypothesis" },
-    { name = "pytest" },
-    { name = "pytest-timeout" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anyio", specifier = "==4.14.2" },
-    { name = "apsw", specifier = "==3.53.3.1" },
-    { name = "argon2-cffi", specifier = "==25.1.0" },
-    { name = "argon2-cffi", marker = "extra == 'portable-recovery'", specifier = "==25.1.0" },
-    { name = "cryptography", specifier = "==50.0.0" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "httpx", marker = "extra == 'semantic-openai'", specifier = "==0.28.1" },
-    { name = "jsonschema", specifier = "==4.26.0" },
-    { name = "keyring", specifier = "==25.7.0" },
-    { name = "mcp", specifier = "==1.28.1" },
-    { name = "openai", specifier = "==2.46.0" },
-    { name = "openai", marker = "extra == 'semantic-openai'", specifier = "==2.46.0" },
-    { name = "packaging", specifier = "==26.2" },
-    { name = "platformdirs", specifier = "==4.10.0" },
-    { name = "pydantic", specifier = "==2.13.4" },
-    { name = "textual", specifier = "==8.2.8" },
-    { name = "typer", specifier = "==0.27.0" },
-]
-provides-extras = ["portable-recovery", "semantic-openai"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "hypothesis", specifier = "==6.156.6" },
-    { name = "pytest", specifier = "==9.1.1" },
-    { name = "pytest-timeout", specifier = "==2.4.0" },
-    { name = "ruff", specifier = "==0.15.22" },
 ]

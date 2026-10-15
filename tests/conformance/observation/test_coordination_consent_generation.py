@@ -8,32 +8,32 @@ from typing import cast
 import pytest
 
 from builders.multi_agent import multi_agent_service
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     load_mapping,
     store_mapping,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application import start as start_module
-from yoetz.application.coordination import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application import start as start_module
+from finishup.application.coordination import (
     CoordinationDetector,
     DeclaredCoordinationInput,
     InMemoryCoordinationStore,
 )
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.projects import (
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.projects import (
     InMemoryProjectCatalog,
     ProjectApplication,
     SourceConsentRevocationPlan,
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.coordination import MemberKind
-from yoetz.domain.observation import ObservationRevokeCommand
-from yoetz.ports.control import ControlError, RepositoryPrivacyContext
-from yoetz.ports.start_catalog import TaskRouteState, TaskSourceProvenance
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import StartRequest
+from finishup.application.start import StartInternalResult
+from finishup.domain.coordination import MemberKind
+from finishup.domain.observation import ObservationRevokeCommand
+from finishup.ports.control import ControlError, RepositoryPrivacyContext
+from finishup.ports.start_catalog import TaskRouteState, TaskSourceProvenance
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import StartRequest
 
 pytestmark = pytest.mark.anyio
 

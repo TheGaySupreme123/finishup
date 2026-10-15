@@ -16,25 +16,27 @@ from typing import Any, cast
 import pytest
 
 from builders.observed_runs import ObservedLedger
-from unit.kernel.test_tb4n3_own_calls import (  # noqa: F401 - fixture + helpers
-    _after_check,  # pyright: ignore[reportPrivateUsage]
-    _surfaces,  # pyright: ignore[reportPrivateUsage]
-    identity_key,  # noqa: F401  # pyright: ignore[reportUnusedImport]
-)
-from yoetz.application.review_concern import _is_material  # pyright: ignore[reportPrivateUsage]
-from yoetz.domain.events import (
+from finishup.application.review_concern import _is_material  # pyright: ignore[reportPrivateUsage]
+from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     CheckRecordedPayload,
     DeliverableState,
     ResultOutcome,
 )
-from yoetz.domain.values import obligation_id
-from yoetz.kernel.closure_class import _emptied_obligations  # pyright: ignore[reportPrivateUsage]
-from yoetz.kernel.concern import ConcernKey
-from yoetz.kernel.later_material import LaterMaterialClass, classify_later_material
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
+from finishup.domain.values import obligation_id
+from finishup.kernel.closure_class import (
+    _emptied_obligations,  # pyright: ignore[reportPrivateUsage]
+)
+from finishup.kernel.concern import ConcernKey
+from finishup.kernel.later_material import LaterMaterialClass, classify_later_material
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from unit.kernel.test_tb4n3_own_calls import (  # noqa: F401 - fixture + helpers
+    _after_check,  # pyright: ignore[reportPrivateUsage]
+    _surfaces,  # pyright: ignore[reportPrivateUsage]
+    identity_key,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
 
 _C = LaterMaterialClass
 
@@ -83,7 +85,7 @@ def test_a_command_without_a_write_scope_stays_unclassified(scope: str | None) -
     assert _surfaces(ledger.prefix).superseded is False
 
 
-def test_yoetz_exploration_commands_never_supersede() -> None:
+def test_finishup_exploration_commands_never_supersede() -> None:
     ledger = _after_check()
     ledger.run(
         None,
@@ -108,8 +110,8 @@ def test_a_refill_by_shell_write_clears_the_stale_emptied_fact(
 ) -> None:
     """The check read the file emptied; the agent refills it with ``cat >``; the fact is stale."""
 
-    from yoetz.kernel import closure_class
-    from yoetz.kernel.check_standing import check_standing
+    from finishup.kernel import closure_class
+    from finishup.kernel.check_standing import check_standing
 
     ledger = _after_check()
     check = cast(AcceptedEvent, ledger.prefix[-1])

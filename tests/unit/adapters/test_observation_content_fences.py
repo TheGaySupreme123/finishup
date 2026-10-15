@@ -7,19 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     LocalConsentTransition,
     LocalObservationStore,
 )
-from yoetz.domain.observation import ObservationControlCommand, ObservationRevokeCommand
-from yoetz.domain.observation_budget import LARGEST_CAPACITY
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation import ObservationControlCommand, ObservationRevokeCommand
+from finishup.domain.observation_budget import LARGEST_CAPACITY
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.observation_settings import ObservationDetailProfile, ObservationSelection
-from yoetz.domain.values import Timestamp
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.domain.observation_settings import ObservationDetailProfile, ObservationSelection
+from finishup.domain.values import Timestamp
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 _PROFILE = CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
 _CURSOR = CURSOR_ORDINARY_OBSERVATION_PROFILE_ID

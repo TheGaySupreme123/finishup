@@ -3,7 +3,7 @@ from __future__ import annotations
 from hypothesis import given
 from hypothesis import strategies as st
 
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 
 _NAMED = tuple(
     profile for profile in ReviewContextProfile if profile is not ReviewContextProfile.CUSTOM

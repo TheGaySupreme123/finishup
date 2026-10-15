@@ -1,15 +1,15 @@
 # Linux and WSL host facts
 
-Operator reference for what Yoetz needs, refuses, and claims on Linux and on Windows through
+Operator reference for what FinishUP needs, refuses, and claims on Linux and on Windows through
 WSL 2 (Windows Subsystem for Linux). Product wording for users lives on
 [the install page](../usage/install-and-first-run.md#linux); this page records the decisions and
 their evidence state. Filed from the Linux/WSL parity sweep (issues #716, #720–#725).
 
 ## Shared desktop installation
 
-`yoetz setup run` discovers installed Codex, Claude Code, Cursor IDE and Cursor Agent CLI.
+`finishup setup run` discovers installed Codex, Claude Code, Cursor IDE and Cursor Agent CLI.
 The selected host uses the common preview, status, disconnect and reconnect flow. Installing the
-Yoetz integration does not require signing in to a model provider. Host account sign-in is a
+FinishUP integration does not require signing in to a model provider. Host account sign-in is a
 separate prerequisite for model use.
 
 Claude and Cursor plugin changes retain the exact-plan operating-system identity check. On
@@ -23,16 +23,16 @@ Issue #767 owns installation verification; it does not certify full model/observ
 ADR-007 advertises exactly two cells: macOS 11.0+ arm64 (`macosx_11_0_arm64`) and glibc 2.28+
 Linux x86-64 (`manylinux_2_28_x86_64`). The dependency lock resolves `apsw` wheels for Linux
 aarch64 too, so `uv tool install` succeeds on WSL 2 under Windows-on-ARM (Snapdragon X), Graviton,
-Raspberry Pi, and Asahi. Those installs are **untested, not presumed compatible**: `yoetz version
---json` lists `platform_cell_untested` under `limitations`, `yoetz setup status --json` reports the
+Raspberry Pi, and Asahi. Those installs are **untested, not presumed compatible**: `finishup version
+--json` lists `platform_cell_untested` under `limitations`, `finishup setup status --json` reports the
 cell under `platform.cell`, and `/doctor` shows the platform line as *not proven*. Nothing is
 refused; nothing is claimed. musl, macOS x86-64, and native Windows remain outside the matrix
 (native Windows refuses with `unsupported_platform`, issue #709).
 
 | Reported by | Field | Certified cell | Untested cell |
 |---|---|---|---|
-| `yoetz version --json` | `limitations` | no platform token | `platform_cell_untested` |
-| `yoetz setup status --json` | `platform.cell` | `certified: true`, `cell: <tag>` | `certified: false`, `cell: null` |
+| `finishup version --json` | `limitations` | no platform token | `platform_cell_untested` |
+| `finishup setup status --json` | `platform.cell` | `certified: true`, `cell: <tag>` | `certified: false`, `cell: null` |
 | `/doctor` | Platform | ok | not proven, with the certified cells named |
 
 Certifying Linux aarch64 needs a real `ubuntu-24.04-arm` release runner and release evidence in
@@ -40,7 +40,7 @@ Certifying Linux aarch64 needs a real `ubuntu-24.04-arm` release runner and rele
 
 ## Service startup on glibc before 2.32
 
-Issue #1040: on `condaforge/miniforge3:24.9.2-0` every `yoetz service run` exited 70 with only
+Issue #1040: on `condaforge/miniforge3:24.9.2-0` every `finishup service run` exited 70 with only
 `internal_error: the command could not be completed`. That image is Ubuntu 20.04 with glibc 2.31.
 glibc before 2.32 has no no-follow `fchmodat`, so CPython raises `NotImplementedError` for
 `os.chmod(..., follow_symlinks=False)`, which is how the service set the mode of each endpoint it
@@ -55,24 +55,74 @@ same failure applies by construction, not by test, to every glibc 2.28–2.31 sy
 certified cell (Ubuntu 20.04, Debian 11, RHEL/Rocky/Alma 8, and images built on them). Release
 verification runs on
 `ubuntu-24.04` (glibc 2.39), which is why the floor was never exercised. PR CI now installs the
-candidate wheel in that exact image (by digest) and starts, queries and stops the service, and
-`tests/subprocess/test_service_startup_failure.py` repeats the start under the image's environment
-with the glibc 2.31 `chmod` behaviour on every platform.
+candidate wheel in that exact image (by digest) and runs `scripts/ci/service_image_smoke.sh` there
+(next section), and `tests/subprocess/test_service_startup_failure.py` repeats the start under the
+image's environment with the glibc 2.31 `chmod` behaviour on every platform.
+
+## Git 2.25 is the minimum; older Gits are named, not obscure
+
+The same images ship an old Git (2.25 on Ubuntu 20.04, 2.30 on Debian 11). With the `chmod` fix the
+service started and reported `locked`, the passphrase vault initialized, and then every command
+failed with `service_incompatible` naming the service's own pid and version (tb4n5). Once the vault
+is ready, the control handshake resolves the caller's repository identity with
+`git rev-parse --path-format=absolute --git-common-dir`. `--path-format` exists only since Git 2.31,
+and an older `rev-parse` does not reject it: it echoes any argument it does not recognise, so the
+answer gained a line and the identity resolver refused. The handshake closed without answering, and
+the client called that silent close another installation. Check-time change capture also passed
+`diff --no-relative` (Git 2.28) and `config --show-scope` (Git 2.26), which Git 2.25 refuses, so
+every capture was `git_failed`.
+
+The documented minimum is now Git 2.25, and FinishUP always uses the system Git (the first `git` in
+`/bin:/usr/bin`, never one a conda environment puts first on `PATH`). ADR-031's #1040 amendment
+lists each replaced argument; in short, no FinishUP Git call needs anything newer, repository
+commitments are the ones `--path-format=absolute` produced, and the hardened runners read no global
+Git configuration on any Git (on Git before 2.32, which ignores `GIT_CONFIG_GLOBAL`, a
+`.gitconfig` committed to the repository used to become the global configuration, because `HOME`
+named the workspace). A system Git older than 2.25 is refused with `git_version_unsupported` and
+the continuation `system_git_upgrade_required`.
+
+A handshake the service fails is named on both sides. The service records it once (`component`
+`service.daemon`, `operation` `control_handshake`, `reason` `handshake_service_fault` with
+`reason_code` the closed refusal such as `git_version_unsupported`, or the unexpected exception's
+class token and origin with `phase` `handshake`); no path, Git output or stderr is recorded. The
+client reports `service_incompatible` only when a validated field of the singleton stamp names
+another installation. For this installation's own holder, and for a holder whose stamp identity is
+unreadable, partly readable or absent, it reports `service_handshake_failed`:
+
+| Surface | What it shows |
+|---|---|
+| CLI (`finishup service status`, any repository-bound command) | `service_unavailable: service_handshake_failed: the local service closed the connection while setting it up …; correlation_id err_…` (holder pid included), exit 20; with an old system Git the line names Git 2.25 and the `system_git_upgrade_required` directive |
+| MCP | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_handshake_failed`, `safe_details.phase: handshake` or `handshake_git_version` (then also `continuation: system_git_upgrade_required`) |
+| `finishup service diagnostics` | the service's `handshake_service_fault` record with its `reason_code`, and the client's `service_handshake_failed` record |
+
+`finishup service restart` does not help (it reports the same failure rather than signalling the
+holder); repair the cause the diagnostics name, typically the system Git. The one exception is a
+holder whose stamp carries no identity key at all (an older FinishUP, or a service whose stamp lost
+its identity when its schema manifest could not be read): nothing replaces it automatically, and
+an explicit `finishup service restart` does. PR CI's image smoke
+(`scripts/ci/service_image_smoke.sh`) records `git --version` (and fails unless it is 2.25.x),
+initializes a passphrase vault under an isolated root, and from inside a Git repository reads ready
+status, starts a task and runs a deterministic check whose change capture must succeed (its test-edit
+baseline must be known). `tests/unit/adapters/test_git_old_versions.py` reproduces Git 2.25's
+behaviour with the real Git behind a shim. To run the smoke elsewhere, set `FINISHUP` to a candidate
+launcher and `SMOKE_BASE` to a private 0700 directory outside `/tmp`; `SMOKE_GIT` only builds the
+repository and is the version `EXPECT_GIT_SERIES` checks, because FinishUP itself always uses the
+system Git.
 
 ## Reading a service startup failure
 
 Every startup failure is recorded once, with the stage that failed, the reviewed exception-class
-token, the innermost `yoetz` source location and one correlation id (never exception text or
+token, the innermost `finishup` source location and one correlation id (never exception text or
 paths). Each surface shows the same facts:
 
 | Surface | What it shows |
 |---|---|
-| `yoetz service run` stderr (a harness's `service.log`) | for example `internal_error: the service could not start (stage: activation; exception_not_implemented_error; at yoetz.adapters.control.unix_socket:434); correlation_id err_…`, exit 70; `stopped unexpectedly` when it failed after serving |
+| `finishup service run` stderr (a harness's `service.log`) | for example `internal_error: the service could not start (stage: activation; exception_not_implemented_error; at finishup.adapters.control.unix_socket:434); correlation_id err_…`, exit 70; `stopped unexpectedly` when it failed after serving |
 | The structural stderr line before it | `{"component":"service.daemon","operation":"service_startup_failed","phase":…,"reason":…,"origin":…}` |
-| `yoetz service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
+| `finishup service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
 | MCP `start`, or any tool call that started the service on demand | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_start_failed`, `safe_details.phase: <stage>`, the spawned service's correlation id; text `Reason: service_start_failed (stage: <stage>).` |
-| A CLI command that started the service on demand (`yoetz service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
-| Setup and drain commands that start it on demand (`yoetz setup vault`, `yoetz setup llm --set`, the interactive `yoetz setup`, the restart after a provider or Codex-subscription change, `yoetz observe drain`) | the same `service_unavailable: … exited while starting …` line on stderr, then the command's own unchanged result and exit code (for example `provider_setup_failed: service_unavailable`, exit 20); the restart stops at the first such failure instead of spawning again. The full-screen window does not print it; `yoetz setup status --next` leads to `yoetz service restart`, which does |
+| A CLI command that started the service on demand (`finishup service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
+| Setup and drain commands that start it on demand (`finishup setup vault`, `finishup setup llm --set`, the interactive `finishup setup`, the restart after a provider or Codex-subscription change, `finishup observe drain`) | the same `service_unavailable: … exited while starting …` line on stderr, then the command's own unchanged result and exit code (for example `provider_setup_failed: service_unavailable`, exit 20); the restart stops at the first such failure instead of spawning again. The full-screen window does not print it; `finishup setup status --next` leads to `finishup service restart`, which does |
 
 Stages: `import` (a service module or native extension could not load, for example a wheel built
 for a newer C library), `configuration` (configuration or the log sink), `composition` (instance
@@ -87,6 +137,146 @@ exception_local_control_transport_error; runtime_directory_unsafe; at …)`. A s
 live one is not a failure: on-demand start connects to the holder. The bridge stops waiting as
 soon as its spawned service exits with a record, instead of spending its 30-second start budget.
 
+## Umask 0002 and user-private groups
+
+Ubuntu, Debian, Fedora and RHEL create normal accounts with a user-private group
+(`USERGROUPS_ENAB yes`) and umask 0002 through `pam_umask`; WSL's Ubuntu inherits the same
+defaults. Every file such an account creates, including `uv tool install`'s environment and uv's
+managed interpreter under `~/.local/share/uv/python`, is group-writable by a group of one.
+FinishUP treats that group write as owner-only (ADR-007, 2026-10-14 amendment): the group must be
+the owner's primary group, named like the owner, with no other member and no other account using
+it as its primary group, as read from `/etc/passwd`, `/etc/group` and (when readable)
+`/etc/gshadow`. That is only trusted when `/etc/nsswitch.conf` serves `passwd` and `group` from
+`files`/`systemd` alone (the Ubuntu, Debian and Fedora defaults) with no userdb records beyond
+dynamic users. Every `passwd`, `group` and `initgroups` line counts, including a duplicate or a
+line written without the colon (`initgroups files sss`); a malformed one (for example an unknown
+`[ACTION]` word) makes the check refuse. On machines joined to a directory service (`sss`, `ldap`, `nis`, `winbind`),
+membership cannot be proved complete, so group write is treated as shared: install with
+`umask 022`, or run the printed `chmod -R go-w`. World write, and group write through any other group, are
+refused everywhere FinishUP checks who can write (installed runtime, launcher, host configuration
+roots, workspace and Git capture).
+
+A refused runtime stops `finishup service run`, `finishup mcp serve`, `finishup upgrade` and every hook
+with `release_runtime_group_writable` or `release_runtime_world_writable` (exit 20). Terminal
+commands print the exact repair for that installation, for example
+`chmod -R go-w /var/home/alice/.local/share/uv/tools/finishup
+/var/home/alice/.local/share/uv/python/cpython-3.14.6-linux-x86_64-gnu`; hooks print the token
+without paths and point at `finishup service run`. A service started on demand records the token as
+its startup failure (`stage: import; …; release_runtime_group_writable`), and CLI
+`service_unavailable` results, `finishup service status` and `finishup setup status` print the same
+refusal; `finishup setup run` refuses to connect Codex, Claude Code or Cursor to that runtime
+(`reason` is the token, `next_step` the repair) while its status view and disconnect still work.
+`finishup upgrade --accept`, `npx finishup` and `scripts/provision_test_instance.py` install under umask
+022; the provisioner also clears group/other write on the runtime it creates.
+
+Evidence (2026-10-14, Boat Ubuntu 24.04, fresh normal account, `umask` 0002 from `pam_umask`):
+`uv tool install` produced a 775/664 environment and a 775 managed interpreter; `service run`,
+`mcp serve` (initialize, tools/list), Codex, Claude Code and Cursor hooks (exit 0), `state capture`
+on a 775 repository, and `setup run` previews for Codex, Claude Code (user-owned executable) and
+Cursor Agent CLI all succeeded. The previous release refused every one of them. Moving the
+runtime to a group shared with a second account produced the token on each surface. Not covered: a
+root-owned Claude Code executable, which the separate executable-ownership rule refuses as
+`target_unsafe` regardless of umask. The interpreter a retained generation links to is
+re-checked on every reuse, so a later group change is refused then too.
+
+## Root-owned project directories (containers)
+
+Container images often keep the working directory root-owned and run the agent as a non-root
+`USER` (for example `/app` as `root:root 0755`, or sticky `1777`, with `USER nobody`). FinishUP
+admits such a project root for the non-root user when no other account can write it, or when it is
+sticky (ADR-007, 2026-10-14); a directory another non-root account owns stays refused. Everything
+FinishUP creates inside it (`.agents/`, `.cursor/`, `.claude/`, `.codex/`) must belong to the user, so
+when the user cannot create entries there, have root pre-create that directory owned by the user.
+
+**Checkouts.** Git refuses another owner's checkout ("dubious ownership"). A checkout root made
+(`/app` and `/app/.git` owned by root, from `COPY` or `git clone` at image build), and the user's
+own `git init` inside a sticky root-owned `/app` (Git refuses that too, because the working tree is
+root's), are used as a plain directory: the locator is `/app` from `/app` or any directory beneath
+it, the service gives `/app` (the checkout's top) the plain directory identity without running
+Git, whichever of those directories a host, the CLI or the full-screen interface starts from, and
+the service starts and hooks and MCP attach. Change and subject-state capture report `unsafe_root`;
+the receipt names the gap as "the repository failed a safety check (a link, another owner, a
+working tree redirected elsewhere, or a directory replaced while it was read)", so checks cover
+what the agent publishes, not a Git diff. A `.git` another non-root account owns, one others can write, or a root-owned
+`.git` file with more than one link (anyone can plant a hard link in a sticky directory) is
+refused. If you need Git-based capture, give the user the checkout (`chown -R`).
+
+**Host folders.** A `.claude`, `.codex` or `.cursor` root committed to the image is read
+normally by host admission, so admission status shows `absent` (typically) and its reverse sweeps
+(the privacy ceremony, Codex disconnect and strict re-registration, plugin removal) report nothing
+to remove; FinishUP cannot write admission entries into it (the user cannot either), so a grant there
+is refused `target_unsafe`. Known gap: every Claude Code plugin change (install, update, enable,
+disable, remove; status still reads it), and Cursor's project MCP status, connect and disconnect,
+still require `.claude` and `.cursor` to be the user's own and refuse a root-committed one as
+`target_unsafe`. In both cases the repair is to have root
+make the folder the user's (`chown -R <user> /app/.claude`); a follow-up may let those paths read
+such a folder for status and removal. In a sticky project folder another account can create one of those folders first;
+admission status then reports it `unknown` (`folder_not_owned`), grant and revoke refuse it, and
+Claude Code setup refuses a squatted `.claude` (`target_unsafe`): remove it, or have root recreate
+it for the user. Writes go through the folder FinishUP checked, pinned by descriptor, never a link
+swapped in after the check.
+
+**Scope.** The rule admits every root-owned sticky directory, so a non-root user can also bind
+`/tmp`, `/var/tmp` or `/dev/shm` (on macOS `/private/tmp` and the shared folder under `/Users`) as
+a project; FinishUP's own state still refuses shared temporary directories. A root-installed `claude`
+executable is still refused for a non-root user (Claude Code's executable must be the user's own),
+while Codex accepts a root-owned launcher.
+
+**The runtime.** Install it as the user (or give the user its prefix and a 0700
+`.<prefix>-releases` sibling), because binding an instance writes into the prefix and every
+serving start uses that sibling. A runtime the user cannot use this way is refused by name
+(ADR-007, 2026-10-14):
+
+- `release_runtime_not_owned` (exit 20) from `service run`, `mcp serve`, `upgrade` and every hook
+  when `.<prefix>-releases` belongs to another account, or does not exist and the user cannot
+  create it in the prefix's parent. Terminal commands print that directory and the repair that
+  fits; hooks print the token only. `service status` names it, and every connect path refuses to
+  connect a host to such a runtime (`setup run` with or without `--host`, the full-screen
+  interface's first run and `/connect`, the menu, the `integrate … install` commands for Codex
+  MCP, Claude Code and Cursor, and `recommend accept codex-plugin-activation`, exit 20);
+  disconnect, removal and status stay available. Before, these
+  printed `release_runtime_unavailable: permission_denied` (no directory yet) or "could not be
+  verified" (root had already run FinishUP and made the directory), and setup connected anyway.
+- When the installation is the user's own but `.<prefix>-releases` is not (typically created by
+  running FinishUP once with `sudo`), the repair is to remove that directory (it holds only that
+  account's runtime copies; stop anything that account runs from it first) and let FinishUP recreate
+  it as the user's, 0700. When it is absent and the user cannot create it, have the owner of the
+  prefix's parent create it for the user (`install -d -m 0700 -o <user> <dir>`).
+- `runtime_pin_unwritable` (exit 20) from `instance create --bind-runtime` when the user cannot
+  write the prefix; the command keeps nothing, so it can simply be run again after the repair.
+
+If the image must keep the runtime root-owned, root can create the sibling for exactly one user
+before anyone runs FinishUP:
+
+```bash
+install -d -m 0700 -o agent /opt/yu/.runtime-releases   # for a runtime at /opt/yu/runtime
+```
+
+That user then builds and serves its own private copies from root's files (verified as `nobody`,
+2026-10-14). Root itself is then refused by the same rule, the runtime serves only that user, and
+it cannot be pinned (a pin must be the running user's own), so a pinned instance still needs a
+runtime the user owns. If root has already run FinishUP from that runtime, the existing sibling holds
+root's copies and lock: leave it and install a runtime for the user instead. Lifecycle in this
+layout: root upgrades the package with its package manager (for example `uv tool upgrade yoetz`;
+`finishup upgrade --accept` run as root is refused by the same rule); the user's next serving start
+builds a fresh copy and removes unused older ones, and the user can remove unused copies at any
+time with `finishup upgrade --prune-runtimes`. Sessions already open keep their copy until they end.
+
+## Retained-runtime bytecode and slow starts
+
+Serving processes (`service run`, `mcp serve`, every hook, `upgrade`) run from a sealed,
+read-only copy of the installation (ADR-007). That copy ships unchecked-hash bytecode for every
+module, so a start costs what an ordinary run costs. Building the copy reuses the installation's
+own bytecode only when it is hash-based and matches the source. `npx finishup` and
+`finishup upgrade --accept` install that way (they set `SOURCE_DATE_EPOCH` for the uv install and
+the build backends it runs for any sdist dependency, nothing else); after a plain
+`uv tool install --compile-bytecode`, which writes timestamp bytecode, the first serving start
+compiles the package once (roughly 2-3 times as long on an M-series Mac, longer on WSL under
+nested virtualization). To get the faster first start from a manual install, run it as
+`SOURCE_DATE_EPOCH=315532800 uv tool install --compile-bytecode …`. A start that outlives the client's budget is reported as
+`service_unavailable: service_handshake_timeout` (CLI) or `safe_details.phase:
+handshake_timeout` (MCP): wait and retry; do not run `finishup service run` or `restart` for it.
+
 ## Approved-check sandbox
 
 Network-denied approved checks run only under an enforcing sandbox: Seatbelt (`sandbox-exec`,
@@ -96,8 +286,8 @@ since issue #720 the dependency is named once instead of per run:
 
 | Surface | Field / line |
 |---|---|
-| `yoetz observe checks status --json` | `sandbox: {status, mechanism, reason, remediation}` (also when `state: not_configured`) |
-| `yoetz setup status --json` | `platform.check_sandbox` (same shape) |
+| `finishup observe checks status --json` | `sandbox: {status, mechanism, reason, remediation}` (also when `state: not_configured`) |
+| `finishup setup status --json` | `platform.check_sandbox` (same shape) |
 | `/doctor` | Approved-check sandbox: ok / not configured, with the remediation |
 
 Reason tokens: `ready`, `bwrap_missing`, `bwrap_unusable`, `sandbox_exec_missing`,
@@ -111,8 +301,8 @@ AppArmor profile that permits it; a still-blocked host can relax
 prefix plus `--chdir <workspace>`: the whole host filesystem is bound read-write and only the
 network namespace is unshared, mirroring the macOS profile `(allow default) (deny network*)`.
 
-**`yoetz service status` does not report sandbox availability, and is not going to.** Issue #720
-asked for the fact to be named once in setup diagnostics *and* in `yoetz service status`; the
+**`finishup service status` does not report sandbox availability, and is not going to.** Issue #720
+asked for the fact to be named once in setup diagnostics *and* in `finishup service status`; the
 second half is deliberately declined here, and those three surfaces are the whole supported set.
 `service status` answers a versioned wire contract (`service-status-1.0.0`, closed to unknown
 fields and a member of the schema manifest whose digest the control handshake pins on both sides)
@@ -133,6 +323,18 @@ Evidence state: issue #786 records an installed 0.2.3 candidate on Ubuntu 24.04 
 a different network namespace, and could not connect to a live listener in the parent namespace.
 This bounded check passed; it does not establish every distribution or native host integration,
 and no Linux sandbox capability cell is claimed from it.
+
+## Codex evaluator without a system bubblewrap
+
+The Codex-subscription evaluator is a different consumer from approved checks. With a
+source-reviewed Codex release (today `0.162.1`), it admits Codex's exact missing-bubblewrap and
+no-user-namespace warnings (ADR-006, 2026-10-14). It runs no commands and writes no files, so
+there is nothing for the sandbox to confine. Without a system `bwrap`, setup and repair still
+pass. `finishup provider codex-subscription status --json` reports
+`codex_sandbox_unavailable: true` and `codex_sandbox_unavailable_reason: bubblewrap_missing`,
+and the terminal interface says the evaluator runs without Codex's verified Linux sandbox. On WSL 2
+the same applies. WSL 1 is unsupported, and Codex's WSL1 warning stays refused. Installing the
+`bubblewrap` package is still what approved network-denied checks need (above).
 
 ## System credential store
 
@@ -155,8 +357,8 @@ auto-unlock-only until a release cell reviews their locked-session behaviour for
 
 What the user sees when the store is unusable (issue #721): the interface's storage step disables
 **Use system secure storage** with the reason (no store loaded, or the loaded backend is not
-approved, naming its id) and what Yoetz needs on that platform; `yoetz setup run` prints the same
-in its "Platform credential store unavailable" line; `yoetz setup status --json` reports
+approved, naming its id) and what FinishUP needs on that platform; `finishup setup run` prints the same
+in its "Platform credential store unavailable" line; `finishup setup status --json` reports
 `platform.secure_storage: {approved, backend_id, reason, requirement}`; `/doctor` shows a System
 secure storage line. Reason tokens: `approved`, `keyring_unavailable`, `backend_not_approved`.
 For Secret Service, approval also requires a successful ten-second bounded D-Bus/service
@@ -164,7 +366,7 @@ availability probe. The probe reads no credential and never unlocks or creates a
 it does not prove that a later credential operation will succeed.
 
 Headless Linux sessions and WSL 2 normally have no session D-Bus and no Secret Service daemon, so
-the vault passphrase is the supported route there; `yoetz service auto-unlock enable` remains
+the vault passphrase is the supported route there; `finishup service auto-unlock enable` remains
 available only where an accepted backend is loaded. Capability CI runs `platform-key-matrix` on
 `ubuntu-24.04` with a desktop Secret Service; headless Linux and WSL 2 keyring evidence is
 **outstanding**.
@@ -175,28 +377,28 @@ available only where an accepted backend is loaded. Capability CI runs `platform
 `path_on_network_filesystem` (`STORAGE_UNSAFE`). On Linux the denylist includes `9p` (how WSL 2
 mounts Windows drives by default), `drvfs` (WSL 1), and `virtiofs` (WSL and VM shared folders
 generally), alongside NFS, SMB, sshfs, and the rest. These transports
-cross a host/guest boundary whose locking and crash durability Yoetz has not certified; the
+cross a host/guest boundary whose locking and crash durability FinishUP has not certified; the
 refusal is a conservative support decision recorded in ADR-003 (issue #723), not a claim that
 all such implementations lack locks. For example,
 [virtiofsd supports configurable POSIX locks](https://virtio-fs.gitlab.io/qemu/tools/virtiofsd.html).
-Inside WSL, Yoetz state must stay on the distribution's own ext4 disk — the WSL home is the default — never under `/mnt/<letter>`. The refusal's remediation says so, and it applies to
-`YOETZ_ISOLATED_ROOT`, `yoetz instance create --root`, and `storage.data_dir` alike.
+Inside WSL, FinishUP state must stay on the distribution's own ext4 disk — the WSL home is the default — never under `/mnt/<letter>`. The refusal's remediation says so, and it applies to
+`FINISHUP_ISOLATED_ROOT`, `finishup instance create --root`, and `storage.data_dir` alike.
 
 Evidence state: in the 2026-09-19 WSL 2 run recorded in #786, the installed candidate initialized
-and restarted/unlocked on the Linux filesystem. `yoetz instance create` with a `/mnt/c` root
+and restarted/unlocked on the Linux filesystem. `finishup instance create` with a `/mnt/c` root
 refused with `path_on_network_filesystem` and exit 20. A full `wsl --terminate` followed by
 distribution startup preserved the installed instance: the service started locked and returned
 ready after passphrase unlock. Native agent acceptance remains a separate, incomplete cell.
 
 ## Host integrations on Linux and WSL
 
-Codex CLI on Linux uses the same first-run and `yoetz integrate codex` flow as macOS; OpenAI
+Codex CLI on Linux uses the same first-run and `finishup integrate codex` flow as macOS; OpenAI
 publishes no Linux Codex App, so the interface labels every Linux Codex as a command-line
 installation by definition. Claude Code and Cursor plugin mutation requires a supported
 presence mechanism, reported by the installed preview's `authorization.human_presence`. The
 Linux PAM ceremony is tracked separately in #719; builds without it refuse
 `human_authority_unavailable` on Linux and WSL 2. That ceremony alone does not prove a Linux
-native host cell. Both hosts can use a hand-added `yoetz mcp serve` entry. The per-host decisions
+native host cell. Both hosts can use a hand-added `finishup mcp serve` entry. The per-host decisions
 are recorded in
 [`claude-code-integration.md`](claude-code-integration.md#linux-and-wsl) and
 [`cursor-integration.md`](cursor-integration.md#linux-and-wsl); the Linux x86-64 evidence cases
@@ -218,7 +420,7 @@ Use `setup status --next --operation local|review|connection` to identify the ne
 for the selected installation. The common host flow and the terminal interface retain the same
 storage capability diagnosis and human-secret boundary. No Windows credential bridge is added.
 
-The [0.2.4 installation evidence](https://github.com/TheGaySupreme123/yoetz/issues/767#issuecomment-5750168131)
+The [0.2.4 installation evidence](https://github.com/TheGaySupreme123/finishup/issues/767#issuecomment-5750168131)
 records preview, connect, status, no-op, disconnect and reconnect on macOS, Ubuntu 24.04, and actual
 WSL 2 for Codex CLI, Claude Code and Cursor Agent CLI. It excludes provider login and model tasks.
 The prior 0.2.3 WSL run recorded above tested passphrase unlock after distribution restart. These

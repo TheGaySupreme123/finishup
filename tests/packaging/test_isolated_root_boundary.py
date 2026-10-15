@@ -1,7 +1,7 @@
 """Isolated-root runtime boundary against the real installed launcher (issue #518).
 
 Proves the one supported exact-target isolation contract end to end: with
-``YOETZ_ISOLATED_ROOT`` set, a real installed ``yoetz`` runtime places its service singleton
+``FINISHUP_ISOLATED_ROOT`` set, a real installed ``finishup`` runtime places its service singleton
 (lock, generation), control endpoint, storage bundle, config, cache, and logs beneath the
 isolated root; an ambient client of the same installation cannot reach that service; the
 ambient home tree is byte-identical before and after the isolated run; and removing the root
@@ -28,6 +28,10 @@ from typing import Final
 import pytest
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
+# The installed client's own wait for a service it starts (service/client.py
+# _SERVICE_START_TIMEOUT_SECONDS). A first start also builds the retained release-runtime snapshot,
+# bytecode included, so it is slower than a warm start.
+_SERVICE_START_WAIT_SECONDS: Final = 30.0
 
 
 def _is_advertised_host() -> bool:
@@ -86,7 +90,7 @@ def _tool_install(dist_dir: Path, root: Path, home: Path) -> tuple[Path, dict[st
     if result.returncode != 0:
         result = _install(offline=False)
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
-    return bin_dir / "yoetz", env
+    return bin_dir / "finishup", env
 
 
 @pytest.fixture(scope="module")
@@ -131,10 +135,10 @@ def test_isolation_report_modes_and_fail_closed_root(built_dist: Path) -> None:
     root = _short_home("iso-report")
     try:
         home = root / "h"
-        yoetz_exe, env = _tool_install(built_dist, root, home)
+        finishup_exe, env = _tool_install(built_dist, root, home)
 
         ambient = subprocess.run(
-            [str(yoetz_exe), "service", "isolation", "--json"],
+            [str(finishup_exe), "service", "isolation", "--json"],
             capture_output=True,
             timeout=20,
             env=env,
@@ -147,10 +151,10 @@ def test_isolation_report_modes_and_fail_closed_root(built_dist: Path) -> None:
         iso = root / "iso"
         iso.mkdir(mode=0o700)
         isolated = subprocess.run(
-            [str(yoetz_exe), "service", "isolation", "--json"],
+            [str(finishup_exe), "service", "isolation", "--json"],
             capture_output=True,
             timeout=20,
-            env={**env, "YOETZ_ISOLATED_ROOT": str(iso)},
+            env={**env, "FINISHUP_ISOLATED_ROOT": str(iso)},
             check=False,
         )
         assert isolated.returncode == 0, isolated.stderr
@@ -169,10 +173,10 @@ def test_isolation_report_modes_and_fail_closed_root(built_dist: Path) -> None:
         assert str(iso) not in isolated.stdout.decode("utf-8")
 
         unusable = subprocess.run(
-            [str(yoetz_exe), "service", "isolation", "--json"],
+            [str(finishup_exe), "service", "isolation", "--json"],
             capture_output=True,
             timeout=20,
-            env={**env, "YOETZ_ISOLATED_ROOT": str(root / "never-created")},
+            env={**env, "FINISHUP_ISOLATED_ROOT": str(root / "never-created")},
             check=False,
         )
         assert unusable.returncode == 2
@@ -187,28 +191,28 @@ def test_isolated_service_singleton_cannot_be_reached_ambiently_and_leaves_no_tr
     root = _short_home("iso-boundary")
     try:
         home = root / "h"
-        yoetz_exe, env = _tool_install(built_dist, root, home)
+        finishup_exe, env = _tool_install(built_dist, root, home)
         iso = root / "iso"
         iso.mkdir(mode=0o700)
-        env_iso = {**env, "YOETZ_ISOLATED_ROOT": str(iso)}
+        env_iso = {**env, "FINISHUP_ISOLATED_ROOT": str(iso)}
 
         before = _home_tree_digest(home)
 
         service = subprocess.Popen(
-            [str(yoetz_exe), "service", "run"],
+            [str(finishup_exe), "service", "run"],
             env=env_iso,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
         try:
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + _SERVICE_START_WAIT_SECONDS
             reachable = False
             while time.monotonic() < deadline:
                 if service.poll() is not None:
                     raise AssertionError("isolated service exited during startup")
                 status = subprocess.run(
-                    [str(yoetz_exe), "service", "status", "--json"],
+                    [str(finishup_exe), "service", "status", "--json"],
                     capture_output=True,
                     timeout=10,
                     env=env_iso,
@@ -227,7 +231,7 @@ def test_isolated_service_singleton_cannot_be_reached_ambiently_and_leaves_no_tr
             # The same installation without the isolation root resolves the ambient endpoint
             # and must NOT reach the isolated singleton (`service status` never spawns).
             ambient_status = subprocess.run(
-                [str(yoetz_exe), "service", "status", "--json"],
+                [str(finishup_exe), "service", "status", "--json"],
                 capture_output=True,
                 timeout=10,
                 env=env,

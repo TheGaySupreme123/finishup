@@ -9,16 +9,16 @@ from datetime import UTC, datetime
 import pytest
 
 from builders.policy_cases import clm, make_case, record
-from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
-from yoetz.domain.privacy import ProviderBinding
-from yoetz.kernel.projections import empty_projection_state
-from yoetz.ports.semantic_budget import (
+from finishup.domain.events import ClaimKind, ClaimRecordedPayload
+from finishup.domain.privacy import ProviderBinding
+from finishup.kernel.projections import empty_projection_state
+from finishup.ports.semantic_budget import (
     current_semantic_budget_profile,
     parse_semantic_budget_profile,
     select_semantic_budget_profile,
     semantic_budget_profile_scope,
 )
-from yoetz.service import ready_composition
+from finishup.service import ready_composition
 
 
 def _claim(kind: ClaimKind, number: int) -> ClaimRecordedPayload:

@@ -1,14 +1,14 @@
 """The advertised resource surface must match what the server actually serves.
 
 The 2026-07-27 Codex dogfood recorded
-``codex_core::tools::router: resources/list failed for 'yoetz': Unexpected response type`` and the
-postmortem attributed it to Yoetz. These cases pin the served wire shape against the MCP schema so
+``codex_core::tools::router: resources/list failed for 'finishup': Unexpected response type`` and the
+postmortem attributed it to FinishUP. These cases pin the served wire shape against the MCP schema so
 that claim can be settled from evidence rather than inferred, and so a future regression in the
 payload is caught here rather than in a dogfood. Issue #173 later reproduced the same host error
 against this conformant payload; Step 0 must not treat a list failure as a missing server.
 The Codex ``0.148.0-alpha.6`` ``rmcp 3.0.0`` pin decodes this same payload as
 ``ServerResult::ListResourcesResult`` for the full shape and for the title / annotations /
-size / minimal subsets, so optional-field stripping is not a Yoetz-side fix.
+size / minimal subsets, so optional-field stripping is not a FinishUP-side fix.
 
 `resources/templates/list` returning method-not-found is correct: no templates are declared, so the
 capability is not advertised. That is asserted rather than "fixed".
@@ -25,7 +25,7 @@ from typing import Any, Final, cast
 import pytest
 from mcp import types
 
-from yoetz.mcp.resources import GUIDANCE_RESOURCES
+from finishup.mcp.resources import GUIDANCE_RESOURCES
 
 _TIMEOUT: Final = 90
 
@@ -49,7 +49,7 @@ def _serve(*requests: str) -> list[dict[str, Any]]:
         (initialize, '{"jsonrpc":"2.0","method":"notifications/initialized"}', *requests)
     )
     process = subprocess.run(
-        [sys.executable, "-m", "yoetz", "mcp", "serve"],
+        [sys.executable, "-m", "finishup", "mcp", "serve"],
         input=(frames + "\n").encode("ascii"),
         capture_output=True,
         timeout=_TIMEOUT,
@@ -135,7 +135,7 @@ def test_resource_uris_are_parseable_absolute_uris(responses: list[dict[str, Any
     # A client that parses uri as a URL must not choke on the custom scheme.
     for entry in _by_id(responses, 3)["result"]["resources"]:
         uri = cast(str, entry["uri"])
-        assert uri.startswith("yoetz://guidance/")
+        assert uri.startswith("finishup://guidance/")
         assert uri.isascii()
         assert " " not in uri
 

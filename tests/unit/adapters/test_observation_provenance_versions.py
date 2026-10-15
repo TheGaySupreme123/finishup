@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
@@ -16,7 +16,7 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _UNPAIRED = ObservationGapCode.UNPAIRED_EVENT.value
 _TRUNCATED = ObservationGapCode.TRUNCATED_PAYLOAD.value
@@ -70,6 +70,7 @@ def _rewrite_version(
     include_truncation_history: bool,
 ) -> None:
     raw = json.loads(state_path.read_text(encoding="utf-8"))
+    # Frozen legacy identifier (ADR-048): the persisted observation-local state tag.
     raw["schema"] = f"yoetz.observation-local/{version}"
     raw["pairing_state_unknown"] = False
     raw.pop("envelopes_truncated", None)

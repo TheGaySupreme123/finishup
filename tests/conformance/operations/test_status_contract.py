@@ -20,20 +20,20 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.projects import ProjectApplication
-from yoetz.application.service import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.projects import ProjectApplication
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     VerificationPolicy,
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
-from yoetz.domain.events import AcceptedEvent, RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
+from finishup.domain.events import AcceptedEvent, RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -46,18 +46,18 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
-from yoetz.domain.values import Frontier, session_id
-from yoetz.kernel.reducers import replay
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
+from finishup.domain.values import Frontier, session_id
+from finishup.kernel.reducers import replay
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkDryRunModel,
@@ -194,7 +194,7 @@ class _ProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -427,7 +427,7 @@ async def test_status_request_result_parity() -> None:
     facts = await app.projection_binding_facts(ControlMethod.STATUS, status_wire, status)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
@@ -1149,7 +1149,9 @@ async def test_status_is_task_state_read_only_and_projection_receipted() -> None
     facts = await app.projection_binding_facts(ControlMethod.STATUS, status_wire, status)
     binding = _cli_binding(212, facts)
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -1162,7 +1164,9 @@ async def test_status_is_task_state_read_only_and_projection_receipted() -> None
     # minting a fresh one for an unchanged result/policy/sink pair -- at most one additional
     # candidate is proposed to confirm reuse rather than an unbounded receipt per replay.
     projected_again = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -1232,7 +1236,7 @@ async def test_status_projects_requested_attempt_accounting_and_result_structure
     obligation_event = protocol_id("evt_", seed + 2)
     plan_event = protocol_id("evt_", seed + 3)
     command = "uv run pytest tests/unit/example.py"
-    change = "src/yoetz/example.py"
+    change = "src/finishup/example.py"
     published = await app.publish_work(
         PublishWorkRequest.model_validate(
             {
@@ -1898,7 +1902,7 @@ async def test_status_filters_before_payload_hydration() -> None:
 async def test_lineage_paginates_children_and_annotations_and_rejects_changed_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.application import task_views
+    from finishup.application import task_views
 
     app, _runtime, _projection = _build_app(seed_offset=12)
     started = await app.start(start_request(1200, title="Lineage pagination exercise"))
@@ -1976,7 +1980,7 @@ async def test_lineage_paginates_children_and_annotations_and_rejects_changed_sn
 async def test_project_status_pages_and_lineage_fallback_use_the_public_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.application import task_views
+    from finishup.application import task_views
 
     app, _runtime, _projection = _build_app(seed_offset=13)
     app = replace(
@@ -2038,7 +2042,9 @@ async def test_project_status_pages_and_lineage_fallback_use_the_public_projecti
     assert isinstance(fallback.page, StatusLineagePageModel)
     facts = await app.projection_binding_facts(ControlMethod.STATUS, wire, fallback)
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         _cli_binding(1302, facts),
         fallback,
     )

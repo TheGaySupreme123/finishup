@@ -7,21 +7,21 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     canonical_logical_identity,
     materialize_observation_envelope,
 )
-from yoetz.domain.host_lineage import (
+from finishup.domain.host_lineage import (
     HostLineageHost,
     host_lineage_from_envelope,
     host_lineage_from_payload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _SESSION = "hmac-sha256:" + ("ab" * 32)
 _COMMITMENT = "hmac-sha256:" + ("cd" * 32)

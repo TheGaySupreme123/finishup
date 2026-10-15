@@ -1,4 +1,4 @@
-"""A review Yoetz deferred before the first edit, on every surface (issue #1046, review).
+"""A review FinishUP deferred before the first edit, on every surface (issue #1046, review).
 
 A routine check before the first material edit sends nothing and records
 ``semantic_review_deferred_before_first_edit`` beside ``semantic_review_not_requested``. An
@@ -33,6 +33,15 @@ import pytest
 
 from builders.review_manifests import provider_bound_manifest
 from builders.start_application import protocol_id, start_request
+from finishup.application.check import CheckCommitResult, FinalSemanticEvaluation
+from finishup.cli.closure_gate import closure_gate_from_readiness
+from finishup.domain.receipts import (
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+    SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+)
+from finishup.domain.task_fact_tokens import STOP_GATE_TOKENS
+from finishup.domain.values import JsonObject
+from finishup.protocol.models import CheckRequest, SemanticReason, SemanticStatus
 from integration.application import test_respond_status_receipt as h
 from integration.closure.test_closure_shapes import (
     _CLEAN,
@@ -46,15 +55,6 @@ from integration.closure.test_closure_shapes import (
     assert_surfaces_agree,
     receipt_artifact_1_3_0,  # noqa: F401  # pyright: ignore[reportUnusedImport] - autouse fixture
 )
-from yoetz.application.check import CheckCommitResult, FinalSemanticEvaluation
-from yoetz.cli.closure_gate import closure_gate_from_readiness
-from yoetz.domain.receipts import (
-    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
-    SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
-)
-from yoetz.domain.task_fact_tokens import STOP_GATE_TOKENS
-from yoetz.domain.values import JsonObject
-from yoetz.protocol.models import CheckRequest, SemanticReason, SemanticStatus
 
 pytestmark = pytest.mark.anyio
 

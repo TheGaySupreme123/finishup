@@ -7,19 +7,19 @@ from pathlib import Path
 from typing import Any
 
 from builders.codex_rollout import encode_lines, response_item, session_meta
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_session_stream import (
     CodexSessionStreamLocator,
     reconcile_session_stream,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 
 def _store(tmp_path: Path) -> tuple[LocalObservationStore, str]:
@@ -166,7 +166,7 @@ def test_an_evicted_session_reconciled_before_its_nested_hook_keeps_the_cell_loc
             )
     assert stream.store.codex_tool_hook_count(stream.workspace, stream.session) == 0
 
-    # ``yoetz observe reconcile`` reads the cell's call before its nested hook fires.
+    # ``finishup observe reconcile`` reads the cell's call before its nested hook fires.
     stream.append(_cell_row("call_cell"))
     stream.reconcile()
     stream.hook("call_nested")
@@ -369,33 +369,33 @@ def test_a_delivered_scope_repeats_only_after_leaving_the_retained_window(
     assert ObservationGapCode.UNPAIRED_EVENT.value in gaps
 
 
-def test_a_cell_whose_nested_items_are_all_yoetz_calls_stays_local(tmp_path: Path) -> None:
-    """#1038: Yoetz-only cells stay local whatever the hook timing; the mark is never borrowed."""
+def test_a_cell_whose_nested_items_are_all_finishup_calls_stays_local(tmp_path: Path) -> None:
+    """#1038: FinishUP-only cells stay local whatever the hook timing; the mark is never borrowed."""
 
     store, workspace = _store(tmp_path)
     session = _session(21)
     # No tool hook fired, so the #917 rule alone would deliver every output.
     assert store.begin_code_mode_cell(workspace, session, "call_own") is True
-    store.note_code_mode_nested_item(workspace, session, yoetz_owned=True)
+    store.note_code_mode_nested_item(workspace, session, finishup_owned=True)
     assert store.finish_code_mode_cell(workspace, session, "call_own") is True
     # One other nested item keeps the cell's own record.
     store.begin_code_mode_cell(workspace, session, "call_mixed")
-    store.note_code_mode_nested_item(workspace, session, yoetz_owned=True)
-    store.note_code_mode_nested_item(workspace, session, yoetz_owned=False)
+    store.note_code_mode_nested_item(workspace, session, finishup_owned=True)
+    store.note_code_mode_nested_item(workspace, session, finishup_owned=False)
     assert store.finish_code_mode_cell(workspace, session, "call_mixed") is False
     # A cell with no nested item at all keeps its record too.
     store.begin_code_mode_cell(workspace, session, "call_empty")
     assert store.finish_code_mode_cell(workspace, session, "call_empty") is False
-    # With two cells open a Yoetz item cannot be attributed: neither takes the mark.
+    # With two cells open a FinishUP item cannot be attributed: neither takes the mark.
     store.begin_code_mode_cell(workspace, session, "call_a")
     store.begin_code_mode_cell(workspace, session, "call_b")
-    store.note_code_mode_nested_item(workspace, session, yoetz_owned=True)
+    store.note_code_mode_nested_item(workspace, session, finishup_owned=True)
     assert store.finish_code_mode_cell(workspace, session, "call_a") is False
     assert store.finish_code_mode_cell(workspace, session, "call_b") is False
     # Another session's items never mark this session's cells.
     store.begin_code_mode_cell(workspace, session, "call_alone")
-    store.note_code_mode_nested_item(workspace, _session(22), yoetz_owned=False)
-    store.note_code_mode_nested_item(workspace, session, yoetz_owned=True)
+    store.note_code_mode_nested_item(workspace, _session(22), finishup_owned=False)
+    store.note_code_mode_nested_item(workspace, session, finishup_owned=True)
     # The marks and decisions are durable across a restart.
     reopened = LocalObservationStore(_state=tmp_path)
     assert reopened.finish_code_mode_cell(workspace, session, "call_alone") is True

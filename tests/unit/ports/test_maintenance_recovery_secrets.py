@@ -7,9 +7,9 @@ from typing import get_type_hints
 
 import pytest
 
-from yoetz.domain.values import request_id
-from yoetz.ports.keys import RecoverySecret
-from yoetz.ports.maintenance import (
+from finishup.domain.values import request_id
+from finishup.ports.keys import RecoverySecret
+from finishup.ports.maintenance import (
     RecoveryOperation,
     RecoverySecretAcquirer,
     RecoverySecretAcquisition,

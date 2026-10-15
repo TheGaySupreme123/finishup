@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.domain.coordination import CoordinationErrorCode
-from yoetz.ports.control import ControlError, ControlMethod, ControlResult
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.service.control_protocol import (
+from finishup.domain.coordination import CoordinationErrorCode
+from finishup.ports.control import ControlError, ControlMethod, ControlResult
+from finishup.protocol.errors import PublicErrorCode
+from finishup.service.control_protocol import (
     decode_control_frame,
     encode_control_frame,
     parse_control_result,

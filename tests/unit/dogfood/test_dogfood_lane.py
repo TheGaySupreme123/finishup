@@ -193,12 +193,12 @@ def test_catastrophic_diagnostics_are_detected_from_hook_reasons() -> None:
 
 def test_prompt_names_tool_hint_workspace_and_external_ref() -> None:
     prompt = _LANE._PROMPT_TEMPLATE.format(
-        tool_hint="plugin_yoetz_yoetz", workspace="/w", external_ref="native-claude-1"
+        tool_hint="plugin_finishup_finishup", workspace="/w", external_ref="native-claude-1"
     )
-    assert "plugin_yoetz_yoetz" in prompt and "'/w'" in prompt and "native-claude-1" in prompt
+    assert "plugin_finishup_finishup" in prompt and "'/w'" in prompt and "native-claude-1" in prompt
     assert "single_atomic_change" in prompt and prompt.endswith("Do not create or edit files.")
     assert "task_statement set to this entire user message verbatim" in prompt
-    assert "YOETZ_NATIVE_BINDING" in prompt and "exactly these keys" in prompt
+    assert "FINISHUP_NATIVE_BINDING" in prompt and "exactly these keys" in prompt
     assert "recovering incomplete pages before continuing" in prompt
     assert "mode 'semantic_required'" in prompt
 
@@ -208,10 +208,10 @@ def test_prompt_names_tool_hint_workspace_and_external_ref() -> None:
 def test_ledger_probe_supplies_full_statement_on_create_and_attach(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str, mapped: bool
 ) -> None:
-    from yoetz.protocol.models import StartRequestModel
+    from finishup.protocol.models import StartRequestModel
 
     lane = _LANE.Lane(_namespace(tmp_path, host=host))
-    lane.launcher = tmp_path / "isolated-runtime" / "bin" / "yoetz"
+    lane.launcher = tmp_path / "isolated-runtime" / "bin" / "finishup"
     session_id = "ses_5b435d29-4f13-4349-b301-b385af5fc4ea"
     monkeypatch.setattr(
         lane,
@@ -225,7 +225,7 @@ def test_ledger_probe_supplies_full_statement_on_create_and_attach(
         captured.append(json.loads(kwargs["stdin"]))
         return None, None
 
-    monkeypatch.setattr(lane, "_yoetz", start_only)
+    monkeypatch.setattr(lane, "_finishup", start_only)
     lane.phase_ledger_probe()
     request = StartRequestModel.model_validate(captured[0])
     assert request.mode == ("attach" if mapped else "create")
@@ -238,7 +238,7 @@ def test_ledger_probe_supplies_full_statement_on_create_and_attach(
 _CHILD = textwrap.dedent(
     """
     import sys
-    sys.stdout.write("Yoetz trusted foreground ceremony\\n")
+    sys.stdout.write("FinishUP trusted foreground ceremony\\n")
     sys.stdout.write("Passphrase (16-1024 UTF-8 bytes; no control characters): ")
     sys.stdout.flush()
     first = sys.stdin.readline().strip()
@@ -302,7 +302,7 @@ def test_prompt_regexes_match_the_product_prompts_as_rendered() -> None:
     import typer
     from typer.testing import CliRunner
 
-    from yoetz.cli import unlock
+    from finishup.cli import unlock
 
     app = typer.Typer()
 
@@ -321,7 +321,7 @@ def test_prompt_regexes_match_the_product_prompts_as_rendered() -> None:
     ):
         assert re.search(pattern, rendered), (pattern, rendered)
 
-    privacy_source = (Path(__file__).parents[3] / "src/yoetz/cli/privacy_setup.py").read_text(
+    privacy_source = (Path(__file__).parents[3] / "src/finishup/cli/privacy_setup.py").read_text(
         "utf-8"
     )
     for literal in (
@@ -338,12 +338,13 @@ def test_prompt_regexes_match_the_product_prompts_as_rendered() -> None:
     assert not re.search(_LANE.PROMPT_CONFIRM_PASSPHRASE, passphrase_prompt)
 
     sources = {
-        "unlock": (Path(__file__).parents[3] / "src/yoetz/cli/unlock.py").read_text("utf-8"),
+        "unlock": (Path(__file__).parents[3] / "src/finishup/cli/unlock.py").read_text("utf-8"),
         "privacy_control": (
-            Path(__file__).parents[3] / "src/yoetz/cli/privacy_control.py"
+            Path(__file__).parents[3] / "src/finishup/cli/privacy_control.py"
         ).read_text("utf-8"),
         "linux_presence": (
-            Path(__file__).parents[3] / "src/yoetz/adapters/integrations/linux_artifact_presence.py"
+            Path(__file__).parents[3]
+            / "src/finishup/adapters/integrations/linux_artifact_presence.py"
         ).read_text("utf-8"),
     }
     assert '"Provider credential: "' in sources["unlock"]
@@ -388,7 +389,7 @@ def _native_output(
         )
     result = text
     if binding is not None:
-        result = f"YOETZ_NATIVE_BINDING {json.dumps(binding, separators=(',', ':'))}\n{text}"
+        result = f"FINISHUP_NATIVE_BINDING {json.dumps(binding, separators=(',', ':'))}\n{text}"
     return json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": result})
 
 
@@ -399,7 +400,7 @@ def _native_output(
         ("DONE", True),
         ("Coverage limitation disclosed. DONE", True),
         ("Probe completed.\n\nDONE\n", True),
-        ("The required Yoetz MCP tools are not available in this session.", False),
+        ("The required FinishUP MCP tools are not available in this session.", False),
         ("NOT_DONE", False),
         ("   ", False),
         ('The prompt says "DONE".', False),
@@ -466,7 +467,7 @@ def test_native_binding_marker_is_a_strict_locator(host: str) -> None:
             "type": "result",
             "subtype": "success",
             "is_error": False,
-            "result": f"YOETZ_NATIVE_BINDING {duplicate_key_payload}\nDONE",
+            "result": f"FINISHUP_NATIVE_BINDING {duplicate_key_payload}\nDONE",
         }
     )
     assert _LANE._native_binding_marker(host, duplicate_key) is None
@@ -521,13 +522,13 @@ def test_native_phase_requires_completion_even_with_preexisting_mapping(
     lane = _LANE.Lane(_namespace(tmp_path, host=host, strict_agent=True, skip_agent=False))
     lane.evidence.mkdir()
     monkeypatch.setattr(lane, "_agent_command", Mock(return_value=(["native"], {}, None)))
-    output = _native_output(host, "DONE" if done else "Yoetz MCP tools unavailable")
+    output = _native_output(host, "DONE" if done else "FinishUP MCP tools unavailable")
     if host == "codex" and done:
         output = _codex_probe_output("Coverage is bounded; the probe completed.")
     monkeypatch.setattr(lane, "_run", Mock(return_value=(0, output, "", 1)))
     monkeypatch.setattr(lane, "_observe_status", Mock(return_value={"mapping_present": True}))
     monkeypatch.setattr(lane, "_observe_drain", Mock(return_value=None))
-    monkeypatch.setattr(lane, "_yoetz", Mock(return_value=(0, {})))
+    monkeypatch.setattr(lane, "_finishup", Mock(return_value=(0, {})))
     lane.phase_native_agent()
     verdict = lane.report()["verdict"]
     expected = done if host == "codex" else False
@@ -552,7 +553,7 @@ def test_native_launch_resolves_pinned_runtime_before_ambient_install(
 ) -> None:
     monkeypatch.setenv("PATH", str(tmp_path / "ambient-bin"))
     lane = _LANE.Lane(_namespace(tmp_path, host=host, host_path="/synthetic/host"))
-    lane.launcher = tmp_path / "disposable" / "runtime" / "bin" / "yoetz"
+    lane.launcher = tmp_path / "disposable" / "runtime" / "bin" / "finishup"
     lane.fireworks_key = "synthetic-provider-key"
     lane.cursor_key = "synthetic-cursor-key"
     argv, env, reason = lane._agent_command()
@@ -581,7 +582,7 @@ def test_codex_setup_run_grants_only_project_check_admission(
             host_config_root=str(codex_home),
         )
     )
-    lane.launcher = tmp_path / "isolated-runtime" / "bin" / "yoetz"
+    lane.launcher = tmp_path / "isolated-runtime" / "bin" / "finishup"
     lane.project.mkdir(parents=True)
     lane.evidence.mkdir(parents=True)
     lane.fireworks_key = "synthetic-provider-key"
@@ -616,7 +617,7 @@ def test_codex_setup_run_grants_only_project_check_admission(
         },
     }
 
-    def fake_yoetz(
+    def fake_finishup(
         name: str, _phase: str, args: list[str], **kwargs: Any
     ) -> tuple[Mock, dict[str, Any]]:
         calls.append((name, args))
@@ -624,7 +625,7 @@ def test_codex_setup_run_grants_only_project_check_admission(
             admission_envs[name] = kwargs.get("env")
         return Mock(exit_code=0), responses[name]
 
-    monkeypatch.setattr(lane, "_yoetz", fake_yoetz)
+    monkeypatch.setattr(lane, "_finishup", fake_finishup)
     lane._connect_setup_run("connect")
 
     assert [name for name, _ in calls] == [
@@ -656,7 +657,7 @@ def test_codex_setup_run_does_not_admit_unpermitted_private_recipe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lane = _LANE.Lane(_namespace(tmp_path, host="codex", connection_mode="setup-run"))
-    lane.launcher = tmp_path / "isolated-runtime" / "bin" / "yoetz"
+    lane.launcher = tmp_path / "isolated-runtime" / "bin" / "finishup"
     lane.project.mkdir(parents=True)
     lane.evidence.mkdir(parents=True)
     calls: list[str] = []
@@ -674,13 +675,13 @@ def test_codex_setup_run_does_not_admit_unpermitted_private_recipe(
         "codex_mcp_status": {},
     }
 
-    def fake_yoetz(
+    def fake_finishup(
         name: str, _phase: str, _args: list[str], **_kwargs: Any
     ) -> tuple[Mock, dict[str, Any]]:
         calls.append(name)
         return Mock(exit_code=0), responses[name]
 
-    monkeypatch.setattr(lane, "_yoetz", fake_yoetz)
+    monkeypatch.setattr(lane, "_finishup", fake_finishup)
     lane._connect_setup_run("connect")
 
     assert "codex_admission_preview" not in calls
@@ -700,7 +701,7 @@ def test_drain_observes_background_completion_before_success(
     pending = {"terminal": terminal, "pending_after": 7}
     drained = {"terminal": "drained", "pending_after": 0}
     invoke = Mock(side_effect=[(Mock(exit_code=0), pending), (Mock(exit_code=0), drained)])
-    monkeypatch.setattr(lane, "_yoetz", invoke)
+    monkeypatch.setattr(lane, "_finishup", invoke)
     monkeypatch.setattr(_LANE.time, "sleep", Mock())
     assert lane._observe_drain("drain", "native", fatal=False) == drained
     assert invoke.call_count == 2
@@ -720,7 +721,7 @@ def test_drain_does_not_retry_invalid_or_nonretryable_result(
     lane = _LANE.Lane(_namespace(tmp_path))
     lane.evidence.mkdir()
     invoke = Mock(return_value=(Mock(exit_code=0), result))
-    monkeypatch.setattr(lane, "_yoetz", invoke)
+    monkeypatch.setattr(lane, "_finishup", invoke)
     lane._observe_drain("drain", "native", fatal=False)
     assert invoke.call_count == 1
     assert lane.steps[-1].status == "fail"
@@ -735,7 +736,7 @@ def test_drain_deadline_never_turns_pending_into_success(
     invoke = Mock(
         return_value=(Mock(exit_code=0), {"terminal": "retry_pending", "pending_after": 7})
     )
-    monkeypatch.setattr(lane, "_yoetz", invoke)
+    monkeypatch.setattr(lane, "_finishup", invoke)
     monkeypatch.setattr(_LANE.time, "monotonic", Mock(side_effect=[0.0, 0.0, 60.0, 60.0]))
     monkeypatch.setattr(_LANE.time, "sleep", Mock())
     lane._observe_drain("drain", "native", fatal=False)
@@ -751,7 +752,7 @@ def test_drain_nonzero_exit_cannot_claim_drained(
     lane = _LANE.Lane(_namespace(tmp_path))
     lane.evidence.mkdir()
     invoke = Mock(return_value=(Mock(exit_code=1), {"terminal": "drained", "pending_after": 0}))
-    monkeypatch.setattr(lane, "_yoetz", invoke)
+    monkeypatch.setattr(lane, "_finishup", invoke)
     lane._observe_drain("drain", "native", fatal=False)
     assert invoke.call_count == 1
     assert lane.steps[-1].status == "fail"
@@ -799,7 +800,7 @@ def _codex_probe_events() -> list[dict[str, Any]]:
             "type": "item.completed",
             "item": {
                 "type": "mcp_tool_call",
-                "server": "yoetz",
+                "server": "finishup",
                 "tool": tool,
                 "arguments": dict(args),
                 "status": "completed",
@@ -1121,7 +1122,7 @@ def test_native_provider_history_reads_marked_session_without_postrun_attach(
         calls.append((name, json.loads(kwargs["stdin"])))
         return Mock(exit_code=0), responses.pop(0)
 
-    monkeypatch.setattr(lane, "_yoetz", operator)
+    monkeypatch.setattr(lane, "_finishup", operator)
     assert lane._verify_native_provider_statement("native", statement, marker) is True
     assert [name for name, _ in calls] == ["native_history_marker_frontier", "native_history_1"]
     assert all("mode" not in request for _, request in calls)
@@ -1153,7 +1154,7 @@ def test_native_provider_history_rejects_fake_marker_without_native_events(
             return Mock(exit_code=0), responses.pop(0)
         return Mock(exit_code=0), {}
 
-    monkeypatch.setattr(lane, "_yoetz", operator)
+    monkeypatch.setattr(lane, "_finishup", operator)
     assert (
         lane._verify_native_provider_statement("native", "missing native events", marker) is False
     )
@@ -1196,7 +1197,7 @@ def test_native_provider_history_ignores_rows_at_or_before_marker_frontier(
     )
     monkeypatch.setattr(
         lane,
-        "_yoetz",
+        "_finishup",
         Mock(side_effect=[(Mock(exit_code=0), response) for response in responses]),
     )
 
@@ -1230,7 +1231,7 @@ def test_native_provider_history_requires_receipt_and_order(
     )
     monkeypatch.setattr(
         lane,
-        "_yoetz",
+        "_finishup",
         Mock(side_effect=[(Mock(exit_code=0), response) for response in responses]),
     )
     assert lane._verify_native_provider_statement("native", statement, marker) is False
@@ -1249,7 +1250,7 @@ def test_native_provider_history_requires_receipt_and_order(
     lane.native_provider_verification = {}
     monkeypatch.setattr(
         lane,
-        "_yoetz",
+        "_finishup",
         Mock(side_effect=[(Mock(exit_code=0), response) for response in responses]),
     )
     assert lane._verify_native_provider_statement("native", statement, marker) is False
@@ -1284,7 +1285,7 @@ def test_native_provider_history_rejects_first_manifest_mismatch(
     )
     monkeypatch.setattr(
         lane,
-        "_yoetz",
+        "_finishup",
         Mock(side_effect=[(Mock(exit_code=0), response) for response in responses]),
     )
     assert lane._verify_native_provider_statement("native", statement, marker) is False
@@ -1326,7 +1327,7 @@ def test_native_provider_history_rejects_later_valid_check_after_early_mismatch(
     )
     monkeypatch.setattr(
         lane,
-        "_yoetz",
+        "_finishup",
         Mock(side_effect=[(Mock(exit_code=0), response) for response in responses]),
     )
 
@@ -1372,7 +1373,7 @@ def test_native_provider_history_exhausts_paged_rows(
         calls.append((name, json.loads(kwargs["stdin"])))
         return Mock(exit_code=0), responses.pop(0)
 
-    monkeypatch.setattr(lane, "_yoetz", operator)
+    monkeypatch.setattr(lane, "_finishup", operator)
     assert lane._verify_native_provider_statement("native", statement, marker) is True
     assert lane.native_provider_verification["history_pages"] == 2
     assert calls[2][1]["cursor"] == "cursor-next"
@@ -1384,7 +1385,7 @@ def test_native_provider_history_requires_locator_before_any_read(
     lane = _LANE.Lane(_namespace(tmp_path, host="claude"))
     lane.evidence.mkdir()
     invoke = Mock()
-    monkeypatch.setattr(lane, "_yoetz", invoke)
+    monkeypatch.setattr(lane, "_finishup", invoke)
     assert lane._verify_native_provider_statement("native", "no locator") is False
     assert invoke.call_count == 0
     assert lane.native_provider_verification["reason"] == "native_binding_marker_missing"
@@ -1455,7 +1456,7 @@ def test_native_phase_uses_locator_and_read_only_history(
             return Mock(exit_code=0), responses.pop(0)
         return Mock(exit_code=0), {}
 
-    monkeypatch.setattr(lane, "_yoetz", operator)
+    monkeypatch.setattr(lane, "_finishup", operator)
     lane.native_prompt = statement
     lane.phase_native_agent()
     assert lane.report()["verdict"]["agent_ok"] is True

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     NEVER_SEND_KINDS,
     AuthorizationScope,
     AuthorizationScopeKind,
@@ -25,8 +25,8 @@ from yoetz.domain.privacy import (
     ReviewSelectionPolicy,
     outcome_reason_is_valid,
 )
-from yoetz.ports.privacy import OutboundGatewayPort, PolicyTransitionProposal
-from yoetz.protocol.models import DataCategory
+from finishup.ports.privacy import OutboundGatewayPort, PolicyTransitionProposal
+from finishup.protocol.models import DataCategory
 
 _HERE = Path(__file__).resolve()
 _ROOT = _HERE.parents[3]
@@ -239,10 +239,10 @@ def test_review_recipes_recommend_a_reviewable_context_without_loosening_first_r
     assert structural.max_excerpts == 0
 
     # Config.toml generation-1 bootstrap is fail-safe all-denied (not durable policy).
-    # yoetz.config.privacy and yoetz.config.models import each other, so the package must be
+    # finishup.config.privacy and finishup.config.models import each other, so the package must be
     # entered through models for the cycle to resolve in the order the runtime uses.
-    from yoetz.config.models import ConfigError  # noqa: F401  # enters the package first
-    from yoetz.config.privacy import safe_privacy_bootstrap
+    from finishup.config.models import ConfigError  # noqa: F401  # enters the package first
+    from finishup.config.privacy import safe_privacy_bootstrap
 
     assert ConfigError is not None
 

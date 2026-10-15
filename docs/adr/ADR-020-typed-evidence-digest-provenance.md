@@ -1,15 +1,15 @@
 # ADR-020 — Typed evidence digest provenance
 
 **Status:** Accepted (2026-08-09), acknowledged in
-[issue #131](https://github.com/TheGaySupreme123/yoetz/issues/131). Decision 7 amended
-(2026-08-10) for [issue #176](https://github.com/TheGaySupreme123/yoetz/issues/176); decisions
+[issue #131](https://github.com/TheGaySupreme123/finishup/issues/131). Decision 7 amended
+(2026-08-10) for [issue #176](https://github.com/TheGaySupreme123/finishup/issues/176); decisions
 9–12 added (2026-08-30) for
-[issue #302](https://github.com/TheGaySupreme123/yoetz/issues/302). Decision 13 added (2026-09-30)
-for [issue #912](https://github.com/TheGaySupreme123/yoetz/issues/912).
-**Implemented by:** `src/yoetz/domain/events.py`, `src/yoetz/application/publish_work.py`,
-`src/yoetz/application/observation_coordinator.py`, `src/yoetz/kernel/deterministic_checks.py`,
-`src/yoetz/kernel/policies/work_integrity.py`, `src/yoetz/kernel/receipt_builder.py`,
-`src/yoetz/application/semantic_case.py`, and the public event schemas and guidance.
+[issue #302](https://github.com/TheGaySupreme123/finishup/issues/302). Decision 13 added (2026-09-30)
+for [issue #912](https://github.com/TheGaySupreme123/finishup/issues/912).
+**Implemented by:** `src/finishup/domain/events.py`, `src/finishup/application/publish_work.py`,
+`src/finishup/application/observation_coordinator.py`, `src/finishup/kernel/deterministic_checks.py`,
+`src/finishup/kernel/policies/work_integrity.py`, `src/finishup/kernel/receipt_builder.py`,
+`src/finishup/application/semantic_case.py`, and the public event schemas and guidance.
 **Relates to:** ADR-002 (canonical protocol), ADR-009 (data egress and privacy), ADR-010
 (harness integration port), ADR-011 (structural subject-state capture), and ADR-032 (closure
 readiness treats the evidence-provenance gaps as standing limitations, and records the direction
@@ -22,7 +22,7 @@ An evidence digest previously identified bytes without recording what those byte
 caller could hash a source diff, publish it as `test_result`, describe successful tests in prose,
 and satisfy the structural evidence link. The digest was real, but its asserted meaning was not
 checkable. A digest also does not establish that a command ran, succeeded, was inspected, or was
-observed by Yoetz.
+observed by FinishUP.
 
 Historical `evidence_recorded/1.0.0` records must remain readable without inventing provenance.
 Approved checks and trusted imports additionally need stronger, capability-owned provenance that
@@ -45,7 +45,7 @@ ordinary cooperative publication cannot claim.
    whether those bytes were retained, not whether their meaning was verified.
 
 4. **Provenance cannot be self-awarded.** Ordinary publication may use only `caller_asserted`.
-   `approved_check` requires a service-authenticated Yoetz-engine author on the engine-derived
+   `approved_check` requires a service-authenticated FinishUP-engine author on the engine-derived
    channel and binds both the approved-policy commitment and result digest. `import_observed`
    requires the trusted importer on the import channel. Envelope validation repeats these checks
    so bypassing the public application path cannot widen authority.
@@ -141,7 +141,7 @@ ordinary cooperative publication cannot claim.
     changes it. Those two codes therefore stay exact case and ref coverage gaps (decision 6 is
     unchanged: they still make the conclusion coverage-incomplete), but they are never subjects of
     the work-integrity ledger finding. The receipt's limitations section names them once, with the
-    number of cited items, as caller-asserted digests Yoetz did not verify, and says no response or
+    number of cited items, as caller-asserted digests FinishUP did not verify, and says no response or
     recheck changes that. It keeps the two retention facts apart: a digest-only item's bytes were
     not retained, while a withheld item records that the publisher withheld them, and a mixed
     count names how many items are of each kind. `evidence_digest_subject_legacy_unknown` still raises the finding; its
@@ -158,7 +158,7 @@ ordinary cooperative publication cannot claim.
 
 ## Consequences
 
-Yoetz can reject a typed kind/subject contradiction at publication without pretending it inspected
+FinishUP can reject a typed kind/subject contradiction at publication without pretending it inspected
 the bytes. Receipts retain exact limitations for digest-only, withheld, redacted, and legacy
 evidence; local findings retain them for legacy and redacted evidence, while an unverified caller
 digest is disclosed on the receipt as a counted provenance label (decision 13). Capability-owned

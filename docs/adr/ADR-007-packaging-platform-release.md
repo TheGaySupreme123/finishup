@@ -2,7 +2,7 @@
 
 **Status:** Implementation lock (2026-07-17). Release ratification still requires clean-VM
 install/upgrade/uninstall evidence from built artifacts and the E-001 release refresh.
-**Implemented by:** repository build metadata, `src/yoetz/version.py`, packaged resource
+**Implemented by:** repository build metadata, `src/finishup/version.py`, packaged resource
 manifests, the packaging/capability suites, and the release workflows under `.github/workflows/`.
 
 ## Decisions
@@ -17,10 +17,12 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    coupling. Async bridge: exactly one top-level `anyio.run(...)` per process entry (CLI command,
    MCP bridge, or foreground service); no nested event-loop helpers. Amended by ADR-012: bare
    invocation prints help in every case except the bounded first-run TTY exception on the root
-   command only (interactive terminal, setup marker absent), which launches `yoetz setup run`.
-4. **Console script:** distribution and executable both `yoetz`
-   (`yoetz.cli.app:main`). `python -m yoetz` delegates to the same entry.
-5. **Wheel strategy:** yoetz itself is a pure-Python wheel; platform specificity comes from
+   command only (interactive terminal, setup marker absent), which launches `finishup setup run`.
+4. **Console script:** distribution and executable both `finishup`
+   (`finishup.cli.entry:main`). `python -m finishup` delegates to the same entry. Amended by ADR-048:
+   through 0.2.5 both were `yoetz`; the `finishup` wheel declares only `finishup`, and a separate
+   transitional `yoetz` distribution carries the deprecated `yoetz` command for one release.
+5. **Wheel strategy:** finishup itself is a pure-Python wheel; platform specificity comes from
    the pinned APSW dependency wheels. Advertised platform matrix remains macOS 11.0+ arm64
    (`macosx_11_0_arm64`) and glibc 2.28+ x86-64 (`manylinux_2_28_x86_64`) until exact release
    evidence expands it. ADR-024 adds Windows 11+ x86-64 (`win_amd64`) as a candidate that may be
@@ -34,10 +36,11 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    `platform_cell_untested` to `limitations`, `setup status` reports `platform.cell`, and the
    interface's `/doctor` shows the platform line as not proven. The install is neither refused
    nor claimed. Certifying that cell requires a real `ubuntu-24.04-arm` release runner and
-   release evidence, at which point the certified-cell table in `yoetz.version` and this list
+   release evidence, at which point the certified-cell table in `finishup.version` and this list
    change together.
-   Primary install:
-   `uv tool install --managed-python --python 3.14.6 "yoetz==0.1.0"`.
+   Primary install (v0.1.0, under the former name):
+   `uv tool install --managed-python --python 3.14.6 "yoetz==0.1.0"`; from 0.3.0 the package is
+   `finishup` (ADR-048).
 6. **Keys, AI-powered review readiness, and compatibility extras:** the certified standard install
    includes direct pinned `cryptography` (AES-GCM, RFC 3394 AES Key Wrap, HKDF/HMAC) and `keyring`
    plus the approved secure-backend dependencies for each advertised cell because object/vault
@@ -54,8 +57,9 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    by `npm run typecheck` is the reproducible invocation. Node/npm are not end-user runtime
    requirements. Amended by ADR-012: the npm launcher now exists at `support/npm-launcher/` with
    its own provenance/delegation/upgrade contract — a dependency-free delegator to
-   `uvx yoetz==<version>`. Maintainer release decision (2026-08-20, issue #366): v0.1.0 publishes
-   that launcher as the public `yoetz` npm package through the protected tagged workflow, after
+   `uvx finishup==<version>`. Maintainer release decision (2026-08-20, issue #366): v0.1.0 publishes
+   that launcher as the public npm package (then `yoetz`, `finishup` from 0.3.0 per ADR-048)
+   through the protected tagged workflow, after
    PyPI publication and with trusted-publisher provenance plus byte-for-byte download verification.
 8. **Release artifacts:** sdist + wheel, SHA-256 checksums, CycloneDX SBOM via `uv export`,
    dependency lock, support matrix, conformance summary, known limitations, changelog, security
@@ -65,17 +69,17 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    is deferred until a documented verification command exists (a signature without a verifier is
    not a gate).
 9. **Install/upgrade/uninstall:** documented and tested: `uv tool install/upgrade/uninstall`, the
-   foreground `yoetz service run` entrypoint suitable for a user-selected external
-   supervisor, `codex mcp add/remove yoetz`, and data-retention behavior on uninstall. Native
+   foreground `finishup service run` entrypoint suitable for a user-selected external
+   supervisor, `codex mcp add/remove finishup`, and data-retention behavior on uninstall. Native
    launchd/systemd-user installer commands are deferred; uninstall never deletes bundles/vault/
    keyring entries. Amended by ADR-012: the `codex mcp get`/`codex mcp add` sequence is also
-   available as the preview-gated `yoetz integrate <harness> mcp` commands and the `yoetz setup`
+   available as the preview-gated `finishup integrate <harness> mcp` commands and the `finishup setup`
    wizard; the manual commands remain valid and the runbook's preservation rules are unchanged.
-   Amended by issue #419: `yoetz integrate <harness> mcp remove` and
-   `yoetz integrate codex plugin remove` are the digest-bound inverses for the MCP entry and the
+   Amended by issue #419: `finishup integrate <harness> mcp remove` and
+   `finishup integrate codex plugin remove` are the digest-bound inverses for the MCP entry and the
    marketplace/`config.toml`/cache surfaces setup writes; uninstall still never deletes
    bundles/vault/keyring entries, consent records, or the observation store.
-10. **Diagnostics:** `yoetz version --json` emits the full `VersionManifest`; startup safety
+10. **Diagnostics:** `finishup version --json` emits the full `VersionManifest`; startup safety
     validation is mandatory but the public `doctor` command stays v0.2.
 11. **Public schema hosting without runtime coupling:** the checked-in `schemas/` tree is mounted
     byte-for-byte at `https://schemas.yoetz.dev/0.1/`; each `$id` is the direct URL formed by
@@ -83,14 +87,14 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
     manifest advances atomically with digest/ETag binding. The release comparison permits new
     manifest members while requiring every previous member to remain identical; released schema,
     migration, and canonical-vector files remain byte-immutable (release #702). PR/release gates resolve all refs from
-    the local manifest with network denied, and installed Yoetz always uses packaged mirrors;
+    the local manifest with network denied, and installed FinishUP always uses packaged mirrors;
     hosted availability is independently verified release evidence, never an operational
     dependency.
 
 ## Amendment — package update and compatible data upgrade (2026-09-12)
 
 Package replacement and data migration are separate lifecycle stages. The supported `uv tool`
-carrier uses the guarded package action from `yoetz upgrade --accept` (the 2026-09-24
+carrier uses the guarded package action from `finishup upgrade --accept` (the 2026-09-24
 amendment below removed the `--writers-stopped` attestation); the command refuses source checkouts,
 pinned test instances, and isolated runtimes. Other carriers follow their own package procedure. A
 successful carrier command is therefore not a host, service, or data-upgrade result.
@@ -148,13 +152,13 @@ no-side-by-side-runtime non-goal and the quiescence requirement for upgrades sta
    interpreter, and a process lease travels across the initial exec without a pruning gap.
 4. **The next session switches.** A fresh MCP bridge retires a stamped older package's service,
    including a protocol-compatible one, through the existing bounded shutdown and restart path.
-   A bridge from an older release never signals a newer holder. Explicit `yoetz service restart`
+   A bridge from an older release never signals a newer holder. Explicit `finishup service restart`
    retains rollback authority. An absent/unparseable version retains the prior bounded identity
    rules. Hooks and ordinary CLI connections never supersede an existing service. Reopening a
    host can interrupt an older session if the new service is incompatible; the old bridge then
    asks to reopen, never to replace its newer successor.
-5. **Package success is observed.** `yoetz upgrade --accept` uses `uv tool install --upgrade`
-   with a Yoetz requirement bounded below by the invoking version. This replaces an old exact
+5. **Package success is observed.** `finishup upgrade --accept` uses `uv tool install --upgrade`
+   with a FinishUP requirement bounded below by the invoking version. This replaces an old exact
    version pin without permitting a downgrade and retains supported compatibility extras and
    the recorded Python selection.
    Custom uv resolution options, additional requirements, non-registry sources, source checkouts
@@ -163,7 +167,7 @@ no-side-by-side-runtime non-goal and the quiescence requirement for upgrades sta
    version is reported as unchanged; timeout or unreadable output is not upgrade success.
    `--writers-stopped` remains accepted and ignored for compatibility.
 6. **Cleanup cannot stop work.** Every serving generation holds a shared process lease. New
-   starts reclaim unused older copies under the manager lock; `yoetz upgrade --prune-runtimes`
+   starts reclaim unused older copies under the manager lock; `finishup upgrade --prune-runtimes`
    explicitly removes unused completed copies and reports how many remain in use. It never
    signals a process, follows a linked generation, or removes an unrecognized directory.
 7. **Coexistence remains a release obligation.** Later releases must keep shared local state
@@ -177,6 +181,296 @@ identity, preserved instance binding, active-generation cleanup refusal, and rea
 and downgrade prevention. It does not certify native Codex/Claude/Cursor sessions or every future
 release's storage coexistence. Package, service, migration and host activation remain separate
 reported facts.
+
+## Amendment — "writable by another account", not a mode bit (2026-10-14, owner decision)
+
+The owner explicitly requested this fix after a Linux compatibility run (release/packaging design
+gate acknowledged). Since the 2026-09-24 amendment, every installed service, MCP bridge and hook
+refused a runtime with any group-write bit (`release_runtime_unsafe`, shown only as "could not be
+verified"). Ubuntu, Debian, Fedora and RHEL give normal accounts umask 0002 with a user-private
+group (`USERGROUPS_ENAB yes`), so `uv tool install` there makes every runtime file and uv's
+managed interpreter group-writable by a group of one, and FinishUP never started. The same mode-only
+rule refused such users' repositories (`unsafe_root`), workspace locators, Codex launchers and
+host configuration roots (`target_unsafe`).
+
+1. **One rule.** An object is unsafe when an account other than its owner can write it. World
+   write always qualifies. Group write qualifies unless the group is the owner's user-private
+   group: the owner's primary group, named like the owner, with no supplementary member other
+   than the owner and no other account using it as its primary group. Completeness must be
+   provable, so the answer is read from `/etc/passwd` and `/etc/group` themselves (and
+   `/etc/gshadow` when readable), and only when `/etc/nsswitch.conf` serves `passwd`, `group`
+   (and `initgroups` when named) exclusively from `files` and `systemd`, with no userdb service
+   beyond dynamic users and no userdb drop-in record. `nsswitch.conf` is read with glibc's
+   syntax (lines end at LF only, so vertical tab and form feed are whitespace; the name ends at
+   a colon or whitespace and the whole run of both is the separator; `[STATUS=ACTION]` clauses
+   must use glibc's words), and every entry for those databases must be local, because glibc
+   before 2.33 honours the first duplicate and later releases the last; a malformed entry for
+   them makes the answer unprovable. A directory service (SSSD, LDAP, NIS, winbind) may not enumerate accounts and may report a populated group as empty, so on such a
+   machine, on macOS (no `nsswitch.conf`) and with any NIS compat line, duplicate gid, name
+   mismatch or unreadable file, group write counts as shared: those users install with
+   `umask 022` or run the printed `chmod`. `/etc/gshadow` is unreadable to ordinary accounts; the
+   account tools keep its member list in step with `/etc/group`, and a group password set with
+   `gpasswd` is outside the rule. Answers are cached for five seconds so a long-lived service
+   notices membership changes. `finishup.config.foreign_write`
+   owns the rule; every former `mode & 0o022` owner-write check uses it (release runtime, runtime
+   pin, workspace binding, structural and check-time Git capture, Codex launcher, and the Codex,
+   Claude Code, Cursor and portable plugin targets). Owner-only `0o077` checks on material FinishUP
+   creates itself are unchanged.
+2. **The runtime check covers what it follows.** The retained-runtime walk also checks the
+   environment prefix itself and, for a `bin/python` link, the resolved interpreter, its
+   directory and that directory's parent. Because a generation links that interpreter rather than
+   copying it, the interpreter check is repeated every time an existing generation is reused and
+   when a process inside a generation starts (a later group change or modification is refused
+   then, not only at creation). A refusal is `release_runtime_group_writable` or
+   `release_runtime_world_writable`, never the generic message. Terminal commands (`service
+   run`, `mcp serve`, `upgrade`) print the exact repair, `chmod -R go-w <environment>
+   <interpreter tree when owned by this account>`, and suggest `umask 022` before reinstalling.
+   Hooks keep the existing non-blocking exit 20 with no stdout decision and print the token
+   without local paths. A spawned `service run` records the token as its startup failure, so
+   the command that started it names it; every CLI `service_unavailable` and `setup` probe the
+   installed runtime read-only and print the same refusal instead of a supervisor hint. `setup run` refuses to connect any host to such a runtime (reason = the token, next step = the repair);
+   its status view and disconnect stay available.
+3. **Our own installs are owner-only.** `finishup upgrade --accept` runs `uv tool install` under
+   umask 022, the npm launcher installs under umask 022, and the test-instance provisioner runs
+   uv under umask 022 and clears group/other write on the runtime it created (uv can hard-link
+   files from a cache written under a looser umask). A runtime already shared through a group is
+   refused rather than silently tightened: tightening cannot undo a write another account made.
+
+Verification: unit tests with synthetic account databases (private group accepted; supplementary
+member, foreign primary, differently named group, unknown or unenumerable databases refused) and
+per-site umask 0002 tests; a real Ubuntu 24.04 normal account with umask 0002 ran `uv tool
+install`, `service run`, `mcp serve`, Codex/Claude Code/Cursor hooks, `state capture` and the
+three host setup previews; adding a second account to the runtime's group produced
+`release_runtime_group_writable` on each surface until the printed `chmod` was run.
+
+## Amendment — retained generations carry their bytecode (2026-10-14, owner request)
+
+A Linux/WSL compatibility run found every sealed generation without bytecode (0 of 384 `finishup`
+modules), so every serving start compiled the whole package and, the tree being read-only, could
+never cache it: importing `finishup.cli.app` took 11.7-12.0 s on a nested WSL 2 guest against
+6.1-6.6 s from the ordinary environment (macOS 0.85-0.96 s against 0.50 s). Clients then missed
+the five-second handshake and services the restart budget.
+
+1. **Sealed with bytecode.** Before sealing, every copied module gets an unchecked-hash pyc in
+   `__pycache__` at optimization level 0 (what the `-I` bootstrap loads; never
+   `sys.pycache_prefix`). Unchecked hashes never consult the source mtimes the copy does not
+   keep, and an immutable generation cannot make them stale. Hash-based bytecode the
+   installation already holds (checked or unchecked) is reused when its embedded source hash
+   matches the copied source, its payload unmarshals to a code object (a truncated or corrupt
+   cache is compiled instead; the hash vouches for freshness, not for the payload) and no other
+   account can write it or its directory; only the flags are rewritten. Timestamp bytecode is never reused: its header proves only a whole-second mtime
+   and a size, which an edit within the same second at equal length keeps, so reusing it could
+   seal stale code. Anything else is compiled with the generation's own file names. A module
+   this interpreter cannot compile still compiles at import. Pycs are sealed `0400` in `0500` directories like every other member.
+2. **Older generations are not reused.** The generation key includes a layout version, so a
+   generation sealed before this change never satisfies a newer start; the next start builds a
+   complete one and the ordinary lease-aware pruning removes the old one once unused.
+3. **Installs compile checked-hash bytecode.** The documented install, `npx finishup`,
+   `finishup upgrade --accept` and the test-instance provisioner pass `--compile-bytecode`. uv
+   writes timestamp bytecode unless `SOURCE_DATE_EPOCH` is set, so the paths FinishUP runs itself
+   (`npx finishup`, `finishup upgrade --accept`, the provisioner) set it in the install child's
+   environment only (an exported value is kept), and uv writes checked-hash bytecode that item 1
+   reuses. The epoch never reaches the parent or later processes, but it does reach every
+   descendant of that install child: when uv builds a dependency from an sdist, its PEP 517
+   backend sees `SOURCE_DATE_EPOCH=315532800` and may stamp wheel timestamps or dynamic metadata
+   with it, unlike a plain source install. No supported dependency is known to change because of
+   it; the 2026-10-14 review probed a local sdist backend to confirm the scope. A plain user-run `uv tool install --compile-bytecode` still yields timestamp bytecode;
+   the first serving start then compiles the package once, and a client that gives up meanwhile
+   sees the retryable `service_handshake_timeout`, which names that one-time compile. Measured on
+   macOS (M-series, 2026-10-14, a full 0.3.0 runtime of about 3,500 modules, cold generation
+   creation on a machine at load average about 33, three runs each): 22.2-28.7 s (median 24.4 s)
+   from timestamp bytecode against 8.4-13.1 s (median 10.7 s) from checked-hash bytecode. uv
+   records that flag as the receipt option `compile-bytecode`; the upgrade accepts
+   exactly that option and still refuses any other recorded option.
+4. **A slow start is named.** When on-demand start ends its budget while the service it spawned
+   (or a live singleton holder) is still starting, the error carries phase `handshake_timeout`
+   and is rendered as `service_handshake_timeout` (retry; no lifecycle command) on the CLI and
+   in MCP (`safe_details.phase`). A CLI command that finds nothing accepting while a live process
+   has stamped the singleton says the same instead of the supervisor hint. Budgets are
+   unchanged: hook auto-attach keeps its one-second fail-open budget and on-demand start its 30
+   seconds; with bytecode, a generation starts as fast as the ordinary environment.
+
+## Amendment — a root-owned project root is a non-root user's project (2026-10-14, owner decision)
+
+The owner decided that the Terminal-Bench 4 FinishUP arms must run as each task image's own non-root
+`USER`, as the official run does, instead of skipping those tasks. Container images commonly keep
+the working directory root-owned (`/app` with mode 0755, or sticky 1777) and run the agent as
+`nobody` or `agent`. Every project-root check refused that directory because it required the
+running user to own it: workspace binding refused the locator (`setup run` then failed as
+`internal_error` from `workspace_locator_invalid`), and the Codex skill, plugin and marketplace,
+the portable plugin, Claude Code's project target and Cursor's project MCP registration refused it
+as `target_unsafe`.
+
+1. **One project-root rule** (`config.foreign_write.project_root_admitted`). A project root is
+   admitted when it is a real directory and either the running user owns it and no other account
+   can write it (unchanged), or, for a non-root user, root owns it and no other account can write
+   it, or root owns it and it is sticky. Root is already trusted with everything the user runs; in
+   a sticky directory no other account can rename or remove the entries the user creates. Any
+   other owner is refused, sticky or not, and so is a non-sticky root-owned directory others can
+   write.
+2. **Only the root itself.** Every file and directory FinishUP writes inside the project
+   (`.agents/…`, `.cursor/…`, `.claude/…`, `.codex/…`) must still be the running user's own, and
+   captured files are checked against the running user. What FinishUP reads there as the user's own
+   configuration is the user's or root's, never another non-root account's (item 5). A root-owned
+   worktree is therefore not a Git repository FinishUP will read: Git
+   refuses another owner's worktree ("dubious ownership") and FinishUP runs Git with no system or
+   global configuration, so no `safe.directory` can be configured around it. Such a project keeps
+   its plain-directory identity; subject-state and change capture report their existing
+   limitations.
+3. **All hosts.** Workspace binding is shared by hooks, MCP and the CLI for Codex, Claude Code and
+   Cursor, and the same rule replaces each host's project-root ownership check.
+4. **A root-owned checkout is the project, as a plain directory.** An image built as root
+   (`COPY . /app` or a `git clone` into `/app`) keeps `/app` and `/app/.git` root-owned. Workspace
+   binding walks up to the nearest `.git`, and a marker another account owned failed the locator
+   closed, so such a project was still refused (`workspace_locator_invalid`) despite item 1. A
+   `.git` that root owns and no other account can write now ends the walk like the user's own when
+   it is a directory or a regular file with a single link (a sticky shared directory lets anyone
+   plant a hard link to a root-owned file, which proves nothing about who made the checkout): the
+   locator is that directory, judged by item 1, from the root or any directory beneath it. A `.git`
+   another non-root account owns, one others can write, or a hard-linked root file still fails
+   closed.
+
+   The service then gives the workspace its repository identity, and Git (2.35.2 and later)
+   refuses a repository whose working tree or `.git` another account owns ("dubious ownership"),
+   so every handshake for such a workspace failed (`repository_identity_unavailable`, a
+   non-retryable `service_unavailable`). Two ways out were weighed. Passing
+   `-c safe.directory=<that path>` to FinishUP's Git would give the checkout its Git identity, but
+   would bring nothing else back: subject-state and change capture independently require the
+   working tree, `.git` and every captured entry to be the user's own and report `unsafe_root`
+   otherwise, so no Git-based capture would work; and it would switch off Git's own ownership guard
+   in exactly the case it exists for. Instead, when the nearest `.git` and the directory holding it
+   are each either the user's own (not writable by others) or root's (`.git` as above; the
+   directory as item 1 admits it), and root owns at least one of them, the service commits the
+   plain `directory` identity of the checkout's top (the directory holding that `.git`, found the
+   way workspace binding finds it, never past the home directory) without running Git. The
+   identity is therefore the same from the top or any directory beneath it, and equals the
+   locator workspace binding gives hooks and setup, so a session the MCP bridge, the CLI or the
+   full-screen interface starts from a subdirectory (they name the raw working directory) meets
+   its own hooks rather than `repository_identity_mismatch`. That covers the root-built checkout
+   and the user's own `git init` inside a sticky root-owned `/app`, which Git refuses the same way.
+   Anything another non-root account owns is not matched and stays refused. Check-time change
+   capture applies the same decision before running Git and reports `unsafe_root` (before, Git's
+   refusal surfaced as `not_git`, "not a Git repository"), as subject-state capture already did.
+   What the user gets: the service starts, hooks and MCP attach, and work is published and checked
+   as for any plain directory; the receipt names the capture gap as "the repository failed a
+   safety check (a link, another owner, a working tree redirected elsewhere, or a directory
+   replaced while it was read)", so checks cover what the agent publishes, not a Git diff. The
+   identity differs from the one the same checkout would get if the user owned it, so consent
+   given under one does not carry to the other (it fails closed: grant again).
+5. **Every path in and out applies the same split.** The project root is judged by item 1 on every
+   path that reaches it, not only on install: Cursor's project MCP status, preview and apply (so
+   Cursor connect, disconnect and status in a root-owned project root), and Codex marketplace
+   removal, which anchors its
+   descriptor walk on the project (a Codex home anchor keeps the owner rule). Before, those paths
+   still required the user to own the project root, so Cursor refused a root-owned project and a
+   Codex disconnect removed the Codex configuration and then failed on the project's
+   `marketplace.json`, on every retry. Host admission (`.claude/settings.local.json`,
+   `.codex/config.toml`, `.cursor/permissions.json` and `.cursor/cli.json`) now judges the project
+   root by item 1 (it checked no owner at all) and splits its host folders by use:
+   - **Read** (status, previews, the reverse sweeps): a folder that is the user's own, or root's,
+     and that no other account can write is read normally, so a folder root committed to the image
+     reads as `absent` and a revoke with nothing to remove stays a no-op. A folder another non-root
+     account made, or one others can write (in a sticky root any account can create `.claude`
+     first), is reported `unknown` (`folder_not_owned`): status never reports admission another
+     account could have written, and both grant and revoke refuse it as `entry_unreadable`.
+   - **Write** (only the surfaces a preview would change): the folder must be the user's own and
+     not writable by others. Preview refuses anything else as `target_unsafe` (including a grant
+     into a folder root committed, which the user could not write anyway), and apply pins the
+     project root and the host folder by descriptor (no link followed), creates the folder
+     owner-only when absent, and stages, rechecks, renames and removes through that descriptor, so
+     swapping the folder for a link or another account's folder after the check cannot redirect
+     the write.
+
+   Claude Code's `--scope project` commands, which write `.claude/settings.json`, require `.claude`
+   to be the user's own and not writable by others before any command runs (preview, which apply
+   repeats). One window stays outside what FinishUP can fence: when `.claude` is absent, another
+   account could create it in a sticky root between FinishUP's check and Claude Code's own write;
+   root can pre-create `.claude` for the user to close it.
+
+   Known gap, recorded rather than closed here: the read/write split above is host admission's
+   alone. Every Claude Code plugin change (install, update, enable, disable, remove; status still
+   reads it) and Cursor's project MCP status, connect and disconnect still require `.claude` and
+   `.cursor` to be the user's own, so a
+   folder root committed to the image (`COPY . /app` with a committed `.claude` or `.cursor`) is
+   refused there as `target_unsafe` until root makes it the user's (`chown`). A follow-up may let
+   their status and removal read a root-owned folder no other account can write, as host admission
+   does, while still requiring the user's own folder for a write.
+
+Scope of the sticky arm, recorded rather than changed: item 1 admits every root-owned sticky
+directory, which includes the shared temporary directories (`/tmp`, `/var/tmp`, `/dev/shm`, and on
+macOS `/private/tmp` and the shared folder under `/Users`). A non-root user can therefore bind one of them as a
+project, as the owner's rule intends for a sticky `/app`. Everything FinishUP creates there is still
+the user's own (item 2), and FinishUP's own state keeps refusing shared temporary directories under
+its separate path-safety rule. Executables are a separate rule: the Codex launcher accepts a
+root-owned executable, while Claude Code's executable must still be the user's own, so a
+root-installed `claude` is refused (`target_unsafe`).
+
+Known limits: the runtime prefix must be writable by the user who binds an instance to it
+(`instance create --bind-runtime` writes the pin there), and a serving start needs the user's own
+0700 `.<prefix>-releases` sibling, so a runtime root installed serves only root unless root
+creates that sibling for the user (below). Both are now refused by name instead of
+`internal_error` or a bare permission error:
+
+6. **`runtime_pin_unwritable`.** `instance create --bind-runtime` on a prefix the user cannot
+   write is a typed refusal and creates nothing that stays (ADR-028, 2026-10-14 amendment).
+7. **`release_runtime_not_owned`.** A serving start (`service run`, `mcp serve`, every hook,
+   `upgrade`) whose `.<prefix>-releases` directory belongs to another account, or is absent from a
+   parent another account owns and this user cannot write, is refused with
+   `release_runtime_not_owned` instead of the generic "could not be verified" (an existing
+   directory) or `release_runtime_unavailable: permission_denied` (none yet). The ownership rule
+   is unchanged: generations stay the running user's own, 0700. Terminal commands name the
+   directory and the repair that fits: when the installation is the user's own, remove a
+   directory another account made (for example with sudo) and FinishUP recreates it, or have the
+   parent's owner create it for the user; when the installation is another account's, install
+   FinishUP as the user, or have the installation's owner create the directory for that one user.
+   Hooks keep the non-blocking exit 20 with no stdout decision and print the token without local
+   paths. A spawned `service run` records the token as its startup failure, the CLI's
+   `service_unavailable` and `setup` probes report it read-only (they create nothing), and
+   `upgrade --prune-runtimes` names it. Every connect path refuses to connect a host to such a
+   runtime (or one another account can write), before writing any registration: `setup run --host`,
+   bare `setup run` (the Codex wizard, with or without `--codex-path`), the full-screen interface's
+   first run and `/connect` (both its host connection and its Codex preview), the direct
+   commands `integrate codex mcp preview|install` (also reached from the prompt-loop menu) and
+   `recommend accept codex-plugin-activation` (setup's next command, which enables the Codex
+   plugin and its hooks; `recommend list` and `decline` stay open),
+   `integrate claude plugin preview|install|update|enable` (any connect action),
+   `integrate cursor plugin preview|install` (install or replace) and
+   `integrate cursor project-mcp preview|install`, and, as a last guard for any front end, the
+   shared apply of a connection. Each reports the token as its reason and the refusal text as the
+   next step (exit 20 on the direct commands); disconnect, removal, their previews and status stay
+   open. Not covered: `integrate claude plugin export`, which writes a development carrier for
+   `claude --plugin-dir` rather than connecting a host; a session started from it is refused at
+   launch like any other. A directory the user owns that is read-only, and every other condition,
+   keeps its existing report.
+
+What the rule already admits, and the 2026-10-14 container run confirmed as `nobody`: root may
+create `.<prefix>-releases` for one non-root account (`install -d -m 0700 -o <user>` before anyone
+runs FinishUP) and leave the runtime root-owned; that account then builds and serves its own
+generations from root's files, which no other account can write. Such a runtime serves only that
+account (root is then refused by the same rule) and cannot carry a pin, because a pin must be the
+running user's own; a pinned instance needs a runtime the user owns. Root upgrades it with its
+package manager (`uv tool upgrade`; `finishup upgrade --accept` as root is refused by the same rule),
+and the user removes unused generations with `finishup upgrade --prune-runtimes`. A separate per-user
+location for generations, so one root-installed runtime could serve every account, is not part of
+this change.
+
+Verification: synthetic-stat unit tests of the rule; per-host tests in which the test runner's
+uid plays root and the process another account; a Boat container run of the full benchmark
+bootstrap and an MCP `start`/`publish_work`/`receipt` lifecycle as `nobody` in a root-owned
+`/app` (risk-scorer-replay) and as `agent` in a sticky root-owned `/app` (rs-archive-clone). For
+items 4, 5 and 7 (found by two independent reviews of the change): tests through each public path (the
+workspace locators and setup's workspace selection; Cursor project MCP install and remove and the
+Cursor connect, disconnect and reconnect composition; Codex install, activation and removal; host
+admission grant, revoke, status and the reverse sweeps, including the privacy ceremony's; Claude
+Code connect and remove; the repository identity the service handshake resolves, with a real Git
+checkout owned by another uid; every connect path for a runtime that cannot serve), in a 0755 and
+a sticky root-owned project and against a host folder another account created or swapped after
+the check, with ownership simulated by rewriting the owner the kernel reports where a real chown
+needs root, so most run on non-root runners too. For items 6 and 7:
+unit tests in which another effective uid plays the non-root user against files the runner owns, and a Linux run as `nobody` against a root-owned runtime (`mcp serve`,
+`service run`, a hook, `service status` and `instance create --bind-runtime`; the previous release
+printed `permission_denied`, "could not be verified" and `internal_error`), including the
+root-created `.<prefix>-releases` layout above serving a hook.
 
 ## Implementation-lock identities
 
@@ -220,20 +514,20 @@ decision like the 2026-08-20 npm decision above; rendering an artifact locally c
 publication claim.
 
 **Issue #150 implementation detail.** The first portable projection's exact members are
-`plugin.json`, `skills/yoetz/SKILL.md`, and the five canonical guidance references; `mcp.json` and
+`plugin.json`, `skills/finishup/SKILL.md`, and the five canonical guidance references; `mcp.json` and
 the Codex-specific skill manifest are absent. The Agent Plugins `plugin.schema.json` and
 `mcp.schema.json` bytes are vendored under `support/agent-plugins/1.0.0/` at the ADR-023 digests,
-and the neutral skill wrapper is owned at `skills/portable/yoetz/SKILL.md`. All three enter the
+and the neutral skill wrapper is owned at `skills/portable/finishup/SKILL.md`. All three enter the
 reviewed resource inventory and wheel/sdist through `sync_resource_ripple.py`. Runtime rendering
 uses only those packaged bytes, so clean-install rendering and installed guidance parity are
 covered by the packaging gates without an upstream fetch.
 
 **Claude Code native amendment (2026-08-27, issue #154).** Claude Code is a native dual target,
 not an Agent Plugins consumer. The generated project-marketplace source contains exactly a strict
-`.claude-plugin/marketplace.json`, `plugins/yoetz/.claude-plugin/plugin.json`, the shared skill and
+`.claude-plugin/marketplace.json`, `plugins/finishup/.claude-plugin/plugin.json`, the shared skill and
 five byte-identical references, the exact tested hook file, and optional plugin-owned `.mcp.json`.
 Claude Code `2.1.241` copies the plugin into
-`<CLAUDE_CONFIG_DIR>/plugins/cache/yoetz-local/yoetz/<manifest-version>`; Yoetz records the source,
+`<CLAUDE_CONFIG_DIR>/plugins/cache/finishup-local/finishup/<manifest-version>`; FinishUP records the source,
 render, marketplace, installed-cache, and executable digests separately. An unchanged manifest
 version cannot be used to claim updated active bytes. Update success proves new cache bytes only;
 reload/new-session activation is a separate proof facet.
@@ -244,8 +538,8 @@ marketplace only. It admits only exactly proven Claude versions (currently `2.1.
 validation behavior first exist, but a version above it is still refused until its native contract
 is proven), uses Claude's project
 install/update/enable/disable/uninstall commands, and verifies each outcome by list/settings/cache
-read-back. Uninstall is qualified as `yoetz@yoetz-local`, uses `--scope project --keep-data`, and
+read-back. Uninstall is qualified as `finishup@finishup-local`, uses `--scope project --keep-data`, and
 removes the private marketplace source only after exact managed-marker validation. Claude plugin
-data, Yoetz ledgers, vault/keyring/provider configuration, privacy receipts, credentials, foreign
+data, FinishUP ledgers, vault/keyring/provider configuration, privacy receipts, credentials, foreign
 marketplaces, other scopes, modified sources, and orphaned caches are never inferred to be safe to
 delete. Public marketplace publication remains a separate release decision.

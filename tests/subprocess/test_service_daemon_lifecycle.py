@@ -23,8 +23,8 @@ _DAEMON_PROBE = r"""
 import asyncio, os, sys
 from datetime import UTC, datetime
 from pathlib import Path
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import LifecycleError, ServiceLifecycle
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import LifecycleError, ServiceLifecycle
 
 class Clock:
     def now_utc(self): return datetime(2026, 7, 19, tzinfo=UTC)
@@ -55,7 +55,7 @@ class Vault:
 async def run():
     lifecycle = ServiceLifecycle(Clock(), generation_store=Store(),
         process_start_identity_commitment="sha256:" + "2" * 64,
-        singleton_lock_path=Path(os.environ["YOETZ_TEST_LOCK"]))
+        singleton_lock_path=Path(os.environ["FINISHUP_TEST_LOCK"]))
     listener = Listener()
     composition = ServiceComposition(lifecycle, listener, None, None, None, Monitor(), Vault())
     daemon = ServiceDaemon(_composition=composition)
@@ -75,12 +75,12 @@ import asyncio, os
 from datetime import UTC, datetime
 from pathlib import Path
 
-import yoetz.adapters.control.unix_socket as unix_socket
-from yoetz.adapters.control.unix_socket import bind_control_listener
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import LifecycleError, ServiceLifecycle
+import finishup.adapters.control.unix_socket as unix_socket
+from finishup.adapters.control.unix_socket import bind_control_listener
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import LifecycleError, ServiceLifecycle
 
-runtime_path = Path(os.environ["YOETZ_TEST_RUNTIME"])
+runtime_path = Path(os.environ["FINISHUP_TEST_RUNTIME"])
 unix_socket._runtime_directory = lambda: runtime_path
 
 class Clock:
@@ -126,7 +126,7 @@ async def run():
         await listener.aclose()
     lifecycle = ServiceLifecycle(Clock(), generation_store=Store(),
         process_start_identity_commitment="sha256:" + "3" * 64,
-        singleton_lock_path=Path(os.environ["YOETZ_TEST_LOCK"]),
+        singleton_lock_path=Path(os.environ["FINISHUP_TEST_LOCK"]),
         endpoint_publisher=publish, endpoint_cleanup=cleanup)
     composition = ServiceComposition(lifecycle, listener, None, None, None, None, Vault())
     daemon = ServiceDaemon(_composition=composition)
@@ -145,11 +145,11 @@ _CONTROL_STOP_CLIENT_PROBE = r"""
 import asyncio, os
 from pathlib import Path
 
-import yoetz.adapters.control.unix_socket as unix_socket
-from yoetz.ports.control import ControlClientKind
-from yoetz.service.client import connect_service
+import finishup.adapters.control.unix_socket as unix_socket
+from finishup.ports.control import ControlClientKind
+from finishup.service.client import connect_service
 
-unix_socket._runtime_directory = lambda: Path(os.environ["YOETZ_TEST_RUNTIME"])
+unix_socket._runtime_directory = lambda: Path(os.environ["FINISHUP_TEST_RUNTIME"])
 
 async def run():
     client = await connect_service(ControlClientKind.CLI)
@@ -169,7 +169,7 @@ def _spawn(lock_path: Path) -> subprocess.Popen[str]:
     environment = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "PYTHONPATH": os.fspath(Path.cwd() / "src"),
-        "YOETZ_TEST_LOCK": os.fspath(lock_path),
+        "FINISHUP_TEST_LOCK": os.fspath(lock_path),
     }
     return subprocess.Popen(  # noqa: S603 - fixed interpreter and in-repo probe
         [sys.executable, "-c", _DAEMON_PROBE],
@@ -185,8 +185,8 @@ def _control_environment(lock_path: Path, runtime_path: Path) -> dict[str, str]:
     return {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "PYTHONPATH": os.fspath(Path.cwd() / "src"),
-        "YOETZ_TEST_LOCK": os.fspath(lock_path),
-        "YOETZ_TEST_RUNTIME": os.fspath(runtime_path),
+        "FINISHUP_TEST_LOCK": os.fspath(lock_path),
+        "FINISHUP_TEST_RUNTIME": os.fspath(runtime_path),
     }
 
 
@@ -216,7 +216,7 @@ def _run_control_stop(lock_path: Path, runtime_path: Path) -> subprocess.Complet
 def _short_socket_runtime() -> Path:
     preferred_root = Path("/private/tmp")
     runtime_root = preferred_root if preferred_root.is_dir() else Path(tempfile.gettempdir())
-    return Path(tempfile.mkdtemp(prefix="yoetz-sock-", dir=runtime_root))
+    return Path(tempfile.mkdtemp(prefix="finishup-sock-", dir=runtime_root))
 
 
 def _readline_bounded(process: subprocess.Popen[str], seconds: float = 10.0) -> str:
@@ -225,7 +225,7 @@ def _readline_bounded(process: subprocess.Popen[str], seconds: float = 10.0) -> 
     lines: queue.Queue[str] = queue.Queue(maxsize=1)
     reader = threading.Thread(
         target=lambda: lines.put(stdout.readline()),
-        name="yoetz-test-daemon-stdout",
+        name="finishup-test-daemon-stdout",
         daemon=True,
     )
     reader.start()
@@ -319,7 +319,7 @@ def test_service_run_against_a_held_singleton_reports_service_already_running(
         wait_status(environment, (owner,))
 
         refused = subprocess.run(  # noqa: S603 - fixed interpreter and installed module
-            (sys.executable, "-m", "yoetz", "service", "run"),
+            (sys.executable, "-m", "finishup", "service", "run"),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             env=environment,

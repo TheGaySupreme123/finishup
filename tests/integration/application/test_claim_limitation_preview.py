@@ -15,13 +15,13 @@ import pytest
 
 from builders.projection_workflow import build_projection_application, frontier_json, request_base
 from builders.start_application import protocol_id, start_request
-from yoetz.application.service import Application
-from yoetz.cli.closure_gate import closure_gate_from_readiness
-from yoetz.cli.render import render_closure_readiness_lines
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_status
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import PublicOperationError
-from yoetz.protocol.models import PublishWorkRequest, StatusRequest
+from finishup.application.service import Application
+from finishup.cli.closure_gate import closure_gate_from_readiness
+from finishup.cli.render import render_closure_readiness_lines
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_status
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import PublicOperationError
+from finishup.protocol.models import PublishWorkRequest, StatusRequest
 
 pytestmark = pytest.mark.anyio
 

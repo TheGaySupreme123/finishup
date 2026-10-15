@@ -7,25 +7,25 @@ from pathlib import Path
 import apsw
 import pytest
 
-from integration.storage.test_migration_0011_observation import (
-    _schema_ten_with_observation_rows,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, Migration, run_migrations
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, Migration, run_migrations
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationContentKind,
     ObservationCursor,
     ObservationSource,
 )
-from yoetz.domain.values import Timestamp
+from finishup.domain.values import Timestamp
+from integration.storage.test_migration_0011_observation import (
+    _schema_ten_with_observation_rows,  # pyright: ignore[reportPrivateUsage]
+)
 
 _ROOT = Path(__file__).resolve().parents[3]
 _WORKSPACE = "hmac-sha256:" + "a" * 64
 _SESSION = "hmac-sha256:" + "b" * 64
 _SOURCE = "hmac-sha256:" + "c" * 64
 _TASK_ID = "tsk_00000000-0000-4000-8000-000000001101"
-_YOETZ_SESSION_ID = "ses_00000000-0000-4000-8000-000000001102"
+_FINISHUP_SESSION_ID = "ses_00000000-0000-4000-8000-000000001102"
 _TIME = Timestamp("2026-09-06T10:00:00.000Z")
 
 
@@ -33,7 +33,7 @@ def _codex_ticket() -> ObservationCaptureTicket:
     return ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK_ID,
-        yoetz_session_id=_YOETZ_SESSION_ID,
+        yoetz_session_id=_FINISHUP_SESSION_ID,
         session_commitment=_SESSION,
         source=ObservationSource.CODEX_HOOK,
         source_identity="hook:codex:1101",
@@ -115,7 +115,7 @@ def test_codex_ticket_schema_rejects_a_profile_or_wrong_native_source() -> None:
             "sha256:" + "5" * 64,
             _WORKSPACE,
             _TASK_ID,
-            _YOETZ_SESSION_ID,
+            _FINISHUP_SESSION_ID,
             _SESSION,
             "codex_hook",
             "hook:codex:invalid",

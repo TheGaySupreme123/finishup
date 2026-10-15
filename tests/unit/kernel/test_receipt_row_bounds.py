@@ -26,9 +26,9 @@ from tests.unit.kernel.test_receipt_builder import (
     _context as _single_context,  # pyright: ignore[reportPrivateUsage]
 )
 
-from yoetz.domain.events import encode_payload
-from yoetz.domain.findings import CheckVerdict, Finding, rank_key
-from yoetz.domain.receipts import (
+from finishup.domain.events import encode_payload
+from finishup.domain.findings import CheckVerdict, Finding, rank_key
+from finishup.domain.receipts import (
     ReceiptConclusion,
     ReceiptSectionKey,
     receipt_document_from_json,
@@ -36,21 +36,21 @@ from yoetz.domain.receipts import (
     resolved_finding_ids_for_render,
     unresolved_findings_for_render,
 )
-from yoetz.domain.values import finding_id, obligation_id
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts
-from yoetz.kernel.projections import (
+from finishup.domain.values import finding_id, obligation_id
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts
+from finishup.kernel.projections import (
     FindingProjectionRecord,
     LatestTestedState,
     empty_projection_state,
 )
-from yoetz.kernel.receipt_builder import (
+from finishup.kernel.receipt_builder import (
     ReceiptBuildContext,
     ReceiptFindingState,
     _finish_section,  # pyright: ignore[reportPrivateUsage]
     _keep_by_rank,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import LedgerFreshness
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import LedgerFreshness
 
 
 def _many_findings(count: int) -> tuple[Finding, ...]:
@@ -168,23 +168,23 @@ def test_a_child_with_more_findings_than_a_receipt_child_holds_still_builds() ->
 
     from dataclasses import replace as dc_replace
 
-    from yoetz.domain.coordination import (
+    from finishup.domain.coordination import (
         LineageAcceptance,
         LineageOrigin,
         SessionHealth,
         WorkState,
     )
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
-    from yoetz.domain.receipts import SchemaVersionEntry
-    from yoetz.domain.values import receipt_id, session_id, task_id, timestamp_from_string
-    from yoetz.kernel.lineage import (
+    from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
+    from finishup.domain.receipts import SchemaVersionEntry
+    from finishup.domain.values import receipt_id, session_id, task_id, timestamp_from_string
+    from finishup.kernel.lineage import (
         ChildDependencySnapshot,
         ChildFindingSnapshot,
         LineageManifest,
         evaluate_lineage,
     )
-    from yoetz.kernel.receipt_builder import build_receipt
-    from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+    from finishup.kernel.receipt_builder import build_receipt
+    from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile
 
     kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
     rows = tuple(
@@ -216,7 +216,7 @@ def test_a_child_with_more_findings_than_a_receipt_child_holds_still_builds() ->
         manifest_event_id=_SOURCE_EVENT_ID,
     )
     lineage = evaluate_lineage(LineageManifest((snapshot,)), base_coverage=_coverage())
-    from yoetz.kernel.deterministic_checks import CaseGap
+    from finishup.kernel.deterministic_checks import CaseGap
 
     marker = f"lineage:lineage_child_actionable_finding:{snapshot.child_task_id}:{_SOURCE_EVENT_ID}"
     context = dc_replace(
@@ -293,24 +293,24 @@ def test_a_self_verified_child_finding_never_hides_one_that_still_needs_work() -
 
     from dataclasses import replace as dc_replace
 
-    from yoetz.domain.coordination import (
+    from finishup.domain.coordination import (
         LineageAcceptance,
         LineageOrigin,
         SessionHealth,
         WorkState,
     )
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
-    from yoetz.domain.receipts import SchemaVersionEntry
-    from yoetz.domain.values import receipt_id, session_id, task_id, timestamp_from_string
-    from yoetz.kernel.deterministic_checks import CaseGap
-    from yoetz.kernel.lineage import (
+    from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
+    from finishup.domain.receipts import SchemaVersionEntry
+    from finishup.domain.values import receipt_id, session_id, task_id, timestamp_from_string
+    from finishup.kernel.deterministic_checks import CaseGap
+    from finishup.kernel.lineage import (
         ChildDependencySnapshot,
         ChildFindingSnapshot,
         LineageManifest,
         evaluate_lineage,
     )
-    from yoetz.kernel.receipt_builder import build_receipt
-    from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+    from finishup.kernel.receipt_builder import build_receipt
+    from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile
 
     kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
     rows = tuple(
@@ -383,21 +383,21 @@ def test_a_cleared_gap_stays_cleared_when_live_gaps_exceed_the_row_bound() -> No
 
     from dataclasses import replace as dc_replace
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         SchemaVersionEntry,
         historical_receipt_gaps,
         live_receipt_gap_codes,
     )
-    from yoetz.domain.values import (
+    from finishup.domain.values import (
         Frontier,
         receipt_id,
         session_id,
         task_id,
         timestamp_from_string,
     )
-    from yoetz.kernel.deterministic_checks import CaseGap
-    from yoetz.kernel.receipt_builder import build_receipt
-    from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+    from finishup.kernel.deterministic_checks import CaseGap
+    from finishup.kernel.receipt_builder import build_receipt
+    from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile
 
     cleared = "planned_verification_not_observed"
     live_codes = tuple(f"live_gap_{index:03d}" for index in range(63))

@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli.hook_io import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli.hook_io import (
     MAX_HOOK_STDIN_BYTES,
     MAX_OBSERVED_IMAGES,
     OBSERVED_IMAGE_MEDIA_TYPES,
@@ -30,9 +30,9 @@ from yoetz.cli.hook_io import (
     observed_image_facts,
     read_hook_ingress,
 )
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
-from yoetz.domain import observation as domain_observation
-from yoetz.domain.events import (
+from finishup.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
+from finishup.domain import observation as domain_observation
+from finishup.domain.events import (
     EvidenceContentAvailability,
     EvidenceDigestProvenance,
     EvidenceDigestSubject,
@@ -41,13 +41,13 @@ from yoetz.domain.events import (
     EvidenceRecordedPayload,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import ObservationEnvelope
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation import ObservationEnvelope
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 def _png(width: int, height: int, *, padding: int = 0) -> bytes:
@@ -329,8 +329,8 @@ def test_one_image_result_is_one_digest_only_evidence_row(
     assert len(results) == 1
     assert evidence.evidence_id in results[0].evidence_refs
     # Cross-lane (L5 D6, #983): the review packet recognizes this exact row as an observed image
-    # notice and a Yoetz-limit (unsupported data type) target, never a request for its pixels.
-    from yoetz.application.missing_for_assessment import observed_image_evidence
+    # notice and a FinishUP-limit (unsupported data type) target, never a request for its pixels.
+    from finishup.application.missing_for_assessment import observed_image_evidence
 
     assert observed_image_evidence(evidence)
 
@@ -365,7 +365,7 @@ def test_a_malformed_header_is_image_unknown_without_dimensions(
 
 
 def test_the_image_fact_survives_the_wire_round_trip(tmp_path: Path) -> None:
-    from yoetz.domain.observation import (
+    from finishup.domain.observation import (
         observation_envelope_from_json,
         observation_envelope_to_json,
     )

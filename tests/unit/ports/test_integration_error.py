@@ -8,7 +8,7 @@ from collections.abc import Generator
 
 import pytest
 
-from yoetz.ports.integrations import IntegrationError, IntegrationReason
+from finishup.ports.integrations import IntegrationError, IntegrationReason
 
 
 @contextlib.contextmanager

@@ -11,10 +11,10 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks
-from yoetz.domain.observation import ObservationSource
-from yoetz.domain.observation_profiles import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks
+from finishup.domain.observation import ObservationSource
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )

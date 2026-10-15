@@ -25,13 +25,13 @@ import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from builders.policy_cases import finding_record, fnd, record
-from yoetz.application.check import (
+from finishup.application.check import (
     build_finding_checklist,
     build_overall_next,
     full_check_gaps_clean,
     semantic_route_required,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     OBLIGATION_SCHEMA_VERSION,
     EventSchema,
     ObligationPublishedPayload,
@@ -39,7 +39,7 @@ from yoetz.domain.events import (
     PlanPublishedPayload,
     ResponseRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
@@ -47,14 +47,14 @@ from yoetz.domain.findings import (
     ResponseDisposition,
     finding_policy_identity,
 )
-from yoetz.domain.values import Frontier, obligation_id
-from yoetz.kernel.closure_class import ReceiptEffect, closure_counts, finding_closures
-from yoetz.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
-from yoetz.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import register_command_identity_key
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Frontier, obligation_id
+from finishup.kernel.closure_class import ReceiptEffect, closure_counts, finding_closures
+from finishup.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
+from finishup.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import register_command_identity_key
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -63,7 +63,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.readiness_text import predicted_receipt_variants, readiness_directive
+from finishup.protocol.readiness_text import predicted_receipt_variants, readiness_directive
 
 _DIGEST = "sha256:" + "3" * 64
 _OBLIGATION = obligation_id("obl_da7fcee1-979b-4a5c-84cc-daf668869d31")
@@ -209,7 +209,7 @@ def test_b4_the_earlier_frontier_gap_has_one_class_and_one_bound() -> None:
         assert effect.kind is (
             GapEffectKind.STANDING_BOUNDING if bounds else GapEffectKind.DISCLOSED
         )
-    # The receipt: only an observation Yoetz cannot prove harmless bounds; answers to the
+    # The receipt: only an observation FinishUP cannot prove harmless bounds; answers to the
     # check's own findings (a responses-only suffix) are a disclosure, as ADR-040 section 7 says.
     assert gap_effect(code, GapContext(earlier_frontier_bounds=False)).kind is (
         GapEffectKind.DISCLOSED
@@ -227,7 +227,7 @@ def test_b5_the_full_check_verdict_reads_the_recorded_route_like_the_receipt() -
     # A route that required review keeps the missing review bounding; so does an unknown route.
     assert not full_check_gaps_clean(gaps, totals, route_requires_review=True)
     assert not full_check_gaps_clean(gaps, totals)
-    # The Yoetz packet budgets follow the same route: disclosed on a deterministic route.
+    # The FinishUP packet budgets follow the same route: disclosed on a deterministic route.
     assert full_check_gaps_clean(
         ("check_time_change_truncated",), totals, route_requires_review=False
     )
@@ -243,7 +243,7 @@ def test_an_unfinished_obligation_reason_does_not_call_an_emptied_deliverable_op
 
     from types import SimpleNamespace
 
-    from yoetz.protocol.readiness_text import predicted_receipt_variants
+    from finishup.protocol.readiness_text import predicted_receipt_variants
 
     prediction = {
         "conclusion": "insufficient_coverage",

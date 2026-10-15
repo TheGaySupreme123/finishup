@@ -19,14 +19,14 @@ from typing import cast
 import pytest
 from tests.builders.privacy_receipts import NOW, local_receipt_view, network_receipt_view
 
-import yoetz.service.control_protocol as control_protocol_module
-from yoetz.adapters.control.unix_socket import AuthenticatedUnixStream, authenticate_peer
-from yoetz.application.privacy_control import encode_privacy_receipt_page
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import ControlMethod, ControlResult
-from yoetz.ports.privacy import PrivacyReceiptPage, PrivacyReceiptView
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.service.control_protocol import (
+import finishup.service.control_protocol as control_protocol_module
+from finishup.adapters.control.unix_socket import AuthenticatedUnixStream, authenticate_peer
+from finishup.application.privacy_control import encode_privacy_receipt_page
+from finishup.domain.values import JsonObject
+from finishup.ports.control import ControlMethod, ControlResult
+from finishup.ports.privacy import PrivacyReceiptPage, PrivacyReceiptView
+from finishup.protocol.ids import IdKind, new_id
+from finishup.service.control_protocol import (
     MAX_CONTROL_FRAME_BYTES,
     MAX_CONTROL_RECEIVE_CHUNK_BYTES,
     ControlFrame,
@@ -242,7 +242,7 @@ def test_the_frame_deadline_starts_at_the_first_byte_not_while_waiting_for_one()
 
 
 def test_a_stalled_response_frame_reaches_the_client_as_retryable_unavailability() -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     mapped = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
         ControlProtocolError("frame_read_timeout")

@@ -9,17 +9,17 @@ import pytest
 from jsonschema import Draft7Validator, Draft202012Validator
 from pydantic import ValidationError
 
-from yoetz.application.start import StartInternalResult, start_projection_wire
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.application.start import StartInternalResult, start_projection_wire
+from finishup.mcp.descriptors import descriptor_for
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     FrontierModel,
     PublishWorkRequestModel,
     StartCompactViewModel,
     StartSuccessModel,
     StartVersionSliceModel,
 )
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 _REQUEST_ID = "req_00000000-0000-4000-8000-000000000001"
 _TASK_ID = "tsk_00000000-0000-4000-8000-000000000002"

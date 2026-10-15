@@ -5,30 +5,30 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.cursor_integration import (
+from finishup.adapters.integrations.cursor_integration import (
     CursorPluginTarget,
     apply_cursor_plugin,
     preview_cursor_plugin,
     render_cursor_plugin,
     status_cursor_plugin,
 )
-from yoetz.adapters.integrations.cursor_mcp_runtime import (
+from finishup.adapters.integrations.cursor_mcp_runtime import (
     CursorMcpProcessSnapshot,
     FixedCursorMcpProcesses,
     classify_cursor_semantic_ceiling,
     classify_serve_suffix,
     observe_cursor_mcp_runtime,
 )
-from yoetz.domain.values import request_id
-from yoetz.ports.plugin_artifacts import (
+from finishup.domain.values import request_id
+from finishup.ports.plugin_artifacts import (
     ArtifactAuthority,
     McpOwnership,
     PluginArtifactAction,
     PluginFormatProfile,
     PluginProofFacet,
 )
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.version import read_verified_resource
+from finishup.protocol.canonical import canonical_encode
+from finishup.version import read_verified_resource
 
 _REQUEST = request_id("req_10000000-0000-4000-8000-000000000021")
 _REVIEW_ID = "a" * 64
@@ -43,12 +43,12 @@ class _AcceptingReview:
 
 
 def test_serve_suffix_classifies_exact_policy_and_strict_argv() -> None:
-    assert classify_serve_suffix(("/opt/yoetz/bin/yoetz", "mcp", "serve")) == "policy"
-    assert classify_serve_suffix(("yoetz", "mcp", "serve", "--host", "cursor")) == "policy"
+    assert classify_serve_suffix(("/opt/finishup/bin/finishup", "mcp", "serve")) == "policy"
+    assert classify_serve_suffix(("finishup", "mcp", "serve", "--host", "cursor")) == "policy"
     assert (
         classify_serve_suffix(
             (
-                "yoetz",
+                "finishup",
                 "mcp",
                 "serve",
                 "--host",
@@ -59,15 +59,15 @@ def test_serve_suffix_classifies_exact_policy_and_strict_argv() -> None:
         )
         == "policy"
     )
-    assert classify_serve_suffix(("yoetz", "mcp", "serve", "--semantic", "off")) == "strict"
+    assert classify_serve_suffix(("finishup", "mcp", "serve", "--semantic", "off")) == "strict"
     assert (
-        classify_serve_suffix(("yoetz", "mcp", "serve", "--host", "cursor", "--semantic", "off"))
+        classify_serve_suffix(("finishup", "mcp", "serve", "--host", "cursor", "--semantic", "off"))
         == "strict"
     )
     assert (
         classify_serve_suffix(
             (
-                "yoetz",
+                "finishup",
                 "mcp",
                 "serve",
                 "--host",
@@ -82,28 +82,30 @@ def test_serve_suffix_classifies_exact_policy_and_strict_argv() -> None:
     )
     assert (
         classify_serve_suffix(
-            ("yoetz", "mcp", "serve", "--host", "cursor", "--project-root", "relative")
+            ("finishup", "mcp", "serve", "--host", "cursor", "--project-root", "relative")
         )
-        == "foreign"
-    )
-    assert (
-        classify_serve_suffix(("yoetz", "mcp", "serve", "--host", "cursor", "--project-root", "/"))
         == "foreign"
     )
     assert (
         classify_serve_suffix(
-            ("yoetz", "mcp", "serve", "--host", "cursor", "--project-root", "/srv/../project")
+            ("finishup", "mcp", "serve", "--host", "cursor", "--project-root", "/")
         )
         == "foreign"
     )
-    assert classify_serve_suffix(("/secret/yoetz", "mcp", "serve", "--extra")) == "foreign"
-    assert classify_serve_suffix(("/secret/not-yoetz", "mcp", "serve")) is None
+    assert (
+        classify_serve_suffix(
+            ("finishup", "mcp", "serve", "--host", "cursor", "--project-root", "/srv/../project")
+        )
+        == "foreign"
+    )
+    assert classify_serve_suffix(("/secret/finishup", "mcp", "serve", "--extra")) == "foreign"
+    assert classify_serve_suffix(("/secret/not-finishup", "mcp", "serve")) is None
     assert classify_serve_suffix(("python", "worker.py", "mcp", "serve")) is None
     assert classify_serve_suffix(("unrelated",)) is None
 
 
 def test_cursor_helper_comm_accepts_macos_paths_without_retaining_them() -> None:
-    import yoetz.adapters.integrations.cursor_mcp_runtime as module
+    import finishup.adapters.integrations.cursor_mcp_runtime as module
 
     assert module._cursor_helper_comm(  # pyright: ignore[reportPrivateUsage]
         "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin)"
@@ -268,10 +270,10 @@ def test_dogfood_fixture_names_the_activation_mismatch_case() -> None:
 def test_serve_argv_compares_the_tokens_before_serve_with_the_bound_launcher() -> None:
     """Issue #468: a live helper child must be attributable to the exact bound executable."""
 
-    from yoetz.adapters.integrations.cursor_mcp_runtime import classify_serve_argv
+    from finishup.adapters.integrations.cursor_mcp_runtime import classify_serve_argv
 
-    console = ("/opt/current/bin/yoetz",)
-    module = ("/opt/current/bin/python3.14", "-m", "yoetz")
+    console = ("/opt/current/bin/finishup",)
+    module = ("/opt/current/bin/python3.14", "-m", "finishup")
     serve = ("mcp", "serve", "--host", "cursor")
 
     assert classify_serve_argv((*console, *serve), console) == ("policy", "matched")
@@ -285,16 +287,16 @@ def test_serve_argv_compares_the_tokens_before_serve_with_the_bound_launcher() -
         "matched",
     )
     # Another explicit executable answered the spawn: an ambient or neighbouring channel.
-    assert classify_serve_argv(("/opt/older/bin/yoetz", *serve), console) == (
+    assert classify_serve_argv(("/opt/older/bin/finishup", *serve), console) == (
         "policy",
         "different",
     )
-    assert classify_serve_argv(("/usr/bin/python3", "-m", "yoetz", *serve), module) == (
+    assert classify_serve_argv(("/usr/bin/python3", "-m", "finishup", *serve), module) == (
         "policy",
         "different",
     )
     # A bare name cannot be attributed either way.
-    assert classify_serve_argv(("yoetz", *serve), console) == ("policy", "unresolved")
+    assert classify_serve_argv(("finishup", *serve), console) == ("policy", "unresolved")
     # Without an expected launcher nothing is compared.
     assert classify_serve_argv((*console, *serve), None) == ("policy", None)
     assert classify_serve_argv(("unrelated",), console) == (None, None)
@@ -347,34 +349,34 @@ def test_helper_child_on_a_different_executable_requires_full_restart() -> None:
 def test_macos_ps_text_matches_a_launcher_path_that_contains_whitespace() -> None:
     """``ps`` joins argv with spaces; a bound path with whitespace must still match exactly."""
 
-    from yoetz.adapters.integrations.cursor_mcp_runtime import launcher_precedes_serve_in_text
+    from finishup.adapters.integrations.cursor_mcp_runtime import launcher_precedes_serve_in_text
 
-    spaced = ("/opt/Yoetz Tools/bin/yoetz",)
-    module = ("/opt/Yoetz Tools/venv/bin/python3.14", "-m", "yoetz")
+    spaced = ("/opt/FinishUP Tools/bin/finishup",)
+    module = ("/opt/FinishUP Tools/venv/bin/python3.14", "-m", "finishup")
 
     assert launcher_precedes_serve_in_text(
-        "/opt/Yoetz Tools/bin/yoetz mcp serve --host cursor", spaced
+        "/opt/FinishUP Tools/bin/finishup mcp serve --host cursor", spaced
     )
     # Shebang expansion puts the interpreter first; the script token still sits before serve.
     assert launcher_precedes_serve_in_text(
-        "/opt/Yoetz Tools/bin/python3.14 /opt/Yoetz Tools/bin/yoetz mcp serve --host cursor",
+        "/opt/FinishUP Tools/bin/python3.14 /opt/FinishUP Tools/bin/finishup mcp serve --host cursor",
         spaced,
     )
     assert launcher_precedes_serve_in_text(
-        "/opt/Yoetz Tools/venv/bin/python3.14 -m yoetz mcp serve", module
+        "/opt/FinishUP Tools/venv/bin/python3.14 -m finishup mcp serve", module
     )
     # A longer path that merely ends with the same suffix is another executable.
     assert not launcher_precedes_serve_in_text(
-        "/opt/other/opt/Yoetz Tools/bin/yoetz mcp serve --host cursor", spaced
+        "/opt/other/opt/FinishUP Tools/bin/finishup mcp serve --host cursor", spaced
     )
-    assert not launcher_precedes_serve_in_text("/opt/older/bin/yoetz mcp serve", spaced)
+    assert not launcher_precedes_serve_in_text("/opt/older/bin/finishup mcp serve", spaced)
     assert not launcher_precedes_serve_in_text("", spaced)
 
     # The split-token path alone would call the spaced launcher ``different``; the text check
     # is what the macOS scanner consults before reporting an executable mismatch.
-    from yoetz.adapters.integrations.cursor_mcp_runtime import classify_serve_argv
+    from finishup.adapters.integrations.cursor_mcp_runtime import classify_serve_argv
 
-    text = "/opt/Yoetz Tools/bin/yoetz mcp serve --host cursor"
+    text = "/opt/FinishUP Tools/bin/finishup mcp serve --host cursor"
     assert classify_serve_argv(tuple(text.split()), spaced) == ("policy", "different")
 
 
@@ -383,14 +385,14 @@ def test_darwin_scanner_uses_the_text_match_for_whitespace_launchers(
 ) -> None:
     import subprocess
 
-    import yoetz.adapters.integrations.cursor_mcp_runtime as module
+    import finishup.adapters.integrations.cursor_mcp_runtime as module
 
-    spaced = ("/opt/Yoetz Tools/bin/yoetz",)
-    comm_table = b"10 1 Cursor\n11 10 mcp-process\n12 11 /opt/Yoetz\n"
+    spaced = ("/opt/FinishUP Tools/bin/finishup",)
+    comm_table = b"10 1 Cursor\n11 10 mcp-process\n12 11 /opt/FinishUP\n"
     arg_table = (
         b"10 1 /Applications/Cursor.app/Contents/MacOS/Cursor\n"
         b"11 10 mcp-process\n"
-        b"12 11 /opt/Yoetz Tools/bin/yoetz mcp serve --host cursor\n"
+        b"12 11 /opt/FinishUP Tools/bin/finishup mcp serve --host cursor\n"
     )
 
     class _Completed:
@@ -409,3 +411,16 @@ def test_darwin_scanner_uses_the_text_match_for_whitespace_launchers(
     snapshot = module._darwin_snapshots(spaced)  # pyright: ignore[reportPrivateUsage]
     assert snapshot == (CursorMcpProcessSnapshot("cursor_helper", "policy", "matched"),)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "launcher",
+    ["yoetz", "/opt/yoetz/bin/yoetz", "C:\\tools\\yoetz.exe", "finishup", "/opt/x/finishup.exe"],
+)
+def test_either_launcher_spelling_is_a_finishup_child(launcher: str) -> None:
+    # A helper keeps the ``yoetz mcp serve`` child an older registration spawned (ADR-048).
+    assert classify_serve_suffix((launcher, "mcp", "serve", "--host", "cursor")) == "policy"
+
+
+def test_other_launcher_names_are_not_finishup_children() -> None:
+    assert classify_serve_suffix(("/opt/yoetz-tools/bin/yoetzd", "mcp", "serve")) is None

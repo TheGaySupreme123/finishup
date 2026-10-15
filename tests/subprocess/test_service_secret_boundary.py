@@ -21,10 +21,10 @@ _SECRET_CANARY = b"confidential-ingress-canary-2026"
 _INGRESS_PROBE = r"""
 import asyncio, hashlib, json, os, sys
 from datetime import UTC, datetime
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretConsumer
-from yoetz.service.confidential_protocol import ConfidentialSecretPurpose, SecretIngressBinding, encode_secret_header
-from yoetz.service.secret_ingress import SecretIngressError, SecretIngressService
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretConsumer
+from finishup.service.confidential_protocol import ConfidentialSecretPurpose, SecretIngressBinding, encode_secret_header
+from finishup.service.secret_ingress import SecretIngressError, SecretIngressService
 
 class Clock:
     def now_utc(self): return datetime(2026, 7, 19, tzinfo=UTC)

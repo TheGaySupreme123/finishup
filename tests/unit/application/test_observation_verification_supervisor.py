@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from yoetz.application.observation_verification import (
+from finishup.application.observation_verification import (
     ObservationVerificationSupervisor,
     VerificationDrainHandle,
 )

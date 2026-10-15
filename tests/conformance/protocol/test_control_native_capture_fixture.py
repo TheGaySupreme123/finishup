@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.schemas import validate_schema_instance
 from fixture_loader import FixtureLoader
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.schemas import validate_schema_instance
 
 _FIXTURE = "canonical/control-native-capture-2.5.case.json"
 

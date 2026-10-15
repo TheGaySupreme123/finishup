@@ -1,14 +1,15 @@
-# Yoetz — decision ledger and release-gate dispositions
+# FinishUP — decision ledger and release-gate dispositions
 
-**ADRs:** ADR-001 through ADR-029 | **Related:** [`docs/INTERFACES.md`](INTERFACES.md),
+**ADRs:** ADR-001 through ADR-049 | **Related:** [`docs/INTERFACES.md`](INTERFACES.md),
 [`docs/adr/`](adr/), release-evidence generation
 
 ## Purpose
 
-The next product release candidate is **0.3.0** (release tracking: #785); **0.2.4** remains
-the published line until the candidate's gates pass. The candidate carries Linux/WSL
-compatibility fixes (**0.2.1**), install-path fixes (**0.2.2**), the integration and session
-recovery repairs (**0.2.3**, #786) and the guided desktop installation (**0.2.4**, #767). The
+The next product release candidate is **0.3.0** (release tracking: #785), the first under the
+FinishUP name; **Yoetz 0.2.5** remains the published line until the candidate's gates pass. The
+candidate carries Linux/WSL compatibility fixes (**0.2.1**), install-path fixes (**0.2.2**), the
+integration and session recovery repairs (**0.2.3**, #786), the guided desktop installation
+(**0.2.4**, #767) and the session recovery and setup repairs (**0.2.5**). The
 dated v0.1 decisions below remain history; the 0.2 re-dispositions govern the current line. Real
 WSL 2 and native Linux Claude/Cursor session acceptance remain untested and native Codex
 multi-agent acceptance (#499, #507) remains open. The #767 first-run gate landed in 0.2.4 and is
@@ -87,7 +88,7 @@ before their owning modules are coded:
 | Wave B4 adapter lock (2026-07-19) | Configuration, key/object stores, memory/SQLite ledgers, start catalog, importer persistence, maintenance, recovery, migrations, and local Unix transport are materialized with generation-fenced durability and memory/SQLite parity. SQLite reopen reconstructs canonical structural history and verified payloads; importer publication reservations are permanent; check/finding commits advance one canonical ledger; unavailable runtime evidence fails closed. | Config, adapter, migration and resource owners; ledger/importer/privacy port amendments; object/key vectors; cumulative unit/property/conformance/integration tests |
 | Wave B5 service lock (2026-07-19) | The trusted local service boundary is materialized with strict ordinary/confidential framing, same-user fixed endpoints, typed clients, vault and unlock generations, durable throttling, one-use human authority, session-triggered relock, one shared ready runtime, structured privacy-safe logging, and bounded daemon drain/close behavior. Privacy receipt inspection is schema-exact and tagged; lifecycle stop has its own closed result. Production ready-application composition remains owned by Wave B6, where the application factory first exists. | Service, runtime/session, observability, control/privacy receipt amendments, focused subprocess security tests, and cumulative non-live gates |
 | Wave B6 application/integration lock (2026-07-19) | Every workflow/import/review use case returns a sink-independent internal body; the daemon performs the sole ordinary-client projection from canonical admitted control bytes, catalog-verified route identity, and one durable objectless privacy-audit record. Agent-context provenance widening is limited to verified self-authored material, local-human projection remains a separate sink, and even an all-structural result completes a receipt. START and CHECK crash continuation use one current verified encrypted object pointer; CHECK reopens its lossless frozen case and pinned local findings without rerunning policy or reallocating IDs. Codex JSONL import is stderr-absent only, uses exact durable source digests for review, and never accepts caller-invented commitments. Codex integration remains explicitly unsupported with empty tested profiles until E-002 evidence exists. Maintenance is preview/digest/acceptance bound, machine-bound work never acquires a secret, portable recovery uses a one-shot generation-bound handle, diagnostics are path-free, and invalid/no-op migration targets are rejected. The production service graph starts locked, constructs the application only inside the successful unlock generation, binds authenticated local endpoints after singleton acquisition, and serializes activation/lock/session/stop cleanup. | Application, privacy, importer, integration, service/daemon, ledger/object/migration owners; `INTERFACES.md`; focused unit/property/conformance/integration/subprocess gates |
-| Wave B7 client/resource lock (2026-07-19) | CLI and `python -m yoetz` are exact service-only peers with bounded exit/render behavior; confidential commands acquire secrets only through foreground current-user controlling-TTY ceremonies and zero mutable buffers after one-shot use. MCP pre-gates unsupported protocol versions, exposes exactly six projected service tools and four verified static resources, uses frozen descriptor/set digests, emits bounded schema-valid errors/summaries, and keeps stdout transport-pure under partial I/O, EINTR, backpressure, cancellation, and signals. The installed resource manifest verifies 71 entries; its set identity has one explicit runtime-support self-exclusion while the concrete support bytes remain hashed. Artifact and post-build evidence are typed external/absent references, not self-digests; development Codex/MCP capability sets remain empty and unverified. Successor startup removes a stale local endpoint only after singleton acquisition and exact stale-inode proof, and a valid stop response is correlated before EOF closes unrelated pending calls. | CLI/MCP/resource/version/service-client/control owners; guidance/skill/support mirrors; schema/resource manifests; focused conformance/subprocess and cumulative non-live gates |
+| Wave B7 client/resource lock (2026-07-19) | CLI and `python -m finishup` are exact service-only peers with bounded exit/render behavior; confidential commands acquire secrets only through foreground current-user controlling-TTY ceremonies and zero mutable buffers after one-shot use. MCP pre-gates unsupported protocol versions, exposes exactly six projected service tools and four verified static resources, uses frozen descriptor/set digests, emits bounded schema-valid errors/summaries, and keeps stdout transport-pure under partial I/O, EINTR, backpressure, cancellation, and signals. The installed resource manifest verifies 71 entries; its set identity has one explicit runtime-support self-exclusion while the concrete support bytes remain hashed. Artifact and post-build evidence are typed external/absent references, not self-digests; development Codex/MCP capability sets remain empty and unverified. Successor startup removes a stale local endpoint only after singleton acquisition and exact stale-inode proof, and a valid stop response is correlated before EOF closes unrelated pending calls. | CLI/MCP/resource/version/service-client/control owners; guidance/skill/support mirrors; schema/resource manifests; focused conformance/subprocess and cumulative non-live gates |
 | Wave C migration lock / W-C-001 (2026-07-19) | Bundle migration `0001` is frozen as one standalone root SQL file with a byte-identical installed resource. Its importer schema owns four tables, including permanent `(publishing_writer_id, request_id)` and `(source_identity_digest, publication_ordinal)` reservations; ordinals `0..batch_count-1` identify batches and ordinal `batch_count` identifies the final report. The runner loads only registered resource bytes, and fresh-schema, constraint, identity, and foreign-key probes pass. | Root/resource migration owners, SQLite migration runner, importer/ledger owners and focused migration tests |
 | Wave B8 privacy/egress lock (2026-07-20) | The scripted/local-model/OpenAI provider adapters and the policy-enforcing outbound gateway are materialized: a generation-fenced `ProviderRegistry` snapshot swap gated on policy/vault/human-authority validation, dispatch bound to one exact credential-free factory per attempt, and idempotent terminal transport closure. `ApprovedOutboundCase` carries only its real domain fields (payload bytes, included item IDs, digests); the outbound-case document's `review_packet`/`review_selection_digest` are wire-schema fields, not domain-value attributes. The honesty/operations/surfaces conformance suites close the remaining Wave B/E behavioral gates and, in doing so, found and fixed four real defects: status's future-frontier mapping to `FRONTIER_CONFLICT` instead of the spec's `INVALID_REQUEST`, a status pagination cursor encoding that could never round-trip against `CursorWire`'s pattern, a `candidate_findings` status view that always failed validation on a `JsonObject`-vs-`dict` mismatch, and a respond evidence serialization that sent an explicit null for a field the wire schema requires omitted. Two `FILE_MANIFEST.md` ordering defects and one missing `tests/unit.md` index entry (`test_catalog_audit.py`, `test_local_enforcer.py`) were reconciled; `verify_spec_manifest.py --check` now reports only its own necessarily self-referential prose examples. | Provider adapter, gateway, status, respond, service owners; `INTERFACES.md`; `FILE_MANIFEST.md`/`tests/unit.md`; focused unit/property/integration/conformance tests |
 
@@ -119,12 +120,12 @@ that evidence.
 | E-009 | Codex skill materiality/activation examples | Freeze examples from bounded dogfood evidence; v0.1 must prefer explicit activation and avoid triggering on trivial work. | Skill fixtures and Codex capability evidence. |
 | E-010 | Local service endpoint, peer-credential, permission, lifecycle, keyring, memory-protection, and relock matrix | No platform support claim until a clean-profile service proves authenticated local attachment, locked/ready transitions, crash recovery, suspend/session-lock relock, and secret-canary absence. | Service/control capability evidence and platform matrix. |
 | E-011 | Privacy classifier, never-send scanner, minimizer/redactor, consent, endpoint binding, and receipt matrix | No “policy enforced” claim from configuration alone; every profile, channel, scope intersection, denial, and dispatch path must produce exact evidence. Imported Codex command/model text is intentionally verbatim only in encrypted local objects and receives no import-time content scan; every later disclosure crosses the one authoritative classifier/secret scan, tested across shell assignments, inline auth/header flags, bearer/API-key forms, credential URLs, and JSON/UTF-8/chunk splits. | ADR-009 privacy conformance, property, integration, and live-profile evidence. |
-| E-012 | Public security, conduct, and support routes | Before public release, prove that private vulnerability reporting is enabled, the single maintained private mailbox `support@yoetz.dev` (serving security fallback, conduct, and support per the 2026-08-20 F-006 amendment) is monitored by maintainers, and the repository issue route is available for ordinary support. | Repository policy-link check plus dated maintainer delivery/response drill. |
+| E-012 | Public security, conduct, and support routes | Before public release, prove that private vulnerability reporting is enabled, the single maintained private mailbox `support@finishup.dev` (serving security fallback, conduct, and support per the 2026-08-20 F-006 amendment) is monitored by maintainers, and the repository issue route is available for ordinary support. | Repository policy-link check plus dated maintainer delivery/response drill. |
 | E-013 | Exact harness lifecycle trigger points and observation events a hook profile may bind to; context compaction among triggers | Codex `0.144.5` currently exposes `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PreCompact`, `PostCompact`, `SessionStart`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, and `Stop`, but names alone are not support evidence. A v0.1 exact capability cell may declare a trigger arm and/or a nonempty `observation_events` set only after an installed-artifact run freezes event, payload/privacy boundary, permitted action, coalescing/loop guard, gap codes, and failure behavior for each arm. Observation evidence must prove dual-source ingest (hooks primary; selective session-stream reconciliation), consent/revoke behavior, and that `hook_observed` is earned only from real observation evidence. Unproven cells remain `None` / empty observation arms; unprofiled harnesses stay cooperative-only. **Status (2026-09-05, issue #494 / ADR-027, no capability flip):** the lineage and project grouping model is ratified. Mapping `SubagentStart` / `SubagentStop` or any other host delegate signal onto a child task remains evidence-gated in #506–#508. This status populates no capability cell and does not earn `hook_observed`. | ADR-010 installed-artifact capability evidence and exact harness support-matrix cell. |
 | E-014 | Publication-ceremony budget and work-package grouping examples | Dogfood must measure publications per work package, model-authored event bytes, token/latency overhead, abandoned or stale-ledger rate, skipped checks, and user-visible chatter. Large inventories must compare grouped work packages with per-file publication amplification; no threshold is inferred from file count alone. | Harness-neutral capability/conformance fixtures plus bounded dogfood evidence used to freeze guidance examples and budgets. |
 | E-015 | Exact structural subject-state capture matrix | No support claim until installed-artifact tests freeze Git/object-format and OS cells, symlink/submodule/racy-worktree behavior, file/byte caps, exclusions, sanitized environment, path/content-free output, and no network or trusted-service reachability. | ADR-011 CLI/subprocess, packaging-boundary, privacy, and capability evidence. |
-| E-016 | TOML as alternate nonsecret settings surface, including official OpenAI vs owner-declared OpenAI-compatible HTTPS origin+model | **Working (ADR-014).** Config validates constrained `https_origin`, rejects secrets/free `base_url`, mutual-excludes official vs owner-declared, and writes the same fields from wizard/menu/`yoetz provider endpoint`. Owner-declared data-use defaults to `unknown` (never `assisted`). Privacy desired-state export/apply classifies widen vs tighten and never silently widens. Remaining: optional live owner-declared host probe before advertising verified interoperability beyond the protocol cell. | ADR-014, ADR-006/009 amendments, config/privacy/openai_responses specs, unit fixtures; live probe optional. |
-| E-017 | Agent Plugins portable-carrier host cells (ADR-023, issue #149) | The Claude Code issue #154 candidate populates static/render plus exact local CLI `2.1.241` project-marketplace install, fresh-session activation, skill registration, tool visibility, and connected plugin MCP evidence. Strict validation, source/render/cache identity, disabled default, list/details discovery, and exact init-event reduction are proven. A correlated model call was blocked because the isolated Claude config was not authenticated; only SessionStart/SessionEnd hook delivery was observed and the separately installed older Yoetz lacked the new ingress command. Full hook-event/accepted-observation, model use, AI-powered review dispatch, privacy receipt, and workflow receipt remain unobserved, so the full support cell is not yet populated. Every other host/scope/format surface remains independent. | ADR-023, `claude-code-cli-native-project-2.1.241.case.json`, per-host installed-artifact capability evidence and support-matrix cells. |
+| E-016 | TOML as alternate nonsecret settings surface, including official OpenAI vs owner-declared OpenAI-compatible HTTPS origin+model | **Working (ADR-014).** Config validates constrained `https_origin`, rejects secrets/free `base_url`, mutual-excludes official vs owner-declared, and writes the same fields from wizard/menu/`finishup provider endpoint`. Owner-declared data-use defaults to `unknown` (never `assisted`). Privacy desired-state export/apply classifies widen vs tighten and never silently widens. Remaining: optional live owner-declared host probe before advertising verified interoperability beyond the protocol cell. | ADR-014, ADR-006/009 amendments, config/privacy/openai_responses specs, unit fixtures; live probe optional. |
+| E-017 | Agent Plugins portable-carrier host cells (ADR-023, issue #149) | The Claude Code issue #154 candidate populates static/render plus exact local CLI `2.1.241` project-marketplace install, fresh-session activation, skill registration, tool visibility, and connected plugin MCP evidence. Strict validation, source/render/cache identity, disabled default, list/details discovery, and exact init-event reduction are proven. A correlated model call was blocked because the isolated Claude config was not authenticated; only SessionStart/SessionEnd hook delivery was observed and the separately installed older FinishUP lacked the new ingress command. Full hook-event/accepted-observation, model use, AI-powered review dispatch, privacy receipt, and workflow receipt remain unobserved, so the full support cell is not yet populated. Every other host/scope/format surface remains independent. | ADR-023, `claude-code-cli-native-project-2.1.241.case.json`, per-host installed-artifact capability evidence and support-matrix cells. |
 
 ### v0.1.0 public-alpha gate dispositions — 2026-08-20
 
@@ -158,7 +159,7 @@ affected claim, and for the first non-alpha release regardless.
 | E-012 | Closed by decision (2026-08-20, issue #366) — GitHub private vulnerability reporting is enabled, `yoetz.dev` is registered with active MX records, and the maintained `support@yoetz.dev` mailbox exists. The maintainer accepts those routes for the public alpha without making a delivery-time, response-time, availability, or monitored-SLA claim; a completed delivery/response drill is required before any later release makes one. `https://schemas.yoetz.dev/0.1/` is deployed from the exact candidate before tagging and every hosted byte is re-fetched and compared by the tagged workflow. |
 | E-013 | Not applicable (narrowed) — no trigger arm and no observation arm ships; every capability cell remains `None`/empty, `hook_observed` is unearnable in v0.1.0, and unprofiled harnesses stay cooperative-only. |
 | E-014 | Closed by decision — publication-ceremony guidance remains qualitative, informed by bounded dogfood use; no numeric budget or grouping-threshold claim ships, and measurement is required before any later budget claim. |
-| E-015 | Narrowed — `yoetz state capture` ships fail-closed with no advertised capability cells; `support.structural_subject_state_capture` stays `not_yet_evidenced`. |
+| E-015 | Narrowed — `finishup state capture` ships fail-closed with no advertised capability cells; `support.structural_subject_state_capture` stays `not_yet_evidenced`. |
 | E-016 | Working (unchanged, ADR-014) — the optional live owner-declared host probe is not performed and verified interoperability beyond the protocol cell is not advertised. |
 | E-017 | Open, narrowed (row added 2026-09-05; the gate post-dates the 2026-08-20 alpha and was never a v0.1.0 tag gate). The Claude Code `claude-code-cli-local-project-2.1.241` cell ships as an implementation/fixture pin declaring a `SessionStart` trigger arm with `observation_events=()`: its fixture proves strict validation, source/render/cache identity, disabled default, discovery, fresh-session plugin/skill/tool registration, and connected plugin-owned MCP, while a correlated model call, accepted observation, AI-powered review dispatch, privacy receipt, and workflow receipt remain unobserved for that version. The 2026-09-04 live capture on Claude Code `2.1.251` proves only the bare-JSON-string `PostToolUse` `tool_response` shape and adds no capability-profile entry (`docs/runbooks/claude-code-integration.md`). Cursor `cursor-ide-3.17.8` and `cursor-cli-2026.07.09-a3815c0` are implementation/fixture pins; the SDK rows are metadata-only. No host cell is `supported`, and `support/runtime-support.json` ships every cell array empty under `development_unverified`. |
 
@@ -181,14 +182,14 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
 - **E-013 — Narrowed (was "not applicable" for v0.1.0; that row stays above as history).** What
   ships in 0.2: hook observation ingress exists for all three first-party hosts. The Codex plugin
   renders `PreToolUse`/`PostToolUse`/`PermissionRequest` hooks
-  (`src/yoetz/adapters/integrations/codex_plugin.py`), the Claude Code marketplace plugin renders
+  (`src/finishup/adapters/integrations/codex_plugin.py`), the Claude Code marketplace plugin renders
   `SessionStart`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `Stop`, and `SessionEnd`
   (`claude_code_integration.py`), and the Cursor IDE plugin renders
   `sessionStart|sessionEnd|afterMCPExecution|afterFileEdit|stop` (`cursor_integration.py`); every
   install goes through the host's explicit preview→confirm plugin ceremony. Consented accepted
   rows are stored in the task ledger under `ObservationSource`
   `claude_hook|codex_hook|codex_session_stream|cursor_hook` (bundle migration `0009`, issues
-  #576/#586). `src/yoetz/application/observation_materialize.py` materializes the `hook_observed`
+  #576/#586). `src/finishup/application/observation_materialize.py` materializes the `hook_observed`
   publication channel for every accepted hook envelope, and the `hook_observed` artifact-observation
   class with `harness_observed` authorship only for a gap-free `codex_hook` envelope; `claude_hook`
   and `cursor_hook` rows keep `published_only`/`service_authenticated` under that channel. So
@@ -212,16 +213,16 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   requires a fresh local-human transition. *(Amended 2026-09-05: `update_checks` left this list.
   It is the one owned non-LLM transport — an independently policy-gated, allowlisted PyPI request
   carrying only the package identity, never task or user content, and never auto-upgrading
-  (`src/yoetz/adapters/privacy/update_checks.py`, `src/yoetz/application/package_update.py`;
+  (`src/finishup/adapters/privacy/update_checks.py`, `src/finishup/application/package_update.py`;
   claim `privacy.v01_update_checks_only_non_llm_transport`).)*
 - Live Git/filesystem artifact inspection during import review; v0.1 compares recorded evidence
   only.
 - Chunked import/object formats above the exact 4 MiB source/object cap.
 - Remote service exposure. *(Narrowed 2026-09-05: this bullet formerly also deferred Codex
   app-server integration and additional first-party harnesses. The exact digest-bound Codex
-  app-server subscription evaluator ships (`src/yoetz/adapters/providers/codex_app_server.py`,
+  app-server subscription evaluator ships (`src/finishup/adapters/providers/codex_app_server.py`,
   issue #480, E-007 status 2026-09-04), and Claude Code and Cursor ship as first-party harness
-  adapters (`src/yoetz/adapters/integrations/claude_code_integration.py`,
+  adapters (`src/finishup/adapters/integrations/claude_code_integration.py`,
   `cursor_integration.py`; ADR-023, E-017) — none with a `supported` release cell. Only remote
   service exposure remains deferred here, alongside the multi-user hosting and remote-control
   bullet below.)*
@@ -242,8 +243,8 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
 - Launchd/systemd convenience installers, multi-user service hosting, remote control, and
   independent concurrent service writers; the single-user persistent local service and
   authenticated local IPC are v0.1 requirements.
-- Standalone public `yoetz doctor` CLI command and support-bundle schema. *(2026-09-05: the
-  terminal interface's read-only `/doctor` report and `yoetz service diagnostics` (one durable
+- Standalone public `finishup doctor` CLI command and support-bundle schema. *(2026-09-05: the
+  terminal interface's read-only `/doctor` report and `finishup service diagnostics` (one durable
   owner-only diagnostic record by correlation id) ship next to `version --json` and the startup
   gates; the standalone CLI command and bundle schema remain deferred without a version promise.)*
 - Broad waiver scopes, noninteractive/model waivers, or waiver of local policy classes.
@@ -267,6 +268,22 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
 - In-place repair of a quarantined route; v0.1 recovery builds/verifies a new target and switches
   routes through the catalog state machine.
 
+### FinishUP rebrand release gates (ADR-048) — 2026-10-14
+
+The rename (#1055) is implemented with full backward compatibility; the steps code cannot take
+are release gates tracked on #1056: registering `finishup.dev` and proving its mail; keeping
+`yoetz.dev` (and `https://schemas.yoetz.dev/0.1/`) registered and serving permanently; renaming the
+repository to `TheGaySupreme123/finishup` and never recreating one named `yoetz`; claiming the
+`finishup` PyPI and npm names; Trusted Publishing for both `finishup` and the existing `yoetz`
+PyPI project and npm package; a release-workflow dry run of the transitional jobs; a live
+upgrade of a real 0.2.5 installation with each host's reconnect and disconnect; and confirming
+that the README logo URL
+(`https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/assets/finishup-logo.png`)
+resolves before publishing, which needs the rename and the logo on `main`, because PyPI renders
+that README, with that absolute URL, as the package description. Removing the
+`yoetz` alias is a later-release decision gated on status reporting no legacy launcher bindings.
+Schema `$id`s can move to a FinishUP host only with a future protocol namespace bump.
+
 ### Resolved founder and working decisions reflected across the tree
 
 - **v0.1.0 public-alpha reconciliation (2026-08-20):** every empirical gate carries a
@@ -283,21 +300,21 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   prefix, the local gate resolves the complete manifest with networking disabled, and the release
   gate publishes then re-fetches the same bytes. Hosted availability never becomes a runtime
   dependency.
-- **F-001:** Yoetz uses the unmodified official Apache License 2.0 text and the exact SPDX expression
+- **F-001:** FinishUP uses the unmodified official Apache License 2.0 text and the exact SPDX expression
   `Apache-2.0`. v0.1 does not invent or require a project-wide copyright-holder notice; applicable
   ownership and repository history remain intact.
 - **F-002:** The project adopts Contributor Covenant 3.0. T3 Code may inspire the clarity and
-  contributor experience of repository documents, but it is not an authority for Yoetz runtime,
+  contributor experience of repository documents, but it is not an authority for FinishUP runtime,
   protocol, privacy, or security architecture.
 - **F-005:** The official npm Pyright package remains an exactly pinned contributor/CI tool only.
-  Node/npm are not Yoetz runtime requirements. The formerly deferred `npx yoetz` launcher is now
+  Node/npm are not FinishUP runtime requirements. The formerly deferred `npx finishup` launcher is now
   built as its own reviewed distribution surface under ADR-012: a dependency-free delegation-only
   package at `support/npm-launcher/` pinned to the exact PyPI version. The separate publication
   decision was made for v0.1.0 on 2026-08-20 (issue #366); npm publication follows PyPI inside the
   protected tag workflow and the downloaded public tarball must match the approved bytes.
-- **F-020 (ADR-012, 2026-07-21):** Founder-authorized first-run setup wizard. `yoetz setup
-  run|status` and `yoetz integrate <harness> mcp status|preview|install` automate Codex discovery
-  and the runbook's check-then-add MCP registration behind preview→confirm→execute; bare `yoetz`
+- **F-020 (ADR-012, 2026-07-21):** Founder-authorized first-run setup wizard. `finishup setup
+  run|status` and `finishup integrate <harness> mcp status|preview|install` automate Codex discovery
+  and the runbook's check-then-add MCP registration behind preview→confirm→execute; bare `finishup`
   on an interactive terminal with no completion marker launches the wizard once (every non-TTY
   bare invocation still prints help). Foreign same-name MCP entries are preserved, never
   replaced; privacy setup and provider credentials remain their existing trusted ceremonies, which
@@ -309,12 +326,16 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   `security@`/`conduct@` routes; the maintainer consolidated to one monitored mailbox for the
   solo-maintained v0.1 era — the routes may split again without a claim change. The v0.1.0 alpha
   makes no mailbox delivery-time, response-time, availability, or monitored-SLA claim.
+  Amended 2026-10-14 (ADR-048, #1055): the rename moves this mailbox to `support@finishup.dev`
+  (conduct issue-template route `conduct@finishup.dev`), and the public documents already name it.
+  Proving that address receives and is monitored, and re-running the E-012 drill against it, is a
+  release gate on #1056; `yoetz.dev` and its mail stay alive.
 - The persistent per-user local service is in v0.1 and is the sole owner of keys, decrypted state,
   durable writers, privacy policy enforcement, and outbound dispatch. CLI, MCP, and UI are clients.
 - **F-007:** v0.1 keeps vault keys, provider-credential handles, and decrypted state inside the
-  trusted local Yoetz service behind swappable `VaultPort`/`SecretMemoryPort` boundaries. Verified
+  trusted local FinishUP service behind swappable `VaultPort`/`SecretMemoryPort` boundaries. Verified
   page-lock/no-core protections and best-effort overwrite are used where available; a native vault
-  broker is deferred. This is a Yoetz-specific decision, not an inheritance from T3 Code.
+  broker is deferred. This is a FinishUP-specific decision, not an inheritance from T3 Code.
 - **F-008:** Unattended readiness is required and is provided in v0.1 by automatic unlock of an
   existing vault through an approved, release-tested OS keyring. If that path is unavailable or
   locked, the service remains alive in explicit `locked`; passphrase vaults require the confidential
@@ -324,7 +345,7 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   in-process service code. They receive an approved case and one-attempt transport capability, not
   ambient repositories or state. This is capability minimization, not an OS sandbox.
 - **F-010:** Pristine automatic keyring initialization requires both verified keyring create/load
-  support and an action-bound `UserPresencePort` for the exact release cell. Otherwise Yoetz writes
+  support and an action-bound `UserPresencePort` for the exact release cell. Otherwise FinishUP writes
   no immutable keyring-mode state and offers explicit passphrase initialization. Existing keyring
   vaults may unlock for permitted local work, but durable widening and credential mutation remain
   fenced without strong presence. `HumanAuthorityCapability.source=unavailable` is not a second
@@ -339,10 +360,10 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   registry, using platform CA trust and hostname validation, and never enters model content,
   previews, receipts, logs, config, environment, transcripts, or reusable SDK state. v0.1 does not
   claim certificate or SPKI pinning.
-- **F-013:** Yoetz may connect only to an exact approved owner-only AF_UNIX local-model endpoint and
+- **F-013:** FinishUP may connect only to an exact approved owner-only AF_UNIX local-model endpoint and
   does not launch/download the model or perform DNS/IP networking. The separate runtime receives
   plaintext and is therefore an explicitly trusted disclosure sink unless its exact support cell
-  proves enforceable network isolation; Yoetz does not claim away another process's authority.
+  proves enforceable network isolation; FinishUP does not claim away another process's authority.
 - **F-014:** Keep the external-LLM-denied installation seed, but make `assisted` the upstream CLI's
   recommended review-context recipe after an explicit technical-user setup decision. It uses a
   standing exact-repository policy beneath a machine installation ceiling, public-structural plus
@@ -390,7 +411,7 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   tier guaranteed to arrive — but naming a path served by an equally unconditional tool satisfies
   that, and the string is bounded because at least one host charges it once per advertised tool
   (issue #300). The five guidance documents remain exposed as read-only
-  `yoetz://guidance/<name>` resources. The templates keep all six operations and all nine ordinary
+  `finishup://guidance/<name>` resources. The templates keep all six operations and all nine ordinary
   publication families authorable when a host drops schema metadata, without changing catalog
   admission authority. MCP declares
   tools and resources only. `mcp/descriptors.py` owns every agent-read string, loads it from verified
@@ -410,7 +431,9 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   gating their own terminal protects nobody. `--json`, non-TTY or redirected streams, and every
   `mcp_bridge` client resolve to `agent_context`; the client never selects its own sink. Terminal
   emulation by a same-UID process is the stated threat-model limit already bounding the unlock TTY
-  contract.
+  contract. *Superseded in part by ADR-009 round 3 (2026-10-14):* an agent's pseudo-terminal passes
+  every terminal test, so no presentation fact selects `local_human_view` any more; the owner's
+  full receipt is a reauthenticated one-use `owner_receipt_view` grant.
 - **F-019:** `agent_context` becomes provenance-conditional on a computed, closed
   `DisclosureProvenance`. Material the requesting writer authored at the frozen frontier, and kernel
   prose derived solely from it, project without a category grant, because that content already sits

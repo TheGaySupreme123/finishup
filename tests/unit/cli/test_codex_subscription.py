@@ -1,4 +1,4 @@
-"""Codex subscription setup retains only exact nonsecret runtime binding state."""
+"""Codex subscription setup binds only capability-checked, nonsecret runtime state."""
 
 from __future__ import annotations
 
@@ -7,28 +7,29 @@ import json
 import os
 import shutil
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.providers.codex_app_server import (
-    CODEX_APP_SERVER_SCHEMA_SHA256,
-    CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
+from builders.codex_capability import LINUX, MAC, binding_for, record_for
+from finishup.adapters.providers.codex_app_server import (
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
-    CODEX_EVALUATOR_CONFIG_SHA256,
     CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-    CodexEvaluatorCell,
     CodexRuntimeStatus,
 )
-from yoetz.adapters.providers.codex_evaluator_runtime import (
+from finishup.adapters.providers.codex_capability import CodexCapabilityRecord, CodexPlatform
+from finishup.adapters.providers.codex_evaluator_runtime import (
     CodexBindingDiagnosis,
     managed_runtime_path,
 )
-from yoetz.cli import codex_subscription as module
-from yoetz.config.models import ConfigError, ExternalRuntimeProfileConfig, YoetzConfig
-from yoetz.config.write import codex_subscription_runtime, render_config_toml
+from finishup.cli import codex_subscription as module
+from finishup.config.models import ConfigError, ExternalRuntimeProfileConfig, FinishUpConfig
+from finishup.config.write import render_config_toml
 
 
 @pytest.fixture(autouse=True)
@@ -38,47 +39,59 @@ def _ambient_config_environment(  # pyright: ignore[reportUnusedFunction]
     """Resolve the default evaluator home from an empty configuration, not the ambient one.
 
     ``default_codex_home`` reads the process environment through the strict loader, which
-    refuses every unknown ``YOETZ_``-prefixed variable. A developer machine can carry
+    refuses every unknown ``FINISHUP_``-prefixed variable. A developer machine can carry
     configuration overrides and its own ``config.toml``; neither is under test here, so every
-    case starts from no ``YOETZ_`` variables and a config path that does not exist.
+    case starts from no ``FINISHUP_`` variables and a config path that does not exist.
     """
 
     for name in tuple(os.environ):
-        if name.startswith("YOETZ_"):
+        if name.startswith("FINISHUP_"):
             monkeypatch.delenv(name)
     absent = tmp_path_factory.mktemp("config") / "absent.toml"
-    monkeypatch.setenv("YOETZ_CONFIG", str(absent))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(absent))
     # The retained evaluator runtime lives in the data bundle. No case may reach the invoking
-    # user's real data directory, discover a real Codex on PATH, or download with a real npm
-    # (#855); a case that exercises any of them opts in explicitly.
+    # user's real data directory, discover a real Codex on PATH, run a real capability check, or
+    # download with a real npm (#855); a case that exercises any of them opts in explicitly.
     bundle = tmp_path_factory.mktemp("bundle")
 
-    def runtime_bundle(_config: YoetzConfig | None = None) -> Path:
+    def runtime_bundle(_config: FinishUpConfig | None = None) -> Path:
         return bundle
 
     monkeypatch.setattr(module, "runtime_bundle", runtime_bundle)
+    _mock_macos_arm64_host(monkeypatch)
 
-    # This module stubs runtime retention; store-path safety is covered by the adapter tests.
-    # Keep the real lock while allowing the synthetic shared temporary test bundle.
+    # This module stubs runtime retention and the capability check; the store and the check
+    # are covered by the adapter tests. Keep the real lock for the synthetic test bundle.
     def allow_private(_path: Path) -> None:
         return None
 
     monkeypatch.setattr(
-        "yoetz.adapters.providers.codex_evaluator_runtime.verify_private_local_bundle",
+        "finishup.adapters.providers.codex_evaluator_runtime.verify_private_local_bundle",
         allow_private,
     )
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: ()
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: ()
     )
 
     def no_download(**_kwargs: object) -> Path:
         raise AssertionError("unit tests never download a real evaluator runtime")
 
-    def retain_in_place(_source: Path, *, bundle: Path, cell: CodexEvaluatorCell) -> Path:
-        return managed_runtime_path(bundle, cell)
+    def candidates(
+        _config: FinishUpConfig, *, executable: Path | None = None
+    ) -> tuple[module.EvaluatorCandidate, ...]:
+        selected = Path("/opt/codex/0.159.0/codex") if executable is None else executable
+        source = "discovered" if executable is None else "selected"
+        return (module.EvaluatorCandidate(source, selected, "0.159.0"),)
+
+    async def checked(candidate: module.EvaluatorCandidate, *, bundle: Path) -> object:
+        record = record_for(b"codex", b"host", version=candidate.version)
+        return module._Checked(  # pyright: ignore[reportPrivateUsage]
+            candidate, managed_runtime_path(bundle, record.source_identity), record
+        )
 
     monkeypatch.setattr(module, "provision_codex_runtime", no_download)
-    monkeypatch.setattr(module, "retain_codex_runtime", retain_in_place)
+    monkeypatch.setattr(module, "evaluator_candidates", candidates)
+    monkeypatch.setattr(module, "_check_candidate", checked)
 
 
 def _assume_structurally_ready(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -90,21 +103,8 @@ def _assume_structurally_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "diagnose_bound_runtime", ready)
 
 
-def _binding(executable: Path, home: Path):
-    return codex_subscription_runtime(
-        executable_path=str(executable),
-        executable_sha256="sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-        runtime_version="0.157.1",
-        source_identity="openai-codex-npm-darwin-arm64-0.157.1",
-        app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-        capability_cell_sha256=CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
-        isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-        capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-        codex_home=str(home),
-        model="gpt-5.6-sol",
-        reasoning_effort="high",
-    )
+def _binding(executable: Path, home: Path) -> ExternalRuntimeProfileConfig:
+    return binding_for(record_for(b"codex", b"host"), executable, home)
 
 
 async def _logged_out_probe(_profile: object) -> CodexRuntimeStatus:
@@ -127,12 +127,12 @@ def _stub_setup_persistence(
     def build_profile(_binding: ExternalRuntimeProfileConfig) -> object:
         return object()
 
-    def write_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def write_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         written.append(binding)
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
-        return YoetzConfig(), None
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
+        return FinishUpConfig(), None
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
@@ -140,15 +140,11 @@ def _stub_setup_persistence(
     def prepare(_home: Path) -> None:
         return None
 
-    def retain(*_args: object, **_kwargs: object) -> None:
-        return None
-
     monkeypatch.setattr(module, "_binding", build_binding)
     monkeypatch.setattr(module, "_profile", build_profile)
     monkeypatch.setattr(module, "_config_snapshot", snapshot)
     monkeypatch.setattr(module, "preflight_config_write", preflight)
     monkeypatch.setattr(module, "prepare_codex_home", prepare)
-    monkeypatch.setattr(module, "_retain_binding_runtime", retain)
     monkeypatch.setattr(module, "write_config_toml_if_unchanged", write_binding)
 
 
@@ -171,7 +167,8 @@ def _write_codex_package_layout(
     root: Path,
     *,
     nested: bool,
-    platform_name: str = "darwin",
+    platform: CodexPlatform = MAC,
+    version: str = "0.159.0",
     native_manifest: Mapping[str, object] | None = None,
     wrapper_manifest: Mapping[str, object] | None = None,
     native_bytes: bytes = b"native-codex",
@@ -182,26 +179,16 @@ def _write_codex_package_layout(
     wrapper_bin.mkdir(parents=True, exist_ok=True)
     wrapper = wrapper_bin / "codex.js"
     wrapper.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-    if platform_name == "linux":
-        native_package_directory = "codex-linux-x64"
-        native_package_version = f"{module.CODEX_EVALUATOR_RUNTIME_VERSION}-linux-x64"
-        native_package_spec = f"npm:@openai/codex@{native_package_version}"
-        native_relative = Path("vendor/x86_64-unknown-linux-musl/bin/codex")
-        native_os = "linux"
-        native_cpu = "x64"
-    else:
-        native_package_directory = "codex-darwin-arm64"
-        native_package_version = f"{module.CODEX_EVALUATOR_RUNTIME_VERSION}-darwin-arm64"
-        native_package_spec = f"npm:@openai/codex@{native_package_version}"
-        native_relative = Path("vendor/aarch64-apple-darwin/bin/codex")
-        native_os = "darwin"
-        native_cpu = "arm64"
     wrapper_document: Mapping[str, object] = (
         {
             "name": "@openai/codex",
-            "version": module.CODEX_EVALUATOR_RUNTIME_VERSION,
+            "version": version,
             "bin": {"codex": "bin/codex.js"},
-            "optionalDependencies": {f"@openai/{native_package_directory}": native_package_spec},
+            "optionalDependencies": {
+                f"@openai/{platform.native_package_directory}": platform.native_package_spec(
+                    version
+                )
+            },
         }
         if wrapper_manifest is None
         else wrapper_manifest
@@ -209,11 +196,11 @@ def _write_codex_package_layout(
     (wrapper_root / "package.json").write_text(json.dumps(wrapper_document), encoding="utf-8")
 
     native_root = (
-        wrapper_root / "node_modules" / "@openai" / native_package_directory
+        wrapper_root / "node_modules" / "@openai" / platform.native_package_directory
         if nested
-        else wrapper_root.parent / native_package_directory
+        else wrapper_root.parent / platform.native_package_directory
     )
-    native_bin = native_root / native_relative.parent
+    native_bin = native_root / platform.native_executable_relative.parent
     native_bin.mkdir(parents=True, exist_ok=True)
     native = native_bin / "codex"
     native.write_bytes(native_bytes)
@@ -225,9 +212,9 @@ def _write_codex_package_layout(
     native_document: Mapping[str, object] = (
         {
             "name": "@openai/codex",
-            "version": native_package_version,
-            "os": [native_os],
-            "cpu": [native_cpu],
+            "version": platform.native_package_version(version),
+            "os": [platform.os],
+            "cpu": [platform.npm_cpu],
         }
         if native_manifest is None
         else native_manifest
@@ -236,26 +223,29 @@ def _write_codex_package_layout(
     return wrapper, native
 
 
-def _mac_cell() -> CodexEvaluatorCell:
-    return module.codex_evaluator_cell_for_platform("darwin", "arm64")
-
-
-def _cell_digests(cell: CodexEvaluatorCell) -> Callable[[Path], str]:
-    """Stand the synthetic executable and code-mode host in for the cell's pinned digests."""
-
-    def digest(path: Path) -> str:
-        if path.name == "codex-code-mode-host":
-            return cell.code_mode_host_sha256
-        return cell.executable_sha256
-
-    return digest
-
-
 def _mock_macos_arm64_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep Mac-cell fixtures coherent when this slice runs on Linux CI."""
+    """Keep Mac fixtures coherent when this slice runs on Linux CI."""
 
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+
+
+def _mock_linux_x64_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+
+
+def _cli_version(version: str) -> object:
+    def probe(_native: Path) -> str:
+        if version == "unknown":
+            raise ValueError("codex_runtime_version_unknown")
+        return version
+
+    return probe
+
+
+def _layout(wrapper: Path, platform: CodexPlatform = MAC) -> tuple[Path, str]:
+    return module._resolve_codex_package_layout(wrapper, platform)  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize(
@@ -266,24 +256,22 @@ def test_unsupported_host_fails_before_any_file_access(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform_os: str, architecture: str
 ) -> None:
     monkeypatch.setattr(sys, "platform", platform_os)
-    monkeypatch.setattr(module.platform, "machine", lambda: architecture)
+    monkeypatch.setattr("platform.machine", lambda: architecture)
 
     with pytest.raises(ValueError, match="^codex_runtime_platform_unsupported$"):
-        module.resolve_supported_codex_executable(tmp_path / "missing" / "codex")
+        module.resolve_codex_executable(tmp_path / "missing" / "codex")
 
 
-def test_codex_package_layout_resolves_nested_optional_dependency_before_digest(
-    tmp_path: Path,
-) -> None:
+def test_codex_package_layout_resolves_nested_optional_dependency(tmp_path: Path) -> None:
     wrapper, native = _write_codex_package_layout(tmp_path, nested=True)
 
-    assert module._resolve_codex_package_layout(wrapper, _mac_cell()) == native  # pyright: ignore[reportPrivateUsage]
+    assert _layout(wrapper) == (native, "0.159.0")
 
 
 def test_codex_package_layout_resolves_npm_prefix_hoisted_sibling(tmp_path: Path) -> None:
-    wrapper, native = _write_codex_package_layout(tmp_path, nested=False)
+    wrapper, native = _write_codex_package_layout(tmp_path, nested=False, version="0.162.1")
 
-    assert module._resolve_codex_package_layout(wrapper, _mac_cell()) == native  # pyright: ignore[reportPrivateUsage]
+    assert _layout(wrapper) == (native, "0.162.1")
 
 
 def test_codex_package_layout_nested_candidate_has_deterministic_precedence(
@@ -295,7 +283,7 @@ def test_codex_package_layout_nested_candidate_has_deterministic_precedence(
     _, hoisted_native = _write_codex_package_layout(tmp_path, nested=False, native_bytes=b"hoisted")
 
     assert nested_native != hoisted_native
-    assert module._resolve_codex_package_layout(wrapper, _mac_cell()) == nested_native  # pyright: ignore[reportPrivateUsage]
+    assert _layout(wrapper)[0] == nested_native
 
 
 def test_codex_package_layout_does_not_fall_back_after_invalid_nested_candidate(
@@ -314,31 +302,35 @@ def test_codex_package_layout_does_not_fall_back_after_invalid_nested_candidate(
     _write_codex_package_layout(tmp_path, nested=False)
 
     with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
 @pytest.mark.parametrize(
-    ("manifest_kind", "field", "value"),
+    ("manifest_kind", "field", "value", "token"),
     [
-        ("wrapper", "name", "@openai/not-codex"),
-        ("wrapper", "version", "0.150.0"),
-        ("wrapper", "bin", {"codex": "other.js"}),
-        ("wrapper", "optionalDependencies", {}),
-        ("native", "name", "@openai/not-codex"),
-        ("native", "version", "0.150.0-darwin-arm64"),
-        ("native", "os", ["linux"]),
-        ("native", "cpu", ["x64"]),
+        ("wrapper", "name", "@openai/not-codex", "codex_runtime_capability_unsupported"),
+        # Below the floor, or not a stable release: never eligible, whatever the layout.
+        ("wrapper", "version", "0.153.4", "codex_runtime_version_unsupported"),
+        ("wrapper", "version", "0.163.0-alpha.9", "codex_runtime_version_unsupported"),
+        ("wrapper", "bin", {"codex": "other.js"}, "codex_runtime_capability_unsupported"),
+        ("wrapper", "optionalDependencies", {}, "codex_runtime_capability_unsupported"),
+        ("native", "name", "@openai/not-codex", "codex_runtime_capability_unsupported"),
+        ("native", "version", "0.162.1-darwin-arm64", "codex_runtime_capability_unsupported"),
+        ("native", "os", ["linux"], "codex_runtime_capability_unsupported"),
+        ("native", "cpu", ["x64"], "codex_runtime_capability_unsupported"),
     ],
 )
 def test_codex_package_layout_rejects_mismatched_package_metadata(
-    tmp_path: Path, manifest_kind: str, field: str, value: object
+    tmp_path: Path, manifest_kind: str, field: str, value: object, token: str
 ) -> None:
     if manifest_kind == "wrapper":
         wrapper_manifest: dict[str, object] = {
             "name": "@openai/codex",
-            "version": module.CODEX_EVALUATOR_RUNTIME_VERSION,
+            "version": "0.159.0",
             "bin": {"codex": "bin/codex.js"},
-            "optionalDependencies": {"@openai/codex-darwin-arm64": _mac_cell().native_package_spec},
+            "optionalDependencies": {
+                "@openai/codex-darwin-arm64": MAC.native_package_spec("0.159.0")
+            },
         }
         wrapper_manifest[field] = value
         wrapper, _ = _write_codex_package_layout(
@@ -347,7 +339,7 @@ def test_codex_package_layout_rejects_mismatched_package_metadata(
     else:
         native_manifest: dict[str, object] = {
             "name": "@openai/codex",
-            "version": _mac_cell().native_package_version,
+            "version": MAC.native_package_version("0.159.0"),
             "os": ["darwin"],
             "cpu": ["arm64"],
         }
@@ -356,8 +348,8 @@ def test_codex_package_layout_rejects_mismatched_package_metadata(
             tmp_path, nested=True, native_manifest=native_manifest
         )
 
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(ValueError, match=token):
+        _layout(wrapper)
 
 
 def test_codex_package_layout_does_not_search_ancestors_or_path(
@@ -375,7 +367,7 @@ def test_codex_package_layout_does_not_search_ancestors_or_path(
     monkeypatch.setenv("PATH", str(path_native.parent))
 
     with pytest.raises(ValueError, match="codex_runtime_not_found"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
 def test_codex_package_layout_rejects_native_executable_symlink_escape(tmp_path: Path) -> None:
@@ -387,7 +379,7 @@ def test_codex_package_layout_rejects_native_executable_symlink_escape(tmp_path:
     native.symlink_to(outside)
 
     with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
 def test_codex_package_layout_rejects_native_package_symlink_escape(tmp_path: Path) -> None:
@@ -398,7 +390,7 @@ def test_codex_package_layout_rejects_native_package_symlink_escape(tmp_path: Pa
     native_root.symlink_to(outside_root, target_is_directory=True)
 
     with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
 def test_codex_package_layout_rejects_same_parent_native_package_symlink(
@@ -411,7 +403,7 @@ def test_codex_package_layout_rejects_same_parent_native_package_symlink(
     native_root.symlink_to(sibling_root, target_is_directory=True)
 
     with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
 def test_codex_package_layout_rejects_intermediate_dependency_symlink_escape(
@@ -424,7 +416,7 @@ def test_codex_package_layout_rejects_intermediate_dependency_symlink_escape(
     dependency_root.symlink_to(outside_root, target_is_directory=True)
 
     with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
 @pytest.mark.parametrize("manifest_owner", ["wrapper", "native"])
@@ -439,7 +431,7 @@ def test_codex_package_layout_rejects_symlinked_manifest(
     manifest.symlink_to(outside)
 
     with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
 def test_codex_package_layout_rejects_oversized_manifest_before_parsing(tmp_path: Path) -> None:
@@ -449,172 +441,135 @@ def test_codex_package_layout_rejects_oversized_manifest_before_parsing(tmp_path
     )
 
     with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module._resolve_codex_package_layout(wrapper, _mac_cell())  # pyright: ignore[reportPrivateUsage]
+        _layout(wrapper)
 
 
-def test_direct_native_executable_support_keeps_platform_and_digest_checks(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("reported", "token"),
+    [
+        ("0.159.0", None),
+        ("0.162.1", None),
+        ("0.153.4", "codex_runtime_version_unsupported"),
+        ("unknown", "codex_runtime_version_unknown"),
+    ],
+)
+def test_a_direct_native_executable_is_versioned_by_asking_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reported: str, token: str | None
 ) -> None:
     native = tmp_path / "vendor" / "aarch64-apple-darwin" / "bin" / "codex"
     native.parent.mkdir(parents=True)
-    native.write_bytes(b"reviewed-native")
+    native.write_bytes(b"native")
     native.chmod(0o700)
-    (native.parent / "codex-code-mode-host").write_bytes(b"reviewed-host")
+    (native.parent / "codex-code-mode-host").write_bytes(b"host")
     (native.parent / "codex-code-mode-host").chmod(0o700)
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
-    expected_digest = "sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d"
-    monkeypatch.setattr(module, "_sha256_file", _cell_digests(_mac_cell()))
+    monkeypatch.setattr(module, "_codex_cli_version", _cli_version(reported))
 
-    resolved, actual_digest, source_identity = module.resolve_supported_codex_executable(native)
+    if token is None:
+        resolved = module.resolve_codex_executable(native)
+        assert (resolved.native, resolved.version, resolved.platform) == (native, reported, MAC)
+        assert resolved.source_identity == f"openai-codex-npm-darwin-arm64-{reported}"
+    else:
+        with pytest.raises(ValueError, match=token):
+            module.resolve_codex_executable(native)
 
-    assert resolved == native
-    assert actual_digest == expected_digest
-    assert source_identity == "openai-codex-npm-darwin-arm64-0.157.1"
 
-
-def test_linux_x64_package_layout_resolves_the_exact_musl_cell(
+def test_a_wrapper_is_versioned_from_its_manifests_without_running_anything(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    _mock_linux_x64_host(monkeypatch)
     wrapper, native = _write_codex_package_layout(
-        tmp_path, nested=True, platform_name="linux", native_bytes=b"linux-native"
-    )
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
-    expected_digest = "sha256:3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970"
-    monkeypatch.setattr(
-        module,
-        "_sha256_file",
-        _cell_digests(module.codex_evaluator_cell_for_platform("linux", "x86_64")),
+        tmp_path, nested=True, platform=LINUX, version="0.162.1"
     )
 
-    resolved, actual_digest, source_identity = module.resolve_supported_codex_executable(wrapper)
+    def forbidden(_native: Path) -> str:
+        raise AssertionError("a wrapper's release comes from its manifests")
 
-    assert resolved == native
-    assert actual_digest == expected_digest
-    assert source_identity == "openai-codex-npm-linux-x64-0.157.1"
+    monkeypatch.setattr(module, "_codex_cli_version", forbidden)
+
+    resolved = module.resolve_codex_executable(wrapper)
+
+    assert (resolved.native, resolved.version, resolved.platform) == (native, "0.162.1", LINUX)
+    assert resolved.source_identity == "openai-codex-npm-linux-x64-0.162.1"
 
 
 @pytest.mark.parametrize("layout", ["nested", "hoisted", "native"])
 @pytest.mark.parametrize(
-    ("host", "token"),
+    ("host", "mode", "token"),
     [
-        (b"code-mode-host", None),
-        (None, "codex_runtime_code_mode_host_missing"),
-        (b"other-host", "codex_runtime_capability_unsupported"),
+        (b"code-mode-host", 0o700, None),
+        (None, 0o700, "codex_runtime_code_mode_host_missing"),
+        (b"code-mode-host", 0o600, "codex_runtime_executable_invalid"),
     ],
 )
-def test_every_supported_layout_requires_the_admitted_code_mode_host_beside_codex(
+def test_every_supported_layout_requires_the_code_mode_host_beside_codex(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     layout: str,
     host: bytes | None,
+    mode: int,
     token: str | None,
 ) -> None:
     """Nested, hoisted, and native selections all resolve the sibling Codex starts (#874)."""
 
+    _mock_linux_x64_host(monkeypatch)
     wrapper, native = _write_codex_package_layout(
-        tmp_path, nested=layout != "hoisted", platform_name="linux", code_mode_host=host
+        tmp_path, nested=layout != "hoisted", platform=LINUX, code_mode_host=host
     )
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
-    cell = module.codex_evaluator_cell_for_platform("linux", "x86_64")
-    admitted = _cell_digests(cell)
-
-    def digest(path: Path) -> str:
-        if path.name == "codex-code-mode-host" and path.read_bytes() != b"code-mode-host":
-            return "sha256:" + "0" * 64
-        return admitted(path)
-
-    monkeypatch.setattr(module, "_sha256_file", digest)
+    if host is not None:
+        (native.parent / "codex-code-mode-host").chmod(mode)
+    monkeypatch.setattr(module, "_codex_cli_version", _cli_version("0.159.0"))
     selected = native if layout == "native" else wrapper
 
     if token is None:
-        assert module.resolve_supported_codex_executable(selected) == (
-            native,
-            cell.executable_sha256,
-            cell.source_identity,
-        )
-        assert module.admitted_native_executable(selected) == native
+        assert module.resolve_codex_executable(selected).native == native
     else:
         with pytest.raises(ValueError, match=token):
-            module.resolve_supported_codex_executable(selected)
-        assert module.admitted_native_executable(selected) is None
+            module.resolve_codex_executable(selected)
 
 
-def test_linux_cell_cannot_be_mixed_with_the_macos_capability_identity(
+def test_preview_resolves_the_selected_runtime_without_creating_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    native = tmp_path / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
-    native.parent.mkdir(parents=True)
-    native.write_bytes(b"linux-native")
-    native.chmod(0o700)
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
-
-    def mac_digest(_path: Path) -> str:
-        return "sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d"
-
-    monkeypatch.setattr(module, "_sha256_file", mac_digest)
-
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module.resolve_supported_codex_executable(native)
-
-
-def test_preview_resolves_exact_cell_without_creating_home(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _mock_macos_arm64_host(monkeypatch)
-    executable = tmp_path / "codex"
+    wrapper, native = _write_codex_package_layout(tmp_path, nested=True, version="0.162.1")
     home = tmp_path / "dedicated-home"
 
-    def resolve(selected: Path) -> tuple[Path, str, str]:
-        return (
-            selected,
-            "sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-            "openai-codex-npm-darwin-arm64-0.157.1",
-        )
-
-    monkeypatch.setattr(
-        module,
-        "resolve_supported_codex_executable",
-        resolve,
-    )
-
     preview = module.codex_subscription_preview(
-        executable=executable,
+        executable=wrapper,
         codex_home=home,
-        model="gpt-5.6-sol",
-        reasoning_effort="high",
+        model="gpt-6.1-sol",
+        reasoning_effort="max",
     )
 
     assert preview["credential_authority"] == "external_runtime_oauth"
-    assert preview["capability_cell_sha256"] == CODEX_EVALUATOR_CAPABILITY_CELL_SHA256
+    assert preview["runtime_version"] == "0.162.1"
+    assert preview["runtime_floor"] == "0.157.1"
+    assert preview["runtime_source_identity"] == "openai-codex-npm-darwin-arm64-0.162.1"
+    assert preview["capability_profile"] == CODEX_EVALUATOR_CAPABILITY_PROFILE
     assert preview["capability_evidence_expires_at"] == CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT
     assert preview["upstream_body_observability"] == "unavailable"
-    assert preview["executable_path"] == str(executable)
+    assert preview["executable_path"] == str(native)
+    assert preview["reasoning_effort"] == "max"
     assert not home.exists()
     assert "token" not in repr(preview).casefold()
 
 
-def test_same_name_executable_with_unknown_digest_is_rejected(
+def test_a_same_name_executable_that_is_not_codex_is_never_eligible(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     executable = tmp_path / "codex"
-    executable.write_bytes(b"not-the-reviewed-runtime")
+    executable.write_bytes(b"#!/bin/sh\necho not codex\n")
     executable.chmod(0o700)
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(module, "_codex_cli_version", _cli_version("unknown"))
 
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module.resolve_supported_codex_executable(executable)
+    with pytest.raises(ValueError, match="codex_runtime_version_unknown"):
+        module.resolve_codex_executable(executable)
 
 
 def test_environment_selected_config_path_is_used_for_reads_and_writes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     selected = tmp_path / "isolated" / "config.toml"
-    monkeypatch.setenv("YOETZ_CONFIG", str(selected))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(selected))
 
     assert module._target_config_path(None) == selected  # pyright: ignore[reportPrivateUsage]
 
@@ -634,12 +589,12 @@ async def test_setup_persists_binding_only_after_codex_confirms_chatgpt_readines
     def build_profile(_binding: ExternalRuntimeProfileConfig) -> object:
         return object()
 
-    def write_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def write_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         written.append(binding)
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
-        return YoetzConfig(), None
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
+        return FinishUpConfig(), None
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
@@ -692,8 +647,8 @@ async def test_setup_failure_never_writes_a_binding(
     def forbidden_write(*_args: object, **_kwargs: object) -> Path:
         pytest.fail("failed readiness must not persist a binding")
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
-        return YoetzConfig(), None
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
+        return FinishUpConfig(), None
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
@@ -775,17 +730,17 @@ async def test_disconnect_confirms_logout_before_removing_only_the_binding(
 ) -> None:
     _assume_structurally_ready(monkeypatch)
     binding = _binding(tmp_path / "codex", tmp_path / "dedicated-home")
-    config = YoetzConfig(profile="codex-subscription", external_runtime=binding)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=binding)
     removed: list[object] = []
 
     def build_profile(_binding: ExternalRuntimeProfileConfig) -> object:
         return object()
 
-    def clear_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def clear_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         removed.append(binding)
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
         return config, b"before"
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
@@ -833,12 +788,12 @@ def test_rollback_preserves_the_dedicated_home_and_installation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     binding = _binding(tmp_path / "codex", tmp_path / "dedicated-home")
-    config = YoetzConfig(profile="codex-subscription", external_runtime=binding)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=binding)
 
-    def clear_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def clear_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
         return config, b"before"
 
     monkeypatch.setattr(module, "_config_snapshot", snapshot)
@@ -874,11 +829,11 @@ def test_missing_executable_is_a_closed_token(tmp_path: Path) -> None:
     missing = tmp_path / "no-such-codex"
 
     with pytest.raises(ValueError, match="codex_runtime_not_found"):
-        module.resolve_supported_codex_executable(missing)
+        module.resolve_codex_executable(missing)
 
 
 def test_cli_setup_maps_missing_executable_without_echoing_the_path(tmp_path: Path) -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     missing = tmp_path / "no-such-codex"
     result = CliRunner().invoke(
@@ -903,16 +858,12 @@ def test_cli_setup_disconnect_and_rollback_recompose_the_service(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _mock_macos_arm64_host(monkeypatch)
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     restarts: list[str] = []
 
-    def resolve(selected: Path) -> tuple[Path, str, str]:
-        return (
-            selected,
-            "sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-            "openai-codex-npm-darwin-arm64-0.157.1",
-        )
+    def resolve(selected: Path) -> module.ResolvedCodex:
+        return module.ResolvedCodex(selected, "0.159.0", MAC)
 
     async def setup(**_kwargs: object) -> dict[str, object]:
         return {"schema": "yoetz.codex-subscription-status/1", "model_available": True}
@@ -927,12 +878,12 @@ def test_cli_setup_disconnect_and_rollback_recompose_the_service(
         restarts.append("restart")
         return {"reachable": True, "state": "ready", "vault_mode": None}
 
-    monkeypatch.setattr(module, "resolve_supported_codex_executable", resolve)
+    monkeypatch.setattr(module, "resolve_codex_executable", resolve)
     monkeypatch.setattr(module, "codex_subscription_setup", setup)
     monkeypatch.setattr(module, "codex_subscription_disconnect", disconnect)
     monkeypatch.setattr(module, "codex_subscription_rollback", rollback)
     monkeypatch.setattr(
-        "yoetz.cli.setup.restart_service_for_semantic_composition",
+        "finishup.cli.setup.restart_service_for_semantic_composition",
         restart,
     )
 
@@ -965,7 +916,7 @@ def test_cli_setup_disconnect_and_rollback_recompose_the_service(
 def test_menu_disconnect_and_rollback_recompose_the_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.cli import menu
+    from finishup.cli import menu
 
     restarts: list[str] = []
 
@@ -992,7 +943,7 @@ def test_menu_disconnect_and_rollback_recompose_the_service(
     monkeypatch.setattr("typer.confirm", always_confirm)
     monkeypatch.setattr(module, "codex_subscription_disconnect", disconnect)
     monkeypatch.setattr(
-        "yoetz.cli.setup.restart_service_for_semantic_composition",
+        "finishup.cli.setup.restart_service_for_semantic_composition",
         restart,
     )
     monkeypatch.setattr(menu, "_show", hide)
@@ -1046,15 +997,19 @@ def test_guided_setup_offers_account_switch(
             "executable_path": "/opt/codex",
             "executable_sha256": "sha256:" + "a" * 64,
             "code_mode_host_sha256": "sha256:" + "c" * 64,
-            "runtime_version": "0.157.1",
-            "capability_cell_sha256": "sha256:" + "b" * 64,
+            "runtime_version": "0.159.0",
+            "runtime_floor": "0.157.1",
+            "runtime_source_identity": "openai-codex-npm-darwin-arm64-0.159.0",
+            "capability_profile": "codex-evaluator/capability/v2",
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
-            "disconnect_command": "yoetz provider codex-subscription disconnect",
-            "rollback_command": "yoetz provider codex-subscription rollback",
+            "disconnect_command": "finishup provider codex-subscription disconnect",
+            "rollback_command": "finishup provider codex-subscription rollback",
         }
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", list)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", list
+    )
     monkeypatch.setattr("typer.prompt", prompt)
     monkeypatch.setattr("typer.confirm", confirm)
     monkeypatch.setattr(module, "codex_subscription_preview", preview)
@@ -1064,8 +1019,8 @@ def test_guided_setup_offers_account_switch(
 
     anyio.run(module.prompt_codex_subscription_setup)
 
-    assert prompt_defaults["Exact model"] == "gpt-6-luna"
-    assert prompt_defaults["Final review reasoning effort"] == "high"
+    assert prompt_defaults["Exact model"] == "gpt-6.1-sol"
+    assert prompt_defaults["Final review reasoning effort"] == "medium"
     assert any(item.startswith("Continue to Codex sign-in") for item in confirms)
     assert any("switch ChatGPT account" in item for item in confirms)
     assert captured == [True]
@@ -1105,15 +1060,19 @@ def test_guided_setup_preserves_existing_model_when_switching_accounts(
             "executable_path": "/opt/codex",
             "executable_sha256": "sha256:" + "a" * 64,
             "code_mode_host_sha256": "sha256:" + "c" * 64,
-            "runtime_version": "0.157.1",
-            "capability_cell_sha256": "sha256:" + "b" * 64,
+            "runtime_version": "0.159.0",
+            "runtime_floor": "0.157.1",
+            "runtime_source_identity": "openai-codex-npm-darwin-arm64-0.159.0",
+            "capability_profile": "codex-evaluator/capability/v2",
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
-            "disconnect_command": "yoetz provider codex-subscription disconnect",
-            "rollback_command": "yoetz provider codex-subscription rollback",
+            "disconnect_command": "finishup provider codex-subscription disconnect",
+            "rollback_command": "finishup provider codex-subscription rollback",
         }
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", list)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", list
+    )
     monkeypatch.setattr(module, "default_codex_subscription_model", lambda: "gpt-5.6-sol")
     monkeypatch.setattr("typer.prompt", prompt)
     monkeypatch.setattr("typer.confirm", confirm)
@@ -1164,15 +1123,19 @@ def test_guided_setup_discloses_login_reuse_before_the_confirmation(
             "executable_path": "/opt/codex",
             "executable_sha256": "sha256:" + "a" * 64,
             "code_mode_host_sha256": "sha256:" + "c" * 64,
-            "runtime_version": "0.157.1",
-            "capability_cell_sha256": "sha256:" + "b" * 64,
+            "runtime_version": "0.159.0",
+            "runtime_floor": "0.157.1",
+            "runtime_source_identity": "openai-codex-npm-darwin-arm64-0.159.0",
+            "capability_profile": "codex-evaluator/capability/v2",
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
-            "disconnect_command": "yoetz provider codex-subscription disconnect",
-            "rollback_command": "yoetz provider codex-subscription rollback",
+            "disconnect_command": "finishup provider codex-subscription disconnect",
+            "rollback_command": "finishup provider codex-subscription rollback",
         }
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", list)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", list
+    )
     monkeypatch.setattr("typer.prompt", prompt)
     monkeypatch.setattr("typer.confirm", confirm)
     monkeypatch.setattr(module, "codex_subscription_preview", preview)
@@ -1191,14 +1154,10 @@ def test_cli_setup_discloses_reuse_and_names_its_override_before_the_confirmatio
     """The `setup` notice must state reuse and the flag that forces a fresh sign-in (#534)."""
 
     _mock_macos_arm64_host(monkeypatch)
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
-    def resolve(selected: Path) -> tuple[Path, str, str]:
-        return (
-            selected,
-            "sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-            "openai-codex-npm-darwin-arm64-0.157.1",
-        )
+    def resolve(selected: Path) -> module.ResolvedCodex:
+        return module.ResolvedCodex(selected, "0.159.0", MAC)
 
     selected_models: list[object] = []
 
@@ -1209,10 +1168,10 @@ def test_cli_setup_discloses_reuse_and_names_its_override_before_the_confirmatio
     async def restart() -> dict[str, object]:
         return {"reachable": True, "state": "ready", "vault_mode": None}
 
-    monkeypatch.setattr(module, "resolve_supported_codex_executable", resolve)
+    monkeypatch.setattr(module, "resolve_codex_executable", resolve)
     monkeypatch.setattr(module, "default_codex_subscription_model", lambda: "gpt-5.6-sol")
     monkeypatch.setattr(module, "codex_subscription_setup", setup)
-    monkeypatch.setattr("yoetz.cli.setup.restart_service_for_semantic_composition", restart)
+    monkeypatch.setattr("finishup.cli.setup.restart_service_for_semantic_composition", restart)
 
     runner = CliRunner()
     arguments = [
@@ -1302,10 +1261,15 @@ async def test_setup_reports_a_completed_login_as_not_reused(
 
 
 @pytest.mark.anyio
-async def test_setup_signed_in_home_without_the_exact_model_still_takes_the_login_path(
+async def test_setup_signed_in_home_without_the_model_fails_without_a_login(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Reuse needs the whole cell proven: a login without the model is not readiness."""
+    """A signed-in home whose model no admitted Codex lists is named, not sent to sign-in.
+
+    Starting ``account/login/start`` on a home Codex already reports as signed in surfaced as
+    ``codex_login_event_invalid`` (the gpt-6.1-sol report on Codex 0.157.1); a new sign-in cannot
+    add a model the runtime does not list.
+    """
 
     binding = _binding(tmp_path / "codex", tmp_path / "dedicated-home")
     written: list[object] = []
@@ -1316,18 +1280,393 @@ async def test_setup_signed_in_home_without_the_exact_model_still_takes_the_logi
         calls.append("account_status")
         return CodexRuntimeStatus(True, "chatgpt", "plus", False, "terminated")
 
-    async def login(*_args: object, **_kwargs: object) -> CodexRuntimeStatus:
-        calls.append("login")
-        return CodexRuntimeStatus(True, "chatgpt", "plus", False, "terminated")
+    async def forbidden_login(*_args: object, **_kwargs: object) -> CodexRuntimeStatus:
+        pytest.fail("a signed-in home must not receive a new login challenge")
 
     monkeypatch.setattr(module, "codex_account_status", probe)
-    monkeypatch.setattr(module, "codex_login", login)
+    monkeypatch.setattr(module, "codex_login", forbidden_login)
 
-    with pytest.raises(ValueError, match="codex_subscription_readiness_unproven"):
+    with pytest.raises(ValueError, match="^codex_model_unavailable$"):
         await _run_setup(tmp_path)
 
-    assert calls == ["account_status", "login"]
+    assert calls == ["account_status"]
     assert written == []
+    assert "--switch-account" in (module.subscription_remediation("codex_model_unavailable") or "")
+
+
+def _three_releases(monkeypatch: pytest.MonkeyPatch, failing: dict[str, str]) -> list[str]:
+    """Candidates 0.162.1, 0.159.0, 0.157.1; ``failing`` maps a release to its check token."""
+
+    checked: list[str] = []
+
+    def candidates(
+        _config: FinishUpConfig, *, executable: Path | None = None
+    ) -> tuple[module.EvaluatorCandidate, ...]:
+        del executable
+        return tuple(
+            module.EvaluatorCandidate("discovered", Path(f"/opt/codex/{version}/codex"), version)
+            for version in ("0.162.1", "0.159.0", "0.157.1")
+        )
+
+    async def check(candidate: module.EvaluatorCandidate, *, bundle: Path) -> object:
+        checked.append(candidate.version)
+        if candidate.version in failing:
+            raise ValueError(failing[candidate.version])
+        record = record_for(b"codex", b"host", version=candidate.version)
+        return module._Checked(  # pyright: ignore[reportPrivateUsage]
+            candidate, managed_runtime_path(bundle, record.source_identity), record
+        )
+
+    monkeypatch.setattr(module, "evaluator_candidates", candidates)
+    monkeypatch.setattr(module, "_check_candidate", check)
+    return checked
+
+
+@pytest.mark.anyio
+async def test_setup_binds_the_newest_release_that_passes_the_capability_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    monkeypatch.setattr(module, "codex_account_status", _ready_probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert checked == ["0.162.1"]
+    (binding,) = written
+    assert cast(ExternalRuntimeProfileConfig, binding).runtime_version == "0.162.1"
+    assert result["runtime_version"] == "0.162.1"
+    assert result["runtimes_passed_over"] == []
+
+
+@pytest.mark.anyio
+async def test_setup_reports_codex_sandbox_unavailable_without_refusing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+
+    async def probe(_profile: object) -> CodexRuntimeStatus:
+        return CodexRuntimeStatus(True, "chatgpt", "pro", True, "terminated", True)
+
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert result["runtime_version"] == "0.162.1"
+    assert result["codex_sandbox_unavailable"] is True
+    assert result["codex_sandbox_unavailable_reason"] is None
+    assert len(written) == 1
+
+
+@pytest.mark.anyio
+async def test_setup_discloses_a_missing_system_bubblewrap_without_refusing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+
+    async def probe(_profile: object) -> CodexRuntimeStatus:
+        return CodexRuntimeStatus(
+            True, "chatgpt", "pro", True, "terminated", True, "bubblewrap_missing"
+        )
+
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert result["runtime_version"] == "0.162.1"
+    assert result["codex_sandbox_unavailable"] is True
+    assert result["codex_sandbox_unavailable_reason"] == "bubblewrap_missing"
+    assert len(written) == 1
+
+
+@pytest.mark.anyio
+async def test_an_unreviewed_release_sending_the_sandbox_warning_falls_back_to_an_older_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(
+        monkeypatch, {"0.162.1": "codex_sandbox_unavailable_unreviewed_runtime"}
+    )
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    monkeypatch.setattr(module, "codex_account_status", _ready_probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert checked == ["0.162.1", "0.159.0"]
+    assert result["runtime_version"] == "0.159.0"
+    assert result["runtimes_passed_over"] == ["codex_sandbox_unavailable_unreviewed_runtime"]
+
+
+def test_the_unreviewed_sandbox_refusal_names_its_continuation() -> None:
+    text = module.subscription_remediation("codex_sandbox_unavailable_unreviewed_runtime") or ""
+    assert "0.162.1" in text and "user namespaces" in text
+    assert "repair" in text
+
+
+def test_the_terminal_interface_names_an_unavailable_codex_sandbox_in_plain_words() -> None:
+    from finishup.tui.app import codex_sandbox_lines
+
+    assert codex_sandbox_lines({"codex_sandbox_unavailable": False}) == ()
+    assert codex_sandbox_lines({}) == ()
+    (line,) = codex_sandbox_lines({"codex_sandbox_unavailable": True})
+    assert line.startswith("Codex sandbox: unavailable here")
+    assert "reviews are unaffected" in line
+    (line,) = codex_sandbox_lines(
+        {
+            "codex_sandbox_unavailable": True,
+            "codex_sandbox_unavailable_reason": "bubblewrap_missing",
+        }
+    )
+    # Honest disclosure: the evaluator ran without a system bubblewrap, so Codex's Linux sandbox
+    # was not verified; the reason the review is still unaffected follows.
+    assert line.startswith("Codex sandbox: no system bubblewrap here")
+    assert "without Codex's verified Linux sandbox" in line
+    assert "reviews are unaffected" in line
+
+
+def test_the_predisclosure_refusal_no_longer_blames_a_missing_bubblewrap() -> None:
+    text = module.subscription_remediation("codex_app_server_predisclosure_event_forbidden") or ""
+    assert "missing system bubblewrap" not in text
+    assert "repair" in text
+
+
+@pytest.mark.anyio
+async def test_a_newer_release_that_fails_the_check_falls_back_to_the_previous_good_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(monkeypatch, {"0.162.1": "codex_runtime_protocol_incompatible"})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    monkeypatch.setattr(module, "codex_account_status", _ready_probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert checked == ["0.162.1", "0.159.0"]
+    assert result["runtime_version"] == "0.159.0"
+    assert result["runtimes_passed_over"] == ["codex_runtime_protocol_incompatible"]
+
+
+@pytest.mark.anyio
+async def test_an_unconfirmed_check_cleanup_stops_selection_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(
+        monkeypatch, {"0.162.1": "codex_capability_probe_cleanup_unconfirmed"}
+    )
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    monkeypatch.setattr(module, "codex_account_status", _ready_probe)
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        await _run_setup_without_executable(tmp_path)
+
+    # No older candidate is launched while a process group may still be running.
+    assert checked == ["0.162.1"]
+    assert written == []
+
+
+@pytest.mark.anyio
+async def test_an_unconfirmed_readiness_cleanup_stops_selection_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    probed: list[str] = []
+
+    async def probe(profile: object) -> CodexRuntimeStatus:
+        probed.append(cast(ExternalRuntimeProfileConfig, profile).runtime_version)
+        raise ValueError("codex_capability_probe_cleanup_unconfirmed")
+
+    def profile_is_binding(binding: ExternalRuntimeProfileConfig) -> object:
+        return binding
+
+    monkeypatch.setattr(module, "_profile", profile_is_binding)
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        await _run_setup_without_executable(tmp_path)
+
+    assert (checked, probed, written) == (["0.162.1"], ["0.162.1"], [])
+
+
+# The autouse fixture stubs discovery; this keeps the real function for the discovery test.
+_REAL_EVALUATOR_CANDIDATES = module.evaluator_candidates
+
+
+def test_discovery_stops_when_a_version_probe_cleanup_is_unconfirmed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    @dataclass(frozen=True)
+    class Binary:
+        executable_path: str
+
+    found = (Binary(str(tmp_path / "a" / "codex")), Binary(str(tmp_path / "b" / "codex")))
+    resolved: list[Path] = []
+
+    def resolve(path: Path) -> module.ResolvedCodex:
+        resolved.append(path)
+        raise ValueError("codex_capability_probe_cleanup_unconfirmed")
+
+    def no_bundle() -> Path:
+        raise ValueError("codex_evaluator_runtime_store_unavailable")
+
+    monkeypatch.setattr(module, "runtime_bundle", no_bundle)
+    monkeypatch.setattr(module, "resolve_codex_executable", resolve)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: found
+    )
+    config = cast(FinishUpConfig, SimpleNamespace(external_runtime=None))
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        _REAL_EVALUATOR_CANDIDATES(config)
+    # The next discovered installation is not probed after an unconfirmed cleanup.
+    assert resolved == [tmp_path / "a" / "codex"]
+
+
+@pytest.mark.anyio
+async def test_a_release_whose_catalog_lacks_the_model_falls_back_to_one_that_lists_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    probed: list[str] = []
+
+    async def probe(profile: object) -> CodexRuntimeStatus:
+        version = cast(ExternalRuntimeProfileConfig, profile).runtime_version
+        probed.append(version)
+        return CodexRuntimeStatus(True, "chatgpt", "pro", version != "0.162.1", "terminated")
+
+    def profile_is_binding(binding: ExternalRuntimeProfileConfig) -> object:
+        return binding
+
+    monkeypatch.setattr(module, "_profile", profile_is_binding)
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert probed == ["0.162.1", "0.159.0"]
+    assert result["runtime_version"] == "0.159.0"
+    assert result["runtimes_passed_over"] == ["codex_model_unavailable"]
+
+
+@pytest.mark.anyio
+async def test_a_release_that_warns_during_authenticated_readiness_falls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A release that passed the scratch probe but warns under the signed-in home is not bound."""
+
+    _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    probed: list[str] = []
+
+    async def probe(profile: object) -> CodexRuntimeStatus:
+        version = cast(ExternalRuntimeProfileConfig, profile).runtime_version
+        probed.append(version)
+        if version == "0.162.1":
+            raise ValueError("codex_app_server_predisclosure_event_forbidden")
+        return CodexRuntimeStatus(True, "chatgpt", "pro", True, "terminated")
+
+    def profile_is_binding(binding: ExternalRuntimeProfileConfig) -> object:
+        return binding
+
+    monkeypatch.setattr(module, "_profile", profile_is_binding)
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert probed == ["0.162.1", "0.159.0"]
+    (binding,) = written
+    assert cast(ExternalRuntimeProfileConfig, binding).runtime_version == "0.159.0"
+    assert result["runtimes_passed_over"] == ["codex_app_server_predisclosure_event_forbidden"]
+
+
+@pytest.mark.anyio
+async def test_no_release_passing_the_check_refuses_with_the_first_cause(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _three_releases(
+        monkeypatch,
+        {
+            "0.162.1": "codex_runtime_protocol_incompatible",
+            "0.159.0": "codex_app_server_predisclosure_event_forbidden",
+            "0.157.1": "codex_thread_isolation_unproven",
+        },
+    )
+    written: list[object] = []
+    _stub_setup_persistence(
+        monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), written
+    )
+
+    async def forbidden(*_args: object, **_kwargs: object) -> CodexRuntimeStatus:
+        pytest.fail("no runtime passed the check, so no Codex session may start")
+
+    monkeypatch.setattr(module, "codex_account_status", forbidden)
+    monkeypatch.setattr(module, "codex_login", forbidden)
+
+    with pytest.raises(ValueError, match="^codex_runtime_protocol_incompatible$"):
+        await _run_setup_without_executable(tmp_path)
+    assert written == []
+    assert module.subscription_remediation("codex_runtime_protocol_incompatible") is not None
+
+
+def _record_binding(tmp_path: Path) -> object:
+    """``_binding`` that keeps the checked record's identity (so tests see the adopted release)."""
+
+    def build(**kwargs: object) -> ExternalRuntimeProfileConfig:
+        record = cast(CodexCapabilityRecord, kwargs["record"])
+        return binding_for(record, cast(Path, kwargs["executable"]), tmp_path / "home")
+
+    return build
+
+
+def _record_write(tmp_path: Path, written: list[object]) -> object:
+    def write(config: FinishUpConfig, **_kwargs: object) -> Path:
+        written.append(config.external_runtime)
+        return tmp_path / "config.toml"
+
+    return write
+
+
+async def _ready_probe(_profile: object) -> CodexRuntimeStatus:
+    return CodexRuntimeStatus(True, "chatgpt", "pro", True, "terminated")
+
+
+async def _run_setup_without_executable(tmp_path: Path) -> Mapping[str, object]:
+    return await module.codex_subscription_setup(
+        executable=None,
+        codex_home=tmp_path / "dedicated-home",
+        model="gpt-6.1-sol",
+        reasoning_effort="max",
+        login_mode="browser",
+        open_browser=False,
+        switch_account=False,
+    )
 
 
 @pytest.mark.anyio
@@ -1405,7 +1744,7 @@ class _SignedInAppServer:
         if method == "initialize":
             return {
                 "codexHome": str(getattr(self.profile, "codex_home")),
-                "userAgent": "yoetz_semantic_evaluator/0.157.1",
+                "userAgent": "finishup_semantic_evaluator/0.159.0 (Mac OS 26.6.2; arm64) unknown",
             }
         if method == "account/read":
             assert params == {"refreshToken": False}
@@ -1433,7 +1772,7 @@ async def test_setup_against_fake_app_server_reads_account_and_never_starts_logi
 ) -> None:
     """End to end through the real adapter: ``account/read`` ready means no ``account/login/start``."""
 
-    from yoetz.adapters.providers import codex_app_server
+    from finishup.adapters.providers import codex_app_server
 
     executable = tmp_path / "codex"
     home = tmp_path / "dedicated-home"
@@ -1465,8 +1804,9 @@ async def test_setup_against_fake_app_server_reads_account_and_never_starts_logi
 
     result = await _run_setup(tmp_path, config_path=target)
 
+    # The trailing account/read is the barrier that closes the pre-disclosure window.
     assert [runtime.methods for runtime in runtimes] == [
-        ["initialize", "account/read", "model/list"]
+        ["initialize", "account/read", "model/list", "account/read"]
     ]
     assert "account/login/start" not in runtimes[0].methods
     assert result["login_reused"] is True
@@ -1481,8 +1821,8 @@ async def test_setup_against_fake_app_server_reads_account_and_never_starts_logi
 def test_setup_rejects_a_reused_home_whose_config_differs_before_any_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.adapters.providers import codex_app_server
-    from yoetz.adapters.providers.codex_app_server import prepare_codex_home
+    from finishup.adapters.providers import codex_app_server
+    from finishup.adapters.providers.codex_app_server import prepare_codex_home
 
     def allow_private_bundle(_path: Path) -> None:
         return None
@@ -1503,9 +1843,9 @@ def _data_dir_config_text(data_dir: Path) -> str:
 def _bound_config_file(tmp_path: Path, binding: ExternalRuntimeProfileConfig) -> Path:
     """Write the exact rendered config selecting the binding, with an explicit data_dir."""
 
-    from yoetz.config.models import StorageConfig
+    from finishup.config.models import StorageConfig
 
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="codex-subscription",
         storage=StorageConfig(data_dir=tmp_path / "state"),
         external_runtime=binding,
@@ -1697,11 +2037,11 @@ def test_cli_status_reports_a_bounded_config_token_instead_of_internal_error(
 ) -> None:
     """Exit 70 ``internal_error`` for a local configuration problem was the #520 defect."""
 
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     target = tmp_path / "config.toml"
     target.write_text("[storage]\ndata_dir = 5\n", encoding="utf-8")
-    monkeypatch.setenv("YOETZ_CONFIG", str(target))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(target))
 
     result = CliRunner().invoke(app, ["provider", "codex-subscription", "status", "--json"])
 
@@ -1714,11 +2054,11 @@ def test_cli_status_reports_a_bounded_config_token_instead_of_internal_error(
 def test_cli_status_accepts_a_valid_storage_data_dir_configuration(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     target = tmp_path / "config.toml"
     target.write_text(_data_dir_config_text(tmp_path / "state"), encoding="utf-8")
-    monkeypatch.setenv("YOETZ_CONFIG", str(target))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(target))
 
     result = CliRunner().invoke(app, ["provider", "codex-subscription", "status"])
 
@@ -1727,25 +2067,27 @@ def test_cli_status_accepts_a_valid_storage_data_dir_configuration(
     assert "internal_error" not in result.stderr
 
 
-def test_cli_setup_recommends_luna_and_keeps_independent_high_effort() -> None:
-    from yoetz.cli.app import provider_codex_subscription_setup
+def test_cli_setup_suggests_medium_final_effort_for_a_new_binding() -> None:
+    from finishup.cli.app import provider_codex_subscription_setup
 
     params = inspect.signature(provider_codex_subscription_setup).parameters
     assert params["model"].default is None
-    # ``None`` resolves to high for a new binding and preserves an existing binding's effort.
+    # ``None`` resolves to medium for a new binding and preserves an existing binding's effort.
     assert params["reasoning_effort"].default is None
     assert params["executable"].default is None
-    assert module.default_codex_subscription_reasoning_effort() == "high"
+    assert module.default_codex_subscription_reasoning_effort() == "medium"
 
 
-def test_default_subscription_model_recommends_luna_or_preserves_existing_binding(
+def test_default_subscription_model_suggests_sol_or_preserves_existing_binding(
     tmp_path: Path,
 ) -> None:
     absent = tmp_path / "absent.toml"
-    assert module.default_codex_subscription_model(absent) == "gpt-6-luna"
+    assert module.default_codex_subscription_model(absent) == "gpt-6.1-sol"
+    assert module.codex_subscription_model_is_suggested(absent) is True
 
     target = _bound_config_file(tmp_path, _binding(tmp_path / "codex", tmp_path / "home"))
     assert module.default_codex_subscription_model(target) == "gpt-5.6-sol"
+    assert module.codex_subscription_model_is_suggested(target) is False
 
 
 # --- issue #571: routine/final budget choices survive setup -------------------------------------
@@ -1772,12 +2114,12 @@ def _budget_setup(
             **kwargs,
         }
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
         if existing is None:
-            return YoetzConfig(), None
-        return YoetzConfig(profile="codex-subscription", external_runtime=existing), None
+            return FinishUpConfig(), None
+        return FinishUpConfig(profile="codex-subscription", external_runtime=existing), None
 
-    def write_binding(config: YoetzConfig, **_kwargs: object) -> Path:
+    def write_binding(config: FinishUpConfig, **_kwargs: object) -> Path:
         assert config.external_runtime is not None
         written.append(config.external_runtime)
         return tmp_path / "config.toml"
@@ -1875,8 +2217,8 @@ def test_routine_default_follows_the_existing_binding(
     legacy = _binding(tmp_path / "codex", tmp_path / "home")
     selected: list[ExternalRuntimeProfileConfig] = [legacy]
 
-    def base_config(_path: Path | None = None) -> YoetzConfig:
-        return YoetzConfig(profile="codex-subscription", external_runtime=selected[0])
+    def base_config(_path: Path | None = None) -> FinishUpConfig:
+        return FinishUpConfig(profile="codex-subscription", external_runtime=selected[0])
 
     monkeypatch.setattr(module, "_base_config", base_config)
     assert module.default_codex_subscription_routine_effort() is None
@@ -1884,24 +2226,8 @@ def test_routine_default_follows_the_existing_binding(
     assert module.default_codex_subscription_routine_effort() == "low"
 
 
-def test_preview_rejects_an_unsupported_routine_effort(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    import platform
-    import sys
-
-    from yoetz.adapters.providers.codex_app_server import codex_evaluator_cell_for_platform
-
-    try:
-        cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())
-    except ValueError:
-        pytest.skip("no supported Codex cell on this platform")
-    native = tmp_path / "codex"
-
-    def resolve(_path: Path) -> tuple[Path, str, str]:
-        return native, cell.executable_sha256, cell.source_identity
-
-    monkeypatch.setattr(module, "resolve_supported_codex_executable", resolve)
+def test_preview_rejects_an_unsupported_routine_effort(tmp_path: Path) -> None:
+    native, _ = _write_codex_package_layout(tmp_path, nested=True)
     preview = module.codex_subscription_preview(
         executable=native,
         codex_home=tmp_path / "home",
@@ -1912,9 +2238,295 @@ def test_preview_rejects_an_unsupported_routine_effort(
     assert (preview["reasoning_effort"], preview["routine_reasoning_effort"]) == ("high", "low")
     with pytest.raises(ValueError, match="codex_runtime_model_invalid"):
         module.codex_subscription_preview(
-            executable=tmp_path / "missing-codex",
+            executable=native,
             codex_home=tmp_path / "home",
             model="gpt-5.6-sol",
             reasoning_effort="high",
             routine_reasoning_effort="turbo",
         )
+
+
+# --- suggested model: gpt-6.1-sol/medium, falling back only when Codex does not list it ----------
+
+# What each admitted Codex release's own model/list offers for a fresh dedicated home, as observed
+# live: 0.162.1 lists gpt-6.1-sol; the catalog of the 0.157.1 floor predates it.
+_RELEASE_CATALOGS: Mapping[str, frozenset[str]] = {
+    "0.162.1": frozenset({"gpt-6.1-sol", "gpt-6-luna"}),
+    "0.157.1": frozenset({"gpt-6-luna"}),
+}
+
+
+@dataclass
+class _SuggestionRun:
+    written: list[ExternalRuntimeProfileConfig]
+    listed: list[tuple[str, str]]
+    checked: list[str]
+    logins: list[tuple[str, str]]
+
+
+def _suggestion_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    releases: tuple[str, ...],
+    signed_in: bool = False,
+    existing: ExternalRuntimeProfileConfig | None = None,
+    catalogs: Mapping[str, frozenset[str]] = _RELEASE_CATALOGS,
+) -> _SuggestionRun:
+    """Admitted releases newest first, each answering ``model/list`` from its own catalog."""
+
+    run = _SuggestionRun([], [], [], [])
+
+    def candidates(
+        _config: FinishUpConfig, *, executable: Path | None = None
+    ) -> tuple[module.EvaluatorCandidate, ...]:
+        del executable
+        return tuple(
+            module.EvaluatorCandidate("discovered", Path(f"/opt/codex/{version}/codex"), version)
+            for version in releases
+        )
+
+    async def check(candidate: module.EvaluatorCandidate, *, bundle: Path) -> object:
+        run.checked.append(candidate.version)
+        record = record_for(b"codex", b"host", version=candidate.version)
+        return module._Checked(  # pyright: ignore[reportPrivateUsage]
+            candidate, managed_runtime_path(bundle, record.source_identity), record
+        )
+
+    def build_binding(**kwargs: object) -> ExternalRuntimeProfileConfig:
+        return binding_for(
+            cast(CodexCapabilityRecord, kwargs["record"]),
+            cast(Path, kwargs["executable"]),
+            tmp_path / "dedicated-home",
+            model=kwargs["model"],
+            reasoning_effort=kwargs["reasoning_effort"],
+        )
+
+    def build_profile(binding: ExternalRuntimeProfileConfig) -> ExternalRuntimeProfileConfig:
+        return binding
+
+    def offers(profile: ExternalRuntimeProfileConfig) -> bool:
+        return profile.model in catalogs[profile.runtime_version]
+
+    async def model_listed(profile: ExternalRuntimeProfileConfig) -> bool:
+        run.listed.append((profile.runtime_version, profile.model))
+        return offers(profile)
+
+    async def account_status(profile: ExternalRuntimeProfileConfig) -> CodexRuntimeStatus:
+        if not signed_in:
+            return CodexRuntimeStatus(True, None, None, False, "terminated")
+        return CodexRuntimeStatus(True, "chatgpt", "plus", offers(profile), "terminated")
+
+    async def login(profile: ExternalRuntimeProfileConfig, **_kwargs: object) -> CodexRuntimeStatus:
+        run.logins.append((profile.runtime_version, profile.model))
+        return CodexRuntimeStatus(True, "chatgpt", "plus", offers(profile), "terminated")
+
+    async def logout(_profile: object) -> CodexRuntimeStatus:
+        return CodexRuntimeStatus(True, None, None, False, "terminated")
+
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
+        if existing is None:
+            return FinishUpConfig(), None
+        return FinishUpConfig(profile="codex-subscription", external_runtime=existing), None
+
+    def preflight(*_args: object, **_kwargs: object) -> Path:
+        return tmp_path / "config.toml"
+
+    def prepare(_home: Path) -> None:
+        return None
+
+    def write_binding(config: FinishUpConfig, **_kwargs: object) -> Path:
+        assert config.external_runtime is not None
+        run.written.append(config.external_runtime)
+        return tmp_path / "config.toml"
+
+    monkeypatch.setattr(module, "evaluator_candidates", candidates)
+    monkeypatch.setattr(module, "_check_candidate", check)
+    monkeypatch.setattr(module, "_binding", build_binding)
+    monkeypatch.setattr(module, "_profile", build_profile)
+    monkeypatch.setattr(module, "codex_model_listed", model_listed)
+    monkeypatch.setattr(module, "codex_account_status", account_status)
+    monkeypatch.setattr(module, "codex_login", login)
+    monkeypatch.setattr(module, "codex_logout", logout)
+    monkeypatch.setattr(module, "_config_snapshot", snapshot)
+    monkeypatch.setattr(module, "preflight_config_write", preflight)
+    monkeypatch.setattr(module, "prepare_codex_home", prepare)
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", write_binding)
+    return run
+
+
+async def _setup_model(
+    tmp_path: Path, model: str, *, suggestion: bool, switch_account: bool = False
+) -> Mapping[str, object]:
+    return await module.codex_subscription_setup(
+        executable=None,
+        codex_home=tmp_path / "dedicated-home",
+        model=model,
+        reasoning_effort="medium",
+        login_mode="browser",
+        open_browser=False,
+        switch_account=switch_account,
+        model_is_suggestion=suggestion,
+    )
+
+
+def _bound(run: _SuggestionRun) -> list[tuple[str, str, str]]:
+    return [(item.runtime_version, item.model, item.reasoning_effort) for item in run.written]
+
+
+@pytest.mark.anyio
+async def test_suggested_model_binds_directly_on_a_codex_that_lists_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _suggestion_setup(monkeypatch, tmp_path, releases=("0.162.1", "0.157.1"))
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert run.checked == ["0.162.1"]
+    assert run.listed == [("0.162.1", "gpt-6.1-sol")]
+    assert run.logins == [("0.162.1", "gpt-6.1-sol")]
+    assert _bound(run) == [("0.162.1", "gpt-6.1-sol", "medium")]
+    assert "model_fallback_from" not in result
+    assert "does not list" not in capsys.readouterr().out
+
+
+@pytest.mark.anyio
+async def test_suggested_model_falls_back_clearly_on_the_older_floor_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _suggestion_setup(monkeypatch, tmp_path, releases=("0.157.1",))
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert run.listed == [("0.157.1", "gpt-6.1-sol"), ("0.157.1", "gpt-6-luna")]
+    assert run.logins == [("0.157.1", "gpt-6-luna")]
+    assert _bound(run) == [("0.157.1", "gpt-6-luna", "medium")]
+    assert result["model"] == "gpt-6-luna"
+    assert result["model_fallback_from"] == "gpt-6.1-sol"
+    out = capsys.readouterr().out
+    assert "Codex 0.157.1 does not list the suggested model gpt-6.1-sol" in out
+    assert "using gpt-6-luna instead" in out
+    assert "--model gpt-6.1-sol" in out
+
+
+@pytest.mark.anyio
+async def test_suggestion_falls_back_when_the_newer_release_fails_its_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run = _suggestion_setup(monkeypatch, tmp_path, releases=("0.162.1", "0.157.1"))
+    passing = module._check_candidate  # pyright: ignore[reportPrivateUsage]
+
+    async def check(candidate: module.EvaluatorCandidate, *, bundle: Path) -> object:
+        if candidate.version == "0.162.1":
+            raise ValueError("codex_runtime_capability_unsupported")
+        return await passing(candidate, bundle=bundle)
+
+    monkeypatch.setattr(module, "_check_candidate", check)
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert _bound(run) == [("0.157.1", "gpt-6-luna", "medium")]
+    assert result["model_fallback_from"] == "gpt-6.1-sol"
+    assert result["runtimes_passed_over"] == ["codex_runtime_capability_unsupported"]
+
+
+@pytest.mark.anyio
+async def test_a_signed_in_home_binds_the_suggestion_on_the_newest_codex_listing_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run = _suggestion_setup(monkeypatch, tmp_path, releases=("0.162.1", "0.157.1"), signed_in=True)
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert run.listed == []
+    assert run.logins == []
+    assert result["login_reused"] is True
+    assert _bound(run) == [("0.162.1", "gpt-6.1-sol", "medium")]
+    assert "model_fallback_from" not in result
+
+
+@pytest.mark.anyio
+async def test_a_signed_in_home_falls_back_when_no_admitted_codex_lists_the_suggestion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _suggestion_setup(monkeypatch, tmp_path, releases=("0.157.1",), signed_in=True)
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert run.logins == []
+    assert result["login_reused"] is True
+    assert _bound(run) == [("0.157.1", "gpt-6-luna", "medium")]
+    assert result["model_fallback_from"] == "gpt-6.1-sol"
+    assert "using gpt-6-luna instead" in capsys.readouterr().out
+
+
+@pytest.mark.anyio
+async def test_switching_accounts_checks_the_suggestion_before_sign_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run = _suggestion_setup(monkeypatch, tmp_path, releases=("0.157.1",), signed_in=True)
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True, switch_account=True)
+
+    assert run.listed == [("0.157.1", "gpt-6.1-sol"), ("0.157.1", "gpt-6-luna")]
+    assert run.logins == [("0.157.1", "gpt-6-luna")]
+    assert _bound(run) == [("0.157.1", "gpt-6-luna", "medium")]
+    assert result["model_fallback_from"] == "gpt-6.1-sol"
+
+
+@pytest.mark.anyio
+async def test_suggestion_is_kept_when_the_fallback_is_not_listed_either(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Nothing is silently substituted for an unlisted fallback; sign-in decides, and fails closed.
+    run = _suggestion_setup(
+        monkeypatch, tmp_path, releases=("0.157.1",), catalogs={"0.157.1": frozenset()}
+    )
+
+    with pytest.raises(ValueError, match="^codex_subscription_readiness_unproven$"):
+        await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert run.listed == [("0.157.1", "gpt-6.1-sol"), ("0.157.1", "gpt-6-luna")]
+    assert run.logins == [("0.157.1", "gpt-6.1-sol")]
+    assert run.written == []
+
+
+@pytest.mark.anyio
+async def test_an_explicit_model_is_never_substituted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run = _suggestion_setup(monkeypatch, tmp_path, releases=("0.157.1",))
+
+    with pytest.raises(ValueError, match="^codex_subscription_readiness_unproven$"):
+        await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=False)
+
+    assert run.listed == []
+    assert run.logins == [("0.157.1", "gpt-6.1-sol")]
+    assert run.written == []
+
+
+@pytest.mark.anyio
+async def test_an_existing_binding_keeps_its_model_on_upgrade(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    existing = _binding(tmp_path / "codex", tmp_path / "dedicated-home")
+    run = _suggestion_setup(
+        monkeypatch,
+        tmp_path,
+        releases=("0.157.1",),
+        existing=existing,
+        catalogs={"0.157.1": frozenset({"gpt-6-luna", existing.model})},
+    )
+
+    await _setup_model(tmp_path, existing.model, suggestion=True)
+
+    assert run.listed == []
+    assert [item.model for item in run.written] == [existing.model]
+
+
+def test_model_unavailable_failures_name_a_next_step() -> None:
+    line = module.subscription_failure_line(ValueError("codex_model_unavailable"))
+    assert line.startswith("codex_subscription: codex_model_unavailable: ")
+    assert "--model" in line
+    effort = module.subscription_failure_line(ValueError("codex_reasoning_effort_unavailable"))
+    assert "--reasoning-effort" in effort

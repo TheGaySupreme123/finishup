@@ -7,9 +7,10 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.privacy.local_enforcer import scan_exact_bytes
-from yoetz.application import check_change as check_change_module
-from yoetz.ports.change_capture import (
+from finishup.adapters.privacy.local_enforcer import scan_exact_bytes
+from finishup.application import check_change as check_change_module
+from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+from finishup.ports.change_capture import (
     ChangeCaptureUnavailable,
     CheckChangeCapture,
     CheckWorkspaceSource,
@@ -45,8 +46,32 @@ def test_parser_source_with_more_matches_than_one_scan_reports_is_fully_redacted
 
     assert redacted.redacted
     assert scan_exact_bytes(redacted.text) == ()
-    assert redacted.text.count(b"[REDACTED]") == 600
+    # Heuristic-only values read as the self-describing placeholder, never a bare [REDACTED].
+    assert redacted.text.count(EGRESS_CREDENTIAL_PLACEHOLDER) == 600
+    assert b"[REDACTED]" not in redacted.text
     assert b"src/parser.ts" in redacted.text
+
+
+def test_a_value_that_only_looks_like_a_credential_reads_as_withheld_not_as_code() -> None:
+    """tb4n5 live-database-cutover: ``password=config.POSTGRES_PASSWORD`` reached the reviewer
+    as ``password=[REDACTED]``, which it read as an undefined name (a NameError finding)."""
+
+    line = (
+        b"+    return URL.create('postgresql+psycopg',username=config.POSTGRES_USER,"
+        b"password=config.POSTGRES_PASSWORD,host=config.POSTGRES_HOST)\n"
+    )
+    token = b"ghp_" + b"Q" * 36
+    text = b"diff --git a/api/db.py b/api/db.py\n" + line + b"+TOKEN = '" + token + b"'\n"
+
+    redacted = _redacted(_capture(text))
+
+    assert redacted.redacted
+    assert b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"," in redacted.text
+    assert b"config.POSTGRES_PASSWORD" not in redacted.text
+    # A concrete credential shape still reads [REDACTED]; both converge to a clean scan.
+    assert token not in redacted.text and b"TOKEN = '[REDACTED]'" in redacted.text
+    assert scan_exact_bytes(redacted.text) == ()
+    assert _redacted(redacted) is redacted
 
 
 def test_clean_change_is_returned_unchanged() -> None:
@@ -56,7 +81,7 @@ def test_clean_change_is_returned_unchanged() -> None:
 
 
 def test_change_that_cannot_be_fully_redacted_is_withheld(monkeypatch: pytest.MonkeyPatch) -> None:
-    def never_clean(data: bytes) -> tuple[bytes, bool]:
+    def never_clean(data: bytes, **_: object) -> tuple[bytes, bool]:
         return data + b".", True
 
     monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean)
@@ -68,7 +93,7 @@ def test_change_that_cannot_be_fully_redacted_is_withheld(monkeypatch: pytest.Mo
 
 @pytest.mark.anyio
 async def test_unavailable_reason_is_frozen_in_the_binding_and_recovered() -> None:
-    from yoetz.application.check_change import CheckChangeOutcome, recover_check_time_change
+    from finishup.application.check_change import CheckChangeOutcome, recover_check_time_change
 
     outcome = CheckChangeOutcome(unavailable=True, reason="changed_during_capture")
     binding = outcome.binding_json()
@@ -89,7 +114,7 @@ async def test_unavailable_reason_is_frozen_in_the_binding_and_recovered() -> No
 
 @pytest.mark.anyio
 async def test_structural_capture_does_not_fallback_to_legacy_content_port() -> None:
-    from yoetz.application.check_change import capture_structural_check_change
+    from finishup.application.check_change import capture_structural_check_change
 
     class LegacyPort:
         def capture(self, workspace: str, base: object) -> CheckChangeCapture:
@@ -136,8 +161,8 @@ def test_declared_deliverables_reach_the_port_and_a_plain_port_keeps_working() -
 
 def test_task_input_paths_are_the_files_the_statement_names_then_declared_inputs() -> None:
     from builders.policy_cases import make_case, obl, obligation_record, plan_record
-    from yoetz.application.check_change import task_input_paths
-    from yoetz.domain.events import (
+    from finishup.application.check_change import task_input_paths
+    from finishup.domain.events import (
         ObligationPublishedPayload,
         ObligationStatus,
         PlanPublishedPayload,
@@ -185,7 +210,7 @@ def test_task_input_paths_are_the_files_the_statement_names_then_declared_inputs
 
 
 def test_task_input_files_are_redacted_one_by_one_and_dropped_when_they_cannot_be() -> None:
-    from yoetz.ports.change_capture import TaskInputFile
+    from finishup.ports.change_capture import TaskInputFile
 
     secret = b'password = "a8F3kL9qZx7Pw2Rt"\n'
     capture = CheckChangeCapture(
@@ -204,7 +229,8 @@ def test_task_input_files_are_redacted_one_by_one_and_dropped_when_they_cannot_b
     redacted = _redacted(capture)
 
     spec, rules = redacted.inputs
-    assert spec.redacted and b"a8F3kL9qZx7Pw2Rt" not in spec.text and b"[REDACTED]" in spec.text
+    assert spec.redacted and b"a8F3kL9qZx7Pw2Rt" not in spec.text
+    assert b'password = "' + EGRESS_CREDENTIAL_PLACEHOLDER + b'"' in spec.text
     assert rules == capture.inputs[1]
     # The change itself was clean and stays as it was, but review content was still altered, so
     # the capture discloses it (``check_time_change_redacted``; review of #1045).
@@ -217,14 +243,14 @@ def test_a_task_input_withheld_whole_is_disclosed_as_redacted(
 ) -> None:
     """Review of #1045: an input that cannot be fully redacted is dropped, and that is said."""
 
-    from yoetz.ports.change_capture import TaskInputFile
+    from finishup.ports.change_capture import TaskInputFile
 
     original = check_change_module.redact_sensitive_content
 
-    def never_clean_for_the_input(data: bytes) -> tuple[bytes, bool]:
+    def never_clean_for_the_input(data: bytes, **options: bytes | None) -> tuple[bytes, bool]:
         if b"WITHHELD_INPUT_MARKER" in data:
             return data + b".", True
-        return original(data)
+        return original(data, **options)
 
     monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean_for_the_input)
     capture = CheckChangeCapture(
@@ -244,7 +270,7 @@ def test_a_task_input_withheld_whole_is_disclosed_as_redacted(
 
 
 def test_clean_task_inputs_leave_the_capture_unmarked() -> None:
-    from yoetz.ports.change_capture import TaskInputFile
+    from finishup.ports.change_capture import TaskInputFile
 
     capture = CheckChangeCapture(
         base="task_start",
@@ -291,7 +317,7 @@ async def test_first_check_pin_drops_a_task_start_snapshot(
 ) -> None:
     """Only the task's own start says which untracked files predate it (#1045)."""
 
-    from yoetz.ports.change_capture import (
+    from finishup.ports.change_capture import (
         NestedUntrackedBaseline,
         TaskChangeBase,
         UntrackedBaselineFile,

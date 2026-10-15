@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.integrations.observation_task_pending import (
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import (
+    STREAM_MAPPING_VERSION,
+    LocalObservationStore,
+)
+from finishup.adapters.integrations.observation_task_pending import (
     session_pending_row_identities,
     task_pending_outbox_count,
 )
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import ObservationSource
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import (
+    ObservationCursor,
+    ObservationEnvelope,
+    ObservationGapCode,
+    ObservationSource,
+)
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.ids import IdKind, new_id
 
 
 def _enqueue(store: LocalObservationStore, workspace: str, session: str, ordinal: int) -> None:
@@ -37,12 +47,12 @@ def _enqueue(store: LocalObservationStore, workspace: str, session: str, ordinal
     store.enqueue_outbox(workspace, session, envelope)
 
 
-def _map(state: Path, host_session: str, yoetz_session: str) -> None:
+def _map(state: Path, host_session: str, finishup_session: str) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
             yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=yoetz_session,
+            yoetz_session_id=finishup_session,
             yoetz_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),
@@ -161,3 +171,69 @@ def test_buffered_inputs_of_this_task_are_flushed_into_the_wait(
     identities = session_pending_row_identities(store, yoetz_session_id=mine, _state=tmp_path)
     assert flushed == ["mine"]
     assert len(identities) == 1
+
+
+def _held_item(
+    store: LocalObservationStore, workspace: str, host_session: str, call: str, read_at: str
+) -> str:
+    """Hold one rollout command item for its hook post, read at ``read_at`` (#910)."""
+
+    session = store.bind_codex_session(workspace, host_session)
+    envelope = ObservationEnvelope(
+        session_commitment=session,
+        event_kind="item_completed",
+        source_identity=f"stream:{call}",
+        source=ObservationSource.CODEX_SESSION_STREAM,
+        cursor=ObservationCursor(1, 120, 4, f"hmac-sha256:{'cd' * 32}", STREAM_MAPPING_VERSION),
+        receipt_time=Timestamp(read_at),
+        structural_payload=JsonObject(
+            {
+                "action": "CommandExecution",
+                "exit_status": 0,
+                "stream_kind": "event_msg",
+                "tool_call_id": call,
+                "tool_name": "command_execution",
+            }
+        ),
+        content_object_refs=(),
+        gap_codes=(),
+    )
+    store.note_pending_rollout_item(workspace, session, host_session, envelope)
+    return envelope.source_identity
+
+
+def test_held_rollout_items_of_this_task_are_released_into_the_wait(tmp_path: Path) -> None:
+    """tb4n5 biped S: a held item landed 13 minutes late, 3 s after the check that awaited.
+
+    The wait releases each of its task's held items read long enough ago, with
+    ``unpaired_event``, and counts a younger one as still pending under an identity that does not
+    change once it is released. Another task's held item is left alone.
+    """
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = _workspace(store, tmp_path / "w")
+    mine = new_id(IdKind.SESSION)
+    _map(tmp_path, "mine", mine)
+    _map(tmp_path, "theirs", new_id(IdKind.SESSION))
+    old = _held_item(store, workspace, "mine", "exec-old", "2026-10-12T19:43:07.246Z")
+    young = _held_item(store, workspace, "mine", "exec-young", "2026-10-12T19:56:00.000Z")
+    foreign = _held_item(store, workspace, "theirs", "exec-foreign", "2026-10-12T19:40:00.000Z")
+    check_at = datetime(2026, 10, 12, 19, 56, 2, tzinfo=UTC).timestamp()
+
+    identities = session_pending_row_identities(
+        store, yoetz_session_id=mine, _state=tmp_path, now=check_at
+    )
+
+    assert identities == {f"stream-input:{old}", f"stream-input:{young}"}
+    (released,) = store.list_pending_outbox_rows(workspace)
+    assert released.envelope.source_identity == old
+    assert ObservationGapCode.UNPAIRED_EVENT.value in released.envelope.gap_codes
+    held = {item.source_identity for item in store.pending_rollout_items(workspace)}
+    assert held == {young, foreign}
+
+    # Once delivered it leaves the wait; the young item is the bounded remainder.
+    assert store.acknowledge_outbox_row(workspace, released) is True
+    after = session_pending_row_identities(
+        store, yoetz_session_id=mine, _state=tmp_path, now=check_at
+    )
+    assert after == {f"stream-input:{young}"}

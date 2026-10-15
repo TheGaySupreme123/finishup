@@ -8,11 +8,11 @@ from typing import Any
 
 import pytest
 
-from yoetz.domain.events import CheckRecordedPayload, EventSchema, decode_payload, encode_payload
-from yoetz.domain.values import freeze_json
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.domain.events import CheckRecordedPayload, EventSchema, decode_payload, encode_payload
+from finishup.domain.values import freeze_json
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 
 def _vectors() -> list[dict[str, Any]]:

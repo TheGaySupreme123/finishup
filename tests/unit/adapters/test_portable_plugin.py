@@ -10,10 +10,11 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.integrations import portable_plugin as portable_mod
-from yoetz.adapters.integrations.codex_plugin import install_plugin
-from yoetz.adapters.integrations.portable_plugin import (
+from finishup.adapters.integrations import portable_plugin as portable_mod
+from finishup.adapters.integrations.codex_plugin import install_plugin
+from finishup.adapters.integrations.portable_plugin import (
     AGENT_PLUGIN_ROOT,
+    LEGACY_AGENT_PLUGIN_ROOT,
     ElevatedPortableArtifactReview,
     PortablePluginArtifactAdapter,
     build_portable_plugin_plan,
@@ -26,9 +27,9 @@ from yoetz.adapters.integrations.portable_plugin import (
     validate_portable_plugin_tree,
     validate_portable_skill,
 )
-from yoetz.domain.values import request_id
-from yoetz.ports.integrations import IntegrationScope, IntegrationTarget
-from yoetz.ports.plugin_artifacts import (
+from finishup.domain.values import request_id
+from finishup.ports.integrations import IntegrationScope, IntegrationTarget
+from finishup.ports.plugin_artifacts import (
     ArtifactAuthority,
     ArtifactTarget,
     McpOwnership,
@@ -43,18 +44,18 @@ from yoetz.ports.plugin_artifacts import (
     PluginOperationState,
     PluginProofFacet,
 )
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
     strict_json_parse,
 )
-from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
-from yoetz.service.elevated_bootstrap import catalog_payload, load_pending
-from yoetz.version import read_verified_resource
+from finishup.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
+from finishup.service.elevated_bootstrap import catalog_payload, load_pending
+from finishup.version import read_verified_resource
 
 _GUIDANCE_NAMES = tuple(
-    uri.removeprefix("yoetz://guidance/")
+    uri.removeprefix("finishup://guidance/")
     for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
 )
 
@@ -183,11 +184,18 @@ def test_codex_portable_root_and_scope_are_fixture_registered() -> None:
     assert fixture["host_surface"] == "codex_cli"
     assert fixture["format_profile"] == "agent_plugins_1"
     assert fixture["scope"] == "trusted_project"
-    assert fixture["plugin_root"] == AGENT_PLUGIN_ROOT
+    # The registered fixture records the Yoetz-era tree (ADR-048): its root is the legacy
+    # directory FinishUP still recognizes, and its members differ only by the skill name.
+    assert fixture["plugin_root"] == LEGACY_AGENT_PLUGIN_ROOT
+    assert AGENT_PLUGIN_ROOT == ".agents/plugins/finishup"
     assert fixture["mcp_ownership"] == "external_registration"
     expected_members = fixture["expected_members"]
     assert type(expected_members) is list
-    assert expected_members == sorted(render_portable_plugin_tree(), key=str.encode)
+    renamed = [
+        str(member).replace("skills/yoetz/", "skills/finishup/")
+        for member in cast(list[object], expected_members)
+    ]
+    assert renamed == sorted(render_portable_plugin_tree(), key=str.encode)
 
 
 def test_plugin_managed_route_variants_match_the_registered_fixture() -> None:
@@ -208,7 +216,16 @@ def test_plugin_managed_route_variants_match_the_registered_fixture() -> None:
         assert isinstance(mcp, Mapping)
         servers = mcp["mcpServers"]
         assert isinstance(servers, Mapping)
-        assert servers[server_name] == routes[profile]
+        # The fixture records the Yoetz-era route (ADR-048). The renamed render keys the same
+        # route ``finishup`` and launches ``finishup``; the legacy bytes stay recognizable.
+        legacy_route = routes[profile]
+        assert isinstance(legacy_route, Mapping)
+        assert dict(servers) == {"finishup": {**legacy_route, "command": "finishup"}}
+        legacy = strict_json_parse(
+            portable_mod._mcp_json(profile, legacy=True)  # pyright: ignore[reportPrivateUsage]
+        )
+        assert isinstance(legacy, Mapping)
+        assert legacy["mcpServers"] == {server_name: legacy_route}
 
 
 def test_portable_tree_is_skills_only_and_guidance_is_byte_identical() -> None:
@@ -218,17 +235,19 @@ def test_portable_tree_is_skills_only_and_guidance_is_byte_identical() -> None:
         item.relative_path for item in rendered.plan.inventory
     )
     assert "plugin.json" in tree
-    assert "skills/yoetz/SKILL.md" in tree
+    assert "skills/finishup/SKILL.md" in tree
     assert "mcp.json" not in tree
-    assert "skills/yoetz/manifest.json" not in tree
+    assert "skills/finishup/manifest.json" not in tree
     assert rendered.plan.format_profile is PluginFormatProfile.AGENT_PLUGINS_1
     assert rendered.plan.mcp_ownership is McpOwnership.EXTERNAL_REGISTRATION
     assert rendered.plan.mcp_route_profile is None
-    skill = tree["skills/yoetz/SKILL.md"].decode("utf-8")
+    skill = tree["skills/finishup/SKILL.md"].decode("utf-8")
     assert "The first workflow operation is `start`." in skill
     assert "Carrier has no authority." in skill
     for name in _GUIDANCE_NAMES:
-        assert tree[f"skills/yoetz/references/{name}"] == read_verified_resource(f"guidance/{name}")
+        assert tree[f"skills/finishup/references/{name}"] == read_verified_resource(
+            f"guidance/{name}"
+        )
         assert f"guidance/{name}" in rendered.plan.source_refs
 
 
@@ -265,14 +284,14 @@ def test_plugin_managed_mcp_variants_are_exact_and_offline_valid(
     mcp_raw = rendered.members["mcp.json"]
     # The condensed skill defers setup to the carried consent topic, which states ownership.
     consent = " ".join(
-        rendered.members["skills/yoetz/references/consent.md"].decode("utf-8").split()
+        rendered.members["skills/finishup/references/consent.md"].decode("utf-8").split()
     )
     assert "`plugin_managed` includes the selected `mcp.json` route" in consent
     assert "this plugin is the sole owner" in consent
     mcp = strict_json_parse(mcp_raw)
     assert mcp == {
         "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-        "mcpServers": {"yoetz": {"args": expected_args, "command": "yoetz", "type": "stdio"}},
+        "mcpServers": {"finishup": {"args": expected_args, "command": "finishup", "type": "stdio"}},
     }
     assert b"env" not in mcp_raw
     assert rendered.plan.mcp_ownership is McpOwnership.PLUGIN_MANAGED
@@ -294,8 +313,8 @@ def test_mcp_failure_boundaries_preserve_skill_and_other_servers() -> None:
         {
             "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
             "mcpServers": {
-                "bad": {"type": "stdio", "command": "yoetz", "unknown": True},
-                "good": {"type": "stdio", "command": "yoetz", "args": ["mcp", "serve"]},
+                "bad": {"type": "stdio", "command": "finishup", "unknown": True},
+                "good": {"type": "stdio", "command": "finishup", "args": ["mcp", "serve"]},
                 "other": {"type": "stdio", "command": "other-server"},
                 "remote": {"type": "streamable-http", "url": "https://example.com/mcp"},
             },
@@ -307,8 +326,8 @@ def test_mcp_failure_boundaries_preserve_skill_and_other_servers() -> None:
         mcp_schema_bytes=mcp_schema,
         mcp_connection_failures={"good": "handshake"},
     )
-    assert "skills/yoetz" in result.loaded_components
-    assert result.loaded_components == ("manifest", "skills/yoetz", "mcp")
+    assert "skills/finishup" in result.loaded_components
+    assert result.loaded_components == ("manifest", "skills/finishup", "mcp")
     assert result.skipped_components == ("mcp_server",)
     assert result.diagnostics == (
         "mcp_server_invalid",
@@ -320,9 +339,9 @@ def test_mcp_failure_boundaries_preserve_skill_and_other_servers() -> None:
 @pytest.mark.parametrize(
     "server",
     [
-        {"type": "stdio", "command": "../yoetz"},
-        {"type": "stdio", "command": "yoetz", "cwd": "data"},
-        {"type": "stdio", "command": "yoetz", "env": {"PLUGIN_ROOT": "override"}},
+        {"type": "stdio", "command": "../finishup"},
+        {"type": "stdio", "command": "finishup", "cwd": "data"},
+        {"type": "stdio", "command": "finishup", "env": {"PLUGIN_ROOT": "override"}},
     ],
 )
 def test_mcp_path_and_reserved_variable_escapes_skip_only_that_server(
@@ -333,7 +352,7 @@ def test_mcp_path_and_reserved_variable_escapes_skip_only_that_server(
             "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
             "mcpServers": {
                 "invalid": server,
-                "yoetz": {"type": "stdio", "command": "yoetz", "args": ["mcp", "serve"]},
+                "finishup": {"type": "stdio", "command": "finishup", "args": ["mcp", "serve"]},
             },
         }
     )
@@ -373,7 +392,7 @@ def test_invalid_top_level_mcp_disables_only_mcp(mcp_raw: bytes) -> None:
         schema_bytes=read_verified_resource("support/agent-plugins/1.0.0/plugin.schema.json"),
         mcp_schema_bytes=read_verified_resource("support/agent-plugins/1.0.0/mcp.schema.json"),
     )
-    assert result.loaded_components == ("manifest", "skills/yoetz")
+    assert result.loaded_components == ("manifest", "skills/finishup")
     assert result.skipped_components == ("mcp",)
     assert result.diagnostics == ("mcp_config_invalid",)
 
@@ -387,7 +406,7 @@ def test_mcp_runtime_failure_skips_only_the_failed_server(failure: str) -> None:
     result = validate_agent_plugin_mcp(
         raw,
         schema_bytes=read_verified_resource("support/agent-plugins/1.0.0/mcp.schema.json"),
-        connection_failures={"yoetz": cast(Any, failure)},
+        connection_failures={"finishup": cast(Any, failure)},
     )
     assert result.top_level_valid is True
     assert result.loaded_server_count == 0
@@ -429,14 +448,14 @@ def test_manifest_fatal_violation_names_the_exact_field(
 
 def test_portable_skill_rejects_host_only_frontmatter_without_touching_manifest() -> None:
     manifest_before = render_portable_plugin_tree()["plugin.json"]
-    invalid_skill = b"---\nname: yoetz\ndescription: test\nmetadata:\n  host: codex\n---\n"
+    invalid_skill = b"---\nname: finishup\ndescription: test\nmetadata:\n  host: codex\n---\n"
     validation = validate_portable_plugin_tree(
-        {"plugin.json": manifest_before, "skills/yoetz/SKILL.md": invalid_skill},
+        {"plugin.json": manifest_before, "skills/finishup/SKILL.md": invalid_skill},
         schema_bytes=read_verified_resource("support/agent-plugins/1.0.0/plugin.schema.json"),
     )
     assert validation.manifest.accepted is True
     assert validation.loaded_components == ("manifest",)
-    assert validation.skipped_components == ("skills/yoetz",)
+    assert validation.skipped_components == ("skills/finishup",)
     assert validation.diagnostics == ("skill_frontmatter_invalid",)
     with pytest.raises(PluginArtifactError) as caught:
         validate_portable_skill(invalid_skill)
@@ -448,7 +467,7 @@ def test_portable_skill_rejects_host_only_frontmatter_without_touching_manifest(
     "overrides",
     [
         {"guidance/workflow.md": None},
-        {"skills/portable/yoetz/SKILL.md": b"x" * 262_145},
+        {"skills/portable/finishup/SKILL.md": b"x" * 262_145},
     ],
 )
 def test_missing_or_oversized_source_member_fails_closed(
@@ -1078,7 +1097,7 @@ async def test_mid_swap_failure_restores_native_and_records_unknown_outcome(
     real_replace = portable_mod.os.replace
 
     def _fail_stage(source: Path, destination: Path) -> None:
-        if source.name.startswith(".yoetz.plugin-stage-") and destination.name == "yoetz":
+        if source.name.startswith(".yoetz.plugin-stage-") and destination.name == "finishup":
             raise OSError("injected")
         real_replace(source, destination)
 

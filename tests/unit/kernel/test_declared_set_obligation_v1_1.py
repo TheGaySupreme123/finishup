@@ -8,7 +8,7 @@ fires for a removed output but never for an input or a role-less item. No monkey
 from __future__ import annotations
 
 from builders.observed_runs import ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     DecisionRecordedPayload,
     EventSchema,
     ObligationPublishedPayload,
@@ -18,11 +18,11 @@ from yoetz.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
 )
-from yoetz.domain.values import actor_id, obligation_id
-from yoetz.kernel.delivered_set import declared_delivered_items, declared_output_removed
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.domain.values import actor_id, obligation_id
+from finishup.kernel.delivered_set import declared_delivered_items, declared_output_removed
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     RequestedOutputState,
     blocked_obligations,
     declared_output_items,
@@ -62,7 +62,7 @@ def _projection(*, block_second: bool = False) -> ProjectionState:
         ledger.append(
             EventSchema("decision_recorded", "1.0.0"),
             DecisionRecordedPayload(
-                statement="Blocked.\nyoetz-blocker:consent",
+                statement="Blocked.\nfinishup-blocker:consent",
                 rationale="The operator holds the consent.",
                 authority=actor_id("agt_codex"),
                 affected_obligation_ids=(_SECOND,),

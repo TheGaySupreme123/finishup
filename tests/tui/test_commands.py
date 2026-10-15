@@ -7,8 +7,8 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from builders.tui_runtime import RECOMMEND_PRIVATE, FakeRuntime
-from yoetz.tui.app import YoetzTui
-from yoetz.tui.models import (
+from finishup.tui.app import FinishUpTui
+from finishup.tui.models import (
     CheckMode,
     PrivacyPosture,
     ProviderOption,
@@ -19,7 +19,7 @@ from yoetz.tui.models import (
 pytestmark = pytest.mark.anyio
 
 WIDE = (100, 34)
-MakeApp = Callable[..., YoetzTui]
+MakeApp = Callable[..., FinishUpTui]
 
 
 @pytest.fixture
@@ -27,11 +27,11 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def transcript(app: YoetzTui) -> str:
+def transcript(app: FinishUpTui) -> str:
     return "\n".join("\n".join((event.title, *event.body)) for event in app.transcript.events)
 
 
-async def run_command(pilot: object, app: YoetzTui, command: str) -> None:
+async def run_command(pilot: object, app: FinishUpTui, command: str) -> None:
     app.composer.focus_input()
     app.composer.text = command
     await pilot.pause()  # type: ignore[attr-defined]
@@ -52,12 +52,14 @@ async def test_connection_handover_preserves_foreground_authority_and_continuati
 
     from textual.app import SuspendNotSupported
 
-    from yoetz.cli import host_connection
-    from yoetz.tui.models import HarnessOption
+    from finishup.cli import host_connection
+    from finishup.tui.models import HarnessOption
 
     app = make_app()
     plan = SimpleNamespace(unchanged=False)
-    continuation = "/opt/test-instance/bin/yoetz setup disconnect --host claude --project /project"
+    continuation = (
+        "/opt/test-instance/bin/finishup setup disconnect --host claude --project /project"
+    )
 
     def select(*_args: object) -> object:
         return object()
@@ -103,6 +105,118 @@ async def test_connection_handover_preserves_foreground_authority_and_continuati
             assert continuation in transcript(app)
 
 
+@pytest.mark.parametrize("disconnect", [False, True], ids=["connect", "disconnect"])
+async def test_connecting_a_host_names_a_runtime_that_cannot_serve_this_account(
+    make_app: MakeApp, monkeypatch: pytest.MonkeyPatch, disconnect: bool
+) -> None:
+    """``/connect`` and first-run used to connect anyway; every launch would then be refused.
+    Disconnect stays open."""
+
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from finishup.adapters import release_runtime
+    from finishup.cli import host_connection
+    from finishup.tui.models import HarnessOption
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+    plan = SimpleNamespace(unchanged=False, body={"action": "disconnect"})
+    prepared: list[bool] = []
+
+    def prepare(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        prepared.append(True)
+        return plan
+
+    def apply(*_args: object) -> dict[str, object]:
+        return {}
+
+    def summary(_plan: object) -> tuple[str, ...]:
+        return ("Preview",)
+
+    def select(*_args: object) -> object:
+        return object()
+
+    monkeypatch.setattr(host_connection, "select_installation", select)
+    monkeypatch.setattr(host_connection, "prepare_selected", prepare)
+    monkeypatch.setattr(host_connection, "connection_summary", summary)
+    monkeypatch.setattr(host_connection, "apply_selected", apply)
+    app = make_app()
+
+    async def approve(_view: object) -> str:
+        return "apply"
+
+    monkeypatch.setattr(app, "ask", approve)
+    option = HarnessOption(str(Path("/opt/claude")), "2.1.0", "Claude", "", host="claude")
+    async with app.run_test(size=WIDE):
+        result = await app._connect_selected_host(option, disconnect=disconnect)  # pyright: ignore[reportPrivateUsage]
+    if disconnect:
+        assert result is True and prepared == [True]
+    else:
+        assert result is False and prepared == []
+        shown = transcript(app)
+        assert "FinishUP cannot run from this installation for this account" in shown
+        assert "must belong to the account running FinishUP" in shown
+
+
+async def test_a_disconnect_that_keeps_unconfirmed_shared_pieces_shows_the_way_out(
+    make_app: MakeApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Yoetz-era Cursor plugin folder found without a record stays on an ordinary disconnect.
+    ``/disconnect`` offers no home-wide removal of its own; it says the pieces were kept and shows
+    the exact ``--remove-shared`` command (#1073, cursor-integration.md)."""
+
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.cli import host_connection
+    from finishup.tui.models import HarnessOption
+
+    installation = HostInstallation(
+        "cursor-ide", Path("/opt/cursor"), "3.17.8", Path("/workspace/.cursor"), "Cursor"
+    )
+    plan = SimpleNamespace(unchanged=False, body={"action": "disconnect"})
+
+    def select(*_args: object) -> HostInstallation:
+        return installation
+
+    def prepare(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return plan
+
+    def summary(_plan: object) -> tuple[str, ...]:
+        return ("Preview",)
+
+    def apply(*_args: object) -> dict[str, object]:
+        return {"configured": False, "membership_unknown": True, "connected_projects": []}
+
+    async def handover(operation: Callable[[], Awaitable[object]]) -> object:
+        return await operation()
+
+    monkeypatch.setattr(host_connection, "select_installation", select)
+    monkeypatch.setattr(host_connection, "prepare_selected", prepare)
+    monkeypatch.setattr(host_connection, "connection_summary", summary)
+    monkeypatch.setattr(host_connection, "apply_selected", apply)
+    app = make_app()
+
+    async def approve(_view: object) -> str:
+        return "apply"
+
+    monkeypatch.setattr(app, "ask", approve)
+    monkeypatch.setattr(app, "hand_over_terminal", handover)
+    option = HarnessOption("/opt/cursor", "3.17.8", "Cursor", "", host="cursor-ide")
+    async with app.run_test(size=WIDE):
+        result = await app._connect_selected_host(option, disconnect=True)  # pyright: ignore[reportPrivateUsage]
+    assert result is True
+    shown = transcript(app)
+    assert "Integration removed from this project; shared pieces kept" in shown
+    assert "--remove-shared" in shown
+    assert "setup disconnect --host cursor-ide --host-path /opt/cursor" in shown
+
+
 # ---------------------------------------------------------------------------
 # Landing surface
 # ---------------------------------------------------------------------------
@@ -115,7 +229,7 @@ async def test_the_post_install_landing_is_a_header_a_tip_and_a_composer(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         assert app.open_view is None
-        assert "Ask Codex to use Yoetz" in transcript(app)
+        assert "Ask Codex to use FinishUP" in transcript(app)
         assert app.composer.display is True
         # No dashboard, sidebar, or permanent settings screen exists to find.
         assert app.query("#sidebar").__len__() == 0
@@ -153,7 +267,7 @@ async def test_the_popup_narrows_as_the_command_is_typed(make_app: MakeApp) -> N
 async def test_popup_selection_preserves_the_typed_argument_suffix(
     make_app: MakeApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.tui.widgets.composer import CommandSubmitted
+    from finishup.tui.widgets.composer import CommandSubmitted
 
     app = make_app()
     async with app.run_test(size=WIDE) as pilot:
@@ -198,7 +312,7 @@ async def test_an_unknown_command_is_reported_rather_than_guessed(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/nonsense")
-        assert "not a Yoetz command" in transcript(app)
+        assert "not a FinishUP command" in transcript(app)
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +328,7 @@ async def test_status_renders_each_readiness_layer_and_the_privacy_claim(
         await pilot.pause()
         await run_command(pilot, app, "/status")
         text = transcript(app)
-        assert "Yoetz status" in text
+        assert "FinishUP status" in text
         assert "Nothing is leaving this computer." in text
         # Technical details keep every layer separate.
         event = app.transcript.latest_with_details()
@@ -245,7 +359,7 @@ async def test_status_does_not_claim_privacy_it_could_not_read(
 async def test_help_lists_every_command_with_a_plain_language_description(
     make_app: MakeApp,
 ) -> None:
-    from yoetz.tui.commands import SLASH_COMMANDS
+    from finishup.tui.commands import SLASH_COMMANDS
 
     app = make_app()
     async with app.run_test(size=WIDE) as pilot:
@@ -389,7 +503,7 @@ async def test_the_provider_picker_is_searchable_over_the_reviewed_presets(
         assert "OpenAI" in labels
         assert "Codex subscription status" in labels
         assert "Disconnect dedicated Codex home" in labels
-        assert "Roll back Yoetz Codex binding" in labels
+        assert "Roll back FinishUP Codex binding" in labels
         assert "Switch Codex ChatGPT account" in labels
         view.filter("anthro")  # type: ignore[attr-defined]
         assert [option.label for option in view.options] == ["Anthropic"]  # type: ignore[attr-defined]
@@ -593,7 +707,7 @@ async def test_provider_switch_preserves_existing_subscription_model_when_omitte
     runtime = FakeRuntime()
     runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
         "/opt/codex/codex",
-        "/var/lib/yoetz/codex-home",
+        "/var/lib/finishup/codex-home",
         "gpt-5.6-sol",
         "high",
     )
@@ -617,12 +731,86 @@ async def test_provider_switch_preserves_existing_subscription_model_when_omitte
     assert runtime.subscription_setups == [
         (
             "/opt/codex/codex",
-            "/var/lib/yoetz/codex-home",
+            "/var/lib/finishup/codex-home",
             "gpt-5.6-sol",
             "high",
             True,
         )
     ]
+
+
+async def test_provider_offers_the_suggested_codex_model_and_marks_it_as_a_suggestion(
+    make_app: MakeApp,
+) -> None:
+    runtime = FakeRuntime()
+    runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
+        "/opt/codex/codex",
+        "/var/lib/finishup/codex-home",
+        "gpt-6.1-sol",
+        "medium",
+    )
+    app = make_app(runtime=runtime)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await run_command(pilot, app, "/provider")
+        view = app.open_view
+        assert view is not None
+        view.filter("switch")  # type: ignore[attr-defined]
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in range(5):  # three entries, final and routine effort
+            await pilot.press("enter")
+            await pilot.pause()
+        view = app.open_view
+        assert view is not None
+        body = " ".join(getattr(view, "body", ()) or getattr(view, "_body", ()))
+        assert "gpt-6.1-sol (suggested; gpt-6-luna if this codex does not list it)" in (
+            body.casefold()
+        )
+        await pilot.press("up")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert [item[2:4] for item in runtime.subscription_setups] == [("gpt-6.1-sol", "medium")]
+    assert runtime.subscription_model_suggestions == [True]
+
+
+async def test_provider_promises_no_fallback_to_an_existing_binding_on_the_suggested_model(
+    make_app: MakeApp,
+) -> None:
+    # An existing binding keeps its model exactly; only a new binding's suggestion can fall back.
+    runtime = FakeRuntime()
+    runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
+        "/opt/codex/codex",
+        "/var/lib/finishup/codex-home",
+        "gpt-6.1-sol",
+        "medium",
+    )
+    runtime.subscription_model_is_suggested = False
+    app = make_app(runtime=runtime)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await run_command(pilot, app, "/provider")
+        view = app.open_view
+        assert view is not None
+        view.filter("switch")  # type: ignore[attr-defined]
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in range(5):  # three entries, final and routine effort
+            await pilot.press("enter")
+            await pilot.pause()
+        view = app.open_view
+        assert view is not None
+        body = " ".join(getattr(view, "body", ()) or getattr(view, "_body", ()))
+        assert "model: gpt-6.1-sol" in body.casefold()
+        assert "suggested" not in body.casefold()
+        await pilot.press("up")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runtime.subscription_model_suggestions == [False]
 
 
 async def test_provider_discloses_and_reports_a_reused_codex_login(make_app: MakeApp) -> None:
@@ -809,7 +997,8 @@ async def test_findings_command_lists_each_item_with_its_state(make_app: MakeApp
 
 
 async def test_receipt_offers_the_supported_formats(make_app: MakeApp) -> None:
-    app = make_app()
+    runtime = FakeRuntime()
+    app = make_app(runtime=runtime)
     app._active_task_title = "upload"  # pyright: ignore[reportPrivateUsage]
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
@@ -820,7 +1009,40 @@ async def test_receipt_offers_the_supported_formats(make_app: MakeApp) -> None:
         assert labels == ["Markdown", "Plain text", "JSON"]
         await pilot.press("enter")
         await pilot.pause()
+        # Every receipt is the agents' view unless the owner asks for theirs (ADR-009).
+        audience = app.open_view
+        assert audience is not None
+        labels = [option.label for option in audience.options]  # type: ignore[attr-defined]
+        assert labels == ["The receipt your agents see", "Your full receipt"]
+        await pilot.press("enter")
+        await pilot.pause()
         assert "Receipt for upload" in transcript(app)
+    assert runtime.receipts == [("upload", "markdown", False)]
+
+
+async def test_your_full_receipt_asks_before_handing_over_the_terminal(
+    make_app: MakeApp,
+) -> None:
+    runtime = FakeRuntime()
+    app = make_app(runtime=runtime)
+    app._active_task_title = "upload"  # pyright: ignore[reportPrivateUsage]
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await run_command(pilot, app, "/receipt")
+        await pilot.press("enter")  # Markdown
+        await pilot.pause()
+        await pilot.press("down", "enter")  # Your full receipt
+        await pilot.pause()
+        confirm = app.open_view
+        assert confirm is not None
+        assert confirm.view_name == "confidential"
+        body = "\n".join(confirm._body)  # type: ignore[attr-defined]
+        assert "Touch ID or your login password" in body
+        assert runtime.receipts == []  # nothing runs before the owner continues
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "Receipt for upload" in transcript(app)
+    assert runtime.receipts == [("upload", "markdown", True)]
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +1068,54 @@ async def test_connect_offers_inspection_before_any_mutation(make_app: MakeApp) 
         await pilot.press("enter")  # inspect
         await pilot.pause()
         assert runtime.applied == []
+
+
+@pytest.mark.parametrize("connected", [True, False])
+async def test_connect_for_claude_code_or_cursor_sets_up_the_review_answer(
+    make_app: MakeApp, connected: bool
+) -> None:
+    """ADR-049 review round 1 (P2-5): /connect asked the three answers, then dropped them.
+
+    After a successful policy-route connection the answer runs exactly as first-run setup runs
+    it; a connection that did not complete sets nothing up.
+    """
+
+    from finishup.tui.models import HarnessOption
+
+    claude = HarnessOption(
+        executable_path="/usr/local/bin/claude",
+        reported_version="2.0",
+        label="Claude Code 2.0",
+        description="Command-line installation",
+        host="claude",
+    )
+    app = make_app(runtime=FakeRuntime(harnesses=(claude,)))
+    calls: list[tuple[object, ...]] = []
+
+    async def choose(_harnesses: object) -> HarnessOption:
+        return claude
+
+    async def ask_review() -> str:
+        return "agent_opt_in"
+
+    async def connect(option: HarnessOption, *, route: str = "strict", **_: object) -> bool:
+        calls.append(("connect", option.host, route))
+        return connected
+
+    async def initial(choice: str, *, connected: bool, **_: object) -> None:
+        calls.append(("review", choice, connected))
+
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        setattr(app, "_choose_harness", choose)
+        setattr(app, "_ask_review_mode", ask_review)
+        setattr(app, "_connect_selected_host", connect)
+        setattr(app, "_run_initial_review", initial)
+        await app.command_connect()
+    expected: list[tuple[object, ...]] = [("connect", "claude", "policy")]
+    if connected:
+        expected.append(("review", "agent_opt_in", True))
+    assert calls == expected
 
 
 async def test_connect_without_a_harness_points_at_local_verification(
@@ -908,7 +1178,7 @@ async def test_service_rotate_uses_the_same_confidential_handoff(
         view = app.open_view
         assert view is not None
         assert view.view_name == "confidential"
-        assert view.title_text == "Change your Yoetz passphrase"
+        assert view.title_text == "Change your FinishUP passphrase"
         await pilot.press("enter")
         await pilot.pause()
         assert runtime.ceremonies == ["rotate_vault_passphrase"]
@@ -928,8 +1198,8 @@ async def test_the_transcript_gets_the_space_and_the_composer_stays_one_line(
     a single composer line and a one-line footer beneath it.
     """
 
-    from yoetz.tui.widgets.composer import Composer, Footer
-    from yoetz.tui.widgets.history import History
+    from finishup.tui.widgets.composer import Composer, Footer
+    from finishup.tui.widgets.history import History
 
     app = make_app()
     async with app.run_test(size=(100, 30)) as pilot:
@@ -951,7 +1221,7 @@ async def test_a_temporary_view_replaces_the_composer_and_then_restores_it(
 ) -> None:
     """Opening a view must not cost the user the line they were writing."""
 
-    from yoetz.tui.widgets.views import Option, SelectionView
+    from finishup.tui.widgets.views import Option, SelectionView
 
     app = make_app()
     async with app.run_test(size=(100, 30)) as pilot:

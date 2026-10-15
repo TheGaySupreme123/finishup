@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast, overload
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionRecordedPayload,
     AssignmentRecordedPayload,
     ClaimRecordedPayload,
@@ -20,8 +20,8 @@ from yoetz.domain.events import (
     ResultRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.findings import Finding
-from yoetz.domain.values import (
+from finishup.domain.findings import Finding
+from finishup.domain.values import (
     ActionId,
     ClaimId,
     EventId,
@@ -38,13 +38,13 @@ from yoetz.domain.values import (
     obligation_id,
     result_id,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     CaseGap,
     DeterministicCase,
     FindingBasisRef,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     ClaimProjectionRecord,
     ContradictionKey,
     ContradictionRecord,
@@ -57,8 +57,8 @@ from yoetz.kernel.projections import (
     ProjectionState,
     StandingPosition,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,

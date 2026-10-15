@@ -1,10 +1,10 @@
-"""A publish result's yoetz-blocker challenge reaches the model as fixed text (#985, C2b/C3)."""
+"""A publish result's finishup-blocker challenge reaches the model as fixed text (#985, C2b/C3)."""
 
 from __future__ import annotations
 
-from yoetz.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
-from yoetz.mcp.summaries import render_publish_blocker_notices
-from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
+from finishup.mcp.summaries import render_publish_blocker_notices
+from finishup.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
 
 _OBLIGATION = "obl_98500000-0000-4000-8000-000000000001"
 _FINISHED = "obl_98500000-0000-4000-8000-000000000002"
@@ -28,12 +28,14 @@ def _wire(*rows: dict[str, str]) -> dict[str, object]:
     }
 
 
-def test_the_challenge_is_repair_first_and_never_invites_a_yoetz_limit_blocker() -> None:
+def test_the_challenge_is_repair_first_and_never_invites_a_finishup_limit_blocker() -> None:
     claimed = PUBLISH_BLOCKER_NOTICE_TEXTS["blocker_claimed"]
     assert claimed.index("Repair the obligation first") < claimed.index("respond self_verified")
-    assert "A Yoetz limit (something Yoetz cannot show or prove) is never a blocker" in claimed
+    assert (
+        "A FinishUP limit (something FinishUP cannot show or prove) is never a blocker" in claimed
+    )
     assert "the task says is recoverable or achievable is not a blocker" in claimed
-    assert "publish the same yoetz-blocker line for it again in a later" in claimed
+    assert "publish the same finishup-blocker line for it again in a later" in claimed
     assert "acknowledged_not_done" not in claimed
     without = PUBLISH_BLOCKER_NOTICE_TEXTS["blocker_without_effect"]
     assert "no effect" in without
@@ -76,10 +78,10 @@ def test_no_pre_claim_text_tells_the_agent_how_to_confirm_a_blocker() -> None:
 
     from pathlib import Path
 
-    from yoetz.domain.findings import FindingKind
-    from yoetz.kernel.deterministic_checks import DETERMINISTIC_FINDING_TEMPLATES
+    from finishup.domain.findings import FindingKind
+    from finishup.kernel.deterministic_checks import DETERMINISTIC_FINDING_TEMPLATES
 
-    recipes = ("same yoetz-blocker line", "same line for it again", "again in a later")
+    recipes = ("same finishup-blocker line", "same line for it again", "again in a later")
     root = Path(__file__).resolve().parents[3]
     texts = {
         "requested_item_never_attempted": DETERMINISTIC_FINDING_TEMPLATES[
@@ -89,7 +91,7 @@ def test_no_pre_claim_text_tells_the_agent_how_to_confirm_a_blocker() -> None:
             str(path.relative_to(root)): path.read_text(encoding="utf-8")
             for path in (
                 *sorted((root / "guidance").glob("*.md")),
-                *sorted((root / "skills").glob("*/yoetz/SKILL.md")),
+                *sorted((root / "skills").glob("*/finishup/SKILL.md")),
             )
         },
     }

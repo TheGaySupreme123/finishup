@@ -11,9 +11,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import cast
 
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.mcp.descriptors import descriptor_for
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.schemas import validate_schema_instance
 
 _STATEMENT = "Under Ascii, Style.Truncate returns plain text without tail."
 

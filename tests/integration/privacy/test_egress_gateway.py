@@ -18,25 +18,25 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from yoetz.adapters.privacy.gateway import (
+from finishup.adapters.privacy.gateway import (
     PolicyEnforcingOutboundGateway,
     _with_policy_digest,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.adapters.providers.factory import external_factory_builders_from_config
-from yoetz.adapters.providers.fake import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.adapters.providers.factory import external_factory_builders_from_config
+from finishup.adapters.providers.fake import (
     FakeSemanticScript,
     ScriptedFakeSemanticEvaluator,
     scripted_success,
 )
-from yoetz.adapters.providers.local_model import (
+from finishup.adapters.providers.local_model import (
     InstalledLocalModelProfileRegistry,
     LocalModelEndpointProfile,
 )
-from yoetz.adapters.providers.openai_responses_factory import provider_binding_from_config
-from yoetz.config.write import anthropic_provider
-from yoetz.domain.findings import RuntimeAttemptEvidence, SamplingParams, SemanticFailureClass
-from yoetz.domain.privacy import (
+from finishup.adapters.providers.openai_responses_factory import provider_binding_from_config
+from finishup.config.write import anthropic_provider
+from finishup.domain.findings import RuntimeAttemptEvidence, SamplingParams, SemanticFailureClass
+from finishup.domain.privacy import (
     ApprovedLocalDisclosureCase,
     ApprovedOutboundCase,
     AuthorizationScope,
@@ -57,16 +57,16 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.observability.privacy import privacy_request_commitment
-from yoetz.ports.privacy import (
+from finishup.observability.privacy import privacy_request_commitment
+from finishup.ports.privacy import (
     ConsumedAuthorization,
     ConsumedLocalDisclosure,
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
     ProviderReconciliation,
 )
-from yoetz.ports.secret_memory import ProviderAttemptAuthBinding
-from yoetz.ports.semantic import (
+from finishup.ports.secret_memory import ProviderAttemptAuthBinding
+from finishup.ports.semantic import (
     Deadline,
     ExternalRuntimeAuthority,
     ProviderAttemptProvenance,
@@ -75,9 +75,9 @@ from yoetz.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import SemanticStatus
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import SemanticStatus
 
 _INSTALLATION = "ins_60000000-0000-4000-8000-000000000001"
 _TASK = "tsk_60000000-0000-4000-8000-000000000002"
@@ -520,7 +520,7 @@ def _case(
         request_id=_REQUEST,
         payload=payload,
         media_type="application/json",
-        schema_id="yoetz.outbound-case-payload",
+        schema_id="finishup.outbound-case-payload",
         included_item_ids=("item-1",),
         approved_categories=(DataCategory.TASK_DESCRIPTION,),
         blocked_categories=(),
@@ -1284,7 +1284,7 @@ def test_preconsume_refusal_records_the_closed_reason_as_owner_diagnostic(
 ) -> None:
     """A pre-dispatch refusal is publicly `unavailable`; the owner diagnostic names the reason."""
 
-    import yoetz.adapters.privacy.gateway as gateway_module
+    import finishup.adapters.privacy.gateway as gateway_module
 
     recorded: list[dict[str, object]] = []
 

@@ -11,7 +11,7 @@ from typing import cast
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     DecisionRecordedPayload,
     DeliverableState,
     EventSchema,
@@ -21,10 +21,10 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.values import ObligationId, actor_id, event_id, obligation_id
-from yoetz.kernel import delivered_set
-from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
-from yoetz.kernel.delivered_set import (
+from finishup.domain.values import ObligationId, actor_id, event_id, obligation_id
+from finishup.kernel import delivered_set
+from finishup.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+from finishup.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
@@ -36,9 +36,9 @@ from yoetz.kernel.delivered_set import (
     deliverable_lineage,
     emptied_declared_items,
 )
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
     STANDING_TASK_FACT_GAPS,
     STOP_GATE_TOKENS,
@@ -46,7 +46,7 @@ from yoetz.kernel.task_facts import (
     deliverable_path_identity,
     register_command_identity_key,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 
@@ -73,7 +73,7 @@ def _projection(*items: RequestedItem, blocker: bool = False) -> ProjectionState
         ledger.append(
             EventSchema("decision_recorded", "1.0.0"),
             DecisionRecordedPayload(
-                statement="Blocked.\nyoetz-blocker:consent",
+                statement="Blocked.\nfinishup-blocker:consent",
                 rationale="The operator holds the consent.",
                 authority=actor_id("agt_codex"),
                 affected_obligation_ids=(_OBLIGATION,),
@@ -244,7 +244,7 @@ def test_input_role_is_ignored_and_directory_counts(monkeypatch: pytest.MonkeyPa
 def test_check_reports_the_gap_beside_requested_output_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.application import check, check_change
+    from finishup.application import check, check_change
 
     projection = _projection(_file("/app/harmony.musicxml"), _file("/app/missing.txt"))
 
@@ -273,8 +273,8 @@ def test_check_reports_the_gap_beside_requested_output_facts(
 def test_a_new_deliverable_written_in_the_session_and_now_gone_is_removed() -> None:
     """tb4n1 music-harmony: harmony.musicxml was a new file, written, then moved out of /app."""
 
-    from yoetz.domain.events import ActionKind, ActionRecordedPayload
-    from yoetz.domain.values import action_id
+    from finishup.domain.events import ActionKind, ActionRecordedPayload
+    from finishup.domain.values import action_id
 
     ledger = ObservedLedger()
     ledger.append(
@@ -309,7 +309,7 @@ def test_a_new_deliverable_written_in_the_session_and_now_gone_is_removed() -> N
     assert declared_output_removed(projection, {(_OBLIGATION, 0): never_tracked}) == (_OBLIGATION,)
 
     # The check reports it once, as removed, not also as an absent output (round-3 review).
-    from yoetz.application import check, check_change
+    from finishup.application import check, check_change
 
     async def states(**_kwargs: object) -> dict[tuple[ObligationId, int], RequestedOutputState]:
         return {(_OBLIGATION, 0): never_tracked}
@@ -398,7 +398,7 @@ def test_content_moved_skips_role_less_and_blocked_items(monkeypatch: pytest.Mon
 
 
 def test_check_adds_content_moved_as_a_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
-    from yoetz.application import check, check_change
+    from finishup.application import check, check_change
 
     projection = _projection(_file("/app/cracker.py"))
 
@@ -420,7 +420,7 @@ def test_check_adds_content_moved_as_a_disclosure(monkeypatch: pytest.MonkeyPatc
 
 
 def test_content_moved_never_fires_the_stop_gate_and_is_noted_when_it_fires() -> None:
-    from yoetz.cli.closure_gate import closure_gate_from_readiness
+    from finishup.cli.closure_gate import closure_gate_from_readiness
 
     def readiness(state: str, actionable: tuple[str, ...]) -> SimpleNamespace:
         return SimpleNamespace(
@@ -454,9 +454,9 @@ def test_content_moved_never_fires_the_stop_gate_and_is_noted_when_it_fires() ->
 
 
 def test_undeclared_reference_inputs_pick_existing_declared_files() -> None:
-    from yoetz.domain.events import RequestedItemRole
-    from yoetz.kernel.delivered_set import undeclared_reference_inputs
-    from yoetz.kernel.task_facts import (
+    from finishup.domain.events import RequestedItemRole
+    from finishup.kernel.delivered_set import undeclared_reference_inputs
+    from finishup.kernel.task_facts import (
         DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
         STANDING_TASK_FACT_GAPS,
     )
@@ -512,9 +512,9 @@ def test_check_adds_undeclared_reference_and_names_it_on_the_deliverable_state(
     """tb4n4 (#1044): the fact is raised and the referencing deliverable's recorded state names
     the undeclared files (sorted, bounded), which is what the receipt and the Stop gate print."""
 
-    from yoetz.application import check, check_change
-    from yoetz.kernel.delivered_set import undeclared_reference_rows
-    from yoetz.kernel.task_facts import DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
+    from finishup.application import check, check_change
+    from finishup.kernel.delivered_set import undeclared_reference_rows
+    from finishup.kernel.task_facts import DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
 
     projection = _projection(_file("/app/cracker.py"))
 
@@ -550,9 +550,33 @@ def test_check_adds_undeclared_reference_and_names_it_on_the_deliverable_state(
     assert state.undeclared_references == ("english_ngrams.npz", "english_words.npz")
     assert state.undeclared_reference_count == 3
     assert DeliverableState.from_wire(state.as_wire()) == state
+    assert state.undeclared_reference_ambiguous is None
     assert undeclared_reference_rows(recorded) == (
         (str(_OBLIGATION), 0, ("english_ngrams.npz", "english_words.npz"), 3),
     )
+
+
+def test_an_ambiguous_count_is_recorded_and_disclosed_never_a_name() -> None:
+    """tb4n5 (the #1044 follow-up, ADR-035 amendment): files a deliverable names only by an
+    ambiguous basename are counted on its state and disclosed with that count; never named."""
+
+    from finishup.application import check
+    from finishup.application.check_change import UndeclaredReferenceRead
+    from finishup.kernel.delivered_set import ambiguous_reference_count
+
+    states = (DeliverableState(_OBLIGATION, 0),)
+    files = ((_OBLIGATION, 0, "solve.py"),)
+    enrich = check._with_undeclared_references  # pyright: ignore[reportPrivateUsage]
+
+    (state,) = enrich(states, files, (), ambiguous=(("solve.py", 18),))
+    assert state.undeclared_reference_ambiguous == 18
+    assert state.undeclared_references == ()
+    assert state.as_wire()["undeclared_reference_ambiguous"] == 18
+    assert DeliverableState.from_wire(state.as_wire()) == state
+    assert ambiguous_reference_count((state, state)) == 18  # one keyed path, counted once
+    assert UndeclaredReferenceRead().pairs == ()
+    with pytest.raises(ProtocolValueError):
+        DeliverableState(_OBLIGATION, 0, undeclared_reference_ambiguous=0)
 
 
 def test_a_recorded_undeclared_reference_is_a_plain_bounded_path() -> None:
@@ -577,7 +601,7 @@ def _resolved_projection(
     status: ObligationStatus = ObligationStatus.RESOLVED,
     assumption: bool = False,
 ) -> ProjectionState:
-    from yoetz.domain.values import evidence_id
+    from finishup.domain.values import evidence_id
 
     ledger = ObservedLedger()
     ledger.append(
@@ -613,7 +637,7 @@ def _resolved_projection(
         ledger.append(
             EventSchema("decision_recorded", "1.0.0"),
             DecisionRecordedPayload(
-                statement=f"The task asks for an empty file.\nyoetz-assumption:{_OBLIGATION}",
+                statement=f"The task asks for an empty file.\nfinishup-assumption:{_OBLIGATION}",
                 rationale="The task statement says the file must be empty.",
                 authority=actor_id("agt_codex"),
             ),
@@ -725,9 +749,9 @@ def test_check_adds_emptied_and_every_stop_voices_it_without_a_rider(
     it once, by key, instead of staying silent.
     """
 
-    from yoetz.application import check, check_change
-    from yoetz.cli.closure_gate import closure_gate_from_readiness
-    from yoetz.kernel.closure_readiness import ClosureReadinessFacts, derive_closure_readiness
+    from finishup.application import check, check_change
+    from finishup.cli.closure_gate import closure_gate_from_readiness
+    from finishup.kernel.closure_readiness import ClosureReadinessFacts, derive_closure_readiness
 
     projection = _resolved_projection(_file("/app/solve.sage"))
 
@@ -865,7 +889,7 @@ def _lifecycle(
     """One obligation declaring *path* moving through *statuses*, optionally a second "empty
     fallback" obligation (resolved) on the same path, optionally a decision."""
 
-    from yoetz.domain.values import evidence_id
+    from finishup.domain.values import evidence_id
 
     ledger = ObservedLedger()
     item = RequestedItem(RequestedItemKind.FILE, path)
@@ -920,7 +944,7 @@ def _lifecycle(
         ledger.append(
             EventSchema("decision_recorded", "1.0.0"),
             DecisionRecordedPayload(
-                statement=f"{decision}\nyoetz-assumption:{_OBLIGATION}",
+                statement=f"{decision}\nfinishup-assumption:{_OBLIGATION}",
                 rationale="The task allows an empty file.",
                 authority=actor_id("agt_codex"),
             ),
@@ -998,7 +1022,7 @@ def test_an_assumption_that_names_the_path_is_the_one_exit() -> None:
 
 
 def test_the_accepted_state_stays_on_the_record() -> None:
-    from yoetz.kernel.delivered_set import assess_deliverables
+    from finishup.kernel.delivered_set import assess_deliverables
 
     projection = _lifecycle(_OPEN, _RESOLVED, decision="/app/solve.sage may be empty.")
     assessment = assess_deliverables(
@@ -1038,7 +1062,7 @@ def test_an_unread_line_count_falls_back_to_a_tenth_of_the_bytes() -> None:
 def test_a_declared_file_gone_after_an_earlier_reading_is_removed() -> None:
     projection = _lifecycle(_OPEN, _RESOLVED)
     gone = {(_OBLIGATION, 0): RequestedOutputState("inside", exists=False, relative="solve.sage")}
-    from yoetz.kernel.delivered_set import removed_declared_items
+    from finishup.kernel.delivered_set import removed_declared_items
 
     assert removed_declared_items(projection, gone) == ()
     assert removed_declared_items(projection, gone, history=(_earlier("solve.sage"),)) == (
@@ -1113,8 +1137,8 @@ def test_a_removal_proved_only_by_a_published_edit_still_has_lineage() -> None:
     """A new file written in the session and gone before its first check: no earlier reading and
     no tracked deletion, but the removal is recorded and explained like the other routes."""
 
-    from yoetz.domain.events import ActionKind, ActionRecordedPayload
-    from yoetz.domain.values import action_id
+    from finishup.domain.events import ActionKind, ActionRecordedPayload
+    from finishup.domain.values import action_id
 
     ledger = ObservedLedger()
     ledger.append(

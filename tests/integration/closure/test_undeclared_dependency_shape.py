@@ -2,7 +2,7 @@
 
 The agent delivered ``artifacts/cracker.py``, which loaded ``english_ngrams.npz`` and
 ``english_words.npz`` from beside itself, and declared only the cracker and its
-``requirements.txt``. Yoetz's advice said "embed it, rebuild it at runtime, or disclose the
+``requirements.txt``. FinishUP's advice said "embed it, rebuild it at runtime, or disclose the
 dependency"; the agent disclosed it and verified the cracker itself. The grader received only the
 two declared files, the program printed nothing, and the reward was 0.
 
@@ -27,6 +27,13 @@ import pytest
 
 from builders.observed_runs import INSTALLATION_KEY
 from builders.start_application import protocol_id
+from finishup.application import check_change
+from finishup.cli.closure_gate import closure_gate_from_readiness
+from finishup.domain.task_fact_tokens import DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
+from finishup.kernel.delivered_set import undeclared_reference_inputs
+from finishup.kernel.task_facts import RequestedOutputState, register_command_identity_key
+from finishup.mcp.summaries import summary_for_status
+from finishup.protocol.models import ReceiptRequest
 from integration.application import test_respond_status_receipt as h
 from integration.closure.test_closure_shapes import (
     _INSUFFICIENT,
@@ -40,13 +47,6 @@ from integration.closure.test_closure_shapes import (
     assert_surfaces_agree,
     receipt_artifact_1_3_0,  # noqa: F401  # pyright: ignore[reportUnusedImport] - autouse fixture
 )
-from yoetz.application import check_change
-from yoetz.cli.closure_gate import closure_gate_from_readiness
-from yoetz.domain.task_fact_tokens import DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP
-from yoetz.kernel.delivered_set import undeclared_reference_inputs
-from yoetz.kernel.task_facts import RequestedOutputState, register_command_identity_key
-from yoetz.mcp.summaries import summary_for_status
-from yoetz.protocol.models import ReceiptRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -295,8 +295,8 @@ async def test_a_disclosure_does_not_clear_it_and_declaring_or_embedding_does(
                 {
                     "statement": (
                         "The cracker loads english_ngrams.npz and english_words.npz from its own"
-                        f" directory.\nyoetz-assumption:{_OBLIGATION}\n"
-                        f"yoetz-verification-limit:{_OBLIGATION}"
+                        f" directory.\nfinishup-assumption:{_OBLIGATION}\n"
+                        f"finishup-verification-limit:{_OBLIGATION}"
                     ),
                     "rationale": "Disclosing the model dependency of the cracker.",
                     "authority": "harness:codex",

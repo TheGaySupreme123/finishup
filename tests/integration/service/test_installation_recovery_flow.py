@@ -12,36 +12,36 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultError, EncryptedVaultStore
-from yoetz.adapters.keys.installation_recovery import (
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultError, EncryptedVaultStore
+from finishup.adapters.keys.installation_recovery import (
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
     unlock_installation_recovery_artifact,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.application.receipt import ReceiptInternalResult
-from yoetz.config.models import YoetzConfig
-from yoetz.domain.privacy import AuthorizationScope, AuthorizationScopeKind
-from yoetz.ports.control import ServiceState
-from yoetz.ports.keys import MacKeyPurpose
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
-from yoetz.protocol.models import CheckRequest, ReceiptRequest, StartRequest
-from yoetz.service.confidential_protocol import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.application.receipt import ReceiptInternalResult
+from finishup.config.models import FinishUpConfig
+from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind
+from finishup.ports.control import ServiceState
+from finishup.ports.keys import MacKeyPurpose
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
+from finishup.protocol.models import CheckRequest, ReceiptRequest, StartRequest
+from finishup.service.confidential_protocol import (
     ClientOpenEnvelope,
     HumanCeremonyKind,
     InstallationRecoveryTarget,
 )
-from yoetz.service.daemon import (
+from finishup.service.daemon import (
     _InstallationStateStore,
     _LockedHumanEffects,
     _PrivacyPolicyAppRelay,
 )
-from yoetz.service.installation_recovery import InstallationRecoverySetStore
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.ready_composition import build_ready_application_factory
-from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleStore
-from yoetz.service.vault import (
+from finishup.service.installation_recovery import InstallationRecoverySetStore
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.ready_composition import build_ready_application_factory
+from finishup.service.unlock import UnlockCoordinator, UnlockThrottleStore
+from finishup.service.vault import (
     VaultMode,
     VaultService,
     VaultState,
@@ -86,7 +86,7 @@ def private_test_root() -> Iterator[Path]:
     """Keep synthetic installation state outside pytest's shared temporary root."""
 
     with tempfile.TemporaryDirectory(
-        prefix=".yoetz-installation-recovery-",
+        prefix=".finishup-installation-recovery-",
         dir=Path.home(),
     ) as temporary:
         root = Path(temporary)
@@ -147,7 +147,7 @@ async def test_self_contained_clean_profile_restores_same_vault_authority(
     original_app = await build_ready_application_factory(
         lifecycle=original_lifecycle,
         vault=vault,
-        config=YoetzConfig(),
+        config=FinishUpConfig(),
         paths=_Paths(original_bundle, original_state),
         clock=clock,
         secret_memory=memory,
@@ -282,7 +282,7 @@ async def test_self_contained_clean_profile_restores_same_vault_authority(
     clean_app = await build_ready_application_factory(
         lifecycle=clean_lifecycle,
         vault=recovered_vault,
-        config=YoetzConfig(),
+        config=FinishUpConfig(),
         paths=_Paths(clean_bundle, clean_state),
         clock=clock,
         secret_memory=clean_memory,
@@ -389,7 +389,7 @@ async def test_self_contained_clean_profile_restores_same_vault_authority(
     reopened_app = await build_ready_application_factory(
         lifecycle=reopen_lifecycle,
         vault=reopened_vault,
-        config=YoetzConfig(),
+        config=FinishUpConfig(),
         paths=_Paths(clean_bundle, clean_state),
         clock=clock,
         secret_memory=reopened_memory,

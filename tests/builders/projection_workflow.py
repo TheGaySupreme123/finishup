@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, cast
 
-import yoetz.service.ready_composition as ready_composition
+import finishup.service.ready_composition as ready_composition
 from builders.ledger_adapters import MemoryObjects, ownership_fence
 from builders.review_manifests import provider_bound_manifest
 from builders.start_application import (
@@ -33,15 +33,15 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.adapters.memory.privacy import (
+from finishup.adapters.memory.privacy import (
     MemoryPrivacyAudit,
     MemoryPrivacyCatalogState,
     MemoryPrivacyPolicyStore,
 )
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import (
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
@@ -49,29 +49,29 @@ from yoetz.application.service import (
     UnprojectedControlBody,
     VerificationPolicy,
 )
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.findings import SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.privacy import (
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.findings import SemanticDispatchKind, SemanticProvenance
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     PrivacyPolicy,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.semantic import SamplingParams, SemanticJudgment
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.ports.semantic import SamplingParams, SemanticJudgment
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
@@ -139,7 +139,7 @@ class _IdleImporter:
     async def status(self, session: str) -> ImportStatusSnapshot:
         """Return an empty importer snapshot for the requested session."""
 
-        from yoetz.domain.values import session_id
+        from finishup.domain.values import session_id
 
         return ImportStatusSnapshot(session_id(session), 0, 0, (), ())
 
@@ -184,7 +184,7 @@ def _versions() -> ReceiptVersionSlice:
     """Return a stable version slice for local disclosure receipts."""
 
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -303,8 +303,13 @@ async def build_projection_application(
     *,
     seed: int = 1400,
     max_findings: int = 3,
+    policy_transform: Callable[[PrivacyPolicy], PrivacyPolicy] | None = None,
 ) -> tuple[Application, PrivacyPolicy]:
-    """A ready application whose disclosure boundary is the real coordinator and default policy."""
+    """A ready application whose disclosure boundary is the real coordinator and default policy.
+
+    ``policy_transform`` derives the seeded policy from the shipped default, for a test that needs
+    a different ceiling (an owner who granted ``repository_excerpt`` to the agent context).
+    """
 
     start_app, start_runtime, clock, catalog = start_composition()
     ids = start_runtime.ids
@@ -316,6 +321,8 @@ async def build_projection_application(
         policy_digest=PROJECTION_DIGEST,
         created_at=_NOW,
     )
+    if policy_transform is not None:
+        policy = policy_transform(policy)
     await policies.seed_if_absent(policy)
     audit = MemoryPrivacyAudit(
         privacy_state, cast(ObjectStorePort, MemoryObjects(ids)), StartTestLookup(), clock
@@ -388,9 +395,13 @@ class ProjectionWorkflow:
 
 
 async def project_case(
-    app: Application, case: ProjectionCase, seed: int
+    app: Application,
+    case: ProjectionCase,
+    seed: int,
+    *,
+    context: ClientProjectionContext | None = None,
 ) -> Mapping[str, JsonValue]:
-    """Run the daemon's exact post-commit projection for an MCP bridge client."""
+    """Run the daemon's exact post-commit projection, for an MCP bridge client by default."""
 
     facts = await app.projection_binding_facts(case.method, case.request_body, case.internal)
     rpc_id = protocol_id("rpc_", seed)
@@ -412,7 +423,8 @@ async def project_case(
         ),
     )
     projected = await app.project_result_for_client(
-        ClientProjectionContext(
+        context
+        or ClientProjectionContext(
             ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
         ),
         binding,

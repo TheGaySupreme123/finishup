@@ -9,26 +9,26 @@ from dataclasses import replace
 import pytest
 
 from builders.policy_cases import make_case, obl, plan_record
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     MAX_SEMANTIC_ITEM_BYTES,
     LineageSemanticCapacityExceeded,
     build_semantic_case,
 )
-from yoetz.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
-from yoetz.domain.events import PlanPublishedPayload
-from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import Frontier, event_id, finding_id, receipt_id, task_id
-from yoetz.kernel.lineage import (
+from finishup.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
+from finishup.domain.events import PlanPublishedPayload
+from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import Frontier, event_id, finding_id, receipt_id, task_id
+from finishup.kernel.lineage import (
     ChildDependencySnapshot,
     ChildFindingSnapshot,
     LineageEvaluation,
     LineageManifest,
     evaluate_lineage,
 )
-from yoetz.ports.semantic import SemanticCase, SemanticCaseItem
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.ports.semantic import SemanticCase, SemanticCaseItem
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 
 _DIGEST = "sha256:" + "1" * 64
 _FRONTIER = Frontier(3, _DIGEST)
@@ -169,7 +169,7 @@ def test_partition_is_deterministic_and_commits_the_manifest() -> None:
 
 
 def test_one_irreducible_child_is_a_capacity_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("yoetz.application.semantic_case.MAX_SEMANTIC_ITEM_BYTES", 32)
+    monkeypatch.setattr("finishup.application.semantic_case.MAX_SEMANTIC_ITEM_BYTES", 32)
     with pytest.raises(LineageSemanticCapacityExceeded, match="lineage_semantic_input_too_large"):
         _case(1)
 
@@ -193,7 +193,7 @@ def test_finding_heavy_allowed_fanout_is_a_typed_total_capacity_error() -> None:
 def test_total_capacity_includes_retained_parent_content(monkeypatch: pytest.MonkeyPatch) -> None:
     child_only = _case(1)
     boundary = sum(item.content_bytes for item in child_only.items)
-    monkeypatch.setattr("yoetz.application.semantic_case.MAX_SEMANTIC_CASE_BYTES", boundary)
+    monkeypatch.setattr("finishup.application.semantic_case.MAX_SEMANTIC_CASE_BYTES", boundary)
     assert _case(1) == child_only
     with pytest.raises(LineageSemanticCapacityExceeded, match="lineage_semantic_case_too_large"):
         _case(1, parent_plan=True)

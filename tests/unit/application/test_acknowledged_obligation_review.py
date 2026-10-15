@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from yoetz.application.publish_work import _event_invalid  # pyright: ignore[reportPrivateUsage]
-from yoetz.application.semantic_case import review_question_set
+from finishup.application.publish_work import _event_invalid  # pyright: ignore[reportPrivateUsage]
+from finishup.application.semantic_case import review_question_set
 
 _OBLIGATION = "obl_00000000-0000-4000-8000-000000000001"
 

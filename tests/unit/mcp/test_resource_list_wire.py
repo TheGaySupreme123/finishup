@@ -8,7 +8,7 @@ from typing import cast
 import anyio
 from mcp import types
 
-from yoetz.mcp import server as bridge
+from finishup.mcp import server as bridge
 
 
 def _floats(value: object) -> list[float]:

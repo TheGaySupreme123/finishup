@@ -16,12 +16,12 @@ from dataclasses import replace
 import pytest
 
 from builders.privacy_widenings import WIDENING_CASES
-from yoetz.application.privacy_policy import privacy_policy_changes
-from yoetz.cli.unlock import (
+from finishup.application.privacy_policy import privacy_policy_changes
+from finishup.cli.unlock import (
     HumanCeremonyCliError,
     _privacy_policy_change_text,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     PRIVACY_CHANGE_FIELDS,
     AuthorizationScope,
     AuthorizationScopeKind,
@@ -30,7 +30,7 @@ from yoetz.domain.privacy import (
     PrivacyPolicyChangeValue,
     sort_privacy_changes,
 )
-from yoetz.service.confidential_protocol import (
+from finishup.service.confidential_protocol import (
     PrivacyPolicyDecisionPreview,
     PrivacyPolicyTransitionPreviewMember,
 )
@@ -123,7 +123,7 @@ def test_every_field_the_wire_may_carry_has_a_fixed_label_and_a_group() -> None:
     Equality is asserted in both directions so neither can drift as either one grows.
     """
 
-    import yoetz.cli.unlock as module
+    import finishup.cli.unlock as module
 
     allowlisted = {
         (area, field) for area, fields in PRIVACY_CHANGE_FIELDS.items() for field in fields
@@ -156,7 +156,7 @@ def test_every_field_the_wire_may_carry_has_a_fixed_label_and_a_group() -> None:
 def test_a_field_the_screen_cannot_place_fails_closed_instead_of_disappearing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.unlock as module
+    import finishup.cli.unlock as module
 
     trimmed = tuple(
         (heading, tuple(member for member in members if member != ("global", "network_egress")))
@@ -184,7 +184,7 @@ def test_a_field_the_screen_cannot_place_fails_closed_instead_of_disappearing(
 
 
 def test_compound_approval_names_machine_ceiling_and_repository_insert_without_identity() -> None:
-    from yoetz.application.privacy_policy import private_repository_baseline
+    from finishup.application.privacy_policy import private_repository_baseline
 
     changes = (
         PrivacyPolicyChange(

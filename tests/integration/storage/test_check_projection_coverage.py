@@ -18,13 +18,8 @@ import pytest
 
 from builders.ledger_adapters import MemoryObjects
 from builders.replay import replay_records
-from integration.storage.test_append_and_replay import (
-    command_from_records,
-    file_sqlite_for,
-    uuid_id,
-)
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.events import (
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.events import (
     EventDraft,
     EventPayload,
     FindingRecordedPayload,
@@ -33,15 +28,15 @@ from yoetz.domain.events import (
     ResponseRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.findings import CheckVerdict, Finding, RankedFindings
-from yoetz.domain.values import (
+from finishup.domain.findings import CheckVerdict, Finding, RankedFindings
+from finishup.domain.values import (
     Frontier,
     event_id,
     finding_id,
     object_id,
     parse_rfc3339_millis,
 )
-from yoetz.ports.ledger import (
+from finishup.ports.ledger import (
     AppendCommand,
     AppendEntry,
     CheckCommitResult,
@@ -50,10 +45,15 @@ from yoetz.ports.ledger import (
     FrozenCase,
     OperationKind,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
-from yoetz.protocol.coverage import CheckType, Coverage
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
+from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.protocol.coverage import CheckType, Coverage
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from integration.storage.test_append_and_replay import (
+    command_from_records,
+    file_sqlite_for,
+    uuid_id,
+)
 
 
 @pytest.fixture
@@ -349,8 +349,8 @@ async def test_compact_status_names_the_latest_check_and_its_verdict(tmp_path: P
     frontier it examined and its closed verdict; a task that was never checked carries none.
     """
 
-    from yoetz.ports.ledger import ProjectionQuery
-    from yoetz.protocol.models import StatusCompactItemModel
+    from finishup.ports.ledger import ProjectionQuery
+    from finishup.protocol.models import StatusCompactItemModel
 
     records = replay_records("projection-rebuild")[:1]
     command, objects = command_from_records(records)

@@ -1,10 +1,10 @@
 """Oversized hook bodies keep their structural row on every host (tb4n1 B5, issue #667).
 
-tb4n1 lost 96 PostToolUse rows to the old 256 KiB ingress cap: 42 were Yoetz's own
+tb4n1 lost 96 PostToolUse rows to the old 256 KiB ingress cap: 42 were FinishUP's own
 ``closure_prepare`` replies (300 KB-1 MB), most of the rest image views (``view_image`` data URLs)
 and large ``cat`` outputs. Each loss left its pre-event unpaired. These tests pin the fix: a larger
 trusted cap, a skim up to ``MAX_HOOK_SKIM_BYTES`` for Codex and Claude Code as well as Cursor,
-image bytes dropped instead of the event, and no coverage gap for Yoetz's own tools.
+image bytes dropped instead of the event, and no coverage gap for FinishUP's own tools.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import hook_io
-from yoetz.cli.hook_io import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import hook_io
+from finishup.cli.hook_io import (
     MAX_HOOK_SKIM_BYTES,
     MAX_HOOK_STDIN_BYTES,
     OversizedHookPayloadError,
@@ -27,20 +27,20 @@ from yoetz.cli.hook_io import (
     read_hook_ingress,
     strip_hook_media,
 )
-from yoetz.cli.observe_hooks import (
+from finishup.cli.observe_hooks import (
+    finishup_mcp_tool,
     handle_claude_observe,
     handle_cursor_observe,
     handle_observe,
     handle_spool,
-    yoetz_mcp_tool,
 )
-from yoetz.domain.observation import ObservationGapCode, ObservationStatusQuery
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation import ObservationGapCode, ObservationStatusQuery
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
 
 _CONTENT_OMITTED = ObservationGapCode.PAYLOAD_CONTENT_OMITTED.value
 _TOO_LARGE = ObservationGapCode.PAYLOAD_TOO_LARGE.value
@@ -107,7 +107,7 @@ def test_a_closure_prepare_sized_body_is_now_a_full_parse() -> None:
     body = _encoded(
         {
             "hook_event_name": "PostToolUse",
-            "tool_name": "mcp__yoetz__closure_prepare",
+            "tool_name": "mcp__finishup__closure_prepare",
             "tool_response": cast(JsonValue, _closure_prepare_response(_CLOSURE_PREPARE_BYTES)),
         }
     )
@@ -157,7 +157,7 @@ def test_image_bytes_are_dropped_and_the_event_is_kept_whole() -> None:
     assert omitted is False
     response = cast(list[dict[str, JsonValue]], payload["tool_response"])
     assert response[0] == {"type": "input_text", "text": '{"crop":"headline"}'}
-    assert response[1]["image_url"] == "[media bytes omitted by Yoetz]"
+    assert response[1]["image_url"] == "[media bytes omitted by FinishUP]"
     assert response[1]["detail"] == "high"
     assert "iVBOR" not in json.dumps(payload)
 
@@ -219,7 +219,7 @@ def test_a_closure_prepare_dense_body_still_fits_the_budget() -> None:
     body = _encoded(
         {
             "session_id": "s",
-            "tool_name": "mcp__yoetz__closure_prepare",
+            "tool_name": "mcp__finishup__closure_prepare",
             "tool_response": {
                 "structuredContent": {"rows": rows},
                 "pad": "p" * MAX_HOOK_STDIN_BYTES,
@@ -228,7 +228,7 @@ def test_a_closure_prepare_dense_body_still_fits_the_budget() -> None:
     )
     payload, omitted = read_hook_ingress(body)
     assert omitted is True
-    assert payload["tool_name"] == "mcp__yoetz__closure_prepare"
+    assert payload["tool_name"] == "mcp__finishup__closure_prepare"
 
 
 def test_codex_structure_heavy_body_records_the_size_loss(tmp_path: Path) -> None:
@@ -278,7 +278,7 @@ def test_strip_hook_media_covers_each_host_image_shape(block: dict[str, JsonValu
         return
     assert omitted >= 1
     assert "A" * 300 not in text
-    assert "[media bytes omitted by Yoetz]" in text
+    assert "[media bytes omitted by FinishUP]" in text
 
 
 def test_strip_hook_media_leaves_text_and_small_values_untouched() -> None:
@@ -314,21 +314,21 @@ def test_cursor_skim_also_drops_image_bytes_first() -> None:
 @pytest.mark.parametrize(
     "name",
     [
-        "mcp__yoetz__closure_prepare",
-        "mcp__plugin_yoetz_yoetz__closure_prepare",
-        "yoetz:closure_prepare",
-        "plugin-yoetz-yoetz:closure_prepare",
-        "mcp__yoetz__status",
-        "mcp__plugin_yoetz_yoetz__check",
+        "mcp__finishup__closure_prepare",
+        "mcp__plugin_finishup_finishup__closure_prepare",
+        "finishup:closure_prepare",
+        "plugin-finishup-finishup:closure_prepare",
+        "mcp__finishup__status",
+        "mcp__plugin_finishup_finishup__check",
     ],
 )
-def test_every_yoetz_mcp_spelling_is_owned(name: str) -> None:
-    assert yoetz_mcp_tool(name)
+def test_every_finishup_mcp_spelling_is_owned(name: str) -> None:
+    assert finishup_mcp_tool(name)
 
 
 @pytest.mark.parametrize("name", ["MCP:closure_prepare", "mcp__other__closure", "Bash", None, 3])
 def test_unowned_or_unattributable_names_are_not(name: object) -> None:
-    assert not yoetz_mcp_tool(name)
+    assert not finishup_mcp_tool(name)
 
 
 # --- Codex --------------------------------------------------------------------------------------
@@ -342,7 +342,7 @@ def _codex(event: str, call: str, **extra: JsonValue) -> dict[str, JsonValue]:
         "cwd": "/workspace/project",
         "hook_event_name": event,
         "model": "gpt-5.3-codex",
-        "tool_name": "mcp__yoetz__closure_prepare",
+        "tool_name": "mcp__finishup__closure_prepare",
         "tool_input": {"selection": {"phase": "inventory"}},
         "tool_use_id": call,
     }
@@ -485,7 +485,7 @@ def test_claude_closure_prepare_reply_keeps_its_row_without_a_gap(
     store, workspace = _consented(tmp_path)
     common: dict[str, JsonValue] = {
         "session_id": "claude-b5",
-        "tool_name": "mcp__plugin_yoetz_yoetz__closure_prepare",
+        "tool_name": "mcp__plugin_finishup_finishup__closure_prepare",
         "tool_use_id": "toolu_cp",
         "tool_input": {"selection": {"phase": "inventory"}},
     }
@@ -587,9 +587,9 @@ def _cursor_pass(tmp_path: Path, event: str, payload: dict[str, JsonValue]) -> N
 @pytest.mark.parametrize(
     ("tool_name", "size", "gap"),
     [
-        ("yoetz:closure_prepare", _CLOSURE_PREPARE_BYTES, False),
-        ("plugin-yoetz-yoetz:closure_prepare", 2 * MAX_HOOK_STDIN_BYTES, False),
-        # Cursor's generic spelling names no server, so Yoetz cannot claim the call.
+        ("finishup:closure_prepare", _CLOSURE_PREPARE_BYTES, False),
+        ("plugin-finishup-finishup:closure_prepare", 2 * MAX_HOOK_STDIN_BYTES, False),
+        # Cursor's generic spelling names no server, so FinishUP cannot claim the call.
         ("MCP:closure_prepare", 2 * MAX_HOOK_STDIN_BYTES, True),
     ],
 )
@@ -625,10 +625,11 @@ def test_hook_io_stays_a_leaf_module() -> None:
         module
         for value in vars(hook_io).values()
         if isinstance(module := getattr(value, "__module__", None), str)
-        and module.startswith("yoetz.")
+        and module.startswith("finishup.")
     }
     assert all(
-        module == "yoetz.cli.hook_io" or module.startswith("yoetz.protocol") for module in modules
+        module == "finishup.cli.hook_io" or module.startswith("finishup.protocol")
+        for module in modules
     )
 
 
@@ -639,7 +640,7 @@ def test_an_unterminated_string_is_consumed_in_one_match() -> None:
     80 KB of escaped quotes); the parse then refuses the body.
     """
 
-    from yoetz.cli.hook_io import _JSON_STRING_TOKEN  # pyright: ignore[reportPrivateUsage]
+    from finishup.cli.hook_io import _JSON_STRING_TOKEN  # pyright: ignore[reportPrivateUsage]
 
     body = b'{"a": 1, "b": "' + b'\\"' * 50_000
     assert _JSON_STRING_TOKEN.sub(b'""', body) == b'{"": 1, "": ""'

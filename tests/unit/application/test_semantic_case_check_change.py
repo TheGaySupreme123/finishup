@@ -19,11 +19,7 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from unit.application.test_semantic_case import (
-    _captured_case_values,  # pyright: ignore[reportPrivateUsage]
-    _case_with_material,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     CHECK_TIME_CHANGE_ITEM_PREFIX,
     CapturedContentScope,
     CapturedSemanticContent,
@@ -35,30 +31,34 @@ from yoetz.application.semantic_case import (
     check_time_change_shown_files,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.receipts import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
     CHECK_TIME_CHANGE_REDACTED_GAP,
     CHECK_TIME_CHANGE_TRUNCATED_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.change_capture import (
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     ChangeBaseKind,
     CheckChangeCapture,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.canonical import strict_json_parse
-from yoetz.protocol.coverage import LedgerFreshness
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.canonical import strict_json_parse
+from finishup.protocol.coverage import LedgerFreshness
+from unit.application.test_semantic_case import (
+    _captured_case_values,  # pyright: ignore[reportPrivateUsage]
+    _case_with_material,  # pyright: ignore[reportPrivateUsage]
+)
 
 _TASK = "tsk_10000000-0000-4000-8000-000000000001"
 
@@ -151,7 +151,7 @@ def test_change_is_the_first_excerpt_linked_to_claims_and_obligations() -> None:
     assert first.linked_subject_refs == (str(clm(1)), str(obl(1)))
     item = next(item for item in semantic.items if item.item_id == first.excerpt_item_id)
     content = item.content.decode("utf-8")
-    assert content.startswith("[Yoetz check-time change, part 1 of 1]\n")
+    assert content.startswith("[FinishUP check-time change, part 1 of 1]\n")
     assert "+kea-repair-marker" in content
     assert not {
         CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
@@ -194,7 +194,7 @@ def test_reserved_share_holds_against_competing_captures_and_backfills_free_room
     assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
     assert semantic.packet.coverage.ledger_freshness is LedgerFreshness.PARTIAL
     last = next(item for item in semantic.items if item.item_id == change_ids[-1])
-    assert last.content.startswith(b"[Yoetz check-time change, part 8 of 10]")
+    assert last.content.startswith(b"[FinishUP check-time change, part 8 of 10]")
 
 
 def test_small_change_leaves_its_unused_reservation_to_other_excerpts() -> None:
@@ -308,7 +308,7 @@ def test_parts_split_on_lines_and_stay_within_one_item() -> None:
         # One excerpt's bound (issue #983), no longer the 4 KiB structural prose bound.
         assert item.content_bytes <= 16_384
         header, _, body = item.content.partition(b"\n")
-        assert header == f"[Yoetz check-time change, part {index} of {len(items)}]".encode()
+        assert header == f"[FinishUP check-time change, part {index} of {len(items)}]".encode()
         assert body.endswith(b"\n")
         joined += body
     assert joined == text
@@ -350,7 +350,7 @@ def _section(path: str, lines: int, *, fill: str = "x") -> bytes:
 def test_shown_files_follow_the_admitted_parts_and_redaction() -> None:
     """Whole, cut at the packet boundary, redacted, and never reached (ADR-031 resolution)."""
 
-    header = b"Yoetz check-time change: header\nFiles:\n  M listed-only.ts\nEnd of header.\n"
+    header = b"FinishUP check-time change: header\nFiles:\n  M listed-only.ts\nEnd of header.\n"
     text = (
         header
         + _section("whole.ts", 3)
@@ -414,7 +414,7 @@ def test_shown_files_follow_the_admitted_parts_and_redaction() -> None:
 def test_many_changed_files_record_only_the_few_the_packet_showed() -> None:
     """More than 128 changed files: only shown files count toward the record bound."""
 
-    header = b"Yoetz check-time change: header\nEnd of header.\n"
+    header = b"FinishUP check-time change: header\nEnd of header.\n"
     text = header + b"".join(_section(f"generated/{index:03d}.ts", 20) for index in range(140))
     change = _change(text)
     case = _build(_case_with_material(), change=change)
@@ -426,7 +426,7 @@ def test_many_changed_files_record_only_the_few_the_packet_showed() -> None:
 
 
 def _check_time_change_chunks(text: bytes) -> tuple[bytes, ...]:
-    from yoetz.application import semantic_case as module
+    from finishup.application import semantic_case as module
 
     selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
     chunks = getattr(module, "_check_time_change_chunks")
@@ -496,7 +496,7 @@ def test_parts_carried_are_counted_from_the_bounded_envelope(
 ) -> None:
     # R945-06: the shown-file record must describe what the provider-facing envelope carries,
     # not the case before envelope minimization dropped catalog rows.
-    import yoetz.application.semantic_case as semantic_case_module
+    import finishup.application.semantic_case as semantic_case_module
 
     # Seven 16 KiB parts (issue #983; the case locked twelve 4 KiB parts before).
     semantic = _build(_case_with_material(), change=_change(_large_change(28)))
@@ -557,12 +557,12 @@ def test_unavailable_reason_is_disclosed_beside_the_generic_code_and_bound_to_th
 
 
 def test_every_adapter_reason_has_a_closed_sentence() -> None:
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         CHECK_TIME_CHANGE_UNAVAILABLE_REASONS,
         check_time_change_gap_sentence,
         check_time_change_unavailable_reason_gap,
     )
-    from yoetz.ports.change_capture import CHANGE_CAPTURE_UNAVAILABLE_REASONS
+    from finishup.ports.change_capture import CHANGE_CAPTURE_UNAVAILABLE_REASONS
 
     assert CHANGE_CAPTURE_UNAVAILABLE_REASONS <= set(CHECK_TIME_CHANGE_UNAVAILABLE_REASONS)
     for reason in CHECK_TIME_CHANGE_UNAVAILABLE_REASONS:
@@ -605,9 +605,34 @@ def test_view_binds_where_redactions_and_hunks_lie_not_only_their_counts() -> No
     assert b"token" not in base.view and b"value" not in base.view  # structure, not lines
 
 
+def test_the_possible_credential_placeholder_counts_as_a_redaction_like_redacted() -> None:
+    """tb4n5: capture-time redaction marks a look-alike value with the placeholder; the shown-file
+    record must still see a withheld span, so the file is never ``whole`` and its view binds it.
+    A change holding ``[REDACTED]`` only (stored before the placeholder) keeps its exact view."""
+
+    placeholder = _SECTION.replace(b"[REDACTED]", b"[withheld-by-yoetz:possible-credential]")
+    both = placeholder.replace(b"+new = 4\n", b"+new = [REDACTED]\n")
+
+    legacy = _view_of(_SECTION)
+    marked = _view_of(placeholder)
+    mixed = _view_of(both)
+
+    assert not marked.whole and marked.redactions == 1
+    assert marked.clean_bytes == placeholder.index(b"[withheld-by-yoetz")
+    assert not mixed.whole and mixed.redactions == 2
+    assert mixed.clean_bytes == marked.clean_bytes
+    assert len({legacy.view, marked.view, mixed.view}) == 3
+    # The pre-existing record is byte-for-byte what it was: one [REDACTED] at the same offset.
+    assert legacy.redactions == 1 and legacy.clean_bytes == _SECTION.index(b"[REDACTED]")
+    # A placeholder cut by the packet edge still counts: part of the withheld span was shown.
+    edge = placeholder.index(b"[withheld-by-yoetz") + 5
+    (cut,) = check_time_change_shown_files(_change(placeholder).capture, edge)
+    assert cut.redactions == 1 and cut.clean_bytes == edge - 5
+
+
 @pytest.mark.anyio
 async def test_partial_files_record_a_keyed_view_commitment_never_the_view() -> None:
-    from yoetz.application.check_change import check_change_shown_files
+    from finishup.application.check_change import check_change_shown_files
 
     commitments: list[bytes] = []
 
@@ -637,7 +662,7 @@ def test_shown_file_views_come_from_exactly_the_carried_envelope_bytes(
 ) -> None:
     """R945-02/R945-06: views and accounting share one source, the parts the envelope kept."""
 
-    import yoetz.application.semantic_case as semantic_case_module
+    import finishup.application.semantic_case as semantic_case_module
 
     text = b"".join(
         _SECTION.replace(b"app.py", f"app{index:03d}.py".encode()) for index in range(300)
@@ -672,7 +697,7 @@ def _cracker_change(table_rows: int = 900) -> bytes:
     """One new ~140 KiB source file with an embedded numeric table (the tb4n1 cracker.py shape)."""
 
     head = (
-        b"Yoetz check-time change: header\nFiles:\n  A cracker.py untracked\nEnd of header.\n"
+        b"FinishUP check-time change: header\nFiles:\n  A cracker.py untracked\nEnd of header.\n"
         b"diff --git a/cracker.py b/cracker.py\nnew file mode 100644\n--- /dev/null\n"
         b"+++ b/cracker.py\n@@ -0,0 +1,2400 @@\n"
     )
@@ -753,7 +778,7 @@ def test_a_single_large_source_file_reaches_the_reviewer_in_few_large_parts() ->
     assert len(change_items) <= 8
     assert all(item.content_bytes <= 16_384 for item in change_items)
     assert carried >= 110_000
-    assert change_items[0].content.startswith(b"[Yoetz check-time change, part 1 of 9]\n")
+    assert change_items[0].content.startswith(b"[FinishUP check-time change, part 1 of 9]\n")
     # Parts are whole lines of the change, so the table rows the reviewer sees are never split.
     joined = b"".join(item.content.partition(b"\n")[2] for item in change_items)
     assert text.startswith(joined) and joined.endswith(b"\n")
@@ -810,11 +835,11 @@ def test_a_planned_case_narrows_general_output_before_the_change() -> None:
 
 def _open_prior_findings() -> dict[Any, Any]:
     from builders.policy_cases import finding_record, fnd
+    from finishup.application.semantic_case import MAX_PRIOR_FINDINGS
     from unit.application.test_semantic_case_prior_findings import (
         _CHALLENGE,  # pyright: ignore[reportPrivateUsage]
         _semantic,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.application.semantic_case import MAX_PRIOR_FINDINGS
 
     return {
         fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 80 + number)
@@ -842,7 +867,7 @@ def _assert_change_leads_and_is_accounted(semantic: SemanticCase, text: bytes) -
     return len(change_items)
 
 
-@pytest.mark.parametrize("ceiling", (262_144, 220_000, 200_000, 170_000, 160_000))
+@pytest.mark.parametrize("ceiling", (262_144, 220_000, 200_000, 170_000, 162_000))
 def test_the_change_keeps_its_leading_part_beside_sixteen_prior_findings(ceiling: int) -> None:
     """tb4n1 (issue #983): a narrowed case dropped every 16 KiB part while small excerpts stayed.
 
@@ -864,14 +889,16 @@ def test_the_change_keeps_its_leading_part_beside_sixteen_prior_findings(ceiling
 
 def test_a_tight_case_cuts_the_first_part_to_the_room_and_says_so() -> None:
     text = _cracker_change()
-    # About 2 KiB of room is left above the fixed material: less than one whole part.
-    semantic, _ = _ledger_build(_change(text), ceiling=160_000, findings=_open_prior_findings())
+    # About 4 KiB of room is left above the fixed material: less than one whole part. (The planner
+    # searches excerpt budgets in 1 KiB steps, so a ceiling within about 2 KiB of the fixed
+    # material can land on no part at all; FinishUP's labels are 3 bytes longer than Yoetz's were.)
+    semantic, _ = _ledger_build(_change(text), ceiling=162_000, findings=_open_prior_findings())
 
     (first,) = [
         item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
     ]
     assert first.content.startswith(
-        b"[Yoetz check-time change, part 1 of 9, cut to the packet's room]\n"
+        b"[FinishUP check-time change, part 1 of 9, cut to the packet's room]\n"
     )
     assert first.content_bytes < 16_384
     assert _assert_change_leads_and_is_accounted(semantic, text) == 1
@@ -881,7 +908,7 @@ def test_a_tight_case_cuts_the_first_part_to_the_room_and_says_so() -> None:
 def test_the_channel_ceiling_planner_keeps_the_change_and_its_accounting(limit: int) -> None:
     """The service planner narrows the selection itself; the change still leads (issue #983)."""
 
-    from yoetz.service.semantic_ceiling import plan_under_channel_ceiling
+    from finishup.service.semantic_ceiling import plan_under_channel_ceiling
 
     text = _cracker_change()
     findings = _open_prior_findings()

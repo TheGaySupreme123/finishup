@@ -9,13 +9,13 @@ import pytest
 
 from builders.policy_cases import act, clm, evd, evt, fnd, obl, res
 from builders.replay import replay_records
-from yoetz.kernel import deterministic_checks as checks
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel import deterministic_checks as checks
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     FindingBasisRef,
     build_deterministic_case,
 )
-from yoetz.kernel.reducers import replay
+from finishup.kernel.reducers import replay
 
 
 def test_source_lookup_matches_all_logical_families_without_rebuilding_map(

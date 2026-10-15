@@ -1,16 +1,16 @@
 # Observation selection
 
-Observation selection controls how much structural host activity Yoetz keeps for a workspace. It
+Observation selection controls how much structural host activity FinishUP keeps for a workspace. It
 is a retention and capacity choice. It does not change what the host is allowed to do, what content
 may be captured, or what an AI-powered review provider may receive.
 
-Focused with the standard capacity is the default. In Focused mode, Yoetz can account for proven
+Focused with the standard capacity is the default. In Focused mode, FinishUP can account for proven
 successful routine reads, searches, and inventory calls in bounded summaries. A summary keeps the
 native identities and source positions it represents, but it is not per-call content evidence or a
 verification result. Detailed mode keeps eligible routine calls as individual records and allows
 more bounded optional detail while pressure remains healthy.
 
-The classifier is deterministic and conservative. Failures, denials, cancellations, interrupted,
+The classifier is rule-based, repeatable and conservative. Failures, denials, cancellations, interrupted,
 partial, and unknown outcomes remain individual observations. Edits and side effects, declared tests and
 checks, negative verification, and reads explicitly linked to an obligation, claim, or finding
 remain individual observations in both modes. A read-only command can still be important evidence.
@@ -24,7 +24,7 @@ Capacity is independent from detail:
 | larger | 2,048 | Explicit owner choice, with Focused or Detailed |
 | largest | 8,192 | Explicit owner choice, with Focused or Detailed |
 | custom | 64 to 8,192 | Explicit owner choice with `--queue-count`, with Focused or Detailed |
-| none (No Yoetz cap) | — | Not available for this queue; see below |
+| none (No FinishUP cap) | — | Not available for this queue; see below |
 
 Each choice also has finite byte, state, pending-pair, protected-reserve, fair-share, diagnostic,
 and capture budgets. The queue allows 1 KiB per row, so 1,024 rows allow 1 MiB of queued records.
@@ -40,9 +40,9 @@ raise the shared queue for every session in the workspace but never lower it: a 
 below it, such as a custom count under 512, limits only that session's own admission, never another
 session's. Status reports both
 the value you selected and the value in effect, which limit is closest to full, and whether No
-Yoetz cap is available.
+FinishUP cap is available.
 
-## No Yoetz cap
+## No FinishUP cap
 
 Choosing `--capacity none` does not remove the limit. The structural queue has no uncapped mode in
 this version: all observation state is kept in one local document with a 16 MiB safety ceiling,
@@ -50,7 +50,7 @@ and an "unlimited" queue would still stop at that ceiling. Preview and apply bot
 outcome `capacity_no_cap_unsupported` and change nothing. The explanation reads:
 
 ```text
-No Yoetz cap is not available for the structural queue in this revision: the local state
+No FinishUP cap is not available for the structural queue in this revision: the local state
 document has a 16 MiB safety ceiling. The largest supported finite capacity is 8,192 rows
 (--capacity largest or --capacity custom --queue-count 8192).
 ```
@@ -66,21 +66,21 @@ fixed or are set by your privacy policy, and provider limits always apply.
 Inspect the current choice for a host session:
 
 ```text
-yoetz observe selection-status --workspace /exact/project \
+finishup observe selection-status --workspace /exact/project \
   --session-id <host-session-id> --json
 ```
 
 Preview a temporary session choice first:
 
 ```text
-yoetz observe selection-preview --workspace /exact/project \
+finishup observe selection-preview --workspace /exact/project \
   --detail detailed --capacity larger --session-id <host-session-id> --json
 ```
 
 Apply the exact `preview_digest` returned by that preview:
 
 ```text
-yoetz observe selection-apply --workspace /exact/project \
+finishup observe selection-apply --workspace /exact/project \
   --detail detailed --capacity larger --session-id <host-session-id> \
   --accept --preview-digest <preview-digest> --json
 ```
@@ -88,23 +88,23 @@ yoetz observe selection-apply --workspace /exact/project \
 For a custom count, add `--queue-count` to both preview and apply:
 
 ```text
-yoetz observe selection-preview --workspace /exact/project \
+finishup observe selection-preview --workspace /exact/project \
   --detail focused --capacity custom --queue-count 1024 \
   --session-id <host-session-id> --json
-yoetz observe selection-apply --workspace /exact/project \
+finishup observe selection-apply --workspace /exact/project \
   --detail focused --capacity custom --queue-count 1024 \
   --session-id <host-session-id> --accept --preview-digest <preview-digest> --json
 ```
 
 ### What the preview discloses
 
-Yoetz never raises capacity on its own, and permission to run an ordinary task is not permission
+FinishUP never raises capacity on its own, and permission to run an ordinary task is not permission
 to raise it. Every preview shows the scope (this session, or the workspace), the current and
 requested queue rows with their queue and state byte limits, and the consequences. For an
 increase, the preview says:
 
 ```text
-Larger local retention can increase disk use, memory use and CPU work, and may slow Yoetz or
+Larger local retention can increase disk use, memory use and CPU work, and may slow FinishUP or
 other apps.
 ```
 
@@ -137,7 +137,7 @@ To lower a setting, preview and apply a smaller capacity at the same scope (the 
 64 rows, pause ingest if needed. Revoking an override restores the inherited or default setting
 and can increase capacity; check the resulting selection. To stop new observation ingest while
 keeping consent and evidence, run
-`yoetz observe pause --workspace /exact/project`; `yoetz observe resume --workspace
+`finishup observe pause --workspace /exact/project`; `finishup observe resume --workspace
 /exact/project` restarts it.
 
 ### In the terminal interface
@@ -145,9 +145,9 @@ keeping consent and evidence, run
 In the terminal interface, `/observe` shows the current selection status and effective budget,
 then asks **Change local retention capacity?** The options are to keep the current setting,
 recommended (512), larger (2,048), largest (8,192), custom (you type a count from 64 to 8,192), or
-No Yoetz cap. The terminal interface changes the workspace default and keeps the current detail
+No FinishUP cap. The terminal interface changes the workspace default and keeps the current detail
 mode. After you pick a value it shows the same disclosure as the CLI preview and asks you to apply
-or cancel. Cancelling or pressing `Esc` changes nothing. Choosing No Yoetz cap shows the
+or cancel. Cancelling or pressing `Esc` changes nothing. Choosing No FinishUP cap shows the
 explanation above and changes nothing.
 
 ### Scope and lifetime
@@ -157,9 +157,9 @@ an optional RFC3339 UTC `--expires-at` deadline. To make an explicit workspace d
 apply with `--persist` and omit `--session-id`:
 
 ```text
-yoetz observe selection-preview --workspace /exact/project \
+finishup observe selection-preview --workspace /exact/project \
   --detail focused --capacity standard --persist --json
-yoetz observe selection-apply --workspace /exact/project \
+finishup observe selection-apply --workspace /exact/project \
   --detail focused --capacity standard --persist \
   --accept --preview-digest <preview-digest> --json
 ```
@@ -167,9 +167,9 @@ yoetz observe selection-apply --workspace /exact/project \
 Revoke the setting at the same scope:
 
 ```text
-yoetz observe selection-revoke --workspace /exact/project \
+finishup observe selection-revoke --workspace /exact/project \
   --session-id <host-session-id> --json
-yoetz observe selection-revoke --workspace /exact/project \
+finishup observe selection-revoke --workspace /exact/project \
   --persist --json
 ```
 
@@ -195,7 +195,7 @@ Ending a host session retires its pressure snapshot, while preserving pending wo
 When a later claim or finding will depend on a read, protect it before the read occurs:
 
 ```text
-yoetz observe protect-read --workspace /exact/project \
+finishup observe protect-read --workspace /exact/project \
   --session-id <host-session-id> --reference clm_<existing-id> \
   --count 1 --json
 ```
@@ -210,7 +210,7 @@ network authority.
 Before a buffered routine read is delivered, its native source identity can be promoted:
 
 ```text
-yoetz observe promote --workspace /exact/project \
+finishup observe promote --workspace /exact/project \
   --source-identity <source-identity> --json
 ```
 
@@ -241,27 +241,36 @@ not proof that bytes were captured or selected for a check.
 
 Captured content waits in a short handoff until its structural record is delivered. If that record
 can no longer deliver it (it was already recorded without the content, refused, or quarantined),
-Yoetz retires the handoff instead of letting its age hold the whole workspace at the pending-age
+FinishUP retires the handoff instead of letting its age hold the whole workspace at the pending-age
 limit. The local service does this in the background, normally within about a minute and a half,
 even when no new host input arrives; a new check does it for its own task. The retired content is
-not attached, so status reports `content_capture_unavailable`, and `yoetz observe status --json`
+not attached, so status reports `content_capture_unavailable`, and `finishup observe status --json`
 lists recent retirements under `capture_handoff_retirements` with the ticket identity, stage, the
 reason, and the handoff's age. The service commits that account before releasing the ticket's
 reservation; a failed or cancelled account leaves the handoff available for retry. A handoff whose
 record is still waiting keeps counting toward the unchanged pending-age limit.
 
-A single hook event is also bounded. Yoetz fully reads a host body of at most 1 MiB; very large
+`finishup observe status --json` also explains a few standing records. `pending_attempt_endings` says
+how tool calls whose result never arrived ended: expired at the ten-minute deadline (`ttl`), at the
+session's end, or with a newer session generation, each named by tool, or closed because FinishUP
+itself answered the call with an error (`rejected_by_yoetz`; hosts send no result report for an
+error answer, and this one is not a coverage gap). `local_retention` says when FinishUP dropped its own
+local copies of already-delivered records to stay within its bounds; nothing you or a check relies
+on was cut, so this is never reported as truncation. `delivery_lag` shows how long recorded
+activity waited between being queued on your machine and being accepted by the service.
+
+A single hook event is also bounded. FinishUP fully reads a host body of at most 1 MiB; very large
 content inside it is kept only up to the capture budget and marked truncated. Images, audio, and
-video inside a tool result are never kept: Yoetz replaces their bytes with a short placeholder,
+video inside a tool result are never kept: FinishUP replaces their bytes with a short placeholder,
 so viewing a screenshot records the call, its outcome, and its text, but not the picture.
-For each image (up to eight per call) Yoetz instead records a fingerprint: its SHA-256, size in
+For each image (up to eight per call) FinishUP instead records a fingerprint: its SHA-256, size in
 bytes, image type, and pixel width and height. That record appears as evidence on the call's
 result, so you or the agent can point to it as proof the image was inspected. The picture itself
 never leaves your machine and is never sent for AI-powered review. An
 event can still exceed 1 MiB without its images, for example a very large file write or command
-output. On every host, Yoetz then keeps the event's identity when the complete event fits in
+output. On every host, FinishUP then keeps the event's identity when the complete event fits in
 8 MiB: the session, tool, call, outcome, and, for a completed edit with a short path, a path
-commitment, with the content left out. That row is `payload_content_omitted`. Yoetz's own tools
+commitment, with the content left out. That row is `payload_content_omitted`. FinishUP's own tools
 are the exception: their content is never captured anyway, so their row is complete and carries
 no gap. An event over 8 MiB, or one that is not a complete valid document, is an unparsed
 `payload_too_large` gap. Either way the rest of the session keeps ingesting, and a receipt cannot
@@ -271,10 +280,10 @@ Summary coverage, current pressure, capture availability, delivery, and selectio
 check are separate facts. A summary or an empty queue cannot support a claim of full per-call
 content observation, and selection does not replace a check or receipt.
 
-Self-observation has a narrower boundary. Explicit Yoetz MCP workflow names are recognized as
+Self-observation has a narrower boundary. Explicit FinishUP MCP workflow names are recognized as
 service-owned reads, so their successful projections stay local. A host shell event such as
-`exec_command yoetz observe status`, `yoetz observe selection-status`, `yoetz observe
-selection-preview`, or `yoetz closure-prepare` does not carry an authenticated identity for the
+`exec_command finishup observe status`, `finishup observe selection-status`, `finishup observe
+selection-preview`, or `finishup closure-prepare` does not carry an authenticated identity for the
 launcher that actually ran. Even an absolute path written in the command text is untrusted at this
 boundary. These local CLI reads therefore remain ordinary shell observations and can consume the
 structural, capture, or materialization work available to that host. Failures, mutations, and

@@ -16,17 +16,17 @@ from typing import Literal
 
 import pytest
 
-from integration.application.test_closure_readiness_checklist import (
-    _bandit_b,  # pyright: ignore[reportPrivateUsage]
-    _wire,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.cli.closure_gate import (
+from finishup.cli.closure_gate import (
     ACCEPTANCE_RECHECK_ITEM,
     ACKNOWLEDGEMENT_RECHECK_ITEM,
     closure_gate_from_readiness,
 )
-from yoetz.domain.closure import recheck_note
-from yoetz.protocol.readiness_text import readiness_directive
+from finishup.domain.closure import recheck_note
+from finishup.protocol.readiness_text import readiness_directive
+from integration.application.test_closure_readiness_checklist import (
+    _bandit_b,  # pyright: ignore[reportPrivateUsage]
+    _wire,  # pyright: ignore[reportPrivateUsage]
+)
 
 pytestmark = pytest.mark.anyio
 

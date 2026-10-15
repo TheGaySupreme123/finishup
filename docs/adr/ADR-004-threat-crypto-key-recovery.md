@@ -6,8 +6,8 @@ independent threat review before the first non-alpha release (maintainer decisio
 and no public surface claims a reviewed design.
 **Implemented by:** `docs/adr/ADR-008-local-service-vault-trust-boundary.md`,
 `docs/adr/ADR-024-installation-vault-recovery.md`,
-`src/yoetz/service/vault.py`, `src/yoetz/service/unlock.py`,
-`src/yoetz/ports/keys.py`, the key adapters, and the key-recovery runbook.
+`src/finishup/service/vault.py`, `src/finishup/service/unlock.py`,
+`src/finishup/ports/keys.py`, the key adapters, and the key-recovery runbook.
 
 ## Threat model
 
@@ -18,7 +18,7 @@ sharing of an application-data copy. It does not protect against a compromised a
 malicious root, inspection of the ready service's memory, or side channels. Structural metadata
 (bounded IDs, sizes, enums, versions, and timings) is deliberately visible.
 
-The per-user Yoetz service is trusted. CLI, MCP bridges, agents, LLMs, future UI renderers,
+The per-user FinishUP service is trusted. CLI, MCP bridges, agents, LLMs, future UI renderers,
 provider adapters, repositories, and imported transcripts are outside the vault boundary. A future
 trusted desktop unlock prompt may be added as a narrowly scoped vault client; that does not make
 ordinary UI content trusted.
@@ -232,14 +232,14 @@ activation remains fenced. A pristine headless installation cannot auto-create k
 passphrase auto-unlock entry unless its exact release cell carries the applicable verified setup
 authority; otherwise it remains setup-required.
 **Scoped exception (ADR-015/016, amended 2026-07-31; chat-user authorize 2026-08-09):** elevated
-vault initialization and console `yoetz consent review` for provider credential set/rotate require
+vault initialization and console `finishup consent review` for provider credential set/rotate require
 independently verified action-bound OS user presence before the foreground console opens. The
 current runtime has no production presence adapter and fails closed with
 `human_authority_unavailable` before pending claim on that path. Initialization uses a
 helper-generated, credential-store-verified secret. Issue #164 adds a narrow agent-attested path:
-after one retention warning and an explicit current-chat instruction, `yoetz consent authorize`
+after one retention warning and an explicit current-chat instruction, `finishup consent authorize`
 may deliver a one-shot provider credential through stdin into the existing YZS1/vault ceremony
-for an exact prepared pending target. Yoetz binds and consumes the assertion but cannot
+for an exact prepared pending target. FinishUP binds and consumes the assertion but cannot
 independently authenticate its chat provenance; a compromised agent can forge it, which is an
 accepted risk of this opt-in path. Secret bytes still never enter structural tables, logs, errors,
 status, receipts, or agent-visible echoes. This is not generic headless unlock and does not unlock

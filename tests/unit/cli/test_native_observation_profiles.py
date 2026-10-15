@@ -10,31 +10,31 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.claude_code_integration import (
+from finishup.adapters.integrations.claude_code_integration import (
     CLAUDE_CODE_ORDINARY_HOOK_EVENTS,
     render_claude_code_plugin,
 )
-from yoetz.adapters.integrations.cursor_integration import (
+from finishup.adapters.integrations.cursor_integration import (
     CURSOR_ORDINARY_HOOK_EVENTS,
     render_cursor_plugin,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe as observe_cli
-from yoetz.cli import observe_hooks
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe as observe_cli
+from finishup.cli import observe_hooks
+from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationRevokeCommand,
     ObservationSource,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_HOOK_MAPPING_VERSION,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, JsonValue
-from yoetz.ports.plugin_artifacts import PluginFormatProfile
-from yoetz.protocol.canonical import canonical_encode, strict_json_parse
+from finishup.domain.values import JsonObject, JsonValue
+from finishup.ports.plugin_artifacts import PluginFormatProfile
+from finishup.protocol.canonical import canonical_encode, strict_json_parse
 
 
 def test_content_profiles_are_independent_and_user_controls_are_reversible(
@@ -314,12 +314,12 @@ def test_cursor_ordinary_profile_uses_generic_tool_identity_and_events(
 
 
 def test_renderers_keep_old_default_and_emit_bounded_ordinary_subscriptions(tmp_path: Path) -> None:
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\n", encoding="utf-8")
     launcher.chmod(0o700)
 
     claude = render_claude_code_plugin(
-        yoetz_launcher=launcher,
+        finishup_launcher=launcher,
         observation_profile="ordinary",
     )
     claude_hooks = json.loads(claude.members["hooks/hooks.json"])["hooks"]
@@ -335,7 +335,7 @@ def test_renderers_keep_old_default_and_emit_bounded_ordinary_subscriptions(tmp_
 
     cursor = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-        yoetz_launcher=launcher,
+        finishup_launcher=launcher,
         observation_profile="ordinary",
     )
     cursor_hooks = json.loads(cursor.members["hooks/hooks.json"])["hooks"]
@@ -978,15 +978,15 @@ def test_claude_ordinary_posttooluse_event_success_preserves_unknown_boundaries(
         tool_response={"success": True},
     )
     pair(
-        "call-yoetz-accepted",
+        "call-finishup-accepted",
         {},
-        tool_name="mcp__plugin_yoetz_yoetz__publish_work",
+        tool_name="mcp__plugin_finishup_finishup__publish_work",
         tool_response={"outcome": "accepted"},
     )
     pair(
         "call-mcp-domain-rejection",
         {},
-        tool_name="mcp__plugin_yoetz_yoetz__publish_work",
+        tool_name="mcp__plugin_finishup_finishup__publish_work",
         tool_response={
             "success": False,
             "structuredContent": {"outcome": "rejected"},
@@ -995,7 +995,7 @@ def test_claude_ordinary_posttooluse_event_success_preserves_unknown_boundaries(
     pair(
         "call-mcp-error",
         {},
-        tool_name="mcp__plugin_yoetz_yoetz__publish_work",
+        tool_name="mcp__plugin_finishup_finishup__publish_work",
         tool_response={
             "isError": True,
             "structuredContent": {"outcome": "rejected"},
@@ -1035,11 +1035,11 @@ def test_claude_ordinary_posttooluse_event_success_preserves_unknown_boundaries(
     assert "success" not in host_status
     assert host_status["result_status"] == "unknown"
 
-    yoetz_accepted = envelopes[13].structural_payload
-    assert yoetz_accepted["action"] == "claude_tool_success"
-    assert yoetz_accepted["success"] is True
-    assert yoetz_accepted["result_status"] == "success"
-    assert "exit_status" not in yoetz_accepted
+    finishup_accepted = envelopes[13].structural_payload
+    assert finishup_accepted["action"] == "claude_tool_success"
+    assert finishup_accepted["success"] is True
+    assert finishup_accepted["result_status"] == "success"
+    assert "exit_status" not in finishup_accepted
 
     mcp_domain_rejection = envelopes[15].structural_payload
     assert mcp_domain_rejection["action"] == "claude_tool_success"
@@ -1110,3 +1110,136 @@ def test_unknown_runtime_authority_never_extracts_native_content(
     assert "content_capture_unavailable" in pending[0].gap_codes
     assert "content_unselected" not in pending[0].gap_codes
     assert pending[0].content_object_refs == ()
+
+
+_FINISHUP_ARGS: dict[str, JsonValue] = {
+    "request_id": "req_7d1e5c2a-3b4f-4a6e-9c8d-1f2e3a4b5c6d",
+    "session_id": "ses_1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b",
+    "writer_id": "wri_2c3d4e5f-6071-4829-9bac-1d2e3f4a5b6c",
+    "view": "obligations",
+}
+
+
+def _cursor_ordinary_emit(
+    tmp_path: Path,
+    event: str,
+    call_id: str,
+    tool_name: str,
+    tool_input: Mapping[str, JsonValue],
+    output: JsonValue,
+) -> None:
+    payload: dict[str, JsonValue] = {
+        "hook_event_name": event,
+        "session_id": "cursor-n5-ordinary",
+        "conversation_id": "cursor-n5-conversation",
+        "tool_name": tool_name,
+        "tool_use_id": call_id,
+        "tool_input": JsonObject(tool_input),
+    }
+    if event != "preToolUse":
+        payload["tool_output"] = output
+    assert (
+        observe_hooks.handle_cursor_observe(
+            event_name=event,
+            stdin_bytes=canonical_encode(payload),
+            stdout=io.BytesIO(),
+            workspace=str(tmp_path),
+            _state=tmp_path / "state",
+            skip_service=True,
+            observation_profile=CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
+        )
+        == 0
+    )
+
+
+def _cursor_delivered(tmp_path: Path, commitment: str) -> set[tuple[str, object, object]]:
+    store = LocalObservationStore(_state=tmp_path / "state")
+    return {
+        (
+            row.envelope.event_kind,
+            row.envelope.structural_payload.get("tool_name"),
+            row.envelope.structural_payload.get("tool_call_id"),
+        )
+        for row in store.list_pending_outbox_rows(commitment)
+        if row.envelope.event_kind in {"PreToolUse", "PostToolUse"}
+    }
+
+
+def test_cursor_ordinary_foreign_status_tool_is_still_delivered(tmp_path: Path) -> None:
+    """tb4 n5 round 2: ``MCP:status`` names no server; another server's ``status`` is evidence."""
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    unhealthy = (
+        '{"content":[{"type":"text","text":"Cluster is unhealthy: 3 pods failing readiness'
+        ' checks"}],"isError":false}'
+    )
+    _cursor_ordinary_emit(
+        tmp_path, "preToolUse", "cur-foreign", "MCP:status", {"cluster": "prod"}, None
+    )
+    _cursor_ordinary_emit(
+        tmp_path, "postToolUse", "cur-foreign", "MCP:status", {"cluster": "prod"}, unhealthy
+    )
+    delivered = _cursor_delivered(tmp_path, commitment)
+    assert {kind for kind, _tool, _call in delivered} == {"PreToolUse", "PostToolUse"}
+
+
+def test_cursor_ordinary_finishup_status_read_proven_by_the_bridge_stays_local(
+    tmp_path: Path,
+) -> None:
+    """tb4 n5: a served FinishUP read is not appended to the ledger it read; nothing else changes."""
+
+    from finishup.adapters.integrations import finishup_call_rejections as rejections
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    # The bridge records serving the read before returning its result to Cursor.
+    assert rejections.record_served_finishup_read(
+        "status", _FINISHUP_ARGS, state_root=tmp_path / "state"
+    )
+    ok = '{"content":[],"isError":false}'
+    for call, tool, args in (
+        ("cur-yoetz-status", "MCP:status", _FINISHUP_ARGS),
+        ("cur-yoetz-publish", "MCP:publish_work", _FINISHUP_ARGS),
+        (
+            "cur-other-status",
+            "MCP:status",
+            {**_FINISHUP_ARGS, "request_id": "req_00000000-0000-4000-8000-0000000000ff"},
+        ),
+    ):
+        _cursor_ordinary_emit(tmp_path, "preToolUse", call, tool, args, None)
+        _cursor_ordinary_emit(tmp_path, "postToolUse", call, tool, args, ok)
+    delivered = _cursor_delivered(tmp_path, commitment)
+    # The proven read's post stays local; its pre cannot be proven yet and is delivered as before.
+    assert ("PostToolUse", "MCP:status", "cur-yoetz-status") not in delivered
+    assert ("PreToolUse", "MCP:status", "cur-yoetz-status") in delivered
+    # A write, and a read the bridge never served, are delivered as before.
+    assert ("PostToolUse", "MCP:publish_work", "cur-yoetz-publish") in delivered
+    assert ("PostToolUse", "MCP:status", "cur-other-status") in delivered
+    local = {e.structural_payload.get("tool_call_id") for e in store.list_envelopes(commitment)}
+    assert "cur-yoetz-status" in local
+
+
+def test_cursor_served_read_record_suppresses_at_most_one_post_event(tmp_path: Path) -> None:
+    """tb4 n5 round 3: a retained record must not suppress a later foreign call's evidence.
+
+    After one genuine FinishUP read, a later foreign ``MCP:status`` that reuses the same request
+    scope (another call id, another host session) is delivered: a served read is claimed once.
+    """
+
+    from finishup.adapters.integrations import finishup_call_rejections as rejections
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    assert rejections.record_served_finishup_read(
+        "status", _FINISHUP_ARGS, state_root=tmp_path / "state"
+    )
+    ok = '{"content":[],"isError":false}'
+    _cursor_ordinary_emit(tmp_path, "postToolUse", "cur-genuine", "MCP:status", _FINISHUP_ARGS, ok)
+    _cursor_ordinary_emit(tmp_path, "postToolUse", "cur-replay", "MCP:status", _FINISHUP_ARGS, ok)
+    delivered = _cursor_delivered(tmp_path, commitment)
+    assert ("PostToolUse", "MCP:status", "cur-genuine") not in delivered
+    assert ("PostToolUse", "MCP:status", "cur-replay") in delivered

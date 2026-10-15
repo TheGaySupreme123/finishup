@@ -2,7 +2,7 @@
 
 Primary scenario (Definition of Done):
   With project consent active and no cooperative publish_work calls, simulated Codex hooks
-  and a selective session stream produce durable task-bundle observations. Yoetz survives
+  and a selective session stream produce durable task-bundle observations. FinishUP survives
   restart, exposes evidence-linked findings through ordinary status, identifies stale or
   missing verification, and returns a useful bounded recommendation to Codex.
 
@@ -38,7 +38,7 @@ from tests.integration.observation.composition_harness import (
 )
 
 from builders.codex_rollout import failed_shell_rollout
-from yoetz.adapters.approved_checks import (
+from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckCommand,
     ApprovedCheckOutcome,
@@ -46,26 +46,26 @@ from yoetz.adapters.approved_checks import (
     ApprovedCheckStatus,
     approval_commitment,
 )
-from yoetz.adapters.importers.codex_jsonl import CodexParsedRecord
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.importers.codex_jsonl import CodexParsedRecord
+from finishup.adapters.integrations.codex_session_stream import (
     SessionStreamReader,
     default_stream_profile,
     envelope_from_stream_record,
     structural_from_stream_record,
 )
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     STREAM_MAPPING_VERSION,
     LocalObservationStore,
 )
-from yoetz.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
-from yoetz.adapters.workspace_inspect import open_inspect_workspace
-from yoetz.application.observation_advice import (
+from finishup.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
+from finishup.adapters.workspace_inspect import open_inspect_workspace
+from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     build_observation_advice_snapshot,
     minimized_semantic_evidence_packet,
 )
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.observation import (
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationCursor,
     ObservationEnvelope,
@@ -74,8 +74,8 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject
+from finishup.kernel.policies.observation_advice import (
     ObservationAdviceContext,
     ObservationCheckFact,
     ObservationCompositionFact,
@@ -397,7 +397,7 @@ async def test_hook_and_stream_copies_materialize_once(tmp_path: Path) -> None:
         # Dual-source envelopes remain distinct by source_identity until coordinator
         # materializes one logical action/result into the ledger.
         assert second_count >= first_count
-        from yoetz.application.observation_materialize import (
+        from finishup.application.observation_materialize import (
             canonical_logical_identity,
             materialize_observation_envelope,
             observation_claim_identity,

@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from builders.policy_cases import evt, finding_record, fnd, obl
-from yoetz.application.check import prior_finding_ids
-from yoetz.domain.findings import (
+from finishup.application.check import prior_finding_ids
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
@@ -20,10 +20,10 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.values import Frontier
-from yoetz.kernel.projections import empty_projection_state
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Frontier
+from finishup.kernel.projections import empty_projection_state
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -32,7 +32,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "1" * 64
 

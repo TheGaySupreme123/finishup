@@ -7,21 +7,21 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.claude_code_integration import render_claude_code_plugin
-from yoetz.adapters.integrations.cursor_integration import render_cursor_plugin
-from yoetz.ports.plugin_artifacts import PluginFormatProfile
+from finishup.adapters.integrations.claude_code_integration import render_claude_code_plugin
+from finishup.adapters.integrations.cursor_integration import render_cursor_plugin
+from finishup.ports.plugin_artifacts import PluginFormatProfile
 
 
 @pytest.mark.parametrize("profile", ["structural", "ordinary"])
 @pytest.mark.parametrize("host", ["claude", "cursor"])
 def test_native_startup_has_an_independent_cue(tmp_path: Path, host: str, profile: str) -> None:
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o700)
     assert profile in {"structural", "ordinary"}
     if host == "claude":
         artifact = render_claude_code_plugin(
-            yoetz_launcher=launcher,
+            finishup_launcher=launcher,
             observation_profile="ordinary" if profile == "ordinary" else "structural",
         )
         groups = json.loads(artifact.members["hooks/hooks.json"])["hooks"]["SessionStart"]
@@ -29,7 +29,7 @@ def test_native_startup_has_an_independent_cue(tmp_path: Path, host: str, profil
     else:
         artifact = render_cursor_plugin(
             PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-            yoetz_launcher=launcher,
+            finishup_launcher=launcher,
             observation_profile="ordinary" if profile == "ordinary" else "structural",
         )
         commands = json.loads(artifact.members["hooks/hooks.json"])["hooks"]["sessionStart"]
@@ -42,12 +42,12 @@ def test_native_startup_has_an_independent_cue(tmp_path: Path, host: str, profil
 
 @pytest.mark.parametrize("host", ["claude", "cursor"])
 def test_required_is_explicit_and_optional_removes_every_gate(tmp_path: Path, host: str) -> None:
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o700)
     if host == "claude":
-        required = render_claude_code_plugin(yoetz_launcher=launcher, startup_mode="required")
-        optional = render_claude_code_plugin(yoetz_launcher=launcher, startup_mode="optional")
+        required = render_claude_code_plugin(finishup_launcher=launcher, startup_mode="required")
+        optional = render_claude_code_plugin(finishup_launcher=launcher, startup_mode="optional")
         hooks = json.loads(required.members["hooks/hooks.json"])["hooks"]
         for event in (
             "SessionStart",
@@ -64,13 +64,13 @@ def test_required_is_explicit_and_optional_removes_every_gate(tmp_path: Path, ho
     else:
         required = render_cursor_plugin(
             PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-            yoetz_launcher=launcher,
+            finishup_launcher=launcher,
             startup_mode="required",
             observation_profile="ordinary",
         )
         optional = render_cursor_plugin(
             PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-            yoetz_launcher=launcher,
+            finishup_launcher=launcher,
             startup_mode="optional",
             observation_profile="ordinary",
         )

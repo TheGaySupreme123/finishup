@@ -21,31 +21,31 @@ import apsw
 import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects, ownership_fence
-from yoetz.adapters.approved_checks import (
+from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckCommand,
     ApprovedCheckResult,
     ApprovedCheckRunner,
     approval_commitment,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.adapters.workspace_inspect import open_inspect_workspace
-from yoetz.application.observation_advice import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.adapters.workspace_inspect import open_inspect_workspace
+from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     build_observation_advice_snapshot,
 )
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_verification import (
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_verification import (
     CompletedApprovedCheck,
     ObservationVerificationJob,
     ObservationVerificationSupervisor,
     ObservationVerificationWorker,
     VerificationDrainHandle,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
@@ -54,18 +54,18 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.kernel.policies.observation_advice import (
     ObservationAdviceContext,
     observation_advice_findings,
 )
-from yoetz.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.ports.runtime import BundleRuntimePort, TaskRuntime
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.runtime import BundleRuntimePort, TaskRuntime
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import IdKind, new_id
 
 pytestmark = pytest.mark.anyio
 

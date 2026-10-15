@@ -7,17 +7,17 @@ from typing import Any, cast
 
 import pytest
 
-from fixture_loader import FixtureLoader
-from yoetz.adapters.integrations.observation_admission import build_routine_read_summary
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_admission import build_routine_read_summary
+from finishup.domain.observation import (
     ObservationEnvelope,
     observation_envelope_from_json,
     observation_envelope_to_json,
     routine_read_summary_from_envelope,
 )
-from yoetz.domain.values import freeze_json
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.domain.values import freeze_json
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from fixture_loader import FixtureLoader
 
 _FIXTURE = "observations/routine-read-summary.case.json"
 

@@ -26,8 +26,8 @@ from typing import Final, cast
 from pydantic import TypeAdapter
 from pydantic_core import core_schema
 
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import MAX_REVIEW_EXCERPTS
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import MAX_REVIEW_EXCERPTS
 
 __all__ = [
     "SCHEMA_NAMESPACE",
@@ -51,6 +51,7 @@ _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
 _SCHEMA_MEDIA_TYPE: Final = "application/schema+json"
 _MAX_OUTPUT_BYTES: Final = 20_000_000
 _MAX_GUIDANCE_DOCUMENT_BYTES: Final = 1_048_576
+_MAX_GUIDANCE_SECTIONS: Final = 128
 
 
 class SchemaGenerationError(Exception):
@@ -100,8 +101,8 @@ def _install_type_shims() -> None:
     objects for the duration of this process only.
     """
 
-    from yoetz.domain.values import JsonObject
-    from yoetz.ports.control import ControlError
+    from finishup.domain.values import JsonObject
+    from finishup.ports.control import ControlError
 
     def _json_object_schema(cls: type, source: type, handler: object) -> core_schema.CoreSchema:
         return core_schema.dict_schema(core_schema.str_schema(), core_schema.any_schema())
@@ -144,7 +145,7 @@ class _RegistryEntry:
 
 
 def _operation_result_schema() -> object:
-    from yoetz.protocol.models import OperationFailureModel
+    from finishup.protocol.models import OperationFailureModel
 
     return OperationFailureModel
 
@@ -157,7 +158,7 @@ def _version_manifest_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     exact request/result version map and resource inventory cardinalities through this owning tool.
     """
 
-    from yoetz.version import build_version_manifest
+    from finishup.version import build_version_manifest
 
     source = (
         Path(__file__).resolve().parent.parent
@@ -259,6 +260,10 @@ def _version_manifest_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "protocol_version",
     ):
         properties[field_name] = {"const": cast(JsonValue, getattr(manifest, field_name))}
+    # Protocol 0.1 shipped as Yoetz and the product is now FinishUP (ADR-048). Released inventory
+    # versions keep their frozen `yoetz` const; this one names the shipping distribution and still
+    # admits a report from a pre-rename development build.
+    properties["package_name"] = {"enum": ["finishup", "yoetz"], "type": "string"}
     return document
 
 
@@ -352,7 +357,11 @@ _TASK_STATEMENT_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (
 )
 # Role- and directory-bearing obligations (issue #1002): a new version of a released family that
 # the unreleased event-draft 1.2.0 admits in place.
-_OBLIGATION_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (("obligation_published", "1.1.0"),)
+_OBLIGATION_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("obligation_published", "1.1.0"),
+    # A conversation's review-mode switch (ADR-049) rides the same unreleased event draft.
+    ("decision_recorded", "1.1.0"),
+)
 
 
 def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -415,6 +424,13 @@ def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # written only when ``disabled``, so every policy without it keeps its bytes and digest; an
     # absent field means ``enforced``. Older wire versions cannot carry it.
     properties["credential_heuristic"] = {"enum": ["disabled", "enforced"], "type": "string"}
+    # How conversations start and whether an agent's switch to AI-powered review waits for the
+    # owner (ADR-049). Optional and written only when set, so every policy without it keeps its
+    # bytes and digest; absent means the released behaviour. Older wire versions cannot carry it.
+    properties["conversation_review"] = {
+        "enum": ["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"],
+        "type": "string",
+    }
     return document
 
 
@@ -1201,7 +1217,7 @@ def _runtime_attempt_evidence_schema(entry: _RegistryEntry) -> dict[str, JsonVal
             "failure_stage": {
                 "enum": sorted(
                     __import__(
-                        "yoetz.domain.findings", fromlist=["RUNTIME_FAILURE_STAGES"]
+                        "finishup.domain.findings", fromlist=["RUNTIME_FAILURE_STAGES"]
                     ).RUNTIME_FAILURE_STAGES
                     - ({"token_usage_invalid"} if entry.schema_version == "1.0.0" else set())
                 ),
@@ -1466,8 +1482,8 @@ def _check_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
 
 def _check_recorded_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
-    from yoetz.domain.findings import MAX_RECORDED_VERDICTS, PRIOR_FINDING_VERDICTS
-    from yoetz.protocol.models import (
+    from finishup.domain.findings import MAX_RECORDED_VERDICTS, PRIOR_FINDING_VERDICTS
+    from finishup.protocol.models import (
         MAX_MISSING_FOR_ASSESSMENT,
         MAX_MISSING_TARGET_REFS,
         MISSING_FOR_ASSESSMENT_KINDS,
@@ -1943,7 +1959,7 @@ def _provider_judgment_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue
 def _provider_judgment_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Build the active provider contract with the required Part 2 review evidence."""
 
-    from yoetz.adapters.providers.openai_responses import build_judgment_json_schema
+    from finishup.adapters.providers.openai_responses import build_judgment_json_schema
 
     document = cast(dict[str, JsonValue], dict(build_judgment_json_schema()))
     ordered: dict[str, JsonValue] = {
@@ -2001,8 +2017,8 @@ def _finding_recorded_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     bytes, so every row written by an earlier 0.3 build still validates.
     """
 
-    from yoetz.domain.findings import MAX_RELATED_FINDING_IDS, REVIEWER_NEXT_STEPS
-    from yoetz.protocol.models import MAX_REVIEW_TEXT_BYTES
+    from finishup.domain.findings import MAX_RELATED_FINDING_IDS, REVIEWER_NEXT_STEPS
+    from finishup.protocol.models import MAX_REVIEW_TEXT_BYTES
 
     document = _load_versioned_template(entry, "findings/finding-1.3.0.schema.json")
     definitions = cast(dict[str, JsonValue], document["$defs"])
@@ -2076,7 +2092,7 @@ def _finding_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
 
 
 def _policy_lineage(policy_id: str) -> list[JsonValue]:
-    from yoetz.protocol.policy_packs import CURRENT_POLICY_VERSIONS, LEGACY_POLICY_VERSIONS
+    from finishup.protocol.policy_packs import CURRENT_POLICY_VERSIONS, LEGACY_POLICY_VERSIONS
 
     return [*LEGACY_POLICY_VERSIONS[policy_id], CURRENT_POLICY_VERSIONS[policy_id]]
 
@@ -2085,13 +2101,13 @@ def _admit_recorded_policy_identities(document: dict[str, JsonValue]) -> None:
     """Admit every recorded version of each built-in pack the active contract names.
 
     The unreleased 0.3 contracts first pinned every pack at ``0.1.0``. New checks run only the
-    current versions (``yoetz.protocol.policy_packs``), but a recorded check or finding, a check
+    current versions (``finishup.protocol.policy_packs``), but a recorded check or finding, a check
     result replayed from the ledger, and a result an earlier 0.3 service shaped keep the identity
     they were written with, so the active result and event contracts admit both. A pack named by
     a constant ``policy_id`` admits only its own lineage; a shared definition admits the union.
     """
 
-    from yoetz.protocol.policy_packs import RECORDED_POLICY_PACKS, RECORDED_POLICY_VERSION_VALUES
+    from finishup.protocol.policy_packs import RECORDED_POLICY_PACKS, RECORDED_POLICY_VERSION_VALUES
 
     def admit(node: JsonValue) -> None:
         if isinstance(node, list):
@@ -2134,7 +2150,7 @@ def _admit_recorded_policy_identities(document: dict[str, JsonValue]) -> None:
 def _select_current_policy_packs(document: dict[str, JsonValue]) -> None:
     """A check request selects only the pack versions new checks run."""
 
-    from yoetz.protocol.policy_packs import CURRENT_POLICY_PACKS
+    from finishup.protocol.policy_packs import CURRENT_POLICY_PACKS
 
     properties = cast(dict[str, JsonValue], document["properties"])
     policy_packs = cast(dict[str, JsonValue], properties["policy_packs"])
@@ -2146,7 +2162,7 @@ def _select_current_policy_packs(document: dict[str, JsonValue]) -> None:
 def _check_totals_schema() -> dict[str, JsonValue]:
     """Closed structural counters; prose and caller-defined keys are never admitted."""
 
-    from yoetz.domain.check_totals import CHECK_TOTAL_FLAG_KEYS, CHECK_TOTAL_KEYS
+    from finishup.domain.check_totals import CHECK_TOTAL_FLAG_KEYS, CHECK_TOTAL_KEYS
 
     groups: dict[str, JsonValue] = {}
     for group, keys in sorted(CHECK_TOTAL_KEYS.items()):
@@ -2179,7 +2195,7 @@ def _check_totals_schema() -> dict[str, JsonValue]:
 def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the persisted Part 2 reviewer fields to the new check event version."""
 
-    from yoetz.protocol.models import MAX_REVIEW_TEXT_BYTES
+    from finishup.protocol.models import MAX_REVIEW_TEXT_BYTES
 
     document = _check_recorded_v1_3_schema(entry)
     definitions = cast(dict[str, JsonValue], document["$defs"])
@@ -2243,6 +2259,7 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     }
     _add_semantic_redacted_values(definitions, properties)
     _add_semantic_route_required(properties)
+    _add_check_review_mode(definitions, properties)
     _add_deliverable_states(definitions, properties)
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
@@ -3068,6 +3085,7 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     definitions = cast(dict[str, JsonValue], document["$defs"])
     binding = cast(dict[str, JsonValue], definitions["semantic_binding"])
     _add_review_input_manifest_to_check_result(document)
+    _admit_current_launcher_heads(definitions)
     for branch in cast(list[JsonValue], binding["oneOf"]):
         if not isinstance(branch, dict):
             continue
@@ -3196,7 +3214,7 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "type": "array",
         "uniqueItems": True,
     }
-    from yoetz.protocol.models import MISSING_ITEM_AVAILABILITIES
+    from finishup.protocol.models import MISSING_ITEM_AVAILABILITIES
 
     # Issue #907: what an insufficient_packet review named as missing, as a check limitation.
     # Additive and optional on this unreleased version, like advisory_notes above.
@@ -3359,6 +3377,57 @@ def _add_semantic_route_required(properties: dict[str, JsonValue]) -> None:
     properties["semantic_route_required"] = {"type": "boolean"}
 
 
+def _add_check_review_mode(
+    definitions: dict[str, JsonValue], properties: dict[str, JsonValue]
+) -> None:
+    """ADR-049: the conversation review mode one check ran in and why (unreleased 1.4.0).
+
+    Optional and additive: closed tokens and one event id, never prose. ``local_reason`` appears
+    only on a local check that was asked to run AI-powered review; ``switch_event_id`` exactly
+    when the conversation's own switch chose the mode.
+    """
+
+    definitions["check_review_mode"] = {
+        "additionalProperties": False,
+        "allOf": [
+            {
+                "if": {"properties": {"source": {"const": "conversation_switch"}}},
+                "then": {"required": ["switch_event_id"]},
+                "else": {"not": {"required": ["switch_event_id"]}},
+            },
+            {
+                "if": {"required": ["local_reason"]},
+                "then": {"properties": {"mode": {"const": "local"}}},
+            },
+        ],
+        "properties": {
+            "local_reason": {
+                "enum": [
+                    "ai_review_not_set_up",
+                    "owner_local_only",
+                    "review_disabled",
+                    "route_local_only",
+                ],
+                "type": "string",
+            },
+            "mode": {"enum": ["ai_powered", "local"], "type": "string"},
+            "source": {
+                "enum": ["check_request", "conversation_default", "conversation_switch"],
+                "type": "string",
+            },
+            "switch_event_id": {
+                "pattern": (
+                    "^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                ),
+                "type": "string",
+            },
+        },
+        "required": ["mode", "source"],
+        "type": "object",
+    }
+    properties["review_mode"] = {"$ref": "#/$defs/check_review_mode"}
+
+
 def _fact_lineage_definition() -> dict[str, JsonValue]:
     """ADR-045: where one derived fact came from. Closed tokens, counts and ids; never a path."""
 
@@ -3448,7 +3517,12 @@ def _add_deliverable_states(
     never its path. ``undeclared_references`` (tb4n4, #1044, added in place on the unreleased
     1.4.0) is the one path text: the root-relative files the change created that this source
     deliverable names and no item declares, so the receipt and the Stop gate can name them.
-    Absent on a check that read no declared output file, so those checks keep their bytes.
+    ``undeclared_reference_ambiguous`` (tb4n5, ADR-035 amendment, also in place) counts created
+    files the deliverable names only by an ambiguous file name; never a name.
+    ``undeclared_references_created_in_task`` is read-compatibility only: intermediate builds
+    (857a712de) wrote it before the provenance was withdrawn, so those ledgers still decode; no
+    build produces it now and it grants nothing. Absent on a check that read no declared output
+    file, so those checks keep their bytes.
     """
 
     count: dict[str, JsonValue] = {"maximum": 9007199254740991, "minimum": 0, "type": "integer"}
@@ -3498,6 +3572,13 @@ def _add_deliverable_states(
                 "type": "array",
                 "uniqueItems": True,
             },
+            "undeclared_reference_ambiguous": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer",
+            },
+            # Read-compatibility only (857a712de wrote it; nothing produces it now).
+            "undeclared_references_created_in_task": {"const": True},
             "unreviewable": {"const": True},
         },
         "required": ["basis", "item_index", "obligation_id"],
@@ -3756,6 +3837,7 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     values.sort(key=lambda item: str(item).encode("ascii"))
     _add_semantic_redacted_values(definitions, properties)
     _add_semantic_route_required(properties)
+    _add_check_review_mode(definitions, properties)
     _add_check_closure_verdict(definitions)
     definitions["fact_lineage"] = _fact_lineage_definition()
     properties["fact_lineage"] = _fact_lineage_array()
@@ -4203,6 +4285,8 @@ def _add_review_input_continuation(definitions: dict[str, JsonValue]) -> None:
                     "maxItems": 4,
                     "minItems": 4,
                     "prefixItems": [
+                        # Frozen legacy identifier (ADR-048): the released head shape, widened
+                        # by ``_admit_current_launcher_heads`` in every unreleased version.
                         {"const": "yoetz"},
                         {"const": "publish-work"},
                         {"const": "--input"},
@@ -4930,7 +5014,9 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_closure_verdict(definitions)
     _add_status_finding_frontier(definitions)
     _add_review_input_continuation(definitions)
+    _admit_current_launcher_heads(definitions)
     _add_status_credential_heuristic(definitions)
+    _add_status_review_mode(definitions)
     _add_status_requested_item_role(definitions)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
@@ -4960,6 +5046,55 @@ def _add_setup_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
         properties = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branch)["properties"])
         if "grant_state" in properties:
             properties["credential_heuristic"] = _credential_heuristic_pair_schema()
+
+
+def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
+    """ADR-049: this conversation's review mode, the owner's setting and the latest switch.
+
+    Optional and additive, closed tokens and ids only. ``mode`` is what the next check runs in;
+    ``requested`` is the conversation's default or latest switch; ``local_reason`` says why a
+    conversation is local. ``setting_explicit`` is whether the owner chose ``setting`` (a policy
+    that predates it has the released reading). ``switch_event_id`` and ``switch_sequence`` name
+    the latest switch.
+    """
+
+    definitions["status_review_mode"] = {
+        "additionalProperties": False,
+        "properties": {
+            "ai_review_available": {"type": "boolean"},
+            "local_reason": {
+                "enum": [
+                    "ai_review_not_set_up",
+                    "conversation_default",
+                    "owner_local_only",
+                    "review_disabled",
+                    "route_local_only",
+                    "switched_to_local",
+                ],
+                "type": "string",
+            },
+            "mode": {"enum": ["ai_powered", "local"], "type": "string"},
+            "requested": {"enum": ["ai_powered", "local"], "type": "string"},
+            "setting": {
+                "enum": ["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"],
+                "type": "string",
+            },
+            "setting_explicit": {"type": "boolean"},
+            "switch_event_id": {
+                "pattern": (
+                    "^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                ),
+                "type": "string",
+            },
+            "switch_sequence": {"pattern": "^(0|[1-9][0-9]{0,15})$", "type": "string"},
+        },
+        "required": ["ai_review_available", "mode", "requested", "setting", "setting_explicit"],
+        "type": "object",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["review_mode"] = {
+        "$ref": "#/$defs/status_review_mode"
+    }
 
 
 def _add_status_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
@@ -5510,7 +5645,7 @@ def _add_status_semantic_progress(definitions: dict[str, JsonValue]) -> None:
     """Add optional structural AI-powered review progress to check operation pages (#571 A2)."""
 
     models = __import__(
-        "yoetz.protocol.models", fromlist=["SemanticProgressPhase", "SemanticReason"]
+        "finishup.protocol.models", fromlist=["SemanticProgressPhase", "SemanticReason"]
     )
     phases = [phase.value for phase in models.SemanticProgressPhase]
     reasons = sorted(
@@ -5739,6 +5874,35 @@ def _add_status_operation_admission(definitions: dict[str, JsonValue]) -> None:
     )
 
 
+# Protocol 0.1 shipped as Yoetz and the product is now FinishUP (ADR-048). The released contracts
+# fix the launcher head of every emitted command and the receipt package name to the pre-rename
+# spelling; the unreleased versions below name the current spelling and still admit the legacy one
+# a pre-rename development service emitted or a stored receipt carries.
+def _admit_current_launcher_heads(definitions: dict[str, JsonValue]) -> None:
+    """Widen each CHECK continuation command head to the current or the legacy launcher."""
+
+    continuation = cast(dict[str, JsonValue], definitions["continuation"])
+    for branch in cast(list[JsonValue], continuation["oneOf"]):
+        properties = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branch)["properties"])
+        command = cast(dict[str, JsonValue], properties["command"])
+        prefix = cast(list[JsonValue], command["prefixItems"])
+        # Frozen legacy identifier (ADR-048): the released continuation head.
+        if prefix[0] != {"const": "yoetz"}:
+            raise SchemaGenerationError("continuation_command_head_changed")
+        prefix[0] = {"enum": ["finishup", "yoetz"], "type": "string"}
+
+
+def _admit_current_receipt_package_name(definitions: dict[str, JsonValue]) -> None:
+    """Widen the receipt version slice package name to the current or the legacy distribution."""
+
+    version_slice = cast(dict[str, JsonValue], definitions["version_slice"])
+    properties = cast(dict[str, JsonValue], version_slice["properties"])
+    # Frozen legacy identifier (ADR-048): the released receipt package name.
+    if properties["package_name"] != {"const": "yoetz"}:
+        raise SchemaGenerationError("receipt_package_name_changed")
+    properties["package_name"] = {"enum": ["finishup", "yoetz"], "type": "string"}
+
+
 def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the recorded child outcome section to the immutable receipt document."""
 
@@ -5747,6 +5911,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "receipts/receipt-document-1.2.0.schema.json",
     )
     definitions = cast(dict[str, JsonValue], document["$defs"])
+    _admit_current_receipt_package_name(definitions)
     definitions["child_finding"] = _lineage_child_finding_schema()
     definitions["receipt_child"] = {
         "additionalProperties": False,
@@ -6004,11 +6169,13 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
 
 
 def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
-    return _simple_versioned_schema(
+    document = _simple_versioned_schema(
         entry,
         "operations/receipt-result-1.2.0.schema.json",
         {"receipt-document-1.2.0": "receipt-document-1.3.0"},
     )
+    _admit_current_receipt_package_name(cast(dict[str, JsonValue], document["$defs"]))
+    return document
 
 
 def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -6017,6 +6184,23 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
         "operations/publish-work-request-1.1.0.schema.json",
         {"event-draft-1.1.0": "event-draft-1.2.0"},
     )
+
+
+def _decision_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Add the required ``review_mode`` switch to the released decision shape (ADR-049).
+
+    Derived from the frozen 1.0.0 bytes; every other field is unchanged. A decision rides 1.1.0
+    iff it switches the conversation's review mode, so 1.1.0 requires the field.
+    """
+
+    document = _load_versioned_template(entry, "events/decision-recorded-1.0.0.schema.json")
+    properties = cast(dict[str, JsonValue], document["properties"])
+    properties["review_mode"] = {"enum": ["ai_powered", "local"], "type": "string"}
+    required = cast(list[JsonValue], document.setdefault("required", []))
+    if "review_mode" not in required:
+        required.append("review_mode")
+    document["title"] = f"Yoetz decision recorded {entry.schema_version}"
+    return document
 
 
 def _obligation_published_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -6314,6 +6498,82 @@ def _publish_work_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _review_packet_row_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """The inner items[] rows of yoetz.review-packet-case/2, not the outer egress case."""
+
+    source = _load_versioned_template(entry, "privacy/outbound-case-1.2.0.schema.json")
+    definitions = cast(dict[str, JsonValue], source["$defs"])
+    item = cast(dict[str, JsonValue], definitions["content_item"])
+    from finishup.domain.privacy import DataCategory
+
+    definitions["data_category"] = {
+        "type": "string",
+        "enum": [category.value for category in DataCategory],
+    }
+    properties = dict(cast(dict[str, JsonValue], item["properties"]))
+    properties.update(
+        content_bytes={"type": "integer", "minimum": 0, "maximum": 131072},
+        occurred_order={"type": "integer", "minimum": 0},
+        latest_for={"$ref": "#/$defs/opaque_ref"},
+        superseded_by={"$ref": "#/$defs/subject_refs"},
+        follow_up_supplied={"type": "boolean", "const": True},
+        transformations={
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "before_bytes": {"type": "integer", "minimum": 0},
+                    "after_bytes": {"type": "integer", "minimum": 0},
+                    "kind": {"const": "redacted"},
+                    "reason": {"const": "sensitive_redacted"},
+                },
+                "required": ["before_bytes", "after_bytes", "kind", "reason"],
+            },
+        },
+    )
+    return _normalize(
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "description": "Provider-bound items[] row for yoetz.review-packet-case/2. The builder emits follow_up_supplied only as true; absence remains compatible with older rows.",
+            "$defs": {
+                key: definitions[key]
+                for key in (
+                    "data_category",
+                    "digest",
+                    "item_id",
+                    "opaque_ref",
+                    "subject_refs",
+                    "subject_ref",
+                )
+            },
+            "properties": properties,
+            "required": [
+                "category",
+                "content",
+                "content_bytes",
+                "content_digest",
+                "item_id",
+                "linked_subject_refs",
+                "occurred_order",
+                "section",
+                "source_kind",
+                "source_ref",
+            ],
+            "allOf": [
+                {
+                    "if": {"required": ["follow_up_supplied"]},
+                    "then": {"properties": {"section": {"const": "excerpt"}}},
+                }
+            ],
+        },
+        entry,
+    )
+
+
 def _outbound_case_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add observation provenance to outbound-case v1.1 without rewriting v1.0."""
 
@@ -6353,7 +6613,7 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     packet's id list and its one-entry-per-finding rulable list are new.
     """
 
-    from yoetz.ports.semantic import MAX_PRIOR_FINDING_ITEMS, MAX_PRIOR_FINDING_REFS
+    from finishup.ports.semantic import MAX_PRIOR_FINDING_ITEMS, MAX_PRIOR_FINDING_REFS
 
     document = _load_versioned_template(entry, "privacy/outbound-case-1.1.0.schema.json")
     try:
@@ -6402,8 +6662,8 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) -> None:
     """Add the metadata-only composed/provider-bound input manifest (issues #951/#907)."""
 
-    from yoetz.ports.semantic import MAX_REVIEW_INPUT_SECTION_ITEMS, MAX_SEMANTIC_CASE_ITEMS
-    from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
+    from finishup.ports.semantic import MAX_REVIEW_INPUT_SECTION_ITEMS, MAX_SEMANTIC_CASE_ITEMS
+    from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
 
     definitions = cast(dict[str, JsonValue], document["$defs"])
     # A section lists every selected item id. The prior-findings section alone can hold sixteen
@@ -6827,7 +7087,7 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 # The exact catalog is enforced by the runtime model. Keep the advertised schema
                 # compact: emitting every heading anchor as an enum would put the full guidance
                 # index back into each host tool declaration (#969).
-                "pattern": r"^yoetz://guidance/[a-z0-9.-]+\.md(?:#[a-z0-9-]+)?$",
+                "pattern": r"^(?:finishup|yoetz)://guidance/[a-z0-9.-]+\.md(?:#[a-z0-9-]+)?$",
                 "type": "string",
             },
             "success": {
@@ -6849,6 +7109,7 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                                     "page_count",
                                     "complete",
                                     "continuation",
+                                    "sections",
                                 )
                             ]
                         },
@@ -6881,6 +7142,11 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                         },
                         "then": {"required": ["continuation"]},
                     },
+                    {
+                        # tb4n5: only page zero of a paged read names the resource's sections.
+                        "if": {"required": ["sections"]},
+                        "then": {"properties": {"page": {"const": "0"}}},
+                    },
                 ],
                 "properties": {
                     "byte_count": {"maximum": 65536, "minimum": 0, "type": "integer"},
@@ -6900,6 +7166,12 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     },
                     "page_size": {"$ref": "#/$defs/page_size"},
                     "revision": {"$ref": "#/$defs/digest"},
+                    "sections": {
+                        "items": {"$ref": "#/$defs/section"},
+                        "maxItems": _MAX_GUIDANCE_SECTIONS,
+                        "minItems": 1,
+                        "type": "array",
+                    },
                     "text": {"maxLength": 65536, "minLength": 0, "type": "string"},
                     "total_byte_count": {
                         "maximum": _MAX_GUIDANCE_DOCUMENT_BYTES,
@@ -6909,6 +7181,19 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     "uri": {"$ref": "#/$defs/guidance_resource_uri"},
                 },
                 "required": ["byte_count", "media_type", "ok", "text", "uri"],
+                "type": "object",
+            },
+            "section": {
+                "additionalProperties": False,
+                "properties": {
+                    "byte_count": {
+                        "maximum": _MAX_GUIDANCE_DOCUMENT_BYTES,
+                        "minimum": 0,
+                        "type": "integer",
+                    },
+                    "uri": {"$ref": "#/$defs/guidance_resource_uri"},
+                },
+                "required": ["byte_count", "uri"],
                 "type": "object",
             },
             "canonical_positive_uint": {
@@ -6961,7 +7246,7 @@ def _read_guidance_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
             "GuidanceResourceUri": {
                 # Runtime validation admits only the exact registered catalog. A pattern keeps
                 # the 100+ bounded heading topics from inflating the host-visible input schema.
-                "pattern": r"^yoetz://guidance/[a-z0-9.-]+\.md(?:#[a-z0-9-]+)?$",
+                "pattern": r"^(?:finishup|yoetz)://guidance/[a-z0-9.-]+\.md(?:#[a-z0-9-]+)?$",
                 "type": "string",
             },
             "canonical_uint": {
@@ -6989,7 +7274,7 @@ def _read_guidance_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
             "revision": {"$ref": "#/$defs/digest"},
             "uri": {
                 "$ref": "#/$defs/GuidanceResourceUri",
-                "description": "One registered URI such as yoetz://guidance/workflow.md.",
+                "description": "One registered URI such as finishup://guidance/workflow.md.",
             },
         },
         "required": ["uri"],
@@ -7424,7 +7709,7 @@ def _control_v2_8_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
 
 # The finite structural-queue bounds a 2.9 selection runtime may report (issue #828).  Mirrored
-# from ``yoetz.domain.observation_budget`` as reviewable literals rather than imported.
+# from ``finishup.domain.observation_budget`` as reviewable literals rather than imported.
 _OBSERVATION_CAPACITY_MINIMUM: Final = 64
 _OBSERVATION_CAPACITY_MAXIMUM: Final = 8_192
 _OBSERVATION_CAPACITY_LABELS: Final[tuple[str, ...]] = ("standard", "larger", "largest", "custom")
@@ -7654,8 +7939,8 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         # the agent's own notes, and a shell command that writes the workspace (ADR-045). The enum
         # is the hook's own closed set: a value the hook emits and this wire refuses fails client
         # validation on every drain pass and never reaches the ledger (#1039).
-        from yoetz.domain.command_segments import MAX_COMMAND_COMMITMENTS
-        from yoetz.domain.write_scope import WRITE_SCOPES
+        from finishup.domain.command_segments import MAX_COMMAND_COMMITMENTS
+        from finishup.domain.write_scope import WRITE_SCOPES
 
         fields["install_target"] = {
             "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
@@ -7868,7 +8153,7 @@ def _admit_privacy_audit_unreadable(
     error_branches.insert(error_branches.index(template) + 1, branch)
 
 
-# The local-disclosure purpose grammar owned by ``yoetz.domain.privacy``.  Mirrored here rather
+# The local-disclosure purpose grammar owned by ``finishup.domain.privacy``.  Mirrored here rather
 # than imported so the generated bytes stay a reviewable literal; the conformance suite asserts
 # the two stay equal.
 LOCAL_DISCLOSURE_PURPOSE_PATTERN: Final = "^[a-z][a-z0-9_-]{0,127}$"
@@ -8170,13 +8455,56 @@ def _publish_work_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonVal
     document = _load_versioned_template(entry, "operations/publish-work-result-1.0.0.schema.json")
     _admit_recorded_policy_identities(document)
     _add_publish_blocker_notices(document)
+    _add_publish_action_notices(document)
     return document
+
+
+def _add_publish_action_notices(document: dict[str, JsonValue]) -> None:
+    """Optional fixed publish-time notices for an action no result names (tb4n5 follow-up)."""
+
+    from finishup.protocol.models import PUBLISH_ACTION_NOTICE_TEXTS
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    definitions["action_id"] = {
+        "pattern": ("^act_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+        "type": "string",
+    }
+    definitions["action_notice"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "notice": {"const": notice},
+                    "text": {"const": text},
+                }
+            }
+            for notice, text in sorted(PUBLISH_ACTION_NOTICE_TEXTS.items())
+        ],
+        "properties": {
+            "action_id": {"$ref": "#/$defs/action_id"},
+            "notice": {"enum": sorted(PUBLISH_ACTION_NOTICE_TEXTS), "type": "string"},
+            "text": {"type": "string"},
+        },
+        "required": ["action_id", "notice", "text"],
+        "type": "object",
+    }
+    for branch in ("success", "dry_run"):
+        properties = cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
+        )
+        properties["action_notices"] = {
+            "items": {"$ref": "#/$defs/action_notice"},
+            # One row per unpaired action: the batch bound (MAX_EVENTS_PER_BATCH), never a cut.
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array",
+        }
 
 
 def _add_publish_blocker_notices(document: dict[str, JsonValue]) -> None:
     """Optional fixed publish-time notices for a ``yoetz-blocker`` line (issue #985)."""
 
-    from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+    from finishup.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
 
     definitions = cast(dict[str, JsonValue], document["$defs"])
     definitions["obligation_id"] = {
@@ -9007,6 +9335,14 @@ def _status_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
 _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
     _RegistryEntry(
+        "privacy/review-packet-row-2.0.0.schema.json",
+        "review-packet-row",
+        "2.0.0",
+        "request_result",
+        "outbound-case",
+        lambda: dict,
+    ),
+    _RegistryEntry(
         "common/actor-assertion-1.0.0.schema.json",
         "actor-assertion",
         "1.0.0",
@@ -9014,7 +9350,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "common-value",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ActorAssertionModel"]
+                "finishup.protocol.models", fromlist=["ActorAssertionModel"]
             ).ActorAssertionModel
         ),
     ),
@@ -9024,7 +9360,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "common-value",
-        lambda: __import__("yoetz.protocol.models", fromlist=["ClientInfoModel"]).ClientInfoModel,
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["ClientInfoModel"]).ClientInfoModel
+        ),
     ),
     _RegistryEntry(
         "common/coverage-1.0.0.schema.json",
@@ -9032,7 +9370,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "common-value",
-        lambda: __import__("yoetz.protocol.coverage", fromlist=["Coverage"]).Coverage,
+        lambda: __import__("finishup.protocol.coverage", fromlist=["Coverage"]).Coverage,
     ),
     _RegistryEntry(
         "common/frontier-1.0.0.schema.json",
@@ -9040,7 +9378,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "common-value",
-        lambda: __import__("yoetz.domain.values", fromlist=["Frontier"]).Frontier,
+        lambda: __import__("finishup.domain.values", fromlist=["Frontier"]).Frontier,
     ),
     _RegistryEntry(
         "common/lineage-acceptance-1.0.0.schema.json",
@@ -9050,7 +9388,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "common-value",
         lambda: (
             __import__(
-                "yoetz.domain.coordination", fromlist=["LineageAcceptance"]
+                "finishup.domain.coordination", fromlist=["LineageAcceptance"]
             ).LineageAcceptance
         ),
     ),
@@ -9060,7 +9398,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "common-value",
-        lambda: __import__("yoetz.domain.coordination", fromlist=["LineageOrigin"]).LineageOrigin,
+        lambda: (
+            __import__("finishup.domain.coordination", fromlist=["LineageOrigin"]).LineageOrigin
+        ),
     ),
     _RegistryEntry(
         "common/operation-result-1.0.0.schema.json",
@@ -9076,7 +9416,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "common-value",
-        lambda: __import__("yoetz.domain.coordination", fromlist=["SessionHealth"]).SessionHealth,
+        lambda: (
+            __import__("finishup.domain.coordination", fromlist=["SessionHealth"]).SessionHealth
+        ),
     ),
     _RegistryEntry(
         "common/work-state-1.0.0.schema.json",
@@ -9084,7 +9426,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "common-value",
-        lambda: __import__("yoetz.domain.coordination", fromlist=["WorkState"]).WorkState,
+        lambda: __import__("finishup.domain.coordination", fromlist=["WorkState"]).WorkState,
     ),
     _RegistryEntry(
         "common/public-error-1.0.0.schema.json",
@@ -9094,7 +9436,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "common-value",
         lambda: (
             __import__(
-                "yoetz.protocol.errors", fromlist=["PublicOperationError"]
+                "finishup.protocol.errors", fromlist=["PublicOperationError"]
             ).PublicOperationError
         ),
     ),
@@ -9104,7 +9446,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "common-value",
-        lambda: __import__("yoetz.domain.values", fromlist=["SubjectStateRef"]).SubjectStateRef,
+        lambda: __import__("finishup.domain.values", fromlist=["SubjectStateRef"]).SubjectStateRef,
     ),
     _RegistryEntry(
         "config/yoetz-config-1.0.0.schema.json",
@@ -9112,7 +9454,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "config",
         "configuration",
-        lambda: __import__("yoetz.config.models", fromlist=["YoetzConfig"]).YoetzConfig,
+        lambda: __import__("finishup.config.models", fromlist=["FinishUpConfig"]).FinishUpConfig,
     ),
     _RegistryEntry(
         "config/yoetz-config-1.1.0.schema.json",
@@ -9120,7 +9462,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "config",
         "configuration",
-        lambda: __import__("yoetz.config.models", fromlist=["YoetzConfig"]).YoetzConfig,
+        lambda: __import__("finishup.config.models", fromlist=["FinishUpConfig"]).FinishUpConfig,
     ),
     _RegistryEntry(
         "config/yoetz-config-1.2.0.schema.json",
@@ -9128,7 +9470,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.2.0",
         "config",
         "configuration",
-        lambda: __import__("yoetz.config.models", fromlist=["YoetzConfig"]).YoetzConfig,
+        lambda: __import__("finishup.config.models", fromlist=["FinishUpConfig"]).FinishUpConfig,
     ),
     _RegistryEntry(
         "config/yoetz-config-1.3.0.schema.json",
@@ -9136,7 +9478,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.3.0",
         "config",
         "configuration",
-        lambda: __import__("yoetz.config.models", fromlist=["YoetzConfig"]).YoetzConfig,
+        lambda: __import__("finishup.config.models", fromlist=["FinishUpConfig"]).FinishUpConfig,
     ),
     _RegistryEntry(
         "consent/catalog-2.0.0.schema.json",
@@ -9178,7 +9520,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["ConsentCatalogModel"]
+                "finishup.protocol.consent", fromlist=["ConsentCatalogModel"]
             ).ConsentCatalogModel
         ),
     ),
@@ -9190,7 +9532,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["ConsentCatalogModel"]
+                "finishup.protocol.consent", fromlist=["ConsentCatalogModel"]
             ).ConsentCatalogModel
         ),
     ),
@@ -9202,7 +9544,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.chat_user_authority", fromlist=["ChatUserAttestationModel"]
+                "finishup.protocol.chat_user_authority", fromlist=["ChatUserAttestationModel"]
             ).ChatUserAttestationModel
         ),
     ),
@@ -9246,7 +9588,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["AgentSafePendingModel"]
+                "finishup.protocol.consent", fromlist=["AgentSafePendingModel"]
             ).AgentSafePendingModel
         ),
     ),
@@ -9258,7 +9600,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["AgentSafePendingModel"]
+                "finishup.protocol.consent", fromlist=["AgentSafePendingModel"]
             ).AgentSafePendingModel
         ),
     ),
@@ -9302,7 +9644,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["ConsentPrepareResultModel"]
+                "finishup.protocol.consent", fromlist=["ConsentPrepareResultModel"]
             ).ConsentPrepareResultModel
         ),
     ),
@@ -9314,7 +9656,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["ConsentPrepareResultModel"]
+                "finishup.protocol.consent", fromlist=["ConsentPrepareResultModel"]
             ).ConsentPrepareResultModel
         ),
     ),
@@ -9358,7 +9700,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["ConsentReviewResultModel"]
+                "finishup.protocol.consent", fromlist=["ConsentReviewResultModel"]
             ).ConsentReviewResultModel
         ),
     ),
@@ -9370,7 +9712,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.protocol.consent", fromlist=["ConsentReviewResultModel"]
+                "finishup.protocol.consent", fromlist=["ConsentReviewResultModel"]
             ).ConsentReviewResultModel
         ),
     ),
@@ -9413,7 +9755,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "local-control",
         lambda: (
-            __import__("yoetz.protocol.consent", fromlist=["ConsentStatusModel"]).ConsentStatusModel
+            __import__(
+                "finishup.protocol.consent", fromlist=["ConsentStatusModel"]
+            ).ConsentStatusModel
         ),
     ),
     _RegistryEntry(
@@ -9423,7 +9767,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "local-control",
         lambda: (
-            __import__("yoetz.protocol.consent", fromlist=["ConsentStatusModel"]).ConsentStatusModel
+            __import__(
+                "finishup.protocol.consent", fromlist=["ConsentStatusModel"]
+            ).ConsentStatusModel
         ),
     ),
     _RegistryEntry(
@@ -9432,7 +9778,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "event",
         "persisted-envelope",
-        lambda: __import__("yoetz.domain.events", fromlist=["AcceptedEvent"]).AcceptedEvent,
+        lambda: __import__("finishup.domain.events", fromlist=["AcceptedEvent"]).AcceptedEvent,
     ),
     _RegistryEntry(
         "observations/routine-read-summary-1.0.0.schema.json",
@@ -9442,7 +9788,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "local-control",
         lambda: (
             __import__(
-                "yoetz.domain.observation", fromlist=["RoutineReadSummary"]
+                "finishup.domain.observation", fromlist=["RoutineReadSummary"]
             ).RoutineReadSummary
         ),
     ),
@@ -9454,7 +9800,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ActionRecordedPayload"]
+                "finishup.domain.events", fromlist=["ActionRecordedPayload"]
             ).ActionRecordedPayload
         ),
     ),
@@ -9466,7 +9812,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ChildAcceptedPayload"]
+                "finishup.domain.events", fromlist=["ChildAcceptedPayload"]
             ).ChildAcceptedPayload
         ),
     ),
@@ -9478,7 +9824,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ChildDependenciesRecordedPayload"]
+                "finishup.domain.events", fromlist=["ChildDependenciesRecordedPayload"]
             ).ChildDependenciesRecordedPayload
         ),
     ),
@@ -9490,7 +9836,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CoordinationContextRecordedPayload"]
+                "finishup.domain.events", fromlist=["CoordinationContextRecordedPayload"]
             ).CoordinationContextRecordedPayload
         ),
     ),
@@ -9502,7 +9848,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CoordinationDispositionRecordedPayload"]
+                "finishup.domain.events", fromlist=["CoordinationDispositionRecordedPayload"]
             ).CoordinationDispositionRecordedPayload
         ),
     ),
@@ -9514,7 +9860,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CoordinationObligationDeclaredPayload"]
+                "finishup.domain.events", fromlist=["CoordinationObligationDeclaredPayload"]
             ).CoordinationObligationDeclaredPayload
         ),
     ),
@@ -9526,7 +9872,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ChildRejectedPayload"]
+                "finishup.domain.events", fromlist=["ChildRejectedPayload"]
             ).ChildRejectedPayload
         ),
     ),
@@ -9538,7 +9884,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ChildWrittenOffPayload"]
+                "finishup.domain.events", fromlist=["ChildWrittenOffPayload"]
             ).ChildWrittenOffPayload
         ),
     ),
@@ -9550,7 +9896,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["AssignmentRecordedPayload"]
+                "finishup.domain.events", fromlist=["AssignmentRecordedPayload"]
             ).AssignmentRecordedPayload
         ),
     ),
@@ -9562,7 +9908,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CheckRecordedPayload"]
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
             ).CheckRecordedPayload
         ),
     ),
@@ -9574,7 +9920,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CheckRecordedPayload"]
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
             ).CheckRecordedPayload
         ),
     ),
@@ -9586,7 +9932,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CheckRecordedPayload"]
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
             ).CheckRecordedPayload
         ),
     ),
@@ -9598,7 +9944,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CheckRecordedPayload"]
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
             ).CheckRecordedPayload
         ),
     ),
@@ -9610,7 +9956,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["CheckRecordedPayload"]
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
             ).CheckRecordedPayload
         ),
     ),
@@ -9622,7 +9968,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ClaimRecordedPayload"]
+                "finishup.domain.events", fromlist=["ClaimRecordedPayload"]
             ).ClaimRecordedPayload
         ),
     ),
@@ -9634,7 +9980,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ClaimRecordedPayloadV1_1"]
+                "finishup.domain.events", fromlist=["ClaimRecordedPayloadV1_1"]
             ).ClaimRecordedPayloadV1_1
         ),
     ),
@@ -9646,7 +9992,19 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["DecisionRecordedPayload"]
+                "finishup.domain.events", fromlist=["DecisionRecordedPayload"]
+            ).DecisionRecordedPayload
+        ),
+    ),
+    _RegistryEntry(
+        "events/decision-recorded-1.1.0.schema.json",
+        "decision-recorded",
+        "1.1.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "finishup.domain.events", fromlist=["DecisionRecordedPayload"]
             ).DecisionRecordedPayload
         ),
     ),
@@ -9658,7 +10016,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["DelegationCancelledPayload"]
+                "finishup.domain.events", fromlist=["DelegationCancelledPayload"]
             ).DelegationCancelledPayload
         ),
     ),
@@ -9670,7 +10028,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["DelegationDeclaredPayload"]
+                "finishup.domain.events", fromlist=["DelegationDeclaredPayload"]
             ).DelegationDeclaredPayload
         ),
     ),
@@ -9680,7 +10038,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "event",
         "event-envelope",
-        lambda: __import__("yoetz.domain.events", fromlist=["EventDraft"]).EventDraft,
+        lambda: __import__("finishup.domain.events", fromlist=["EventDraft"]).EventDraft,
     ),
     _RegistryEntry(
         "events/event-draft-1.1.0.schema.json",
@@ -9688,7 +10046,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "event",
         "event-envelope",
-        lambda: __import__("yoetz.domain.events", fromlist=["EventDraft"]).EventDraft,
+        lambda: __import__("finishup.domain.events", fromlist=["EventDraft"]).EventDraft,
     ),
     _RegistryEntry(
         "events/event-draft-1.2.0.schema.json",
@@ -9696,7 +10054,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.2.0",
         "event",
         "event-envelope",
-        lambda: __import__("yoetz.domain.events", fromlist=["EventDraft"]).EventDraft,
+        lambda: __import__("finishup.domain.events", fromlist=["EventDraft"]).EventDraft,
     ),
     _RegistryEntry(
         "events/evidence-recorded-1.0.0.schema.json",
@@ -9706,7 +10064,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["EvidenceRecordedPayload"]
+                "finishup.domain.events", fromlist=["EvidenceRecordedPayload"]
             ).EvidenceRecordedPayload
         ),
     ),
@@ -9718,7 +10076,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["EvidenceRecordedPayload"]
+                "finishup.domain.events", fromlist=["EvidenceRecordedPayload"]
             ).EvidenceRecordedPayload
         ),
     ),
@@ -9730,7 +10088,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["EvidenceRecordedPayload"]
+                "finishup.domain.events", fromlist=["EvidenceRecordedPayload"]
             ).EvidenceRecordedPayload
         ),
     ),
@@ -9740,7 +10098,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "event",
         "event-payload",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "events/finding-recorded-1.1.0.schema.json",
@@ -9748,7 +10106,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "event",
         "event-payload",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "events/finding-recorded-1.2.0.schema.json",
@@ -9764,7 +10122,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.3.0",
         "event",
         "event-payload",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "events/finding-recorded-1.4.0.schema.json",
@@ -9772,7 +10130,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.4.0",
         "event",
         "event-payload",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "events/obligation-published-1.0.0.schema.json",
@@ -9782,7 +10140,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ObligationPublishedPayload"]
+                "finishup.domain.events", fromlist=["ObligationPublishedPayload"]
             ).ObligationPublishedPayload
         ),
     ),
@@ -9794,7 +10152,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ObligationPublishedPayload"]
+                "finishup.domain.events", fromlist=["ObligationPublishedPayload"]
             ).ObligationPublishedPayload
         ),
     ),
@@ -9804,7 +10162,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "event",
         "event-envelope",
-        lambda: __import__("yoetz.domain.events", fromlist=["UnknownEvent"]).UnknownEvent,
+        lambda: __import__("finishup.domain.events", fromlist=["UnknownEvent"]).UnknownEvent,
     ),
     _RegistryEntry(
         "events/opaque-unknown-event-draft-1.1.0.schema.json",
@@ -9812,7 +10170,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "event",
         "event-envelope",
-        lambda: __import__("yoetz.domain.events", fromlist=["UnknownEvent"]).UnknownEvent,
+        lambda: __import__("finishup.domain.events", fromlist=["UnknownEvent"]).UnknownEvent,
     ),
     _RegistryEntry(
         "events/opaque-unknown-event-draft-1.2.0.schema.json",
@@ -9820,7 +10178,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.2.0",
         "event",
         "event-envelope",
-        lambda: __import__("yoetz.domain.events", fromlist=["UnknownEvent"]).UnknownEvent,
+        lambda: __import__("finishup.domain.events", fromlist=["UnknownEvent"]).UnknownEvent,
     ),
     _RegistryEntry(
         "events/plan-published-1.0.0.schema.json",
@@ -9830,7 +10188,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["PlanPublishedPayload"]
+                "finishup.domain.events", fromlist=["PlanPublishedPayload"]
             ).PlanPublishedPayload
         ),
     ),
@@ -9842,7 +10200,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["PlanPublishedPayload"]
+                "finishup.domain.events", fromlist=["PlanPublishedPayload"]
             ).PlanPublishedPayload
         ),
     ),
@@ -9853,7 +10211,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event",
         "event-payload",
         lambda: (
-            __import__("yoetz.domain.events", fromlist=["PlanRevisedPayload"]).PlanRevisedPayload
+            __import__("finishup.domain.events", fromlist=["PlanRevisedPayload"]).PlanRevisedPayload
         ),
     ),
     _RegistryEntry(
@@ -9863,7 +10221,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event",
         "event-payload",
         lambda: (
-            __import__("yoetz.domain.events", fromlist=["PlanRevisedPayload"]).PlanRevisedPayload
+            __import__("finishup.domain.events", fromlist=["PlanRevisedPayload"]).PlanRevisedPayload
         ),
     ),
     _RegistryEntry(
@@ -9874,7 +10232,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ReceiptRecordedPayload"]
+                "finishup.domain.events", fromlist=["ReceiptRecordedPayload"]
             ).ReceiptRecordedPayload
         ),
     ),
@@ -9886,7 +10244,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["RedactionRecordedPayload"]
+                "finishup.domain.events", fromlist=["RedactionRecordedPayload"]
             ).RedactionRecordedPayload
         ),
     ),
@@ -9898,7 +10256,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ResponseRecordedPayload"]
+                "finishup.domain.events", fromlist=["ResponseRecordedPayload"]
             ).ResponseRecordedPayload
         ),
     ),
@@ -9910,7 +10268,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ResponseRecordedPayload"]
+                "finishup.domain.events", fromlist=["ResponseRecordedPayload"]
             ).ResponseRecordedPayload
         ),
     ),
@@ -9922,7 +10280,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["ResultRecordedPayload"]
+                "finishup.domain.events", fromlist=["ResultRecordedPayload"]
             ).ResultRecordedPayload
         ),
     ),
@@ -9934,7 +10292,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["SessionOpenedPayload"]
+                "finishup.domain.events", fromlist=["SessionOpenedPayload"]
             ).SessionOpenedPayload
         ),
     ),
@@ -9946,7 +10304,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["SessionOpenedPayload"]
+                "finishup.domain.events", fromlist=["SessionOpenedPayload"]
             ).SessionOpenedPayload
         ),
     ),
@@ -9958,7 +10316,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["SessionOpenedPayload"]
+                "finishup.domain.events", fromlist=["SessionOpenedPayload"]
             ).SessionOpenedPayload
         ),
     ),
@@ -9970,7 +10328,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["SessionResumedPayload"]
+                "finishup.domain.events", fromlist=["SessionResumedPayload"]
             ).SessionResumedPayload
         ),
     ),
@@ -9982,7 +10340,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["SessionResumedPayload"]
+                "finishup.domain.events", fromlist=["SessionResumedPayload"]
             ).SessionResumedPayload
         ),
     ),
@@ -9994,7 +10352,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["SessionResumedPayload"]
+                "finishup.domain.events", fromlist=["SessionResumedPayload"]
             ).SessionResumedPayload
         ),
     ),
@@ -10006,7 +10364,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["WorkAbandonedPayload"]
+                "finishup.domain.events", fromlist=["WorkAbandonedPayload"]
             ).WorkAbandonedPayload
         ),
     ),
@@ -10018,7 +10376,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["WorkCancelledPayload"]
+                "finishup.domain.events", fromlist=["WorkCancelledPayload"]
             ).WorkCancelledPayload
         ),
     ),
@@ -10028,7 +10386,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "event",
         "event-payload",
-        lambda: __import__("yoetz.domain.events", fromlist=["WorkClosedPayload"]).WorkClosedPayload,
+        lambda: (
+            __import__("finishup.domain.events", fromlist=["WorkClosedPayload"]).WorkClosedPayload
+        ),
     ),
     _RegistryEntry(
         "events/work-written-off-1.0.0.schema.json",
@@ -10038,7 +10398,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "event-payload",
         lambda: (
             __import__(
-                "yoetz.domain.events", fromlist=["WorkWrittenOffPayload"]
+                "finishup.domain.events", fromlist=["WorkWrittenOffPayload"]
             ).WorkWrittenOffPayload
         ),
     ),
@@ -10048,7 +10408,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "finding",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "findings/finding-1.1.0.schema.json",
@@ -10056,7 +10416,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "request_result",
         "finding",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "findings/finding-1.2.0.schema.json",
@@ -10072,7 +10432,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.3.0",
         "request_result",
         "finding",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "findings/finding-1.4.0.schema.json",
@@ -10080,7 +10440,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.4.0",
         "request_result",
         "finding",
-        lambda: __import__("yoetz.domain.findings", fromlist=["Finding"]).Finding,
+        lambda: __import__("finishup.domain.findings", fromlist=["Finding"]).Finding,
     ),
     _RegistryEntry(
         "findings/semantic-provenance-1.0.0.schema.json",
@@ -10089,7 +10449,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "semantic-provenance",
         lambda: (
-            __import__("yoetz.domain.findings", fromlist=["SemanticProvenance"]).SemanticProvenance
+            __import__(
+                "finishup.domain.findings", fromlist=["SemanticProvenance"]
+            ).SemanticProvenance
         ),
     ),
     _RegistryEntry(
@@ -10099,7 +10461,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "semantic-provenance",
         lambda: (
-            __import__("yoetz.domain.findings", fromlist=["SemanticProvenance"]).SemanticProvenance
+            __import__(
+                "finishup.domain.findings", fromlist=["SemanticProvenance"]
+            ).SemanticProvenance
         ),
     ),
     _RegistryEntry(
@@ -10109,7 +10473,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "semantic-provenance",
         lambda: (
-            __import__("yoetz.domain.findings", fromlist=["SemanticProvenance"]).SemanticProvenance
+            __import__(
+                "finishup.domain.findings", fromlist=["SemanticProvenance"]
+            ).SemanticProvenance
         ),
     ),
     _RegistryEntry(
@@ -10120,7 +10486,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "semantic-provenance",
         lambda: (
             __import__(
-                "yoetz.domain.findings", fromlist=["RuntimeAttemptEvidence"]
+                "finishup.domain.findings", fromlist=["RuntimeAttemptEvidence"]
             ).RuntimeAttemptEvidence
         ),
     ),
@@ -10132,7 +10498,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "semantic-provenance",
         lambda: (
             __import__(
-                "yoetz.domain.findings", fromlist=["RuntimeAttemptEvidence"]
+                "finishup.domain.findings", fromlist=["RuntimeAttemptEvidence"]
             ).RuntimeAttemptEvidence
         ),
     ),
@@ -10144,7 +10510,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "provider-judgment",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ProviderJudgmentEnvelopeModel"]
+                "finishup.protocol.models", fromlist=["ProviderJudgmentEnvelopeModel"]
             ).ProviderJudgmentEnvelopeModel
         ),
     ),
@@ -10156,7 +10522,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "provider-judgment",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ProviderJudgmentEnvelopeModel"]
+                "finishup.protocol.models", fromlist=["ProviderJudgmentEnvelopeModel"]
             ).ProviderJudgmentEnvelopeModel
         ),
     ),
@@ -10168,7 +10534,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "provider-judgment",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ProviderJudgmentEnvelopeModel"]
+                "finishup.protocol.models", fromlist=["ProviderJudgmentEnvelopeModel"]
             ).ProviderJudgmentEnvelopeModel
         ),
     ),
@@ -10179,7 +10545,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP input",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["CheckRequestModel"]).CheckRequestModel
+            __import__("finishup.protocol.models", fromlist=["CheckRequestModel"]).CheckRequestModel
         ),
     ),
     _RegistryEntry(
@@ -10189,7 +10555,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP input",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["CheckRequestModel"]).CheckRequestModel
+            __import__("finishup.protocol.models", fromlist=["CheckRequestModel"]).CheckRequestModel
         ),
     ),
     _RegistryEntry(
@@ -10198,7 +10564,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "MCP output",
-        lambda: __import__("yoetz.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel,
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel
+        ),
     ),
     _RegistryEntry(
         "operations/check-result-1.1.0.schema.json",
@@ -10206,7 +10574,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "request_result",
         "MCP output",
-        lambda: __import__("yoetz.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel,
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel
+        ),
     ),
     _RegistryEntry(
         "operations/check-result-1.2.0.schema.json",
@@ -10222,7 +10592,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.3.0",
         "request_result",
         "MCP output",
-        lambda: __import__("yoetz.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel,
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel
+        ),
     ),
     _RegistryEntry(
         "operations/check-result-1.4.0.schema.json",
@@ -10230,7 +10602,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.4.0",
         "request_result",
         "MCP output",
-        lambda: __import__("yoetz.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel,
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel
+        ),
     ),
     _RegistryEntry(
         "operations/closure-prepare-request-1.0.0.schema.json",
@@ -10240,7 +10614,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ClosurePrepareRequestModel"]
+                "finishup.protocol.models", fromlist=["ClosurePrepareRequestModel"]
             ).ClosurePrepareRequestModel
         ),
     ),
@@ -10252,7 +10626,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP output",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ClosurePrepareResultModel"]
+                "finishup.protocol.models", fromlist=["ClosurePrepareResultModel"]
             ).ClosurePrepareResultModel
         ),
     ),
@@ -10264,7 +10638,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["PublishWorkRequestModel"]
+                "finishup.protocol.models", fromlist=["PublishWorkRequestModel"]
             ).PublishWorkRequestModel
         ),
     ),
@@ -10276,7 +10650,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["PublishWorkRequestModel"]
+                "finishup.protocol.models", fromlist=["PublishWorkRequestModel"]
             ).PublishWorkRequestModel
         ),
     ),
@@ -10288,7 +10662,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["PublishWorkRequestModel"]
+                "finishup.protocol.models", fromlist=["PublishWorkRequestModel"]
             ).PublishWorkRequestModel
         ),
     ),
@@ -10300,7 +10674,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP output",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["PublishWorkResultModel"]
+                "finishup.protocol.models", fromlist=["PublishWorkResultModel"]
             ).PublishWorkResultModel
         ),
     ),
@@ -10312,7 +10686,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP output",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["PublishWorkResultModel"]
+                "finishup.protocol.models", fromlist=["PublishWorkResultModel"]
             ).PublishWorkResultModel
         ),
     ),
@@ -10324,7 +10698,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ReadGuidanceRequestModel"]
+                "finishup.protocol.models", fromlist=["ReadGuidanceRequestModel"]
             ).ReadGuidanceRequestModel
         ),
     ),
@@ -10336,7 +10710,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP output",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ReadGuidanceResultModel"]
+                "finishup.protocol.models", fromlist=["ReadGuidanceResultModel"]
             ).ReadGuidanceResultModel
         ),
     ),
@@ -10348,7 +10722,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ReadGuidanceRequestModel"]
+                "finishup.protocol.models", fromlist=["ReadGuidanceRequestModel"]
             ).ReadGuidanceRequestModel
         ),
     ),
@@ -10360,7 +10734,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP output",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ReadGuidanceResultModel"]
+                "finishup.protocol.models", fromlist=["ReadGuidanceResultModel"]
             ).ReadGuidanceResultModel
         ),
     ),
@@ -10372,7 +10746,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["ReceiptRequestModel"]
+                "finishup.protocol.models", fromlist=["ReceiptRequestModel"]
             ).ReceiptRequestModel
         ),
     ),
@@ -10383,7 +10757,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["ReceiptResultModel"]).ReceiptResultModel
+            __import__(
+                "finishup.protocol.models", fromlist=["ReceiptResultModel"]
+            ).ReceiptResultModel
         ),
     ),
     _RegistryEntry(
@@ -10393,7 +10769,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["ReceiptResultModel"]).ReceiptResultModel
+            __import__(
+                "finishup.protocol.models", fromlist=["ReceiptResultModel"]
+            ).ReceiptResultModel
         ),
     ),
     _RegistryEntry(
@@ -10411,7 +10789,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["ReceiptResultModel"]).ReceiptResultModel
+            __import__(
+                "finishup.protocol.models", fromlist=["ReceiptResultModel"]
+            ).ReceiptResultModel
         ),
     ),
     _RegistryEntry(
@@ -10422,7 +10802,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["RespondRequestModel"]
+                "finishup.protocol.models", fromlist=["RespondRequestModel"]
             ).RespondRequestModel
         ),
     ),
@@ -10433,7 +10813,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["RespondResultModel"]).RespondResultModel
+            __import__(
+                "finishup.protocol.models", fromlist=["RespondResultModel"]
+            ).RespondResultModel
         ),
     ),
     _RegistryEntry(
@@ -10444,7 +10826,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "MCP input",
         lambda: (
             __import__(
-                "yoetz.protocol.models", fromlist=["RespondRequestModel"]
+                "finishup.protocol.models", fromlist=["RespondRequestModel"]
             ).RespondRequestModel
         ),
     ),
@@ -10455,7 +10837,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["RespondResultModel"]).RespondResultModel
+            __import__(
+                "finishup.protocol.models", fromlist=["RespondResultModel"]
+            ).RespondResultModel
         ),
     ),
     _RegistryEntry(
@@ -10465,7 +10849,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP input",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StartRequestModel"]).StartRequestModel
+            __import__("finishup.protocol.models", fromlist=["StartRequestModel"]).StartRequestModel
         ),
     ),
     _RegistryEntry(
@@ -10475,7 +10859,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP input",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StartRequestModel"]).StartRequestModel
+            __import__("finishup.protocol.models", fromlist=["StartRequestModel"]).StartRequestModel
         ),
     ),
     _RegistryEntry(
@@ -10484,7 +10868,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "MCP output",
-        lambda: __import__("yoetz.protocol.models", fromlist=["StartResultModel"]).StartResultModel,
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["StartResultModel"]).StartResultModel
+        ),
     ),
     _RegistryEntry(
         "operations/start-result-1.1.0.schema.json",
@@ -10492,7 +10878,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "request_result",
         "MCP output",
-        lambda: __import__("yoetz.protocol.models", fromlist=["StartResultModel"]).StartResultModel,
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["StartResultModel"]).StartResultModel
+        ),
     ),
     _RegistryEntry(
         "operations/status-request-1.0.0.schema.json",
@@ -10501,7 +10889,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP input",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StatusRequestModel"]).StatusRequestModel
+            __import__(
+                "finishup.protocol.models", fromlist=["StatusRequestModel"]
+            ).StatusRequestModel
         ),
     ),
     _RegistryEntry(
@@ -10511,7 +10901,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
+            __import__("finishup.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
         ),
     ),
     _RegistryEntry(
@@ -10521,7 +10911,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP input",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StatusRequestModel"]).StatusRequestModel
+            __import__(
+                "finishup.protocol.models", fromlist=["StatusRequestModel"]
+            ).StatusRequestModel
         ),
     ),
     _RegistryEntry(
@@ -10531,7 +10923,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP input",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StatusRequestModel"]).StatusRequestModel
+            __import__(
+                "finishup.protocol.models", fromlist=["StatusRequestModel"]
+            ).StatusRequestModel
         ),
     ),
     _RegistryEntry(
@@ -10541,7 +10935,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
+            __import__("finishup.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
         ),
     ),
     _RegistryEntry(
@@ -10551,7 +10945,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
+            __import__("finishup.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
         ),
     ),
     _RegistryEntry(
@@ -10569,7 +10963,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "MCP output",
         lambda: (
-            __import__("yoetz.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
+            __import__("finishup.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
         ),
     ),
     _RegistryEntry(
@@ -10578,7 +10972,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "privacy-audit",
-        lambda: __import__("yoetz.domain.privacy", fromlist=["EgressReceipt"]).EgressReceipt,
+        lambda: __import__("finishup.domain.privacy", fromlist=["EgressReceipt"]).EgressReceipt,
     ),
     _RegistryEntry(
         "privacy/egress-receipt-1.1.0.schema.json",
@@ -10586,7 +10980,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "request_result",
         "privacy-audit",
-        lambda: __import__("yoetz.domain.privacy", fromlist=["EgressReceipt"]).EgressReceipt,
+        lambda: __import__("finishup.domain.privacy", fromlist=["EgressReceipt"]).EgressReceipt,
     ),
     _RegistryEntry(
         "privacy/outbound-case-1.0.0.schema.json",
@@ -10596,7 +10990,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "outbound-case",
         lambda: (
             __import__(
-                "yoetz.domain.privacy", fromlist=["ApprovedOutboundCase"]
+                "finishup.domain.privacy", fromlist=["ApprovedOutboundCase"]
             ).ApprovedOutboundCase
         ),
     ),
@@ -10608,7 +11002,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "outbound-case",
         lambda: (
             __import__(
-                "yoetz.domain.privacy", fromlist=["ApprovedOutboundCase"]
+                "finishup.domain.privacy", fromlist=["ApprovedOutboundCase"]
             ).ApprovedOutboundCase
         ),
     ),
@@ -10620,7 +11014,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "outbound-case",
         lambda: (
             __import__(
-                "yoetz.domain.privacy", fromlist=["ApprovedOutboundCase"]
+                "finishup.domain.privacy", fromlist=["ApprovedOutboundCase"]
             ).ApprovedOutboundCase
         ),
     ),
@@ -10630,7 +11024,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "privacy-policy",
-        lambda: __import__("yoetz.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
+        lambda: __import__("finishup.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
     ),
     _RegistryEntry(
         "privacy/privacy-policy-1.1.0.schema.json",
@@ -10638,7 +11032,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "request_result",
         "privacy-policy",
-        lambda: __import__("yoetz.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
+        lambda: __import__("finishup.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
     ),
     _RegistryEntry(
         "privacy/privacy-policy-1.2.0.schema.json",
@@ -10646,7 +11040,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.2.0",
         "request_result",
         "privacy-policy",
-        lambda: __import__("yoetz.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
+        lambda: __import__("finishup.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
     ),
     _RegistryEntry(
         "privacy/setup-wizard-contract-1.0.0.schema.json",
@@ -10664,7 +11058,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "setup-contract",
         lambda: (
             __import__(
-                "yoetz.protocol.mcp_removal", fromlist=["McpRemovalContract"]
+                "finishup.protocol.mcp_removal", fromlist=["McpRemovalContract"]
             ).McpRemovalContract
         ),
     ),
@@ -10675,7 +11069,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "request_result",
         "setup-contract",
         lambda: (
-            __import__("yoetz.protocol.setup_readiness", fromlist=["SetupReadiness"]).SetupReadiness
+            __import__(
+                "finishup.protocol.setup_readiness", fromlist=["SetupReadiness"]
+            ).SetupReadiness
         ),
     ),
     _RegistryEntry(
@@ -10686,7 +11082,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "setup-contract",
         lambda: (
             __import__(
-                "yoetz.protocol.host_connection", fromlist=["HostConnectionContract"]
+                "finishup.protocol.host_connection", fromlist=["HostConnectionContract"]
             ).HostConnectionContract
         ),
     ),
@@ -10696,7 +11092,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.0.0",
         "request_result",
         "setup-contract",
-        lambda: __import__("yoetz.protocol.setup_status", fromlist=["SetupStatus"]).SetupStatus,
+        lambda: __import__("finishup.protocol.setup_status", fromlist=["SetupStatus"]).SetupStatus,
     ),
     _RegistryEntry(
         "receipts/receipt-document-1.0.0.schema.json",
@@ -10704,7 +11100,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "receipt-document",
-        lambda: __import__("yoetz.domain.receipts", fromlist=["ReceiptDocument"]).ReceiptDocument,
+        lambda: (
+            __import__("finishup.domain.receipts", fromlist=["ReceiptDocument"]).ReceiptDocument
+        ),
     ),
     _RegistryEntry(
         "receipts/receipt-document-1.1.0.schema.json",
@@ -10712,7 +11110,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.1.0",
         "request_result",
         "receipt-document",
-        lambda: __import__("yoetz.domain.receipts", fromlist=["ReceiptDocument"]).ReceiptDocument,
+        lambda: (
+            __import__("finishup.domain.receipts", fromlist=["ReceiptDocument"]).ReceiptDocument
+        ),
     ),
     _RegistryEntry(
         "receipts/receipt-document-1.2.0.schema.json",
@@ -10728,7 +11128,9 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.3.0",
         "request_result",
         "receipt-document",
-        lambda: __import__("yoetz.domain.receipts", fromlist=["ReceiptDocument"]).ReceiptDocument,
+        lambda: (
+            __import__("finishup.domain.receipts", fromlist=["ReceiptDocument"]).ReceiptDocument
+        ),
     ),
     _RegistryEntry(
         "service/control-hello-1.0.0.schema.json",
@@ -10768,7 +11170,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
     ),
     _RegistryEntry(
         "service/control-result-1.0.0.schema.json",
@@ -10776,7 +11178,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlResult"]).ControlResult,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
         "service/control-request-2.0.0.schema.json",
@@ -11008,7 +11410,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.7.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
     ),
     _RegistryEntry(
         "service/control-hello-result-2.7.0.schema.json",
@@ -11016,7 +11418,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.7.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlResult"]).ControlResult,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
         "service/control-request-2.7.0.schema.json",
@@ -11024,7 +11426,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.7.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
     ),
     _RegistryEntry(
         "service/control-result-2.7.0.schema.json",
@@ -11032,7 +11434,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.7.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlResult"]).ControlResult,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
         "service/control-hello-2.8.0.schema.json",
@@ -11040,7 +11442,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.8.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
     ),
     _RegistryEntry(
         "service/control-hello-result-2.8.0.schema.json",
@@ -11048,7 +11450,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.8.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlResult"]).ControlResult,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
         "service/control-request-2.8.0.schema.json",
@@ -11056,7 +11458,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.8.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
     ),
     _RegistryEntry(
         "service/control-result-2.8.0.schema.json",
@@ -11064,7 +11466,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.8.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlResult"]).ControlResult,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
         "service/control-hello-2.9.0.schema.json",
@@ -11072,7 +11474,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.9.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
     ),
     _RegistryEntry(
         "service/control-hello-result-2.9.0.schema.json",
@@ -11080,7 +11482,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.9.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlResult"]).ControlResult,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
         "service/control-request-2.9.0.schema.json",
@@ -11088,7 +11490,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.9.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
     ),
     _RegistryEntry(
         "service/control-result-2.9.0.schema.json",
@@ -11096,7 +11498,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.9.0",
         "request_result",
         "local-control",
-        lambda: __import__("yoetz.ports.control", fromlist=["ControlResult"]).ControlResult,
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
         "service/isolation-report-1.0.0.schema.json",
@@ -11106,7 +11508,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "service-status",
         lambda: (
             __import__(
-                "yoetz.protocol.isolation_report", fromlist=["IsolationReportContract"]
+                "finishup.protocol.isolation_report", fromlist=["IsolationReportContract"]
             ).IsolationReportContract
         ),
     ),
@@ -11116,7 +11518,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "1.0.0",
         "request_result",
         "service-status",
-        lambda: __import__("yoetz.ports.control", fromlist=["ServiceStatus"]).ServiceStatus,
+        lambda: __import__("finishup.ports.control", fromlist=["ServiceStatus"]).ServiceStatus,
     ),
     _RegistryEntry(
         "version/version-manifest-1.0.0.schema.json",
@@ -11132,7 +11534,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.0.0",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
     _RegistryEntry(
         "version/version-manifest-2.1.0.schema.json",
@@ -11140,7 +11542,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.1.0",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
     _RegistryEntry(
         "version/version-manifest-2.2.0.schema.json",
@@ -11148,7 +11550,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.2.0",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
     _RegistryEntry(
         "version/version-manifest-2.2.1.schema.json",
@@ -11156,7 +11558,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.2.1",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
     _RegistryEntry(
         "version/version-manifest-2.2.2.schema.json",
@@ -11164,7 +11566,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.2.2",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
     _RegistryEntry(
         "version/version-manifest-2.2.3.schema.json",
@@ -11172,7 +11574,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.2.3",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
     _RegistryEntry(
         "version/version-manifest-2.2.4.schema.json",
@@ -11180,7 +11582,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.2.4",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
     _RegistryEntry(
         "version/version-manifest-2.3.0.schema.json",
@@ -11188,7 +11590,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "2.3.0",
         "version_manifest",
         "version-report",
-        lambda: __import__("yoetz.version", fromlist=["VersionManifest"]).VersionManifest,
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
 )
 
@@ -11201,6 +11603,8 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
     {
         # Role- and directory-bearing obligations (issue #1002).
         "events/obligation-published-1.1.0.schema.json",
+        # The conversation review-mode switch (ADR-049).
+        "events/decision-recorded-1.1.0.schema.json",
         # The task-statement contracts (issue #908).
         "events/plan-published-1.1.0.schema.json",
         "events/plan-revised-1.1.0.schema.json",
@@ -11718,6 +12122,11 @@ def build_schema_documents(
             normalized = _frozen_schema(entry)
         elif entry.relative_path == "events/obligation-published-1.1.0.schema.json":
             normalized = _obligation_published_v1_1_schema(entry)
+        elif entry.relative_path == "events/decision-recorded-1.0.0.schema.json":
+            # Released: the domain model now also admits the 1.1.0 switch, so never re-derive it.
+            normalized = _frozen_schema(entry)
+        elif entry.relative_path == "events/decision-recorded-1.1.0.schema.json":
+            normalized = _decision_recorded_v1_1_schema(entry)
         elif entry.relative_path == "events/plan-published-1.1.0.schema.json":
             normalized = _with_required_task_statement(
                 entry, "events/plan-published-1.0.0.schema.json", title="Yoetz plan published"
@@ -11726,6 +12135,8 @@ def build_schema_documents(
             normalized = _with_required_task_statement(
                 entry, "events/plan-revised-1.0.0.schema.json", title="Yoetz plan revised"
             )
+        elif entry.relative_path == "privacy/review-packet-row-2.0.0.schema.json":
+            normalized = _review_packet_row_schema(entry)
         elif entry.relative_path == "privacy/outbound-case-1.1.0.schema.json":
             normalized = _outbound_case_schema(entry)
         elif entry.relative_path == "privacy/outbound-case-1.2.0.schema.json":

@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     CheckVerdict,
     CostFields,
     SamplingParams,
@@ -17,7 +17,7 @@ from yoetz.domain.findings import (
     SemanticProvenance,
     TokenUsage,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     ReceiptConclusion,
     ReceiptDocument,
@@ -31,9 +31,9 @@ from yoetz.domain.receipts import (
     render_receipt_human,
     unresolved_findings_for_render,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _RECEIPT_FIXTURES = Path(__file__).parents[3] / "fixtures" / "receipts"
 
@@ -66,6 +66,34 @@ def _variant(file_name: str, variant_name: str) -> dict[str, Any]:
         if candidate_file == file_name and candidate_name == variant_name:
             return deepcopy(document)
     raise AssertionError(f"unknown fixture variant: {file_name}/{variant_name}")
+
+
+def _rendered_with_current_product_name(expected: str) -> str:
+    """The fixtures record pre-rename receipts and their pre-rename rendering (ADR-048).
+
+    The stored receipt document is unchanged and still loads; only the product name the renderer
+    prints is the current one.
+    """
+
+    return expected.replace("Yoetz receipt at frontier ", "FinishUP receipt at frontier ", 1)
+
+
+def test_receipt_package_name_admits_the_current_and_the_legacy_distribution() -> None:
+    """Receipts issued before the rename name ``yoetz``; new ones name ``finishup`` (ADR-048)."""
+
+    legacy = _variant("deterministic-current.case.json", "current_complete")
+    assert legacy["versions"]["package_name"] == "yoetz"
+    current = deepcopy(legacy)
+    current["versions"]["package_name"] = "finishup"
+    for wire in (legacy, current):
+        document = receipt_document_from_json(wire)
+        assert receipt_document_to_json(document) == wire
+        assert render_receipt_compact(document).startswith("FinishUP receipt at frontier 12:")
+    other = deepcopy(legacy)
+    other["versions"]["package_name"] = "other"
+    with pytest.raises(ProtocolValueError) as exc_info:
+        receipt_document_from_json(other)
+    _assert_reason(exc_info, "invalid_receipt_version_slice")
 
 
 def _assert_reason(exc_info: pytest.ExceptionInfo[ProtocolValueError], reason: str) -> None:
@@ -107,7 +135,7 @@ def test_render_receipt_compact_never_outruns_evidence(
 ) -> None:
     del file_name, variant_name
     rendered = render_receipt_compact(receipt_document_from_json(wire))
-    assert rendered == expected
+    assert rendered == _rendered_with_current_product_name(expected)
     assert "\n" not in rendered
     assert len(rendered) <= 32_768
     assert "fully verified" not in rendered.lower()
@@ -283,7 +311,7 @@ def test_self_verified_ids_get_their_own_section_and_never_read_clean() -> None:
     assert receipt_document_from_json(encoded) == document
     for markdown in (True, False):
         rendered = render_receipt_human(document, markdown=markdown)
-        assert "Self-verified by the agent; Yoetz could not prove the repair" in rendered
+        assert "Self-verified by the agent; FinishUP could not prove the repair" in rendered
         assert f"- {finding}" in rendered
     assert finding not in {item.finding_id for item in unresolved_findings_for_render(document)}
 
@@ -601,7 +629,7 @@ def test_every_explicit_gap_occurs_in_coverage_summary() -> None:
 def test_semantic_review_not_configured_receipt_states_not_run() -> None:
     """Requirement: receipt with AI-powered evaluator not configured discloses not-run."""
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
         SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     )
@@ -634,7 +662,7 @@ def test_semantic_review_not_configured_receipt_states_not_run() -> None:
 def test_semantic_relevance_review_not_run_gap_shares_not_run_wording() -> None:
     """Evaluator failure/timeout uses the same truthful not-run disclosure family."""
 
-    from yoetz.domain.receipts import SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP
+    from finishup.domain.receipts import SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP
 
     wire = _variant("deterministic-current.case.json", "current_complete")
     wire["conclusion"] = "insufficient_coverage"
@@ -658,7 +686,7 @@ def test_semantic_relevance_review_not_run_gap_shares_not_run_wording() -> None:
 def test_semantic_review_not_run_never_hides_unresolved_findings() -> None:
     """An AI-powered gap must not turn an unresolved local receipt into a clean claim."""
 
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_CONFIGURED_GAP
+    from finishup.domain.receipts import SEMANTIC_REVIEW_NOT_CONFIGURED_GAP
 
     wire = _variant("deterministic-current.case.json", "current_complete")
     wire["conclusion"] = "unresolved_findings_remain"
@@ -679,7 +707,7 @@ def test_semantic_review_not_run_never_hides_unresolved_findings() -> None:
 def test_render_receipt_human_projects_sections_and_advisory_count() -> None:
     """#437/#429: markdown/text human_text carries sections, not a compact one-liner."""
 
-    from yoetz.domain.findings import FindingKind, FindingOrigin
+    from finishup.domain.findings import FindingKind, FindingOrigin
 
     wire = _variant("unresolved-findings.case.json", "mixed_open_responses")
     wire["sections"][0]["coverage_note"] = "Coverage note"
@@ -747,7 +775,7 @@ def test_registration_drift_compact_names_policy_recovery() -> None:
     # stored as a second golden vector: the coverage schema's `known_gaps` pattern
     # (`^[a-z][a-z0-9_]{0,127}$`) is open, so the new gap code needs no schema bump,
     # and the ceiling-only fixture plus this augmentation cover both wordings.
-    from yoetz.domain.receipts import OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP
+    from finishup.domain.receipts import OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP
 
     wire = _variant("semantic-advisory.case.json", "predispatch_policy_block")
     coverage = cast(dict[str, Any], wire["coverage"])
@@ -766,7 +794,7 @@ def test_registration_drift_compact_names_policy_recovery() -> None:
     # The disagreement is the claim; whether the strict route was intended is the owner's
     # to say, so the recovery is offered as a conditional rather than asserted.
     assert "If this strict route was not intended" in rendered
-    assert "yoetz integrate codex mcp install --route-profile policy" in rendered
+    assert "finishup integrate codex mcp install --route-profile policy" in rendered
     assert "start a fresh Codex process" in rendered
     assert "No provider attempt or AI-powered finding was recorded." in rendered
 
@@ -826,7 +854,7 @@ def test_genuine_strict_ceiling_compact_keeps_terminal_wording() -> None:
     wire = _variant("semantic-advisory.case.json", "predispatch_policy_block")
     rendered = render_receipt_compact(receipt_document_from_json(wire))
     assert rendered == (
-        "Yoetz receipt at frontier 22: coverage is insufficient because optional AI-powered "
+        "FinishUP receipt at frontier 22: coverage is insufficient because optional AI-powered "
         "review was blocked before dispatch by network-egress policy. No provider attempt "
         "or AI-powered finding was recorded."
     )

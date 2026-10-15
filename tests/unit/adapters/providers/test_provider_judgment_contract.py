@@ -12,17 +12,17 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import TypeAdapter, ValidationError
 
-from yoetz.adapters.providers.local_model import (
+from finishup.adapters.providers.local_model import (
     LocalModelEndpointProfile,
     normalize_local_response,
 )
-from yoetz.adapters.providers.openai_chat_completions import (
+from finishup.adapters.providers.openai_chat_completions import (
     ChatCompletionsProfile,
 )
-from yoetz.adapters.providers.openai_chat_completions import (
+from finishup.adapters.providers.openai_chat_completions import (
     normalize_response as normalize_chat_response,
 )
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.openai_responses import (
     CHALLENGE_FIELD_GLOSSARY,
     FINDING_KIND_GLOSSARY,
     JUDGMENT_JSON_SCHEMA,
@@ -38,23 +38,23 @@ from yoetz.adapters.providers.openai_responses import (
     normalize_judgment,
     owner_declared_data_use_profile,
 )
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.openai_responses import (
     normalize_response as normalize_responses_response,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     EXTERNAL_SEMANTIC_FINDING_KINDS,
     RUNTIME_FAILURE_STAGES,
     FindingKind,
     SemanticFailureClass,
 )
-from yoetz.ports.semantic import (
+from finishup.ports.semantic import (
     SemanticResultInvalid,
     SemanticResultRefused,
     SemanticResultSuccess,
     SemanticResultTimeout,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
-from yoetz.protocol.models import (
+from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
+from finishup.protocol.models import (
     ProviderChallengeModel,
     ProviderJudgmentEnvelopeModel,
     ProviderJudgmentModel,
@@ -982,7 +982,7 @@ def test_conflicting_rulings_on_one_finding_fold_to_unassessable() -> None:
 def test_the_instruction_asks_for_exactly_one_ruling_per_listed_finding() -> None:
     """Every provider shares the text that names the rulable list and the per-finding rule."""
 
-    from yoetz.adapters.providers.openai_responses import (
+    from finishup.adapters.providers.openai_responses import (
         SEMANTIC_REVIEW_INSTRUCTION,
         VERDICT_FIELD_GLOSSARY,
     )

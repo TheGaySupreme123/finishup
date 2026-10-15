@@ -24,8 +24,8 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.application.semantic_case import build_semantic_case, declared_output_capture_refs
-from yoetz.domain.events import (
+from finishup.application.semantic_case import build_semantic_case, declared_output_capture_refs
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -41,11 +41,11 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import EvidenceId, object_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.protocol.coverage import EvidenceImmutability
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import EvidenceId, object_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.protocol.coverage import EvidenceImmutability
 
 _AT = timestamp_from_string("2026-10-08T00:00:00.000Z")
 _OUTPUT = "/output/flight_plan.json"
@@ -246,7 +246,7 @@ def test_a_cited_capture_with_the_same_bytes_as_an_older_one_keeps_its_reservati
 
     import tests.unit.application.test_semantic_case_selection as selection_tests
 
-    from yoetz.application.semantic_case import CapturedContentScope, CapturedSemanticContent
+    from finishup.application.semantic_case import CapturedContentScope, CapturedSemanticContent
 
     helpers: dict[str, Any] = {
         name: getattr(selection_tests, name)

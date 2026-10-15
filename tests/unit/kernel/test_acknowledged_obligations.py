@@ -15,7 +15,7 @@ from typing import cast
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     OBLIGATION_SCHEMA_VERSION,
     EventSchema,
     ObligationPublishedPayload,
@@ -26,16 +26,16 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
-from yoetz.domain.values import evidence_id, obligation_id
-from yoetz.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.domain.values import evidence_id, obligation_id
+from finishup.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     acknowledged_obligation_ids,
     open_effective_obligations,
     register_command_identity_key,
     task_fact_signals,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 _OTHER = obligation_id("obl_00000000-0000-4000-8000-000000000002")
@@ -170,7 +170,7 @@ def test_a_later_publication_reopens_or_resolves_it(later: ObligationStatus) -> 
 
 
 def test_reducer_transition_table() -> None:
-    from yoetz.kernel import reducers
+    from finishup.kernel import reducers
 
     table = reducers._OBLIGATION_TRANSITIONS  # pyright: ignore[reportPrivateUsage]
     ack, opened, resolved = (
@@ -185,9 +185,9 @@ def test_reducer_transition_table() -> None:
 
 
 def test_no_requested_item_finding_for_an_acknowledged_obligation() -> None:
-    from yoetz.domain.findings import FindingKind
-    from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
-    from yoetz.kernel.policies.work_integrity import work_integrity_findings
+    from finishup.domain.findings import FindingKind
+    from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
+    from finishup.kernel.policies.work_integrity import work_integrity_findings
 
     def never_attempted(ledger: ObservedLedger) -> set[str]:
         records = ledger.prefix
@@ -216,7 +216,7 @@ def test_a_resolution_that_no_longer_holds_can_be_acknowledged() -> None:
     """tb4n2 R2 (#1022, ADR-041) replaces L6's "resolved is final": a resolved obligation whose
     work no longer holds is acknowledged as not done; re-resolving it in place stays refused."""
 
-    from yoetz.kernel import reducers
+    from finishup.kernel import reducers
 
     ledger = _ledger()
     resolved = ObligationPublishedPayload(
@@ -244,8 +244,8 @@ def test_l6_counting_regime_lists_an_acknowledged_obligation_once(
 
     from types import SimpleNamespace
 
-    from yoetz.cli.closure_gate import closure_gate_from_readiness
-    from yoetz.kernel import closure_readiness
+    from finishup.cli.closure_gate import closure_gate_from_readiness
+    from finishup.kernel import closure_readiness
 
     ledger = _ledger()
     _acknowledge(ledger)
@@ -308,7 +308,7 @@ def _gate_view(**fields: object) -> object:
 def test_the_gate_challenges_each_acknowledged_obligation_once() -> None:
     """Review item 1: one acknowledgement must not end the work silently (mirrors blockers)."""
 
-    from yoetz.cli.closure_gate import (
+    from finishup.cli.closure_gate import (
         ACKNOWLEDGEMENT_RECHECK_ITEM,
         ClosureGate,
         closure_gate_from_readiness,
@@ -342,7 +342,7 @@ def test_the_gate_challenges_each_acknowledged_obligation_once() -> None:
 def test_an_ordinary_gate_never_offers_acknowledgement_as_an_exit() -> None:
     """Review item 4: the last resort appears only once a blocker was challenged."""
 
-    from yoetz.cli.closure_gate import closure_gate_from_readiness
+    from finishup.cli.closure_gate import closure_gate_from_readiness
 
     view = _gate_view(
         state="action_required",
@@ -360,7 +360,7 @@ def test_an_ordinary_gate_never_offers_acknowledgement_as_an_exit() -> None:
 
 
 def test_check_totals_count_an_acknowledged_obligation_once() -> None:
-    from yoetz.domain.check_totals import render_check_totals
+    from finishup.domain.check_totals import render_check_totals
 
     totals = {
         "obligations": {
@@ -384,7 +384,7 @@ def test_check_totals_count_an_acknowledged_obligation_once() -> None:
             )
         },
     }
-    from yoetz.domain.check_totals import CHECK_TOTAL_KEYS
+    from finishup.domain.check_totals import CHECK_TOTAL_KEYS
 
     for group in ("evidence", "findings", "test_edits"):
         totals[group] = dict.fromkeys(CHECK_TOTAL_KEYS[group], "0")
@@ -396,9 +396,9 @@ def test_a_claim_on_only_acknowledged_obligations_can_be_withdrawn() -> None:
     """Codex review 3 (#1022): the honest replacement of a claim whose every obligation is now
     acknowledged as not done names none; an overlapping scope is still required otherwise."""
 
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayloadV1_1
-    from yoetz.domain.values import claim_id
-    from yoetz.kernel.reducers import ClaimRevisionMismatch
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayloadV1_1
+    from finishup.domain.values import claim_id
+    from finishup.kernel.reducers import ClaimRevisionMismatch
 
     old = claim_id("clm_00000000-0000-4000-8000-000000000001")
     new = claim_id("clm_00000000-0000-4000-8000-000000000002")

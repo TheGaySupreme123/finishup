@@ -16,23 +16,23 @@ from conformance.adapters.test_start_catalog_port import (
     _id,  # pyright: ignore[reportPrivateUsage]
     _memory_catalog,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.projects import (
+from finishup.application.projects import (
     InMemoryProjectCatalog,
     ProjectApplication,
     ProjectCommandError,
 )
-from yoetz.cli.bootstrap import (
+from finishup.cli.bootstrap import (
     _COORDINATION_CONTROL_GUIDANCE,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.coordination import (
+from finishup.domain.coordination import (
     CoordinationErrorCode,
     GrantState,
     MemberKind,
     ProjectMembership,
 )
-from yoetz.ports.start_catalog import StartIdentityInput, TaskSourceProvenance
-from yoetz.protocol.errors import PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.ports.start_catalog import StartIdentityInput, TaskSourceProvenance
+from finishup.protocol.errors import PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
 
 
 def _commitment(letter: str) -> str:

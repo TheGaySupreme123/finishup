@@ -3,19 +3,19 @@
 **Status:** Working decision revised 2026-08-30 for issue #404 vendor-runtime egress. Ratification requires an independent
 privacy/security review plus executable no-bypass, never-send, approval-resume, and zero-egress
 evidence.
-**Implemented by:** `src/yoetz/domain/privacy.py`,
-`src/yoetz/application/egress.py`,
-`src/yoetz/application/privacy_policy.py`,
-`src/yoetz/ports/privacy.py`, the privacy adapters/configuration/audit modules, ADR-006,
+**Implemented by:** `src/finishup/domain/privacy.py`,
+`src/finishup/application/egress.py`,
+`src/finishup/application/privacy_policy.py`,
+`src/finishup/ports/privacy.py`, the privacy adapters/configuration/audit modules, ADR-006,
 ADR-011 structural subject-state capture, `PRIVACY.md`, the technical privacy protocol, policy
 schemas, fixtures, and tests.
 
 ## Context and trust boundary
 
-Yoetz is the policy authority. CLI, MCP, future UI, plugins, provider adapters, integrations,
+FinishUP is the policy authority. CLI, MCP, future UI, plugins, provider adapters, integrations,
 agents, and LLMs are clients or constrained effectors; none may decide what data is disclosable.
 Network egress and local disclosure are distinct: an MCP response may enter an agent/LLM context,
-and a local model still receives user content through Yoetz's AF_UNIX-only path. A pre-existing
+and a local model still receives user content through FinishUP's AF_UNIX-only path. A pre-existing
 model runtime is a separate trusted disclosure sink unless its exact support cell proves enforced
 no-network isolation; AF_UNIX delivery alone does not prove what that process does later (F-013).
 
@@ -59,11 +59,11 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    sensitive task/user content.
 
    **Revised 2026-08-03 — `update_checks` transport and product default.** v0.1 ships a bounded
-   structural transport for `update_checks` only: a fixed allowlisted HTTPS GET of the `yoetz`
-   distribution identity on PyPI (`https://pypi.org/pypi/yoetz/json`), with `trust_env=False`,
+   structural transport for `update_checks` only: a fixed allowlisted HTTPS GET of the `finishup`
+   distribution identity on PyPI (`https://pypi.org/pypi/finishup/json`), with `trust_env=False`,
    size/timeout caps, and response use limited to the latest version string. Interactive TUI
    surfaces (first-run finish, resume tip, `/doctor`) and interactive setup/`/connect` may surface
-   an advisory plus the exact upgrade command `uv tool upgrade yoetz`; work receipts never carry
+   an advisory plus the exact upgrade command `uv tool upgrade finishup`; work receipts never carry
    update metadata. The product durable seed and named recipes default `update_checks` **on** with
    `network_egress_permitted=true` solely because that channel is on, while `llm_inference` and the
    other three non-LLM channels stay off and profile remains `local_only`. Config.toml generation-1
@@ -77,13 +77,26 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    returns `channel_unavailable` without persistence or I/O, and forced enabled state yields a
    pre-dispatch `channel_unavailable` decision receipt with no DNS/socket I/O. Absence of a channel
    is not silently replaced by a generic HTTP client.
+
+   **Amended 2026-10-14 (ADR-048, issue #1055) — the transitional `yoetz` identity.** The
+   allowlist holds exactly two URLs: `https://pypi.org/pypi/finishup/json` and, for an install that
+   came from the deprecated transitional `yoetz` distribution (the `yoetz` distribution is installed
+   at exactly the running version), `https://pypi.org/pypi/yoetz/json`. Such an install upgrades
+   through that same name, so its check asks about that identity and its advisory names
+   `yoetz upgrade`; every other install asks about `finishup`. Each request still carries only that
+   one package identity, under the same channel gate, caps and response use. Each identity has its
+   own cache file in the state directory (`package-update-cache.json` for `yoetz`, which released
+   Yoetz readers also read and treat as a `yoetz` poll, and `package-update-cache-finishup.json`
+   for `finishup`), so each keeps its own 24-hour TTL and makes at most one request per TTL; an
+   entry recording the other identity is never answered from, and an entry with no package member
+   is a pre-rename `yoetz` poll. The second URL leaves the allowlist when the alias is removed.
 3. **Local disclosure sinks:** `local_model`, `agent_context`, `local_human_view`, and
    `trusted_human_control` are not network-egress channels. They receive only policy-approved
    minimized content and are covered by the never-send fence. The trusted human surface may render an
    approval preview and exact policy diff, but it never exposes cryptographic material or
    service-vault credentials.
    A local-model runtime receives plaintext and belongs to the trusted local computing base unless
-   its exact artifact/profile supplies independently enforceable sandbox evidence; Yoetz's adapter
+   its exact artifact/profile supplies independently enforceable sandbox evidence; FinishUP's adapter
    makes no claim about another process's ambient network authority.
    `HumanAuthorityCapability.source=unavailable` fences external-provider activation, credential
    mutation, and durable policy widening; it is not a second use-time authorization gate for an
@@ -98,13 +111,14 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    `check → respond → recheck` loop the product exists for. Two changes correct it without weakening
    the fence:
 
-   `local_human_view` is now a separate sink for ordinary human-readable rendering to an attached
-   controlling terminal. A local human reading a vault they unlocked is not a third-party
-   disclosure. It admits every non-never-send category at
-   `public_structural|ordinary_user_content`. `--json`, non-TTY or redirected streams, and every
-   `mcp_bridge` client remain `agent_context`; the client never selects its own sink. Terminal
-   emulation by a same-UID process is the stated threat-model limit that already bounds the unlock
-   TTY contract, not a claimed cryptographic exclusion.
+   `local_human_view` is now a separate sink for the owner reading their own unlocked vault, which
+   is not a third-party disclosure. It admits every non-never-send category at
+   `public_structural|ordinary_user_content`. *Superseded 2026-10-14 (round 3):* this sink was first
+   selected by human-readable rendering to an attached controlling terminal. A pseudo-terminal an
+   agent controls passes that test, so no presentation fact selects it any more; every ordinary
+   client result is `agent_context`, and `local_human_view` is reached only through the
+   reauthenticated one-use `owner_receipt_view` grant described under decision 3's receipt
+   amendment. The client never selects its own sink.
 
    `agent_context` is now conditioned on a computed closed `DisclosureProvenance`
    (`self_authored`, `engine_derived_from_self_authored`, `other_writer`, `imported`). Material the
@@ -145,8 +159,23 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    and surfacing it in `privacy receipts get` needs a design-gated egress-receipt schema change,
    left as a follow-up.
 
+   **Revised 2026-10-13 — names of undeclared files a deliverable may read (tb4n5).** The owner
+   allowed showing the agent, locally, the names of files it itself created. No structural record
+   proves that (a file staged before the task, an ignored file force-added later, or one another
+   process wrote all appear as created; no observation records a shell-written path), so no new
+   provenance value is added and the exception fails closed: the status leaf
+   `/closure_readiness/undeclared_references/<n>/paths/<m>` carries the ledger authorship of the
+   accepted, unredacted publication that spelled that exact name (`attempted_items` or
+   `requested_items`; a later `redaction_recorded` naming its event ID or its payload object ID
+   revokes it), keyed on that leaf (`ProjectionProvenanceContext.leaf_authorship`, admitted
+   only for that leaf family and only as `repository_excerpt`), and the ordinary `self_authored`
+   rule decides: only the writer that published the name, in this session, through a cooperative
+   channel, gets it back. Every other name keeps the ceiling, with a typed continuation in the Stop
+   gate (ADR-035). The review packet never carries the names, nor the digest of a payload that held
+   them (ADR-035).
+
    **Revised 2026-07-24 — default agent-context disclosure of verification output.** Under the
-   default LOCAL_ONLY bootstrap policy, `agent_context` may include Yoetz-authored verification
+   default LOCAL_ONLY bootstrap policy, `agent_context` may include FinishUP-authored verification
    projection content for the requesting agent's own task: `finding_summary` and
    `obligation_text` (receipt document sections, human_text, check findings/obligations). These
    remain `ordinary_user_content` at the data-class layer; the default policy allowlist is widened
@@ -168,6 +197,198 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    structural fields and omission markers, while the current route is revalidated and the outer
    control correlation is freshly stamped. Any plaintext event summary prevents caching and uses
    the ordinary reserve/complete path again.
+   **Amended 2026-10-14 — receipt prose ceiling (N5 privacy).** The maintainer explicitly
+   requested this scoped repair, acknowledging the privacy/egress design gate. A `full_local`
+   profile is a local storage/rendering choice, never agent disclosure authority.
+
+   Amended again 2026-10-14 (round 2, maintainer request): withholding narrows to the repository
+   names the ceiling covers and large omission lists coalesce. Amended 2026-10-14 (round 3,
+   maintainer request): no presentation fact selects `local_human_view` any more; the owner's full
+   receipt is a reauthenticated, one-use `owner_receipt_view` grant (ADR-016 decision 4), `./` and
+   absolute spellings are the same name, and an expanded field is bounded visibly.
+
+   Receipt prose is FinishUP-authored and keeps its ordinary category policy in an `agent_context`
+   projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
+   thing it can carry that the excerpt ceiling covers is a repository file name the check found and
+   no participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt
+   spells. Each such name span is offered as its own `repository_excerpt` candidate. Unless the
+   policy grants repository excerpts, or the requesting writer published that exact name in this
+   session through an accepted, unredacted cooperative publication, the whole path token becomes
+   `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the
+   quoted path the receipt prints, the bare path when it has a directory, or a basename with an
+   extension. Any name, a top-level one without an extension included, is also a span behind a
+   leading `./` (also `.//` or `././`), quoted or not, and empty or `.` segments inside the name
+   still spell the same file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`,
+   optionally behind `file://`) any directories may come before the name's last component: an
+   absolute path that ends in a withheld file's base name counts as that file, which can only
+   withhold more. Unquoted, the prefix's directories stop at whitespace, at quotes and backticks, at
+   `<` `>` `|` `,` `;` and brackets, and at a `:` that starts another path (`:/`, `:~`, `:$`, `:./`
+   or `:../`), so the next path in a list starts afresh; a `:` inside a directory or a port
+   (`host:8080/`) is kept. The whole prefixed token is withheld. A path in single quotes, double
+   quotes or backticks may run through directories with spaces or the other quote characters
+   (`"/r/Bob's/a.npz"`), and the whole quoted token is withheld when the name ends the quoted text;
+   a name earlier in the quotes (`"/r/x/b.npz /r/y/a.npz"`) is found too, and its own path is
+   withheld. An absolute path through a directory with spaces is not recognised as one path when it
+   is unquoted, since prose gives it no token boundary, or when anything follows the name inside the
+   quotes (`"/My Docs/a.npz:12"`); nor is an unquoted one through a directory holding a stop
+   character (`/r/Bob's/a.npz`), or a quoted one through a directory holding its own closing quote.
+   A name glued to other characters and then a `/` (`/r/a.npz~/x`), or followed by a `:` and a bare
+   relative path (`/r/a.npz:rel/x`, or grep's `/r/a.npz:12:rel/x`), reads as a directory of a longer
+   path and stays readable: the prefix never gives a directory back, which keeps each search linear.
+   A different relative directory (`../`, `x/`), a longer name, a suffix, a plain word such as
+   `Summary` (or a top-level name written without a prefix or quotes), and a different letter case
+   stay readable: spellings are compared exactly, because folding case or Unicode would conflate
+   distinct files on a case-sensitive filesystem. Every bound in the span pattern is fixed, so a
+   search stays linear in the prose it reads. The rule applies to JSON, markdown and text and to
+   every profile, `full_local` included: a format or profile is not a disclosure grant.
+
+   The token can be longer than the name it replaces. A field that would then pass its wire bound
+   (32,768 characters for `human_text`, at least its original length for a document field) or the
+   16 KiB per-item privacy bound is cut deterministically at a whole token and ends with a visible
+   `[receipt text truncated after withholding: N characters not shown]` marker; only text already
+   past the withholding is dropped, and the audit still records every per-name decision.
+   `privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
+   bound the list coalesces deterministically to containing fields, so a large receipt still renders;
+   the local disclosure audit keeps one decision per name and field
+   (`<field pointer>/@repository_name/<name index>`). The digest and object ID identify the unchanged
+   stored owner receipt. An earlier stored receipt meets the same rule when reread, with name
+   provenance read at the current ledger head, so redacting the publication that spelled a name
+   withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
+   fails closed when that denial would need an object marker inside the receipt document.
+
+   Every client result is agent-facing (`agent_context`): the CLI, the terminal interface, MCP tools
+   and hooks alike. A terminal, a human-readable rendering, a client kind or the user ID is a
+   presentation fact an agent can reproduce (a pseudo-terminal passes every terminal test), so none of
+   them selects the owner's view, and the service ignores them as authority. The owner's full receipt
+   (`local_human_view`) needs an explicit request, `finishup receipt --owner-view` or *Your full receipt*
+   in the terminal interface, and a human-control `owner_receipt_view` ceremony: the owner
+   reauthenticates with operating-system presence or the vault passphrase for that exact receipt
+   request. The grant belongs to the command's own control connection as the service admitted it:
+   the service mints an opaque identity for every admitted connection and never takes one from the
+   client, refuses any connection whose hello nonce is already live or was used before, mints the
+   grant only for the one live connection the ceremony target names, consumes it only on a receipt
+   call on that connection, and revokes it when the connection closes. The grant is one-use and
+   expires after 60 seconds. There is no standing grant, and the agent-attested consent lane cannot
+   stand in for it. Anyone holding the terminal can type into the prompt, a pseudo-terminal
+   included; the boundary is a passphrase or presence check the agent cannot pass. On macOS the
+   packaged service composes one operating-system presence provider, Apple LocalAuthentication
+   (Touch ID or the device password), scoped to this ceremony (round 5 below). Linux and WSL 2
+   compose none: there only a vault passphrase the owner types completes the ceremony. A vault
+   without one, or whose passphrase is kept in the platform credential store (setup's
+   system-keychain choice, never shown to its owner), fails closed with `owner_view_unavailable`;
+   an owner who chose a stored passphrase can still type it with `--use-passphrase`. A command with no foreground terminal to prompt on
+   (for example a headless session) fails with `owner_view_requires_terminal`. Either way it shows
+   nothing and points to the next step. Linux and WSL 2 use the same code but were not exercised
+   for this change. A process running as the owner's account that can already read the vault
+   passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
+   every passphrase reauthentication (ADR-008).
+
+   **Amended 2026-10-14 (round 5, owner decision on issue #1073: Touch ID before release).** The
+   owner asked for an operating-system presence path on the existing reauthentication so a
+   system-keychain installation can open its full receipt. Setup's system-keychain choice creates
+   a passphrase vault whose passphrase is generated and kept in the Keychain for auto-unlock, so
+   its owner never learned it and could not answer the passphrase prompt.
+
+   - *Where the check runs.* The service process runs it, never a client. A client's
+     `SelectAuthorizationSourceAction` names `os_user_presence` and carries nothing else; the
+     human-control service then binds a fresh reauthentication challenge and asks its composed
+     `UserPresencePort`. Only the provider's own one-use attestation for that exact challenge
+     reaches the vault, which mints the proof the owner-view effect consumes. A TTY, a
+     pseudo-terminal, a client kind or a hello field still grants nothing.
+   - *The macOS provider* (`MacOSLocalAuthenticationPresence`) starts the SIP-protected
+     `/usr/bin/osascript -l JavaScript` with a fixed program on stdin, no shell, a three-variable
+     environment and working directory `/`. The program creates a fresh
+     `LAContext` with authentication reuse disabled and evaluates
+     `LAPolicyDeviceOwnerAuthentication`. The dialog text is fixed per purpose; its only variable
+     part is a confirmation code (the first eight hex digits of the service-computed target
+     digest), which the owner's own command prints too, so nothing user-controlled reaches the
+     dialog. The program's own deadline is 60 seconds; the service kills and reaps it at 75
+     seconds, or at once when the ceremony is cancelled, its client disappears, or the service
+     stops. Only the exact token `approved` yields an attestation, held in service memory, bound
+     to the exact challenge and consumed once within 30 seconds. Every other result is typed:
+     `unavailable` (no dialog can be shown: not macOS, no LocalAuthentication, no desktop session,
+     or a nonzero, garbled or unknown helper result) becomes `presence_unavailable`;
+     `cancelled` or `failed` becomes `presence_refused`; `timeout` becomes `presence_timeout`.
+     None of them carries operating-system text, and none grants anything.
+   - *Scope.* The provider prompts only for `owner_receipt_view`, and the service offers it
+     (`PresenceScope`) only for that purpose on a ready vault of either mode. It does not stand
+     in for provider credentials, privacy widening, idle relock, installation recovery,
+     passphrase rotation or keyring retry. Keyring first-install still needs a qualified
+     `user_presence_cells` row; this provider's capability names the release cell
+     `unqualified` and never matches one.
+   - *Passphrase vaults.* A passphrase stays offered beside the dialog. The command asks for the
+     dialog first. When the service reports that it cannot show one (`presence_unavailable`;
+     where the service runs decides this, not where the command runs) and the vault offered its
+     passphrase, the command asks once for the passphrase in a fresh ceremony. A cancelled,
+     failed or unanswered dialog is not retried. The command never asks for a passphrase that is
+     kept in the platform credential store (setup's system-keychain choice generates one its
+     owner never saw): there it ends with `owner_view_unavailable`, naming `--use-passphrase`,
+     which an owner who chose that passphrase uses to type it. `--use-passphrase` also skips the
+     dialog, for an owner connected over SSH whose service would raise the dialog on the Mac's
+     own screen. Offering presence beside an owner-chosen passphrase adds no secret an agent can
+     learn; its cost is the residual risks below.
+   - *No held lock.* The ceremony releases the human-control mutex while the dialog waits, as it
+     already does while a secret is entered, so `cancel`, `service stop` and a disappearing
+     ceremony client end the dialog at once instead of waiting out its deadline. One prompt runs
+     at a time, and a second action on the same ceremony is refused while it is up. A ceremony
+     opened while another is active fails with the closed `ceremony_busy` code, never with the
+     locked-vault `state_forbidden`, unless the active one is past its five-minute binding
+     expiry: such a ceremony can never complete, so the next open ends it and proceeds. A
+     throttled passphrase is `reauthentication_rate_limited` on every ceremony.
+   - *Backoff.* After a prompt that did not approve (refused or unanswered, or cancelled after it
+     was up for at least 2 seconds), the next prompt waits 5 seconds, then 15, 30, 60, 120 and at
+     most 300 seconds per consecutive miss. An approval resets it, and so do 10 minutes without a
+     miss. A prompt cancelled sooner does not lengthen the wait, since the owner may never have seen
+     it (2 seconds is the service's estimate, not a signal from the helper), but the next prompt
+     still waits the first step: after a dialog that did not approve, the service raises no other
+     for 5 seconds however quickly it was cancelled. Within the wait no dialog is raised and the
+     ceremony fails with `reauthentication_rate_limited`. The backoff lives in the service process,
+     so a restart clears it: it slows repeated dialogs, it does not cap them. The durable passphrase
+     throttle is separate: 30 seconds after the third wrong passphrase, doubling to 5 minutes, and a
+     restart does not clear it. The owner view tells the two apart by the source it chose and never
+     offers a restart or `--use-passphrase` for a throttled passphrase (`passphrase_rate_limited` on
+     the CLI; the terminal interface says the same).
+   - *Why a helper process, not ctypes.* The same Apple executable and program shape already
+     serve the `plugin_artifact_apply` cell (ADR-016, issue #409), so this adds no dependency and
+     no new native surface. ctypes against `libobjc` and LocalAuthentication would need a
+     hand-built Objective-C reply block running native code inside the long-lived service, and a
+     wedged prompt could not be killed without killing the service; a child process can.
+   - *Residual risks, stated.* An agent that can run the command from a pseudo-terminal can make
+     the dialog appear but cannot answer it: that takes the owner's fingerprint or device
+     password. An agent shell without a terminal, such as Claude Code's Bash tool run directly,
+     is refused with `owner_view_requires_terminal` before any dialog, but the agent can wrap
+     the command in a pseudo-terminal (for example with `script`), and then the dialog appears
+     as it does under Codex. An owner who approves a dialog they
+     did not ask for gives that command the view, so the dialog says what it shows, shows the
+     code the owner's own terminal prints, and says to cancel unless they just asked. An agent
+     can also open its own ceremony just before the owner runs the command. The service runs one
+     ceremony at a time, so the owner's command then fails with `owner_view_busy` and names its
+     own confirmation code (on macOS it prints that code before anything opens), and the dialog
+     on screen shows a different one: the owner cancels it. The code is the first eight hex
+     digits of a digest of the exact request and its connection, so it is request-specific but
+     short; it is a cross-check, not a secret. The dialog appears in the desktop session the
+     service runs in; a service started outside one (for example over SSH) is expected to report
+     that no dialog can be shown. Two lockouts remain, each bounded. A client that opens a
+     ceremony and goes silent holds the one slot until its binding expires (five minutes) or
+     the service restarts; meanwhile the owner sees `owner_view_busy`, which names
+     `finishup service restart`. An agent that raises dialogs and lets each be refused, time out or
+     stay up for 2 seconds before cancelling can push the owner's next dialog behind the
+     backoff (at most 5 minutes); `finishup service restart` clears it, and `--use-passphrase`
+     confirms with an owner-chosen passphrase instead. One that cancels each dialog sooner does
+     not lengthen the wait but can still raise a dialog every 5 seconds; the owner cancels any
+     dialog they did not ask for. A program running as the owner's account
+     that can read the credential-store entry can confirm with that passphrase instead of the
+     dialog (`--use-passphrase`), so the dialog protects against agents that cannot read the
+     owner's keychain, not against everything that runs as the owner. Same-account code
+     tampering with the installed runtime is outside this boundary, as for every presence and
+     passphrase check (ADR-008).
+   - *Evidence.* Unit and integration tests drive the real adapter, scope, ceremony, vault proof,
+     daemon handler and ceremony client with a stub helper; no real Touch ID prompt has been
+     exercised. The manual check on a real Mac in the test-instance runbook (*Owner view with
+     Touch ID: manual check on a real Mac*) has not been run. The owner asked for a Codex check
+     of this round; it has not been run. Three independent Claude review rounds ran instead
+     (2026-10-14 and 2026-10-15), and this round addresses their findings.
+
 4. **Data classes:** structural public data, ordinary task/user content, sensitive/confidential
    content, and secrets/cryptographic material are distinct. Classification combines source-owned
    structural labels, scope validation, and deterministic secret scanning. Unknown or conflicting
@@ -193,7 +414,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    *Amended by ADR-016 decision 5 (issues #164/#533) and the "Human required?" table below:* the
    user's explicit current-chat instruction, relayed by a capable agent through the consent lane for
    one exact prepared, previewed, expiring consent target, is a second reauthenticated loosening
-   path; that relay is an agent attestation Yoetz cannot independently authenticate, and it never
+   path; that relay is an agent attestation FinishUP cannot independently authenticate, and it never
    overrides the never-send set.
    Answering a `confirm_every_request` disclosure is deliberately *not* one of these loosening
    operations and does not require passphrase mode or strong reauthentication: it decides one exact
@@ -206,7 +427,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    consume-first admits one attempt that may send, must be best-effort closed/nonselectable, and
    records its actual terminal or unknown receipt. Tightening never claims to retract bytes already
    admitted.
-   **Desired-state TOML (ADR-014):** `yoetz privacy export-desired` / `apply-desired` may declare
+   **Desired-state TOML (ADR-014):** `finishup privacy export-desired` / `apply-desired` may declare
    nonsecret policy intent in a sidecar TOML document. Apply classifies against the effective
    store: equivalent is a no-op; tighten routes to the existing tighten gate; widen never commits
    from the file alone and requires the ordinary propose→decide path. The generation-1
@@ -280,12 +501,12 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    likewise preserves terminal evidence but restores no live disclosure authority.
    A dangling/tampered catalog root quarantines the audit row and fences content disclosure rather
    than being swept or repaired with an invented ledger row.
-10. **Zero-egress definition:** true Yoetz zero-network egress is the composite policy state
+10. **Zero-egress definition:** true FinishUP zero-network egress is the composite policy state
     `profile=local_only`, `network_egress_permitted=false`, all five channels disabled, and no
     network-capable runtime path. The product default is **not** that state: it is `local_only`
     with structural `update_checks` permitted (opt-out) and no task-content egress. Zero-network
     for package identity checks requires the operator to disable `update_checks` (and therefore
-    the ceiling when no other channel is on). In the true zero-network state the Yoetz-owned tested
+    the ceiling when no other channel is on). In the true zero-network state the FinishUP-owned tested
     process set permits only the
     exact service/confidential AF_UNIX endpoints; a separately approved exact local-model AF_UNIX
     endpoint; and exact release-cell platform IPC needed for OS credential storage, user presence,
@@ -293,19 +514,19 @@ case → single-use authorization → bounded gateway → bound sink/provider �
     The last category includes measured Linux AF_UNIX routes to allowlisted session-bus Secret
     Service peers/methods and, separately, system-bus `org.freedesktop.login1` peers/methods, or
     measured macOS native security/presence/session notifications; it never permits
-    arbitrary AF_UNIX, arbitrary bus names/methods, or a local proxy. Yoetz denies AF_INET, AF_INET6,
+    arbitrary AF_UNIX, arbitrary bus names/methods, or a local proxy. FinishUP denies AF_INET, AF_INET6,
     DNS, proxies, redirects, external provider
     construction, telemetry, diagnostics upload, update checks, and capability calls. The
     `local_only` profile alone is not a zero-network claim because a separately authorized
     structural non-LLM row (today: `update_checks`) may raise the ceiling without enabling LLM
     disclosure; the remaining three non-LLM rows stay unsupported/off.
-    Evidence names the exact platform/release profile, Yoetz service/client/confidential-helper
+    Evidence names the exact platform/release profile, FinishUP service/client/confidential-helper
     processes, lifecycle interval from startup through `locked|ready` and tested operations, and
-    allowlisted local IPC peers. It proves those Yoetz paths, not the ambient authority of the OS
+    allowlisted local IPC peers. It proves those FinishUP paths, not the ambient authority of the OS
     credential agent or a separately running model process; public wording is conditional on the
     resolved F-013 trust boundary.
 11. **Setup is an application use case:** a wizard or UI reads effective policy and submits a
-    proposed policy transition through the Yoetz use case. It cannot write configuration or policy
+    proposed policy transition through the FinishUP use case. It cannot write configuration or policy
     storage directly. Its first question, `network_egress`, controls the global
     `network_egress_permitted` ceiling; answering yes still leaves all five channels denied until
     they are chosen independently. Setup explains concrete allowed/blocked examples, all five
@@ -352,7 +573,15 @@ case → single-use authorization → bounded gateway → bound sink/provider �
     the optional high-ceremony alternative. A new repository proposal may need both to widen the
     machine ceiling and to insert the first repository row. Those changes are one transition bundle,
     one complete trusted preview, and one authority-digest-bound CAS commit; no intermediate state
-    may authorize every repository.
+    may authorize every repository. **Amendment (ADR-049, issue #1073, 2026-10-14):** the policy
+    also carries the owner's `conversation_review` setting. A first AI-powered review grant made
+    through setup carries `local_agent_opt_in` unless the owner answered otherwise: every task
+    starts with local checks, and within the standing policy an agent's one `decision_recorded`
+    1.1.0 switch turns AI-powered review on for that task without a per-request prompt.
+    `local_owner_approval` restores a per-request decision for every such review, `local_only`
+    refuses agent opt-in, and `ai_powered` is the behaviour above (every task reviewed). The
+    setting never widens what may be sent; widening it is a trusted decision and narrowing it
+    applies at once. A policy without the field keeps its bytes and reads as before.
 15. **Structural subject-state hashing is a local non-disclosure support effect:** ADR-011 permits
     one explicit trusted local CLI command to read bounded Git/worktree bytes only into streaming
     hashers and return a versioned `SubjectStateRef`. It returns no source, diff, filename, path,
@@ -391,13 +620,13 @@ case → single-use authorization → bounded gateway → bound sink/provider �
 
     This boundary protects stolen object files, SQLite files, backups, and copied local state when
     vault keys are unavailable, and tampering must fail authenticated decryption. It does **not**
-    claim protection from root, kernel compromise, or a compromised same-user Yoetz/Codex process
+    claim protection from root, kernel compromise, or a compromised same-user FinishUP/Codex process
     while the vault is unlocked; immutable Python buffers are not promised zeroized. Public copy
     must describe authenticated encryption at rest and secret exclusion, never “cannot be hacked”
     or absolute host immunity.
 
     Exact project check policy bytes propose no authority. One trusted-local confirmation binds the
-    raw `.yoetz/checks.toml` digest; any byte change suspends all listed commands. Approved checks
+    raw `.finishup/checks.toml` digest; any byte change suspends all listed commands. Approved checks
     use exact argv, `shell=False`, sanitized environment, bounded output/time, and an enforcing
     sandbox. Network-requiring checks fail closed unless a separately reviewed authorization and
     sandbox prove the permission. Output bytes pass the same fail-closed secret scanner before
@@ -447,7 +676,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
 An agent may guide the owner to a trusted ceremony but cannot stand in for it. Both a nonterminal
 per-request decision and an explicitly reported missing standing repository grant use the exact
 command carried by their distinct continuation kinds and preserve the original check request
-identity. Repository setup uses the trusted CLI/TUI entrypoint `yoetz --privacy`; the one-use
+identity. Repository setup uses the trusted CLI/TUI entrypoint `finishup --privacy`; the one-use
 decision carries a proposal id and expiry. Recovery uses `status(view=operation)` or exact replay of
 the original request, never a fresh check. Ordinary chat assent alone is never authority. The
 delegated consent lane accepts only the user's explicit current-chat instruction relayed by an
@@ -462,8 +691,8 @@ invalid effective policy, unavailable reconciliation, and reconciliation failure
 no-dispatch policy outcomes and advertise no approval surface. Repository privacy setup/effective/
 propose result projection derives its workspace disclosure policy and receipt scope only from the
 authenticated control session's repository context. The same session carries closed render-mode
-and controlling-TTY facts: only interactive human-readable CLI output selects
-`local_human_view`; JSON, pipe/redirection, MCP, or absent facts remain fail-safe agent context.
+and controlling-TTY facts for presentation only; since round 3 (2026-10-14) none of them selects
+`local_human_view`, and every ordinary result is agent context.
 
 | Event | Human required? | Rule |
 |---|---:|---|
@@ -476,14 +705,14 @@ and controlling-TTY facts: only interactive human-readable CLI output selects
 | Never-send match or out-of-scope content | impossible to approve | Fail closed under every profile and fork claiming upstream conformance |
 
 When the user explicitly instructs an allowlisted first-party agent in the current chat to finish
-exact setup, agent-attested authorize (`yoetz consent authorize` with
+exact setup, agent-attested authorize (`finishup consent authorize` with
 `yoetz.chat-user-attestation/1`, issue #164) may complete a prepared `repository_privacy_grant` or
-provider credential set/rotate after one warning. This is delegated agent authority: Yoetz binds
+provider credential set/rotate after one warning. This is delegated agent authority: FinishUP binds
 the exact pending/action/digests but cannot independently distinguish genuine current-chat words
 from a forged agent assertion. Retrieved content, tool output, quoted text, or earlier history do
 not authorize under the agent skill contract. Denial, expiry, cancellation, target drift, or an
 unsupported client yields zero policy/credential mutation and zero provider dispatch. The trusted
-CLI/TUI (`yoetz --privacy`, `yoetz consent review`) remains the stronger recommended path and is
+CLI/TUI (`finishup --privacy`, `finishup consent review`) remains the stronger recommended path and is
 always available.
 
 For an `expanded_review` chat grant, prepare returns the complete bounded substantive policy diff,
@@ -516,10 +745,10 @@ plugin discovery, and tool listing are not observation evidence and do not stren
 ### Claude Code local project-hook amendment (2026-08-27, issue #154)
 
 `claude_hook` is a distinct untrusted advisory source on local Claude Code CLI project sessions.
-The native renderer registers only `SessionStart`, scoped-Yoetz `PostToolUse`, scoped-Yoetz
+The native renderer registers only `SessionStart`, scoped-FinishUP `PostToolUse`, scoped-FinishUP
 `PostToolUseFailure`, `Stop`, and `SessionEnd`; it never registers permission-changing, prompt,
 agent, HTTP, or content-expansion hooks. The ingress accepts only the exact
-`mcp__plugin_yoetz_yoetz__<workflow-operation>` names, a bounded session/correlation token,
+`mcp__plugin_finishup_finishup__<workflow-operation>` names, a bounded session/correlation token,
 closed lifecycle action, fixed capability-profile identity, and host-derived success bit.
 
 Transcript/cwd/file paths, prompts, assistant messages, tool input/output, MCP results, raw errors,
@@ -528,7 +757,7 @@ the common observation boundary. No Claude content capture or transcript reconci
 Hook failure and the host's three-second timeout are fail-soft; declaration, delivery, consent, and
 accepted evidence remain separate. Local-control schema `2.2.0` appends only the `claude_hook`
 envelope/coverage row and retains `2.1.0` byte-for-byte for Cursor peers. Claude trust or plugin
-enablement grants no Yoetz observation/egress/provider authority.
+enablement grants no FinishUP observation/egress/provider authority.
 
 The privacy policy is more than an AI-powered review provider toggle and cannot be represented by
 one `network=true` capability. Releases must prove the global ceiling; policy-intersection behavior;
@@ -536,7 +765,7 @@ valid `local_only` policies with one bounded but v0.1-unavailable non-LLM channe
 independence; agent-context and local-model fences; exact approval binding/restart behavior; no
 secret-bearing configuration/environment/arguments; reviewed bundled-adapter composition (without
 claiming OS sandbox isolation); keyed terminal-receipt commitments; the initial-reservation
-no-receipt exception; Yoetz-process local-only AF_UNIX behavior without overclaiming a separate
+no-receipt exception; FinishUP-process local-only AF_UNIX behavior without overclaiming a separate
 model runtime; and no plaintext canaries across databases, objects, logs, traces, prompts, receipts,
 errors, or transports. Public copy must reserve “zero network egress” for the composite
 ceiling-plus-channel state, not infer it from `local_only` alone. The runtime plaintext release gate
@@ -576,7 +805,7 @@ strict route and an unapproved repository both stop before runtime factory const
 launch.
 
 Codex composes its upstream OpenAI request internally, so the gateway commitment covers the exact
-final disclosed Yoetz case bytes at the boundary Yoetz controls. The terminal AI-powered review
+final disclosed FinishUP case bytes at the boundary FinishUP controls. The terminal AI-powered review
 provenance adds the exact runtime/launcher/config/instruction/schema/selection/output commitments
 and states `upstream_body_observability=unavailable`. Neither the case digest nor its HMAC may be
 labeled an upstream request-body digest. Receipt counts are zero when structural readiness fails
@@ -605,7 +834,7 @@ Destination group right after the primary. Removing it is a tightening. Effectiv
 intersection keeps a fallback only when both scopes name the identical one; disagreement tightens
 to the primary alone rather than disabling a channel both scopes allow. Policy JSON emits
 `fallback_provider_binding` only when present, so single-endpoint policy digests are unchanged.
-`yoetz privacy setup` reads both bound endpoints and shows the fallback as "Fallback destination
+`finishup privacy setup` reads both bound endpoints and shows the fallback as "Fallback destination
 (after the primary cannot serve)". Which endpoint an attempt reaches is decided by ADR-006's closed
 engagement rule; this amendment only makes both destinations exact, approved, receipted, and
 independently revocable.
@@ -665,8 +894,8 @@ though both are `task_description`, so an approval given for the plan (`goal`) n
   `sections` widening, so it needs the trusted approval ceremony, whose screen says in fixed words
   that the agent's transcription of the user's request will be sent and that the host-captured
   prompt is not used. A 1.0.0/1.1.0 document that names the section is corrupt.
-- `yoetz --privacy` and the policy draft print whether the current and proposed policies send
-  the task statement; `yoetz privacy show` on a terminal adds the same sentence after the policy.
+- `finishup --privacy` and the policy draft print whether the current and proposed policies send
+  the task statement; `finishup privacy show` on a terminal adds the same sentence after the policy.
 - The statement item passes the same classifier and never-send scanner as every other item and is
   bounded like one excerpt (16 KiB of canonical JSON, head and tail kept, elision marked).
 - The host-captured user prompt (`host_captured_user_prompt`) is a reserved source. No path
@@ -705,15 +934,15 @@ into the unreleased privacy-policy wire 1.2.0 (the #908 version), so one re-appr
   data class the destination withholds never cost an eligible excerpt its place.
   There are at most four rebuilds, the result is deterministic so a recovered review keeps its
   case digest, and egress still decides every dispatch.
-- `yoetz privacy show` on a terminal and `yoetz --privacy` show the current limits beside those the
+- `finishup privacy show` on a terminal and `finishup --privacy` show the current limits beside those the
   current recipe offers. The policy draft prints the limits it would approve. The terminal
   interface says a newer version of the owner's recipe exists instead of "already recommended".
   `privacy show --json` does not carry the proposed limits: that would need a control-result
   schema change.
 - The ceremony's count note says the byte limits are unchanged only when no byte limit widens on
   the same screen. Otherwise it points at the limits shown there.
-- Way back: approving the earlier preset again (with `yoetz privacy propose`, or by choosing Assisted
-  in `yoetz --privacy`) is a narrowing that needs no widening approval. An Expanded policy returned
+- Way back: approving the earlier preset again (with `finishup privacy propose`, or by choosing Assisted
+  in `finishup --privacy`) is a narrowing that needs no widening approval. An Expanded policy returned
   to the 1.1.0 preset encodes as the exact 1.1.0 bytes it had before.
 - Token budgets and raised channel ceilings are not part of this amendment (issue #924).
 
@@ -777,7 +1006,7 @@ heuristic spans before storage.
 
 ## Partial withholding and encoding-stable redaction amendment (2026-10-06, issue #976)
 
-TB4 run tb4f1 lost every implementation-stage review in two tasks to a Yoetz false positive: a
+TB4 run tb4f1 lost every implementation-stage review in two tasks to a FinishUP false positive: a
 heuristic span redacted to `[REDACTED]` re-matched the token-assignment detector once the item was
 JSON-encoded into the prepared case (`\n` became part of the "value"), and the prepared-bytes rescan
 blocked the whole packet with `never_send_detected`. Decisions:
@@ -792,7 +1021,12 @@ blocked the whole packet with `never_send_detected`. Decisions:
   placeholder `[withheld-by-yoetz:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`); the rest
   of the line, item and file is still sent, and the scanner exempts the placeholder like
   `[REDACTED]` (issue #982, owner decision B2, 2026-10-07). The check reports the review-scoped gap
-  `semantic_review_value_redacted`.
+  `semantic_review_value_redacted`. The check-time change and its task inputs (ADR-031), which
+  are redacted when the service reads them rather than at egress, use the same placeholder for a
+  heuristic span and `[REDACTED]` for a concrete credential (tb4n5); the reviewer instruction
+  explains both markers as withheld values, never the agent's code. That capture-time replacement
+  is not an egress replacement: it adds no `semantic_redacted_values` entry and is disclosed as
+  `check_time_change_redacted`.
 - When a low-confidence heuristic still survives into the prepared semantic-review bytes, local
   minimization first re-applies that in-place replacement to the item's packet (JSON-string)
   encoding, and withholds an item only when that cannot make it scan clean. It re-assembles the
@@ -849,7 +1083,7 @@ reviewer only, and status shows it before any check. Decisions:
   task checks first).
 - Turning it off is a widening (`global` / `credential_heuristic` in the policy diff) that applies
   only through the separately reauthenticated trusted-terminal decision; no MCP tool, hook or
-  agent path can apply it. `yoetz privacy credential-heuristic disable` proposes it on the current
+  agent path can apply it. `finishup privacy credential-heuristic disable` proposes it on the current
   repository's grant; in a repository without a grant it walks the ordinary grant-creation
   ceremony with the filter off and records the setting in the grant the owner approves. It never
   creates a grant silently. `enable` is the symmetric reverse: a tightening of the current
@@ -859,8 +1093,8 @@ reviewer only, and status shows it before any check. Decisions:
   same gates.
 - Visibility: the status result (status-result 1.4.0, additive) carries `credential_heuristic`
   with the `repository` state and the `machine_default` (`enforced`, `disabled` or `unknown`),
-  shown by MCP `status` and `yoetz status` before any check runs; `yoetz privacy show`,
-  `yoetz provider status` and the terminal interface name it when it is off. Every external
+  shown by MCP `status` and `finishup status` before any check runs; `finishup privacy show`,
+  `finishup provider status` and the terminal interface name it when it is off. Every external
   disclosure receipt prepared under it records `secret_scan.credential_heuristic: disabled`
   (egress-receipt 1.1.0; omitted when enforced). Every check whose external AI-powered review ran
   under it carries the standing-limitation gap `semantic_review_credential_heuristic_disabled`. It
@@ -885,6 +1119,43 @@ receipts on one `bounded_structural_metadata` item with no way to name the opera
   attempt. Suppressing those attempts, or admitting the advice packet, is a separate decision (a
   disclosure-shape change), recorded on issue #1019 and not made here.
 
+## Automatic advice review and category-denial honesty amendment (2026-10-14, issue #1019)
+
+Maintainer acknowledgement for this privacy/egress design gate: the owner explicitly requested
+this scoped repair. The earlier #1019 observation-advice delivery defect is resolved by the
+following shared service behavior; the original receipt-origin amendment above records the
+historical failure, not the current delivery contract.
+
+- The frozen minimized advice packet is offered as separately classified content inside the same
+  `review-packet` envelope/catalog contract used by explicit `check`. The existing approved-item
+  filter assembles `yoetz.review-packet-case/2`; no live repository, transcript or log is added.
+  Producer-owned rule metadata and scoped gaps remain `bounded_structural_metadata`;
+  `finding_summaries` are separate `finding_summary` content and never appear in the structural
+  envelope. Only approved content is retained. A malformed packet, missing or denied envelope,
+  or an assembly that loses the advice content fails closed. Packet digest and gaps must match
+  the frozen attempt. Old pending rows with an unknown packet format remain fail closed.
+- Advice uses a custom observation-only context with no cooperative ledger frontier or ledger
+  citations. Its question and coverage name
+  only the recorded observation facts and gaps; delivery is not a closing task check. The
+  `observation-advice-packet` content marker takes precedence over the shared envelope marker
+  when deriving `origin_operation`, including successful and blocked receipts.
+- Predispatch receipts carry only categories actually denied by the classifier/category policy.
+  Failure to assemble approved context does not deny its category: it reports
+  `insufficient_approved_context`, zero included items and no category denial unless another item
+  was actually denied. Scope, destination, channel and size refusals likewise preserve the actual
+  request failure reason instead of declaring every candidate category denied. Approval counts
+  describe classification, never provider delivery. Before classification, neither approval nor
+  denial is asserted. `secret_scan.stage` still distinguishes an unrun scan from prepared scanning.
+- The existing egress-receipt 1.1.0 fields carry these facts; no new reason or
+  required field is introduced. Stored 1.0.0/1.1.0 receipts keep their exact bytes and remain readable;
+  older overbroad category sets are historical assertions, not retroactively corrected facts.
+- Codex, Claude Code and Cursor share this service path, on all supported platforms. Hooks only
+  enqueue; background dispatch applies the same authority and category checks as CLI/MCP checks.
+  CLI and terminal-interface privacy receipt inspection receive the same corrected network receipt.
+  No host adapter, receipt agent-sink projection, or JSON/markdown/text task-receipt projection
+  changes here; those overlap the privacy lane but are outside this repair. Verification uses an
+  isolated service composition and fake provider, not live host sessions or model calls.
+
 ## Declared outputs outside the workspace amendment (2026-10-08, issue #1016, tb4n2 R7)
 
 Owner decision (maintainer acknowledgement on #1016): a deliverable the task places outside the
@@ -902,7 +1173,7 @@ here.
   rows rank with the current
   diff instead of competing with general tool output for excerpt room, and the content resolver
   reads their captures first.
-- No new read path: Yoetz never opens the outside file itself. Only content a hook already captured
+- No new read path: FinishUP never opens the outside file itself. Only content a hook already captured
   under the session's content-capture consent, or text the agent published, can be carried. A
   declared input, a role-less item, a relative path and a task with no known workspace root select
   nothing.
@@ -914,3 +1185,42 @@ here.
 - Disclosure: carried rows are listed in the review input manifest and the egress receipt like any
   other excerpt; nothing new is hidden from the owner, and the behaviour is service-side and the
   same on Codex, Claude Code and Cursor.
+
+### Background advice under preview-required policies (2026-10-14, issue #1019 round 2)
+
+Maintainer acknowledgement: the owner requested this scoped follow-up to the amendment above.
+
+- Background advice now actually sends the approved, minimized advice packet when external review
+  is configured and the effective repository policy permits unattended disclosure. The background
+  switch was already on by default; before #1019 an invalid envelope meant nothing was sent. This
+  is a behaviour change, recorded in the changelog and release notes.
+- Background advice has nobody to preview a packet and no continuation to resume. When the
+  effective repository policy needs a human preview (profile `confirm_every_request`, which the
+  metadata-only recipe selects, or an LLM channel with `preview_required`), admission skips advice
+  with the typed reason `preview_required` (gap `advice_semantic_preview_required`). Nothing is
+  queued, no disclosure proposal waits for the owner, no provider identity is recorded and no
+  backoff accrues. A row queued before the policy changed closes as `authorization_missing` with no
+  provider identity. As defence in depth, the egress pipeline refuses an `observation_advice`
+  candidate under such a policy before classification, so its receipt asserts no category
+  approval. Explicit checks keep their preview and resume ceremony unchanged.
+- Per recipe: `private` sends nothing; `metadata_only` skips background advice; `assisted_review`,
+  `expanded_review` and a custom policy without preview send only within the repository grant,
+  allowed categories and review-context selection. The advice envelope names the effective
+  review-context profile, and finding-summary prose is offered only when that profile's selection
+  includes finding prose (never under `structural`).
+- A refused request can still carry classification approvals in `approved_categories` and
+  `counts.approved_items`. The released receipt shape is closed, so the CLI's human rendering of
+  privacy receipts adds a `not sent:` line for network receipts that never reached a provider;
+  `--json` and the wire are unchanged.
+- Shared service behaviour for Codex, Claude Code and Cursor on macOS, Linux and Windows through
+  WSL 2. No migration: the skip writes no row, and a race closes with an existing reason.
+
+Round 3 (same day, same issue): a preview switch that lands after the service's own read (while
+the coordinator prepares the packet, or at its final repository-authority check) is refused by the
+egress pipeline as `scope_mismatch` or `policy_denied`. The advice row is now mapped from that typed
+pre-dispatch refusal, not from the configured binding: `unavailable` / `authorization_missing`, no
+provider identity, the privacy record linked, no session provider-rate charge and only the base
+retry. Only `outcome_unknown` keeps the provider identity. The coordinator also refuses an advice
+candidate built for a review-context profile that is no longer in force (`scope_mismatch`); the
+next admission rebuilds it from the current profile. The gateway's own consume fence for a switch
+after authorization is unchanged and not re-tested here (the provider gateway is faked).

@@ -5,9 +5,9 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from yoetz.ports.diagnostics import StartupCheckOutcome
-from yoetz.protocol.schemas import load_schema_catalog, request_result_schema_versions
-from yoetz.version import (
+from finishup.ports.diagnostics import StartupCheckOutcome
+from finishup.protocol.schemas import load_schema_catalog, request_result_schema_versions
+from finishup.version import (
     REVIEWED_RESOURCE_COUNT,
     ResourceIntegrityError,
     build_version_manifest,
@@ -29,7 +29,8 @@ def test_development_manifest_is_truthful_and_complete() -> None:
         "development_unverified",
         "mcp_capability_unverified",
     )
-    assert len(manifest.request_result_schema_versions) == 53
+    # 54 since the review-packet-row 2.0.0 provider contract (outbound-case role).
+    assert len(manifest.request_result_schema_versions) == 54
     assert dict(manifest.request_result_schema_versions)["setup-readiness"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions)["setup-status"] == "2.0.0"
     assert dict(manifest.request_result_schema_versions)["isolation-report"] == "1.0.0"
@@ -81,9 +82,9 @@ def test_guidance_and_skill_source_package_bytes_are_identical() -> None:
         "guidance/coverage-and-receipts.md",
         "guidance/publication-policy.md",
         "guidance/workflow.md",
-        "skills/codex/yoetz/SKILL.md",
-        "skills/codex/yoetz/manifest.json",
-        "skills/portable/yoetz/SKILL.md",
+        "skills/codex/finishup/SKILL.md",
+        "skills/codex/finishup/manifest.json",
+        "skills/portable/finishup/SKILL.md",
         "support/agent-plugins/1.0.0/mcp.schema.json",
         "support/agent-plugins/1.0.0/plugin.schema.json",
         "support/runtime-support.json",
@@ -94,7 +95,7 @@ def test_guidance_and_skill_source_package_bytes_are_identical() -> None:
 
 
 def test_skill_does_not_advertise_parser_only_rollout_evidence() -> None:
-    document = json.loads(read_verified_resource("skills/codex/yoetz/manifest.json"))
+    document = json.loads(read_verified_resource("skills/codex/finishup/manifest.json"))
 
     assert document["codex_version_bounds"] == {
         "denied": [],

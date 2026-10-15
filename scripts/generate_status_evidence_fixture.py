@@ -15,10 +15,10 @@ import json
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.cli.render import render_human_status
-from yoetz.mcp.summaries import render_safe_compact_summary
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import StatusRequestModel, StatusResultModel, StatusSuccessModel
+from finishup.cli.render import render_human_status
+from finishup.mcp.summaries import render_safe_compact_summary
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import StatusRequestModel, StatusResultModel, StatusSuccessModel
 
 _PATH: Final = "canonical/status-evidence-author-1.4.0.case.json"
 _FIXTURE_ID: Final = "CAN-013"

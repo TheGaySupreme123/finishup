@@ -7,9 +7,9 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
+from finishup.protocol.canonical import JsonValue, request_digest
+from finishup.protocol.models import FrontierModel
 from fixture_loader import FixtureLoader
-from yoetz.protocol.canonical import JsonValue, request_digest
-from yoetz.protocol.models import FrontierModel
 
 
 def _fixture(loader: FixtureLoader) -> dict[str, Any]:

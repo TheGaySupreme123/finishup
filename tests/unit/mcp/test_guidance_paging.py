@@ -8,9 +8,10 @@ from typing import Any, cast
 import pytest
 from mcp import types
 
-from yoetz.mcp import resources as resource_module
-from yoetz.mcp import server as bridge
-from yoetz.mcp.resources import (
+from finishup.mcp import resources as resource_module
+from finishup.mcp import server as bridge
+from finishup.mcp.resources import (
+    GUIDANCE_SECTIONS_MARKER,
     GuidanceAssemblyError,
     GuidancePageAssembler,
     GuidanceResourceError,
@@ -18,11 +19,11 @@ from yoetz.mcp.resources import (
     _page_boundaries,  # pyright: ignore[reportPrivateUsage]
     read_resource_page,
 )
-from yoetz.ports.control import McpHostProfile
-from yoetz.protocol.models import ReadGuidanceRequestModel
+from finishup.ports.control import McpHostProfile
+from finishup.protocol.models import ReadGuidanceRequestModel
 
-_URI = "yoetz://guidance/agent-instructions.md"
-_OVERSIZED_URI = "yoetz://guidance/workflow.md"
+_URI = "finishup://guidance/agent-instructions.md"
+_OVERSIZED_URI = "finishup://guidance/workflow.md"
 
 
 def _wire(page: GuidanceResourcePage) -> dict[str, object]:
@@ -52,11 +53,11 @@ def _host_text(page: GuidanceResourcePage) -> str:
     next_page = "none" if page.next_page is None else str(page.next_page)
     complete = "yes" if page.complete else "no"
     return (
-        f"YOETZ_GUIDANCE_PAGE_BEGIN document={page.resource.uri} page={page.page} "
+        f"FINISHUP_GUIDANCE_PAGE_BEGIN document={page.resource.uri} page={page.page} "
         f"page_count={page.page_count} offset={page.offset} bytes={page.byte_count} "
         f"total_bytes={page.total_byte_count} revision={page.revision} digest={page.digest}\n"
         f"{page.text}\n"
-        f"YOETZ_GUIDANCE_PAGE_END complete={complete} next_page={next_page} "
+        f"FINISHUP_GUIDANCE_PAGE_END complete={complete} next_page={next_page} "
         f"revision={page.revision} digest={page.digest}"
     )
 
@@ -218,10 +219,15 @@ def test_dispatch_paged_result_has_bounded_markers_and_stale_recovery() -> None:
             assert wire["page_size"] == "64"
             block = result.content[0]
             assert isinstance(block, types.TextContent)
-            assert block.text.startswith("YOETZ_GUIDANCE_PAGE_BEGIN ")
-            assert block.text.endswith(f"digest={wire['digest']}")
+            assert block.text.startswith("FINISHUP_GUIDANCE_PAGE_BEGIN ")
+            # Page zero appends the catalogued section list after its end marker (tb4n5); the page
+            # itself still ends at the digest.
+            page_text, marker, _sections = block.text.partition(f"\n{GUIDANCE_SECTIONS_MARKER} ")
+            assert marker
+            assert wire["sections"]
+            assert page_text.endswith(f"digest={wire['digest']}")
             assert isinstance(wire["text"], str)
-            assert wire["text"] in block.text
+            assert wire["text"] in page_text
 
             stale = await bridge.dispatch_read_guidance(
                 {

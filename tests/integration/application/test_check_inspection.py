@@ -24,12 +24,12 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.application.check_inspection import CheckInspection, check_inspection_json
-from yoetz.application.observation_materialize import observation_author
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.cli.render import render_human_inspection
-from yoetz.domain.events import (
+from finishup.application.check_inspection import CheckInspection, check_inspection_json
+from finishup.application.observation_materialize import observation_author
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.cli.render import render_human_inspection
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EventDraft,
@@ -40,16 +40,16 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.values import Frontier, action_id, event_id, result_id, timestamp_from_datetime
-from yoetz.kernel.observed_failures import observed_action_description
-from yoetz.kernel.task_facts import requested_command_identity
-from yoetz.mcp.summaries import render_safe_compact_summary
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.ledger import AppendCommand, AppendEntry, CheckCommitResult, OperationKind
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier, action_id, event_id, result_id, timestamp_from_datetime
+from finishup.kernel.observed_failures import observed_action_description
+from finishup.kernel.task_facts import requested_command_identity
+from finishup.mcp.summaries import render_safe_compact_summary
+from finishup.ports.control import ControlMethod
+from finishup.ports.ledger import AppendCommand, AppendEntry, CheckCommitResult, OperationKind
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.protocol.models import (
     CheckInspectionModel,
     CheckRequest,
     CheckResult,
@@ -307,7 +307,7 @@ async def test_inspection_answers_what_is_left_what_hooks_saw_and_where_evidence
     )
     assert type(checked) is CheckCommitResult
     checked_frontier = checked.result_frontier
-    # After the check: a failing observed command, an observed workspace edit, and Yoetz's own
+    # After the check: a failing observed command, an observed workspace edit, and FinishUP's own
     # status call (never listed: it cannot change the work).
     frontier = await _append_observed(
         app,
@@ -316,7 +316,7 @@ async def test_inspection_answers_what_is_left_what_hooks_saw_and_where_evidence
             _observed_action(7400, ActionKind.COMMAND, "Bash", write_scope="workspace"),
             _observed_result(7401, 7400, ResultOutcome.FAILURE, 1),
             _observed_action(7402, ActionKind.EDIT, "Edit", write_scope="workspace"),
-            _observed_action(7403, ActionKind.OTHER, "mcp__yoetz__status"),
+            _observed_action(7403, ActionKind.OTHER, "mcp__finishup__status"),
         ),
         seed=7400,
         expected_frontier=checked_frontier.sequence,
@@ -356,7 +356,7 @@ async def test_inspection_answers_what_is_left_what_hooks_saw_and_where_evidence
     assert edit["action_kind"] == "edit"
     assert edit["material_class"] == "edit_or_write"
     assert edit["write_scope"] == "workspace"
-    assert all(row.get("tool_name") != "mcp__yoetz__status" for row in observed["actions"])
+    assert all(row.get("tool_name") != "mcp__finishup__status" for row in observed["actions"])
 
     alignment = projected["evidence_alignment"]
     assert alignment["basis"] == "recorded_links"
@@ -499,7 +499,7 @@ def test_inspect_refuses_the_options_that_only_a_minting_check_has(extra: dict[s
 
 
 def test_inspection_json_carries_only_a_supplied_wait() -> None:
-    from yoetz.ports.ledger import CheckObservationsAwaited
+    from finishup.ports.ledger import CheckObservationsAwaited
 
     base = CheckInspection(
         protocol_id("req_", 8100),
@@ -523,7 +523,7 @@ def test_inspection_json_carries_only_a_supplied_wait() -> None:
 async def test_evidence_items_trace_through_their_recorded_links_or_say_they_cannot() -> None:
     """An evidence item cites its action through ``causal_parents``; a bare one is unattributed."""
 
-    from yoetz.domain.events import EVIDENCE_SCHEMA_VERSION
+    from finishup.domain.events import EVIDENCE_SCHEMA_VERSION
 
     app, _policy = await build_projection_application(seed=8200)
     started = await app.start(start_request(8200, title="Evidence links"))
@@ -634,7 +634,7 @@ async def test_evidence_items_trace_through_their_recorded_links_or_say_they_can
 @pytest.mark.parametrize(
     ("observed_command", "alignment", "named"),
     (
-        # The run Yoetz's hook observed was the requested supervisor command.
+        # The run FinishUP's hook observed was the requested supervisor command.
         ("supervisorctl start payments", "evidence_names_declared_item", ["1"]),
         # tb4n4 payments D: the latency run bypassed the supervisor the service is deployed under.
         ("python bench/latency.py --direct", "evidence_off_declared_items", []),
@@ -644,8 +644,8 @@ async def test_an_observed_run_is_compared_with_the_requested_command_by_keyed_i
     observed_command: str, alignment: str, named: list[str]
 ) -> None:
     from builders.observed_runs import INSTALLATION_KEY, command_identity_for
-    from yoetz.kernel.observed_failures import command_identity
-    from yoetz.kernel.task_facts import register_command_identity_key
+    from finishup.kernel.observed_failures import command_identity
+    from finishup.kernel.task_facts import register_command_identity_key
 
     register_command_identity_key(INSTALLATION_KEY)
     try:

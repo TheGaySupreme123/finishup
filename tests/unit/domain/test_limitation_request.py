@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from builders.policy_cases import fnd, obl
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingChallenge,
@@ -21,9 +21,9 @@ from yoetz.domain.findings import (
     finding_policy_identity,
     is_limitation_request,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Frontier
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -32,7 +32,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "3" * 64
 

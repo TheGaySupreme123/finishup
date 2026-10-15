@@ -16,21 +16,21 @@ from typing import cast
 
 from builders.codex_rollout import encode_lines, item_completed, session_meta
 from builders.observed_runs import ObservedLedger, omissions, omitted_results, receipt_limitations
-from yoetz.adapters.integrations.codex_session_stream import SessionStreamReader
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
+from finishup.adapters.integrations.observation_local import (
     STREAM_MAPPING_VERSION,
     LocalObservationStore,
 )
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli import observe_hooks
-from yoetz.domain.events import ActionRecordedPayload, EventPayload, ResultRecordedPayload
-from yoetz.domain.observation import ObservationCursor, ObservationSource
-from yoetz.domain.observation_profiles import (
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli import observe_hooks
+from finishup.domain.events import ActionRecordedPayload, EventPayload, ResultRecordedPayload
+from finishup.domain.observation import ObservationCursor, ObservationSource
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonValue, ResultId
-from yoetz.protocol.canonical import canonical_encode
+from finishup.domain.values import JsonValue, ResultId
+from finishup.protocol.canonical import canonical_encode
 
 _TASK = "tsk_00000000-0000-4000-8000-000000000909"
 _CANARY = "zq909hostcanary"

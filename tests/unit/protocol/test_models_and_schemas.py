@@ -16,11 +16,11 @@ from urllib.parse import urldefrag
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-import yoetz.protocol.schemas as schemas_module
+import finishup.protocol.schemas as schemas_module
 from builders.readiness import with_checklist
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import (
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import (
     SCHEMA_MANIFEST_SCHEMA,
     SCHEMA_MANIFEST_VERSION,
     SCHEMA_MEMBER_COUNT,
@@ -48,7 +48,7 @@ _VALID_COVERAGE: dict[str, JsonValue] = {
     "check_types": ["none"],
     "known_gaps": [],
 }
-_SCHEMA_RESOURCE_ROOT = resources.files("yoetz").joinpath("resources").joinpath("schemas")
+_SCHEMA_RESOURCE_ROOT = resources.files("finishup").joinpath("resources").joinpath("schemas")
 _EXPECTED_PROTOCOL_VERSION = "0.1"
 _EXPECTED_SCHEMA_VERSION = "1.0.0"
 _EXPECTED_MAX_EVENTS_PER_BATCH = 100
@@ -179,7 +179,7 @@ _OPTIONAL_SEMANTIC_PROVENANCE_PAIRS = frozenset({("failed", "coordinator_failure
 
 
 def _models_module() -> Any:
-    return importlib.import_module("yoetz.protocol.models")
+    return importlib.import_module("finishup.protocol.models")
 
 
 def _schema_resource(rel_path: str) -> Any:
@@ -312,17 +312,17 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "check",
         None,
-    ): 438,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
-    # #1047 +1 follow_up_round
-    ("publish_work", None): 61,
+    ): 442,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
+    # #1047 +1 follow_up_round; ADR-049 +4 review_mode
+    ("publish_work", None): 64,
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
     (
         "status",
         None,
-    ): 121,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
-    # tb4n4 #1044 +7: closure_readiness.undeclared_references
+    ): 129,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
+    # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
@@ -342,7 +342,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("StartSuccessModel", "operations/start-result-1.1.0.schema.json", "success"),
     ("StartCompactViewModel", "operations/start-result-1.0.0.schema.json", "compact_view"),
     ("StartVersionSliceModel", "operations/start-result-1.0.0.schema.json", "version_slice"),
-    # 1.1.0 (unreleased) adds the optional yoetz-blocker notices (#985).
+    # 1.1.0 (unreleased) adds the optional finishup-blocker notices (#985).
     (
         "PublishWorkSuccessModel",
         "operations/publish-work-result-1.1.0.schema.json",
@@ -353,6 +353,12 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "PublishWorkBlockerNoticeModel",
         "operations/publish-work-result-1.1.0.schema.json",
         "blocker_notice",
+    ),
+    # tb4n5 follow-up: the optional unlinked-action notices (1.1.0, unreleased, changed in place).
+    (
+        "PublishWorkActionNoticeModel",
+        "operations/publish-work-result-1.1.0.schema.json",
+        "action_notice",
     ),
     (
         "PublishWorkAcceptedEventModel",
@@ -828,7 +834,7 @@ def _candidate_status_result_wire(*, omitted: bool = False) -> dict[str, JsonVal
 
 
 def test_human_status_renders_operation_continuation_and_exact_trusted_command() -> None:
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -845,7 +851,7 @@ def test_human_status_renders_operation_continuation_and_exact_trusted_command()
         "accepted_events": [],
         "continuation": {
             "kind": "repository_privacy_setup",
-            "command": ["yoetz", "--privacy"],
+            "command": ["finishup", "--privacy"],
             "replay_request_id": operation_request_id,
             "instruction": "Run the trusted repository privacy setup, then replay this request.",
         },
@@ -858,12 +864,12 @@ def test_human_status_renders_operation_continuation_and_exact_trusted_command()
     # ADR-046: no human surface prints "receipt-blocking" any more; the counters are the verdict.
     assert "Receipt-blocking" not in rendered
     assert "Continuation: repository_privacy_setup" in rendered
-    assert "Trusted command: yoetz --privacy" in rendered
+    assert "Trusted command: finishup --privacy" in rendered
     assert f"Replay request ID: {operation_request_id}" in rendered
 
 
 def test_human_status_reports_latest_check_test_edit_totals() -> None:
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -912,7 +918,7 @@ def test_human_status_reports_latest_check_test_edit_totals() -> None:
 
 @pytest.mark.parametrize("attempt_count", [0, 3, 64])
 def test_human_status_bounds_command_attempts_without_truncating_json(attempt_count: int) -> None:
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -946,7 +952,7 @@ def test_human_status_bounds_command_attempts_without_truncating_json(attempt_co
     rendered = render_human_status(parsed.root)
     assert rendered.count(" command item ") == min(attempt_count, 3)
     # tb4n4 (#1049): the open obligation's view states the resolution recipe, field included.
-    from yoetz.protocol.readiness_text import OBLIGATION_RESOLVE_RECIPE_VARIANTS
+    from finishup.protocol.readiness_text import OBLIGATION_RESOLVE_RECIPE_VARIANTS
 
     assert OBLIGATION_RESOLVE_RECIPE_VARIANTS[0] in rendered
     if attempt_count > 3:
@@ -961,7 +967,7 @@ def test_human_status_bounds_command_attempts_without_truncating_json(attempt_co
 def test_human_status_reports_unknown_readiness_counts_as_unavailable() -> None:
     """An unreadable compact singleton must not render as ``None`` or as a clean zero."""
 
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -987,8 +993,8 @@ def test_human_status_reports_unknown_readiness_counts_as_unavailable() -> None:
 def test_human_status_counts_acknowledged_obligations_apart() -> None:
     """#997 review item 2: an acknowledged obligation is shown once, never as open."""
 
-    from yoetz.cli.render import render_human_status
-    from yoetz.mcp.summaries import summary_for_status
+    from finishup.cli.render import render_human_status
+    from finishup.mcp.summaries import summary_for_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -1364,7 +1370,7 @@ def test_protocol_models_public_exports_are_closed() -> None:
         ReceiptFormat ReceiptInclude ReceiptRedactionProfile
         ReceiptRequest ReceiptRequestModel ReceiptResult ReceiptResultModel
         REGISTERED_GUIDANCE_URIS ReadGuidanceRequest ReadGuidanceRequestModel
-        ReadGuidanceContinuationModel
+        ReadGuidanceContinuationModel ReadGuidanceSectionModel
         ReadGuidanceResult ReadGuidanceResultModel ClosurePrepareRequest
         ClosurePrepareRequestModel ClosurePrepareResult ClosurePrepareResultModel
         ClosureSelectionModel RespondRequest
@@ -1931,6 +1937,27 @@ def test_receipt_version_slice_is_exact_and_canonical() -> None:
     schema_versions[1] = dict(cast(dict[str, JsonValue], schema_versions[0]))
     with pytest.raises(ValidationError):
         models.ReceiptResultModel.model_validate(duplicate_schemas)
+
+
+def test_receipt_version_slice_admits_the_current_and_the_legacy_package_name() -> None:
+    """A receipt issued before the rename names ``yoetz``; new receipts name ``finishup``."""
+
+    models = _models_module()
+    legacy = _receipt_result_wire()
+    assert cast(dict[str, JsonValue], legacy["versions"])["package_name"] == "yoetz"
+    for package_name in ("yoetz", "finishup"):
+        wire = _receipt_result_wire()
+        for versions in (
+            wire["versions"],
+            cast(dict[str, JsonValue], wire["document"])["versions"],
+        ):
+            cast(dict[str, JsonValue], versions)["package_name"] = package_name
+        result = models.ReceiptResultModel.model_validate(wire)
+        assert result.root.versions.package_name == package_name
+    unknown = _receipt_result_wire()
+    cast(dict[str, JsonValue], unknown["versions"])["package_name"] = "other"
+    with pytest.raises(ValidationError):
+        models.ReceiptResultModel.model_validate(unknown)
 
 
 def test_check_semantic_status_reason_and_provenance_matrix() -> None:
@@ -2544,9 +2571,10 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1584
+        len(derived_patterns) == 1599
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
-    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2
+    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
+    # tb4n5 +3 publish action_notices
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2556,9 +2584,10 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1611
+        len(rules) == 1626
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
-    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2
+    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
+    # tb4n5 +3 publish action_notices
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2567,8 +2596,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1584  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
-    # #1048 +38, #1047 +2
+    assert len(registry_patterns) == 1599  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -3134,7 +3163,7 @@ def _plain_object(data: bytes) -> dict[str, JsonValue]:
 
 
 def _schema_tree(tmp_path: Path, case: str) -> Path:
-    source = Path(__file__).resolve().parents[3] / "src" / "yoetz" / "resources" / "schemas"
+    source = Path(__file__).resolve().parents[3] / "src" / "finishup" / "resources" / "schemas"
     destination = tmp_path / case
     shutil.copytree(source, destination)
     return destination
@@ -3198,7 +3227,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 228
+    assert SCHEMA_MEMBER_COUNT == 230
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3279,14 +3308,16 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     with pytest.raises(FrozenInstanceError):
         catalog.documents[0].schema_name = "changed"  # type: ignore[misc]
 
-    root = resources.files("yoetz").joinpath("resources", "schemas")
+    root = resources.files("finishup").joinpath("resources", "schemas")
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_793
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_815
     )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
-    # #1048 +26 inspection branch
+    # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),
+    # tb4n5 +2 (read_guidance page-zero sections: the item and its uri), ADR-049 +9
+    # (decision-recorded 1.1.0 and its draft branch, review_mode)
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:
@@ -3295,7 +3326,7 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
     event_versions = event_schema_versions(catalog)
     assert request_versions is catalog.request_result_versions
     assert event_versions is catalog.event_schema_versions
-    assert len(request_versions) == 53
+    assert len(request_versions) == 54
     assert len(event_versions) == 29
     assert tuple(request_versions) == tuple(sorted(request_versions, key=str.encode))
     assert tuple(event_versions) == tuple(sorted(event_versions, key=str.encode))

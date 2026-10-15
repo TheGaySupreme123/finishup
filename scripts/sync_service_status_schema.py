@@ -10,8 +10,8 @@ from typing import cast
 
 from verify_resource_manifest import build_manifest, collect_source_entries, load_inventory_config
 
-from yoetz.ports.control import _SERVICE_STATE_REASON_VALUES
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.ports.control import _SERVICE_STATE_REASON_VALUES
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 
 def _load(path: Path) -> dict[str, JsonValue]:

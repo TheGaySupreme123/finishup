@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.mcp import resources
-from yoetz.mcp.resources import MAX_GUIDANCE_PAGE_SIZE
-from yoetz.protocol.guidance_uris import GUIDANCE_TOPIC_URIS
+from finishup.mcp import resources
+from finishup.mcp.resources import MAX_GUIDANCE_PAGE_SIZE
+from finishup.protocol.guidance_uris import GUIDANCE_TOPIC_URIS
 
 _ROOT = Path(__file__).resolve().parents[3]
 

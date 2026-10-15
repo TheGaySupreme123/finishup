@@ -11,18 +11,18 @@ the text is edited. It sits next to the Claude cap gate (#789).
 
 from __future__ import annotations
 
-from yoetz.mcp.descriptors import (
+from finishup.mcp.descriptors import (
     COMPACT_INITIALIZE_INSTRUCTIONS,
     COMPACT_INSTRUCTIONS_BUDGET,
     McpRouteProfile,
     server_instructions,
 )
-from yoetz.mcp.semantic_destination import (
+from finishup.mcp.semantic_destination import (
     DISCLOSURE_PREFIX,
     MAX_DISCLOSURE_ENCODED_BYTES,
     SemanticDestinationDisclosure,
 )
-from yoetz.ports.control import McpHostProfile
+from finishup.ports.control import McpHostProfile
 
 STATED_COMPACT_BODY_CAP_BYTES = 2_048
 COMPACT_HOSTS: tuple[McpHostProfile, ...] = ("codex", "cursor")

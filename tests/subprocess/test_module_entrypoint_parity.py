@@ -10,7 +10,9 @@ def _run(arguments: list[str], *, module: bool) -> subprocess.CompletedProcess[b
     root = Path(__file__).resolve().parents[2]
     environment = dict(os.environ)
     environment["PYTHONPATH"] = os.fspath(root / "src")
-    launcher = [sys.executable, "-m", "yoetz"] if module else [os.fspath(root / ".venv/bin/yoetz")]
+    launcher = (
+        [sys.executable, "-m", "finishup"] if module else [os.fspath(root / ".venv/bin/finishup")]
+    )
     return subprocess.run(  # noqa: S603 - both fixed in-repository launchers
         [*launcher, *arguments],
         stdin=subprocess.DEVNULL,
@@ -22,7 +24,7 @@ def _run(arguments: list[str], *, module: bool) -> subprocess.CompletedProcess[b
 
 
 def _normalized_help(data: bytes) -> bytes:
-    return data.replace(b"python -m yoetz", b"yoetz")
+    return data.replace(b"python -m finishup", b"finishup")
 
 
 def test_console_and_module_version_are_byte_identical() -> None:

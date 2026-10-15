@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from builders.projection_workflow import build_projection_application
-from yoetz.application.project_projection import (
+from finishup.application.project_projection import (
     hydrate_project_status_coordination_resources,
     hydrate_project_status_text,
     hydrate_status_advice_coordination_resources,
@@ -20,13 +20,13 @@ from yoetz.application.project_projection import (
     revalidate_status_advice_sources,
     source_denied_project_items,
 )
-from yoetz.application.projects import (
+from finishup.application.projects import (
     ProjectApplication,
     ProjectCommandError,
     ProjectMembershipView,
     ProjectStatus,
 )
-from yoetz.domain.coordination import (
+from finishup.domain.coordination import (
     CoordinationErrorCode,
     MemberKind,
     ProjectDescriptor,
@@ -34,7 +34,7 @@ from yoetz.domain.coordination import (
     ProjectMembership,
     ProjectTextRef,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -44,9 +44,9 @@ from yoetz.domain.privacy import (
     LocalDisclosureSink,
     ProjectionAuditContext,
 )
-from yoetz.ports.control import ControlError
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.models import OmittedContentModel, StatusProjectDetectionModel
+from finishup.ports.control import ControlError
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.models import OmittedContentModel, StatusProjectDetectionModel
 
 pytestmark = pytest.mark.anyio
 

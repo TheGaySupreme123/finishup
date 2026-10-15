@@ -7,11 +7,11 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.project_operations import SqliteProjectOperationJournal
-from yoetz.domain.coordination import ProjectTextRef
-from yoetz.domain.values import JsonObject
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.adapters.sqlite.project_operations import SqliteProjectOperationJournal
+from finishup.domain.coordination import ProjectTextRef
+from finishup.domain.values import JsonObject
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.ids import IdKind, new_id
 
 _INSTALLATION = "ins_70000000-0000-4000-8000-000000000001"
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from builders.start_application import start_composition, start_request
-from yoetz.application.start import execute_start
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import StartRequest
+from finishup.application.start import execute_start
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import StartRequest
 
 pytestmark = pytest.mark.anyio
 

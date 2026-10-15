@@ -14,23 +14,23 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
-from yoetz.application.privacy_policy import privacy_policy_changes
-from yoetz.cli.app import (
+from finishup.application.privacy_policy import privacy_policy_changes
+from finishup.cli.app import (
     _effective_excerpt_limits_line,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.cli.privacy_setup import (
+from finishup.cli.privacy_setup import (
     _render_review,  # pyright: ignore[reportPrivateUsage]
     policy_excerpt_limits_disclosure,
 )
-from yoetz.cli.unlock import (
+from finishup.cli.unlock import (
     _privacy_policy_change_text,  # pyright: ignore[reportPrivateUsage]
     _task_statement_change_note,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     PRE_1_2_MAX_EXCERPTS,
     PrivacyPolicy,
     PrivacyPolicyPresetVersion,
@@ -38,10 +38,10 @@ from yoetz.domain.privacy import (
     ReviewSelectionPolicy,
     review_selection_policy_schema_version,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.models import MAX_REVIEW_EXCERPTS
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
-from yoetz.service.confidential_protocol import PrivacyPolicyDecisionPreview
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.models import MAX_REVIEW_EXCERPTS
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.service.confidential_protocol import PrivacyPolicyDecisionPreview
 
 
 def _expanded(preset_version: PrivacyPolicyPresetVersion = "1.2.0") -> PrivacyPolicy:
@@ -174,7 +174,7 @@ def test_privacy_show_renders_current_beside_proposed_limits() -> None:
     assert line(_expanded("1.1.0")) == (
         "Excerpt limits: current 16 excerpts, 16 KiB each, 128 KiB in total; proposed by the "
         "current expanded recipe: 64 excerpts, 16 KiB each, 128 KiB in total. Nothing changes "
-        "until you approve it with 'yoetz --privacy'; approving nothing keeps the current limits"
+        "until you approve it with 'finishup --privacy'; approving nothing keeps the current limits"
     )
     assert line(_expanded()) == (
         "Excerpt limits: 64 excerpts, 16 KiB each, 128 KiB in total (the current expanded recipe)"

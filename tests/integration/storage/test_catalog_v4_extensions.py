@@ -7,8 +7,8 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite import migrations
-from yoetz.adapters.sqlite.migrations import initialize_catalog
+from finishup.adapters.sqlite import migrations
+from finishup.adapters.sqlite.migrations import initialize_catalog
 
 
 def test_catalog_v4_installs_provisional_and_coordination_tables() -> None:

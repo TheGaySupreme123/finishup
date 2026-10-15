@@ -1,4 +1,4 @@
-"""``yoetz instance create|status|dispose`` (issue #604).
+"""``finishup instance create|status|dispose`` (issue #604).
 
 Disposal must touch exactly one marked root, stop only the service that holds that root's
 singleton, never remove the everyday install or an unlabeled ADR-026 root, and be safe to repeat.
@@ -6,6 +6,7 @@ singleton, never remove the everyday install or an unlabeled ADR-026 root, and b
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -20,23 +21,29 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-from yoetz.cli.exits import INSTANCE_PUBLIC_CODES, exit_code_for
-from yoetz.cli.instance import (
+import finishup.cli.app as cli
+from finishup.cli.exits import INSTANCE_PUBLIC_CODES, exit_code_for
+from finishup.cli.instance import (
     create_instance,
     dispose_instance,
     instance_status,
     parse_expiry,
 )
-from yoetz.config.installation import (
+from finishup.config.installation import (
     InstanceIdentityError,
     new_instance_identity,
     read_instance_identity,
     write_instance_identity,
+    write_runtime_pin,
 )
-from yoetz.config.paths import ISOLATED_ROOT_ENV, RUNTIME_PIN_NAME, read_runtime_pin
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.service.lifecycle import SINGLETON_LOCK_NAME
+from finishup.config.paths import (
+    ISOLATED_ROOT_ENV,
+    LEGACY_ISOLATED_ROOT_ENV,
+    RUNTIME_PIN_NAME,
+    read_runtime_pin,
+)
+from finishup.protocol.canonical import canonical_encode
+from finishup.service.lifecycle import SINGLETON_LOCK_NAME
 
 _NOW = datetime(2026, 9, 5, 15, 0, 0, tzinfo=UTC)
 _SOURCE_REF = "c3d553611c998df32a72c64337d1e8231560a37d"
@@ -74,7 +81,7 @@ def _ambient_state_dir(cell: Path) -> Callable[..., Path]:
 
 
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [name for name in os.environ if name.startswith("YOETZ_")]:
+    for name in [name for name in os.environ if name.startswith(("FINISHUP_", "YOETZ_"))]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -103,7 +110,10 @@ def test_create_seals_identity_creates_root_and_binds_runtime(
 
     assert result["created"] is True
     assert result["isolated_root"] == str(root)
-    assert result["environment_export"] == f"{ISOLATED_ROOT_ENV}={root}"
+    # Both spellings with one root (ADR-048): an older launcher on PATH stays isolated too.
+    assert result["environment_export"] == (
+        f"{ISOLATED_ROOT_ENV}={root} {LEGACY_ISOLATED_ROOT_ENV}={root}"
+    )
     assert result["runtime_pin"] == "bound"
     assert result["lifecycle"] == "disposable"
     assert result["expires_at"] == "2026-09-05T23:00:00.000Z"
@@ -181,6 +191,172 @@ def test_create_refuses_to_repin_a_runtime_bound_elsewhere(
     assert not (cell / "second").exists()
 
 
+def _deny_new_entries(monkeypatch: pytest.MonkeyPatch, directory: Path) -> Callable[[], None]:
+    """Make ``directory`` refuse new entries the way it refuses an account without write access.
+
+    The directory loses its write bits. A superuser runner bypasses those bits, so there every
+    ``os.open(..., O_CREAT)`` directly beneath it fails with EACCES instead, which is what the
+    kernel answers a non-owner. The returned callable is the operator's repair.
+    """
+
+    directory.chmod(0o555)
+    denied = [True]
+    if os.geteuid() == 0:
+        real_open = os.open
+
+        def refusing_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            if denied[0] and flags & os.O_CREAT and Path(os.fsdecode(path)).parent == directory:
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "open", refusing_open)
+
+    def repair() -> None:
+        denied[0] = False
+        directory.chmod(0o755)
+
+    return repair
+
+
+def test_cli_bind_runtime_on_an_unwritable_runtime_fails_whole_and_retries_cleanly(
+    cell: Path,
+    prefix: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The pin cannot be written: a typed refusal, nothing left behind, and a clean retry.
+
+    Before, the raw OSError surfaced as internal_error after the root and its marker were
+    already sealed, so the retry after fixing permissions reported instance_exists.
+    """
+
+    _scrub(monkeypatch)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(cell / "missing.toml"))
+    root = cell / "state"
+    repair = _deny_new_entries(monkeypatch, prefix)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "yoetz",
+            "instance",
+            "create",
+            "--root",
+            str(root),
+            "--lifecycle",
+            "disposable",
+            "--bind-runtime",
+            "--json",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as refused:
+        cli.main()
+
+    stderr = capsys.readouterr().err
+    assert stderr.startswith("runtime_pin_unwritable:"), stderr
+    assert refused.value.code == exit_code_for(INSTANCE_PUBLIC_CODES["runtime_pin_unwritable"])
+    assert refused.value.code == 20
+    assert "internal_error" not in stderr
+    assert str(prefix) not in stderr
+    assert not root.exists()
+    assert list(prefix.iterdir()) == []
+
+    repair()
+    with pytest.raises(SystemExit) as created:
+        cli.main()
+
+    captured = capsys.readouterr()
+    assert created.value.code == 0, captured.err
+    body = json.loads(captured.out)
+    assert body["runtime_pin"] == "bound"
+    identity = read_instance_identity(root / "state")
+    assert identity is not None and identity.installation_id == body["installation_id"]
+    assert read_runtime_pin() is not None
+
+
+def test_failed_bind_keeps_a_pre_existing_empty_root(
+    cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rollback removes only what this create made; the operator's empty root stays."""
+
+    _scrub(monkeypatch)
+    root = cell / "state"
+    root.mkdir(mode=0o700)
+    _deny_new_entries(monkeypatch, prefix)
+
+    with pytest.raises(InstanceIdentityError) as caught:
+        create_instance(
+            root=root, lifecycle="persistent", now=_NOW, bind_runtime=True, runtime_prefix=prefix
+        )
+
+    assert caught.value.reason == "runtime_pin_unwritable"
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+    assert list(prefix.iterdir()) == []
+
+
+def test_a_pin_conflict_found_at_write_time_rolls_back_only_this_create(
+    cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any refusal after the root exists unwinds it; another instance's pin is never touched."""
+
+    import finishup.cli.instance as instance_module
+
+    _scrub(monkeypatch)
+    other = new_instance_identity(
+        "persistent", now=_NOW, package_version="0.1.0", runtime_prefix=prefix
+    )
+    write_runtime_pin(prefix, cell / "other", other.installation_id)
+    pinned = (prefix / RUNTIME_PIN_NAME).read_bytes()
+    # The other pin lands between the preflight and the write.
+    monkeypatch.setattr(instance_module, "read_runtime_pin", lambda: None)
+    root = cell / "state"
+
+    with pytest.raises(InstanceIdentityError) as caught:
+        create_instance(
+            root=root, lifecycle="persistent", now=_NOW, bind_runtime=True, runtime_prefix=prefix
+        )
+
+    assert caught.value.reason == "runtime_pin_conflict"
+    assert not root.exists()
+    assert (prefix / RUNTIME_PIN_NAME).read_bytes() == pinned
+
+
+def test_a_seal_that_fails_after_its_rename_is_unwound_too(
+    cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker is renamed into place before its directory is synced; a failing sync must
+    not leave that marker behind for the retry to report as ``instance_exists``."""
+
+    import stat
+
+    _scrub(monkeypatch)
+    root = cell / "state"
+    real_fsync = os.fsync
+
+    def failing_directory_sync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", failing_directory_sync)
+    with pytest.raises(OSError):
+        create_instance(root=root, lifecycle="persistent", now=_NOW, runtime_prefix=prefix)
+    monkeypatch.setattr(os, "fsync", real_fsync)
+
+    assert not root.exists()
+    created = create_instance(root=root, lifecycle="persistent", now=_NOW, runtime_prefix=prefix)
+    assert created["created"] is True
+
+
 def test_parse_expiry_accepts_exactly_one_spelling() -> None:
     assert parse_expiry(now=_NOW, expires_in_hours=None, expires_at=None) is None
     assert parse_expiry(now=_NOW, expires_in_hours=2, expires_at=None) == _NOW + timedelta(hours=2)
@@ -213,7 +389,7 @@ def test_status_reports_pinned_instance_digest_only(
         runtime_prefix=prefix,
     )
     monkeypatch.setattr(sys, "prefix", str(prefix))
-    monkeypatch.setenv("YOETZ_CONFIG", str(cell / "missing.toml"))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(cell / "missing.toml"))
 
     status = instance_status(now=_NOW + timedelta(minutes=5))
 
@@ -246,8 +422,8 @@ def test_status_reports_the_everyday_install_as_permanent(
 ) -> None:
     _scrub(monkeypatch)
     monkeypatch.setattr(sys, "prefix", str(prefix))
-    monkeypatch.setenv("YOETZ_CONFIG", str(cell / "missing.toml"))
-    import yoetz.config.paths as paths
+    monkeypatch.setenv("FINISHUP_CONFIG", str(cell / "missing.toml"))
+    import finishup.config.paths as paths
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
@@ -345,9 +521,12 @@ def test_dispose_stops_only_the_holder_of_that_roots_lock(
             "os.write(fd, sys.argv[2].encode())\n"
             # Block SIGTERM before announcing the lock, then wait for it synchronously: a
             # handler plus time.sleep loses a SIGTERM that lands before the sleep starts.
+            # sigwait is POSIX (sigtimedwait is absent on macOS); the alarm's default action
+            # bounds an orphaned holder to 60 seconds.
             "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
+            "signal.alarm(60)\n"
             "print('held', flush=True)\n"
-            "signal.sigtimedwait({signal.SIGTERM}, 60)\n",
+            "signal.sigwait({signal.SIGTERM})\n",
             str(lock),
             "PLACEHOLDER",
         ],
@@ -419,7 +598,7 @@ def test_cli_create_status_dispose_round_trip(
 ) -> None:
     _scrub(monkeypatch)
     monkeypatch.setattr(sys, "prefix", str(prefix))
-    monkeypatch.setenv("YOETZ_CONFIG", str(cell / "missing.toml"))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(cell / "missing.toml"))
     root = cell / "state"
     runner = CliRunner()
 
@@ -469,8 +648,8 @@ def test_cli_create_status_dispose_round_trip(
 def test_cli_service_run_names_an_instance_refusal(
     cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.config.paths as paths
-    import yoetz.service.daemon as daemon_module
+    import finishup.config.paths as paths
+    import finishup.service.daemon as daemon_module
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
@@ -482,14 +661,14 @@ def test_cli_service_run_names_an_instance_refusal(
 
     assert result.exit_code == exit_code_for(INSTANCE_PUBLIC_CODES["instance_expired"]) == 20
     assert result.stderr.startswith("instance_expired:")
-    assert "yoetz instance dispose" in result.stderr
+    assert "finishup instance dispose" in result.stderr
     assert "Traceback" not in result.stderr
 
 
 def test_cli_service_run_names_a_pin_conflict(cell: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import yoetz.config.paths as paths
-    import yoetz.service.daemon as daemon_module
-    from yoetz.config.paths import PathSafetyError
+    import finishup.config.paths as paths
+    import finishup.service.daemon as daemon_module
+    from finishup.config.paths import PathSafetyError
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 

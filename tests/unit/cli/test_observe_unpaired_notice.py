@@ -16,10 +16,10 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.cli import observe_hooks
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.cli import observe_hooks
+from finishup.domain.observation import (
     ObservationGapCode,
     ObservationIngestDisposition,
     ObservationIngestRequest,
@@ -28,11 +28,11 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.kernel.policies.observation_advice import (
+from finishup.kernel.policies.observation_advice import (
     ObservationAdviceContext,
     observation_advice_findings,
 )
-from yoetz.protocol.canonical import canonical_encode
+from finishup.protocol.canonical import canonical_encode
 
 HOST = "019f9b27-orphan-scope-host"
 
@@ -120,11 +120,11 @@ def test_orphan_scope_stays_operator_visible_without_agent_advisory(
     cell.hook("SessionStart", source="startup")
 
     first = cell.orphan_post("call_orphan_1")
-    assert "Yoetz notice (no response needed)" not in first
+    assert "FinishUP notice (no response needed)" not in first
     assert "Observation coverage is incomplete or stale" not in first
     # Repeated orphans in the same scope, and a restarted store, remain silent.
-    assert "Yoetz notice (no response needed)" not in cell.orphan_post("call_orphan_2")
-    assert "Yoetz notice (no response needed)" not in cell.orphan_post("call_orphan_3")
+    assert "FinishUP notice (no response needed)" not in cell.orphan_post("call_orphan_2")
+    assert "FinishUP notice (no response needed)" not in cell.orphan_post("call_orphan_3")
 
     cell.drain()
     store = cell.store()
@@ -154,7 +154,7 @@ def test_orphan_scope_stays_operator_visible_without_agent_advisory(
         tool_use_id="call_paired",
         tool_input={"command": "npm run test-type"},
     )
-    assert "Yoetz notice (no response needed)" not in hook_context
+    assert "FinishUP notice (no response needed)" not in hook_context
     assert "refresh_observation" not in hook_context
     assert "Observation coverage is incomplete or stale" not in hook_context
     cell.drain()

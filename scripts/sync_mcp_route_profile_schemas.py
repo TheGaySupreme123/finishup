@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 _ROUTE_PROFILE_SCHEMA: dict[str, JsonValue] = {
     "enum": ["policy", "strict"],

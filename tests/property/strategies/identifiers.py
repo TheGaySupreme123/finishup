@@ -9,7 +9,7 @@ from typing import Final
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 __all__ = [
     "strategy_invalid_ids",

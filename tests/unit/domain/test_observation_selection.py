@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.domain.observation_selection import (
+from finishup.domain.observation_selection import (
     OBSERVATION_CLASSIFICATION_VERSION,
     ObservationContentRole,
     classify_observation,
     command_runner_class,
     is_routine_read_candidate,
 )
-from yoetz.protocol.canonical import JsonValue
+from finishup.protocol.canonical import JsonValue
 
 
 def _read(**extra: JsonValue) -> dict[str, JsonValue]:

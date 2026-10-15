@@ -1,6 +1,6 @@
 """tb4n1 B4/C6: content staging under a contended lease, and the drain finished at Stop.
 
-In tb4n1 (Codex, 72 Yoetz attempts) `drain_budget_exhausted` fired on 10,835 of 11,556 hooks,
+In tb4n1 (Codex, 72 FinishUP attempts) `drain_budget_exhausted` fired on 10,835 of 11,556 hooks,
 `content_capture_unavailable` reached 72/72 attempts, and 39/40 closure-gate texts said
 "observations were still draining", so the planned-verification gate tokens never fired.
 """
@@ -16,11 +16,11 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationContentChunk,
     ObservationContentKind,
@@ -31,9 +31,9 @@ from yoetz.domain.observation import (
     ObservationStatusQuery,
     observation_ingest_result_to_json,
 )
-from yoetz.kernel.task_facts import PLANNED_VERIFICATION_NOT_OBSERVED_GAP
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.kernel.task_facts import PLANNED_VERIFICATION_NOT_OBSERVED_GAP
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
 
 _DIGEST = "sha256:" + "e" * 64
 

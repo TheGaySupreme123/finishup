@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.cursor_integration import (
+from finishup.adapters.integrations.cursor_integration import (
     CURSOR_HARNESS_PROFILE,
     CURSOR_HOOK_EVENTS,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
@@ -32,8 +32,8 @@ from yoetz.adapters.integrations.cursor_integration import (
     render_cursor_plugin,
     status_cursor_plugin,
 )
-from yoetz.domain.values import JsonObject, request_id
-from yoetz.ports.plugin_artifacts import (
+from finishup.domain.values import JsonObject, request_id
+from finishup.ports.plugin_artifacts import (
     ArtifactAuthority,
     McpOwnership,
     McpOwnershipState,
@@ -44,25 +44,25 @@ from yoetz.ports.plugin_artifacts import (
     PluginOperationState,
     PluginProofFacet,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
-from yoetz.version import read_verified_resource
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
+from finishup.version import read_verified_resource
 
 _REQUEST = request_id("req_10000000-0000-4000-8000-000000000001")
 _REVIEW_ID = "a" * 64
 _GUIDANCE_NAMES = tuple(
-    uri.removeprefix("yoetz://guidance/")
+    uri.removeprefix("finishup://guidance/")
     for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
 )
 
 
 def test_required_startup_install_inspect_and_reverse(tmp_path: Path) -> None:
-    launcher = _fake_yoetz(tmp_path / "bin" / "yoetz")
+    launcher = _fake_finishup(tmp_path / "bin" / "finishup")
     target = CursorPluginTarget(str(tmp_path / ".cursor"))
     for index, mode in enumerate(("required", "optional")):
         artifact = render_cursor_plugin(
             PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-            yoetz_launcher=launcher,
+            finishup_launcher=launcher,
             startup_mode="required" if mode == "required" else "optional",
         )
         action = PluginArtifactAction.INSTALL if index == 0 else PluginArtifactAction.REPLACE
@@ -127,6 +127,7 @@ def test_cursor_profile_exposes_only_supported_ide_and_cli_cells() -> None:
         "cursor-stale-shared-mcp-runtime.case.json",
     ):
         fixture = json.loads(read_verified_resource(f"fixtures/agent-plugins/{name}"))
+        # Frozen legacy identifier (ADR-048): recorded host fixtures keep their schema tags.
         assert fixture["schema"].startswith("yoetz.cursor-")
         if name.startswith("cursor-sdk-"):
             assert fixture["proof_limits"] == ["metadata_only", "not_a_support_claim"]
@@ -138,32 +139,32 @@ def test_portable_and_native_use_distinct_skill_entries_and_shared_guidance(
     # This fixture models a legacy ambient install. Keep the process isolated
     # while mocking only the adapter's binding lookup.
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
-    executable = tmp_path / "bin" / "yoetz"
+    executable = tmp_path / "bin" / "finishup"
     executable.parent.mkdir()
     executable.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
     executable.chmod(0o755)
 
     def find_executable(command: str) -> str | None:
-        return str(executable) if command == "yoetz" else None
+        return str(executable) if command == "finishup" else None
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which", find_executable
+        "finishup.adapters.integrations.cursor_integration.shutil.which", find_executable
     )
     portable = render_cursor_plugin(PluginFormatProfile.AGENT_PLUGINS_1)
     native = render_cursor_plugin(PluginFormatProfile.CURSOR_PLUGIN_NATIVE)
 
-    assert portable.members["skills/yoetz/SKILL.md"] == read_verified_resource(
-        "skills/cursor/yoetz/SKILL.md"
+    assert portable.members["skills/finishup/SKILL.md"] == read_verified_resource(
+        "skills/cursor/finishup/SKILL.md"
     )
-    assert native.members["skills/yoetz/SKILL.md"] == read_verified_resource(
-        "skills/cursor/yoetz/SKILL.md"
+    assert native.members["skills/finishup/SKILL.md"] == read_verified_resource(
+        "skills/cursor/finishup/SKILL.md"
     )
     for name in _GUIDANCE_NAMES:
         assert (
-            portable.members[f"skills/yoetz/references/{name}"]
-            == native.members[f"skills/yoetz/references/{name}"]
+            portable.members[f"skills/finishup/references/{name}"]
+            == native.members[f"skills/finishup/references/{name}"]
             == read_verified_resource(f"guidance/{name}")
         )
         assert f"guidance/{name}" in portable.plan.source_refs
@@ -182,7 +183,7 @@ def test_portable_and_native_use_distinct_skill_entries_and_shared_guidance(
     assert tuple(sorted(hooks["hooks"])) == CURSOR_HOOK_EVENTS
     assert "afterAgentThought" not in hooks["hooks"]
     resolved = str(executable.resolve())
-    assert native.yoetz_launcher == (resolved,)
+    assert native.finishup_launcher == (resolved,)
     assert all(
         definition[-1]["command"].startswith(f"{shlex.quote(resolved)} hooks cursor-observe ")
         for definition in hooks["hooks"].values()
@@ -218,7 +219,7 @@ def test_plugin_managed_native_route_is_exact_and_external_omits_it(
 ) -> None:
     # The scripted route is the pre-isolation ambient form.
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
     external = render_cursor_plugin(PluginFormatProfile.CURSOR_PLUGIN_NATIVE)
     managed = render_cursor_plugin(
@@ -228,11 +229,11 @@ def test_plugin_managed_native_route_is_exact_and_external_omits_it(
     )
 
     assert "mcp.json" not in external.members
-    assert managed.yoetz_launcher is not None
-    launcher = managed.yoetz_launcher
+    assert managed.finishup_launcher is not None
+    launcher = managed.finishup_launcher
     # Issue #468: the plugin-owned entry names the exact launcher the hooks use, never a bare
-    # ``yoetz`` that Cursor's sanitized desktop PATH may resolve to another installation.
-    route = json.loads(managed.members["mcp.json"])["mcpServers"]["yoetz"]
+    # ``finishup`` that Cursor's sanitized desktop PATH may resolve to another installation.
+    route = json.loads(managed.members["mcp.json"])["mcpServers"]["finishup"]
     assert route == {
         "args": [*launcher[1:], "mcp", "serve", "--host", "cursor", "--semantic", "off"],
         "command": launcher[0],
@@ -250,7 +251,7 @@ def test_plugin_managed_native_route_is_exact_and_external_omits_it(
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
     )
-    assert json.loads(policy.members["mcp.json"])["mcpServers"]["yoetz"] == {
+    assert json.loads(policy.members["mcp.json"])["mcpServers"]["finishup"] == {
         "args": [*launcher[1:], "mcp", "serve", "--host", "cursor"],
         "command": launcher[0],
         "type": "stdio",
@@ -261,11 +262,11 @@ def test_isolated_native_artifact_binds_root_in_mcp_and_hook_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     isolated_root = tmp_path / "isolated root with 'quotes'"
-    executable = _fake_yoetz(tmp_path / "runtime" / "yoetz")
-    executable.write_text("#!/bin/sh\nprintf '%s' \"$YOETZ_ISOLATED_ROOT\"\n", encoding="utf-8")
+    executable = _fake_finishup(tmp_path / "runtime" / "finishup")
+    executable.write_text("#!/bin/sh\nprintf '%s' \"$FINISHUP_ISOLATED_ROOT\"\n", encoding="utf-8")
     executable.chmod(0o755)
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root",
+        "finishup.adapters.integrations.cursor_integration.isolated_root",
         lambda: isolated_root,
     )
 
@@ -273,18 +274,23 @@ def test_isolated_native_artifact_binds_root_in_mcp_and_hook_commands(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=executable,
+        finishup_launcher=executable,
     )
 
     assert artifact.isolation_root == str(isolated_root)
-    route = json.loads(artifact.members["mcp.json"])["mcpServers"]["yoetz"]
-    assert route["env"] == {"YOETZ_ISOLATED_ROOT": str(isolated_root)}
+    route = json.loads(artifact.members["mcp.json"])["mcpServers"]["finishup"]
+    # Both spellings with one value while the deprecated ``yoetz`` alias ships (ADR-048).
+    assert route["env"] == {
+        "FINISHUP_ISOLATED_ROOT": str(isolated_root),
+        "YOETZ_ISOLATED_ROOT": str(isolated_root),
+    }
     assert set(route) == {"args", "command", "env", "type"}
 
     hooks = json.loads(artifact.members["hooks/hooks.json"])["hooks"]
+    quoted = shlex.quote(str(isolated_root))
     for definition in hooks.values():
         command = definition[-1]["command"]
-        assert command.startswith(f"YOETZ_ISOLATED_ROOT={shlex.quote(str(isolated_root))} ")
+        assert command.startswith(f"FINISHUP_ISOLATED_ROOT={quoted} YOETZ_ISOLATED_ROOT={quoted} ")
         # Cursor executes command hooks as shell strings.  This also proves a path containing
         # spaces and a quote cannot escape the assignment.
         completed = subprocess.run(
@@ -300,17 +306,17 @@ def test_isolated_native_artifact_binds_root_in_mcp_and_hook_commands(
 
 
 def test_isolated_root_route_recognition_is_closed_and_drift_readable(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.cursor_integration import (
+    from finishup.adapters.integrations.cursor_integration import (
         _route_profile,  # pyright: ignore[reportPrivateUsage]
     )
 
-    launcher = (str(tmp_path / "bin" / "yoetz"),)
+    launcher = (str(tmp_path / "bin" / "finishup"),)
     serve = ["mcp", "serve", "--host", "cursor"]
     isolated = str(tmp_path / "isolated")
     exact = _entry(
         launcher[0],
         serve,
-        env={"YOETZ_ISOLATED_ROOT": isolated},  # type: ignore[arg-type]
+        env={"FINISHUP_ISOLATED_ROOT": isolated},  # type: ignore[arg-type]
     )
     assert _route_profile(exact, (launcher,)) == "policy"
     assert _route_profile(exact, (launcher,), expected_isolation_root=isolated) == "policy"
@@ -320,20 +326,20 @@ def test_isolated_root_route_recognition_is_closed_and_drift_readable(tmp_path: 
     different = _entry(
         launcher[0],
         serve,
-        env={"YOETZ_ISOLATED_ROOT": str(tmp_path / "other")},  # type: ignore[arg-type]
+        env={"FINISHUP_ISOLATED_ROOT": str(tmp_path / "other")},  # type: ignore[arg-type]
     )
     assert _route_profile(different, (launcher,)) == "policy"
     assert _route_profile(different, (launcher,), expected_isolation_root=isolated) is None
     assert (
         _route_profile(
-            _entry(launcher[0], serve, env={"YOETZ_TOKEN": "secret"}),  # type: ignore[arg-type]
+            _entry(launcher[0], serve, env={"FINISHUP_TOKEN": "secret"}),  # type: ignore[arg-type]
             (launcher,),
         )
         is None
     )
     assert (
         _route_profile(
-            _entry(launcher[0], serve, env={"YOETZ_ISOLATED_ROOT": "relative"}),  # type: ignore[arg-type]
+            _entry(launcher[0], serve, env={"FINISHUP_ISOLATED_ROOT": "relative"}),  # type: ignore[arg-type]
             (launcher,),
         )
         is None
@@ -358,56 +364,58 @@ def _entry(command: str, args: list[str], **extra: str) -> Mapping[str, JsonValu
     )
 
 
-def _fake_yoetz(path: Path) -> Path:
+def _fake_finishup(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\n", encoding="utf-8")
     path.chmod(0o755)
     return path
 
 
-def test_plugin_mcp_ignores_sanitized_path_and_foreign_older_yoetz(
+def test_plugin_mcp_ignores_sanitized_path_and_foreign_older_finishup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Negative controls for issue #468: PATH must not choose the MCP runtime."""
 
     # The fixture asserts the legacy ambient route shape; only the adapter
-    # lookup is mocked so YOETZ_ISOLATED_ROOT remains set for the test process.
+    # lookup is mocked so FINISHUP_ISOLATED_ROOT remains set for the test process.
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
 
-    invoking = _fake_yoetz(tmp_path / "current" / "bin" / "yoetz")
-    older = _fake_yoetz(tmp_path / "older-channel" / "bin" / "yoetz")
+    invoking = _fake_finishup(tmp_path / "current" / "bin" / "finishup")
+    older = _fake_finishup(tmp_path / "older-channel" / "bin" / "finishup")
 
-    # A sanitized desktop PATH that cannot find any ``yoetz``.
+    # A sanitized desktop PATH that cannot find any ``finishup``.
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which", _no_path_lookup
+        "finishup.adapters.integrations.cursor_integration.shutil.which", _no_path_lookup
     )
     sanitized = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=invoking,
+        finishup_launcher=invoking,
     )
-    entry = json.loads(sanitized.members["mcp.json"])["mcpServers"]["yoetz"]
+    entry = json.loads(sanitized.members["mcp.json"])["mcpServers"]["finishup"]
     assert entry["command"] == str(invoking.resolve())
     assert entry["args"] == ["mcp", "serve", "--host", "cursor"]
 
-    # A foreign, older ``yoetz`` earlier on PATH than the invoking installation.
+    # A foreign, older ``finishup`` earlier on PATH than the invoking installation.
     monkeypatch.setenv("PATH", f"{older.parent}:{invoking.parent}")
 
     def find_older(_name: str) -> str | None:
         return str(older)
 
-    monkeypatch.setattr("yoetz.adapters.integrations.cursor_integration.shutil.which", find_older)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.cursor_integration.shutil.which", find_older
+    )
     shadowed = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=invoking,
+        finishup_launcher=invoking,
     )
-    entry = json.loads(shadowed.members["mcp.json"])["mcpServers"]["yoetz"]
+    entry = json.loads(shadowed.members["mcp.json"])["mcpServers"]["finishup"]
     assert entry["command"] == str(invoking.resolve())
     assert str(older) not in json.dumps(json.loads(shadowed.members["mcp.json"]))
     hooks = json.loads(shadowed.members["hooks/hooks.json"])
@@ -416,56 +424,58 @@ def test_plugin_mcp_ignores_sanitized_path_and_foreign_older_yoetz(
         for definition in hooks["hooks"].values()
     )
     # Hooks and MCP bind the same launcher by construction.
-    assert shadowed.yoetz_launcher == (str(invoking.resolve()),)
+    assert shadowed.finishup_launcher == (str(invoking.resolve()),)
 
 
 def test_module_entrypoint_launcher_binds_plugin_mcp_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
-    interpreter = _fake_yoetz(tmp_path / "venv" / "bin" / "python")
+    interpreter = _fake_finishup(tmp_path / "venv" / "bin" / "python")
 
     def refuse_path_lookup(_name: str) -> str | None:
         pytest.fail("module entrypoint launcher must not consult PATH")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which", refuse_path_lookup
+        "finishup.adapters.integrations.cursor_integration.shutil.which", refuse_path_lookup
     )
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="strict",
-        yoetz_launcher=(str(interpreter), "-m", "yoetz"),
+        finishup_launcher=(str(interpreter), "-m", "finishup"),
     )
-    entry = json.loads(artifact.members["mcp.json"])["mcpServers"]["yoetz"]
+    entry = json.loads(artifact.members["mcp.json"])["mcpServers"]["finishup"]
     assert entry == {
-        "args": ["-m", "yoetz", "mcp", "serve", "--host", "cursor", "--semantic", "off"],
+        "args": ["-m", "finishup", "mcp", "serve", "--host", "cursor", "--semantic", "off"],
         "command": str(interpreter.resolve()),
         "type": "stdio",
     }
 
 
 def test_mcp_route_recognition_accepts_bare_and_exact_launchers_only(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.cursor_integration import (
+    from finishup.adapters.integrations.cursor_integration import (
         _route_profile,  # pyright: ignore[reportPrivateUsage]
     )
 
-    console = (str(tmp_path / "current" / "bin" / "yoetz"),)
-    module = (str(tmp_path / "venv" / "bin" / "python"), "-m", "yoetz")
+    console = (str(tmp_path / "current" / "bin" / "finishup"),)
+    module = (str(tmp_path / "venv" / "bin" / "python"), "-m", "finishup")
     launchers = (console, module)
     serve = ["mcp", "serve", "--host", "cursor"]
 
-    assert _route_profile(_entry("yoetz", serve)) == "policy"
+    assert _route_profile(_entry("finishup", serve)) == "policy"
     assert _route_profile(_entry(console[0], serve), launchers) == "policy"
     assert (
-        _route_profile(_entry(module[0], ["-m", "yoetz", *serve, "--semantic", "off"]), launchers)
+        _route_profile(
+            _entry(module[0], ["-m", "finishup", *serve, "--semantic", "off"]), launchers
+        )
         == "strict"
     )
     # Unknown launcher, missing module arguments, wrong prefix order, or extra keys stay foreign.
     assert _route_profile(_entry(console[0], serve)) is None
-    assert _route_profile(_entry(str(tmp_path / "other" / "yoetz"), serve), launchers) is None
+    assert _route_profile(_entry(str(tmp_path / "other" / "finishup"), serve), launchers) is None
     assert _route_profile(_entry(module[0], serve), launchers) is None
     assert _route_profile(_entry(console[0], serve, cwd="/x"), launchers) is None
 
@@ -473,7 +483,7 @@ def test_mcp_route_recognition_accepts_bare_and_exact_launchers_only(tmp_path: P
 def _install_native(
     tmp_path: Path, artifact: object, request: object = _REQUEST
 ) -> CursorPluginTarget:
-    from yoetz.adapters.integrations.cursor_integration import CursorPluginArtifact
+    from finishup.adapters.integrations.cursor_integration import CursorPluginArtifact
 
     assert isinstance(artifact, CursorPluginArtifact)
     target = CursorPluginTarget(str(tmp_path / ".cursor"))
@@ -500,18 +510,18 @@ def test_status_verifies_launcher_binding_identity_and_drift(
 ) -> None:
     """Issue #468: status reports executable drift, missing launchers, and MCP binding."""
 
-    from yoetz.adapters.integrations.launcher_probe import FixedLauncherProbe
-    from yoetz.version import build_version_manifest
+    from finishup.adapters.integrations.launcher_probe import FixedLauncherProbe
+    from finishup.version import build_version_manifest
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which", _no_path_lookup
+        "finishup.adapters.integrations.cursor_integration.shutil.which", _no_path_lookup
     )
-    current = _fake_yoetz(tmp_path / "current" / "bin" / "yoetz")
+    current = _fake_finishup(tmp_path / "current" / "bin" / "finishup")
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=current,
+        finishup_launcher=current,
     )
     target = _install_native(tmp_path, artifact)
     own = build_version_manifest()
@@ -532,17 +542,17 @@ def test_status_verifies_launcher_binding_identity_and_drift(
     assert status.mcp_observation.route_profile == "policy"
     assert status.launcher.executable == "matched"
     assert status.launcher.mcp_binding == "exact_launcher"
-    assert status.launcher.installed_launcher == artifact.yoetz_launcher
+    assert status.launcher.installed_launcher == artifact.finishup_launcher
     assert status.launcher.identity.observed is True
     assert status.launcher.identity.matched is True
 
     # The installed plugin binds another channel than the runtime reading status.
-    older = _fake_yoetz(tmp_path / "older" / "bin" / "yoetz")
+    older = _fake_finishup(tmp_path / "older" / "bin" / "finishup")
     older_runtime = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=older,
+        finishup_launcher=older,
     )
     other_identity = cast(Mapping[str, JsonValue], {**same_identity, "package_version": "0.0.9"})
     drift = status_cursor_plugin(
@@ -555,8 +565,8 @@ def test_status_verifies_launcher_binding_identity_and_drift(
     assert drift.installed_digest != older_runtime.artifact_digest
     assert drift.mcp_observation.ownership_state is McpOwnershipState.PLUGIN
     assert drift.launcher.executable == "drifted"
-    assert drift.launcher.installed_launcher == artifact.yoetz_launcher
-    assert drift.launcher.artifact_launcher == older_runtime.yoetz_launcher
+    assert drift.launcher.installed_launcher == artifact.finishup_launcher
+    assert drift.launcher.artifact_launcher == older_runtime.finishup_launcher
     assert drift.launcher.identity.matched is False
     assert drift.launcher.identity.package_version == "0.0.9"
 
@@ -580,29 +590,29 @@ def test_status_reports_legacy_bare_plugin_mcp_as_ambient_path(
     """A marker-valid tree rendered before #468 still launches whatever PATH resolves."""
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
 
-    from yoetz.adapters.integrations.launcher_probe import FixedLauncherProbe
+    from finishup.adapters.integrations.launcher_probe import FixedLauncherProbe
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which", _no_path_lookup
+        "finishup.adapters.integrations.cursor_integration.shutil.which", _no_path_lookup
     )
-    current = _fake_yoetz(tmp_path / "current" / "bin" / "yoetz")
+    current = _fake_finishup(tmp_path / "current" / "bin" / "finishup")
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=current,
+        finishup_launcher=current,
     )
     target = _install_native(tmp_path, artifact)
-    destination = tmp_path / ".cursor" / "plugins" / "local" / "yoetz"
+    destination = tmp_path / ".cursor" / "plugins" / "local" / "finishup"
     legacy_entry = canonical_encode(
         {
             "mcpServers": {
-                "yoetz": {
+                "finishup": {
                     "args": ["mcp", "serve", "--host", "cursor"],
-                    "command": "yoetz",
+                    "command": "finishup",
                     "type": "stdio",
                 }
             }
@@ -628,16 +638,16 @@ def test_status_reports_legacy_bare_plugin_mcp_as_ambient_path(
     assert status.launcher.mcp_binding == "ambient_path"
 
 
-def test_native_render_fails_closed_when_yoetz_console_is_not_discoverable(
+def test_native_render_fails_closed_when_finishup_console_is_not_discoverable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def find_executable(_name: str) -> str | None:
         return None
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which", find_executable
+        "finishup.adapters.integrations.cursor_integration.shutil.which", find_executable
     )
-    with pytest.raises(ValueError, match="^yoetz_executable_unavailable$"):
+    with pytest.raises(ValueError, match="^finishup_executable_unavailable$"):
         render_cursor_plugin(PluginFormatProfile.CURSOR_PLUGIN_NATIVE)
 
 
@@ -646,13 +656,13 @@ def test_native_render_prefers_explicit_invoking_executable_over_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
-    invoking = tmp_path / "invoking" / "yoetz"
+    invoking = tmp_path / "invoking" / "finishup"
     invoking.parent.mkdir()
     invoking.write_text("#!/bin/sh\n", encoding="utf-8")
     invoking.chmod(0o755)
-    ambient = tmp_path / "ambient" / "yoetz"
+    ambient = tmp_path / "ambient" / "finishup"
     ambient.parent.mkdir()
     ambient.write_text("#!/bin/sh\n", encoding="utf-8")
     ambient.chmod(0o755)
@@ -661,17 +671,17 @@ def test_native_render_prefers_explicit_invoking_executable_over_path(
         return str(ambient)
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which",
+        "finishup.adapters.integrations.cursor_integration.shutil.which",
         find_ambient,
     )
 
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-        yoetz_launcher=invoking,
+        finishup_launcher=invoking,
     )
 
     resolved = str(invoking.resolve())
-    assert artifact.yoetz_launcher == (resolved,)
+    assert artifact.finishup_launcher == (resolved,)
     hooks = json.loads(artifact.members["hooks/hooks.json"])
     assert all(
         definition[-1]["command"].startswith(f"{shlex.quote(resolved)} hooks cursor-observe ")
@@ -684,7 +694,7 @@ def test_native_render_preserves_module_entrypoint_launcher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
     interpreter = tmp_path / "venv" / "bin" / "python"
     interpreter.parent.mkdir(parents=True)
@@ -695,19 +705,19 @@ def test_native_render_preserves_module_entrypoint_launcher(
         raise AssertionError("module entrypoint launcher must not consult PATH")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which",
+        "finishup.adapters.integrations.cursor_integration.shutil.which",
         refuse_path_lookup,
     )
 
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-        yoetz_launcher=(str(interpreter), "-m", "yoetz"),
+        finishup_launcher=(str(interpreter), "-m", "finishup"),
     )
 
     resolved = str(interpreter.resolve())
-    assert artifact.yoetz_launcher == (resolved, "-m", "yoetz")
+    assert artifact.finishup_launcher == (resolved, "-m", "finishup")
     hooks = json.loads(artifact.members["hooks/hooks.json"])
-    prefix = f"{shlex.quote(resolved)} -m yoetz hooks cursor-observe "
+    prefix = f"{shlex.quote(resolved)} -m finishup hooks cursor-observe "
     assert all(
         definition[-1]["command"].startswith(prefix) for definition in hooks["hooks"].values()
     )
@@ -716,10 +726,10 @@ def test_native_render_preserves_module_entrypoint_launcher(
 @pytest.mark.parametrize(
     ("candidate", "relative_target"),
     [
-        ("./yoetz", "work/yoetz"),
-        ("bin/yoetz", "work/bin/yoetz"),
-        ("../bin/yoetz", "bin/yoetz"),
-        (Path("yoetz"), "work/yoetz"),
+        ("./finishup", "work/finishup"),
+        ("bin/finishup", "work/bin/finishup"),
+        ("../bin/finishup", "bin/finishup"),
+        (Path("finishup"), "work/finishup"),
     ],
 )
 def test_native_render_preserves_explicit_relative_executable_path(
@@ -740,16 +750,16 @@ def test_native_render_preserves_explicit_relative_executable_path(
         raise AssertionError("explicit executable path must not consult PATH")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which",
+        "finishup.adapters.integrations.cursor_integration.shutil.which",
         refuse_path_lookup,
     )
 
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-        yoetz_launcher=candidate,
+        finishup_launcher=candidate,
     )
 
-    assert artifact.yoetz_launcher == (str(invoking.resolve()),)
+    assert artifact.finishup_launcher == (str(invoking.resolve()),)
 
 
 def test_portable_render_never_resolves_a_host_executable(
@@ -759,23 +769,23 @@ def test_portable_render_never_resolves_a_host_executable(
         raise AssertionError("portable rendering must stay host-resolver-free")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.which",
+        "finishup.adapters.integrations.cursor_integration.shutil.which",
         refuse_path_lookup,
     )
 
     artifact = render_cursor_plugin(
         PluginFormatProfile.AGENT_PLUGINS_1,
-        yoetz_launcher="./yoetz",
+        finishup_launcher="./finishup",
     )
 
-    assert artifact.yoetz_launcher is None
+    assert artifact.finishup_launcher is None
 
 
 def test_safe_cursor_lifecycle_is_preview_bound_atomic_and_reversible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
     target = CursorPluginTarget(str(tmp_path / ".cursor"))
     artifact = render_cursor_plugin(PluginFormatProfile.CURSOR_PLUGIN_NATIVE)
@@ -803,12 +813,12 @@ def test_safe_cursor_lifecycle_is_preview_bound_atomic_and_reversible(
             / ".cursor"
             / "plugins"
             / "local"
-            / "yoetz"
+            / "finishup"
             / ".yoetz-cursor-plugin-install.json"
         ).read_text(encoding="utf-8")
     )
-    assert artifact.yoetz_launcher is not None
-    assert marker["yoetz_launcher"] == list(artifact.yoetz_launcher)
+    assert artifact.finishup_launcher is not None
+    assert marker["yoetz_launcher"] == list(artifact.finishup_launcher)
     assert marker["schema"] == "yoetz.cursor-plugin-install/3"
     assert marker["isolation_root"] is None
     assert marker["renderer_version"] == "cursor-plugin/0.3.0"
@@ -836,7 +846,7 @@ def test_safe_cursor_lifecycle_is_preview_bound_atomic_and_reversible(
         review=_AcceptingReview(),
     )
     assert removed.state_after is PluginArtifactState.ABSENT
-    assert not (tmp_path / ".cursor" / "plugins" / "local" / "yoetz").exists()
+    assert not (tmp_path / ".cursor" / "plugins" / "local" / "finishup").exists()
     assert status_cursor_plugin(target, artifact).operation_state.value == "not_started"
 
 
@@ -845,17 +855,17 @@ def test_isolation_binding_reports_drift_and_unset_reverts_to_ambient(
 ) -> None:
     first_root = tmp_path / "isolated-one"
     second_root = tmp_path / "isolated-two"
-    executable = _fake_yoetz(tmp_path / "runtime" / "yoetz")
+    executable = _fake_finishup(tmp_path / "runtime" / "finishup")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root",
+        "finishup.adapters.integrations.cursor_integration.isolated_root",
         lambda: first_root,
     )
     first = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=executable,
+        finishup_launcher=executable,
     )
     target = _install_native(tmp_path, first)
     installed = status_cursor_plugin(target, first)
@@ -864,9 +874,9 @@ def test_isolation_binding_reports_drift_and_unset_reverts_to_ambient(
 
     # A managed tree whose route is changed to another valid root is modified, and the foreign
     # route cannot be admitted as the current artifact's owned MCP route.
-    route_path = tmp_path / ".cursor" / "plugins" / "local" / "yoetz" / "mcp.json"
+    route_path = tmp_path / ".cursor" / "plugins" / "local" / "finishup" / "mcp.json"
     route = json.loads(route_path.read_bytes())
-    route["mcpServers"]["yoetz"]["env"]["YOETZ_ISOLATED_ROOT"] = str(second_root)
+    route["mcpServers"]["finishup"]["env"]["FINISHUP_ISOLATED_ROOT"] = str(second_root)
     route_path.write_text(json.dumps(route), encoding="utf-8")
     route_drift = status_cursor_plugin(target, first)
     assert route_drift.state is PluginArtifactState.MODIFIED
@@ -885,14 +895,14 @@ def test_isolation_binding_reports_drift_and_unset_reverts_to_ambient(
     route_path.write_bytes(first.members["mcp.json"])
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root",
+        "finishup.adapters.integrations.cursor_integration.isolated_root",
         lambda: second_root,
     )
     second = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=executable,
+        finishup_launcher=executable,
     )
     project = tmp_path / "project"
     (project / ".cursor").mkdir(parents=True)
@@ -900,7 +910,7 @@ def test_isolation_binding_reports_drift_and_unset_reverts_to_ambient(
         json.dumps(
             {
                 "mcpServers": {
-                    "yoetz": {
+                    "finishup": {
                         "args": ["foreign"],
                         "command": "other-runtime",
                         "type": "stdio",
@@ -948,13 +958,13 @@ def test_isolation_binding_reports_drift_and_unset_reverts_to_ambient(
     # Unsetting the environment renders the ambient form and exposes the installed isolated form
     # as drift until the operator explicitly replaces it.
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
     ambient = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=executable,
+        finishup_launcher=executable,
     )
     assert ambient.isolation_root is None
     ambient_view = status_cursor_plugin(target, ambient)
@@ -978,14 +988,16 @@ def test_isolation_binding_reports_drift_and_unset_reverts_to_ambient(
     assert final.state is PluginArtifactState.NATIVE_MANAGED
     assert final.isolation_binding == "ambient"
     route = json.loads(
-        (tmp_path / ".cursor" / "plugins" / "local" / "yoetz" / "mcp.json").read_bytes()
-    )["mcpServers"]["yoetz"]
+        (tmp_path / ".cursor" / "plugins" / "local" / "finishup" / "mcp.json").read_bytes()
+    )["mcpServers"]["finishup"]
     assert "env" not in route
     hooks = json.loads(
-        (tmp_path / ".cursor" / "plugins" / "local" / "yoetz" / "hooks" / "hooks.json").read_bytes()
+        (
+            tmp_path / ".cursor" / "plugins" / "local" / "finishup" / "hooks" / "hooks.json"
+        ).read_bytes()
     )["hooks"]
     assert all(
-        "YOETZ_ISOLATED_ROOT=" not in definition[-1]["command"] for definition in hooks.values()
+        "FINISHUP_ISOLATED_ROOT=" not in definition[-1]["command"] for definition in hooks.values()
     )
 
 
@@ -994,16 +1006,16 @@ def test_ordinary_isolation_binding_checks_ordinary_hook_set(
 ) -> None:
     isolated_root = tmp_path / "isolated"
     drifted_root = tmp_path / "drifted"
-    executable = _fake_yoetz(tmp_path / "runtime" / "yoetz")
+    executable = _fake_finishup(tmp_path / "runtime" / "finishup")
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root",
+        "finishup.adapters.integrations.cursor_integration.isolated_root",
         lambda: isolated_root,
     )
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=executable,
+        finishup_launcher=executable,
         observation_profile="ordinary",
     )
     assert artifact.plan.host_extension_profile == CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
@@ -1011,13 +1023,13 @@ def test_ordinary_isolation_binding_checks_ordinary_hook_set(
     exact = status_cursor_plugin(target, artifact)
     assert exact.isolation_binding == "isolated_exact"
 
-    destination = tmp_path / ".cursor" / "plugins" / "local" / "yoetz"
+    destination = tmp_path / ".cursor" / "plugins" / "local" / "finishup"
     hooks_path = destination / "hooks" / "hooks.json"
     hooks = json.loads(hooks_path.read_bytes())
     ordinary_command = hooks["hooks"]["postToolUse"][0]["command"]
     hooks["hooks"]["postToolUse"][0]["command"] = ordinary_command.replace(
-        f"YOETZ_ISOLATED_ROOT={shlex.quote(str(isolated_root))}",
-        f"YOETZ_ISOLATED_ROOT={shlex.quote(str(drifted_root))}",
+        f"FINISHUP_ISOLATED_ROOT={shlex.quote(str(isolated_root))}",
+        f"FINISHUP_ISOLATED_ROOT={shlex.quote(str(drifted_root))}",
         1,
     )
     hooks_bytes = canonical_encode(cast(JsonValue, hooks))
@@ -1051,18 +1063,18 @@ def test_isolated_legacy_marker_without_root_reports_missing_and_replaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "isolated"
-    executable = _fake_yoetz(tmp_path / "runtime" / "yoetz")
+    executable = _fake_finishup(tmp_path / "runtime" / "finishup")
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: root
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: root
     )
     artifact = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=executable,
+        finishup_launcher=executable,
     )
     target = _install_native(tmp_path, artifact)
-    destination = tmp_path / ".cursor" / "plugins" / "local" / "yoetz"
+    destination = tmp_path / ".cursor" / "plugins" / "local" / "finishup"
     marker_path = destination / ".yoetz-cursor-plugin-install.json"
     marker = json.loads(marker_path.read_bytes())
     marker.pop("isolation_root")
@@ -1119,7 +1131,7 @@ def test_legacy_native_v1_marker_has_a_safe_replace_path(tmp_path: Path) -> None
         authority=_authority(installed.preview_digest),
         review=_AcceptingReview(),
     )
-    destination = tmp_path / ".cursor" / "plugins" / "local" / "yoetz"
+    destination = tmp_path / ".cursor" / "plugins" / "local" / "finishup"
     _rewrite_native_marker_as_legacy_v1(destination)
 
     status = status_cursor_plugin(target, artifact)
@@ -1158,7 +1170,7 @@ def test_portable_v1_marker_remains_exact_and_removable(tmp_path: Path) -> None:
         authority=_authority(installed.preview_digest),
         review=_AcceptingReview(),
     )
-    destination = tmp_path / ".cursor" / "plugins" / "local" / "yoetz"
+    destination = tmp_path / ".cursor" / "plugins" / "local" / "finishup"
     marker = json.loads((destination / ".yoetz-cursor-plugin-install.json").read_bytes())
     assert marker["schema"] == "yoetz.cursor-plugin-install/1"
     status = status_cursor_plugin(target, artifact)
@@ -1175,8 +1187,8 @@ def test_portable_v1_marker_remains_exact_and_removable(tmp_path: Path) -> None:
 def test_native_executable_drift_is_modified_and_replaceable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    first = tmp_path / "first" / "yoetz"
-    second = tmp_path / "second" / "yoetz"
+    first = tmp_path / "first" / "finishup"
+    second = tmp_path / "second" / "finishup"
     for executable in (first, second):
         executable.parent.mkdir()
         executable.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -1185,7 +1197,9 @@ def test_native_executable_drift_is_modified_and_replaceable(
     def find_first(_command: str) -> str | None:
         return str(first)
 
-    monkeypatch.setattr("yoetz.adapters.integrations.cursor_integration.shutil.which", find_first)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.cursor_integration.shutil.which", find_first
+    )
     installed_artifact = render_cursor_plugin(PluginFormatProfile.CURSOR_PLUGIN_NATIVE)
     target = CursorPluginTarget(str(tmp_path / ".cursor"))
     installed = preview_cursor_plugin(
@@ -1204,7 +1218,9 @@ def test_native_executable_drift_is_modified_and_replaceable(
     def find_second(_command: str) -> str | None:
         return str(second)
 
-    monkeypatch.setattr("yoetz.adapters.integrations.cursor_integration.shutil.which", find_second)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.cursor_integration.shutil.which", find_second
+    )
     desired = render_cursor_plugin(PluginFormatProfile.CURSOR_PLUGIN_NATIVE)
     status = status_cursor_plugin(target, desired)
     assert status.state is PluginArtifactState.MODIFIED
@@ -1227,7 +1243,12 @@ def test_native_executable_drift_is_modified_and_replaceable(
     )
     assert replaced.state_after is PluginArtifactState.NATIVE_MANAGED
     marker_path = (
-        tmp_path / ".cursor" / "plugins" / "local" / "yoetz" / ".yoetz-cursor-plugin-install.json"
+        tmp_path
+        / ".cursor"
+        / "plugins"
+        / "local"
+        / "finishup"
+        / ".yoetz-cursor-plugin-install.json"
     )
     assert json.loads(marker_path.read_bytes())["yoetz_launcher"] == [str(second.resolve())]
 
@@ -1236,7 +1257,7 @@ def test_remove_preserves_separately_registered_mcp_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
     target = CursorPluginTarget(str(tmp_path / ".cursor"))
     artifact = render_cursor_plugin(
@@ -1258,9 +1279,9 @@ def test_remove_preserves_separately_registered_mcp_route(
         json.dumps(
             {
                 "mcpServers": {
-                    "yoetz": {
+                    "finishup": {
                         "args": ["mcp", "serve", "--semantic", "off"],
-                        "command": "yoetz",
+                        "command": "finishup",
                         "type": "stdio",
                     }
                 }
@@ -1321,7 +1342,7 @@ def test_post_commit_cleanup_failure_preserves_new_and_old_trees_for_recovery(
         real_rmtree(path)
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.shutil.rmtree",
+        "finishup.adapters.integrations.cursor_integration.shutil.rmtree",
         fail_rollback_cleanup,
     )
     with pytest.raises(CursorIntegrationError) as raised:
@@ -1336,7 +1357,7 @@ def test_post_commit_cleanup_failure_preserves_new_and_old_trees_for_recovery(
         )
 
     assert raised.value.reason is PluginArtifactReason.WRITE_FAILED
-    destination = tmp_path / ".cursor" / "plugins" / "local" / "yoetz"
+    destination = tmp_path / ".cursor" / "plugins" / "local" / "finishup"
     assert (destination / ".cursor-plugin" / "plugin.json").is_file()
     assert (destination.parent / ".yoetz-cursor-plugin-rollback" / "plugin.json").is_file()
     assert status_cursor_plugin(target, native).state is PluginArtifactState.RECOVERY_REQUIRED
@@ -1355,7 +1376,9 @@ def test_modified_managed_copy_is_preserved_and_remove_refused(tmp_path: Path) -
         authority=_authority(preview.preview_digest),
         review=_AcceptingReview(),
     )
-    skill = tmp_path / ".cursor" / "plugins" / "local" / "yoetz" / "skills" / "yoetz" / "SKILL.md"
+    skill = (
+        tmp_path / ".cursor" / "plugins" / "local" / "finishup" / "skills" / "finishup" / "SKILL.md"
+    )
     skill.write_text("locally modified\n", encoding="utf-8")
 
     assert status_cursor_plugin(target, artifact).state is PluginArtifactState.MODIFIED
@@ -1378,7 +1401,9 @@ def test_mcp_precedence_negative_controls_never_create_false_plugin_pass(tmp_pat
     (project / ".cursor").mkdir(parents=True)
     user.mkdir()
     exact = {
-        "mcpServers": {"yoetz": {"args": ["mcp", "serve"], "command": "yoetz", "type": "stdio"}}
+        "mcpServers": {
+            "finishup": {"args": ["mcp", "serve"], "command": "finishup", "type": "stdio"}
+        }
     }
     (plugin / "mcp.json").write_text(json.dumps(exact), encoding="utf-8")
 
@@ -1392,9 +1417,9 @@ def test_mcp_precedence_negative_controls_never_create_false_plugin_pass(tmp_pat
 
     cursor_exact = {
         "mcpServers": {
-            "yoetz": {
+            "finishup": {
                 "args": ["mcp", "serve", "--host", "cursor"],
-                "command": "yoetz",
+                "command": "finishup",
                 "type": "stdio",
             }
         }
@@ -1409,7 +1434,7 @@ def test_mcp_precedence_negative_controls_never_create_false_plugin_pass(tmp_pat
     assert cursor_plugin_only.route_profile == "policy"
 
     inline = JsonObject(
-        {"yoetz": JsonObject({"args": ["mcp", "serve"], "command": "yoetz", "type": "stdio"})}
+        {"finishup": JsonObject({"args": ["mcp", "serve"], "command": "finishup", "type": "stdio"})}
     )
     dual = observe_cursor_mcp(
         plugin_root=plugin,
@@ -1421,7 +1446,7 @@ def test_mcp_precedence_negative_controls_never_create_false_plugin_pass(tmp_pat
     assert dual.winning_source is CursorMcpSource.INLINE_SEND
 
     foreign = {
-        "mcpServers": {"yoetz": {"args": ["-c", "foreign"], "command": "sh", "type": "stdio"}}
+        "mcpServers": {"finishup": {"args": ["-c", "foreign"], "command": "sh", "type": "stdio"}}
     }
     (project / ".cursor" / "mcp.json").write_text(json.dumps(foreign), encoding="utf-8")
     observed = observe_cursor_mcp(
@@ -1445,7 +1470,7 @@ def test_cursor_cli_discovery_uses_first_nonempty_complete_utf8_line(
         return subprocess.CompletedProcess((str(executable), "--version"), 0, output, b"")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.subprocess.run",
+        "finishup.adapters.integrations.cursor_integration.subprocess.run",
         fake_run,
     )
 
@@ -1468,7 +1493,7 @@ def test_cursor_cli_discovery_normalizes_empty_and_invalid_utf8_identity(
         return subprocess.CompletedProcess((str(executable), "--version"), 0, stdout, b"")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.subprocess.run",
+        "finishup.adapters.integrations.cursor_integration.subprocess.run",
         fake_run,
     )
 
@@ -1514,14 +1539,14 @@ def test_linux_cursor_identity_reads_package_without_launching(
         selected = tmp_path / "cursor-link"
         selected.symlink_to(root / "cursor")
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.platform.machine", lambda: "x86_64"
+        "finishup.adapters.integrations.cursor_integration.platform.machine", lambda: "x86_64"
     )
 
     def refuse_execution(*args: object, **kwargs: object) -> None:
         pytest.fail("Identity discovery must not launch the IDE")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.subprocess.run", refuse_execution
+        "finishup.adapters.integrations.cursor_integration.subprocess.run", refuse_execution
     )
     identity = discover_cursor_ide(selected, system="Linux")
     assert identity.surface == "cursor_ide"
@@ -1634,7 +1659,7 @@ def test_linux_cursor_identity_uses_artifact_architecture(
     content = executable.read_bytes()
     executable.write_bytes(content[:18] + machine.to_bytes(2, "little") + content[20:])
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.platform.machine", lambda: "other"
+        "finishup.adapters.integrations.cursor_integration.platform.machine", lambda: "other"
     )
     assert discover_cursor_ide(root, system="Linux").architecture == expected
 
@@ -1728,7 +1753,7 @@ def test_cursor_mutation_requires_a_consumed_review_and_accept_alone_is_not_auth
     target = CursorPluginTarget(str(tmp_path / ".cursor"))
     artifact = render_cursor_plugin(PluginFormatProfile.CURSOR_PLUGIN_NATIVE)
     preview = preview_cursor_plugin(_REQUEST, target, PluginArtifactAction.INSTALL, artifact)
-    destination = tmp_path / ".cursor" / "plugins" / "local" / "yoetz"
+    destination = tmp_path / ".cursor" / "plugins" / "local" / "finishup"
 
     with pytest.raises(CursorIntegrationError) as no_authority:
         apply_cursor_plugin(
@@ -1843,7 +1868,7 @@ def test_wedged_install_replay_reconciles_without_conflict_or_a_second_review(
     # digest is a pure function of its inputs, so a request that never committed anything can
     # recompute one and reach the same reconciled result. That is a read-only equivalent of
     # ``status`` -- no bytes move, no review is consumed -- so it is admitted, not a bypass.
-    from yoetz.adapters.integrations.cursor_integration import (
+    from finishup.adapters.integrations.cursor_integration import (
         _ABSENT_STATE_DIGEST,  # pyright: ignore[reportPrivateUsage]
         _admissible_owner_states,  # pyright: ignore[reportPrivateUsage]
         _preview_digest,  # pyright: ignore[reportPrivateUsage]
@@ -1955,11 +1980,13 @@ def test_same_name_entry_with_any_extra_key_is_foreign_not_a_recognized_route(
     user.mkdir()
     entry: dict[str, object] = {
         "args": ["mcp", "serve", "--host", "cursor"],
-        "command": "yoetz",
+        "command": "finishup",
         "type": "stdio",
-        extra_key: {"YOETZ_TOKEN": "leak"} if extra_key == "env" else "/tmp",
+        extra_key: {"FINISHUP_TOKEN": "leak"} if extra_key == "env" else "/tmp",
     }
-    (user / "mcp.json").write_text(json.dumps({"mcpServers": {"yoetz": entry}}), encoding="utf-8")
+    (user / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"finishup": entry}}), encoding="utf-8"
+    )
 
     observation = observe_cursor_mcp(plugin_root=plugin, project_root=None, user_config_root=user)
 

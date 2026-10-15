@@ -9,10 +9,10 @@ import pytest
 from textual.widgets import Input, Static
 
 from builders.tui_runtime import CLI, DESKTOP, FakeRuntime
-from yoetz.tui.app import YoetzTui
-from yoetz.tui.models import IntegrationOutcome, LayerState, ReadinessLayer, VaultPosture
-from yoetz.tui.runtime import RuntimeError_
-from yoetz.tui.widgets.views import Option, SelectionView
+from finishup.tui.app import FinishUpTui
+from finishup.tui.models import IntegrationOutcome, LayerState, ReadinessLayer, VaultPosture
+from finishup.tui.runtime import RuntimeError_
+from finishup.tui.widgets.views import Option, SelectionView
 
 pytestmark = pytest.mark.anyio
 
@@ -20,7 +20,7 @@ WIDE = (100, 34)
 SMALL = (60, 18)
 NARROW = (42, 24)
 
-MakeApp = Callable[..., YoetzTui]
+MakeApp = Callable[..., FinishUpTui]
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def _selected(view: object) -> Option:
     return option
 
 
-def transcript(app: YoetzTui) -> str:
+def transcript(app: FinishUpTui) -> str:
     return "\n".join("\n".join((event.title, *event.body)) for event in app.transcript.events)
 
 
@@ -48,12 +48,16 @@ async def answer_review(pilot: object, mode: str = "local") -> None:
     """Answer the review-mode question, which now precedes any registration.
 
     Kept in one place because it encodes the option order: moving the recommendation changes
-    which keystroke means which posture, and every caller should follow automatically.
+    which keystroke means which posture, and every caller should follow automatically. ADR-049
+    order: the recommended hybrid (``semantic``), local only (``local``), AI-powered review on
+    every task (``ai_powered``).
     """
 
     press = getattr(pilot, "press")
     if mode == "semantic":
         await press("enter")  # first row, where the cursor rests
+    elif mode == "ai_powered":
+        await press("down", "down", "enter")
     else:
         await press("down", "enter")
     await getattr(pilot, "pause")()
@@ -65,15 +69,15 @@ async def test_welcome_shows_detection_and_offers_the_recommended_path(
     app = make_app(first_run=True)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
-        assert "Welcome to Yoetz" in transcript(app)
+        assert "Welcome to FinishUP" in transcript(app)
         assert "Codex Desktop 0.44" in transcript(app)
         view = app.open_view
         assert view is not None
         assert view.view_name == "welcome"
         labels = [option.label for option in _options(view)]
         assert labels == [
-            "Connect Yoetz to an agent",
-            "Set up Yoetz without an agent",
+            "Connect FinishUP to an agent",
+            "Set up FinishUP without an agent",
             "Exit",
         ]
 
@@ -102,7 +106,7 @@ async def test_the_layout_still_renders_on_a_small_or_narrow_terminal(
             view = app.open_view
             assert view is not None
             assert isinstance(view, SelectionView)
-            assert "Welcome to Yoetz" in transcript(app)
+            assert "Welcome to FinishUP" in transcript(app)
             # Nothing rendered may be wider than the terminal.
             for event in app.transcript.events:
                 for line in event.body:
@@ -450,13 +454,51 @@ async def test_a_foreign_mcp_entry_blocks_and_never_offers_to_replace_it(
         await pilot.pause()
         await answer_review(pilot)
         assert runtime.applied == []
-        assert "Could not register Yoetz with Codex" in transcript(app)
+        assert "Could not register FinishUP with Codex" in transcript(app)
         view = app.open_view
         assert view is not None
         assert view.view_name == "foreign"
         labels = [option.label.lower() for option in _options(view)]
         assert not any("replace" in label or "force" in label for label in labels)
         assert "Nothing was replaced or removed." in transcript(app)
+
+
+async def test_a_kept_yoetz_entry_on_another_review_mode_blocks_before_approval(
+    make_app: MakeApp,
+) -> None:
+    """A project's Codex configuration still needs the owned ``yoetz`` entry, which serves the
+    whole home with local-only review; first-run setup registers the policy route, which would
+    run both modes side by side. The terminal interface stops before the approval and names the
+    way on (#1073)."""
+
+    import dataclasses
+
+    from builders.tui_runtime import PLAN
+
+    runtime = FakeRuntime(
+        plan=dataclasses.replace(
+            PLAN,
+            legacy_registration="legacy_only",
+            legacy_registration_kept_for=("/work/a",),
+            legacy_registration_route_profile="strict",
+        )
+    )
+    app = make_app(first_run=True, runtime=runtime)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")  # trust
+        await pilot.pause()
+        await answer_review(pilot)
+        assert runtime.applied == []
+        text = transcript(app)
+        assert "The earlier yoetz registration stays, on its own review mode" in text
+        assert "/work/a" in text
+        assert "--route-profile strict" in text
+        # The policy route the first run asks for stays reachable, as an explicit choice.
+        assert "integrate codex mcp preview-remove" in text
+        assert "--route-profile policy" in text
 
 
 async def test_a_failed_registration_is_reported_as_a_failure(make_app: MakeApp) -> None:
@@ -482,7 +524,7 @@ async def test_a_failed_registration_is_reported_as_a_failure(make_app: MakeApp)
         await pilot.pause()
         text = transcript(app)
         assert "could not finish connecting" in text
-        assert "Yoetz is connected to this project" not in text
+        assert "FinishUP is connected to this project" not in text
 
 
 async def test_a_preview_failure_reports_the_reason_and_stops(make_app: MakeApp) -> None:
@@ -521,7 +563,9 @@ async def test_keychain_unavailable_disables_system_storage_but_offers_a_passphr
         options = _options(view)
         assert options[0].disabled is True
         # The disabled row states the reason, never a bare "not available" (issue #721).
-        assert options[0].disabled_reason == ("no credential store is loaded; Yoetz needs a test")
+        assert options[0].disabled_reason == (
+            "no credential store is loaded; FinishUP needs a test"
+        )
         assert options[1].disabled is False
         assert _selected(view).key == "passphrase"
 
@@ -567,12 +611,12 @@ async def test_setup_finishes_with_an_honest_summary_and_records_the_marker(
         await pilot.press("escape")  # skip storage
         await pilot.pause()
         text = transcript(app)
-        assert "Yoetz is ready" in text
+        assert "FinishUP is ready" in text
         assert "Nothing is being sent to an external review model." in text
         assert app.markers_written == ["registered"]  # type: ignore[attr-defined]
 
 
-async def test_semantic_review_is_the_recommended_answer_and_where_the_cursor_rests(
+async def test_the_hybrid_is_the_recommended_answer_and_where_the_cursor_rests(
     make_app: MakeApp,
 ) -> None:
     """The recommendation is a property of this question, not of what an install seeds.
@@ -580,6 +624,7 @@ async def test_semantic_review_is_the_recommended_answer_and_where_the_cursor_re
     Pressing enter here chooses a wizard branch. It binds no provider, stores no credential,
     and commits no policy -- each of those is a separate step with its own gate -- so the
     seeded zero-egress ``local_only`` policy is unaffected by which row the cursor starts on.
+    ADR-049: the same three answers as ``finishup setup run``.
     """
 
     runtime = FakeRuntime()
@@ -594,11 +639,14 @@ async def test_semantic_review_is_the_recommended_answer_and_where_the_cursor_re
         assert view is not None
         assert view.view_name == "review-mode"
         assert [option.label for option in _options(view)] == [
-            "Add AI-powered review",
-            "Local only",
+            "FinishUP (recommended)",
+            "FinishUP, local only",
+            "AI-powered review on every task",
         ]
-        assert _selected(view).key == "semantic"
-        assert "Recommended." in _selected(view).description
+        assert _selected(view).key == "agent_opt_in"
+        assert "your agent can turn on AI-powered review for a task when it helps" in (
+            _selected(view).description
+        )
 
 
 async def test_the_review_answer_decides_the_route_and_both_halves_use_it(
@@ -611,7 +659,8 @@ async def test_the_review_answer_decides_the_route_and_both_halves_use_it(
     halves agree is what keeps the question and the registration connected.
     """
 
-    for mode, expected in (("semantic", "policy"), ("local", "strict")):
+    # ADR-049: every answer registers the policy route; the privacy policy decides egress.
+    for mode, expected in (("semantic", "policy"), ("local", "policy"), ("ai_powered", "policy")):
         runtime = FakeRuntime()
         app = make_app(first_run=True, runtime=runtime)
         async with app.run_test(size=WIDE) as pilot:
@@ -636,9 +685,10 @@ async def test_abandoning_semantic_setup_offers_a_coherent_local_only_finish(
 ) -> None:
     """Backing out of the provider step must not leave a half-configured install.
 
-    AI-powered review was chosen, so the policy route is already registered. Without this the flow
-    returns with that route in place, no provider behind it, and no marker written -- an
-    install that is neither local-only nor AI-powered, and says so nowhere.
+    AI-powered review was chosen and its setup did not complete. Without this the flow returns
+    with no provider behind the route and no marker written -- an install that is neither
+    local-only nor AI-powered, and says so nowhere. ADR-049: the policy route stays registered
+    and the privacy policy records local checks only.
     """
 
     runtime = FakeRuntime()
@@ -661,10 +711,10 @@ async def test_abandoning_semantic_setup_offers_a_coherent_local_only_finish(
         assert view.view_name == "semantic-incomplete"
         await pilot.press("enter")  # "Yes, finish as local only"
         await pilot.pause()
-        await pilot.press("enter")  # approve the strict re-registration
-        await pilot.pause()
-        # The install ends on the route it actually has, and setup is marked complete.
-        assert runtime.applied_routes == ["policy", "strict"]
+        # No re-registration: the install keeps the policy route, records local checks only in
+        # its privacy policy, and setup is marked complete.
+        assert runtime.applied_routes == ["policy"]
+        assert runtime.ceremonies[-1] == "privacy:private+conversations:local_only"
         assert app.markers_written == ["registered"]  # type: ignore[attr-defined]
 
 
@@ -692,10 +742,10 @@ async def test_declining_the_local_only_finish_says_setup_is_unfinished(
         assert "Setup was not completed." in transcript(app)
 
 
-async def test_the_approval_screen_shows_the_local_only_serve_command(
+async def test_the_approval_screen_shows_the_policy_serve_command_for_local_only(
     make_app: MakeApp,
 ) -> None:
-    """Choosing local only must not show the command that permits AI-powered review."""
+    """ADR-049: local only registers the policy route; the privacy policy keeps every task local."""
 
     runtime = FakeRuntime()
     app = make_app(first_run=True, runtime=runtime)
@@ -709,7 +759,8 @@ async def test_the_approval_screen_shows_the_local_only_serve_command(
         view = app.open_view
         assert view is not None
         details = "\n".join(view.technical_details)
-        assert "yoetz mcp serve --semantic off" in details
+        assert "finishup mcp serve" in details
+        assert "--semantic off" not in details
 
 
 async def test_choosing_local_only_setup_never_touches_the_project(
@@ -719,11 +770,13 @@ async def test_choosing_local_only_setup_never_touches_the_project(
     app = make_app(first_run=True, runtime=runtime)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
-        await pilot.press("down", "enter")  # "Set up Yoetz without Codex"
+        await pilot.press("down", "enter")  # "Set up FinishUP without Codex"
         await pilot.pause()
         await answer_review(pilot)
         await pilot.press("escape")  # skip storage
         await pilot.pause()
         assert runtime.applied == []
+        # ADR-049: the answer is recorded as the owner's explicit local-only setting.
+        assert runtime.ceremonies == ["privacy:private+conversations:local_only"]
         assert app.markers_written == ["local_only"]  # type: ignore[attr-defined]
-        assert "Yoetz is ready" in transcript(app)
+        assert "FinishUP is ready" in transcript(app)

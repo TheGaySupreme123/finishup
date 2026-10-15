@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CandidateFinding,
     CheckVerdict,
@@ -33,7 +33,7 @@ from yoetz.domain.findings import (
     semantic_provenance_from_json,
     semantic_provenance_to_json,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Frontier,
     JsonObject,
     claim_id,
@@ -41,9 +41,9 @@ from yoetz.domain.values import (
     finding_id,
     obligation_id,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -53,9 +53,9 @@ from yoetz.protocol.coverage import (
     PublicationChannel,
     weakest,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import SemanticReason, SemanticStatus
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.schemas import validate_schema_instance
 
 _UUID_ONE = "00000000-0000-4000-8000-000000000001"
 _UUID_TWO = "00000000-0000-4000-8000-000000000002"

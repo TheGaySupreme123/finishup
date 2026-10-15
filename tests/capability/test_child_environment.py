@@ -24,20 +24,23 @@ def test_child_paths_cannot_select_inherited_instance(
     outer.mkdir(mode=0o700)
     marker = outer / "holder"
     marker.write_text("outer-instance-holder")
+    monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(outer))
+    # A legacy spelling of the ambient root must not leak into the child either (ADR-048).
     monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(outer))
-    monkeypatch.setenv("YOETZ_CANDIDATE_PYTHON", candidate)
+    monkeypatch.setenv("FINISHUP_CANDIDATE_PYTHON", candidate)
     parameters = _serve_parameters(tmp_path)
     assert parameters.command == (candidate or "uv")
     environment = parameters.env
     assert environment is not None
-    root = Path(environment["YOETZ_ISOLATED_ROOT"])
+    root = Path(environment["FINISHUP_ISOLATED_ROOT"])
     assert root != outer
+    assert environment["YOETZ_ISOLATED_ROOT"] == str(root)
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     probe = subprocess.run(
         [
             candidate or sys.executable,
             "-c",
-            "import json; from yoetz.config.paths import state_dir, log_dir, runtime_dir; "
+            "import json; from finishup.config.paths import state_dir, log_dir, runtime_dir; "
             "print(json.dumps([str(f()) for f in (state_dir, log_dir, runtime_dir)]))",
         ],
         env=environment,
@@ -49,7 +52,7 @@ def test_child_paths_cannot_select_inherited_instance(
     assert all(Path(path).is_relative_to(root) for path in paths)
     assert marker.read_text() == "outer-instance-holder"
     assert list(outer.iterdir()) == [marker]
-    assert os.environ["YOETZ_ISOLATED_ROOT"] == str(outer)
+    assert os.environ["FINISHUP_ISOLATED_ROOT"] == str(outer)
 
 
 def test_child_environment_rejects_linked_root(tmp_path: Path) -> None:
@@ -57,7 +60,7 @@ def test_child_environment_rejects_linked_root(tmp_path: Path) -> None:
     target = tmp_path / "foreign"
     target.mkdir(mode=0o700)
     home.symlink_to(target, target_is_directory=True)
-    from yoetz.config.paths import PathSafetyError
+    from finishup.config.paths import PathSafetyError
 
     with pytest.raises(PathSafetyError, match="path_contains_symlink"):
         child_environment(tmp_path)

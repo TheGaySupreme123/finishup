@@ -8,13 +8,13 @@ from importlib.resources import files
 from types import SimpleNamespace
 from typing import Any, cast
 
-from yoetz.application.service import Application
-from yoetz.domain.values import JsonObject
-from yoetz.mcp.summaries import (
+from finishup.application.service import Application
+from finishup.domain.values import JsonObject
+from finishup.mcp.summaries import (
     _credential_heuristic_clause,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.ports.control import ControlMethod, RepositoryIdentityKind, RepositoryPrivacyContext
-from yoetz.protocol.models import StatusCredentialHeuristicModel
+from finishup.ports.control import ControlMethod, RepositoryIdentityKind, RepositoryPrivacyContext
+from finishup.protocol.models import StatusCredentialHeuristicModel
 
 _COMMITMENT = "hmac-sha256:" + "1" * 64
 
@@ -79,7 +79,7 @@ def test_unreadable_policy_reads_unknown_and_no_support_omits_the_field() -> Non
 
 def test_status_schema_model_and_summary_carry_the_state() -> None:
     document = json.loads(
-        files("yoetz.resources")
+        files("finishup.resources")
         .joinpath("schemas/operations/status-result-1.4.0.schema.json")
         .read_bytes()
     )
@@ -109,7 +109,7 @@ def test_status_schema_model_and_summary_carry_the_state() -> None:
 
 
 def test_cli_status_names_the_filter_for_this_repository_and_the_default() -> None:
-    from yoetz.cli.render import (
+    from finishup.cli.render import (
         _credential_heuristic_lines,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -118,7 +118,7 @@ def test_cli_status_names_the_filter_for_this_repository_and_the_default() -> No
     assert lines == (
         "Possible-credential filter (external reviewer): off for this repository; "
         "installation default on. Turn it back on here with "
-        "'yoetz privacy credential-heuristic enable'",
+        "'finishup privacy credential-heuristic enable'",
     )
     default_off = StatusCredentialHeuristicModel(repository="enforced", machine_default="disabled")
     (line,) = _credential_heuristic_lines(
@@ -129,8 +129,8 @@ def test_cli_status_names_the_filter_for_this_repository_and_the_default() -> No
 
 
 def test_the_shared_derivation_covers_grants_migrations_and_the_default() -> None:
-    from yoetz.application.privacy_policy import credential_heuristic_state
-    from yoetz.domain.privacy import CredentialHeuristic
+    from finishup.application.privacy_policy import credential_heuristic_state
+    from finishup.domain.privacy import CredentialHeuristic
 
     off, on = CredentialHeuristic.DISABLED, CredentialHeuristic.ENFORCED
     machine = SimpleNamespace(credential_heuristic=on)

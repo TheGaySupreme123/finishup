@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 
 def test_host_connection_golden_plan_is_bound_and_rejects_observed_claim() -> None:

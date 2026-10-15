@@ -17,8 +17,8 @@ from builders.policy_cases import (
     obligation_record,
     plan_record,
 )
-from yoetz.application.semantic_case import build_semantic_case
-from yoetz.domain.events import (
+from finishup.application.semantic_case import build_semantic_case
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -27,13 +27,13 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import EvidenceId, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.models import MAX_REVIEW_EXCERPTS
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import EvidenceId, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.models import MAX_REVIEW_EXCERPTS
 
 _ITEMS = 40
 

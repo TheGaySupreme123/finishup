@@ -41,13 +41,13 @@ MISS_CLASSES: Final = frozenset(
 # Phrases that, if present in final prose while work_product_influence is not_demonstrated,
 # constitute a forbidden-summary violation. Matched case-insensitively as substrings.
 _FORBIDDEN_IMPROVEMENT_PHRASES: Final = (
-    "yoetz improved work quality",
-    "yoetz improved the agent",
-    "yoetz improved agent quality",
-    "yoetz improved the implementation",
-    "yoetz improved implementation quality",
-    "yoetz improved work-product",
-    "yoetz improved the work product",
+    "finishup improved work quality",
+    "finishup improved the agent",
+    "finishup improved agent quality",
+    "finishup improved the implementation",
+    "finishup improved implementation quality",
+    "finishup improved work-product",
+    "finishup improved the work product",
     "feedback improved the work",
     "feedback improved work quality",
     "semantic feedback improved",
@@ -56,9 +56,9 @@ _FORBIDDEN_IMPROVEMENT_PHRASES: Final = (
 
 
 class AttributionRecord(TypedDict, total=False):
-    """One attributable revision bound to a Yoetz output."""
+    """One attributable revision bound to a FinishUP output."""
 
-    yoetz_output_ref: str
+    finishup_output_ref: str
     agent_decision_before: str
     bounded_action_after: str
     new_evidence_ref: str
@@ -119,7 +119,7 @@ class InfluenceReport(TypedDict):
     honesty_influence: HonestyInfluence
     seeded_defect_outcome: SeededDefectOutcome
     seeded_defect_miss_class: MissClass | None
-    material_revisions_attributable_to_yoetz: int
+    material_revisions_attributable_to_finishup: int
     material_revisions_rechecked: int
     semantic_scoring_eligible: bool
     forbidden_summary_violation: bool
@@ -273,7 +273,7 @@ def classify_work_product_influence(
     material = 0
     rechecked = 0
     for row in attributions:
-        ref = row.get("yoetz_output_ref")
+        ref = row.get("finishup_output_ref")
         action = row.get("bounded_action_after")
         if type(ref) is not str or not ref or type(action) is not str or not action:
             continue
@@ -436,7 +436,7 @@ def classify_influence_report(timeline: InfluenceTimeline) -> InfluenceReport:
         honesty_influence=honesty,
         seeded_defect_outcome=outcome,
         seeded_defect_miss_class=miss,
-        material_revisions_attributable_to_yoetz=material,
+        material_revisions_attributable_to_finishup=material,
         material_revisions_rechecked=rechecked,
         semantic_scoring_eligible=eligible,
         forbidden_summary_violation=forbidden,

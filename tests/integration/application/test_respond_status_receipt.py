@@ -24,19 +24,18 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from fixture_loader import load_fixture_json
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.observation_advice import stable_advice_finding_id
-from yoetz.application.observation_materialize import (
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.observation_advice import stable_advice_finding_id
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     observation_author,
 )
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.receipt import ReceiptInternalResult
-from yoetz.application.semantic_case import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.receipt import ReceiptInternalResult
+from finishup.application.semantic_case import (
     ReviewPacketDisclosure,
     build_semantic_case,
     review_packet_disclosure,
@@ -44,9 +43,9 @@ from yoetz.application.semantic_case import (
     semantic_case_to_prepared_payload,
     sent_ledger_refs,
 )
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.events import (
+from finishup.application.service import Application, VerificationPolicy
+from finishup.application.start import StartInternalResult
+from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
     ActionKind,
     ActionRecordedPayload,
@@ -63,7 +62,7 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
@@ -71,14 +70,14 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -94,8 +93,8 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
-from yoetz.domain.values import (
+from finishup.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
+from finishup.domain.values import (
     Frontier,
     Timestamp,
     action_id,
@@ -107,19 +106,19 @@ from yoetz.domain.values import (
     session_id,
     timestamp_from_datetime,
 )
-from yoetz.domain.values import JsonObject as DomainJsonObject
-from yoetz.kernel.finding_resolution import finding_is_resolved
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject as DomainJsonObject
+from finishup.kernel.finding_resolution import finding_is_resolved
+from finishup.kernel.policies.observation_advice import (
     OBSERVATION_ADVICE_POLICY_ID,
     ObservationAdviceCandidate,
 )
-from yoetz.kernel.projections import projection_from_snapshot, projection_snapshot
-from yoetz.kernel.receipt_capacity import receipt_gap_codes
-from yoetz.kernel.reducers import replay
-from yoetz.mcp.summaries import summary_for_status
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import (
+from finishup.kernel.projections import projection_from_snapshot, projection_snapshot
+from finishup.kernel.receipt_capacity import receipt_gap_codes
+from finishup.kernel.reducers import replay
+from finishup.mcp.summaries import summary_for_status
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import (
     AppendCommand,
     AppendEntry,
     CheckCommitResult,
@@ -129,7 +128,7 @@ from yoetz.ports.ledger import (
     ProjectionView,
     StoredProjection,
 )
-from yoetz.ports.objects import (
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
@@ -137,17 +136,22 @@ from yoetz.ports.objects import (
     ObjectSource,
     StagedObject,
 )
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleProvisionCommand, BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.semantic import (
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import (
+    BundleProvisionCommand,
+    BundleRuntimePort,
+    RouteCommand,
+    TaskRuntime,
+)
+from finishup.ports.semantic import (
     ReviewerChallenge,
     ReviewerNextStep,
     SamplingParams,
     SemanticCase,
     SemanticJudgment,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -157,8 +161,8 @@ from yoetz.protocol.coverage import (
     PublicationChannel,
     coverage_for_channel,
 )
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkDryRunModel,
@@ -179,6 +183,7 @@ from yoetz.protocol.models import (
     StatusOperationPageModel,
     StatusRequest,
 )
+from fixture_loader import load_fixture_json
 
 pytestmark = pytest.mark.anyio
 
@@ -409,7 +414,7 @@ class _ProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -750,14 +755,14 @@ async def test_response_disposition_and_waiver_scope() -> None:
 
 
 async def test_status_is_task_read_only_paginated_and_projection_receipted() -> None:
-    from yoetz.application.service import (
+    from finishup.application.service import (
         ClientProjectionContext,
         ControlProjectionBinding,
         ProjectionRenderMode,
     )
-    from yoetz.ports.control import ControlClientKind, ControlMethod
-    from yoetz.protocol.canonical import canonical_encode
-    from yoetz.protocol.models import StatusResultModel
+    from finishup.ports.control import ControlClientKind, ControlMethod
+    from finishup.protocol.canonical import canonical_encode
+    from finishup.protocol.models import StatusResultModel
 
     app, runtime, projection = _build_app(seed_offset=1)
     started, checked, _obligation = await _bootstrap_finding(app, seed=400)
@@ -825,7 +830,9 @@ async def test_status_is_task_read_only_paginated_and_projection_receipted() -> 
         ),
     )
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -837,7 +844,9 @@ async def test_status_is_task_read_only_paginated_and_projection_receipted() -> 
     # Replaying the exact same logical projection reuses the same durable receipt rather than
     # minting a second one for an unchanged result/policy/sink.
     projected_again = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -861,9 +870,9 @@ async def test_receipt_matches_check_and_response_state(
         pytest.fail("respond/receipt must reuse the authenticated current projection")
 
     monkeypatch.setattr(
-        "yoetz.application.ledger_snapshot._replay_until_cancelled", forbidden_replay
+        "finishup.application.ledger_snapshot._replay_until_cancelled", forbidden_replay
     )
-    monkeypatch.setattr("yoetz.kernel.deterministic_checks.replay", forbidden_replay)
+    monkeypatch.setattr("finishup.kernel.deterministic_checks.replay", forbidden_replay)
     finding = checked.findings[0]
 
     respond_wire: dict[str, JsonValue] = {
@@ -1489,7 +1498,7 @@ async def test_legacy_receipt_coverage_overflow_is_not_invalid_request(
     def overflow(*_args: object, **_kwargs: object) -> object:
         raise ProtocolValueError("invalid_known_gap")
 
-    monkeypatch.setattr("yoetz.application.receipt._context", overflow)
+    monkeypatch.setattr("finishup.application.receipt._context", overflow)
     with pytest.raises(PublicOperationError) as caught:
         await app.receipt(
             ReceiptRequest.model_validate(
@@ -2816,10 +2825,10 @@ def _forbid_genesis_replay(monkeypatch: pytest.MonkeyPatch, why: str) -> None:
     def forbidden(*_args: object) -> object:
         pytest.fail(why)
 
-    monkeypatch.setattr("yoetz.application.ledger_snapshot._replay_until_cancelled", forbidden)
-    monkeypatch.setattr("yoetz.kernel.deterministic_checks.replay", forbidden)
-    monkeypatch.setattr("yoetz.adapters.memory.ledger.replay", forbidden)
-    monkeypatch.setattr("yoetz.adapters.memory.ledger.replay_with_index", forbidden)
+    monkeypatch.setattr("finishup.application.ledger_snapshot._replay_until_cancelled", forbidden)
+    monkeypatch.setattr("finishup.kernel.deterministic_checks.replay", forbidden)
+    monkeypatch.setattr("finishup.adapters.memory.ledger.replay", forbidden)
+    monkeypatch.setattr("finishup.adapters.memory.ledger.replay_with_index", forbidden)
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
@@ -3515,28 +3524,51 @@ async def test_host_observation_gaps_do_not_keep_repaired_action_finding_current
                 }
                 for offset, obligation in enumerate((obligation_a, obligation_b))
             ),
-            *(
-                {
-                    "event_id": protocol_id("evt_", 5009 + offset),
-                    "schema": {"name": "action_recorded", "version": "1.0.0"},
-                    "occurred_at": "2026-07-19T12:00:01.000Z",
-                    "causal_parents": (),
-                    "payload": {
-                        "action_id": action,
-                        "action_kind": "other",
-                        "description": f"Attempt result {offset + 1}.",
-                        "obligation_refs": (obligation,),
-                    },
-                    "artifact_refs": (),
-                    "evidence_refs": (),
-                }
-                for offset, (action, obligation) in enumerate(
-                    ((action_a, obligation_a), (action_b, obligation_b))
-                )
-            ),
+            {
+                "event_id": protocol_id("evt_", 5009),
+                "schema": {"name": "action_recorded", "version": "1.0.0"},
+                "occurred_at": "2026-07-19T12:00:01.000Z",
+                "causal_parents": (),
+                "payload": {
+                    "action_id": action_a,
+                    "action_kind": "other",
+                    "description": "Attempt result 1.",
+                    "obligation_refs": (obligation_a,),
+                },
+                "artifact_refs": (),
+                "evidence_refs": (),
+            },
         ),
     }
-    published = await app.publish_work(PublishWorkRequest.model_validate(publish_wire))
+    first_batch = await app.publish_work(PublishWorkRequest.model_validate(publish_wire))
+    # The unrelated later work arrives in its own batch: a sibling in the same batch is never
+    # subsequent work (tb4n5 follow-up).
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 5090)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(first_batch.result_frontier),
+                "event_drafts": (
+                    {
+                        "event_id": protocol_id("evt_", 5010),
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:01.000Z",
+                        "causal_parents": (),
+                        "payload": {
+                            "action_id": action_b,
+                            "action_kind": "other",
+                            "description": "Attempt result 2.",
+                            "obligation_refs": (obligation_b,),
+                        },
+                        "artifact_refs": (),
+                        "evidence_refs": (),
+                    },
+                ),
+            }
+        )
+    )
     first_check = await app.check(
         CheckRequest.model_validate(
             {
@@ -4197,7 +4229,7 @@ async def test_completion_scope_difference_is_visible_and_repairable(
     assert "completion_plan_not_claimed" not in checked.coverage.known_gaps
     ledger, _ = next(iter(runtime.resources.values()))
     records = tuple([row async for row in ledger.load_events(started.session_id)])
-    from yoetz.kernel.completion_scope import completion_scope_codes
+    from finishup.kernel.completion_scope import completion_scope_codes
 
     assert completion_scope_codes(replay(records)) == ()
 
@@ -4418,6 +4450,11 @@ async def test_command_gap_partition_preserves_receipt_coverage(
             draft("obligation_published", oa),
             draft("obligation_published", ob),
             draft("action_recorded", action_a),
+        ]
+    )
+    # B is later, unrelated work in its own batch (a same-batch sibling never is, tb4n5).
+    await publish(
+        [
             draft("action_recorded", action_b),
             draft("result_recorded", {"result_id": rb, "action_id": ab, "outcome": "success"}),
             draft(
@@ -4471,8 +4508,8 @@ async def test_command_gap_partition_preserves_receipt_coverage(
         assert "command_relation_overlaps_obligation:" + a in str(current.detail)
     ledger, _ = next(iter(runtime.resources.values()))
     records = tuple([row async for row in ledger.load_events(started.session_id)])
-    from yoetz.kernel.finding_resolution import finding_is_resolved
-    from yoetz.kernel.projections import projection_from_snapshot, projection_snapshot
+    from finishup.kernel.finding_resolution import finding_is_resolved
+    from finishup.kernel.projections import projection_from_snapshot, projection_snapshot
 
     rebuilt = replay(records)
     assert finding_is_resolved(rebuilt, target.finding_id) is should_resolve
@@ -4558,9 +4595,9 @@ async def test_empty_claim_repair_converges_across_views_and_receipts(
     ledger_backend: Literal["memory", "sqlite"], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#859: historical C0 + scoped C1 become C2 without rewriting accepted bytes."""
-    import yoetz.application.publish_work as publication
-    from yoetz.kernel.claims import effective_claim_ids
-    from yoetz.kernel.completion_scope import completion_scope_codes
+    import finishup.application.publish_work as publication
+    from finishup.kernel.claims import effective_claim_ids
+    from finishup.kernel.completion_scope import completion_scope_codes
 
     app, runtime, _ = _build_app(ledger_backend=ledger_backend)
     started = await app.start(start_request(85900, title="Empty claim repair"))
@@ -4950,7 +4987,7 @@ async def test_process_finding_is_answered_by_the_completed_review_but_work_find
 
     Check 1 (kea check 1): the reviewer reports two distinct problems in one round, an open work
     obligation under a completion claim and a code defect; both land as findings. The agent rejects
-    the defect. Check 2: a record-state finding cites only an earlier ``check_recorded`` row (Yoetz
+    the defect. Check 2: a record-state finding cites only an earlier ``check_recorded`` row (FinishUP
     process state). ``acknowledged`` on it needs no filler publish, because the completed review
     recorded after it is its resolution. The work-obligation finding, a finding that mixes a process
     row with the claim, and a work-kind finding that cites only the check row while challenging what
@@ -5728,7 +5765,7 @@ async def test_growing_caller_digest_excerpts_mint_no_finding_and_one_receipt_la
     citing all of them, checking after each round. Before the fix every round minted a new
     ``ledger_stale_or_incomplete`` id whose text asked for "content-bearing evidence". Now none is
     raised, nothing is left to answer, and the receipt still discloses once, with the exact count,
-    that Yoetz did not verify those caller digests.
+    that FinishUP did not verify those caller digests.
     """
 
     app, _runtime, _ = _build_app(seed_offset=40, ledger_backend=ledger_backend)
@@ -5801,7 +5838,7 @@ async def test_growing_caller_digest_excerpts_mint_no_finding_and_one_receipt_la
     body = _limitations_body(receipt.document)
     assert body.count("caller-asserted digest") == 1
     assert (
-        f"{len(_ISSUE_912_HUNKS)} cited evidence items carry caller-asserted digests that Yoetz "
+        f"{len(_ISSUE_912_HUNKS)} cited evidence items carry caller-asserted digests that FinishUP "
         "did not verify: the digest was recorded but the bytes were not retained."
     ) in body
     assert "withheld" not in body
@@ -5860,7 +5897,7 @@ async def test_receipt_label_keeps_digest_only_and_withheld_retention_apart(
     )
 
     expected = (
-        "2 cited evidence items carry caller-asserted digests that Yoetz did not verify: "
+        "2 cited evidence items carry caller-asserted digests that FinishUP did not verify: "
         "1 is digest-only (the digest was recorded but the bytes were not retained) and "
         "1 is withheld (the publisher recorded the bytes as withheld)."
     )
@@ -6067,8 +6104,9 @@ async def test_resolved_obligation_digest_is_one_disclosed_label_beside_native_s
     assert receipt.conclusion != "unresolved_findings_remain"
     body = _limitations_body(receipt.document)
     assert body.count("caller-asserted digest") == 1
-    assert "One cited evidence item carries a caller-asserted digest that Yoetz did not verify" in (
-        body
+    assert (
+        "One cited evidence item carries a caller-asserted digest that FinishUP did not verify"
+        in (body)
     )
     assert "content-bearing" not in body
     document = cast(dict[str, JsonValue], receipt.document)
@@ -6961,7 +6999,7 @@ async def test_an_ai_finding_the_recheck_did_not_assess_never_resolves_by_silenc
     # Replay from the recorded events reaches the same answer on this ledger backend.
     ledger, _ = next(iter(runtime.resources.values()))
     records = tuple([item async for item in ledger.load_events(started.session_id)])
-    from yoetz.kernel.finding_resolution import finding_is_resolved
+    from finishup.kernel.finding_resolution import finding_is_resolved
 
     assert finding_is_resolved(replay(records), finding.finding_id) is (source == "complete")
 
@@ -6980,7 +7018,7 @@ async def test_the_check_carries_the_finding_checklist_on_both_ledgers(
     _started, checked, _obligation = await _bootstrap_finding(app, seed=5700)
     checklist = checked.finding_checklist
     assert checklist is not None
-    from yoetz.domain.findings import FINDING_KIND_TRAITS
+    from finishup.domain.findings import FINDING_KIND_TRAITS
 
     blocking = {item.finding_id for item in checked.findings if FINDING_KIND_TRAITS[item.kind][1]}
     assert blocking <= {item.finding_id for item in checklist.items}
@@ -7115,7 +7153,7 @@ async def test_a_finding_raised_before_the_task_statement_is_not_trapped_by_its_
         # undecomposed-request finding (pilot blocker D3), whose open gap would bound this
         # AI-powered proof too. This fixture edits nothing, so its documented answer, the
         # no-material-work decision, keeps the test on the task-statement gaps it is about.
-        from yoetz.domain.task_statement import current_task_statement
+        from finishup.domain.task_statement import current_task_statement
 
         ledger, _objects = _runtime.resources[started.task_id]
         recorded = current_task_statement(
@@ -7129,7 +7167,7 @@ async def test_a_finding_raised_before_the_task_statement_is_not_trapped_by_its_
                 "occurred_at": "2026-07-19T12:00:03.000Z",
                 "causal_parents": (),
                 "payload": {
-                    "statement": f"yoetz-no-material-work:{recorded.source_event_id}",
+                    "statement": f"finishup-no-material-work:{recorded.source_event_id}",
                     "rationale": "The fixture asks for no file change.",
                     "authority": "harness:test",
                 },
@@ -7582,7 +7620,7 @@ async def _resolve_pre_upgrade_finding(
     resolve the finding.
     """
 
-    import yoetz.application.check as check_module
+    import finishup.application.check as check_module
 
     stamp = check_module.semantic_capture_baseline_gaps
 
@@ -7663,12 +7701,12 @@ async def _append_local_redaction(
 ) -> None:
     """Append a local human's logical redaction of *target*, shaped like the recorded fixture."""
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         RedactionMethod,
         RedactionReasonCategory,
         RedactionRecordedPayload,
     )
-    from yoetz.domain.values import Actor, ActorType, actor_id
+    from finishup.domain.values import Actor, ActorType, actor_id
 
     ledger, objects = next(iter(runtime.resources.values()))
     now = app.clock.now_utc()
@@ -8367,8 +8405,8 @@ async def test_reattach_with_an_unchanged_statement_keeps_the_statement_event() 
     obligation citing it stay put; both events count as equivalent. An amended statement moves it.
     """
 
-    from yoetz.domain.events import SessionResumedPayload
-    from yoetz.domain.task_statement import current_task_statement
+    from finishup.domain.events import SessionResumedPayload
+    from finishup.domain.task_statement import current_task_statement
 
     seed = 9800
     statement = "The user's request, verbatim."
@@ -8531,9 +8569,9 @@ async def test_requested_output_facts_reach_the_evaluator_as_task_fact_gaps(
     gap codes onward runs through the real check and ``Application.evaluate_semantic_check``.
     """
 
-    from yoetz.application import check_change
-    from yoetz.kernel.deterministic_checks import REQUESTED_OUTPUT_ABSENT_FACT
-    from yoetz.kernel.task_facts import REQUESTED_OUTPUT_GIT_IGNORED_GAP, RequestedOutputState
+    from finishup.application import check_change
+    from finishup.kernel.deterministic_checks import REQUESTED_OUTPUT_ABSENT_FACT
+    from finishup.kernel.task_facts import REQUESTED_OUTPUT_GIT_IGNORED_GAP, RequestedOutputState
 
     seed = 5600
     obligation = protocol_id("obl_", seed + 1)
@@ -8593,7 +8631,7 @@ async def _compact_readiness(app: Application, started: StartInternalResult, see
 async def test_self_verified_answers_a_local_finding_only_observation_loss_keeps_unproven() -> None:
     """Issue #984, tb4n1 B3/C1: one lost hook input marked later observations
     ``observation_input_loss``; the repaired local finding could never be proven absent and the
-    agent filed a false ``yoetz-blocker``. It now verifies the repair itself and says so."""
+    agent filed a false ``finishup-blocker``. It now verifies the repair itself and says so."""
 
     app, runtime, _ = _build_app(seed_offset=41)
     started, checked, obligation = await _bootstrap_finding(app, seed=9800)
@@ -8971,12 +9009,12 @@ async def test_an_emptied_deliverable_tells_the_same_story_on_every_surface(
     """
 
     from builders.observed_runs import INSTALLATION_KEY
-    from yoetz.application import check_change
-    from yoetz.application.check import check_internal_json
-    from yoetz.cli.closure_gate import closure_gate_from_readiness
-    from yoetz.cli.render import render_closure_readiness_lines
-    from yoetz.kernel.fact_lineage import lineage_from_wire, lineage_text
-    from yoetz.kernel.task_facts import (
+    from finishup.application import check_change
+    from finishup.application.check import check_internal_json
+    from finishup.cli.closure_gate import closure_gate_from_readiness
+    from finishup.cli.render import render_closure_readiness_lines
+    from finishup.kernel.fact_lineage import lineage_from_wire, lineage_text
+    from finishup.kernel.task_facts import (
         DECLARED_OUTPUT_EMPTIED_GAP,
         RequestedOutputState,
         register_command_identity_key,

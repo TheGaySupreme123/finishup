@@ -13,10 +13,10 @@ from __future__ import annotations
 import pytest
 
 from builders.replay import genesis_session_opened, genesis_session_opened_variant
-from yoetz.domain.events import RedactionState
-from yoetz.domain.task_statement import may_carry_task_statement
-from yoetz.kernel.finding_resolution import first_task_statement_sequence_of
-from yoetz.kernel.reducers import empty_replay_index, extend_replay_index
+from finishup.domain.events import RedactionState
+from finishup.domain.task_statement import may_carry_task_statement
+from finishup.kernel.finding_resolution import first_task_statement_sequence_of
+from finishup.kernel.reducers import empty_replay_index, extend_replay_index
 
 _STATEMENT = "Under Ascii, Style.Truncate returns plain text without tail."
 

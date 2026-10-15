@@ -19,17 +19,17 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel
 
-import yoetz.mcp.server as bridge
-from yoetz.ports.control import ControlError, WorkspaceLocator
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+import finishup.mcp.server as bridge
+from finishup.ports.control import ControlError, WorkspaceLocator
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     PublicRequestModel,
     StartRequest,
     StartResult,
     StatusRequest,
     StatusResult,
 )
-from yoetz.service.lifecycle import SingletonHolder
+from finishup.service.lifecycle import SingletonHolder
 
 _PARENT = "req_00000000-0000-4000-8000-000000000001"
 _DELEGATES = (
@@ -133,7 +133,7 @@ class _Harness:
     """Counts every way the bridge could reach the service and every diagnostic it mints."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        import yoetz.observability.diagnostics as diagnostics
+        import finishup.observability.diagnostics as diagnostics
 
         monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
         self.on_demand: list[str] = []
@@ -230,7 +230,7 @@ async def test_parent_terminal_start_is_inherited_by_three_delegates_without_any
         assert inherited_details["availability_request_id"] == _PARENT
         assert inherited_details["reason_code"] == "service_incompatible"
         message = cast(str, inherited["message"])
-        assert "yoetz service restart" in message
+        assert "finishup service restart" in message
         assert "no new diagnostic was recorded" in message
         assert len(message) <= 4096
 
@@ -561,7 +561,7 @@ async def test_a_changed_service_holder_clears_the_latch(
     inherited = _error(await bridge.dispatch_start(_start(_DELEGATES[0]), runtime))
     assert cast(dict[str, object], inherited["safe_details"])["availability_inherited"] is True
 
-    # `yoetz service restart` replaced the holder: the next new identity probes afresh.
+    # `finishup service restart` replaced the holder: the next new identity probes afresh.
     harness.holder = SingletonHolder(4343, "new", "sha256:" + "b" * 64, "0.1.0")
     harness.on_demand_failure = None
     harness.on_demand_client = _FakeClient()

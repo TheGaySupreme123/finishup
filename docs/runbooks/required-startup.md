@@ -1,6 +1,6 @@
 # Required startup for native Claude Code and Cursor
 
-Issue [#692](https://github.com/TheGaySupreme123/yoetz/issues/692) adds an owner-selected tool gate.
+Issue [#692](https://github.com/TheGaySupreme123/finishup/issues/692) adds an owner-selected tool gate.
 Optional cooperative startup remains the default for new installations. This is a workflow
 constraint, not a security sandbox or evidence that a plan is correct.
 
@@ -37,8 +37,8 @@ fresh plan revision or exact next-version restatement. Resume/compaction also re
 Empty plans do not admit tools. Text-only trivial answers need no bootstrap; even a small edit
 uses tools and needs a plan in required mode. Optional mode keeps its usual trivial-work exception.
 
-Tool/schema discovery, the Yoetz skill, registered guidance, clarification and Yoetz workflow calls
-remain possible. Direct commands through the current runtime's exact Yoetz launcher for service
+Tool/schema discovery, the FinishUP skill, registered guidance, clarification and FinishUP workflow calls
+remain possible. Direct commands through the current runtime's exact FinishUP launcher for service
 status/diagnostics/restart, consent catalog/prepare/status/review/authorize and vault unlock reach
 normal host admission. Pipelines, substitutions, compound commands and other launchers do not
 qualify. This grants no repair, consent, credential or disclosure authority: the typed continuation,

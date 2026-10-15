@@ -30,7 +30,7 @@ from builders.projection_workflow import (
     project_case,
     run_projection_workflow,
 )
-from yoetz.protocol.canonical import JsonValue
+from finishup.protocol.canonical import JsonValue
 
 pytestmark = pytest.mark.anyio
 

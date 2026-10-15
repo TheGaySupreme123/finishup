@@ -10,10 +10,10 @@ from tests.unit.protocol.test_models_and_schemas import (
     _check_result_wire,  # pyright: ignore[reportPrivateUsage]
 )
 
-from yoetz.application.check import semantic_route_required
-from yoetz.cli.render import render_human_check
-from yoetz.mcp.summaries import summary_for_check
-from yoetz.protocol.models import CheckResult, CheckSuccessModel
+from finishup.application.check import semantic_route_required
+from finishup.cli.render import render_human_check
+from finishup.mcp.summaries import summary_for_check
+from finishup.protocol.models import CheckResult, CheckSuccessModel
 
 _CLI = "the route did not require it, so it does not block a clean receipt"
 _MCP = "route did not require AI-powered review (disclosed; does not block receipt); "

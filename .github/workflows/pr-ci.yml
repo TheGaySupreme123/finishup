@@ -96,7 +96,7 @@ jobs:
       - name: Reject symlink/path escape in owned resource and release roots
         run: |
           set -euo pipefail
-          for root in schemas migrations fixtures skills; do
+          for root in schemas migrations fixtures skills release; do
             if [ -d "$root" ]; then
               found=$(find "$root" -type l -print)
               if [ -n "$found" ]; then
@@ -120,6 +120,15 @@ jobs:
 
       - name: Verify generated schemas and packaged resources reached a fixed point
         run: uv run --locked python scripts/sync_resource_ripple.py --check
+
+      - name: Verify the transitional yoetz distributions build and stay in lockstep (ADR-048)
+        run: |
+          set -euo pipefail
+          uv run --locked python scripts/check_transitional_yoetz.py
+          uv build --no-sources release/transitional-yoetz/python \
+            --out-dir "${{ runner.temp }}/transitional-dist"
+          uv run --locked python scripts/check_transitional_yoetz.py \
+            --dist "${{ runner.temp }}/transitional-dist"
 
       - name: Verify CHECK continuation schemas are exact
         run: uv run --locked python scripts/sync_check_continuation_schemas.py --check
@@ -293,9 +302,9 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -337,9 +346,9 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -424,24 +433,24 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/subprocess-venv"
           uv pip install --python "${{ runner.temp }}/subprocess-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
           uv pip install --python "${{ runner.temp }}/subprocess-venv/bin/python" \
-            "yoetz[semantic-openai,portable-recovery]==${candidate_version}"
+            "finishup[semantic-openai,portable-recovery]==${candidate_version}"
           echo "${{ runner.temp }}/subprocess-venv/bin" >> "$GITHUB_PATH"
 
       - name: uv sync --locked (test runner tooling only)
         run: uv sync --locked --group dev
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
           echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/subprocess-venv/bin/python" >> "$GITHUB_ENV"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/subprocess-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Bounded console/module/MCP subprocess cases (excludes full kill matrix)
         run: |
@@ -455,28 +464,28 @@ jobs:
             -m "not fault and not soak and not live" -q --timeout=120
 
       # condaforge/miniforge3:24.9.2-0 is Ubuntu 20.04 (glibc 2.31, inside the certified glibc
-      # 2.28+ cell), where `yoetz service run` exited 70 at startup (#1040). Install the candidate
-      # with the documented uv command, start the service, read its status, and stop it.
-      - name: Service starts in a conda image on glibc 2.31
+      # 2.28+ cell; Git 2.25, the documented minimum). There `finishup service run` exited 70 at
+      # startup, and once that was fixed every connection closed as soon as the vault was ready
+      # (#1040). Install the candidate with the documented uv command, then
+      # scripts/ci/service_image_smoke.sh records the system Git version, initializes a vault
+      # under an isolated root, and from inside a Git repository reads ready status, starts a task
+      # and runs a deterministic check whose change capture must succeed.
+      - name: Service runs in a conda image on glibc 2.31 and Git 2.25
         run: |
           set -euo pipefail
           docker run --rm \
             -v "${{ runner.temp }}/dist:/dist:ro" \
             -v "$(command -v uv):/usr/local/bin/uv:ro" \
+            -v "$PWD/scripts:/scripts:ro" \
             condaforge/miniforge3:24.9.2-0@sha256:937dc1e8ab9ffc5f388f0d2a1ce5d24ba5b15850771571d7442fac1af53f3fad \
             bash -euo pipefail -c '
-              uv tool install --managed-python --python 3.14.6 /dist/yoetz-*.whl >/dev/null
+              if ! PATH=/bin:/usr/bin command -v git >/dev/null; then
+                apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
+              fi
+              uv tool install --managed-python --python 3.14.6 /dist/finishup-*.whl >/dev/null
               export PATH="$HOME/.local/bin:$PATH"
-              yoetz service run 2>/tmp/service.log &
-              service=$!
-              for _ in $(seq 1 60); do
-                if yoetz service status --json >/tmp/status.json 2>/dev/null; then break; fi
-                if ! kill -0 "$service" 2>/dev/null; then cat /tmp/service.log; exit 1; fi
-                sleep 0.5
-              done
-              grep -q "\"state\":\"locked\"" /tmp/status.json
-              yoetz service stop --json >/dev/null
-              wait "$service"
+              EXPECT_GIT_SERIES=2.25 CEREMONY_PYTHON=/opt/conda/bin/python3 \
+                bash /scripts/ci/service_image_smoke.sh
             '
 
   # ---------------------------------------------------------------------------------------------
@@ -525,12 +534,12 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/pkg-venv"
           uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" "yoetz==${candidate_version}"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" "finishup==${candidate_version}"
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -541,9 +550,9 @@ jobs:
       - name: Run import, help, version --json, and strict-local vertical slice
         run: |
           cd "${{ runner.temp }}"
-          "${{ runner.temp }}/pkg-venv/bin/python" -c "import yoetz; print(yoetz.__name__)"
-          "${{ runner.temp }}/pkg-venv/bin/yoetz" --help
-          "${{ runner.temp }}/pkg-venv/bin/yoetz" version --json
+          "${{ runner.temp }}/pkg-venv/bin/python" -c "import finishup; print(finishup.__name__)"
+          "${{ runner.temp }}/pkg-venv/bin/finishup" --help
+          "${{ runner.temp }}/pkg-venv/bin/finishup" version --json
 
       - name: Run public-boundary scanner over checkout, sdist, wheel, metadata
         run: |
@@ -556,7 +565,7 @@ jobs:
           set -euo pipefail
           canary_dir="${{ runner.temp }}/negative-control"
           mkdir -p "$canary_dir"
-          canary="YOETZ_CANARY_$(uv run --locked python -c 'import uuid; print(uuid.uuid4().hex)')"
+          canary="FINISHUP_CANARY_$(uv run --locked python -c 'import uuid; print(uuid.uuid4().hex)')"
           canary_file="${{ runner.temp }}/negative-control.canary"
           printf '%s' "$canary" > "$canary_file"
           echo "$canary" > "$canary_dir/leak.txt"

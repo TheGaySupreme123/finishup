@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-from yoetz.cli.hooks import (
+from finishup.cli.hooks import (
     _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
     _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
     _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.cli.observe_hooks import (
+from finishup.cli.observe_hooks import (
     _attachment_recovery_context,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.cli.render import (
+from finishup.cli.render import (
     render_hook_recovery_suffix,
     render_local_recovery_lines,
     render_semantic_outcome_recovery_lines,
 )
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.mcp.summaries import summary_for_check
-from yoetz.protocol.models import SemanticReason, SemanticStatus
-from yoetz.protocol.recovery import (
+from finishup.domain.findings import SemanticFailureClass
+from finishup.mcp.summaries import summary_for_check
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.recovery import (
     continuation_for_reason,
     continuation_for_semantic_outcome,
     directive_for,
@@ -63,6 +63,13 @@ def test_hook_and_tui_surfaces_resolve_registry_tokens() -> None:
     assert "Call start" in timeout_attach
     assert "service_incompatible" in _attachment_recovery_context("service_incompatible")
     assert "Continuation:" not in _attachment_recovery_context("service_incompatible")
+    # #1040 follow-up: a hello this installation's own service closed is neither a service still
+    # to start nor another installation to replace; start's typed result names the cause.
+    handshake_attach = _attachment_recovery_context("service_handshake_failed")
+    assert "service_handshake_failed" in handshake_attach
+    assert "Call start" in handshake_attach
+    assert "incompatible" not in handshake_attach
+    assert "finish service startup" not in handshake_attach
     assert render_hook_recovery_suffix("vault_locked") == " Continuation: vault_unlock_required."
     tui_lines = render_local_recovery_lines("vault_locked")
     assert tui_lines[0] == "Continuation: vault_unlock_required"

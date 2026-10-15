@@ -1,4 +1,4 @@
-"""Yoetz's own calls and observations are not "later material"; an observed edit is (tb4n3 RC-6).
+"""FinishUP's own calls and observations are not "later material"; an observed edit is (tb4n3 RC-6).
 
 Provenance: tb4n3 (28 real Codex runs on 26e9cecf). ``check_current_as_of_earlier_frontier`` (ccaoef)
 was added for any later material record. The real post-check suffix is the ``check`` call's own hook
@@ -23,11 +23,8 @@ from dataclasses import dataclass
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from unit.kernel.test_closure_readiness import (
-    _prefix_through_check,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.memory.ledger import compact_status_coverage
-from yoetz.domain.events import (
+from finishup.adapters.memory.ledger import compact_status_coverage
+from finishup.domain.events import (
     ActionKind,
     EventSchema,
     EvidenceKind,
@@ -36,19 +33,22 @@ from yoetz.domain.events import (
     ObligationPublishedPayload,
     ResultOutcome,
 )
-from yoetz.domain.values import evidence_id, obligation_id
-from yoetz.kernel.check_standing import check_standing
-from yoetz.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
-from yoetz.kernel.later_material import (
+from finishup.domain.values import evidence_id, obligation_id
+from finishup.kernel.check_standing import check_standing
+from finishup.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
+from finishup.kernel.later_material import (
     COMPLETION_SIGNAL_PREFIX,
     OPAQUE_OBSERVATION_PREFIX,
     LaterMaterialClass,
     classify_later_material,
 )
-from yoetz.kernel.receipt_capacity import receipt_gap_codes
-from yoetz.kernel.reducers import invalidates_recorded_check, later_material_class, replay
-from yoetz.kernel.task_facts import register_command_identity_key
-from yoetz.protocol.coverage import EvidenceImmutability, LedgerFreshness
+from finishup.kernel.receipt_capacity import receipt_gap_codes
+from finishup.kernel.reducers import invalidates_recorded_check, later_material_class, replay
+from finishup.kernel.task_facts import register_command_identity_key
+from finishup.protocol.coverage import EvidenceImmutability, LedgerFreshness
+from unit.kernel.test_closure_readiness import (
+    _prefix_through_check,  # pyright: ignore[reportPrivateUsage]
+)
 
 _CCAOEF = "check_current_as_of_earlier_frontier"
 _C = LaterMaterialClass
@@ -62,7 +62,7 @@ def identity_key() -> Iterator[None]:
 
 
 def _evidence(ledger: ObservedLedger, number: int, description: str) -> None:
-    from yoetz.domain.values import timestamp_from_string
+    from finishup.domain.values import timestamp_from_string
 
     ledger.append(
         EventSchema("evidence_recorded", "1.0.0"),
@@ -138,15 +138,15 @@ def test_b4_earlier_frontier_gap_class_agrees_with_receipt_bound() -> None:
     """Repro: readiness classed ccaoef "standing" (nothing to do) while the receipt treated it as
     bounding unless the suffix was responses only, and the suffix was never responses only.
 
-    After the fix the gap exists only for a suffix Yoetz cannot prove harmless, and every surface
+    After the fix the gap exists only for a suffix FinishUP cannot prove harmless, and every surface
     agrees on that: capacity fold, compact coverage, readiness standing list and the receipt count
-    the same records. A suffix of Yoetz's own calls and host bookkeeping adds no gap anywhere.
+    the same records. A suffix of FinishUP's own calls and host bookkeeping adds no gap anywhere.
     """
 
     # The real post-check shape: the check call's own observation, status/receipt polls, and host
     # stream bookkeeping. Nothing here can have changed the work the check read.
     own = _after_check()
-    for tool in ("mcp__yoetz__check", "mcp__yoetz__status", "mcp__yoetz__receipt"):
+    for tool in ("mcp__finishup__check", "mcp__finishup__status", "mcp__finishup__receipt"):
         _own_call(own, tool)
     _bookkeeping(own, 9100)
     quiet = _surfaces(own.prefix)
@@ -157,13 +157,13 @@ def test_b4_earlier_frontier_gap_class_agrees_with_receipt_bound() -> None:
     assert _CCAOEF not in quiet.readiness_actionable + quiet.readiness_standing
     assert quiet.freshness is not LedgerFreshness.STALE_AFTER_MATERIAL_CHANGE
 
-    # A command Yoetz cannot classify may have changed the work: the disclosure stays and the
+    # A command FinishUP cannot classify may have changed the work: the disclosure stays and the
     # receipt side counts it. Readiness keeps the code a standing limitation: it is not agent work,
     # because any instruction derived from it can regenerate after the check it asks for (the
-    # Yoetz CLI run through a shell, Cursor's tool-identity-free post-only results, ADR-040
+    # FinishUP CLI run through a shell, Cursor's tool-identity-free post-only results, ADR-040
     # section 7), and "nothing to do" is true of it (Codex review 1 and 2).
     script = _after_check()
-    _own_call(script, "mcp__yoetz__check")
+    _own_call(script, "mcp__finishup__check")
     script.passes("python gen.py")
     bounded = _surfaces(script.prefix)
     assert bounded.superseded is False and bounded.counted >= 1
@@ -233,7 +233,7 @@ def test_c4_observed_edit_after_check_supersedes_it() -> None:
 
 @pytest.mark.parametrize("outcome", (ResultOutcome.FAILURE, ResultOutcome.UNKNOWN))
 def test_c4_a_failed_or_outcomeless_edit_still_supersedes(outcome: ResultOutcome) -> None:
-    """The safe direction: Yoetz cannot tell that a failed patch left the files unchanged."""
+    """The safe direction: FinishUP cannot tell that a failed patch left the files unchanged."""
 
     ledger = _after_check()
     ledger.edit(outcome)
@@ -262,7 +262,7 @@ def test_write_scope_decides_whether_an_edit_counts(scope: str | None, expected:
 def test_a_declared_temp_output_makes_a_scratch_write_a_deliverable_edit() -> None:
     """ADR-042 precedence: a deliverable declared under /tmp is not scratch."""
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ObligationStatus,
         PlanPublishedPayload,
         RequestedItem,
@@ -297,7 +297,7 @@ def test_a_declared_temp_output_makes_a_scratch_write_a_deliverable_edit() -> No
     projection = replay(ledger.prefix)
     scratch, receipt = ledger.prefix[-4], ledger.prefix[-2]
     assert classify_later_material(scratch, projection).material_class is _C.EDIT_OR_WRITE
-    # A Yoetz receipt is the output about the check: it never counts, declared or not.
+    # A FinishUP receipt is the output about the check: it never counts, declared or not.
     assert classify_later_material(receipt, projection).material_class is _C.NON_COUNTING_WRITE
 
 
@@ -332,20 +332,20 @@ def test_only_the_closed_exploration_runner_class_is_read_only(
 
 
 def test_a_receipt_saved_into_a_declared_output_directory_never_supersedes() -> None:
-    """lake D (tb4n2): the agent saved yoetz_receipt.json into the declared output directory after
+    """lake D (tb4n2): the agent saved finishup_receipt.json into the declared output directory after
     its last check. ``task_facts.non_counting_edits_exempt`` counts that write for verification
     staleness (a directory output makes it part of the delivery), but a check can never cover the
     receipt that reports on it: counting it would invalidate the check that produced it, and the
     next saved receipt would do it again."""
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ObligationStatus,
         PlanPublishedPayload,
         RequestedItem,
         RequestedItemKind,
         RequestedItemRole,
     )
-    from yoetz.kernel.task_facts import non_counting_edits_exempt
+    from finishup.kernel.task_facts import non_counting_edits_exempt
 
     obligation = obligation_id("obl_00000000-0000-4000-8000-0000000000b5")
     ledger = ObservedLedger()
@@ -380,7 +380,7 @@ def test_a_receipt_saved_into_a_declared_output_directory_never_supersedes() -> 
 
 
 def test_captured_content_takes_the_class_of_the_call_it_was_recorded_under() -> None:
-    """Codex review 1: saving yoetz_receipt.md with captured patch content records an evidence row
+    """Codex review 1: saving finishup_receipt.md with captured patch content records an evidence row
     under the action. That row is the call's output, not a second, unclassified observation: it
     must not turn an ignored write into a counted record (and then a recheck loop)."""
 
@@ -388,7 +388,7 @@ def test_captured_content_takes_the_class_of_the_call_it_was_recorded_under() ->
     check_sequence = ledger.prefix[-1].ledger.ingestion_sequence
     ledger.edit(write_scope="yoetz_owned")
     action = ledger.prefix[-2]
-    from yoetz.domain.values import timestamp_from_string
+    from finishup.domain.values import timestamp_from_string
 
     ledger.append(
         EventSchema("evidence_recorded", "1.0.0"),
@@ -413,11 +413,11 @@ def test_captured_content_takes_the_class_of_the_call_it_was_recorded_under() ->
     assert len(check_standing(replay(orphan.prefix), orphan.prefix).counted) == 1
 
 
-def test_a_declared_yoetz_tree_deliverable_keeps_counting() -> None:
+def test_a_declared_finishup_tree_deliverable_keeps_counting() -> None:
     """Codex review 1: the receipt exemption is for the receipt, not for a task whose product is
-    the packaged plugin or skill (a declared output under .agents/skills/yoetz)."""
+    the packaged plugin or skill (a declared output under .agents/skills/finishup)."""
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ObligationStatus,
         PlanPublishedPayload,
         RequestedItem,
@@ -437,7 +437,7 @@ def test_a_declared_yoetz_tree_deliverable_keeps_counting() -> None:
             requested_items=(
                 RequestedItem(
                     RequestedItemKind.FILE,
-                    "/app/.agents/skills/yoetz/SKILL.md",
+                    "/app/.agents/skills/finishup/SKILL.md",
                     role=RequestedItemRole.OUTPUT,
                 ),
             ),
@@ -460,7 +460,7 @@ def test_a_find_that_writes_a_file_is_not_exploration() -> None:
     """Codex review 1: ``find -fprint0 FILE`` writes FILE; the read-only runner class must not
     admit it, because the later-material rule now ignores exploration entirely."""
 
-    from yoetz.domain.observation_selection import command_runner_class
+    from finishup.domain.observation_selection import command_runner_class
 
     for command in (
         "find . -fprint0 manifest.bin",
@@ -475,7 +475,7 @@ def test_a_find_that_writes_a_file_is_not_exploration() -> None:
 def test_a_wrapped_read_is_not_proven_read_only() -> None:
     """Codex review 2: ``uv run --upgrade cat README.md`` rewrites uv.lock before it reads."""
 
-    from yoetz.domain.observation_selection import command_runner_class
+    from finishup.domain.observation_selection import command_runner_class
 
     for command in ("uv run --upgrade cat README.md", "uv run cat README.md", "poetry run ls"):
         assert command_runner_class({"command": command}) != "exploration", command
@@ -487,7 +487,7 @@ def test_a_late_output_of_an_edit_is_disclosed_but_never_a_second_supersession()
     under an edit action that arrived before the check is the edit's late output: counted (the
     disclosure stays), never superseding, and the same in the reducer, which cannot see lineage."""
 
-    from yoetz.domain.values import timestamp_from_string
+    from finishup.domain.values import timestamp_from_string
 
     ledger = ObservedLedger()
     ledger.edit()
@@ -523,19 +523,19 @@ def test_a_late_output_of_an_edit_is_disclosed_but_never_a_second_supersession()
     assert not with_lineage.supersedes
 
 
-def test_only_the_packaged_yoetz_trees_end_the_receipt_exemption() -> None:
-    """Codex review 2: ``.agents/skills/project-skill`` is the project's, not Yoetz's."""
+def test_only_the_packaged_finishup_trees_end_the_receipt_exemption() -> None:
+    """Codex review 2: ``.agents/skills/project-skill`` is the project's, not FinishUP's."""
 
-    from yoetz.domain.write_scope import yoetz_tree_overlap
+    from finishup.domain.write_scope import finishup_tree_overlap
 
     for overlapping in (
-        "/app/.agents/skills/yoetz/SKILL.md",
-        "/app/.agents/plugins/yoetz",
+        "/app/.agents/skills/finishup/SKILL.md",
+        "/app/.agents/plugins/finishup",
         "/app/.agents",
         "/app/.agents/skills",
         "/app/.agents/plugins/",
     ):
-        assert yoetz_tree_overlap(overlapping), overlapping
+        assert finishup_tree_overlap(overlapping), overlapping
     for separate in (
         "/app/.agents/skills/project-skill",
         "/app/.agents/skills/project-skill/SKILL.md",
@@ -543,4 +543,4 @@ def test_only_the_packaged_yoetz_trees_end_the_receipt_exemption() -> None:
         "/app",
         "",
     ):
-        assert not yoetz_tree_overlap(separate), separate
+        assert not finishup_tree_overlap(separate), separate

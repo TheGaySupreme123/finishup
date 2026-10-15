@@ -13,9 +13,9 @@ from types import MappingProxyType
 
 import pytest
 
-import yoetz.kernel.projections as projections
-from yoetz.domain.events import ResponseRecordedPayload
-from yoetz.domain.findings import (
+import finishup.kernel.projections as projections
+from finishup.domain.events import ResponseRecordedPayload
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
@@ -23,14 +23,14 @@ from yoetz.domain.findings import (
     ResponseDisposition,
     WaiverScope,
 )
-from yoetz.domain.values import Frontier, event_id, finding_id, timestamp_from_string
-from yoetz.kernel.projections import (
+from finishup.domain.values import Frontier, event_id, finding_id, timestamp_from_string
+from finishup.kernel.projections import (
     OBSERVATION_LIMITATION_KINDS,
     FindingProjectionRecord,
     is_observation_limitation,
 )
-from yoetz.kernel.reducers import supersedes_recorded_check
-from yoetz.protocol.coverage import (
+from finishup.kernel.reducers import supersedes_recorded_check
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,

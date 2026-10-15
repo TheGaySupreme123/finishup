@@ -9,16 +9,16 @@ from unittest.mock import patch
 
 import pytest
 
-from yoetz.cli import trusted_console
-from yoetz.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
+from finishup.cli import trusted_console
+from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX terminal checks are unavailable")
 def test_posix_redirected_stdin_fails_before_open() -> None:
     adapter = trusted_console._PosixConsoleAdapter()  # pyright: ignore[reportPrivateUsage]
     with (
-        patch("yoetz.cli.trusted_console.os.isatty", return_value=False),
-        patch("yoetz.cli.trusted_console.os.open") as opened,
+        patch("finishup.cli.trusted_console.os.isatty", return_value=False),
+        patch("finishup.cli.trusted_console.os.open") as opened,
     ):
         with pytest.raises(TrustedConsoleError) as exc:
             adapter.open()
@@ -31,12 +31,12 @@ def test_posix_background_or_mismatched_terminal_fails_and_closes() -> None:
     adapter = trusted_console._PosixConsoleAdapter()  # pyright: ignore[reportPrivateUsage]
     terminal = SimpleNamespace(st_rdev=10)
     with (
-        patch("yoetz.cli.trusted_console.os.isatty", return_value=True),
-        patch("yoetz.cli.trusted_console.os.open", return_value=9),
-        patch("yoetz.cli.trusted_console.os.fstat", return_value=terminal),
-        patch("yoetz.cli.trusted_console.os.tcgetpgrp", return_value=777),
-        patch("yoetz.cli.trusted_console.os.getpgrp", return_value=778),
-        patch("yoetz.cli.trusted_console.os.close") as closed,
+        patch("finishup.cli.trusted_console.os.isatty", return_value=True),
+        patch("finishup.cli.trusted_console.os.open", return_value=9),
+        patch("finishup.cli.trusted_console.os.fstat", return_value=terminal),
+        patch("finishup.cli.trusted_console.os.tcgetpgrp", return_value=777),
+        patch("finishup.cli.trusted_console.os.getpgrp", return_value=778),
+        patch("finishup.cli.trusted_console.os.close") as closed,
     ):
         with pytest.raises(TrustedConsoleError) as exc:
             adapter.open()
@@ -48,10 +48,10 @@ def test_posix_background_or_mismatched_terminal_fails_and_closes() -> None:
 def test_posix_ambiguous_terminal_error_is_bounded_and_closes() -> None:
     adapter = trusted_console._PosixConsoleAdapter()  # pyright: ignore[reportPrivateUsage]
     with (
-        patch("yoetz.cli.trusted_console.os.isatty", return_value=True),
-        patch("yoetz.cli.trusted_console.os.open", return_value=9),
-        patch("yoetz.cli.trusted_console.os.fstat", side_effect=OSError("private detail")),
-        patch("yoetz.cli.trusted_console.os.close") as closed,
+        patch("finishup.cli.trusted_console.os.isatty", return_value=True),
+        patch("finishup.cli.trusted_console.os.open", return_value=9),
+        patch("finishup.cli.trusted_console.os.fstat", side_effect=OSError("private detail")),
+        patch("finishup.cli.trusted_console.os.close") as closed,
     ):
         with pytest.raises(TrustedConsoleError) as exc:
             adapter.open()
@@ -69,8 +69,8 @@ def test_posix_empty_line_is_rejected() -> None:
         return 1
 
     with (
-        patch("yoetz.cli.trusted_console._PosixConsoleAdapter.write"),
-        patch("yoetz.cli.trusted_console.os.readv", side_effect=newline),
+        patch("finishup.cli.trusted_console._PosixConsoleAdapter.write"),
+        patch("finishup.cli.trusted_console.os.readv", side_effect=newline),
     ):
         with pytest.raises(TrustedConsoleError) as exc:
             adapter.read_line("Secret: ", 64, hidden=False)
@@ -83,8 +83,8 @@ def test_posix_eof_is_distinct_from_empty_input() -> None:
     adapter._fd = 9  # pyright: ignore[reportPrivateUsage]
 
     with (
-        patch("yoetz.cli.trusted_console._PosixConsoleAdapter.write"),
-        patch("yoetz.cli.trusted_console.os.readv", return_value=0),
+        patch("finishup.cli.trusted_console._PosixConsoleAdapter.write"),
+        patch("finishup.cli.trusted_console.os.readv", return_value=0),
     ):
         with pytest.raises(TrustedConsoleError) as exc:
             adapter.read_line("Secret: ", 64, hidden=False)
@@ -114,8 +114,8 @@ def test_posix_hidden_input_renders_live_masks_and_erases_on_backspace() -> None
         return 1
 
     with (
-        patch("yoetz.cli.trusted_console._PosixConsoleAdapter.write", side_effect=writes.append),
-        patch("yoetz.cli.trusted_console.os.readv", side_effect=read_one),
+        patch("finishup.cli.trusted_console._PosixConsoleAdapter.write", side_effect=writes.append),
+        patch("finishup.cli.trusted_console.os.readv", side_effect=read_one),
         patch("termios.tcgetattr", return_value=attributes),
         patch("termios.tcsetattr") as set_attributes,
     ):
@@ -282,7 +282,7 @@ def test_windows_ambiguous_console_error_is_bounded() -> None:
 def test_public_boundary_uses_platform_adapter_without_injection() -> None:
     fake = _WindowsApi()
     adapter = trusted_console._WindowsConsoleAdapter(fake)  # pyright: ignore[reportPrivateUsage]
-    with patch("yoetz.cli.trusted_console._new_adapter", return_value=adapter):
+    with patch("finishup.cli.trusted_console._new_adapter", return_value=adapter):
         with TrustedForegroundConsole() as console:
             assert console.read_secret("Secret: ", 64) == bytearray(b"secret")
 

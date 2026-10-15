@@ -16,9 +16,9 @@ from conformance.adapters.test_start_catalog_port import (  # pyright: ignore[re
     _Lookup,  # pyright: ignore[reportPrivateUsage]
     _memory_catalog,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.domain.coordination import MemberKind
-from yoetz.protocol.ids import IdKind
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.domain.coordination import MemberKind
+from finishup.protocol.ids import IdKind
 
 
 def _sqlite_catalog_v4(installation_id: str, clock: _Clock) -> SqliteStartCatalog:

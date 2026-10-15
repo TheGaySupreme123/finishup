@@ -13,19 +13,21 @@ from typing import cast
 
 import pytest
 
-import yoetz.mcp.server as bridge
-from yoetz.config.models import LoggingConfig
-from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
-from yoetz.observability.logging import LogMode, configure_logging
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.service.client import _AcceptedServiceUnresponsive  # pyright: ignore[reportPrivateUsage]
+import finishup.mcp.server as bridge
+from finishup.config.models import LoggingConfig
+from finishup.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
+from finishup.observability.logging import LogMode, configure_logging
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode
+from finishup.service.client import (
+    _AcceptedServiceUnresponsive,  # pyright: ignore[reportPrivateUsage]
+)
 
 _CORRELATION = "err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 _REQUEST = "req_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 _ABSENT_SERVICE_MESSAGE = (
-    "The local Yoetz service is not running. On a local terminal run "
-    "'yoetz service run' under your selected user supervisor, then retry this "
+    "The local FinishUP service is not running. On a local terminal run "
+    "'finishup service run' under your selected user supervisor, then retry this "
     "operation with the same request_id."
 )
 _LEAK_TOKENS = (
@@ -41,7 +43,7 @@ _LEAK_TOKENS = (
 
 @pytest.fixture
 def diagnostic_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     return tmp_path
@@ -64,7 +66,7 @@ def test_bridge_reuses_service_correlation_for_response_projection_failed(
 ) -> None:
     """A check-shaped write failure must surface the daemon's id, not a second mint."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     append_diagnostic_record(
@@ -106,7 +108,7 @@ def test_bridge_reuses_service_correlation_for_read_projection_failed(
 ) -> None:
     """A status read failure must surface the daemon's id so diagnostics resolve."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     append_diagnostic_record(
@@ -140,7 +142,7 @@ def test_bridge_level_failure_without_service_id_still_resolves(
 ) -> None:
     """Bridge-originated ControlError without a service id mints and records under its own id."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     configure_logging(LoggingConfig(level="error"), LogMode.MCP_STDIO)  # type: ignore[arg-type]
@@ -172,7 +174,7 @@ def test_bridge_does_not_re_record_when_service_id_is_present(
 ) -> None:
     """Reusing a service id must not mint a second diagnostic record under a different id."""
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     append_diagnostic_record(
@@ -224,7 +226,7 @@ def test_vault_locked_message_and_retryable_follow_the_daemon_flag(
     agent to abandon evidence and receipts a single retry would have recorded.
     """
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
 
@@ -270,7 +272,7 @@ def test_incompatible_service_is_a_bounded_service_unavailable_with_the_repair_c
     assert error["retryable"] is True
     assert error["correlation_id"] == _CORRELATION
     assert cast(dict[str, object], error["safe_details"])["reason_code"] == "service_incompatible"
-    assert "yoetz service restart" in str(error["message"])
+    assert "finishup service restart" in str(error["message"])
 
 
 def test_bridge_from_before_an_update_asks_to_reopen_instead_of_restarting(
@@ -278,7 +280,7 @@ def test_bridge_from_before_an_update_asks_to_reopen_instead_of_restarting(
 ) -> None:
     """A newer service already serves new sessions; this older bridge must not replace it (#820)."""
 
-    from yoetz.service.lifecycle import SingletonHolder
+    from finishup.service.lifecycle import SingletonHolder
 
     monkeypatch.setattr(
         bridge,
@@ -300,7 +302,7 @@ def test_bridge_from_before_an_update_asks_to_reopen_instead_of_restarting(
     assert error["retryable"] is True
     message = cast(str, error["message"])
     assert "reopen this session" in message
-    assert "yoetz service restart" not in message
+    assert "finishup service restart" not in message
     assert cast(dict[str, object], error["safe_details"])["reason_code"] == "service_incompatible"
 
 
@@ -340,7 +342,7 @@ def test_accepted_but_unresponsive_is_distinct_from_absent_service(
     message = cast(str, error["message"])
     assert message != _ABSENT_SERVICE_MESSAGE
     assert "under your selected user supervisor" not in message
-    assert "Do not run `yoetz service run`" in message
+    assert "Do not run `finishup service run`" in message
     assert (
         cast(dict[str, object], error["safe_details"])["reason_code"] == "accepted_but_unresponsive"
     )
@@ -363,7 +365,7 @@ def test_protocol_mismatch_uses_restart_copy_and_ships_non_retryable(
     assert error["retryable"] is False
     assert error["correlation_id"] == _CORRELATION
     assert cast(dict[str, object], error["safe_details"])["reason_code"] == "protocol_mismatch"
-    assert "yoetz service restart" in str(error["message"])
+    assert "finishup service restart" in str(error["message"])
     assert lookup_diagnostic_records(_CORRELATION, root=diagnostic_root) == ()
     _assert_no_leakage(error)
 
@@ -500,5 +502,28 @@ def test_every_mapped_control_reason_reuses_a_service_correlation_id(
     assert error["correlation_id"] == _CORRELATION
     assert minted == []
     found = lookup_diagnostic_records(_CORRELATION, root=diagnostic_root)
+    assert len(found) == 1
+    _assert_no_leakage(error, found)
+
+
+def test_start_timeout_names_a_slow_start_not_a_supervisor_or_lifecycle_command(
+    diagnostic_root: Path,
+) -> None:
+    result = bridge._control_error_result(  # pyright: ignore[reportPrivateUsage]
+        ControlError("service_unavailable", retryable=True, phase="handshake_timeout"),
+        request_id=_REQUEST,
+        operation="start",
+    )
+    error = _error_of(result)
+    assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
+    assert error["retryable"] is True
+    message = cast(str, error["message"])
+    assert "service_handshake_timeout" in message
+    assert "under your selected user supervisor" not in message
+    assert "same request_id" in message
+    assert "no reusable hash-verified bytecode" in message
+    details = cast(dict[str, object], error["safe_details"])
+    assert details == {"reason_code": "service_unavailable", "phase": "handshake_timeout"}
+    found = lookup_diagnostic_records(cast(str, error["correlation_id"]), root=diagnostic_root)
     assert len(found) == 1
     _assert_no_leakage(error, found)

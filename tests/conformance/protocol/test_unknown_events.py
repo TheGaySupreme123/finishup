@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from builders.replay import replay_records
-from fixture_loader import FixtureLoader
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EVENT_FAMILIES,
     AcceptedEvent,
     EventDraft,
@@ -14,11 +13,12 @@ from yoetz.domain.events import (
     UnknownEvent,
     accepted_record_to_json,
 )
-from yoetz.domain.values import event_id, freeze_json, timestamp_from_string
-from yoetz.kernel.projections import projection_digest, projection_snapshot
-from yoetz.kernel.reducers import replay
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.coverage import LedgerFreshness
+from finishup.domain.values import event_id, freeze_json, timestamp_from_string
+from finishup.kernel.projections import projection_digest, projection_snapshot
+from finishup.kernel.reducers import replay
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.coverage import LedgerFreshness
+from fixture_loader import FixtureLoader
 
 # The two coordination detail payloads are exercised by the closed codec tests but are not
 # replayed in either frozen corpus: their rows are produced only after a live detector/admission

@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
-from yoetz.application.observation_check_policy import (
+from finishup.application.observation_check_policy import (
+    CHECK_POLICY_PATH,
+    LEGACY_CHECK_POLICY_PATH,
     ObservationCheckPolicyAbsent,
+    ObservationCheckPolicyAmbiguous,
     load_observation_check_policy,
     parse_observation_check_policy,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 
 def _policy(*, argv: str = '["/usr/bin/true"]') -> bytes:
@@ -49,13 +54,13 @@ def test_policy_reader_rejects_symlinked_policy_directory(tmp_path: Path) -> Non
     (outside / "checks.toml").write_bytes(_policy())
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / ".yoetz").symlink_to(outside, target_is_directory=True)
+    (workspace / ".finishup").symlink_to(outside, target_is_directory=True)
     with pytest.raises(ProtocolValueError):
         load_observation_check_policy(workspace)
 
 
 def test_policy_reader_accepts_fixed_in_workspace_file(tmp_path: Path) -> None:
-    policy_dir = tmp_path / ".yoetz"
+    policy_dir = tmp_path / ".finishup"
     policy_dir.mkdir()
     (policy_dir / "checks.toml").write_bytes(_policy())
     policy, raw = load_observation_check_policy(tmp_path)
@@ -68,7 +73,7 @@ def test_policy_reader_reports_missing_policy_as_absent_not_invalid(
     tmp_path: Path, make_dir: bool
 ) -> None:
     if make_dir:
-        (tmp_path / ".yoetz").mkdir()
+        (tmp_path / ".finishup").mkdir()
     with pytest.raises(ObservationCheckPolicyAbsent) as caught:
         load_observation_check_policy(tmp_path)
     # Still the invalid-policy failure for callers that only need "no usable policy".
@@ -77,7 +82,7 @@ def test_policy_reader_reports_missing_policy_as_absent_not_invalid(
 
 
 def test_policy_reader_keeps_present_but_broken_policy_invalid(tmp_path: Path) -> None:
-    policy_dir = tmp_path / ".yoetz"
+    policy_dir = tmp_path / ".finishup"
     policy_dir.mkdir()
     (policy_dir / "checks.toml").write_bytes(b"not = [valid")
     with pytest.raises(ProtocolValueError) as caught:
@@ -91,18 +96,112 @@ def test_policy_reader_treats_non_directory_policy_dir_as_invalid(
     tmp_path: Path, kind: str
 ) -> None:
     if kind == "file":
-        (tmp_path / ".yoetz").write_bytes(b"")
+        (tmp_path / ".finishup").write_bytes(b"")
     else:
-        (tmp_path / ".yoetz").symlink_to(tmp_path / "missing-dir")
+        (tmp_path / ".finishup").symlink_to(tmp_path / "missing-dir")
     with pytest.raises(ProtocolValueError) as caught:
         load_observation_check_policy(tmp_path)
     assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
 
 
 def test_policy_reader_treats_dangling_policy_symlink_as_invalid(tmp_path: Path) -> None:
-    policy_dir = tmp_path / ".yoetz"
+    policy_dir = tmp_path / ".finishup"
     policy_dir.mkdir()
     (policy_dir / "checks.toml").symlink_to(tmp_path / "missing.toml")
     with pytest.raises(ProtocolValueError) as caught:
         load_observation_check_policy(tmp_path)
     assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+
+
+def _write(workspace: Path, location: Path, raw: bytes) -> None:
+    (workspace / location.parent).mkdir(exist_ok=True)
+    (workspace / location).write_bytes(raw)
+
+
+def test_policy_reader_reads_the_legacy_location_when_it_is_the_only_one(tmp_path: Path) -> None:
+    _write(tmp_path, LEGACY_CHECK_POLICY_PATH, _policy())
+    policy, raw = load_observation_check_policy(tmp_path)
+    assert raw == _policy()
+    assert policy.source_path == Path(".yoetz/checks.toml")
+
+
+def test_policy_reader_names_the_finishup_location_when_it_is_the_only_one(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, CHECK_POLICY_PATH, _policy())
+    policy, _raw = load_observation_check_policy(tmp_path)
+    assert policy.source_path == Path(".finishup/checks.toml")
+
+
+def test_a_moved_policy_keeps_its_byte_bound_trust_identity(tmp_path: Path) -> None:
+    legacy = tmp_path / "legacy"
+    moved = tmp_path / "moved"
+    legacy.mkdir()
+    moved.mkdir()
+    _write(legacy, LEGACY_CHECK_POLICY_PATH, _policy())
+    _write(moved, CHECK_POLICY_PATH, _policy())
+    before, _ = load_observation_check_policy(legacy)
+    after, _ = load_observation_check_policy(moved)
+    assert before.raw_digest == after.raw_digest
+    assert before == after
+
+
+def test_policy_reader_refuses_to_choose_between_both_locations(tmp_path: Path) -> None:
+    _write(tmp_path, CHECK_POLICY_PATH, _policy())
+    _write(tmp_path, LEGACY_CHECK_POLICY_PATH, _policy())
+    with pytest.raises(ObservationCheckPolicyAmbiguous) as caught:
+        load_observation_check_policy(tmp_path)
+    # Every caller that only needs "no usable policy" keeps failing closed.
+    assert caught.value.reason_code == "invalid_approved_check_policy"
+    assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+
+
+def test_an_empty_legacy_directory_does_not_make_the_policy_ambiguous(tmp_path: Path) -> None:
+    _write(tmp_path, CHECK_POLICY_PATH, _policy())
+    (tmp_path / ".yoetz").mkdir()
+    policy, _raw = load_observation_check_policy(tmp_path)
+    assert policy.source_path == CHECK_POLICY_PATH
+
+
+def test_a_symlinked_legacy_policy_directory_is_invalid(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "checks.toml").write_bytes(_policy())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".yoetz").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ProtocolValueError) as caught:
+        load_observation_check_policy(workspace)
+    assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+
+
+@pytest.mark.parametrize("location", [CHECK_POLICY_PATH, LEGACY_CHECK_POLICY_PATH])
+@pytest.mark.parametrize("other_present", [False, True])
+def test_a_policy_fifo_never_blocks_the_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: Path, other_present: bool
+) -> None:
+    (tmp_path / location.parent).mkdir()
+    os.mkfifo(tmp_path / location)
+    if other_present:
+        other = LEGACY_CHECK_POLICY_PATH if location == CHECK_POLICY_PATH else CHECK_POLICY_PATH
+        _write(tmp_path, other, _policy())
+    real_open = os.open
+
+    def bounded_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if dir_fd is not None:
+            facts = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISFIFO(facts.st_mode) and not flags & os.O_NONBLOCK:
+                # Fail before the unsafe open rather than leave a hung test process.
+                raise AssertionError("policy open would block on a named pipe")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", bounded_open)
+    expected = ObservationCheckPolicyAmbiguous if other_present else ProtocolValueError
+    with pytest.raises(expected):
+        load_observation_check_policy(tmp_path)

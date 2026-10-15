@@ -7,7 +7,7 @@ from typing import Any
 
 import tests.unit.kernel.test_receipt_builder as receipt_tests
 
-from yoetz.domain.receipts import HISTORICAL_GAPS_SECTION_TITLE, render_receipt_human
+from finishup.domain.receipts import HISTORICAL_GAPS_SECTION_TITLE, render_receipt_human
 
 _historical_receipt: Any = getattr(receipt_tests, "_historical_receipt")
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.project_coordination import SqliteCoordinationStore
-from yoetz.application.coordination import CoordinationAdvice, CoordinationParticipant
-from yoetz.domain.coordination import (
+from finishup.adapters.sqlite.project_coordination import SqliteCoordinationStore
+from finishup.application.coordination import CoordinationAdvice, CoordinationParticipant
+from finishup.domain.coordination import (
     CoordinationCoverage,
     CoordinationDetection,
     CoordinationError,
@@ -17,9 +17,9 @@ from yoetz.domain.coordination import (
     OverlapKind,
     coordination_detection_identity,
 )
-from yoetz.domain.values import ObligationId
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.values import ObligationId
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import IdKind, new_id
 
 pytestmark = pytest.mark.anyio
 

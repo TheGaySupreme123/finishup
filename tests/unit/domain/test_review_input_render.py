@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from yoetz.domain.review_input_render import (
-    YOETZ_LIMIT_MISSING_TEXT,
+from finishup.domain.review_input_render import (
+    FINISHUP_LIMIT_MISSING_TEXT,
     has_agent_suppliable_missing,
     render_missing_for_assessment_lines,
     render_missing_for_assessment_next,
@@ -149,7 +149,7 @@ def test_missing_renderer_prioritizes_agent_suppliable_input_over_a_receipt() ->
     )
 
 
-def test_yoetz_limit_items_are_named_as_yoetz_limits_never_agent_work() -> None:
+def test_finishup_limit_items_are_named_as_finishup_limits_never_agent_work() -> None:
     """tb4n1 D1/F2 (#983): an unshowable item tells the agent to self-verify, never to reshape."""
 
     items = [
@@ -166,18 +166,18 @@ def test_yoetz_limit_items_are_named_as_yoetz_limits_never_agent_work() -> None:
         "- other (evd_00000000-0000-4000-8000-000000000002): yoetz_limit_unsupported_data_type"
         in lines
     )
-    assert lines[-1] == YOETZ_LIMIT_MISSING_TEXT
-    assert "never a blocker" in YOETZ_LIMIT_MISSING_TEXT
-    assert "git-add" in YOETZ_LIMIT_MISSING_TEXT
+    assert lines[-1] == FINISHUP_LIMIT_MISSING_TEXT
+    assert "never a blocker" in FINISHUP_LIMIT_MISSING_TEXT
+    assert "git-add" in FINISHUP_LIMIT_MISSING_TEXT
 
 
 def test_recorded_manifest_accepts_the_omission_total_and_refuses_a_smaller_one() -> None:
     import pytest
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         _review_input_manifest_from_json,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.protocol.errors import ProtocolValueError
+    from finishup.protocol.errors import ProtocolValueError
 
     manifest = _manifest()
     manifest["omitted_item_count"] = 64

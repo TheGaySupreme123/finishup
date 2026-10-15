@@ -49,7 +49,7 @@ _SCRIPT_PATH: Final = _REPO_ROOT / "scripts" / "scan_public_boundary.py"
 
 
 def _load_scanner() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("yoetz_scan_public_boundary", _SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("finishup_scan_public_boundary", _SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -232,7 +232,7 @@ def test_metadata_scan_ignores_non_metadata_paths(scanner: ModuleType) -> None:
     home = "/" + "Users/alice/notes"
     entries = (
         scanner.FileEntry(
-            relative_path="yoetz/somewhere/not_metadata.py",
+            relative_path="finishup/somewhere/not_metadata.py",
             size=20,
             data=f"# {home}\n".encode(),
         ),
@@ -276,7 +276,7 @@ def test_injected_canary_is_detected_and_never_leaked_in_the_report(
 def test_canary_in_filename_is_blocked_and_redacted_from_report(
     scanner: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    canary = "YOETZ_CANARY_3f9c2a7e1b6d4f58aabbccddeeff00"
+    canary = "FINISHUP_CANARY_3f9c2a7e1b6d4f58aabbccddeeff00"
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / f"{canary}.txt").write_text(canary, encoding="utf-8")
@@ -434,7 +434,7 @@ def test_runtime_tree_canary_is_detected_and_redacted(
 ) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    canary = b"YOETZ_RUNTIME_CANARY_0123456789abcdef"
+    canary = b"FINISHUP_RUNTIME_CANARY_0123456789abcdef"
     (runtime / "leak.bin").write_bytes(b"prefix:" + canary)
     canary_file = tmp_path / "canary.bin"
     canary_file.write_bytes(canary)
@@ -642,4 +642,4 @@ def test_cli_blocks_and_never_prints_the_canary_bytes(
 def test_sdist_can_be_enumerated_via_tarfile_directly(built_dist: _BuiltDist) -> None:
     with tarfile.open(built_dist.sdist, mode="r:gz") as archive:
         names = archive.getnames()
-    assert any(name.endswith("src/yoetz/__init__.py") for name in names)
+    assert any(name.endswith("src/finishup/__init__.py") for name in names)

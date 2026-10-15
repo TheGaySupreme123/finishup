@@ -17,11 +17,11 @@ from collections.abc import Sequence
 import pytest
 
 from builders.shell_write_vectors import VECTORS, ShellWriteVector
-from yoetz.domain import shell_writes
-from yoetz.domain.observation import (
+from finishup.domain import shell_writes
+from finishup.domain.observation import (
     _MAX_OBSERVED_COMMAND_CHARS,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.shell_writes import MAX_SHELL_WRITE_CHARS, shell_write_paths, shell_write_scope
+from finishup.domain.shell_writes import MAX_SHELL_WRITE_CHARS, shell_write_paths, shell_write_scope
 
 _DEADLINE_SECONDS = 2.0
 
@@ -286,3 +286,30 @@ def test_the_same_path_is_named_once_and_in_order() -> None:
         "b.txt",
         "a.txt",
     ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "finishup_receipt.md",
+        "yoetz_receipt.md",
+        "/app/output/yoetz_receipt.json",
+        "YOETZ-export.txt",
+    ],
+)
+def test_a_receipt_saved_under_either_product_name_is_finishup_material(name: str) -> None:
+    """Agents guided before the rename save ``yoetz_receipt.md``; it is classified alike (ADR-048)."""
+
+    command = f": > {name}"
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "yoetz_owned"
+    if not name.startswith("/"):
+        assert (
+            shell_write_scope(
+                command, workspace=None, inside=lambda _path: False, relative_only=True
+            )
+            == "yoetz_owned"
+        )
+    # Two non-counting classes still count as an edit, whichever spelling names the receipt.
+    assert shell_write_scope(f": > NOTES.md; {command}", workspace="/app", inside=_inside) == (
+        "workspace"
+    )

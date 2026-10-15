@@ -20,7 +20,7 @@ import pytest
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _GUIDANCE: Final = _REPO_ROOT / "guidance"
 _SKILLS: Final = tuple(
-    _REPO_ROOT / "skills" / host / "yoetz" / "SKILL.md"
+    _REPO_ROOT / "skills" / host / "finishup" / "SKILL.md"
     for host in ("claude-code", "codex", "cursor", "portable")
 )
 
@@ -133,7 +133,7 @@ def test_insufficient_packet_goes_to_the_receipt_not_a_deterministic_fallback(na
         for phrase in (
             "deterministic_only` fallback",
             "never use `deterministic_only` merely to shorten closure",
-            "go to the receipt rather than a deterministic fallback",
+            "go to the receipt rather than a local-only fallback",
         )
     )
 
@@ -157,10 +157,11 @@ def test_every_host_skill_carries_the_same_closure_order(path: Path) -> None:
     text = _collapsed(path)
     assert "at its result frontier" not in text
     assert "at the result frontier" not in text
-    # The budgeted skills (8 KiB with the core) keep one closure line; the frontier and no-answer
-    # rules ride in the receipt topic every host carries as a reference (#961).
-    assert (
-        "For closure, publish evidence before `check`, answer findings, and request `receipt` last."
-        in text
-    )
+    # The budgeted skills (8 KiB with the core) keep the stop signal and the finding rules; the
+    # closure order is stated once, in the operating card (tb4n5 startup dedup, ADR-047), and the
+    # frontier and no-answer rules ride in the receipt topic every host carries (#961).
+    assert "publish evidence before `check`" not in text
     assert "A `respond` does not clear a finding." in text
+    card = _collapsed(_GUIDANCE / "agent-instructions.md")
+    assert "Publish claim/evidence before the final check; answer findings, check, and " in card
+    assert "Cadence: `start` once, `publish_work` per material transition; `receipt` last." in card

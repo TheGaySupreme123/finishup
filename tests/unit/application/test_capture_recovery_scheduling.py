@@ -8,11 +8,11 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_drain import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_drain import (
     ObservationCaptureRecoveryOutcome as Outcome,
 )
-from yoetz.application.observation_drain import (
+from finishup.application.observation_drain import (
     ObservationIngestCoordinator,
     ObservationOutboxSweeper,
 )

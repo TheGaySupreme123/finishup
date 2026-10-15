@@ -4,15 +4,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from yoetz.adapters.integrations import artifact_presence
-from yoetz.adapters.integrations.artifact_presence import (
+from finishup.adapters.integrations import artifact_presence
+from finishup.adapters.integrations.artifact_presence import (
     UnsupportedArtifactUserPresence,
     describe_artifact_presence,
     select_artifact_user_presence,
 )
-from yoetz.adapters.integrations.linux_artifact_presence import LinuxArtifactUserPresence
-from yoetz.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
-from yoetz.ports.plugin_artifacts import ArtifactAuthority
+from finishup.adapters.integrations.linux_artifact_presence import LinuxArtifactUserPresence
+from finishup.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
+from finishup.ports.plugin_artifacts import ArtifactAuthority
 
 
 @pytest.mark.parametrize(

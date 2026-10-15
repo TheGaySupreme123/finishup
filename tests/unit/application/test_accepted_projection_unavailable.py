@@ -7,11 +7,11 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.publish_work import build_accepted_projection_unavailable_result
-from yoetz.domain.values import Frontier
-from yoetz.ports.ledger import AcceptedEventSummary
-from yoetz.protocol import models as protocol_models
-from yoetz.protocol.models import (
+from finishup.application.publish_work import build_accepted_projection_unavailable_result
+from finishup.domain.values import Frontier
+from finishup.ports.ledger import AcceptedEventSummary
+from finishup.protocol import models as protocol_models
+from finishup.protocol.models import (
     PublishWorkAcceptedProjectionUnavailableModel,
     PublishWorkResult,
 )

@@ -9,13 +9,13 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import local_only_policy, minimal_external_policy
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
-from yoetz.domain.privacy import ReviewSelectionPolicy
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.domain.privacy import ReviewSelectionPolicy
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.schemas import validate_schema_instance
 
 
 def test_encode_local_only_matches_wire_schema() -> None:
@@ -52,7 +52,7 @@ def test_wire_round_trip_preserves_domain_policy() -> None:
 
 
 def test_domain_desired_state_shape_still_decodes(tmp_path: Path) -> None:
-    from yoetz.config.privacy_desired import (
+    from finishup.config.privacy_desired import (
         load_privacy_desired_canonical,
         write_privacy_desired_toml,
     )

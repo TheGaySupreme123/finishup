@@ -8,7 +8,7 @@ import os
 import stat
 import subprocess
 import time
-from collections.abc import Buffer, Generator
+from collections.abc import Buffer, Generator, Mapping
 from contextlib import contextmanager
 from inspect import signature
 from pathlib import Path
@@ -17,12 +17,12 @@ from typing import BinaryIO, cast
 
 import pytest
 
-from yoetz.adapters.control.unix_socket import (
+from finishup.adapters.control.unix_socket import (
     AuthenticatedUnixStream,
     LocalControlTransportError,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import (
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
     ControlClientKind,
     ControlError,
     ControlMethod,
@@ -32,11 +32,11 @@ from yoetz.ports.control import (
     ServiceStopResult,
     WorkspaceLocator,
 )
-from yoetz.ports.privacy import LocalDisclosureReceiptView, PrivacyReceiptPage
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import CheckRequest, ReceiptRequest
-from yoetz.service.client import (
+from finishup.ports.privacy import LocalDisclosureReceiptView, PrivacyReceiptPage
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import CheckRequest, ReceiptRequest
+from finishup.service.client import (
     GetPrivacyReceiptRequest,
     ListPrivacyReceiptsRequest,
     PreparedProjectRequest,
@@ -46,7 +46,7 @@ from yoetz.service.client import (
     connect_service_on_demand,
     prepare_project_request,
 )
-from yoetz.service.control_protocol import (
+from finishup.service.control_protocol import (
     ControlSession,
     decode_control_frame,
     encode_control_frame,
@@ -143,7 +143,7 @@ def _session(stream: _FakeStream, kind: ControlClientKind) -> ControlSession:
 
 
 def _client(stream: _FakeStream, kind: ControlClientKind = ControlClientKind.CLI) -> ServiceClient:
-    factory = getattr(__import__("yoetz.service.client", fromlist=["x"]), "_connected_client")
+    factory = getattr(__import__("finishup.service.client", fromlist=["x"]), "_connected_client")
     return cast(
         ServiceClient,
         factory(
@@ -395,7 +395,7 @@ async def test_mcp_rejects_every_support_method_before_transport() -> None:
 async def test_on_demand_connect_spawns_only_after_absent_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     expected = object()
     calls = 0
@@ -440,9 +440,9 @@ async def test_on_demand_names_a_spawned_service_startup_failure_at_once(
 ) -> None:
     """The conda-image bridge waited its whole budget, then said only "not running" (#1040)."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    import yoetz.service.client as client_module
-    from yoetz.service.startup_failure import record_startup_failure
+    import finishup.observability.diagnostics as diagnostics
+    import finishup.service.client as client_module
+    from finishup.service.startup_failure import record_startup_failure
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     startup_id = new_id(IdKind.CORRELATION)
@@ -484,8 +484,8 @@ async def test_on_demand_keeps_waiting_when_the_spawned_service_lost_the_singlet
 ) -> None:
     """A spawn that exits without a startup record lost a race; the holder still answers."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    import yoetz.service.client as client_module
+    import finishup.observability.diagnostics as diagnostics
+    import finishup.service.client as client_module
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     expected = object()
@@ -516,7 +516,7 @@ async def test_on_demand_keeps_waiting_when_the_spawned_service_lost_the_singlet
 def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     observed: list[object] = []
 
@@ -533,7 +533,7 @@ def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
     assert isinstance(command, tuple)
     assert command[1:] == (
         "-m",
-        "yoetz",
+        "finishup",
         "service",
         "run",
         "--startup-correlation-id",
@@ -546,7 +546,7 @@ def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
 async def test_on_demand_reuses_workspace_locator_for_every_reconnect_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     expected = object()
     locator = WorkspaceLocator("/private/repository")
@@ -580,7 +580,7 @@ async def test_on_demand_reuses_workspace_locator_for_every_reconnect_attempt(
 async def test_on_demand_does_not_spawn_after_accepted_service_stalls_handshake(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     stream = _FakeStream()
     spawned = 0
@@ -613,7 +613,7 @@ async def test_on_demand_tolerates_the_daemon_it_just_spawned_until_the_deadline
 ) -> None:
     """A daemon this call started is still starting, not wedged, while it stays silent."""
 
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     expected = object()
     attempts = 0
@@ -652,7 +652,7 @@ async def test_on_demand_accepted_unresponsive_after_spawn_still_ends_at_the_dea
 ) -> None:
     """Tolerating the startup window must not restore an unbounded wait."""
 
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     attempts = 0
     spawned = 0
@@ -688,7 +688,7 @@ async def test_on_demand_accepted_unresponsive_after_spawn_still_ends_at_the_dea
 async def test_on_demand_initial_connect_is_inside_the_total_start_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     spawned = 0
 
@@ -715,7 +715,7 @@ async def test_on_demand_initial_connect_is_inside_the_total_start_budget(
 async def test_connect_timeout_does_not_wait_for_never_closing_accepted_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     class _NeverClosingStream(_FakeStream):
         async def aclose(self) -> None:
@@ -753,8 +753,8 @@ def test_on_demand_service_environment_forwards_the_pinned_root(
 ) -> None:
     """A pinned runtime spawns its service with the resolved root made explicit (issue #604)."""
 
-    import yoetz.service.client as client_module
-    from yoetz.config.paths import ISOLATED_ROOT_ENV
+    import finishup.service.client as client_module
+    from finishup.config.paths import ISOLATED_ROOT_ENV
 
     monkeypatch.delenv(ISOLATED_ROOT_ENV, raising=False)
     monkeypatch.setattr(client_module, "isolated_root", lambda: tmp_path / "pinned")
@@ -769,19 +769,50 @@ def test_on_demand_service_environment_forwards_the_pinned_root(
 def test_on_demand_service_environment_strips_secret_shaped_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "must-not-cross")
     monkeypatch.setenv("UNRELATED_TOKEN", "must-not-cross")
-    monkeypatch.setenv("YOETZ_UNRELATED_APP_SETTING", "must-not-cross")
-    monkeypatch.setenv("YOETZ_LOG_LEVEL", "warning")
+    monkeypatch.setenv("FINISHUP_UNRELATED_APP_SETTING", "must-not-cross")
+    monkeypatch.setenv("FINISHUP_LOG_LEVEL", "warning")
     monkeypatch.setenv("PATH", "/safe/bin")
     environment = client_module._service_environment()  # pyright: ignore[reportPrivateUsage]
     assert environment["PATH"] == "/safe/bin"
-    assert environment["YOETZ_LOG_LEVEL"] == "warning"
+    assert environment["FINISHUP_LOG_LEVEL"] == "warning"
     assert "FIREWORKS_API_KEY" not in environment
     assert "UNRELATED_TOKEN" not in environment
+    assert "FINISHUP_UNRELATED_APP_SETTING" not in environment
+    assert "must-not-cross" not in environment.values()
+
+
+def test_on_demand_service_environment_forwards_both_root_spellings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The resolved root reaches the service under both spellings with one value (ADR-048)."""
+
+    import finishup.service.client as client_module
+    from finishup.config.paths import ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV
+
+    monkeypatch.delenv(ISOLATED_ROOT_ENV, raising=False)
+    monkeypatch.setenv(LEGACY_ISOLATED_ROOT_ENV, str(tmp_path / "legacy-spelling"))
+    monkeypatch.setattr(client_module, "isolated_root", lambda: tmp_path / "resolved")
+    environment = client_module._service_environment()  # pyright: ignore[reportPrivateUsage]
+    assert environment[ISOLATED_ROOT_ENV] == str(tmp_path / "resolved")
+    assert environment[LEGACY_ISOLATED_ROOT_ENV] == str(tmp_path / "resolved")
+
+
+def test_on_demand_service_environment_filters_legacy_names_by_the_same_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.service.client as client_module
+
+    monkeypatch.setenv("YOETZ_LOG_LEVEL", "warning")
+    monkeypatch.setenv("YOETZ_UNRELATED_APP_SETTING", "must-not-cross")
+    monkeypatch.setenv("YOETZ_PROVIDER_API_KEY", "must-not-cross")
+    environment = client_module._service_environment()  # pyright: ignore[reportPrivateUsage]
+    assert environment["YOETZ_LOG_LEVEL"] == "warning"
     assert "YOETZ_UNRELATED_APP_SETTING" not in environment
+    assert "YOETZ_PROVIDER_API_KEY" not in environment
     assert "must-not-cross" not in environment.values()
 
 
@@ -789,7 +820,7 @@ def test_on_demand_spawn_routes_stderr_to_owner_only_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     log_root = tmp_path / "logs"
     observed: dict[str, object] = {}
@@ -1264,7 +1295,7 @@ async def test_on_demand_supersedes_an_incompatible_holder_then_spawns(
 ) -> None:
     """An upgraded client must replace a stale installation's service, not fail opaquely."""
 
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     expected = object()
     calls = 0
@@ -1303,7 +1334,7 @@ async def test_on_demand_supersedes_an_incompatible_holder_then_spawns(
 async def test_on_demand_reports_incompatibility_when_no_supersede_candidate_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     spawned = 0
 
@@ -1338,25 +1369,219 @@ async def test_on_demand_reports_incompatibility_when_no_supersede_candidate_exi
     assert untouched.value.reason == "service_incompatible"
 
 
-def test_protocol_rejection_reasons_map_to_service_incompatible() -> None:
-    import yoetz.service.client as client_module
-    from yoetz.service.control_protocol import ControlProtocolError
+def test_only_an_answered_manifest_mismatch_maps_to_service_incompatible() -> None:
+    import finishup.service.client as client_module
+    from finishup.service.control_protocol import ControlProtocolError
 
-    for reason in ("manifest_mismatch", "handshake_rejected"):
-        mapped = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
-            ControlProtocolError(reason)
-        )
-        assert mapped.reason == "service_incompatible"
-        assert mapped.retryable is True
+    mapped = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
+        ControlProtocolError("manifest_mismatch")
+    )
+    assert mapped.reason == "service_incompatible"
+    assert mapped.retryable is True
     mismatch = client_module._protocol_error(  # pyright: ignore[reportPrivateUsage]
         ControlProtocolError("protocol_mismatch")
     )
     assert mismatch.reason == "protocol_mismatch"
 
 
+def _holder(digest: str | None, version: str | None, *, legacy: bool = False) -> object:
+    from finishup.service.lifecycle import SingletonHolder
+
+    return SingletonHolder(
+        pid=626,
+        instance_id="svc_test",
+        schema_manifest_digest=digest,
+        service_version=version,
+        identity_fields_absent=legacy,
+    )
+
+
+_FOREIGN_DIGEST = "sha256:" + "0" * 64
+
+
+@pytest.mark.parametrize(
+    ("stamp", "locator", "git_too_old", "expected"),
+    [
+        # #1040 (tb4n5 wdm): the holder is this installation (same pid, version and manifest).
+        ("same", True, False, ("service_unavailable", "handshake", False)),
+        ("same", True, True, ("service_unavailable", "handshake_git_version", False)),
+        # Without a workspace the service never runs Git during the handshake.
+        ("same", False, True, ("service_unavailable", "handshake", False)),
+        # An unreadable stamp demonstrates nothing either way.
+        ("none", True, False, ("service_unavailable", "handshake", False)),
+        # Partly unreadable identity (a key absent, or present but invalid, beside matching or
+        # unreadable fields) is missing information, never another installation.
+        ("digest_unreadable", True, False, ("service_unavailable", "handshake", False)),
+        ("version_absent", True, False, ("service_unavailable", "handshake", False)),
+        ("version_invalid", True, False, ("service_unavailable", "handshake", False)),
+        ("both_unreadable", True, False, ("service_unavailable", "handshake", False)),
+        # A present, validated field that differs is a demonstrated mismatch.
+        ("other_digest", True, True, ("service_incompatible", None, True)),
+        ("other_version", True, False, ("service_incompatible", None, True)),
+        ("other_version_digest_unreadable", True, False, ("service_incompatible", None, True)),
+        ("other_digest_version_invalid", True, False, ("service_incompatible", None, True)),
+        # No identity key at all: Yoetz 0.1.x, or an earlier modern writer whose manifest lookup
+        # failed. Absence is not evidence: never incompatible, never replaced automatically.
+        ("legacy_stamp", True, False, ("service_unavailable", "handshake", False)),
+    ],
+)
+def test_an_unanswered_hello_is_incompatible_only_when_the_stamp_names_another_installation(
+    monkeypatch: pytest.MonkeyPatch,
+    stamp: str,
+    locator: bool,
+    git_too_old: bool,
+    expected: tuple[str, str | None, bool],
+) -> None:
+    import finishup.observability.logging as logging_module
+    import finishup.service.client as client_module
+    from finishup import __version__
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    own = schema_manifest_digest()
+    holders: dict[str, object | None] = {
+        "same": _holder(own, __version__),
+        "none": None,
+        # ``probe_singleton_holder_identity`` reads an invalid digest as None.
+        "digest_unreadable": _holder(None, __version__),
+        "version_absent": _holder(own, None),
+        "version_invalid": _holder(own, "not a version"),
+        "both_unreadable": _holder(None, None),
+        "other_digest": _holder(_FOREIGN_DIGEST, __version__),
+        "other_version": _holder(own, "0.0.1"),
+        "other_version_digest_unreadable": _holder(None, "0.0.1"),
+        "other_digest_version_invalid": _holder(_FOREIGN_DIGEST, "not a version"),
+        "legacy_stamp": _holder(None, None, legacy=True),
+    }
+    recorded: list[dict[str, object]] = []
+
+    def record(**fields: object) -> str:
+        recorded.append(fields)
+        return _CORRELATION_FOR_TEST
+
+    monkeypatch.setattr(client_module, "service_holder_identity", lambda: holders[stamp])
+    monkeypatch.setattr(client_module, "_system_git_below_minimum", lambda: git_too_old)
+    monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+
+    error = client_module._unanswered_hello(  # pyright: ignore[reportPrivateUsage]
+        WorkspaceLocator("/private/repository") if locator else None
+    )
+
+    reason, phase, retryable = expected
+    assert (error.reason, error.phase, error.retryable) == (reason, phase, retryable)
+    assert client_module.handshake_failure(error) == phase
+    if reason == "service_incompatible":
+        assert recorded == []
+        assert error.correlation_id is None
+    else:
+        assert error.correlation_id == _CORRELATION_FOR_TEST
+        assert recorded == [
+            {
+                "component": "service.client",
+                "operation": "control_handshake",
+                "reason": "service_handshake_failed",
+                "reason_code": "git_version_unsupported" if git_too_old and locator else None,
+            }
+        ]
+
+
+@pytest.mark.anyio
+async def test_a_hello_closed_by_this_installations_holder_is_a_failed_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n5 wdm: same pid, version and manifest, so neither incompatible nor replaceable."""
+
+    import finishup.observability.logging as logging_module
+    import finishup.service.client as client_module
+    from finishup import __version__
+    from finishup.protocol.schemas import schema_manifest_digest
+    from finishup.service.control_protocol import ControlProtocolError
+
+    stream = _FakeStream()
+    spawned = 0
+
+    async def connect() -> AuthenticatedUnixStream:
+        return cast(AuthenticatedUnixStream, stream)
+
+    async def rejected_handshake(*_args: object, **_kwargs: object) -> object:
+        raise ControlProtocolError("handshake_rejected")
+
+    async def must_not_supersede(*, deadline: float, replace_newer: bool = False) -> bool:
+        raise AssertionError("an identical holder is never signalled")
+
+    def spawn() -> None:
+        nonlocal spawned
+        spawned += 1
+
+    monkeypatch.setattr(client_module, "connect_control", connect)
+    monkeypatch.setattr(client_module, "client_handshake", rejected_handshake)
+    monkeypatch.setattr(
+        client_module,
+        "service_holder_identity",
+        lambda: _holder(schema_manifest_digest(), __version__),
+    )
+    monkeypatch.setattr(client_module, "_system_git_below_minimum", lambda: True)
+
+    def record(**_fields: object) -> str:
+        return _CORRELATION_FOR_TEST
+
+    monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+    monkeypatch.setattr(client_module, "supersede_incompatible_service", must_not_supersede)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+
+    with pytest.raises(ControlError) as refused:
+        await connect_service_on_demand(
+            ControlClientKind.MCP_BRIDGE,
+            workspace_locator=WorkspaceLocator("/private/repository"),
+            timeout_seconds=1.0,
+        )
+
+    assert refused.value.reason == "service_unavailable"
+    assert refused.value.phase == "handshake_git_version"
+    assert refused.value.retryable is False
+    assert refused.value.correlation_id == _CORRELATION_FOR_TEST
+    assert stream.closed is True
+    assert spawned == 0
+
+
+@pytest.mark.anyio
+async def test_on_demand_reports_a_failed_handshake_without_spawning_or_superseding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A holder of this installation that closes the hello is reported, never replaced (#1040)."""
+
+    import finishup.service.client as client_module
+
+    attempts = 0
+    failed = ControlError(
+        "service_unavailable",
+        retryable=False,
+        phase="handshake",
+        correlation_id=_CORRELATION_FOR_TEST,
+    )
+
+    async def scripted_connect(kind: ControlClientKind, **_kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise failed
+
+    async def must_not_supersede(*, deadline: float) -> bool:
+        raise AssertionError("a failed handshake is not an incompatible holder")
+
+    def must_not_spawn() -> None:
+        raise AssertionError("a running holder must not race a spawned successor")
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", scripted_connect)
+    monkeypatch.setattr(client_module, "supersede_incompatible_service", must_not_supersede)
+    monkeypatch.setattr(client_module, "_spawn_service_process", must_not_spawn)
+    with pytest.raises(ControlError) as refused:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=5.0)
+    assert refused.value is failed
+    assert attempts == 1
+
+
 def test_transport_error_preserves_endpoint_unsafe() -> None:
-    import yoetz.service.client as client_module
-    from yoetz.adapters.control.unix_socket import LocalControlTransportError
+    import finishup.service.client as client_module
+    from finishup.adapters.control.unix_socket import LocalControlTransportError
 
     mapped = client_module._transport_error(  # pyright: ignore[reportPrivateUsage]
         LocalControlTransportError("endpoint_unsafe")
@@ -1373,11 +1598,11 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
     import sys
     import threading
 
-    import yoetz.observability.logging as logging_module
-    import yoetz.service.client as client_module
-    from yoetz import __version__
-    from yoetz.protocol.canonical import canonical_encode
-    from yoetz.protocol.schemas import schema_manifest_digest
+    import finishup.observability.logging as logging_module
+    import finishup.service.client as client_module
+    from finishup import __version__
+    from finishup.protocol.canonical import canonical_encode
+    from finishup.protocol.schemas import schema_manifest_digest
 
     lock = tmp_path / "service.lock"
     monkeypatch.setattr(client_module, "_singleton_lock_path", lambda: lock)
@@ -1415,14 +1640,59 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
     # to the liveness probe instead of lingering as a zombie that ``kill(pid, 0)`` still sees.
     reaper = threading.Thread(target=holder.wait, daemon=True)
     reaper.start()
+    own = schema_manifest_digest()
+
+    def stamp_raw(pid: int, identity: Mapping[str, object]) -> None:
+        lock.write_bytes(
+            canonical_encode({"instance_id": "svc_test", "pid": pid, **identity})  # type: ignore[arg-type]
+            + b"\n"
+        )
+        lock.chmod(0o600)
+
     try:
-        stamp(holder.pid, schema_manifest_digest(), __version__)
+        stamp(holder.pid, own, __version__)
         assert await client_module.supersede_incompatible_service(deadline=deadline) is False
         assert holder.poll() is None
         assert recorded == []
-        # A legacy stamp (no identity) from a live process is a supersede candidate.
+        # Partly unreadable identity proves no other installation: never signalled (#1040).
+        for identity in (
+            {"schema_manifest_digest": "not-a-digest", "service_version": __version__},
+            {"service_version": __version__},
+            {"schema_manifest_digest": own},
+            {"schema_manifest_digest": own, "service_version": "not a version"},
+            {"schema_manifest_digest": own, "service_version": 7},
+            {"schema_manifest_digest": None, "service_version": None},
+        ):
+            stamp_raw(holder.pid, identity)
+            assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+            # Not even the explicit restart replaces a partly readable stamp.
+            assert (
+                await client_module.supersede_incompatible_service(
+                    deadline=deadline, replace_newer=True, replace_legacy=True
+                )
+                is False
+            )
+            assert holder.poll() is None
+        assert recorded == []
+        # A stamp with no identity keys at all (Yoetz 0.1.x, or an earlier modern writer whose
+        # manifest lookup failed) is never replaced automatically (#1040 follow-up) ...
         stamp(holder.pid, None, None)
-        assert await client_module.supersede_incompatible_service(deadline=deadline) is True
+        assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+        assert (
+            await client_module.supersede_incompatible_service(
+                deadline=deadline, replace_newer=True
+            )
+            is False
+        )
+        assert holder.poll() is None
+        assert recorded == []
+        # ... only by the owner's explicit restart.
+        assert (
+            await client_module.supersede_incompatible_service(
+                deadline=deadline, replace_newer=True, replace_legacy=True
+            )
+            is True
+        )
         reaper.join(timeout=5)
         assert holder.returncode is not None and holder.returncode != 0
         assert recorded == ["service_supersede"]
@@ -1431,11 +1701,35 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
             holder.kill()
             holder.wait(timeout=5)
 
+    # A present, validated digest that differs is a demonstrated mismatch, signalled even when
+    # the version field is unreadable.
+    foreign = subprocess.Popen(  # noqa: S603 - fixed interpreter
+        (sys.executable, "-c", "import time; time.sleep(30)"),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    foreign_reaper = threading.Thread(target=foreign.wait, daemon=True)
+    foreign_reaper.start()
+    try:
+        stamp_raw(
+            foreign.pid,
+            {"schema_manifest_digest": "sha256:" + "0" * 64, "service_version": "not a version"},
+        )
+        assert await client_module.supersede_incompatible_service(deadline=deadline) is True
+        foreign_reaper.join(timeout=5)
+        assert foreign.returncode is not None and foreign.returncode != 0
+        assert recorded == ["service_supersede", "service_supersede"]
+    finally:
+        if foreign.poll() is None:
+            foreign.kill()
+            foreign.wait(timeout=5)
+
 
 def test_holder_version_order_orders_packages_and_never_guesses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     monkeypatch.setattr(client_module, "__version__", "0.3.1")
     order = client_module.holder_version_order
@@ -1458,9 +1752,9 @@ async def test_supersede_never_replaces_a_newer_holder_unless_explicitly_restart
     import sys
     import threading
 
-    import yoetz.observability.logging as logging_module
-    import yoetz.service.client as client_module
-    from yoetz.protocol.canonical import canonical_encode
+    import finishup.observability.logging as logging_module
+    import finishup.service.client as client_module
+    from finishup.protocol.canonical import canonical_encode
 
     lock = tmp_path / "service.lock"
     monkeypatch.setattr(client_module, "_singleton_lock_path", lambda: lock)
@@ -1545,7 +1839,7 @@ def _script_on_demand(
     *,
     supersede_result: bool | ControlError = True,
 ) -> dict[str, int]:
-    import yoetz.service.client as client_module
+    import finishup.service.client as client_module
 
     counts = {"connect": 0, "supersede": 0, "spawn": 0}
 
@@ -1778,8 +2072,8 @@ async def test_failed_send_bounds_every_concurrent_pending_caller() -> None:
 async def test_hook_startup_reuses_starting_holder_without_spawning_or_signalling(
     monkeypatch: pytest.MonkeyPatch, compatible: bool
 ) -> None:
-    import yoetz.service.client as client_module
-    from yoetz.service.lifecycle import SingletonHolder
+    import finishup.service.client as client_module
+    from finishup.service.lifecycle import SingletonHolder
 
     expected = object()
     calls = 0
@@ -1830,8 +2124,8 @@ async def test_hook_startup_spawns_after_an_unheld_holder_stamp(
 ) -> None:
     """An unheld stamp, including an old-version one, must not block hook startup."""
 
-    import yoetz.service.client as client_module
-    from yoetz.service.lifecycle import SingletonHolder
+    import finishup.service.client as client_module
+    from finishup.service.lifecycle import SingletonHolder
 
     expected = object()
     calls = 0
@@ -1869,3 +2163,128 @@ async def test_hook_startup_spawns_after_an_unheld_holder_stamp(
     assert connected is expected
     assert calls == 2
     assert spawned == 1
+
+
+def test_transport_error_keeps_a_refused_endpoint_root_by_its_path_token() -> None:
+    """A root that cannot be resolved is named, never reported as an absent service (ADR-048)."""
+
+    import finishup.service.client as client_module
+
+    for path_reason in ("installation_root_ambiguous", "isolation_root_conflict"):
+        mapped = client_module._transport_error(  # pyright: ignore[reportPrivateUsage]
+            LocalControlTransportError("runtime_directory_unsafe", path_reason=path_reason)
+        )
+        assert mapped.reason == "endpoint_unsafe"
+        assert mapped.retryable is False
+        assert client_module.path_refusal_reason(mapped) == path_reason
+        assert public_error_code_for_control_reason(mapped.reason) is (
+            PublicErrorCode.SERVICE_UNAVAILABLE
+        )
+    # A runtime directory that is merely absent (no service ever started) stays retryable.
+    plain = client_module._transport_error(  # pyright: ignore[reportPrivateUsage]
+        LocalControlTransportError("runtime_directory_unsafe")
+    )
+    assert plain.reason == "service_unavailable"
+    assert plain.retryable is True
+    assert client_module.path_refusal_reason(plain) is None
+    assert client_module.path_refusal_reason(ControlError("endpoint_unsafe")) is None
+
+
+def _ambiguous_ambient_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catalogs under both product names in XDG roots below ``tmp_path``."""
+
+    base = tmp_path / "xdg"
+    for name in ("data", "config", "cache", "state", "runtime"):
+        (base / name).mkdir(mode=0o700, parents=True)
+    for app_name in ("finishup", "yoetz"):
+        (base / "data" / app_name).mkdir(mode=0o700)
+        (base / "data" / app_name / "catalog.sqlite3").write_bytes(b"")
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(base / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(base / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(base / "runtime"))
+    monkeypatch.delenv("FINISHUP_ISOLATED_ROOT", raising=False)
+    monkeypatch.delenv("YOETZ_ISOLATED_ROOT", raising=False)
+
+
+@pytest.mark.anyio
+async def test_on_demand_names_ambiguous_folders_and_never_spawns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Data under both names refuses before any endpoint, spawn, or start budget (ADR-048)."""
+
+    import finishup.service.client as client_module
+
+    _ambiguous_ambient_install(tmp_path, monkeypatch)
+    spawned = 0
+
+    def spawn() -> None:
+        nonlocal spawned
+        spawned += 1
+
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+
+    started = time.monotonic()
+    with pytest.raises(ControlError) as caught:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=5.0)
+
+    assert time.monotonic() - started < 5.0
+    assert caught.value.reason == "endpoint_unsafe"
+    assert caught.value.retryable is False
+    assert client_module.path_refusal_reason(caught.value) == "installation_root_ambiguous"
+    assert spawned == 0
+    assert not (tmp_path / "xdg" / "runtime" / "finishup").exists()
+
+
+@pytest.mark.anyio
+async def test_a_refused_successor_log_root_is_named_instead_of_spending_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.service.client as client_module
+    from finishup.config.paths import PathSafetyError
+
+    async def unavailable(*_args: object, **_kwargs: object) -> ServiceClient:
+        raise ControlError("service_unavailable", retryable=True)
+
+    def spawn() -> None:
+        raise PathSafetyError("isolation_root_conflict")
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", unavailable)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+
+    with pytest.raises(ControlError) as caught:
+        await connect_service_on_demand(ControlClientKind.CLI, timeout_seconds=5.0)
+
+    assert caught.value.reason == "endpoint_unsafe"
+    assert client_module.path_refusal_reason(caught.value) == "isolation_root_conflict"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("alive", [True, False])
+async def test_on_demand_names_a_service_still_starting_at_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, alive: bool
+) -> None:
+    """WSL: a slow first start outlived the budget and was reported as plainly absent."""
+
+    import finishup.service.client as client_module
+
+    async def unavailable(_kind: ControlClientKind, **_kwargs: object) -> object:
+        raise ControlError("service_unavailable", retryable=True)
+
+    def spawn() -> object:
+        return client_module._SpawnedService(  # pyright: ignore[reportPrivateUsage]
+            cast(subprocess.Popen[bytes], _ExitedProcess(None if alive else 1)),
+            new_id(IdKind.CORRELATION),
+        )
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", unavailable)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+    monkeypatch.setattr(client_module, "service_holder_identity", lambda: None)
+    monkeypatch.setattr(client_module, "_SERVICE_START_POLL_SECONDS", 0.01)
+    with pytest.raises(ControlError) as raised:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=0.2)
+    assert raised.value.reason == "service_unavailable"
+    assert raised.value.retryable is True
+    assert raised.value.phase == ("handshake_timeout" if alive else None)
+    assert client_module.start_timed_out(raised.value) is alive

@@ -22,15 +22,15 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.adapters.keys.os_keyring import (
+from finishup.adapters.keys.os_keyring import (
     KeyringInitializationBinding,
     OSKeyringError,
     OSKeyringState,
     OSVaultRootKeySource,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretConsumer, SecretPurpose, UserPresenceCapability
-from yoetz.protocol.canonical import JsonValue, canonical_digest
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretConsumer, SecretPurpose, UserPresenceCapability
+from finishup.protocol.canonical import JsonValue, canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _INSTALLATION_ID = "ins_71000000-0000-4000-8000-000000000001"

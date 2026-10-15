@@ -32,12 +32,12 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     MAX_PRIOR_FINDINGS,
     build_semantic_case,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EvidenceKind,
     EvidenceRecordedPayload,
     ObligationPublishedPayload,
@@ -47,7 +47,7 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingChallenge,
     FindingKind,
@@ -56,19 +56,19 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
-from yoetz.domain.values import FindingId, ObligationId, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
+from finishup.domain.values import FindingId, ObligationId, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import (
     FindingProjectionRecord,
     ObligationProjectionRecord,
     ProjectionRecord,
 )
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "1" * 64
 _NOW = timestamp_from_string("2026-09-28T12:00:00.000Z")
@@ -364,11 +364,11 @@ def test_a_case_without_prior_findings_is_unchanged_apart_from_the_empty_list() 
 def test_envelope_pressure_removes_the_oldest_prior_findings_before_any_work_content() -> None:
     """The dialogue section yields first, so it never displaces an excerpt (review of #905)."""
 
-    from yoetz.application.semantic_case import (
+    from finishup.application.semantic_case import (
         _drop_prior_finding_rows,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
+    from finishup.protocol.canonical import canonical_encode
 
     def row(item_id: str, section: str, source: str) -> dict[str, JsonValue]:
         return {"item_id": item_id, "section": section, "source_ref": source}
@@ -413,11 +413,11 @@ def test_envelope_pressure_removes_the_oldest_prior_findings_before_any_work_con
 def test_settled_rows_leave_before_any_open_finding_and_never_set_the_gap() -> None:
     """Round-3 review: settled rows carry newer times, so oldest-first dropped open ones first."""
 
-    from yoetz.application.semantic_case import (
+    from finishup.application.semantic_case import (
         _drop_prior_finding_rows,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
+    from finishup.protocol.canonical import canonical_encode
 
     def row(item_id: str, source: str) -> dict[str, JsonValue]:
         return {"item_id": item_id, "section": "prior_finding", "source_ref": source}
@@ -453,11 +453,11 @@ def test_settled_rows_leave_before_any_open_finding_and_never_set_the_gap() -> N
 def test_the_oldest_settled_finding_leaves_first() -> None:
     """Final review: catalog rows are oldest first, so the newest settlement stays nameable."""
 
-    from yoetz.application.semantic_case import (
+    from finishup.application.semantic_case import (
         _drop_prior_finding_rows,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
+    from finishup.protocol.canonical import canonical_encode
 
     older, newer = str(fnd(1)), str(fnd(2))
     envelope: dict[str, JsonValue] = {
@@ -506,9 +506,9 @@ def test_bounded_case_envelope_drops_prior_findings_first_and_accounts_for_them(
 ) -> None:
     """The bounding entry point, not only the helper, yields the dialogue section first."""
 
-    from yoetz.application import semantic_case as module
-    from yoetz.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.application import semantic_case as module
+    from finishup.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
+    from finishup.protocol.canonical import canonical_encode
 
     older, newer = str(fnd(1)), str(fnd(2))
 
@@ -561,8 +561,8 @@ def test_bounded_case_envelope_drops_prior_findings_first_and_accounts_for_them(
 def test_the_packet_view_reports_prior_rows_bounding_removed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.application import semantic_case as module
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.application import semantic_case as module
+    from finishup.protocol.canonical import canonical_encode
 
     case = _build(_numba_case())
     assert any(item.section == "prior_finding" for item in case.items)
@@ -595,7 +595,7 @@ def test_a_selection_without_the_assessments_section_discloses_unshown_prior_fin
 
 
 def test_answered_local_finding_reaches_the_reviewer_as_non_rulable_context() -> None:
-    """TB4 tb4f1 atrx (issue #976): the agent's answer to Yoetz's own finding reaches the review.
+    """TB4 tb4f1 atrx (issue #976): the agent's answer to FinishUP's own finding reaches the review.
 
     The deliverable finding was local, so its answer ("cannot honestly be populated") never
     reached the reviewer and prior_finding_context read missing although findings were answered.
@@ -631,7 +631,7 @@ def test_a_settled_finding_is_carried_nameable_but_never_rulable() -> None:
     re-raise minted a new id. It is carried as a non-rulable ``yoetz.settled-finding/1`` row the
     packet view reports as nameable, after the open findings and inside the section bounds."""
 
-    from yoetz.application.semantic_case import semantic_case_packet_view
+    from finishup.application.semantic_case import semantic_case_packet_view
 
     settled = finding_record(_semantic(7), 11)
     answer = ResponseRecordedPayload(
@@ -676,7 +676,7 @@ def _with_limit_decision(
     case: DeterministicCase,
     extra_obligation: tuple[ObligationId, ObligationProjectionRecord] | None = None,
 ) -> DeterministicCase:
-    """The case with a ``yoetz-verification-limit`` decision on obl(1) (and one more obligation)."""
+    """The case with a ``finishup-verification-limit`` decision on obl(1) (and one more obligation)."""
 
     obligations = dict(case.projection.obligations)
     allowed = set(case.allowed_ids)
@@ -802,7 +802,7 @@ def test_closing_review_with_one_withheld_item_keeps_a_valid_final_manifest() ->
     closing review was never recorded as final. The section now records ``redacted_never_send``.
     """
 
-    from yoetz.application.semantic_case import (
+    from finishup.application.semantic_case import (
         REVIEW_PACKET_ITEM_ID,
         assemble_filtered_review_packet,
         bounded_case_envelope,

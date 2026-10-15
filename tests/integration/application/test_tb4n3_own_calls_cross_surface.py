@@ -22,12 +22,11 @@ from typing import Any, Literal, cast
 import pytest
 
 from builders.start_application import protocol_id, start_request
-from integration.application import test_respond_status_receipt as h
-from yoetz.application.observation_materialize import observation_author
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.cli.render import render_closure_readiness_lines
-from yoetz.domain.events import (
+from finishup.application.observation_materialize import observation_author
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.cli.render import render_closure_readiness_lines
+from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
     ActionKind,
     ActionRecordedPayload,
@@ -41,31 +40,32 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     action_id,
     event_id,
     evidence_id,
     result_id,
     timestamp_from_datetime,
 )
-from yoetz.kernel.later_material import (
+from finishup.kernel.later_material import (
     COMPLETION_SIGNAL_PREFIX,
     OPAQUE_OBSERVATION_PREFIX,
 )
-from yoetz.kernel.observed_failures import observed_action_description
-from yoetz.kernel.receipt_capacity import receipt_gap_codes
-from yoetz.kernel.reducers import replay
-from yoetz.mcp.summaries import _MAX_SUMMARY_BYTES, _check_cause_variants, summary_for_status
-from yoetz.ports.ledger import AppendCommand, AppendEntry, CheckCommitResult, OperationKind
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.kernel.observed_failures import observed_action_description
+from finishup.kernel.receipt_capacity import receipt_gap_codes
+from finishup.kernel.reducers import replay
+from finishup.mcp.summaries import _MAX_SUMMARY_BYTES, _check_cause_variants, summary_for_status
+from finishup.ports.ledger import AppendCommand, AppendEntry, CheckCommitResult, OperationKind
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     EvidenceImmutability,
     LedgerFreshness,
     PublicationChannel,
     coverage_for_channel,
 )
-from yoetz.protocol.models import CheckRequest, ReceiptRequest, StatusRequest
+from finishup.protocol.models import CheckRequest, ReceiptRequest, StatusRequest
+from integration.application import test_respond_status_receipt as h
 
 pytestmark = pytest.mark.anyio
 
@@ -119,11 +119,11 @@ def _own_calls_and_bookkeeping(seed: int) -> tuple[_Item, ...]:
     """What the real tb4n3 suffix is: the ``check`` call's own post, then host stream rows."""
 
     return (
-        _action(seed, ActionKind.OTHER, "mcp__yoetz__check", "lint"),
+        _action(seed, ActionKind.OTHER, "mcp__finishup__check", "lint"),
         _result(seed + 1, seed),
-        _action(seed + 2, ActionKind.OTHER, "mcp__yoetz__status", "other"),
+        _action(seed + 2, ActionKind.OTHER, "mcp__finishup__status", "other"),
         _result(seed + 3, seed + 2),
-        _action(seed + 4, ActionKind.OTHER, "mcp__yoetz__receipt", "other"),
+        _action(seed + 4, ActionKind.OTHER, "mcp__finishup__receipt", "other"),
         _result(seed + 5, seed + 4),
         _evidence(seed + 6, f"{OPAQUE_OBSERVATION_PREFIX}event_msg"),
         _evidence(seed + 7, f"{OPAQUE_OBSERVATION_PREFIX}response_item"),
@@ -275,7 +275,7 @@ def _limitations(receipt: Any) -> str:
 async def test_own_calls_and_host_bookkeeping_after_the_check_leave_it_current(
     backend: Literal["memory", "sqlite"],
 ) -> None:
-    """(a) check -> only Yoetz's own calls and stream bookkeeping -> receipt: no earlier-frontier
+    """(a) check -> only FinishUP's own calls and stream bookkeeping -> receipt: no earlier-frontier
     gap on any surface, and the deterministic arm's receipt reads clean."""
 
     app, runtime, _ = h._build_app(seed_offset=60, ledger_backend=backend)
@@ -329,7 +329,7 @@ async def test_own_calls_and_host_bookkeeping_after_the_check_leave_it_current(
 async def test_an_unclassified_command_after_the_check_still_keeps_the_disclosure(
     backend: Literal["memory", "sqlite"],
 ) -> None:
-    """Control: what Yoetz cannot prove harmless (a script run) keeps the earlier-frontier note,
+    """Control: what FinishUP cannot prove harmless (a script run) keeps the earlier-frontier note,
     exactly as before, and bounds the conclusion on every surface alike."""
 
     app, runtime, _ = h._build_app(seed_offset=61, ledger_backend=backend)
@@ -352,7 +352,7 @@ async def test_an_unclassified_command_after_the_check_still_keeps_the_disclosur
     assert _NOT_APPLICABLE not in surfaces["capacity"]
     assert _CCAOEF in surfaces["compact"].coverage.known_gaps
     # Readiness keeps the code a standing limitation (any recheck instruction derived from it can
-    # regenerate after the check it asks for: the Yoetz CLI run through a shell, Cursor's
+    # regenerate after the check it asks for: the FinishUP CLI run through a shell, Cursor's
     # tool-identity-free results; ADR-040 section 7), and names the first record (owner lineage).
     readiness = surfaces["status"].closure_readiness
     assert _CCAOEF in readiness.standing_limitations
@@ -375,7 +375,7 @@ async def test_an_unclassified_command_after_the_check_still_keeps_the_disclosur
         body = _limitations(receipt)
         assert "Its verdict is current as of subject frontier" in body, fmt
         assert "rule unclassified_observed_action" in body, fmt
-        assert "Not counted, because Yoetz classified them" in body, fmt
+        assert "Not counted, because FinishUP classified them" in body, fmt
 
 
 @pytest.mark.parametrize("backend", ("memory", "sqlite"))
@@ -475,7 +475,7 @@ async def test_an_observed_deliverable_edit_after_the_check_supersedes_it(
 
 
 @pytest.mark.parametrize("backend", ("memory", "sqlite"))
-async def test_a_saved_yoetz_receipt_or_scratch_write_never_supersedes_the_check(
+async def test_a_saved_finishup_receipt_or_scratch_write_never_supersedes_the_check(
     backend: Literal["memory", "sqlite"],
 ) -> None:
     """A receipt the agent saves is the output *about* the check: counting it would invalidate the
@@ -510,7 +510,7 @@ async def test_a_mixed_suffix_names_the_observation_that_bounds_not_the_response
     status and the cited records on the receipt are the observation; the advisory answer never
     stands in for it."""
 
-    from yoetz.protocol.models import RespondRequest
+    from finishup.protocol.models import RespondRequest
 
     app, runtime, _ = h._build_app(seed_offset=64, ledger_backend=backend)
     started, checked, _obligation = await h._bootstrap_finding(app, seed=6400)

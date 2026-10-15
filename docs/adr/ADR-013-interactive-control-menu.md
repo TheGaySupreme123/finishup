@@ -3,35 +3,35 @@
 **Status:** Working decision (2026-07-21), founder-authorized amendment of ADR-012 decision 2.
 **Amended by:** [ADR-017](ADR-017-full-screen-terminal-interface.md) (2026-07-26). Decisions 1
 and 2 below, and the "full-screen TUI framework" rejection under *Alternatives considered*, are
-superseded: bare `yoetz` and `yoetz menu` on a real terminal now open the full-screen interface,
+superseded: bare `finishup` and `finishup menu` on a real terminal now open the full-screen interface,
 with first run folded into it. Decisions 3 and 4 — the surface adds no authority, and bounded
 failures stay bounded — are carried forward unchanged and still bind. The prompt-loop menu
 described here remains implemented and supported as the fallback when the rendering dependency
-is unavailable or `YOETZ_TUI=0` is set.
-**Implemented by:** `src/yoetz/cli/menu.py` (new), plus the amended
-`src/yoetz/cli/app.py`.
+is unavailable or `FINISHUP_TUI=0` is set.
+**Implemented by:** `src/finishup/cli/menu.py` (new), plus the amended
+`src/finishup/cli/app.py`.
 **Relates to:** ADR-008 (local service/vault trust boundary), ADR-009 (privacy/egress),
 ADR-012 (first-run setup wizard).
 
 ## Context
 
 ADR-012 gave a fresh install one guided moment — the first-run wizard — and then returned every
-later bare `yoetz` invocation to the historical help screen. Users who wanted to manage the
+later bare `finishup` invocation to the historical help screen. Users who wanted to manage the
 install afterwards (re-check the Codex MCP registration, rotate a provider credential, inspect
 the privacy posture, unlock or stop the service) had to reassemble the correct subcommands from
 `--help` each time. The command tree is correct but is an assembly manual, not a control panel.
 
 ## Decisions
 
-1. **Bare `yoetz` on a real terminal opens an interactive menu (amends ADR-012 decision 2).**
+1. **Bare `finishup` on a real terminal opens an interactive menu (amends ADR-012 decision 2).**
    The root callback keeps the exact ADR-012 order with one added final state: stdin+stdout both
    TTYs and no completion marker → first-run wizard, then the menu; both TTYs with the marker →
    the menu; every non-TTY, piped, CI, `--help`, and named-subcommand invocation remains
    byte-for-byte the historical behavior (help text for bare non-TTY invocations).
 
-2. **`yoetz menu` is a new top-level command** that opens the same menu explicitly. On a
+2. **`finishup menu` is a new top-level command** that opens the same menu explicitly. On a
    non-TTY it fails closed with a usage error (exit 2) and never prompts.
-   Founder-authorized amendment (2026-07-29): `yoetz --privacy` is a direct root shortcut to the
+   Founder-authorized amendment (2026-07-29): `finishup --privacy` is a direct root shortcut to the
    trusted privacy ceremony. It first renders the exact recommended `assisted_review` draft only
    for a current, exact-route eligible provider record, and otherwise renders `private`, with its
    tradeoffs; only declining that draft opens the detailed one-by-one questions. The shortcut
@@ -55,12 +55,12 @@ the privacy posture, unlock or stop the service) had to reassemble the correct s
 
 ## Consequences
 
-After install, `yoetz` in a terminal is always a navigable control panel: status overview
+After install, `finishup` in a terminal is always a navigable control panel: status overview
 (service reachability, vault mode, per-binary Codex registration state, first-run posture) plus
 sections for the wizard, harness connection, LLM provider credentials, privacy, and service.
 Discoverability no longer depends on memorizing the command tree, while scripts, CI, and pipes
 see unchanged output. The cost is that the bare-TTY invocation is no longer the help screen;
-`yoetz --help` remains untouched for that purpose.
+`finishup --help` remains untouched for that purpose.
 
 ## Alternatives considered
 
@@ -68,7 +68,7 @@ see unchanged output. The cost is that the bare-TTY invocation is no longer the 
 render complexity for no authority gain; a prompt-loop menu over the existing operations delivers
 the discoverability with zero new trust boundary.
 
-**Keep help as the bare-TTY output and only add `yoetz menu`.** Rejected: the discoverability
+**Keep help as the bare-TTY output and only add `finishup menu`.** Rejected: the discoverability
 problem is exactly that users do not know the command to type; the marker plus TTY guard already
 distinguishes a human at a terminal from automation.
 

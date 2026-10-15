@@ -22,12 +22,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
-from yoetz.application.start import _request_digest  # pyright: ignore[reportPrivateUsage]
-from yoetz.domain.events import (
+from finishup.application.start import _request_digest  # pyright: ignore[reportPrivateUsage]
+from finishup.domain.events import (
     ClientKind,
     EventSchema,
     IntegrationKind,
@@ -39,16 +39,16 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
-from yoetz.domain.privacy import ReviewSelectionPolicy
-from yoetz.domain.values import Frontier, obligation_id
-from yoetz.ports.start_catalog import (
+from finishup.domain.privacy import ReviewSelectionPolicy
+from finishup.domain.values import Frontier, obligation_id
+from finishup.ports.start_catalog import (
     StartCommand,
     StartIdentityCommitments,
     StartIdentityInput,
     StartMode,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.models import StartRequestModel
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.models import StartRequestModel
 
 _RELATIVE = "canonical/task-statement.case.json"
 _ID = "TSK-001"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yoetz.tui.commands import SLASH_COMMANDS, command_named, filter_commands
+from finishup.tui.commands import SLASH_COMMANDS, command_named, filter_commands
 
 
 def test_the_documented_commands_are_all_present_with_descriptions() -> None:

@@ -7,7 +7,7 @@ from collections.abc import Iterator, Mapping
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     DecisionRecordedPayload,
@@ -20,26 +20,26 @@ from yoetz.domain.events import (
     RequestedItemRole,
     ResultOutcome,
 )
-from yoetz.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
-from yoetz.kernel.closure_readiness import (
+from finishup.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
+from finishup.kernel.closure_readiness import (
     GAP_CLASSIFICATION,
     GapClass,
     closure_readiness_facts,
     derive_closure_readiness,
 )
-from yoetz.kernel.observed_failures import (
+from finishup.kernel.observed_failures import (
     observed_action_description,
     observed_action_runner_class,
     observed_action_runtime_tokens,
     observed_action_tool,
     observed_event_ids_from_records,
 )
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
     EDITED_AFTER_LAST_VERIFICATION_GAP,
+    INSTALL_INTO_FINISHUP_RUNTIME_GAP,
     INSTALL_INTO_PRIVATE_ENV_GAP,
-    INSTALL_INTO_YOETZ_RUNTIME_GAP,
     OBLIGATION_BLOCKED_GAP,
     OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
     PLANNED_VERIFICATION_AGENT_LINKED_GAP,
@@ -248,8 +248,8 @@ def test_edited_after_last_verification_needs_a_prior_verification_run() -> None
 
 
 @pytest.mark.parametrize("scope", ["scratch", "yoetz_owned"])
-def test_scratch_and_yoetz_owned_edits_never_make_verification_stale(scope: str) -> None:
-    """ADR-042 (tb4n2 R4): pretrain D `/tmp/*.py` scratch, cad S `/app/yoetz_receipt.md`."""
+def test_scratch_and_finishup_owned_edits_never_make_verification_stale(scope: str) -> None:
+    """ADR-042 (tb4n2 R4): pretrain D `/tmp/*.py` scratch, cad S `/app/finishup_receipt.md`."""
 
     ledger = ObservedLedger()
     _planned(ledger, _command("pytest -q"))
@@ -305,14 +305,16 @@ def test_a_declared_output_directory_keeps_a_saved_receipt_counting() -> None:
     assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(other)
 
 
-def test_a_declared_file_in_a_yoetz_tree_keeps_yoetz_owned_edits_counting() -> None:
-    """Codex review round 3: a requested output the rule could call Yoetz-owned wins."""
+def test_a_declared_file_in_a_finishup_tree_keeps_finishup_owned_edits_counting() -> None:
+    """Codex review round 3: a requested output the rule could call FinishUP-owned wins."""
 
     ledger = ObservedLedger()
     _planned(
         ledger,
         RequestedItem(
-            RequestedItemKind.FILE, "/app/.agents/skills/yoetz/SKILL.md", RequestedItemRole.OUTPUT
+            RequestedItemKind.FILE,
+            "/app/.agents/skills/finishup/SKILL.md",
+            RequestedItemRole.OUTPUT,
         ),
     )
     _plan(ledger, _OBLIGATION)
@@ -390,7 +392,7 @@ def test_runtime_facts_from_observed_descriptions() -> None:
     ledger.edit(write_outside_workspace=True)
     codes = _codes(ledger)
     assert {
-        INSTALL_INTO_YOETZ_RUNTIME_GAP,
+        INSTALL_INTO_FINISHUP_RUNTIME_GAP,
         INSTALL_INTO_PRIVATE_ENV_GAP,
         WRITE_OUTSIDE_WORKSPACE_GAP,
     } <= codes
@@ -401,7 +403,7 @@ def test_workspace_and_system_installs_are_not_reported() -> None:
     ledger = ObservedLedger()
     for target in ("workspace_env", "system", "unresolved"):
         ledger.run("pip install x", ResultOutcome.SUCCESS, exit_status=0, install_target=target)
-    assert not {INSTALL_INTO_YOETZ_RUNTIME_GAP, INSTALL_INTO_PRIVATE_ENV_GAP} & _codes(ledger)
+    assert not {INSTALL_INTO_FINISHUP_RUNTIME_GAP, INSTALL_INTO_PRIVATE_ENV_GAP} & _codes(ledger)
 
 
 def test_verification_only_as_root() -> None:
@@ -474,8 +476,8 @@ def test_blocker_decision_is_honoured_only_for_closed_kinds() -> None:
     _planned(ledger, _command("deploy --prod"))
     _planned(ledger, obligation=_OTHER)
     _plan(ledger, _OBLIGATION, _OTHER)
-    _decision(ledger, "yoetz-blocker:data_not_found", _OTHER)
-    _decision(ledger, "Blocked.\nyoetz-blocker:credential", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:data_not_found", _OTHER)
+    _decision(ledger, "Blocked.\nfinishup-blocker:credential", _OBLIGATION)
     prefix = ledger.prefix
     projection = replay(prefix)
 
@@ -490,7 +492,7 @@ def test_blocker_decision_is_honoured_only_for_closed_kinds() -> None:
     assert any(code.startswith("planned_verification") for code, _ in markers)
 
     # The same line again in a later decision confirms it.
-    _decision(ledger, "Still blocked.\nyoetz-blocker:credential", _OBLIGATION)
+    _decision(ledger, "Still blocked.\nfinishup-blocker:credential", _OBLIGATION)
     prefix = ledger.prefix
     projection = replay(prefix)
     assert dict(blocked_obligations(projection, _batches(ledger))) == {_OBLIGATION: "credential"}
@@ -508,9 +510,9 @@ def test_a_kind_change_starts_a_new_claim_and_an_unrelated_obligation_confirms_n
     _planned(ledger, obligation=_OBLIGATION)
     _planned(ledger, obligation=_OTHER)
     _plan(ledger, _OBLIGATION, _OTHER)
-    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
-    _decision(ledger, "yoetz-blocker:authority", _OTHER)
-    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:authority", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:authority", _OTHER)
+    _decision(ledger, "finishup-blocker:authority", _OBLIGATION)
     projection = replay(ledger.prefix)
     declarations = blocker_declarations(projection, _batches(ledger))
     assert declarations[_OBLIGATION].confirmed
@@ -519,12 +521,12 @@ def test_a_kind_change_starts_a_new_claim_and_an_unrelated_obligation_confirms_n
 
     # A different kind resets the claim, even over a confirmed blocker: it must face its own
     # challenge.
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION)
     projection = replay(ledger.prefix)
     declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
     assert (declaration.kind, declaration.confirmed) == ("consent", False)
     assert dict(blocked_obligations(projection, _batches(ledger))) == {}
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION)
     projection = replay(ledger.prefix)
     declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
     assert (declaration.kind, declaration.confirmed) == ("consent", True)
@@ -556,14 +558,14 @@ def test_superseding_the_claim_or_the_confirmation_resets_what_counts() -> None:
     ledger = ObservedLedger()
     _planned(ledger, obligation=_OBLIGATION)
     _plan(ledger, _OBLIGATION)
-    _decision(ledger, "yoetz-blocker:credential", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:credential", _OBLIGATION)
     claim = _last_event(ledger)
     # Superseding the claim with the same line makes the replacement the (unconfirmed) claim.
-    replacement = _supersede(ledger, "yoetz-blocker:credential", claim)
+    replacement = _supersede(ledger, "finishup-blocker:credential", claim)
     declaration = blocker_declarations(replay(ledger.prefix), _batches(ledger))[_OBLIGATION]
     assert (declaration.decision_event_id, declaration.confirmed) == (replacement, False)
 
-    _decision(ledger, "yoetz-blocker:credential", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:credential", _OBLIGATION)
     confirmation = _last_event(ledger)
     declaration = blocker_declarations(replay(ledger.prefix), _batches(ledger))[_OBLIGATION]
     assert declaration.confirmation_event_id == confirmation
@@ -583,7 +585,7 @@ def test_two_back_to_back_publishes_confirm_because_the_first_result_carried_the
     result is the challenge, and no pre-claim text tells the agent how to confirm, so a second
     publish right after it is the agent's answer to that challenge."""
 
-    from yoetz.kernel.task_facts import (
+    from finishup.kernel.task_facts import (
         BLOCKER_NOTICE_CLAIMED,
         BLOCKER_NOTICE_CONFIRMED,
         blocker_publication_notices,
@@ -593,7 +595,7 @@ def test_two_back_to_back_publishes_confirm_because_the_first_result_carried_the
     _planned(ledger, obligation=_OBLIGATION)
     _plan(ledger, _OBLIGATION)
     payload = DecisionRecordedPayload(
-        statement="yoetz-blocker:authority",
+        statement="finishup-blocker:authority",
         rationale="Production deploy rights belong to the operator.",
         authority=actor_id("agt_codex"),
         affected_obligation_ids=(_OBLIGATION,),
@@ -619,14 +621,17 @@ def test_two_back_to_back_publishes_confirm_because_the_first_result_carried_the
 
 
 def test_a_blocker_naming_an_unknown_obligation_has_no_effect() -> None:
-    from yoetz.kernel.task_facts import BLOCKER_NOTICE_WITHOUT_EFFECT, blocker_publication_notices
+    from finishup.kernel.task_facts import (
+        BLOCKER_NOTICE_WITHOUT_EFFECT,
+        blocker_publication_notices,
+    )
 
     ledger = ObservedLedger()
     _planned(ledger, obligation=_OBLIGATION)
     _plan(ledger, _OBLIGATION)
     unknown = obligation_id("obl_00000000-0000-4000-8000-0000000009ff")
     payload = DecisionRecordedPayload(
-        statement="yoetz-blocker:consent",
+        statement="finishup-blocker:consent",
         rationale="Named the wrong id.",
         authority=actor_id("agt_codex"),
         affected_obligation_ids=(unknown,),
@@ -641,7 +646,7 @@ def test_readiness_turns_fully_blocked_open_obligations_into_a_disclosure() -> N
     _planned(ledger, obligation=_OBLIGATION)
     _planned(ledger, obligation=_OTHER)
     _plan(ledger, _OBLIGATION, _OTHER)
-    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:authority", _OBLIGATION)
     prefix = ledger.prefix
     facts = closure_readiness_facts(replay(prefix), prefix)
     partly = derive_closure_readiness(
@@ -649,7 +654,7 @@ def test_readiness_turns_fully_blocked_open_obligations_into_a_disclosure() -> N
     )
     assert "obligations_open" in partly.agent_actionable
 
-    _decision(ledger, "yoetz-blocker:dependency_unavailable", _OTHER)
+    _decision(ledger, "finishup-blocker:dependency_unavailable", _OTHER)
     prefix = ledger.prefix
     facts = closure_readiness_facts(replay(prefix), prefix)
     claimed = derive_closure_readiness(
@@ -662,7 +667,7 @@ def test_readiness_turns_fully_blocked_open_obligations_into_a_disclosure() -> N
     assert OBLIGATION_BLOCKED_GAP not in claimed.standing_limitations
 
     # Confirming one of the two is not enough.
-    _decision(ledger, "yoetz-blocker:authority", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:authority", _OBLIGATION)
     prefix = ledger.prefix
     facts = closure_readiness_facts(replay(prefix), prefix)
     assert facts.confirmed_blocked_obligation_ids == (_OBLIGATION,)
@@ -672,7 +677,7 @@ def test_readiness_turns_fully_blocked_open_obligations_into_a_disclosure() -> N
     assert OBLIGATION_BLOCKER_UNCONFIRMED_GAP in half.agent_actionable
     assert OBLIGATION_BLOCKED_GAP in half.standing_limitations
 
-    _decision(ledger, "yoetz-blocker:dependency_unavailable", _OTHER)
+    _decision(ledger, "finishup-blocker:dependency_unavailable", _OTHER)
     prefix = ledger.prefix
     facts = closure_readiness_facts(replay(prefix), prefix)
     blocked = derive_closure_readiness(
@@ -794,13 +799,13 @@ def test_requested_output_facts_split_absent_from_gap_markers() -> None:
         REQUESTED_OUTPUT_UNVERIFIED_GAP,
     }
 
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION)
     # #985: a claimed blocker suppresses nothing until a later decision confirms it.
     assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
         absent,
         markers,
     )
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION)
     blocked_absent, blocked_markers = requested_output_facts(
         replay(ledger.prefix), states, blocked=_confirmed(ledger)
     )
@@ -950,8 +955,8 @@ def test_ungated_output_facts_need_no_edit_and_matching_is_exact() -> None:
     assert (REQUESTED_OUTPUT_UNCHANGED_GAP, _OBLIGATION) in markers
 
     # A confirmed blocker on the obligation still suppresses every output fact, edited or not.
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION)
     assert requested_output_facts(replay(ledger.prefix), states, blocked=_confirmed(ledger)) == (
         (),
         (),
@@ -959,7 +964,7 @@ def test_ungated_output_facts_need_no_edit_and_matching_is_exact() -> None:
 
 
 def test_every_task_fact_code_has_one_fixed_sentence() -> None:
-    from yoetz.domain.receipts import TASK_FACT_GAP_SENTENCES, check_time_change_gap_sentence
+    from finishup.domain.receipts import TASK_FACT_GAP_SENTENCES, check_time_change_gap_sentence
 
     assert set(TASK_FACT_GAP_SENTENCES) == set(TASK_FACT_GAPS)
     for code in TASK_FACT_GAPS:
@@ -968,8 +973,8 @@ def test_every_task_fact_code_has_one_fixed_sentence() -> None:
 
 def test_a_started_run_without_a_result_is_unknown_not_unobserved() -> None:
     from builders.observed_runs import command_identity_for
-    from yoetz.domain.values import action_id as make_action_id
-    from yoetz.kernel.observed_failures import observed_action_description
+    from finishup.domain.values import action_id as make_action_id
+    from finishup.kernel.observed_failures import observed_action_description
 
     ledger = ObservedLedger()
     _planned(ledger, _command("pytest -q"))
@@ -1277,17 +1282,19 @@ def test_only_a_later_publish_batch_confirms_a_blocker() -> None:
     _planned(ledger, obligation=_OBLIGATION)
     _plan(ledger, _OBLIGATION)
     batch = "req_98500000-0000-4000-8000-0000000009a1"
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION, batch=batch)
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION, batch=batch)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION, batch=batch)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION, batch=batch)
     # Two identical lines in one decision are one claim as well.
-    _decision(ledger, "yoetz-blocker:consent\nyoetz-blocker:consent", _OBLIGATION, batch=batch)
+    _decision(
+        ledger, "finishup-blocker:consent\nfinishup-blocker:consent", _OBLIGATION, batch=batch
+    )
     projection = replay(ledger.prefix)
     assert not blocker_declarations(projection, _batches(ledger))[_OBLIGATION].confirmed
     assert dict(blocked_obligations(projection, _batches(ledger))) == {}
     # Without the publish batches nothing is ever confirmed.
     assert not blocker_declarations(projection, {})[_OBLIGATION].confirmed
 
-    _decision(ledger, "yoetz-blocker:consent", _OBLIGATION)
+    _decision(ledger, "finishup-blocker:consent", _OBLIGATION)
     projection = replay(ledger.prefix)
     declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
     assert declaration.confirmed
@@ -1295,7 +1302,7 @@ def test_only_a_later_publish_batch_confirms_a_blocker() -> None:
 
 
 def test_publish_notices_challenge_a_first_claim_and_confirm_only_from_a_later_batch() -> None:
-    from yoetz.kernel.task_facts import (
+    from finishup.kernel.task_facts import (
         BLOCKER_NOTICE_CLAIMED,
         BLOCKER_NOTICE_CONFIRMED,
         blocker_publication_notices,
@@ -1306,7 +1313,7 @@ def test_publish_notices_challenge_a_first_claim_and_confirm_only_from_a_later_b
     _planned(ledger, obligation=_OTHER)
     _plan(ledger, _OBLIGATION, _OTHER)
     payload = DecisionRecordedPayload(
-        statement="yoetz-blocker:authority",
+        statement="finishup-blocker:authority",
         rationale="Deploy rights are held by the operator.",
         authority=actor_id("agt_codex"),
         affected_obligation_ids=(_OBLIGATION,),

@@ -1,10 +1,10 @@
 # Prepare closure without hand-authoring requests
 
-Read the current inventory using the session and writer IDs returned by Yoetz:
+Read the current inventory using the session and writer IDs returned by FinishUP:
 
 ```text
-yoetz closure-prepare --session-id <session> --writer-id <writer>
-yoetz closure-schema
+finishup closure-prepare --session-id <session> --writer-id <writer>
+finishup closure-schema
 ```
 
 The first command reads all pages at one frontier. The second describes the selection file accepted
@@ -21,7 +21,7 @@ printing it. Choose a path outside the repository you are working in, so the sav
 never committed or picked up as a change to your work:
 
 ```text
-yoetz closure-prepare --session-id <session> --writer-id <writer> --output ~/yoetz-closure.json
+finishup closure-prepare --session-id <session> --writer-id <writer> --output ~/finishup-closure.json
 ```
 
 The file holds exactly what the command would otherwise print. It is readable only by you and is

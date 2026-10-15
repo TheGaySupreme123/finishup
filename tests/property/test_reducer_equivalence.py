@@ -6,21 +6,21 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from builders.replay import replay_records
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     build_deterministic_case,
     deterministic_case_from_json,
     deterministic_case_to_json,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     ProjectionState,
     empty_projection_state,
     projection_from_snapshot,
     projection_snapshot,
 )
-from yoetz.kernel.reducers import empty_replay_index, extend_replay_index, reduce_event, replay
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import LEDGER_FRESHNESS_ORDER
+from finishup.kernel.reducers import empty_replay_index, extend_replay_index, reduce_event, replay
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import LEDGER_FRESHNESS_ORDER
 
 _FIXTURES = (
     "all-event-families",

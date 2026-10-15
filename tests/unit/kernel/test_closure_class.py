@@ -15,7 +15,7 @@ import pytest
 
 from builders.observed_runs import ObservedLedger
 from builders.policy_cases import evd, evt, finding_record, fnd, obl, record
-from yoetz.domain.events import (
+from finishup.domain.events import (
     DecisionRecordedPayload,
     EventSchema,
     ObligationPublishedPayload,
@@ -23,7 +23,7 @@ from yoetz.domain.events import (
     PlanPublishedPayload,
     ResponseRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingChallenge,
@@ -34,8 +34,8 @@ from yoetz.domain.findings import (
     SemanticProvenance,
     finding_policy_identity,
 )
-from yoetz.domain.values import FindingId, Frontier, actor_id, obligation_id
-from yoetz.kernel.closure_class import (
+from finishup.domain.values import FindingId, Frontier, actor_id, obligation_id
+from finishup.kernel.closure_class import (
     FINDING_BASES,
     FindingClosureClass,
     ObligationClosureClass,
@@ -46,20 +46,20 @@ from yoetz.kernel.closure_class import (
     obligation_closures,
     review_can_rule,
 )
-from yoetz.kernel.limitation import (
+from finishup.kernel.limitation import (
     limitation_disclosed_ids,
     limitation_requested_ids,
     limitation_standing,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     FindingProjectionRecord,
     ProjectionRecord,
     ProjectionState,
     empty_projection_state,
 )
-from yoetz.kernel.reducers import replay
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.coverage import (
+from finishup.kernel.reducers import replay
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -68,7 +68,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "3" * 64
 _LIMITATION_STEP = "state_unresolved_limitation"
@@ -398,7 +398,7 @@ def test_a_decision_line_never_turns_an_acknowledged_not_done_answer_into_a_disc
     ledger.append(
         EventSchema("decision_recorded", "1.0.0"),
         DecisionRecordedPayload(
-            statement=f"yoetz-verification-limit:{obligation}",
+            statement=f"finishup-verification-limit:{obligation}",
             rationale="The evaluator is hidden; I cannot run it.",
             authority=actor_id("agt_codex"),
         ),
@@ -491,7 +491,7 @@ def test_a_verification_limit_decision_discloses_the_request_without_a_response(
     ledger.append(
         EventSchema("decision_recorded", "1.0.0"),
         DecisionRecordedPayload(
-            statement=f"yoetz-verification-limit:{obligation}",
+            statement=f"finishup-verification-limit:{obligation}",
             rationale="The evaluator is hidden; I cannot run it.",
             authority=actor_id("agt_codex"),
         ),
@@ -517,7 +517,7 @@ def test_a_verification_limit_decision_never_settles_the_agents_own_criterion() 
     """Review of #1043, guard G1: only the agent's own reasoned answer narrows its criterion.
 
     ``agent_criterion_unmet`` is a limitation request whatever next step the reviewer asked for,
-    so a ``yoetz-verification-limit`` decision on its obligation (recorded for a hidden grader, as
+    so a ``finishup-verification-limit`` decision on its obligation (recorded for a hidden grader, as
     the Stop gate advises) settled it unanswered: the agent never learned its probe fails, and the
     explanation said it narrowed the criterion with a reason. The decision line also never makes
     that obligation externally evaluated: the criterion is not a hidden evaluator's.
@@ -527,7 +527,7 @@ def test_a_verification_limit_decision_never_settles_the_agents_own_criterion() 
     ledger.append(
         EventSchema("decision_recorded", "1.0.0"),
         DecisionRecordedPayload(
-            statement=f"yoetz-verification-limit:{obligation}",
+            statement=f"finishup-verification-limit:{obligation}",
             rationale="The real grader is hidden; the sample passes.",
             authority=actor_id("agt_codex"),
         ),
@@ -688,8 +688,8 @@ def _duplicate_pair(
 def _group_views(state: ProjectionState):
     """Every consumer of the group selection: counters, receipt count, readiness, prediction."""
 
-    from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
-    from yoetz.kernel.receipt_prediction import ClosureBasis, predict_receipt_conclusion
+    from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
+    from finishup.kernel.receipt_prediction import ClosureBasis, predict_receipt_conclusion
 
     closures = finding_closures(state)
     counts = closure_counts(closures.values(), ())
@@ -739,10 +739,10 @@ def test_a_settled_root_never_hides_an_unresolved_duplicate(
 
 
 def test_the_representative_is_the_most_severe_member_with_a_deterministic_tiebreak() -> None:
-    from yoetz.kernel.closure_class import counted_findings
+    from finishup.kernel.closure_class import counted_findings
 
     def closure(number: int, basis: str, counts_as: int = 1):
-        from yoetz.kernel.closure_class import FINDING_BASES, FindingClosure
+        from finishup.kernel.closure_class import FINDING_BASES, FindingClosure
 
         klass, effect = FINDING_BASES[basis]
         return FindingClosure(
@@ -788,7 +788,7 @@ def test_a_reopened_finding_is_agent_work_under_the_reopened_basis() -> None:
 
 
 def test_readiness_names_the_same_group_representative_as_the_counters() -> None:
-    from yoetz.kernel.closure_readiness import closure_readiness_facts
+    from finishup.kernel.closure_readiness import closure_readiness_facts
 
     state = _duplicate_pair(_finding(1, semantic=True, next_step=_LIMITATION_STEP), None)
     _, counts, blocking, _ = _group_views(state)

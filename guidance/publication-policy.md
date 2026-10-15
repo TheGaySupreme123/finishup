@@ -4,6 +4,20 @@ Use the small `publication.md` topic through `read_guidance` for ordinary materi
 and claim decisions. This complete document remains authoritative for event families and field
 rules.
 
+Read only the section you need, as `finishup://guidance/publication-policy.md#<anchor>`:
+
+| Situation | Anchor |
+| --- | --- |
+| what to publish, and how often | `#cadence` |
+| evidence fields, digests, or replacing evidence | `#discover-evidence-before-authoring-replacements` |
+| correcting a claim or linking a limitation | `#claim-correction-and-limitation-linkage` |
+| the order of repair, final check, and receipt | `#repair-then-finish` |
+| resolving an obligation | `#obligation-resolution` |
+| `requested_items` and `attempted_items` | `#requested-items-and-attempt-accounting` |
+| batch size, ordering, and retries | `#batching-sequencing-and-retry` |
+| sorted reference lists | `#set-valued-reference-lists` |
+| a conditional output or another worked flow | `#mini-flows` |
+
 ## Materiality checklist
 
 Publish a fact when it changes an independently reviewable work package, a requested outcome, an obligation, a decision, a material attempt, a result, evidence, a claim, a plan, or a finding response. Keep routine navigation, searches, formatting, generated-file writes, repeated status reads, tool chatter, and per-file bookkeeping out of the ledger.
@@ -14,8 +28,12 @@ For a large inventory, create obligations per coherent work package. Publish one
 
 Publish one batch per material transition, roughly one to eight events. A normal session is a handful of batches: the plan and its obligations, each independently useful result with its evidence, the completion claim, and any finding response. It is not one batch per file, per tool call, or per message.
 
-State-sensitive families require `expected_frontier`. Read it from `status` and include it in the
-batch; omitting it returns retryable `expected_frontier_required` without writing an operation.
+State-sensitive families require `expected_frontier` (never `null`). Send the frontier you
+already hold: the first plan batch uses the `frontier` that `start` returned (its
+`next_request_template` already carries it), and every later batch uses the `result_frontier` of
+your last accepted `publish_work`, `check` or `respond`. No `status` read is needed for it; read
+`status` only when you hold no frontier, or after a `frontier_changed` conflict. Omitting it
+returns retryable `expected_frontier_required` without writing an operation.
 The guard is task-scoped. Publication tolerates a held frontier when every intervening record is
 observation-authored and then appends at the real head. Check acquisition applies the same suffix
 predicate but freezes the case at that real head. Receipt may instead stay pinned to the supplied
@@ -26,6 +44,11 @@ repair facts for a retry rather than guessing a replacement frontier.
 These are not publishable transitions: reading or searching, running a command whose result you already expect, formatting, regenerating a derived file, repeating a status read, or republishing state that has not changed since the last accepted event. When in doubt, ask whether an independent reader of the ledger alone would conclude something different without the fact.
 
 ## The sixteen event families
+
+These are the core protocol families. `publish_work` admits eighteen families in all: the nine
+ordinary core families below (plan, obligation, assignment, decision, action, result, evidence,
+claim, revised plan), seven delegation and work lifecycle families and two coordination families,
+each with a template in `finishup://guidance/request-templates.md`.
 
 - `session_opened` — establishes the recorded session; it does not prove workspace access.
 - `session_resumed` — records a resume assertion; it does not prove continuity outside the ledger.
@@ -47,7 +70,10 @@ These are not publishable transitions: reading or searching, running a command w
 
 ## Obligations, evidence, and claims
 
-An obligation names what must be satisfied. Evidence is a bounded, provenance-labeled reason to believe something about it. A claim states a conclusion. Link them explicitly; do not substitute a file list for an obligation or a claim for evidence.
+<a id="plan-and-obligations"></a>
+
+The plan and its obligations are published together in the first plan batch: see
+`finishup://guidance/request-templates.md#publish-work-plan-plus-obligation`. An obligation names what must be satisfied. Evidence is a bounded, provenance-labeled reason to believe something about it. A claim states a conclusion. Link them explicitly; do not substitute a file list for an obligation or a claim for evidence.
 
 ### Digest subjects and provenance
 
@@ -110,7 +136,7 @@ with `subject=source_diff` instead.
 
 `captured` requires the mirrored `captured_object_id`; `digest_only` and `withheld` forbid one. A
 digest proves byte identity only. It does not prove that a command ran, that its exit status was
-successful, that Yoetz inspected the content, or that the evidence supports a claim. `description`
+successful, that FinishUP inspected the content, or that the evidence supports a claim. `description`
 is caller-authored narrative and is never treated as the bytes identified by `content_digest`.
 
 ### Making a change reviewable
@@ -124,10 +150,10 @@ that `description`.
 
 You may also publish the matching `content_digest` with its `digest_binding` for byte identity; the
 digest identity facts then travel alongside the excerpt as excerpt provenance. Ordinary publication
-records that binding as `caller_asserted` with `digest_only` availability: Yoetz did not capture or
+records that binding as `caller_asserted` with `digest_only` availability: FinishUP did not capture or
 verify those bytes. This is a disclosed provenance label, not a finding. It raises no local finding,
 and the receipt names once, with a count, the cited evidence items whose caller-asserted digests
-Yoetz did not verify. No response, recheck, or further publication changes that label, so do not
+FinishUP did not verify. No response, recheck, or further publication changes that label, so do not
 publish more excerpts or digests to clear it. A digest-bound record without a `description`
 contributes only its bounded provenance facts, so the reviewer sees identity but no content.
 
@@ -135,7 +161,7 @@ The excerpt is truncated to at most 4,096 UTF-8 bytes, silently and possibly mid
 slice within 4,096 UTF-8 bytes so the reviewer receives it intact; `description` itself accepts up
 to 8,192 characters, so the field limit does not protect against excerpt truncation.
 
-When the review recipe selects diff excerpts, Yoetz itself also reads the task's repository at
+When the review recipe selects diff excerpts, FinishUP itself also reads the task's repository at
 check time and gives the reviewer that **check-time change** first: committed and uncommitted
 changes from the commit the task started on, plus untracked files Git does not ignore, including
 edits made by scripts or commits that no hook captured. Untracked files already there when the task
@@ -143,7 +169,7 @@ started and unchanged since are left out, a nested repository's own change is in
 way (when the header says its untracked files are named but not shown, give the reviewer evidence
 for one it must read), and up to
 four files the task statement names that the task only reads (a specification, the source being
-ported) travel beside it, so they need no evidence of their own. Yoetz redacts secret-shaped content in that
+ported) travel beside it, so they need no evidence of their own. FinishUP redacts secret-shaped content in that
 check-time change, so no deliverable ever needs hiding: never git-ignore, exclude (including
 `.git/info/exclude`), stash, or move a requested output for privacy. Do not paste or digest the whole diff for the reviewer;
 use `description` for the problem-local hunk or test slice the claim depends on. The
@@ -195,9 +221,11 @@ their existing contradiction and decision-history meanings.
 Use this bounded sequence for a material repair or closure. It applies to the six existing
 operations and does not add a composer or a new protocol field:
 
-1. Read current `status` and retain its returned frontier. Before replacing evidence or a claim,
-   cite the evidence IDs you published and find native captures with a filtered
-   `status view=evidence` read, preserving its filter and original `limit` with every cursor.
+1. Keep the frontier you hold (the `result_frontier` of your last accepted write) for the next
+   write; read `status` for one only when you hold none or after `frontier_changed`. Before
+   replacing evidence or a claim, cite the evidence IDs you published, and find native captures
+   with a filtered `status view=evidence` read only when you need them, preserving its filter and
+   original `limit` with every cursor.
    Reuse only native IDs a structural link ties to the claim; a missing MCP capture call, one
    digest-only item, or one clipped item does not establish that all native evidence is
    unavailable.
@@ -211,8 +239,9 @@ operations and does not add a composer or a new protocol field:
    current status frontier. No historical frontier search is needed. A response is a disposition,
    not proof of repair. Observation-authored non-actionable findings need no response.
 4. Run the final check deliberately. Select `semantic_required` when the user, effective policy, or
-   named acceptance criterion requires AI-powered review. If relying on the configured default, omit
-   `mode`; use `semantic_if_configured` only when review is known to be optional. Reserve
+   named acceptance criterion requires AI-powered review. Omit `mode` to run in the task's review
+   mode (`status` `review_mode`); use `semantic_if_configured` only when review is known to be
+   optional. Reserve
    `deterministic_only` for explicitly local/structural work or a deliberate no-egress choice, and
    disclose an unmet required review.
 5. Respond only to findings that check returned that are still unanswered, then read
@@ -229,7 +258,7 @@ operations and does not add a composer or a new protocol field:
    one current-state recheck still fails to qualify, stop repeating an unchanged check, continue any
    distinct authorized repair, and disclose the remaining blocker.
 
-The optional `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>`
+The optional `finishup closure-prepare --session-id <returned-session> --writer-id <returned-writer>`
 command is read-only preparation. It may inventory obligations, results, evidence, findings, and
 history and draft one explicit phase, but it never invents attempts, evidence, finding responses,
 obligation satisfaction, or completion. `--output <file>` saves the result for repeated reading;
@@ -269,7 +298,8 @@ preserves the original view, filter, frontier, and `limit`. Changing `limit` sta
 no cursor. A `respond` request carries `finding_id`, `finding_frontier`, `disposition`, and `reason`;
 a `receipt` request carries its own receipt fields. Never copy response fields into a receipt, and
 never invent a finding disposition when a host reports that the wrong operation template was used.
-The complete operation bodies remain in `yoetz://guidance/request-templates.md`.
+The complete operation bodies remain in `finishup://guidance/request-templates.md`; read the one
+section for your operation, such as `#respond` or `#receipt` (page 0 lists every section).
 
 Newly minted caller IDs (`request_id`, event/object payload IDs, and claim IDs) use the required
 prefix plus a fresh lowercase UUID v4. Existing returned evidence, obligation, claim, and finding
@@ -293,10 +323,10 @@ declaration: include the current reason when the revised effective ref set is em
 clear an earlier reason. When a mid-task obligation requires a full append-only restatement rather
 than a change disposition, publish `plan_published` at exactly the current plan version plus one;
 its refs and optional empty-scope reason become the complete effective declaration. A duplicate
-root or version gap makes the chain unreadable. Yoetz never infers obligations from prompts, source
+root or version gap makes the chain unreadable. FinishUP never infers obligations from prompts, source
 code, workspace state, or plan prose.
 
-You decompose the request; Yoetz checks the link. When a task statement is recorded and the
+You decompose the request; FinishUP checks the link. When a task statement is recorded and the
 effective plan declares obligations, at least one of them must name the statement event in
 `source_refs`, or every whole-task check returns the agent-actionable `task_requirement_unmet`
 finding (subject: the statement event) and readiness lists `instruction_requirement_unmapped`.
@@ -310,7 +340,7 @@ coverage-incomplete: `completion_scope_undeclared` without a reason or
 `completion_scope_declared_none` with one. With a task statement recorded, that completion claim
 also returns `task_requirement_unmet` until you either publish statement-sourced obligations or
 record a `decision_recorded` whose statement holds the exact line
-`yoetz-no-material-work:<statement event id>` with a rationale. The decision counts only while the
+`finishup-no-material-work:<statement event id>` with a rationale. The decision counts only while the
 task records no edit action and the check sees no changed file in the workspace (shell writes
 count); a task that changed files must map the work to obligations.
 
@@ -335,7 +365,9 @@ longer holds may be reopened (`status: open`) or acknowledged as not done
 (`acknowledged_not_done` with its reason, on `1.1.0`), repeating every meaning field. The
 public error names the mismatched schema field names only — never their values. A worked open +
 resolution pair lives in the `publish_work` tool input schema `examples` entry. Complete request
-bodies remain available at `yoetz://guidance/request-templates.md` if a host drops schema examples.
+bodies remain available at
+`finishup://guidance/request-templates.md#publish-work-plan-plus-obligation` if a host drops schema
+examples.
 
 ## Requested items and attempt accounting
 
@@ -368,11 +400,12 @@ replay once only for `absent`, use the stored `complete` outcome, and follow an 
 continuation before replaying a `pending` request. A read timeout gets a new read request ID with
 the same intent. Never manufacture a replacement event merely because a response was lost.
 
-A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier and the accepted event ids. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in Yoetz, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
+A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier (`result_frontier`) and the accepted event ids; send that frontier as the next write's `expected_frontier`. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in FinishUP, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
 
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
-and as complete fallback bodies at `yoetz://guidance/request-templates.md`. Example `occurred_at`
+and as complete fallback bodies in one section per family of
+`finishup://guidance/request-templates.md` (for example `#publish-work-action`). Example `occurred_at`
 values are illustrative shape only; do not copy them into live drafts.
 
 ### Event draft skeleton
@@ -478,6 +511,21 @@ Publish the question, source identities, bounded supported and contradicted clai
 ### Plan revision
 
 Publish the original obligation, the material new fact, and one plan revision explaining which outcome or dependency changed. Restate the current empty-scope reason or omit it to clear the declaration; omission never inherits the prior reason. Routine schedule adjustment needs no event.
+
+### Conditional output
+
+A file the request asks for only under a condition (a quarantine log written only for a malformed
+input) is runtime behavior: declare a `change` item that names the condition and the path, plus the
+source files that implement it as `role: output` `file` items. If you already declared it as a
+`file` and the final state does not meet the condition, `requested_output_absent` names it:
+publish the corrected obligation, supersede the old one with `plan_revised` (`change: superseded`,
+`reason`, `replacement_obligation_ids`), record the work with the new item values in
+`attempted_items`, resolve the new obligation, and replace the completion claim with one naming it.
+Never write an empty or placeholder file, or change when the deliverable writes the file, to
+satisfy the declaration. Give each conditional file its own `change` item spelling its declared
+path and its condition (`when`, `if`, `unless`); a change item that names several requested files,
+calls one unconditional or states no condition releases none of them. A file the request asks for
+unconditionally is never re-modelled this way.
 
 ### Large generated inventory
 

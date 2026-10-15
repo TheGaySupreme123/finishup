@@ -33,8 +33,8 @@ def _inputs(tmp_path: Path, *, prefixed_checksums: bool = False) -> tuple[Path, 
     root = tmp_path / "inputs"
     artifacts = root / "candidate-0.1.0"
     artifacts.mkdir(parents=True)
-    (artifacts / "yoetz-0.1.0.whl").write_bytes(b"wheel")
-    (artifacts / "yoetz-0.1.0.tar.gz").write_bytes(b"sdist")
+    (artifacts / "finishup-0.1.0.whl").write_bytes(b"wheel")
+    (artifacts / "finishup-0.1.0.tar.gz").write_bytes(b"sdist")
     checksum_lines: list[str] = []
     for path in sorted(artifacts.iterdir(), key=lambda item: item.name.encode("utf-8")):
         artifact_digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -211,7 +211,7 @@ def test_builder_rejects_unbound_gate_and_substituted_candidate_artifact(tmp_pat
     assert "gate_record_digest_invalid" in unbound.stderr
 
     artifact_root, matrix, limitations, digest = _inputs(tmp_path / "substituted")
-    (artifact_root / "yoetz-0.1.0.whl").write_bytes(b"substituted-wheel")
+    (artifact_root / "finishup-0.1.0.whl").write_bytes(b"substituted-wheel")
     output = tmp_path / "substituted" / "release-inputs.json"
     command = [
         sys.executable,

@@ -10,7 +10,9 @@ counters that explain it follow it.
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import summary_for_status
+import pytest
+
+from finishup.mcp.summaries import summary_for_status
 
 _HEAD = "sha256:" + "a" * 64
 _STOP = (
@@ -100,8 +102,8 @@ _RECHECKS = [
 def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> None:
     """A "nothing further to do" is never followed by a surprise gate: the text names the re-reads."""
 
-    from yoetz.domain.closure import recheck_note
-    from yoetz.protocol.readiness_text import recheck_note as shared
+    from finishup.domain.closure import recheck_note
+    from finishup.protocol.readiness_text import recheck_note as shared
 
     readiness = _status(rechecks=_RECHECKS)["closure_readiness"]
     sentence = shared(readiness)
@@ -118,7 +120,7 @@ def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> N
 
 
 def test_findings_awaiting_a_ruling_are_named_with_the_frontier_of_the_rejection() -> None:
-    from yoetz.protocol.readiness_text import awaiting_ruling_variants
+    from finishup.protocol.readiness_text import awaiting_ruling_variants
 
     counts: dict[str, str] = {
         "to_do": "1",
@@ -143,3 +145,68 @@ def test_findings_awaiting_a_ruling_are_named_with_the_frontier_of_the_rejection
     # A count without ids still says that something waits, and where to see it.
     bare = awaiting_ruling_variants({"finding_counts": counts})
     assert bare and "status view=findings lists them" in bare[0]
+
+
+_FLAGGED = [
+    {
+        "kind": "acceptance",
+        "key": "accept:1a2b3c4d",
+        "subjects": ["obl_00000000-0000-4000-8000-000000000001"],
+        "rule": "resolved_obligations_acceptance_risk",
+        "since_frontier": "5",
+    }
+]
+_LINE = "`finishup-acceptance:<obligation id>:met`"
+
+
+def _prepared(**readiness: object) -> dict[str, object]:
+    status = _status(**readiness)
+    return {
+        "preparatory_only": True,
+        "frontier": status["head_frontier"],
+        "closure_readiness": status["closure_readiness"],
+        "inventory": {},
+        "request": None,
+        "notes": [],
+    }
+
+
+def test_the_mcp_summary_names_the_acceptance_line_only_where_the_host_can_deliver_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1050 follow-up: the bridge's host reaches the status and closure_prepare summaries. Cursor
+    (no final answer at Stop) gets the Cursor wording, a generic bridge names which hosts read the
+    line, and Codex and Claude Code text is byte-identical to the host-less render."""
+
+    from finishup.mcp import server
+    from finishup.mcp.summaries import render_safe_compact_summary_detailed
+
+    for wire in (_status(rechecks=_FLAGGED), _prepared(rechecks=_FLAGGED)):
+        unhosted = render_safe_compact_summary_detailed(wire).text
+        assert _LINE in unhosted
+        for host in ("codex", "claude"):
+            assert render_safe_compact_summary_detailed(wire, host=host).text == unhosted
+            assert server._result_text(wire, host_profile=host) == unhosted  # pyright: ignore[reportPrivateUsage]
+        cursor = render_safe_compact_summary_detailed(wire, host="cursor").text
+        assert "finishup-acceptance" not in cursor
+        assert "Cursor passes FinishUP no final answer" in cursor
+        generic = render_safe_compact_summary_detailed(wire, host="generic").text
+        assert f"on Codex and Claude Code a line {_LINE}" in generic
+        assert "Cursor passes no final answer" in generic
+        assert server._result_text(wire, host_profile="generic") == generic  # pyright: ignore[reportPrivateUsage]
+        # Cursor's bridge normally sends the canonical JSON copy; its summary fallback (when that
+        # encoding fails) carries the Cursor wording too.
+        with monkeypatch.context() as patch:
+
+            def refuse(_value: object) -> bytes:
+                raise ValueError("encode_failed")
+
+            patch.setattr(server, "canonical_encode", refuse)
+
+            def unrecorded(*_args: object, **_kwargs: object) -> str:
+                return ""
+
+            patch.setattr(server, "_record_summary_degradation", unrecorded)
+            fallback = server._result_text(wire, host_profile="cursor")  # pyright: ignore[reportPrivateUsage]
+        assert "finishup-acceptance" not in fallback
+        assert "Cursor passes FinishUP no final answer" in fallback

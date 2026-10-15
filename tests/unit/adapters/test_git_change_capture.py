@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import yoetz.adapters.git_change_capture as capture_module
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.kernel.test_edit_visibility import check_change_header_entries, preexisting_test_edits
-from yoetz.ports.change_capture import (
+import finishup.adapters.git_change_capture as capture_module
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.kernel.test_edit_visibility import check_change_header_entries, preexisting_test_edits
+from finishup.ports.change_capture import (
     ChangeCaptureUnavailable,
     CheckChangeCapture,
     CheckChangeMetadata,
@@ -50,9 +51,9 @@ def _commit(repository: Path, message: str) -> None:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-am",
@@ -73,9 +74,9 @@ def _repository(tmp_path: Path) -> Path:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -123,7 +124,7 @@ def test_script_rewrite_without_any_edit_tool_is_captured_against_the_task_base(
     assert (capture.tracked_files, capture.untracked_files, capture.omitted_files) == (1, 1, 0)
     assert not capture.truncated
     text = _text(capture)
-    assert text.startswith("Yoetz check-time change: captured by the Yoetz service")
+    assert text.startswith("FinishUP check-time change: captured by the FinishUP service")
     assert "Base: the commit HEAD named when this task started." in text
     assert "-  return String(value);" in text
     assert "+  return typeof value + ':' + String(value);" in text
@@ -388,6 +389,50 @@ def test_plain_directory_is_not_git(tmp_path: Path) -> None:
     assert caught.value.reason == "not_git"
 
 
+@pytest.mark.parametrize("start", ["top", "subdirectory"])
+def test_a_checkout_root_owns_is_refused_as_another_owners_not_as_not_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start: str
+) -> None:
+    """A root-built /app served to a non-root user: Git refuses it ("dubious ownership"), which
+    read as ``not_git`` ("not a Git repository"). It is another owner's checkout: ``unsafe_root``.
+    Simulated ownership, so it runs on any runner; Git itself is never consulted."""
+
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    repository = _repository(tmp_path)
+    (repository / "src").mkdir()
+    present_owners(monkeypatch, {repository: SUPERUSER, repository / ".git": SUPERUSER})
+    workspace = repository if start == "top" else repository / "src"
+
+    with pytest.raises(ChangeCaptureUnavailable) as caught:
+        GitChangeCaptureAdapter().capture(os.fspath(workspace), None)
+    assert caught.value.reason == "unsafe_root"
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() != 0, reason="a real chown needs root"
+)
+def test_a_real_checkout_root_owns_reports_unsafe_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With real ownership Git itself refuses the checkout, which used to surface as not_git."""
+
+    from finishup.config import foreign_write
+
+    played_root = 41006
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", played_root)
+    repository = _repository(tmp_path)
+    for directory, _subdirectories, files in os.walk(repository):
+        os.chown(directory, played_root, played_root)
+        for name in files:
+            os.chown(os.path.join(directory, name), played_root, played_root)
+    repository.chmod(0o755)
+
+    with pytest.raises(ChangeCaptureUnavailable) as caught:
+        GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+    assert caught.value.reason == "unsafe_root"
+
+
 def test_capture_round_trips_through_its_object_encoding(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     (repository / "selectors.ts").write_text("export const é = 'ü';\n", encoding="utf-8")
@@ -591,10 +636,10 @@ def test_deadline_inside_the_diff_lists_every_file_and_shows_none(
     assert "untracked words" not in text and "the untracked count above is a lower bound" in text
 
 
-def test_git_without_show_scope_fails_closed_before_any_diff(
+def test_an_unreadable_effective_config_fails_closed_before_any_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Git older than 2.26 rejects ``--show-scope``; the filter check is never skipped."""
+    """A Git that cannot list its effective config never gets to run a diff (filter check)."""
 
     repository = _repository(tmp_path)
     (repository / "selectors.ts").write_text("export const changed = 1;\n", encoding="utf-8")
@@ -603,8 +648,8 @@ def test_git_without_show_scope_fails_closed_before_any_diff(
 
     def run(handle: Any, arguments: tuple[str, ...], **kwargs: Any) -> tuple[int, bytes]:
         calls.append(arguments)
-        if "--show-scope" in arguments:
-            raise ValueError("git_failed")  # exit 129: unknown option
+        if "--list" in arguments and "--show-origin" in arguments:
+            raise ValueError("git_failed")  # exit 129: an option this Git does not know
         return real(handle, arguments, **kwargs)
 
     monkeypatch.setattr(capture_module, "run_read_only_git", run)
@@ -1007,9 +1052,9 @@ def test_pack_hard_linked_from_another_repository_is_shown_once_every_blob_verif
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -1247,9 +1292,9 @@ def _nested_repository(parent: Path, name: str = "api") -> Path:
     _git(
         nested,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -1317,7 +1362,7 @@ def test_a_base_without_a_snapshot_keeps_every_untracked_file_as_before(tmp_path
 
 
 def test_first_check_base_cannot_carry_a_task_start_snapshot() -> None:
-    from yoetz.ports.change_capture import UntrackedBaselineFile
+    from finishup.ports.change_capture import UntrackedBaselineFile
 
     with pytest.raises(ValueError):
         TaskChangeBase(
@@ -1342,9 +1387,9 @@ def test_nested_repository_change_is_captured_under_its_directory(tmp_path: Path
     _git(
         nested,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-am",
@@ -1540,7 +1585,7 @@ def test_a_snapshot_the_base_refuses_keeps_the_commit_base_and_is_recorded(
 
     def refused(self: object, pinned: object, deadline: float) -> object:
         # A listing for a repository without a recorded HEAD: the base object refuses it.
-        from yoetz.ports.change_capture import NestedUntrackedBaseline
+        from finishup.ports.change_capture import NestedUntrackedBaseline
 
         return (), True, (), (NestedUntrackedBaseline("api", True),)
 
@@ -1597,7 +1642,7 @@ def test_a_nested_listing_past_the_snapshot_bound_names_its_untracked_files_only
 
 
 def test_nested_untracked_listings_decode_strictly(tmp_path: Path) -> None:
-    from yoetz.ports.change_capture import NestedUntrackedBaseline, UntrackedBaselineFile
+    from finishup.ports.change_capture import NestedUntrackedBaseline, UntrackedBaselineFile
 
     state = "sha256:" + "0" * 64
     note = UntrackedBaselineFile("notes.md", state)
@@ -1927,9 +1972,9 @@ def _nested_commit(nested: Path, content: str, message: str) -> None:
     _git(
         nested,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-am",
@@ -2126,6 +2171,8 @@ def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     assert design.size > len(design.text) and len(design.text) <= 16_384
     assert design.text.startswith(b"# Design\n")
     assert b"bytes elided here; head and tail kept]" in design.text
+    # New captures spell the cut marker with the new name (ADR-048); the packet fences both names.
+    assert b"\n[finishup: " in design.text and b"[yoetz" not in design.text.lower()
     joined = b"".join(item.text for item in capture.inputs)
     assert b"IGNORED_CANARY" not in joined and b"AGENT_NOTES_MARKER" not in joined
     # Inputs never enter the change text, and they round-trip with the stored object.
@@ -2200,3 +2247,38 @@ def strict_json_keys(data: bytes) -> list[str]:
     import json
 
     return list(json.loads(data))
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["user-private-group", "shared-group"])
+def test_umask_0002_nested_repository_is_read_only_for_a_user_private_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    from finishup.config import foreign_write
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(private))
+    monkeypatch.setattr(capture_module, "owner_private_group", _private_group_is(private))
+    # The outer repository is owner-only whatever the runner's umask; only the nested one is g+w.
+    previous = os.umask(0o022)
+    try:
+        repository = _repository(tmp_path)
+    finally:
+        os.umask(previous)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    previous = os.umask(0o002)
+    try:
+        nested = _nested_repository(repository)
+        nested.chmod(0o775)
+        (nested / "server.py").write_text("NESTED_CANARY = 1\n", encoding="utf-8")
+    finally:
+        os.umask(previous)
+    text = _text(adapter.capture(os.fspath(repository), base))
+    assert ("NESTED_CANARY" in text) is private
+    assert ("it failed a safety check" in text) is not private
+
+
+def _private_group_is(value: bool) -> Callable[[int, int], bool]:
+    def answer(_uid: int, _gid: int) -> bool:
+        return value
+
+    return answer

@@ -70,8 +70,8 @@ VECTORS: list[ShellWriteVector] = [
     # A directory destination is classified by where it is, not by a notes or receipt file name.
     _v("cp -tNOTES.md source.py", ["NOTES.md"], "workspace", "workspace", "round 1: -t dir"),
     _v(
-        "cp -t/opt/yoetz_receipt.json source.py",
-        ["/opt/yoetz_receipt.json"],
+        "cp -t/opt/finishup_receipt.json source.py",
+        ["/opt/finishup_receipt.json"],
         "outside_workspace",
         None,
         "round 1: -t dir",
@@ -83,7 +83,13 @@ VECTORS: list[ShellWriteVector] = [
         "workspace",
         "round 1: dest/ is a dir",
     ),
-    _v("install -d yoetz_receipt.md", ["yoetz_receipt.md"], "workspace", "workspace", "install -d"),
+    _v(
+        "install -d finishup_receipt.md",
+        ["finishup_receipt.md"],
+        "workspace",
+        "workspace",
+        "install -d",
+    ),
     # macOS `sed -i ''` and GNU `sed -i ''` (an empty script) differ by their operand count.
     _v("gsed -i '' solve.py", ["solve.py"], "workspace", "workspace", "round 1: GNU empty script"),
     _v("sed -i '' solve.py", [], None, None, "round 2: macOS and GNU disagree: no guess"),
@@ -101,15 +107,15 @@ VECTORS: list[ShellWriteVector] = [
     _v("cat <<$'E\\x4fF'\nEOF\n: > out", [], None, None, "round 1: undecodable delimiter"),
     # The scratch exemption never overrides ownership or the mixed-class rule.
     _v(
-        ": > /tmp/yoetz_receipt.json",
-        ["/tmp/yoetz_receipt.json"],
+        ": > /tmp/finishup_receipt.json",
+        ["/tmp/finishup_receipt.json"],
         "yoetz_owned",
         None,
         "round 1: owned in /tmp",
     ),
     _v(
-        ": > NOTES.md; : > /tmp/yoetz_receipt.json",
-        ["NOTES.md", "/tmp/yoetz_receipt.json"],
+        ": > NOTES.md; : > /tmp/finishup_receipt.json",
+        ["NOTES.md", "/tmp/finishup_receipt.json"],
         "workspace",
         "notes",
         "round 1: notes + owned in /tmp",
@@ -226,18 +232,18 @@ VECTORS: list[ShellWriteVector] = [
     _v("sed -i '' 's/a/b/' NOTES.md", ["NOTES.md"], "notes", "notes", f"{_R} sed (macOS)"),
     _v("sed -i '' -e 's/a/b/' solve.py", ["solve.py"], "workspace", "workspace", "macOS -e"),
     _v("sed -E -i 's/(a)/b/' solve.py", ["solve.py"], "workspace", "workspace", "-E -i"),
-    # 3. One classifier: a Yoetz receipt copied outside the workspace is Yoetz-owned.
+    # 3. One classifier: a FinishUP receipt copied outside the workspace is FinishUP-owned.
     _v(
-        "cp source.json /opt/yoetz_receipt.json",
-        ["/opt/yoetz_receipt.json"],
+        "cp source.json /opt/finishup_receipt.json",
+        ["/opt/finishup_receipt.json"],
         "yoetz_owned",
         None,
         f"{_R} 3",
     ),
     _v("cp source.json /opt/result.json", ["/opt/result.json"], "outside_workspace", None, "3"),
     _v(
-        "cp a /opt/yoetz_receipt.json; cp b /opt/result.json",
-        ["/opt/yoetz_receipt.json", "/opt/result.json"],
+        "cp a /opt/finishup_receipt.json; cp b /opt/result.json",
+        ["/opt/finishup_receipt.json", "/opt/result.json"],
         "outside_workspace",
         None,
         "3: outside wins",
@@ -324,14 +330,20 @@ VECTORS: list[ShellWriteVector] = [
     _v("dd if=a of=$X", [], None, None, "dd of=$X"),
     # Mixed non-counting classes in one command keep counting, like a mixed edit-tool call.
     _v(
-        ": > NOTES.md; : > yoetz_receipt.md",
-        ["NOTES.md", "yoetz_receipt.md"],
+        ": > NOTES.md; : > finishup_receipt.md",
+        ["NOTES.md", "finishup_receipt.md"],
         "workspace",
         "workspace",
         f"{_R} mixed",
     ),
     _v(": > NOTES.md", ["NOTES.md"], "notes", "notes", "one class stays non-counting"),
-    _v(": > yoetz_receipt.md", ["yoetz_receipt.md"], "yoetz_owned", "yoetz_owned", "one class"),
+    _v(
+        ": > finishup_receipt.md",
+        ["finishup_receipt.md"],
+        "yoetz_owned",
+        "yoetz_owned",
+        "one class",
+    ),
     _v(
         "echo x > NOTES.md && cp a.txt b.txt",
         ["NOTES.md", "b.txt"],

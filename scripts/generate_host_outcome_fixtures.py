@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Any, Final
 
-from yoetz.protocol.canonical import canonical_encode
+from finishup.protocol.canonical import canonical_encode
 
 _MANIFEST_RELATIVE: Final = Path("fixtures/manifest.json")
 _MEDIA_TYPE: Final = "application/vnd.yoetz.fixture-case+json"

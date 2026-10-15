@@ -17,21 +17,21 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from yoetz.domain.findings import CheckVerdict
-from yoetz.mcp import summaries
-from yoetz.mcp.summaries import (
+from finishup.domain.findings import CheckVerdict
+from finishup.mcp import summaries
+from finishup.mcp.summaries import (
     MAX_SUMMARY_BYTES,
     render_safe_compact_summary,
     render_safe_compact_summary_detailed,
 )
-from yoetz.protocol.errors import (
+from finishup.protocol.errors import (
     PROTOCOL_REASON_CODES,
     SAFE_DETAIL_KEYS,
     PublicErrorCode,
 )
-from yoetz.protocol.models import SemanticReason, SemanticStatus
-from yoetz.protocol.readiness_text import READINESS_STATES
-from yoetz.protocol.recovery import CONTINUATION_TOKENS
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.readiness_text import READINESS_STATES
+from finishup.protocol.recovery import CONTINUATION_TOKENS
 
 _HEAD = st.one_of(
     st.just("genesis"), st.binary(min_size=32, max_size=32).map(lambda b: "sha256:" + b.hex())
@@ -315,9 +315,7 @@ def test_the_check_core_survives_whatever_optional_fields_arrive(
         and envelope["semantic_status"] == "not_requested"
         and envelope["semantic_reason"] == "deterministic_mode"
     )
-    assert (
-        "No issue detected within deterministic coverage" if scoped else envelope["verdict"]
-    ) in text
+    assert ("No issue detected within local coverage" if scoped else envelope["verdict"]) in text
     assert (
         f"AI-powered review status/reason: {envelope['semantic_status']}/"
         f"{envelope['semantic_reason']}"

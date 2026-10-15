@@ -26,16 +26,16 @@ from builders.status_text import (
     matched_by_prefix_lineage,
     status_wire,
 )
-from yoetz.kernel.fact_lineage import lineage_text, lineage_to_wire
-from yoetz.mcp import summaries
-from yoetz.mcp.summaries import (
+from finishup.kernel.fact_lineage import lineage_text, lineage_to_wire
+from finishup.mcp import summaries
+from finishup.mcp.summaries import (
     _check_cause_variants,
     _operation_progress_clause,
     render_safe_compact_summary,
     render_safe_compact_summary_detailed,
     summary_for_check,
 )
-from yoetz.protocol.readiness_text import readiness_directive
+from finishup.protocol.readiness_text import readiness_directive
 
 EMPTIED = lineage_text(emptied_lineage())
 PREFIX = lineage_text(matched_by_prefix_lineage())

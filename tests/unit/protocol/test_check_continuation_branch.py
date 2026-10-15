@@ -16,16 +16,16 @@ from typing import Any, Final, cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.cli.render import render_human_awaiting_human
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.cli.render import render_human_awaiting_human
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckAwaitingHumanModel,
     CheckResultModel,
     CheckSuccessModel,
     StatusOperationPageModel,
 )
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import validate_schema_instance
 
 _PENDING: Final = f"ppr_{uuid.uuid4()}"
 _REQUEST: Final = f"req_{uuid.uuid4()}"
@@ -57,7 +57,7 @@ def _continuation(**overrides: Any) -> dict[str, Any]:
         "kind": "privacy_disclosure_decision",
         "pending_id": _PENDING,
         "expires_at": "2026-08-05T13:00:00.000Z",
-        "command": ["yoetz", "privacy", "decide-disclosure", _PENDING],
+        "command": ["finishup", "privacy", "decide-disclosure", _PENDING],
         "replay_request_id": _REQUEST,
         "instruction": _INSTRUCTION,
     }
@@ -68,7 +68,7 @@ def _continuation(**overrides: Any) -> dict[str, Any]:
 def _repository_grant_continuation(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "kind": "repository_privacy_setup",
-        "command": ["yoetz", "--privacy"],
+        "command": ["finishup", "--privacy"],
         "replay_request_id": _REQUEST,
         "instruction": (
             "Use the trusted local privacy ceremony, then replay this exact request id."
@@ -121,7 +121,7 @@ def test_the_awaiting_input_branch_validates_and_discriminates_on_state() -> Non
             semantic_reason="review_input_required",
             continuation={
                 "kind": "review_input_required",
-                "command": ["yoetz", "publish-work", "--input", "PATH"],
+                "command": ["finishup", "publish-work", "--input", "PATH"],
                 "replay_request_id": _REQUEST,
                 "instruction": "Supply the statement, then replay this exact request.",
             },
@@ -136,7 +136,7 @@ def test_the_awaiting_input_branch_validates_and_discriminates_on_state() -> Non
     rendered = render_human_awaiting_human(result.root)
     assert "awaiting_input (review_input_required)" in rendered
     assert "complete review input" in rendered
-    assert "yoetz publish-work --input PATH" in rendered
+    assert "finishup publish-work --input PATH" in rendered
     assert "awaiting_human (human_approval_required)" not in rendered
 
 
@@ -145,7 +145,7 @@ def test_the_branch_carries_the_exact_command_the_user_must_run() -> None:
     assert type(result.root) is CheckAwaitingHumanModel
 
     assert result.root.continuation.command == (
-        "yoetz",
+        "finishup",
         "privacy",
         "decide-disclosure",
         _PENDING,
@@ -190,7 +190,7 @@ def test_missing_repository_grant_carries_standing_setup_without_one_use_fields(
 
     continuation = result.root.continuation
     assert continuation.kind == "repository_privacy_setup"
-    assert continuation.command == ("yoetz", "--privacy")
+    assert continuation.command == ("finishup", "--privacy")
     assert continuation.pending_id is None
     assert continuation.expires_at is None
 
@@ -202,13 +202,53 @@ def test_missing_repository_grant_carries_standing_setup_without_one_use_fields(
 def test_both_continuation_schema_branches_accept_only_their_exact_commands(
     continuation: dict[str, Any],
 ) -> None:
-    valid = _awaiting(continuation=continuation)
-    validate_schema_instance("check-result", "1.0.0", cast(JsonValue, valid))
+    # The released 1.0.0 contract fixes the head to the pre-rename launcher; the current version
+    # names ``finishup`` and still admits the legacy head an older service emitted (ADR-048).
+    legacy = {**continuation, "command": ["yoetz", *continuation["command"][1:]]}
+    validate_schema_instance(
+        "check-result", "1.0.0", cast(JsonValue, _awaiting(continuation=legacy))
+    )
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("check-result", "1.0.0", cast(JsonValue, _awaiting()))
+    for body in (continuation, legacy):
+        validate_schema_instance(
+            "check-result", "1.4.0", cast(JsonValue, _awaiting(continuation=body))
+        )
     invalid = _awaiting(
         continuation={**continuation, "command": ["x"] * len(continuation["command"])}
     )
-    with pytest.raises(ProtocolValueError):
-        validate_schema_instance("check-result", "1.0.0", cast(JsonValue, invalid))
+    for version in ("1.0.0", "1.4.0"):
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("check-result", version, cast(JsonValue, invalid))
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (_continuation(), _repository_grant_continuation()),
+)
+def test_the_model_admits_the_legacy_launcher_head_and_renders_the_current_one(
+    continuation: dict[str, Any],
+) -> None:
+    from finishup.mcp.summaries import _awaiting_continuation_command
+
+    legacy = {**continuation, "command": ["yoetz", *continuation["command"][1:]]}
+    result = CheckResultModel.model_validate(_awaiting(continuation=legacy))
+    assert type(result.root) is CheckAwaitingHumanModel
+    assert result.root.continuation.command[0] == "yoetz"
+    rendered = _awaiting_continuation_command(legacy["kind"], legacy["command"])
+    assert rendered == " ".join(["finishup", *continuation["command"][1:]])
+    assert rendered == _awaiting_continuation_command(continuation["kind"], continuation["command"])
+    # The CLI rendering names the current launcher too, never the pre-rename alias.
+    current = CheckResultModel.model_validate(_awaiting(continuation=continuation))
+    assert type(current.root) is CheckAwaitingHumanModel
+    human = render_human_awaiting_human(result.root)
+    assert f"  {rendered}\n" in human
+    assert "yoetz" not in human
+    assert human == render_human_awaiting_human(current.root)
+    with pytest.raises(ValidationError):
+        CheckResultModel.model_validate(
+            _awaiting(continuation={**continuation, "command": ["yoetzz", *legacy["command"][1:]]})
+        )
 
 
 @pytest.mark.parametrize("field", ("pending_id", "expires_at"))
@@ -246,7 +286,7 @@ def test_a_command_that_does_not_match_the_pending_id_is_rejected() -> None:
     other = f"ppr_{uuid.uuid4()}"
     body = _awaiting(
         continuation=_continuation(
-            command=["yoetz", "privacy", "decide-disclosure", other],
+            command=["finishup", "privacy", "decide-disclosure", other],
         )
     )
 
@@ -257,8 +297,8 @@ def test_a_command_that_does_not_match_the_pending_id_is_rejected() -> None:
 @pytest.mark.parametrize(
     "command",
     (
-        ["yoetz", "privacy", "decide-disclosure"],
-        ["yoetz", "privacy", "decide-policy", _PENDING],
+        ["finishup", "privacy", "decide-disclosure"],
+        ["finishup", "privacy", "decide-policy", _PENDING],
         ["sh", "-c", "decide-disclosure", _PENDING],
     ),
 )
@@ -363,6 +403,30 @@ def test_operation_status_returns_the_same_continuation_for_a_pending_check() ->
     assert page.continuation is not None
     assert page.continuation.pending_id == _PENDING
     assert page.continuation.command[3] == _PENDING
+
+
+def test_operation_status_trusted_command_names_the_current_launcher() -> None:
+    from finishup.cli.render import _continuation_command
+
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "pending",
+            "operation_kind": "check",
+            # A pre-rename service named the legacy launcher (ADR-048).
+            "continuation": {
+                **_continuation(),
+                "command": ["yoetz", *_continuation()["command"][1:]],
+            },
+        }
+    )
+
+    assert page.continuation is not None
+    assert page.continuation.command[0] == "yoetz"
+    assert (
+        _continuation_command(page.continuation) == f"finishup privacy decide-disclosure {_PENDING}"
+    )
 
 
 def test_operation_status_recovers_the_same_standing_repository_grant_handoff() -> None:

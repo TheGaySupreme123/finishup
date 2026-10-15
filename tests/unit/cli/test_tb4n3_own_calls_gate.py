@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from yoetz.cli.closure_gate import closure_gate_from_readiness
+from finishup.cli.closure_gate import closure_gate_from_readiness
 
 
 def _readiness(*actionable: str) -> SimpleNamespace:

@@ -11,8 +11,8 @@ import pytest
 
 from builders.privacy_policies import INSTALLATION_ID, local_only_policy, minimal_external_policy
 from builders.privacy_widenings import llm_channel, with_llm
-from yoetz.application.egress import PrivacyCoordinator, SemanticEgressBlocked
-from yoetz.domain.privacy import (
+from finishup.application.egress import PrivacyCoordinator, SemanticEgressBlocked
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -30,9 +30,9 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.privacy import (
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.privacy import (
     DisclosureProposalRequest,
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
@@ -43,10 +43,10 @@ from yoetz.ports.privacy import (
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
 )
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
+from finishup.ports.semantic import Deadline
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 8, 3, tzinfo=UTC)
 _REQUEST = "req_30000000-0000-4000-8000-000000000101"
@@ -460,8 +460,8 @@ async def test_shipped_recipe_ceilings_admit_a_full_size_review_case() -> None:
     are allowed to gather — so enforcing it refused essentially every real review case.
     """
 
-    from yoetz.adapters.privacy.local_enforcer import estimated_token_count
-    from yoetz.cli.privacy_setup import (
+    from finishup.adapters.privacy.local_enforcer import estimated_token_count
+    from finishup.cli.privacy_setup import (
         _CASE_MAX_BYTES,  # pyright: ignore[reportPrivateUsage]
         _CASE_MAX_TOKENS,  # pyright: ignore[reportPrivateUsage]
     )
@@ -485,7 +485,7 @@ async def test_shipped_recipe_ceilings_admit_a_full_size_review_case() -> None:
 def _packet_with_excerpts(count: int, *, content_bytes: int = 64) -> bytes:
     """A prepared review packet whose ``excerpt`` rows are what the egress check counts."""
 
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.protocol.canonical import canonical_encode
 
     rows = [
         {
@@ -582,10 +582,10 @@ async def test_a_packet_over_the_channel_ceiling_is_denied_whatever_its_excerpt_
     262,144 bytes by construction, so the shipped ceiling cannot be crossed in a unit fixture.
     """
 
-    from yoetz.application.egress import (
+    from finishup.application.egress import (
         _within_excerpt_limits,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.protocol.canonical import canonical_encode
 
     policy = replace(
         _expanded("1.2.0"),

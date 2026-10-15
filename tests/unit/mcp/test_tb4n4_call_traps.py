@@ -1,6 +1,6 @@
 """The tb4n4 call traps (issue #1049): each case replays the shape an agent actually sent.
 
-tb4n4 counted 78 rejected Yoetz calls in 41 of 60 attempts. The shapes below are rebuilt from the
+tb4n4 counted 78 rejected FinishUP calls in 41 of 60 attempts. The shapes below are rebuilt from the
 issue's census (the recorded frames stay on the maintainer's machine). Each runs the bridge's own
 validation path or read_guidance dispatch; no service is contacted.
 """
@@ -12,12 +12,12 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.mcp import server as bridge
-from yoetz.mcp.errors import safe_validation_locations
-from yoetz.mcp.resources import resolve_guidance_topic_uri
-from yoetz.mcp.server import invalid_request_message
-from yoetz.protocol.guidance_uris import GUIDANCE_DOCUMENT_URIS, GUIDANCE_TOPIC_URIS
-from yoetz.protocol.models import PublishWorkRequest, StatusRequest
+from finishup.mcp import server as bridge
+from finishup.mcp.errors import safe_validation_locations
+from finishup.mcp.resources import resolve_guidance_topic_uri
+from finishup.mcp.server import invalid_request_message
+from finishup.protocol.guidance_uris import GUIDANCE_DOCUMENT_URIS, GUIDANCE_TOPIC_URIS
+from finishup.protocol.models import PublishWorkRequest, StatusRequest
 
 _IDENTITY: dict[str, object] = {
     "protocol_version": "0.1",
@@ -30,8 +30,8 @@ _IDENTITY: dict[str, object] = {
 }
 _UUID = "00000000-0000-4000-8000-00000000000"
 _SECRET = "caller-prose-must-not-echo"
-_TEMPLATES = "yoetz://guidance/request-templates.md"
-_POLICY = "yoetz://guidance/publication-policy.md"
+_TEMPLATES = "finishup://guidance/request-templates.md"
+_POLICY = "finishup://guidance/publication-policy.md"
 
 
 def _request(*drafts: dict[str, object]) -> dict[str, object]:
@@ -136,8 +136,8 @@ def test_a_resolution_without_its_refs_names_what_goes_in_them(
 
 
 def test_the_obligations_view_states_the_resolution_recipe() -> None:
-    from yoetz.mcp.summaries import summary_for_status
-    from yoetz.protocol.readiness_text import (
+    from finishup.mcp.summaries import summary_for_status
+    from finishup.protocol.readiness_text import (
         OBLIGATION_RESOLVE_RECIPE_VARIANTS,
         obligation_resolve_recipe_variants,
     )
@@ -192,6 +192,14 @@ def test_the_obligations_view_states_the_resolution_recipe() -> None:
             f"{_TEMPLATES}#publish-work-plan-plus-obligation",
         ),
         (f"{_POLICY}#resolution", f"{_POLICY}#obligation-resolution"),
+        # tb4n5 (#1049): the guesses agents made, now explicit stable aliases. The bare family
+        # prefix reads the overview that lists every publish_work template's exact URI, and the
+        # resource description's phrase reads the same overview.
+        (f"{_TEMPLATES}#publish-work", f"{_TEMPLATES}#publication-templates"),
+        (f"{_TEMPLATES}#publish_work", f"{_TEMPLATES}#publication-templates"),
+        (f"{_TEMPLATES}#ordinary-publication", f"{_TEMPLATES}#publication-templates"),
+        (f"{_TEMPLATES}#plan-and-obligations", f"{_TEMPLATES}#publish-work-plan-plus-obligation"),
+        (f"{_POLICY}#plan-and-obligations", f"{_POLICY}#obligations-evidence-and-claims"),
     ],
 )
 async def test_a_guessed_anchor_that_names_one_topic_reads_it(
@@ -215,14 +223,14 @@ async def test_a_guessed_anchor_that_names_one_topic_reads_it(
     "guessed",
     [
         # Ambiguous: several catalogued anchors contain every word.
-        f"{_TEMPLATES}#publish-work",
+        f"{_TEMPLATES}#publish-work-coordination",
         f"{_TEMPLATES}#claim",
         # No catalogued anchor contains every word.
         f"{_TEMPLATES}#publish_work-plan-revision",
         f"{_TEMPLATES}#zz-guessed-anchor",
         # Focused topics and unknown documents carry no anchors.
-        "yoetz://guidance/publication.md#attempt-accounting",
-        "yoetz://guidance/not-a-document.md#decision",
+        "finishup://guidance/publication.md#attempt-accounting",
+        "finishup://guidance/not-a-document.md#decision",
         f"{_TEMPLATES}#",
     ],
 )

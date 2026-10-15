@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.integrations import (
+from finishup.application.integrations import (
     IntegrationConfirmation,
     IntegrationDiagnostic,
     IntegrationDiagnosticSink,
@@ -14,8 +14,8 @@ from yoetz.application.integrations import (
     IntegrationService,
     IntegrationStatusRequest,
 )
-from yoetz.domain.values import JsonObject, request_id
-from yoetz.ports.integrations import (
+from finishup.domain.values import JsonObject, request_id
+from finishup.ports.integrations import (
     HarnessId,
     IntegrationAction,
     IntegrationError,

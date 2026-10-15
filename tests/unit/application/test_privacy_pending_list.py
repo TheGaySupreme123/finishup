@@ -8,9 +8,9 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.application.privacy_control import build_privacy_support_handlers
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.privacy import (
+from finishup.application.privacy_control import build_privacy_support_handlers
+from finishup.ports.control import ControlMethod
+from finishup.ports.privacy import (
     PendingDisclosureEntry,
     PendingDisclosurePage,
     PrivacyReceiptAudience,

@@ -1,12 +1,12 @@
 # Portable plugin authoring and lifecycle runbook
 
-This runbook covers Yoetz's Agent Plugins 1.0.0 artifact, including its optional exclusive
+This runbook covers FinishUP's Agent Plugins 1.0.0 artifact, including its optional exclusive
 plugin-managed MCP projection. It is a format carrier, not
 an authority or a support claim.
 
 ## Exact source and output
 
-The only portable wrapper source is `skills/portable/yoetz/SKILL.md`. Shared reference bytes remain
+The only portable wrapper source is `skills/portable/finishup/SKILL.md`. Shared reference bytes remain
 owned under `guidance/`. The vendored upstream schemas live under
 `support/agent-plugins/1.0.0/`; their accepted SHA-256 values are recorded in ADR-023.
 The registered Codex project-root evidence is
@@ -16,17 +16,17 @@ The external-registration renderer emits exactly:
 
 ```text
 plugin.json
-skills/yoetz/SKILL.md
-skills/yoetz/references/agent-instructions.md
-skills/yoetz/references/coverage-and-receipts.md
-skills/yoetz/references/publication-policy.md
-skills/yoetz/references/request-templates.md
-skills/yoetz/references/workflow.md
+skills/finishup/SKILL.md
+skills/finishup/references/agent-instructions.md
+skills/finishup/references/coverage-and-receipts.md
+skills/finishup/references/publication-policy.md
+skills/finishup/references/request-templates.md
+skills/finishup/references/workflow.md
 ```
 
 In `external_registration` mode there is no `mcp.json`; existing `HarnessMcpPort` registration is
 the one MCP owner. In `plugin_managed` mode the same inventory also contains root `mcp.json`, with
-one stdio server named `yoetz`, executable token `yoetz`, and args `mcp serve` (policy) or
+one stdio server named `finishup`, executable token `finishup`, and args `mcp serve` (policy) or
 `mcp serve --semantic off` (strict). It contains no environment, headers, credentials, secret
 references, or shell command. Neither mode includes a hook, permission, or Codex-specific skill
 manifest. Run `uv run python scripts/sync_resource_ripple.py --write` after an intentional source or
@@ -43,7 +43,7 @@ missing members, and oversized members fail closed.
 Invalid or mismatched top-level `mcp.json` disables only MCP. One invalid entry, unsupported
 transport, missing executable, or start/connect/auth/handshake failure skips and reports only that
 server; an independently valid skill remains available. A GUI host must already be able to resolve
-the bare `yoetz` executable. Fix that host capability outside the artifact rather than injecting
+the bare `finishup` executable. Fix that host capability outside the artifact rather than injecting
 shell configuration, environment, or credentials.
 
 Schema success proves only format validity. It does not prove host discovery, activation, skill
@@ -67,14 +67,14 @@ The artifact adapter fails closed as `ambiguous` unless its caller supplies one 
 observation covering both sources; plugin-tree absence by itself is never treated as exclusive
 absence.
 
-Codex uses the existing `.agents/plugins/yoetz` root. Migration is a whole-directory swap between
+Codex uses the existing `.agents/plugins/finishup` root. Migration is a whole-directory swap between
 marker-identified native and portable trees; files are never merged. A preserved exact native tree
 is restored when the portable tree is removed. Native rollback admission requires byte equality
-with the canonical native renderer and its exact adapter/harness/scope/Yoetz version marker;
+with the canonical native renderer and its exact adapter/harness/scope/FinishUP version marker;
 marker and inventory self-consistency alone is insufficient. Modified, partial, stale, unmanaged,
 foreign, unsafe, or ambiguous trees are preserved and refused. Stage or rollback remnants produce
 `recovery_required`; status reports them and never deletes or chooses between them.
-Removing or rolling back a plugin never removes Yoetz data, vault keys, credentials, privacy
+Removing or rolling back a plugin never removes FinishUP data, vault keys, credentials, privacy
 grants, provider bindings, or foreign host configuration.
 
 Standalone install, replace, and remove use the `plugin_artifact_apply` `review_only` operation.

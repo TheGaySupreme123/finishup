@@ -1,17 +1,17 @@
 # ADR-035 — The declared delivered set and a fact for a removed deliverable
 
-**Status:** Accepted for [issue #1005](https://github.com/TheGaySupreme123/yoetz/issues/1005)
+**Status:** Accepted for [issue #1005](https://github.com/TheGaySupreme123/finishup/issues/1005)
 (proposal PL5-4). Maintainer acknowledgement (TheGaySupreme123, 2026-10-07): "declared delivered
 file set, with a deterministic fact for content moved out of it or a declared file deleted or
 renamed". It changes no wire schema, no egress and no storage. It grants no runtime, credential,
 disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/kernel/delivered_set.py`, `src/yoetz/kernel/task_facts.py`
+**Implemented by:** `src/finishup/kernel/delivered_set.py`, `src/finishup/kernel/task_facts.py`
 (`DECLARED_OUTPUT_REMOVED_GAP`, `DECLARED_OUTPUT_CONTENT_MOVED_GAP`,
 `AGENT_ACTIONABLE_TASK_FACT_GAPS`, `STANDING_TASK_FACT_GAPS`, `STOP_GATE_TOKENS`),
-`src/yoetz/application/check.py` (`_requested_output_inputs`),
-`src/yoetz/application/check_change.py` (`requested_output_states`),
-`src/yoetz/adapters/git_change_capture.py` (`count_change_lines`), `src/yoetz/domain/receipts.py`
-(`TASK_FACT_GAP_SENTENCES`), `src/yoetz/cli/closure_gate.py`, `guidance/workflow.md`.
+`src/finishup/application/check.py` (`_requested_output_inputs`),
+`src/finishup/application/check_change.py` (`requested_output_states`),
+`src/finishup/adapters/git_change_capture.py` (`count_change_lines`), `src/finishup/domain/receipts.py`
+(`TASK_FACT_GAP_SENTENCES`), `src/finishup/cli/closure_gate.py`, `guidance/workflow.md`.
 **Relates to:** ADR-031 (check-time change capture), ADR-033 (task facts and the Stop-time closure
 gate), issues #983, #1002, #1003.
 
@@ -21,7 +21,7 @@ In TB4 run tb4n1, agents reshaped their deliverables to fit an AI-powered review
 interleaved-vigenere, the agent moved the statistics table out of the delivered `/app/cracker.py`
 into an undelivered `/app/english_model.bin` so the reviewer could see the code. The cracker then
 produced empty output, and 3 of 6 tests failed. In music-harmony, the agent moved the delivered
-`harmony.musicxml` to `/tmp` "to reduce the review input". Guidance now forbids this. Yoetz still
+`harmony.musicxml` to `/tmp` "to reduce the review input". Guidance now forbids this. FinishUP still
 needs a deterministic fact that tells the agent when its change removed a deliverable it declared.
 
 ## Decision
@@ -40,18 +40,18 @@ needs a deterministic fact that tells the agent when its change removed a delive
    original; the Git capture folds exact renames). The check adds the closed gap code beside the
    requested-output gaps. A declared file that was never in the task base is removed when it is
    now missing and an `edit` action of the session named it in `attempted_items` (written, then
-   moved away: music-harmony's new `harmony.musicxml`). A read Yoetz could not make
+   moved away: music-harmony's new `harmony.musicxml`). A read FinishUP could not make
    (`unverified`, `outside`, unknown existence) never raises it.
 3. **Classification.** The code is agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`, so `_A` in
    `GAP_CLASSIFICATION`). It makes a check `coverage_incomplete`, and it is a `STOP_GATE_TOKENS`
    entry. Like every task fact, a local absence proof tolerates it. Its receipt sentence and
    Stop-gate text give the repair: "Restore the delivered file, or correct the requested item if
-   the task asked for the deletion: Yoetz review limits never justify moving, splitting or
+   the task asked for the deletion: FinishUP review limits never justify moving, splitting or
    deleting deliverables."
 4. **Ways out.** The fact clears when the delivered file is back at its declared path. If the
    task really asked for the deletion, the agent corrects the requested item instead: it
    supersedes the obligation without that item, or, from 1.1.0, marks the item `role: input`.
-   Recording a `yoetz-blocker:<kind>` for the obligation also suppresses the fact, as it does for
+   Recording a `finishup-blocker:<kind>` for the obligation also suppresses the fact, as it does for
    every requested-output fact.
 
 5. **`declared_output_content_moved` (owner decision, 2026-10-07).** Content moved out of a
@@ -100,7 +100,7 @@ needs a deterministic fact that tells the agent when its change removed a delive
 
 tb4n2 interleaved-vigenere: the declared deliverable `cracker.py` loaded `english_model.npz` and
 `english_words.json.gz`, files the agent created in the workspace and never declared. The grader
-received only the declared files, so the deliverable failed. Yoetz now discloses that shape.
+received only the declared files, so the deliverable failed. FinishUP now discloses that shape.
 
 - **Deliverables read.** Every effective obligation's requested item with role `output` and kind
   `file` whose check-time state is `inside` and existing (not deleted), skipping blocked and
@@ -122,12 +122,13 @@ received only the declared files, so the deliverable failed. Yoetz now discloses
   `STANDING_TASK_FACT_GAPS` disclosure: never a finding, never a `STOP_GATE_TOKENS` entry, never
   receipt-blocking. Declaring the referenced file as an output or input clears it. It is a
   heuristic: a reference built at run time from pieces, or beyond the read bound, is not seen, and
-  a matching literal that is not actually loaded still raises it.
+  a matching literal that is not actually loaded still raises it (narrowed by the tb4n5
+  amendment below: a provable write, or an ambiguous basename (counted instead), no longer does).
 
 ## Amendment (tb4n2 R2, issue #1022): declared_output_emptied
 
 tb4n2 formal-crypto S emptied its delivered `/app/solve.sage` (0 bytes) after an open finding,
-while six obligations stayed recorded `resolved`; Yoetz showed only the standing
+while six obligations stayed recorded `resolved`; FinishUP showed only the standing
 `obligation_evidence_stale_after_scope_edit`, so the Stop gate said nothing. A recorded status is
 now re-derived from the current deliverable (ADR-041):
 
@@ -160,7 +161,7 @@ that read it with content). A file created empty never fires; a new file cut to 
 truncated capture is unknown, not changed. The fact is keyed on the path: it fires while an
 obligation declaring the path is delivered, or the path was recorded with content while delivered
 or verified, whatever the obligation's status is now, so an `acknowledged_not_done` republish or a
-new "empty fallback" obligation cannot clear it. The single exit is a `yoetz-assumption` decision of
+new "empty fallback" obligation cannot clear it. The single exit is a `finishup-assumption` decision of
 an obligation declaring the path that names the path. The lines "clears ... once the obligation is
 republished open or acknowledged_not_done" and "An untracked file truncated ... is not seen" above
 no longer hold. The content-moved disclosure is unchanged and now also covers untracked
@@ -187,7 +188,7 @@ tb4n4 remediation PR), which is the acknowledgement for the storage change below
   or declare the file as a requested item (a delivered output; a file the task itself provides is a
   `role: input` item). The read is unchanged on this point: every declared `file` or `directory` of
   any role excludes a candidate, and a deliverable that no longer names the file does not raise it.
-  A `yoetz-assumption` or `yoetz-verification-limit` decision, a final-answer disclosure or a
+  A `finishup-assumption` or `finishup-verification-limit` decision, a final-answer disclosure or a
   self-verification never clears it; the receipt sentence, the Stop-gate item and the guidance no
   longer offer "disclose the dependency". As before, a confirmed blocker or an
   `acknowledged_not_done` obligation is not read (it is already below clean).
@@ -223,3 +224,108 @@ tb4n4 remediation PR), which is the acknowledgement for the storage change below
 
 The R2 amendment's "Standing and non-blocking", "Only a count leaves the adapter" and "no path ...
 is returned, logged or stored" no longer hold; the rest of it does.
+
+## Amendment (tb4n5, the #1044 follow-up): a dependency is a possible read, ambiguity is counted, and a name returns only to its author
+
+tb4n5 biped-contact-dynamics D (reward 1): the delivered `submission/solve.py` only *wrote*
+`walk.npz`, `run.npz` and `jump.npz` (`model.export(..., out/'walk.npz')`, whose sink is
+`np.savez_compressed`); the declared outputs `results/*.npz` carry the same names, and the agent's
+validator left 18 copies under `checks/case_*/`. All 18 matched by basename, the now-blocking fact
+stopped closure, and under the shipped privacy default (the run's `local_only` policy, structural
+review, an `agent_context` ceiling without `repository_excerpt`) every name was withheld: the Stop
+gate printed "(path withheld)", and the agent spent about a dozen guidance reads before declaring
+all 18 validation copies as delivered outputs. The match rule had no notion of reading versus
+writing or of where a name points, and the guidance promised a name the agent never saw. A first
+fix was checked and failed (`CHECK_FIX_DELIVERY`); this records the corrected rule.
+
+1. **A path a deliverable builds is resolved first.** `find_undeclared_references` (now the
+   dependency view of `classify_undeclared_references`) takes the declared values (any role) and
+   resolves each literal to the relative path the code builds from literals, on a copy of the
+   deliverable whose one-line string literals and comments are blanked: `os.path.join('checks',
+   'case_0', 'walk.npz')` and `Path('checks') / 'case_0' / 'walk.npz'` end
+   `checks/case_0/walk.npz`; a non-literal part (`HERE`, `out`) ends the composition, so
+   `os.path.join(HERE, 'models', 'x.npz')` ends `models/x.npz` below an unknown prefix. A
+   composed path with a directory names candidates by that explicit path only (equal, or a `/`
+   suffix), never by basename: explicit directory evidence beats a declared namesake and any
+   inferred location (from `a/serve.py`, `os.path.join('b', 'model.npz')` names `b/model.npz`,
+   never the `a/model.npz` beside it).
+2. **Only a proven write is not a dependency.** Each naming is classified by the call holding it,
+   within a 2 KiB window and through at most four enclosing path builders: a write is proven only
+   for a supported API in the argument that is its destination (`np.save*`/`savetxt` argument 0 or
+   `file=`; `torch.save` argument 1; a frame's `to_csv`/`to_json`/`to_parquet`/... argument 0 or
+   `path_or_buf=`; `savefig`; `cv2`/`imageio` `imwrite`; `fs.writeFile*`/`appendFile*`;
+   `os.remove`/`os.unlink`/`shutil.rmtree`), for an opener whose actual mode argument (positional
+   index 1, or `mode=`) is a literal write-only mode of that API (a bare, `io`, `codecs`, `gzip`,
+   `bz2`, `lzma` or `builtins` `open`, and `fopen`: `w`, `x` or `a` without `r` or `+`;
+   `zipfile.ZipFile`: `w` or `x`; `h5py.File`: `w`, `x` or `w-`), for
+   `write_text`/`write_bytes`/`unlink`/`touch` chained on a built path, and for a shell `>`.
+   Everything else is `unknown` and counts as a possible read: an unsupported wrapper
+   (`model.export`, `save_model`), `ZipFile.write` (it reads its source), an `open` with no mode
+   (the default reads), a container's append or read-write mode (`ZipFile(..., 'a')` reads the
+   members already in the archive; checker R2), `open` on any other receiver (`tarfile.open`), an
+   assignment to a name used later. A candidate is a dependency when at
+   least one naming may read it (a read before a write is a read) and a path names it; when only
+   its basename does, when no declared item has that basename and the deliverable ties the
+   literal to the candidate's directory at least as closely as to any other candidate of that
+   name (beside it, the repository root, or a literal naming one of its directories). At most 256
+   literal occurrences per deliverable are classified; the rest count as unknown. The matcher keeps
+   one aggregate per candidate (whether an unproven use named it, and whether by explicit path)
+   and applies each distinct literal and composed path once, so its memory is bounded by the
+   candidates and distinct literals, never by occurrences times candidates (checker R2).
+3. **Ambiguity is counted on the receipt.** A candidate named only by an ambiguous basename (a
+   declared file shares it, nothing ties it to its directory, or another candidate of the name is
+   tied more closely) is not a dependency and is never named. The check records how many on the
+   referencing deliverable's `DeliverableState.undeclared_reference_ambiguous` (`check_recorded`
+   1.4.0, unreleased, in place) and raises the new standing disclosure
+   `deliverable_references_ambiguous_name` (gap rule G4b: readiness `S`, disclosed on both routes,
+   never a Stop-gate token, proof-tolerated like every task fact). The receipt sentence says the
+   syntactic check did not treat those files as dependencies and states the count ("Files named
+   ambiguously: 18."), never a name.
+4. **Coverage bound (replaces the R2 "a matching literal that is not actually loaded still raises
+   it").** The read is a bounded syntactic heuristic, not a data-flow analysis. It misses a
+   dependency named only by an ambiguous basename (now disclosed with its count) and one built
+   from pieces it cannot compose; it raises a candidate that an unclassified use names without
+   reading it, which is why the receipt says the deliverable *may* read the file. A false raise is
+   cleared by declaring the file or the directory holding it (a declared directory covers every
+   file beneath it), or by not naming it.
+5. **A name returns only to its author (owner decision 2026-10-13, fail closed).** The owner
+   allowed showing the agent, locally, the names of files it itself created. The structural record
+   cannot establish that: the check-time change lists as created a file staged before the task, an
+   ignored file force-added later, or one any other process wrote, and observation records no path
+   for a shell-written file (hook-captured edit content holds edit paths, but it is consent-gated
+   content the local check does not read; using it is a follow-up). So no new provenance class is
+   introduced. Status attaches, to each `closure_readiness.undeclared_references` path leaf, the
+   ledger authorship of an accepted, unredacted (not targeted by a later `redaction_recorded`, by
+   event ID or payload object ID) `action_recorded` `attempted_items` or
+   `obligation_published` `requested_items` value that spells that exact path (whole, or as the tail
+   of an absolute spelling), preferring the requesting writer's own
+   (`StatusInternalResult.leaf_authorship`, never in `as_json`, head reads only); the resolver
+   applies the existing `self_authored` rule to it (INTERFACES `DisclosureProvenance`): only the
+   writer that published that exact text, in this session, through a cooperative channel, gets
+   the name back, because it already holds it. Every other name keeps the category ceiling, and
+   the Stop gate then says the names were withheld, that FinishUP returns only a name the agent
+   published itself, and how to list the files its change created with its own shell (`git status
+   --porcelain --untracked-files=all`), then to declare the ones the deliverable may read, or their
+   directory, or embed or rebuild them. The "Named, once" rule above is otherwise unchanged: only a
+   `full_local` receipt names a path, export receipts count, the MCP summary, hook diagnostics and
+   gate memory never carry one.
+6. **Never egressed.** The review packet carries a check's history row as bounded structural
+   metadata; it drops `undeclared_references` from each deliverable state (keeping the count) and
+   carries the digest of what it sends, in every history visibility mode: a row whose content is
+   not sent (timeline-only, not selected, not recorded, redacted) carries no digest of a check
+   payload, because the ledger digest of a payload that held names would confirm a guessed name.
+   Before this, review profiles that carried history payloads sent the names.
+
+Guidance (`workflow.md`, `coverage-and-receipts.md`), the receipt sentences, the gate item and the
+host runbooks say "may read" and "names the file when your privacy policy allows, or you published
+that exact name yourself", and the continuations name the directory declaration. Tests:
+`tests/unit/adapters/test_deliverable_references_undeclared_file.py` (biped shape, supported writes,
+unsupported wrappers and `ZipFile.write` as possible reads, the actual `open` mode, explicit
+directories against a declared namesake and a beside-source decoy, read-before-write, a runtime
+rebuild keeping its output literals, shell redirections),
+`tests/integration/closure/test_undeclared_dependency_privacy.py` (the exact biped ceiling through
+the real projection: unpublished, pre-staged and force-added ignored files withheld with the
+continuation; a name the writer published returns to that writer and session only; an authorized
+naming ceiling; the biped shape raising no gap and disclosing 18 ambiguous names on every surface),
+`tests/unit/privacy/test_provenance_resolver.py` and
+`tests/unit/application/test_undeclared_names_never_egress.py`.

@@ -20,19 +20,19 @@ from typing import Any
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     paired_action_link,
 )
-from yoetz.cli import observe_hooks
-from yoetz.domain.observation import ObservationEnvelope
-from yoetz.domain.observation_profiles import (
+from finishup.cli import observe_hooks
+from finishup.domain.observation import ObservationEnvelope
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _TASK = "tsk_7a3f1c52-6a0e-4c1b-9d2e-8b5f4a3c2d10"
 _KEY = bytes(range(32))
@@ -47,6 +47,8 @@ _CLAUDE_POSTS: tuple[tuple[str, dict[str, Any], str | None], ...] = (
             "permission_mode": "bypassPermissions",
             "session_id": "7c1e2f4a-claude-session",
             "tool_input": {"dry_run": True},
+            # Frozen legacy identifier (ADR-048): the recorded pre-rename spelling, so the pinned
+            # digest also proves a legacy plugin's calls still materialize byte for byte.
             "tool_name": "mcp__plugin_yoetz_yoetz__publish_work",
             "tool_response": {"content": [{"text": "published", "type": "text"}]},
             "tool_use_id": "toolu_01PublishWork",
@@ -63,6 +65,8 @@ _CLAUDE_POSTS: tuple[tuple[str, dict[str, Any], str | None], ...] = (
             "permission_mode": "default",
             "session_id": "7c1e2f4a-claude-session",
             "tool_input": {},
+            # Frozen legacy identifier (ADR-048): the recorded pre-rename spelling, so the pinned
+            # digest also proves a legacy plugin's calls still materialize byte for byte.
             "tool_name": "mcp__plugin_yoetz_yoetz__check",
             "tool_response": {"content": [{"text": "verdict", "type": "text"}]},
             "tool_use_id": "toolu_01Check",
@@ -237,7 +241,7 @@ def test_ordinary_profile_pre_and_post_share_one_action(
 ) -> None:
     """The opt-in Claude ordinary profile is paired, so it gets the same single action."""
 
-    from yoetz.domain.events import ActionRecordedPayload, ResultRecordedPayload
+    from finishup.domain.events import ActionRecordedPayload, ResultRecordedPayload
 
     pre, post = _ingress(
         tmp_path,

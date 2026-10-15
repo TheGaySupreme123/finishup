@@ -1,8 +1,8 @@
 """Import-diet regression guards for the Codex hook entry path (#242).
 
 A hook is always a fresh process, so its import graph is paid per tool call.
-Before this bound, ``yoetz hooks observe`` loaded typer, pydantic, the protocol
-schema catalog, and the whole ``yoetz.application`` package — ~325 ms of the
+Before this bound, ``finishup hooks observe`` loaded typer, pydantic, the protocol
+schema catalog, and the whole ``finishup.application`` package — ~325 ms of the
 measured 1.67-2.50 s hook, none of which a hook consumes.
 
 These probes spawn a clean interpreter and only import modules; nothing here
@@ -33,17 +33,17 @@ _FORBIDDEN: Final = (
     "jsonschema",
     "typer",
     "anyio",
-    "yoetz.protocol.models",
-    "yoetz.protocol.schemas",
-    "yoetz.service.client",
-    "yoetz.cli.app",
-    "yoetz.cli.render",
-    "yoetz.application.publish_work",
-    "yoetz.application.unit_of_work",
-    "yoetz.ports.ledger",
-    "yoetz.domain.events",
-    "yoetz.application.recommendations",
-    "yoetz.application.package_update",
+    "finishup.protocol.models",
+    "finishup.protocol.schemas",
+    "finishup.service.client",
+    "finishup.cli.app",
+    "finishup.cli.render",
+    "finishup.application.publish_work",
+    "finishup.application.unit_of_work",
+    "finishup.ports.ledger",
+    "finishup.domain.events",
+    "finishup.application.recommendations",
+    "finishup.application.package_update",
 )
 # Drift ceiling: the measured set after the diet is well under this, so a
 # future eager import shows up here even if it is not on the named list.
@@ -80,7 +80,7 @@ def _modules(statement: str) -> list[str]:
 
 
 def test_hook_entry_does_not_import_named_heavy_modules() -> None:
-    loaded = set(_modules("from yoetz.cli import entry"))
+    loaded = set(_modules("from finishup.cli import entry"))
     offenders = sorted(loaded & set(_FORBIDDEN))
     assert not offenders, (
         "the console entry shim must reach the observe hook without the full CLI "
@@ -89,23 +89,23 @@ def test_hook_entry_does_not_import_named_heavy_modules() -> None:
 
 
 def test_observe_hooks_module_import_set_is_bounded() -> None:
-    loaded = _modules("import yoetz.cli.observe_hooks")
+    loaded = _modules("import finishup.cli.observe_hooks")
     offenders = sorted(set(loaded) & set(_FORBIDDEN))
-    assert not offenders, f"yoetz.cli.observe_hooks eagerly imported {offenders}"
+    assert not offenders, f"finishup.cli.observe_hooks eagerly imported {offenders}"
     assert len(loaded) < _MAX_MODULES, (
         f"the hook import graph grew to {len(loaded)} modules; every one of them "
         "is paid on every tool call"
     )
 
 
-def test_yoetz_application_package_import_is_lazy() -> None:
-    eager = _modules("import yoetz.application")
-    assert "yoetz.application.publish_work" not in eager, (
+def test_finishup_application_package_import_is_lazy() -> None:
+    eager = _modules("import finishup.application")
+    assert "finishup.application.publish_work" not in eager, (
         "importing the application package must not drag publish_work -> "
         "unit_of_work -> ports.ledger -> domain.events -> protocol.models"
     )
-    resolved = _modules("from yoetz.application import Application")
-    assert "yoetz.application.service" in resolved, (
+    resolved = _modules("from finishup.application import Application")
+    assert "finishup.application.service" in resolved, (
         "the lazy re-export must still resolve the documented public names"
     )
 
@@ -131,10 +131,10 @@ def _run_entry_hook(
     the two streams cannot be confused when a hook emits its normal JSON response.
     """
 
-    argv = ["yoetz", *command]
+    argv = ["finishup", *command]
     source = (
         f"import json, sys; sys.path.insert(0, {os.fspath(_REPO_ROOT / 'src')!r})\n"
-        "from yoetz.cli import entry\n"
+        "from finishup.cli import entry\n"
         f"sys.argv = {json.dumps(argv)}\n"
         "error = None\n"
         "try:\n"
@@ -146,7 +146,7 @@ def _run_entry_hook(
         "    error = f'{type(exc).__name__}: {exc}'\n"
         "else:\n"
         "    code = 0\n"
-        "print('__YOETZ_IMPORT_DIET__' + json.dumps({\n"
+        "print('__FINISHUP_IMPORT_DIET__' + json.dumps({\n"
         "    'code': code,\n"
         "    'error': error,\n"
         "    'modules': sorted(sys.modules),\n"
@@ -155,13 +155,13 @@ def _run_entry_hook(
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("YOETZ_") and key not in {"PYTHONPATH", "PYTHONSTARTUP"}
+        if not key.startswith("FINISHUP_") and key not in {"PYTHONPATH", "PYTHONSTARTUP"}
     }
     environment.update(
         {
             "HOME": str(isolated_root / "home"),
             "PYTHONNOUSERSITE": "1",
-            "YOETZ_ISOLATED_ROOT": str(isolated_root),
+            "FINISHUP_ISOLATED_ROOT": str(isolated_root),
         }
     )
     completed = subprocess.run(  # noqa: S603 - fixed interpreter and in-repository source
@@ -173,7 +173,7 @@ def _run_entry_hook(
         timeout=_PROBE_TIMEOUT,
     )
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
-    marker = "__YOETZ_IMPORT_DIET__"
+    marker = "__FINISHUP_IMPORT_DIET__"
     reports = [
         line[len(marker) :]
         for line in completed.stderr.decode("utf-8", errors="replace").splitlines()
@@ -221,8 +221,8 @@ def test_ordinary_native_hooks_call_entry_without_loading_full_cli(
         assert report["code"] == 0, report
         assert report["error"] is None, report
         loaded = set(cast(Sequence[object], report["modules"]))
-        assert "yoetz.cli.observe_hooks" in loaded
-        assert "yoetz.cli.app" not in loaded
+        assert "finishup.cli.observe_hooks" in loaded
+        assert "finishup.cli.app" not in loaded
         assert "typer" not in loaded
         assert "pydantic" not in loaded
         assert completed.stdout == (
@@ -259,8 +259,8 @@ def test_required_startup_hooks_keep_the_import_diet(
         assert report["code"] == 0, report
         assert report["error"] is None, report
         loaded = set(cast(Sequence[object], report["modules"]))
-        assert "yoetz.cli.observe_hooks" not in loaded
-        assert "yoetz.cli.app" not in loaded
+        assert "finishup.cli.observe_hooks" not in loaded
+        assert "finishup.cli.app" not in loaded
         assert "typer" not in loaded
         assert "pydantic" not in loaded
         json.loads(completed.stdout.decode("utf-8"))

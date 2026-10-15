@@ -10,12 +10,12 @@ from pathlib import Path
 import pytest
 
 from builders.multi_agent import multi_agent_service
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.repository_identity import resolve_repository_privacy_context
-from yoetz.domain.coordination import SessionHealth
-from yoetz.ports.control import WorkspaceLocator
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import StartRequest
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.domain.coordination import SessionHealth
+from finishup.ports.control import WorkspaceLocator
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import StartRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -37,7 +37,7 @@ class _SyntheticIdentityKey:
 
 def _git(*args: str) -> None:
     subprocess.run(
-        ["git", "-c", "user.name=Yoetz Test", "-c", "user.email=test@yoetz.invalid", *args],
+        ["git", "-c", "user.name=FinishUP Test", "-c", "user.email=test@finishup.invalid", *args],
         check=True,
         capture_output=True,
     )

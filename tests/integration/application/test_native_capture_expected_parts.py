@@ -8,13 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from integration.application.test_native_capture_pipeline import (
-    _claude_hook_runner,  # pyright: ignore[reportPrivateUsage]
-    _pending_structural_request,  # pyright: ignore[reportPrivateUsage]
-    _pipeline,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.domain.observation import (
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationContentChunk,
     ObservationContentKind,
@@ -23,7 +18,12 @@ from yoetz.domain.observation import (
     ObservationStatusQuery,
     observation_capture_part_descriptors,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from integration.application.test_native_capture_pipeline import (
+    _claude_hook_runner,  # pyright: ignore[reportPrivateUsage]
+    _pending_structural_request,  # pyright: ignore[reportPrivateUsage]
+    _pipeline,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 @pytest.mark.anyio

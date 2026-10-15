@@ -9,8 +9,8 @@ from typing import cast
 
 import pytest
 
-from yoetz.cli import host_hold_advisory as advisory
-from yoetz.cli.hook_io import claude_permission_denied_output
+from finishup.cli import host_hold_advisory as advisory
+from finishup.cli.hook_io import claude_permission_denied_output
 
 
 def test_grant_is_confirmed_only_from_a_granted_state_with_llm_inference_enabled() -> None:
@@ -138,7 +138,7 @@ def test_every_composed_advisory_is_bounded_fixed_text_with_closed_tokens_only()
         assert "additionalContext" not in specific
         assert rendered["systemMessage"] == case.explanation
         assert len(case.explanation) <= 2_000
-        assert case.explanation.startswith("Yoetz")
+        assert case.explanation.startswith("FinishUP")
         assert "{" not in case.explanation and "}" not in case.explanation
         assert "no provider dispatch occurred" in case.explanation.lower()
         assert "do not switch to deterministic_only" in case.explanation
@@ -204,7 +204,7 @@ def test_admission_state_steers_the_durable_fix_line() -> None:
             retry_offer="first",
         ).explanation
 
-    assert "yoetz integrate claude admission grant" in text("absent")
+    assert "finishup integrate claude admission grant" in text("absent")
     assert "already carries Claude Code's admission entry" in text("present")
     assert "partial Claude Code admission entry" in text("partial")
     assert "wider or conflicting" in text("foreign")
@@ -251,7 +251,7 @@ def test_claude_permission_denied_output_matches_native_event_schema() -> None:
     rendered = claude_permission_denied_output("x" * 2_500, retry=False)
     shown = rendered["systemMessage"]
     assert isinstance(shown, str) and len(shown) == 2_000
-    assert shown.endswith("[Yoetz text cut at 2000 characters; read status or the receipt]")
+    assert shown.endswith("[FinishUP text cut at 2000 characters; read status or the receipt]")
 
 
 @pytest.mark.parametrize(

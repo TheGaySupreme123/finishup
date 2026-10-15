@@ -16,7 +16,16 @@ from unittest.mock import patch
 import apsw
 import pytest
 
-import yoetz.mcp.server as bridge
+import finishup.mcp.server as bridge
+from finishup.adapters.runtime import LocalBundleRuntime
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.application.service import Application
+from finishup.cli import elevated
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.ports.start_catalog import EncryptedResultRef, StartAllocation, StartPhase
+from finishup.protocol.canonical import JsonValue
+from finishup.service.elevated_bootstrap import load_pending
 from integration.service.test_consent_vault_initialize_composition import (
     _approve_attestation,  # pyright: ignore[reportPrivateUsage]
     _approved_store,  # pyright: ignore[reportPrivateUsage]
@@ -24,15 +33,6 @@ from integration.service.test_consent_vault_initialize_composition import (
     _production_daemon,  # pyright: ignore[reportPrivateUsage]
     runtime_directory,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
-from yoetz.adapters.runtime import LocalBundleRuntime
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.application.service import Application
-from yoetz.cli import elevated
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.ports.start_catalog import EncryptedResultRef, StartAllocation, StartPhase
-from yoetz.protocol.canonical import JsonValue
-from yoetz.service.elevated_bootstrap import load_pending
 
 pytestmark = pytest.mark.anyio
 
@@ -57,8 +57,8 @@ async def ready(
     runtime = bridge.build_bridge_runtime()
     try:
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent)
@@ -181,7 +181,7 @@ async def test_runtime_wait_bound_yields_reserved_start_and_mcp_exact_replay_com
         )
     )
     # Expire the wait budget deterministically; success is established after explicit release.
-    monkeypatch.setattr("yoetz.adapters.runtime._START_REBIND_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr("finishup.adapters.runtime._START_REBIND_WAIT_SECONDS", 0.0)
     request = _body(7443, held.session_id)
     try:
         result = await bridge.dispatch_start(request, transport)

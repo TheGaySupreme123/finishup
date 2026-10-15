@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.semantic_attempts import (
+from finishup.application.semantic_attempts import (
     FALLBACK_PRIMARY_FAILURE_LIMIT,
     SemanticAttemptAccounting,
     SemanticEndpointAttempts,
@@ -18,9 +18,9 @@ from yoetz.application.semantic_attempts import (
     endpoint_role_for_ordinal,
     is_fallback_licensing_outcome,
 )
-from yoetz.ports.ledger import SemanticAttemptRecord, SemanticJobRecord
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.protocol.models import VALID_SEMANTIC_REASONS, SemanticReason, SemanticStatus
+from finishup.ports.ledger import SemanticAttemptRecord, SemanticJobRecord
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.protocol.models import VALID_SEMANTIC_REASONS, SemanticReason, SemanticStatus
 
 _JOB = "job_40000000-0000-4000-8000-000000000001"
 _LICENSING = (

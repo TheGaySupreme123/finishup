@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation_budget import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation_budget import (
     LARGER_CAPACITY,
     STANDARD_CAPACITY,
     ObservationCapacity,
     PressureState,
 )
-from yoetz.domain.observation_settings import (
+from finishup.domain.observation_settings import (
     DEFAULT_OBSERVATION_SELECTION,
     EFFECTIVE_BUDGET_SCHEMA,
     ObservationCapacityProfile,
@@ -28,8 +28,8 @@ from yoetz.domain.observation_settings import (
     observation_selection_settings_to_json,
     resolve_observation_selection,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import ProtocolValueError
 
 _SET = Timestamp("2026-01-01T00:00:00.000Z")
 _EXPIRY = Timestamp("2026-01-02T00:00:00.000Z")

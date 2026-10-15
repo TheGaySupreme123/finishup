@@ -8,8 +8,8 @@ agent's account. Every adapter that composes its own system instruction carries 
 
 from __future__ import annotations
 
-from yoetz.adapters.providers import openai_chat_completions
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers import openai_chat_completions
+from finishup.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
     TASK_STATEMENT_REVIEW_INSTRUCTION,
 )

@@ -1,8 +1,8 @@
 # ADR-027 — Task lineage and project scope identity
 
 **Status:** Accepted design (2026-09-05), tracked by
-[issue #494](https://github.com/TheGaySupreme123/yoetz/issues/494). The recorded foundation
-[PR #591](https://github.com/TheGaySupreme123/yoetz/pull/591) is merged; the 0.3 candidate now
+[issue #494](https://github.com/TheGaySupreme123/finishup/issues/494). The recorded foundation
+[PR #591](https://github.com/TheGaySupreme123/finishup/pull/591) is merged; the 0.3 candidate now
 implements the Increment-A lineage/project primitives and Increment-B admission, rollup,
 coordination-grant, and host-mapping surfaces described here. This ADR records durable design and
 implementation scope; native capability evidence and limits are maintained in the host integration
@@ -21,7 +21,7 @@ decision bounds.
 
 ## Context
 
-Before the 0.3 implementation, Yoetz had no identity for work that was part of a larger effort.
+Before the 0.3 implementation, FinishUP had no identity for work that was part of a larger effort.
 Subagent work was invisible for some hosts or retained only as metadata, automatic attachment
 historically refused a second task in one workspace, and a receipt spoke for one task ledger. A
 2026-08-31 maintainer design session, recorded and amended on 2026-09-05 in issue #494, chose the
@@ -280,7 +280,7 @@ than implementation notes.
    carries actionable findings is an impossible acceptance transition and stays blocking.
    A child finding the child agent self-verified (ADR-034, `self_verified` on the snapshot row)
    is not parent work and never blocks; on an accepted child it reads "self-verified by the
-   child agent; Yoetz could not prove it" and holds the parent at best at
+   child agent; FinishUP could not prove it" and holds the parent at best at
    `insufficient_coverage`.
    Status agrees: the `view=lineage` child row carries `self_verified_finding_count` (present
    only when positive), and parent status readiness lists the standing code
@@ -294,7 +294,7 @@ than implementation notes.
    that carries it also carries that coverage blocker, and the no-gap precedence is locked by
    the kernel evaluator.
    Grandchildren are visible only through their direct parent. The clean-parent
-   wording remains coverage-bounded and never says that Yoetz verified every child.
+   wording remains coverage-bounded and never says that FinishUP verified every child.
 
 5. **A project is a grouping object, not an egress scope.** `IdKind.project` uses server-generated
    `prj_` identifiers under the same lowercase UUIDv4 rule as the other server kinds. The project

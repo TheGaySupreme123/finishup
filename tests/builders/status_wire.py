@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from builders.readiness import with_checklist
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import StatusResultModel
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import StatusResultModel
 
 __all__ = ["CompactStatus", "compact_status", "obligations_status"]
 

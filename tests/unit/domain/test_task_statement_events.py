@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     MAX_TASK_STATEMENT_BYTES,
     TASK_STATEMENT_EVENT_SCHEMAS,
     ClientKind,
@@ -20,18 +20,18 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.task_statement import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.task_statement import (
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
     TASK_STATEMENT_NOT_SUPPLIED_GAP,
     TASK_STATEMENT_UNAVAILABLE_GAP,
     specification_preflight,
     task_statement_gap_detail,
 )
-from yoetz.domain.values import Frontier, freeze_json, obligation_id
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.domain.values import Frontier, freeze_json, obligation_id
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import validate_schema_instance
 
 _STATEMENT = "Under Ascii, Style.Truncate returns plain text without tail."
 _OBLIGATION = obligation_id("obl_90800000-0000-4000-8000-000000000001")
@@ -139,7 +139,7 @@ def test_gap_details_are_fixed_words_for_each_code() -> None:
     assert "start.task_statement" in cast(
         str, task_statement_gap_detail(TASK_STATEMENT_NOT_SUPPLIED_GAP)
     )
-    assert "yoetz --privacy" in cast(
+    assert "finishup --privacy" in cast(
         str, task_statement_gap_detail(TASK_STATEMENT_NOT_AUTHORIZED_GAP)
     )
     assert task_statement_gap_detail("content_unselected") is None
@@ -176,7 +176,7 @@ def test_an_older_service_contract_refuses_the_statement_instead_of_dropping_it(
     the field as an optional addition, so a body without it keeps its earlier shape.
     """
 
-    from yoetz.protocol.schemas import SchemaInstanceInvalid
+    from finishup.protocol.schemas import SchemaInstanceInvalid
 
     wire = cast(
         JsonValue,

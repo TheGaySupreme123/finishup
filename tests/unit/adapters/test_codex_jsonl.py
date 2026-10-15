@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from builders import ids
-from yoetz.adapters.importers.codex_jsonl import (
+from finishup.adapters.importers.codex_jsonl import (
     CODEX_JSONL_MAPPING_VERSION,
     CodexMappingContext,
     CodexMaterializationIds,
@@ -18,10 +18,10 @@ from yoetz.adapters.importers.codex_jsonl import (
     profile_for_codex_version,
     sanitize_codex_argv,
 )
-from yoetz.domain.values import Timestamp
-from yoetz.ports.importer import ImportLineStatus
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Timestamp
+from finishup.ports.importer import ImportLineStatus
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     PublicationChannel,
     coverage_for_channel,

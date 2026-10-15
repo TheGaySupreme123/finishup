@@ -25,10 +25,9 @@ from __future__ import annotations
 from dataclasses import replace
 
 from builders.policy_cases import clm, evt, finding_record, fnd, obl, record, res
-from unit.application import test_semantic_post_validation as T
-from yoetz.application.check import SemanticJudgmentReview, validate_semantic_judgment
-from yoetz.domain.events import ResponseDisposition, ResponseRecordedPayload
-from yoetz.domain.findings import (
+from finishup.application.check import SemanticJudgmentReview, validate_semantic_judgment
+from finishup.domain.events import ResponseDisposition, ResponseRecordedPayload
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CandidateFinding,
     Finding,
@@ -37,9 +36,14 @@ from yoetz.domain.findings import (
     finding_policy_identity,
     is_limitation_request,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.finding_todo import FindingTodoState, finding_blocks_receipt, finding_todo_state
-from yoetz.ports.semantic import ReviewerChallenge, SemanticJudgment
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.finding_todo import (
+    FindingTodoState,
+    finding_blocks_receipt,
+    finding_todo_state,
+)
+from finishup.ports.semantic import ReviewerChallenge, SemanticJudgment
+from unit.application import test_semantic_post_validation as T
 
 _FOREIGN = "evd_99999999-9999-4999-8999-999999999999"
 
@@ -122,13 +126,13 @@ def test_fixed_over_a_rejection_with_a_trimmed_citation_is_not_an_open_round() -
     assert [v for _f, v, _c in T._rulings(review)] != ["unassessable"]
 
 
-# --- D-1 (ks S fnd_28afe22a, vpp S, lake S): the reviewer obeys P0-3 and Yoetz mints a blocker ---
+# --- D-1 (ks S fnd_28afe22a, vpp S, lake S): the reviewer obeys P0-3 and FinishUP mints a blocker ---
 
 
 def test_a_state_unresolved_limitation_challenge_is_not_receipt_blocking_work() -> None:
     """ks S: the reviewer wrote 'you cannot produce it ... record this as an unresolved verification
     limitation' (requested_next_step state_unresolved_limitation), citing the agent's own
-    yoetz-verification-limit decision. Yoetz minted it as an actionable priority-1
+    finishup-verification-limit decision. FinishUP minted it as an actionable priority-1
     task_requirement_unmet finding; the receipt of a reward-1.0 run read unresolved_findings_remain."""
 
     base = T._formal_crypto_case()

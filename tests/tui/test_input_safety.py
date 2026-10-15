@@ -2,7 +2,7 @@
 
 These are the tests that stop a terminal UI from becoming a way to approve
 something by accident. Each one corresponds to a rule stated in
-``yoetz.tui.widgets.views``.
+``finishup.tui.widgets.views``.
 """
 
 from __future__ import annotations
@@ -12,12 +12,12 @@ from collections.abc import Callable
 import pytest
 
 from builders.tui_runtime import FakeRuntime
-from yoetz.tui.app import YoetzTui
+from finishup.tui.app import FinishUpTui
 
 pytestmark = pytest.mark.anyio
 
 WIDE = (100, 34)
-MakeApp = Callable[..., YoetzTui]
+MakeApp = Callable[..., FinishUpTui]
 
 
 @pytest.fixture
@@ -25,11 +25,11 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def transcript(app: YoetzTui) -> str:
+def transcript(app: FinishUpTui) -> str:
     return "\n".join("\n".join((event.title, *event.body)) for event in app.transcript.events)
 
 
-async def reach_integration_preview(pilot: object, app: YoetzTui) -> None:
+async def reach_integration_preview(pilot: object, app: FinishUpTui) -> None:
     await pilot.pause()  # type: ignore[attr-defined]
     await pilot.press("enter")  # type: ignore[attr-defined]  # connect
     await pilot.pause()  # type: ignore[attr-defined]
@@ -106,7 +106,7 @@ async def test_escape_on_review_mode_during_local_setup_does_not_finish(
     app = make_app(first_run=True, runtime=runtime)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
-        await pilot.press("down", "enter")  # "Set up Yoetz without Codex"
+        await pilot.press("down", "enter")  # "Set up FinishUP without Codex"
         await pilot.pause()
         assert app.open_view is not None
         assert app.open_view.view_name == "review-mode"
@@ -285,7 +285,7 @@ async def test_the_credential_step_is_a_handoff_and_never_a_widget(
 ) -> None:
     """The confidential ceremony owns the real terminal; no widget takes a key."""
 
-    from yoetz.tui.widgets.views import TextEntryView
+    from finishup.tui.widgets.views import TextEntryView
 
     runtime = FakeRuntime()
     app = make_app(runtime=runtime)
@@ -362,7 +362,7 @@ async def test_a_disabled_row_cannot_be_reached_or_chosen(make_app: MakeApp) -> 
         assert app.open_view is view
 
 
-async def run_command(pilot: object, app: YoetzTui, command: str) -> None:
+async def run_command(pilot: object, app: FinishUpTui, command: str) -> None:
     """Type a slash command into the composer and submit it the way a user would."""
 
     app.composer.focus_input()

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import unicodedata
 
-from yoetz.application.respond import self_verification_refusal_message
-from yoetz.domain.findings import FindingOrigin
-from yoetz.kernel.self_verification import NO_RECORDED_LIMIT, disqualifying_reasons
+from finishup.application.respond import self_verification_refusal_message
+from finishup.domain.findings import FindingOrigin
+from finishup.kernel.self_verification import NO_RECORDED_LIMIT, disqualifying_reasons
 
 _MESSAGE_BOUND_BYTES = 4096
 
@@ -24,7 +24,7 @@ def test_the_disqualifying_reasons_are_the_recorded_tokens_in_order() -> None:
         "issue_returned_again",
     )
     blocking = disqualifying_reasons(reasons, FindingOrigin.DETERMINISTIC)
-    # Standing Yoetz limits are not blocking; duplicates collapse in recorded order.
+    # Standing FinishUP limits are not blocking; duplicates collapse in recorded order.
     assert blocking == ("issue_returned_again", "coverage:completion_plan_not_claimed")
     assert disqualifying_reasons((), FindingOrigin.DETERMINISTIC) == (NO_RECORDED_LIMIT,)
     assert disqualifying_reasons(("coverage:content_redacted",), FindingOrigin.DETERMINISTIC) == ()
@@ -38,7 +38,7 @@ def test_the_message_names_the_tokens_a_next_step_per_family_and_the_limit_exit(
     assert "coverage:completion_plan_not_claimed" in message
     assert "the check still sees the issue: repair it, then check" in message
     assert "must name every plan obligation not acknowledged as not done" in message
-    assert "yoetz-verification-limit:<obligation id>" in message
+    assert "finishup-verification-limit:<obligation id>" in message
     assert "Do not retry self_verified" in message
     _assert_bounded(message)
 
@@ -56,8 +56,8 @@ def test_an_unhinted_coverage_code_still_gets_a_coverage_next_step() -> None:
 def test_no_recorded_reason_still_names_the_exits() -> None:
     for blocking in ((), (NO_RECORDED_LIMIT,)):
         message = self_verification_refusal_message(blocking)
-        assert message.startswith("Not a Yoetz limit")
-        assert "yoetz-verification-limit:" in message
+        assert message.startswith("Not a FinishUP limit")
+        assert "finishup-verification-limit:" in message
         _assert_bounded(message)
 
 
@@ -83,7 +83,7 @@ def test_a_command_attempt_mismatch_names_the_link_that_clears_it() -> None:
 
 
 def test_every_hint_family_at_once_stays_bounded() -> None:
-    from yoetz.application.respond import (
+    from finishup.application.respond import (
         _BLOCKING_HINTS,  # pyright: ignore[reportPrivateUsage]
     )
 

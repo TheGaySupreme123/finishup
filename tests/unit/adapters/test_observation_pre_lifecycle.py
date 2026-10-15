@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import ObservationSource, ObservationStatusQuery
-from yoetz.domain.values import Timestamp
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import ObservationSource, ObservationStatusQuery
+from finishup.domain.values import Timestamp
 
 _NOW = Timestamp("2026-09-10T00:01:00.000Z")
 _WALL_SECONDS = datetime(2026, 9, 10, 0, 1, tzinfo=UTC).timestamp()

@@ -7,22 +7,22 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.lineage_coordinator import LineageManifestCoordinator
-from yoetz.domain.events import LedgerRecord
-from yoetz.domain.values import task_id
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.ids import IdPort
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.ledger import LedgerPort
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.ports.runtime import (
+from finishup.application.lineage_coordinator import LineageManifestCoordinator
+from finishup.domain.events import LedgerRecord
+from finishup.domain.values import task_id
+from finishup.ports.clock import ClockPort
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.ids import IdPort
+from finishup.ports.importer import ImporterPort
+from finishup.ports.ledger import LedgerPort
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.runtime import (
     BundleRuntimePort,
     OwnershipFence,
     TaskRuntime,
 )
-from yoetz.ports.start_catalog import StartCatalogPort
-from yoetz.protocol.ids import IdKind
+from finishup.ports.start_catalog import StartCatalogPort
+from finishup.protocol.ids import IdKind
 
 pytestmark = pytest.mark.anyio
 
@@ -112,20 +112,20 @@ def test_child_snapshot_carries_self_verified_only_for_a_self_verified_finding(
     from dataclasses import replace
 
     from builders.policy_cases import evd, finding_record, fnd, obl, record
-    from yoetz.application.lineage_coordinator import (
+    from finishup.application.lineage_coordinator import (
         _child_finding_snapshot,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.events import ResponseRecordedPayload
-    from yoetz.domain.findings import (
+    from finishup.domain.events import ResponseRecordedPayload
+    from finishup.domain.findings import (
         FINDING_KIND_TRAITS,
         Finding,
         FindingKind,
         FindingOrigin,
         ResponseDisposition,
     )
-    from yoetz.domain.values import Frontier
-    from yoetz.kernel.projections import empty_projection_state
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+    from finishup.domain.values import Frontier
+    from finishup.kernel.projections import empty_projection_state
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 
     digest = "sha256:" + "4" * 64
     kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
@@ -177,20 +177,20 @@ def test_child_snapshots_roll_a_linked_pair_up_once_and_never_inherit_resolution
     from dataclasses import replace
 
     from builders.policy_cases import evd, evt, finding_record, fnd, obl, record
-    from yoetz.application.lineage_coordinator import (
+    from finishup.application.lineage_coordinator import (
         _child_finding_snapshots,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.events import ResponseRecordedPayload
-    from yoetz.domain.findings import (
+    from finishup.domain.events import ResponseRecordedPayload
+    from finishup.domain.findings import (
         FINDING_KIND_TRAITS,
         Finding,
         FindingKind,
         FindingOrigin,
         ResponseDisposition,
     )
-    from yoetz.domain.values import Frontier
-    from yoetz.kernel.projections import empty_projection_state
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+    from finishup.domain.values import Frontier
+    from finishup.kernel.projections import empty_projection_state
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 
     digest = "sha256:" + "4" * 64
     kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS

@@ -7,14 +7,14 @@ from pathlib import Path
 import anyio
 import pytest
 
-from yoetz.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
-from yoetz.application.applied_mcp_route import read_applied_route, record_applied_route
-from yoetz.cli import setup
-from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND, HarnessBinary
-from yoetz.ports.integrations import HarnessId
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
+from finishup.application.applied_mcp_route import read_applied_route, record_applied_route
+from finishup.cli import setup
+from finishup.ports.harness_mcp import MCP_SERVE_COMMAND, HarnessBinary
+from finishup.ports.integrations import HarnessId
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import validate_schema_instance
 
 
 @pytest.mark.parametrize("post_state", ["absent", "yoetz_owned", "foreign_present", "unreadable"])
@@ -28,7 +28,7 @@ def test_remove_json_exit_and_bookkeeping_agree(
 ) -> None:
     binary = HarnessBinary(HarnessId.CODEX, "/opt/test codex", "0.153.4", "untested")
     owned = CommandOutput(
-        0, json.dumps({"command": "yoetz", "args": list(MCP_SERVE_COMMAND[1:])}).encode()
+        0, json.dumps({"command": "finishup", "args": list(MCP_SERVE_COMMAND[1:])}).encode()
     )
     calls: list[tuple[str, ...]] = []
     post = {
@@ -39,13 +39,22 @@ def test_remove_json_exit_and_bookkeeping_agree(
     }[post_state]
     outputs = [owned, owned, owned, owned, CommandOutput(exit_code, b"private-host-payload"), *post]
 
+    found = False
+
     def runner(argv: tuple[str, ...]) -> CommandOutput:
+        nonlocal found
         calls.append(argv)
-        return outputs.pop(0)
+        if argv[1:3] == ("mcp", "list") and found:
+            # The legacy ``yoetz`` key read that follows a found entry (ADR-048): none here.
+            found = False
+            return CommandOutput(0, b"[]")
+        output = outputs.pop(0)
+        found = argv[1:3] == ("mcp", "get") and output.exit_code == 0
+        return output
 
     adapter = CodexMcpAdapter(runner)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.isolated_root", lambda: None)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
     monkeypatch.setattr(setup, "discover_codex_binaries", lambda: (binary,))
 
     def selected_adapter(*_args: object, **_kwargs: object) -> CodexMcpAdapter:

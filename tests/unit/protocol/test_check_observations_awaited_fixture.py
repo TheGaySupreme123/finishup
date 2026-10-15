@@ -12,9 +12,9 @@ from tests.unit.protocol.test_models_and_schemas import (
     _check_result_wire,  # pyright: ignore[reportPrivateUsage]
 )
 
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.models import CheckRequest, CheckResult, CheckSuccessModel
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.models import CheckRequest, CheckResult, CheckSuccessModel
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 _FIXTURE = (
     Path(__file__).resolve().parents[3]

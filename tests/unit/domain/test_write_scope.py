@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_session_stream import (
     _file_change_write_scope,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     _action_kind,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.events import ActionKind
-from yoetz.domain.write_scope import classify_write_path, edit_write_scope
+from finishup.domain.events import ActionKind
+from finishup.domain.write_scope import (
+    classify_write_path,
+    edit_write_scope,
+    finishup_artifact_name,
+    finishup_tree_overlap,
+)
 
 
 def _inside(path: str) -> bool:
@@ -29,11 +34,19 @@ def _inside(path: str) -> bool:
         ("/var/tmp/x", "scratch"),
         # A log inside the workspace may be a deliverable: it counts (Codex review round 1).
         ("/app/run.log", "workspace"),
+        ("/app/finishup_exporter.py", "workspace"),
+        ("/app/finishup_receipt.md", "yoetz_owned"),
+        ("/app/output/finishup_receipt.json", "yoetz_owned"),
+        ("/app/.agents/skills/finishup/SKILL.md", "yoetz_owned"),
+        ("/srv/state/finishup/ledger.sqlite", "yoetz_owned"),
+        # Legacy receipt names and packaged trees an earlier install wrote stay owned (ADR-048).
         ("/app/yoetz_exporter.py", "workspace"),
         ("/app/yoetz_receipt.md", "yoetz_owned"),
-        ("/app/output/yoetz_receipt.json", "yoetz_owned"),
+        ("/app/output/yoetz-export.json", "yoetz_owned"),
         ("/app/.agents/skills/yoetz/SKILL.md", "yoetz_owned"),
-        ("/srv/state/yoetz/ledger.sqlite", "yoetz_owned"),
+        ("/app/.agents/plugins/yoetz/.mcp.json", "yoetz_owned"),
+        ("/app/.agents/plugins/finishup/.mcp.json", "yoetz_owned"),
+        ("/app/.agents/skills/yoetz-notes/SKILL.md", "workspace"),
         ("/usr/lib/python3/site-packages/lightning/x.py", "outside_workspace"),
         ("/opt/logs/x.log", "outside_workspace"),
         ("/tmp/../etc/passwd", "outside_workspace"),
@@ -43,10 +56,21 @@ def test_classify_write_path(path: str, expected: str) -> None:
     inside = _inside(path) if path.startswith("/") else None
     assert (
         classify_write_path(
-            path, workspace="/app", inside=inside, owned_roots=("/srv/state/yoetz",)
+            path, workspace="/app", inside=inside, owned_roots=("/srv/state/finishup",)
         )
         == expected
     )
+
+
+def test_legacy_trees_overlap_like_the_finishup_trees() -> None:
+    """A declared deliverable in either spelling of the packaged trees is the work (ADR-048)."""
+
+    assert finishup_tree_overlap(".agents/skills/yoetz/SKILL.md")
+    assert finishup_tree_overlap(".agents/plugins/finishup")
+    assert not finishup_tree_overlap(".agents/skills/yoetz-extra/SKILL.md")
+    assert finishup_artifact_name("out/yoetz_receipt.json")
+    assert finishup_artifact_name("out/finishup_receipt.json")
+    assert not finishup_artifact_name("out/receipt.json")
 
 
 def test_a_workspace_under_a_temporary_root_is_still_the_workspace() -> None:
@@ -76,16 +100,16 @@ def test_edit_write_scope_counts_any_real_path(classes: tuple[str, ...], scope: 
 @pytest.mark.parametrize(
     ("tool", "kind"),
     [
-        ("mcp__yoetz__check", ActionKind.OTHER),
-        ("mcp__yoetz__publish_work", ActionKind.OTHER),
-        ("mcp__plugin_yoetz_yoetz__receipt", ActionKind.OTHER),
+        ("mcp__finishup__check", ActionKind.OTHER),
+        ("mcp__finishup__publish_work", ActionKind.OTHER),
+        ("mcp__plugin_finishup_finishup__receipt", ActionKind.OTHER),
         ("mcp__fs__edit_file", ActionKind.EDIT),
         ("apply_patch", ActionKind.EDIT),
         ("file_change", ActionKind.EDIT),
         ("Bash", ActionKind.COMMAND),
     ],
 )
-def test_yoetz_mcp_tools_are_never_edits_or_commands(tool: str, kind: ActionKind) -> None:
+def test_finishup_mcp_tools_are_never_edits_or_commands(tool: str, kind: ActionKind) -> None:
     assert _action_kind(tool) is kind
 
 
@@ -93,7 +117,7 @@ def test_codex_stream_file_change_names_only_non_counting_scopes() -> None:
     # Rollout mapping form and `codex exec --json` list form.
     # The stream knows no workspace root, so a temp path is never exempt there.
     assert _file_change_write_scope({"/tmp/a.py": {"type": "add"}}) is None
-    assert _file_change_write_scope([{"path": "/app/yoetz_receipt.md"}]) == "yoetz_owned"
+    assert _file_change_write_scope([{"path": "/app/finishup_receipt.md"}]) == "yoetz_owned"
     assert _file_change_write_scope({"/app/cracker.py": {"type": "update"}}) is None
     assert (
         _file_change_write_scope({"/tmp/a.py": {"type": "add"}, "/app/b.py": {"type": "add"}})

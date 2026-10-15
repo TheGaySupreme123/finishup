@@ -10,9 +10,10 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.control.unix_socket import LocalControlTransportError
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import (
+from finishup.adapters.control.unix_socket import LocalControlTransportError
+from finishup.adapters.repository_identity import RepositoryIdentityError
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
     ControlCallRequest,
     ControlCancelRequest,
     ControlClientKind,
@@ -25,14 +26,14 @@ from yoetz.ports.control import (
     ServiceStatus,
     WorkspaceLocator,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.schemas import (
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.schemas import (
     SchemaInstanceInvalid,
     load_schema_catalog,
     validate_schema_instance,
 )
-from yoetz.service.control_protocol import (
+from finishup.service.control_protocol import (
     CONTROL_PROTOCOL_VERSION,
     MAX_ACTIVE_REQUESTS_PER_SESSION,
     MAX_CONTROL_FRAME_BYTES,
@@ -40,6 +41,7 @@ from yoetz.service.control_protocol import (
     BoundedControlQueue,
     ControlProtocolError,
     ControlSession,
+    HandshakeServiceFault,
     client_handshake,
     decode_control_frame,
     encode_control_frame,
@@ -352,7 +354,7 @@ def test_status_projection_phase_survives_the_control_wire() -> None:
 
 
 def test_workflow_start_request_round_trips_through_frozen_json_object() -> None:
-    from yoetz.protocol.models import StartRequest
+    from finishup.protocol.models import StartRequest
 
     start = StartRequest.model_validate(
         {
@@ -389,7 +391,7 @@ def test_workflow_start_request_round_trips_through_frozen_json_object() -> None
 
 
 def test_private_mcp_route_profile_round_trips_only_for_check_and_status() -> None:
-    from yoetz.protocol.models import CheckRequest
+    from finishup.protocol.models import CheckRequest
 
     check = CheckRequest.model_validate(
         {
@@ -467,7 +469,10 @@ class _MemoryStream:
 
     async def receive(self, max_bytes: int) -> bytes:
         while not self._buffer:
-            self._buffer.extend(await self._chunks.get())
+            chunk = await self._chunks.get()
+            if not chunk:
+                return b""
+            self._buffer.extend(chunk)
         chunk = bytes(self._buffer[:max_bytes])
         del self._buffer[:max_bytes]
         return chunk
@@ -478,6 +483,11 @@ class _MemoryStream:
 
     async def aclose(self) -> None:
         self.closed = True
+
+    def close_inbound(self) -> None:
+        """Deliver the end of stream the peer's close would: the next read returns no bytes."""
+
+        self._chunks.put_nowait(b"")
 
 
 def _stream_pair() -> tuple[_MemoryStream, _MemoryStream, object]:
@@ -570,6 +580,101 @@ def test_legacy_hello_remains_unbound_and_never_invokes_locator_resolver() -> No
         assert server_result.repository_privacy_context is None
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("raised", "refusal"),
+    [
+        (RepositoryIdentityError("git_version_unsupported"), "git_version_unsupported"),
+        (
+            RepositoryIdentityError("repository_identity_unavailable"),
+            "repository_identity_unavailable",
+        ),
+        (RuntimeError("/private/raw-repository: fatal"), None),
+    ],
+)
+def test_a_service_side_handshake_fault_is_typed_for_the_daemon(
+    raised: Exception, refusal: str | None
+) -> None:
+    """#1040: a resolver fault after unlock closes the hello as a typed, recordable fault."""
+
+    async def exercise() -> tuple[HandshakeServiceFault, BaseException]:
+        client, server, client_peer = _stream_pair()
+
+        async def fail(_locator: WorkspaceLocator) -> RepositoryPrivacyContext:
+            raise raised
+
+        hello = asyncio.create_task(
+            client_handshake(
+                client,
+                ControlClientKind.CLI,
+                "0.1.0",
+                workspace_locator=WorkspaceLocator("/private/raw-repository"),
+            )
+        )
+        with pytest.raises(HandshakeServiceFault) as fault:
+            await server_handshake(server, client_peer, _status(), repository_context_resolver=fail)
+        # The service closed without answering, which the client reads as `handshake_rejected`.
+        assert server.closed
+        client.close_inbound()
+        rejected = (await asyncio.gather(hello, return_exceptions=True))[0]
+        assert isinstance(rejected, BaseException)
+        return fault.value, rejected
+
+    fault, rejected = asyncio.run(exercise())
+    assert fault.reason == "handshake_service_fault"
+    assert fault.refusal == refusal
+    assert fault.__cause__ is raised
+    # Nothing the fault carries names the locator; only the closed token travels.
+    assert "/private/raw-repository" not in f"{fault!r} {fault}"
+    assert isinstance(rejected, ControlProtocolError)
+    assert rejected.reason == "handshake_rejected"
+
+
+def test_the_daemon_records_a_handshake_fault_by_its_closed_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from finishup.service import daemon
+
+    public: list[dict[str, object]] = []
+    unexpected: list[tuple[BaseException, dict[str, object]]] = []
+
+    def record_public(**fields: object) -> str:
+        public.append(fields)
+        return "err_00000000-0000-4000-8000-000000000001"
+
+    def record_unexpected(exc: BaseException, **fields: object) -> str:
+        unexpected.append((exc, fields))
+        return "err_00000000-0000-4000-8000-000000000002"
+
+    monkeypatch.setattr(daemon, "record_public_error_without_raising", record_public)
+    monkeypatch.setattr(daemon, "record_unexpected_exception_without_raising", record_unexpected)
+    record = daemon._record_handshake_service_fault  # pyright: ignore[reportPrivateUsage]
+
+    record(HandshakeServiceFault("git_version_unsupported"))
+    cause = RuntimeError("/private/raw-repository")
+    fault = HandshakeServiceFault()
+    fault.__cause__ = cause
+    record(fault)
+
+    assert public == [
+        {
+            "component": "service.daemon",
+            "operation": "control_handshake",
+            "reason": "handshake_service_fault",
+            "reason_code": "git_version_unsupported",
+        }
+    ]
+    assert unexpected == [
+        (
+            cause,
+            {
+                "component": "service.daemon",
+                "operation": "control_handshake",
+                "phase": "handshake",
+            },
+        )
+    ]
 
 
 def test_partial_reads_do_not_consume_the_next_frame_and_eof_is_fatal() -> None:
@@ -719,7 +824,7 @@ def test_client_handshake_names_an_answered_foreign_digest_as_manifest_mismatch(
     """A 2.1.0-shaped hello-result with another installation's digest is not frame_invalid."""
 
     async def exercise() -> None:
-        import yoetz.service.control_protocol as proto
+        import finishup.service.control_protocol as proto
 
         client, server, _peer = _stream_pair()
 

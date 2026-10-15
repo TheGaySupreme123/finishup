@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
 from builders.clock import format_utc_millis
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EVENT_FAMILIES,
     RESPONSE_EVENT_SCHEMA_VERSION,
     SCHEMA_VERSION,
@@ -50,7 +50,7 @@ from yoetz.domain.events import (
     WriterChain,
     encode_payload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     CheckVerdict,
     Finding,
     FindingKind,
@@ -58,8 +58,8 @@ from yoetz.domain.findings import (
     ResponseDisposition,
     WaiverScope,
 )
-from yoetz.domain.receipts import ReceiptConclusion
-from yoetz.domain.values import (
+from finishup.domain.receipts import ReceiptConclusion
+from finishup.domain.values import (
     ActionId,
     ActorId,
     ClaimId,
@@ -89,7 +89,7 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.protocol.coverage import (
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -98,8 +98,8 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
-from yoetz.protocol.models import (
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     ReceiptRedactionProfile,

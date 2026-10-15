@@ -20,16 +20,16 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
-import yoetz.mcp.server as bridge
-from yoetz.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
-from yoetz.mcp.errors import safe_validation_locations
-from yoetz.mcp.server import invalid_request_message
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.models import PublishWorkRequestModel
+import finishup.mcp.server as bridge
+from finishup.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
+from finishup.mcp.errors import safe_validation_locations
+from finishup.mcp.server import invalid_request_message
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.models import PublishWorkRequestModel
 
 _PUBLISH_SCHEMA = descriptor_for("publish_work").input_schema
-_TEMPLATE_URI = "yoetz://guidance/request-templates.md"
+_TEMPLATE_URI = "finishup://guidance/request-templates.md"
 _REPAIR_KEYS = (
     "repair_field",
     "repair_kind",
@@ -251,7 +251,7 @@ def test_one_retry_moves_the_field_instead_of_deleting_it() -> None:
     locations = _locations(request)
     misplaced = locations[0]["misplaced_field"]
 
-    from yoetz.mcp.errors import _FIELD_OWNERSHIP  # pyright: ignore[reportPrivateUsage]
+    from finishup.mcp.errors import _FIELD_OWNERSHIP  # pyright: ignore[reportPrivateUsage]
 
     owner = _FIELD_OWNERSHIP[misplaced]
     assert owner == "action_recorded"
@@ -270,7 +270,7 @@ def test_one_retry_moves_the_field_instead_of_deleting_it() -> None:
 
 
 def test_the_ownership_registry_stays_closed_and_pinned() -> None:
-    from yoetz.mcp.errors import (
+    from finishup.mcp.errors import (
         _FIELD_OWNERSHIP,  # pyright: ignore[reportPrivateUsage]
         _SAFE_LOCATION_SEGMENTS,  # pyright: ignore[reportPrivateUsage]
     )

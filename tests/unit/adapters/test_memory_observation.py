@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from yoetz.adapters.memory.observation import MemoryObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.memory.observation import MemoryObservationStore
+from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationCursor,
     ObservationEnvelope,
@@ -18,12 +18,12 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import PublicOperationError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import PublicOperationError
 
 _WORKSPACE = "hmac-sha256:" + "1" * 64
 _SESSION = "hmac-sha256:" + "2" * 64

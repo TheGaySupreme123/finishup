@@ -1,4 +1,4 @@
-# Yoetz vX.Y.Z — one-line release name
+# FinishUP vX.Y.Z — one-line release name
 
 <!--
 Curated release-notes conventions (docs/releases/).
@@ -16,7 +16,7 @@ Curated release-notes conventions (docs/releases/).
   must not appear here as a stronger statement.
 - Thank external contributors by name whenever there are any.
 - Relative links do not resolve from a GitHub release body: link into the repository with
-  absolute `https://github.com/TheGaySupreme123/yoetz/blob/<tag>/...` URLs pinned to the tag.
+  absolute `https://github.com/TheGaySupreme123/finishup/blob/<tag>/...` URLs pinned to the tag.
 -->
 
 One short paragraph: what can no longer go wrong, or what is now possible, and for whom.
@@ -29,23 +29,25 @@ One short paragraph: what can no longer go wrong, or what is now possible, and f
 ## What this release does not claim
 
 - Bounded statements of what remains unverified, untested, or deferred, mirroring
-  [`docs/public-claims.json`](https://github.com/TheGaySupreme123/yoetz/blob/vX.Y.Z/docs/public-claims.json)
+  [`docs/public-claims.json`](https://github.com/TheGaySupreme123/finishup/blob/vX.Y.Z/docs/public-claims.json)
   and
-  [`docs/OPEN_QUESTIONS.md`](https://github.com/TheGaySupreme123/yoetz/blob/vX.Y.Z/docs/OPEN_QUESTIONS.md).
+  [`docs/OPEN_QUESTIONS.md`](https://github.com/TheGaySupreme123/finishup/blob/vX.Y.Z/docs/OPEN_QUESTIONS.md).
 
 ## Install
 
 ```text
-uv tool install --managed-python --python 3.14.6 "yoetz==X.Y.Z"
+uv tool install --managed-python --python 3.14.6 "finishup==X.Y.Z"
 ```
 
-For a one-off run: `uvx "yoetz==X.Y.Z"`. With `uv` already installed: `npx yoetz@X.Y.Z` (the npm
+For a one-off run: `uvx "finishup==X.Y.Z"`. With `uv` already installed: `npx finishup@X.Y.Z` (the npm
 package is a dependency-free launcher for the exact PyPI distribution).
 
 ## Release integrity
 
 How to verify the artifacts: point at the attached `SHA256SUMS`, `NPM_SHA256SUMS`, SBOM, support
-matrix, known limitations, release-evidence bundle, and `VERIFY.md`.
+matrix, known limitations, release-evidence bundle, and `VERIFY.md`. While the deprecated `yoetz`
+alias ships (ADR-048), also name `TRANSITIONAL_SHA256SUMS`, `TRANSITIONAL_NPM_SHA256SUMS` and
+`TRANSITIONAL_REPRODUCIBILITY.txt`, and keep an "Upgrading from Yoetz" note under Install.
 
 ## Thanks
 
@@ -58,4 +60,4 @@ Curated notes above; the complete list of merged changes:
 
 - Per-PR list (the GitHub "generate release notes" output is fine here).
 
-**Full Changelog**: https://github.com/TheGaySupreme123/yoetz/compare/vPREV...vX.Y.Z
+**Full Changelog**: https://github.com/TheGaySupreme123/finishup/compare/vPREV...vX.Y.Z

@@ -25,28 +25,28 @@ import pytest
 
 from builders.projection_workflow import frontier_json, request_base
 from builders.start_application import protocol_id
-from integration.application import test_review_dialogue_workflow as W
-from yoetz.application.respond import RespondInternalResult
-from yoetz.domain.findings import FindingKind, FindingOrigin
-from yoetz.kernel.finding_todo import (
+from finishup.application.respond import RespondInternalResult
+from finishup.domain.findings import FindingKind, FindingOrigin
+from finishup.kernel.finding_todo import (
     FindingTodoState,
     finding_blocks_receipt,
     finding_todo_state,
     premise_dispute_basis,
 )
-from yoetz.kernel.limitation import limitation_disclosed_ids, limitation_requested_ids
-from yoetz.kernel.projections import projection_snapshot
-from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
-from yoetz.kernel.reducers import replay
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.semantic import (
+from finishup.kernel.limitation import limitation_disclosed_ids, limitation_requested_ids
+from finishup.kernel.projections import projection_snapshot
+from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
+from finishup.kernel.reducers import replay
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.semantic import (
     ReviewerChallenge,
     ReviewerNextStep,
     SemanticJudgment,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import PublicOperationError
-from yoetz.protocol.models import PublishWorkRequest, RespondRequest
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import PublicOperationError
+from finishup.protocol.models import PublishWorkRequest, RespondRequest
+from integration.application import test_review_dialogue_workflow as W
 
 pytestmark = pytest.mark.anyio
 

@@ -15,10 +15,10 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
-from yoetz.mcp.errors import authoring_hint
-from yoetz.mcp.resources import read_resource
-from yoetz.protocol.canonical import JsonValue
+from finishup.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
+from finishup.mcp.errors import authoring_hint
+from finishup.mcp.resources import read_resource
+from finishup.protocol.canonical import JsonValue
 
 _START_SCHEMA = descriptor_for("start").input_schema
 _PUBLISH_SCHEMA = descriptor_for("publish_work").input_schema
@@ -57,7 +57,7 @@ def test_an_empty_request_names_the_constant_versions_and_the_template() -> None
     )
     assert "protocol_version admits 0.1" in hint
     assert "schema_version admits 1.0.0" in hint
-    assert "yoetz://guidance/request-templates.md" in hint
+    assert "finishup://guidance/request-templates.md" in hint
 
 
 def test_the_hint_is_bounded() -> None:
@@ -88,7 +88,7 @@ def test_a_malformed_schema_yields_no_hint_rather_than_raising(schema: object) -
 
 
 def test_no_locations_still_points_at_the_template() -> None:
-    assert "yoetz://guidance/request-templates.md" in authoring_hint(_START_SCHEMA, ())
+    assert "finishup://guidance/request-templates.md" in authoring_hint(_START_SCHEMA, ())
 
 
 def test_a_schema_without_an_example_stays_silent_when_nothing_is_admitted() -> None:
@@ -115,7 +115,7 @@ def test_every_workflow_tool_can_produce_a_hint() -> None:
     # same bare "arguments are invalid" the dogfood got.
     for name in ("start", "publish_work", "check", "respond", "status", "receipt"):
         schema = cast(dict[str, Any], descriptor_for(name).input_schema)
-        assert "yoetz://guidance/request-templates.md" in authoring_hint(schema, ()), name
+        assert "finishup://guidance/request-templates.md" in authoring_hint(schema, ()), name
 
 
 def test_event_draft_index_names_admitted_families_not_bare_fallback() -> None:
@@ -127,7 +127,7 @@ def test_event_draft_index_names_admitted_families_not_bare_fallback() -> None:
     assert "event family admits" not in hint
     for family in sorted(ORDINARY_MCP_PUBLISH_EVENT_FAMILIES):
         assert family in hint
-    assert hint != (" Hint: see yoetz://guidance/request-templates.md for a complete request.")
+    assert hint != (" Hint: see finishup://guidance/request-templates.md for a complete request.")
 
 
 def test_event_draft_index_names_the_required_envelope_keys() -> None:
@@ -160,7 +160,7 @@ def test_nested_payload_enums_name_admitted_members(pointer: str, label: str, me
     hint = authoring_hint(_PUBLISH_SCHEMA, _locations(pointer))
     assert f"{label} admits" in hint
     assert member in hint
-    assert "yoetz://guidance/request-templates.md" in hint
+    assert "finishup://guidance/request-templates.md" in hint
 
 
 def test_hostile_payload_values_never_appear_in_hints() -> None:
@@ -189,7 +189,7 @@ def test_hint_construction_failure_degrades_to_template_fallback() -> None:
 
     schema: Mapping[str, JsonValue] = _Boom(_PUBLISH_SCHEMA)
     hint = authoring_hint(schema, _locations("/event_drafts/0/payload/action_kind"))
-    assert hint == (" Hint: see yoetz://guidance/request-templates.md for a complete request.")
+    assert hint == (" Hint: see finishup://guidance/request-templates.md for a complete request.")
 
 
 def test_envelope_hint_construction_failure_degrades_to_template_fallback() -> None:
@@ -205,7 +205,7 @@ def test_envelope_hint_construction_failure_degrades_to_template_fallback() -> N
     schema: Mapping[str, JsonValue] = _Boom(_PUBLISH_SCHEMA)
     assert authoring_hint(schema, _locations("/event_drafts/0")) in {
         "",
-        " Hint: see yoetz://guidance/request-templates.md for a complete request.",
+        " Hint: see finishup://guidance/request-templates.md for a complete request.",
     }
 
 
@@ -258,7 +258,7 @@ def test_no_caller_value_reaches_the_new_hint_parts() -> None:
 def test_every_required_schema_name_can_be_located_in_a_public_error() -> None:
     """A required name outside the allowlist reports its parent as missing when it was sent."""
 
-    from yoetz.mcp.errors import (
+    from finishup.mcp.errors import (
         _DELIBERATELY_UNLOCATABLE,  # pyright: ignore[reportPrivateUsage]
         _SAFE_LOCATION_SEGMENTS,  # pyright: ignore[reportPrivateUsage]
     )
@@ -378,7 +378,7 @@ def test_publish_work_examples_include_obligation_resolution_pair() -> None:
 def test_request_templates_document_requested_item_kinds() -> None:
     """Issue #318: the obligation template must name admitted kinds before the first publish."""
 
-    text = read_resource("yoetz://guidance/request-templates.md").decode("utf-8")
+    text = read_resource("finishup://guidance/request-templates.md").decode("utf-8")
     assert "`item_kind` admits `change`, `command`, `file`, `source`, `url`" in text, (
         "the authoring fallback never listed the closed item_kind enum"
     )
@@ -391,14 +391,14 @@ def test_request_templates_document_requested_item_kinds() -> None:
 
 
 def test_publication_policy_documents_obligation_resolution_rule() -> None:
-    text = read_resource("yoetz://guidance/publication-policy.md").decode("utf-8")
+    text = read_resource("finishup://guidance/publication-policy.md").decode("utf-8")
     assert "obligation-resolution" in text or "Obligation resolution" in text
     assert "meaning_fields_must_repeat" in text or "byte-for-byte" in text
     assert "resolution_evidence_refs" in text
 
 
 def test_every_worked_example_validates_against_its_request_schema() -> None:
-    from yoetz.protocol.models import (
+    from finishup.protocol.models import (
         CheckRequestModel,
         PublishWorkRequestModel,
         ReceiptRequestModel,
@@ -425,20 +425,20 @@ def test_every_worked_example_validates_against_its_request_schema() -> None:
 def test_guidance_uris_in_tool_descriptions_resolve() -> None:
     for name in ("start", "publish_work", "check", "respond", "status", "receipt"):
         description = descriptor_for(name).description
-        assert "yoetz://guidance/" in description
-        for resource in description.split("yoetz://guidance/")[1:]:
+        assert "finishup://guidance/" in description
+        for resource in description.split("finishup://guidance/")[1:]:
             name = resource.split(".md", 1)[0] + ".md"
-            payload = read_resource("yoetz://guidance/" + name)
-            assert payload.startswith(b"#") or payload.startswith(b"Yoetz")
+            payload = read_resource("finishup://guidance/" + name)
+            assert payload.startswith(b"#") or payload.startswith(b"FinishUP")
 
 
 def test_invalid_request_message_names_registered_guidance() -> None:
-    from yoetz.mcp.server import invalid_request_message
+    from finishup.mcp.server import invalid_request_message
 
     publish_message = invalid_request_message(
         "publish_work", _locations("/event_drafts/0/payload/action_kind")
     )
     assert "action_kind admits" in publish_message
-    assert "yoetz://guidance/request-templates.md" in publish_message
+    assert "finishup://guidance/request-templates.md" in publish_message
     start_message = invalid_request_message("start", _locations("/mode"))
-    assert "yoetz://guidance/request-templates.md" in start_message
+    assert "finishup://guidance/request-templates.md" in start_message

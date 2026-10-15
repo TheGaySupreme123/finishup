@@ -1,4 +1,4 @@
-Project                 /srv/yoetz
+Project                 /srv/finishup
 Codex                   connected
 Project integration     verified
 Local service           ready

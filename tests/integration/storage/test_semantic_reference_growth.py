@@ -8,31 +8,39 @@ from typing import cast
 import pytest
 
 from builders.replay import replay_records
-from integration.storage.test_append_and_replay import command_from_records, memory_for, uuid_id
-from yoetz.application import ledger_snapshot
-from yoetz.application.semantic_case import bounded_case_envelope, build_semantic_case
-from yoetz.domain.events import (
+from finishup.application import ledger_snapshot
+from finishup.application.semantic_case import bounded_case_envelope, build_semantic_case
+from finishup.domain.events import (
     OBSERVATION_COORDINATOR_ACTOR_ID,
     ActionRecordedPayload,
     encode_payload,
     is_observation_authored,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     MAX_EGRESS_ENVELOPE_BYTES,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import Actor, ActorType, Frontier, action_id, actor_id, event_id, object_id
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
-from yoetz.kernel.projections import ProjectionState
-from yoetz.ports.ledger import AppendEntry, ProjectionView
-from yoetz.protocol.canonical import (
+from finishup.domain.values import (
+    Actor,
+    ActorType,
+    Frontier,
+    action_id,
+    actor_id,
+    event_id,
+    object_id,
+)
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
+from finishup.kernel.projections import ProjectionState
+from finishup.ports.ledger import AppendEntry, ProjectionView
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
     strict_json_parse,
 )
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from integration.storage.test_append_and_replay import command_from_records, memory_for, uuid_id
 
 
 @pytest.fixture

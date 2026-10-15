@@ -22,7 +22,7 @@ from typing import cast
 import pytest
 from pydantic import BaseModel, ValidationError
 
-import yoetz.protocol.models as protocol_models
+import finishup.protocol.models as protocol_models
 from builders.projection_workflow import (
     ProjectionCase,
     build_projection_application,
@@ -31,15 +31,15 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.respond import RespondInternalResult
-from yoetz.application.service import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.respond import RespondInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     CandidateContext,
     ConsentSource,
     LocalDisclosureApproved,
@@ -52,12 +52,12 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.values import Frontier, review_input_continuation
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.ledger import CheckAwaitingHuman, CheckCommitResult, CheckVersionSlice
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier, review_input_continuation
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.ledger import CheckAwaitingHuman, CheckCommitResult, CheckVersionSlice
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
+from finishup.protocol.models import (
     CheckAwaitingHumanModel,
     CheckChecklistCountsModel,
     CheckChecklistItemModel,
@@ -72,6 +72,7 @@ from yoetz.protocol.models import (
     CheckProjectedFindingModel,
     CheckRequest,
     CheckResultModel,
+    CheckReviewModeModel,
     CheckSuccessModel,
     CheckVerifiedItemModel,
     ChildDependencySnapshotModel,
@@ -112,6 +113,7 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusRequestedItemModel,
     StatusResultItemModel,
+    StatusReviewModeModel,
     StatusSemanticProgressModel,
     StatusStructuralSubjectStateModel,
     StatusVersionSliceModel,
@@ -175,7 +177,7 @@ def _check_awaiting_human_payload() -> dict[str, object]:
         "semantic_reason": "human_approval_required",
         "continuation": {
             "kind": "repository_privacy_setup",
-            "command": ["yoetz", "--privacy"],
+            "command": ["finishup", "--privacy"],
             "replay_request_id": request_id,
             "instruction": "Use the trusted local privacy ceremony, then replay this exact request.",
         },
@@ -234,9 +236,15 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "semantic_route_required",
                 # ADR-045: absent when the check carries no derived fact.
                 "fact_lineage",
+                # ADR-049: absent when the owner's conversation setting was not read.
+                "review_mode",
             }
         ),
     ),
+    # ADR-049: a reason only on a check asked for AI-powered review that ran local; a switch id
+    # only when the conversation's own switch chose the mode.
+    (CheckReviewModeModel, frozenset({"local_reason", "switch_event_id"})),
+    (StatusReviewModeModel, frozenset({"local_reason", "switch_event_id", "switch_sequence"})),
     (CheckAwaitingHumanModel, frozenset({"specification_preflight"})),
     # Issue #1048 (ADR-047): the read-only inspection branch.
     (CheckInspectionModel, frozenset({"observations_awaited"})),
@@ -282,9 +290,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusLineageChildModel, frozenset({"self_verified_finding_count"})),
     (ProjectTextRefModel, frozenset({"envelope_digest"})),
     (PublishWorkAcceptedEventModel, frozenset({"summary"})),
-    # #985 publish notices and blocker confirmation, absent when nothing applies.
-    (PublishWorkSuccessModel, frozenset({"blocker_notices"})),
-    (PublishWorkDryRunModel, frozenset({"blocker_notices"})),
+    # #985 publish notices and blocker confirmation, absent when nothing applies; tb4n5 action
+    # notices, absent when every action the batch recorded has a result naming it.
+    (PublishWorkSuccessModel, frozenset({"blocker_notices", "action_notices"})),
+    (PublishWorkDryRunModel, frozenset({"blocker_notices", "action_notices"})),
     (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
     (StatusCheckCauseModel, frozenset({"tool"})),
     (PublicErrorModel, frozenset({"safe_details"})),
@@ -303,6 +312,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "page_count",
                 "complete",
                 "continuation",
+                "sections",
             }
         ),
     ),
@@ -893,11 +903,13 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
             )
         ],
     }
-    # #985: a dry run of a batch without yoetz-blocker lines carries no blocker_notices.
+    # #985: a dry run of a batch without finishup-blocker lines carries no blocker_notices.
     dry_body = {**body, "request_id": protocol_id("req_", 2411), "dry_run": True}
     dry = await app.publish_work(PublishWorkRequest.model_validate(dry_body))
     dumped_dry = cast(object, getattr(dry, "model_dump")(mode="json", exclude_unset=True))
     assert "blocker_notices" not in cast(Mapping[str, JsonValue], dumped_dry)
+    # tb4n5: a batch that records no action carries no action_notices either.
+    assert "action_notices" not in cast(Mapping[str, JsonValue], dumped_dry)
     internal = await app.publish_work(PublishWorkRequest.model_validate(body))
     assert type(internal) is PublishWorkInternalResult
     projected = await project_case(
@@ -910,8 +922,9 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
     assert events
     for event in events:
         assert "summary" not in event
-    # #985: a batch without yoetz-blocker lines carries no blocker_notices at all.
+    # #985: a batch without finishup-blocker lines carries no blocker_notices at all.
     assert "blocker_notices" not in projected
+    assert "action_notices" not in projected
 
 
 def test_blocked_obligation_omits_an_unset_confirmation() -> None:
@@ -950,7 +963,7 @@ def test_check_cause_omits_an_unset_tool() -> None:
 async def test_respond_omits_unset_optional_response_fields() -> None:
     """RespondResponseModel reason/waiver fields and evidence description stay absent when unset."""
 
-    from yoetz.protocol.models import CheckRequest, RespondRequest
+    from finishup.protocol.models import CheckRequest, RespondRequest
 
     # Dedicated path: acknowledge without reason/waiver, and reference evidence that has no
     # description, so every optional_non_null leaf on the respond result stays unset.
@@ -1441,6 +1454,8 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         assert "review_input_manifest" not in projected_check
         # ADR-045: a check with no derived fact lists no lineage (absent, not an empty list).
         assert "fact_lineage" not in projected_check
+        # ADR-049: a composition that cannot read the conversation setting records no mode.
+        assert "review_mode" not in projected_check
         # Issue #961: reviewer output is absent on a deterministic check; frozen-work totals and
         # the overall continuation are filled on every new check but stay optional for legacy rows.
         assert not {"semantic_conclusion", "review_summary", "verified"} & projected_check.keys()
@@ -1463,6 +1478,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             "semantic_redacted_values",
             "observations_awaited",
             "fact_lineage",
+            "review_mode",
         ):
             unset = {key: value for key, value in projected_check.items() if key != field}
             model = CheckSuccessModel.model_validate(unset)
@@ -1888,6 +1904,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         )
     for model in ("PublishWorkSuccessModel", "PublishWorkDryRunModel"):
         covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
+        covered[model, "action_notices"] = "test_publish_accepted_events_omit_unset_summary"
     for field in ("confirmation", "confirmation_event_id"):
         covered["StatusBlockedObligationModel", field] = (
             "test_blocked_obligation_omits_an_unset_confirmation"
@@ -1918,11 +1935,16 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "observations_awaited",
                 "semantic_route_required",
                 "fact_lineage",
+                "review_mode",
             ),
         ),
     ):
         for field in fields:
             covered[model, field] = "test_root_start_and_check_omit_unset_multi_agent_fields"
+    for field in CheckReviewModeModel.optional_non_null_fields:
+        covered["CheckReviewModeModel", field] = "test_review_mode_omits_unset_reason_and_switch"
+    for field in StatusReviewModeModel.optional_non_null_fields:
+        covered["StatusReviewModeModel", field] = "test_review_mode_omits_unset_reason_and_switch"
     for field in FactLineageModel.optional_non_null_fields:
         covered["FactLineageModel", field] = "test_fact_lineage_omits_every_unset_field"
     covered["CheckAwaitingHumanModel", "specification_preflight"] = (
@@ -2027,6 +2049,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "page_count",
         "complete",
         "continuation",
+        "sections",
     ):
         covered["ReadGuidanceSuccessModel", field] = (
             "test_legacy_guidance_result_omits_unset_paging_metadata"
@@ -2040,6 +2063,48 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         f"unset-projection coverage drifted: missing={expected - set(covered)} "
         f"extra={set(covered) - expected}"
     )
+
+
+def test_review_mode_omits_unset_reason_and_switch() -> None:
+    """ADR-049: a conversation-default review mode omits its reason and switch; null is refused."""
+
+    check_mode = CheckReviewModeModel.model_validate(
+        {"mode": "ai_powered", "source": "conversation_default"}
+    )
+    assert check_mode.model_dump(mode="json", exclude_unset=True) == {
+        "mode": "ai_powered",
+        "source": "conversation_default",
+    }
+    for field in CheckReviewModeModel.optional_non_null_fields:
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            CheckReviewModeModel.model_validate(
+                {"mode": "local", "source": "conversation_default", field: None}
+            )
+    status_mode = StatusReviewModeModel.model_validate(
+        {
+            "mode": "local",
+            "requested": "local",
+            "setting": "local_agent_opt_in",
+            "setting_explicit": True,
+            "ai_review_available": True,
+        }
+    )
+    assert (
+        not StatusReviewModeModel.optional_non_null_fields
+        & status_mode.model_dump(mode="json", exclude_unset=True).keys()
+    )
+    for field in StatusReviewModeModel.optional_non_null_fields:
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusReviewModeModel.model_validate(
+                {
+                    "mode": "local",
+                    "requested": "local",
+                    "setting": "local_agent_opt_in",
+                    "setting_explicit": True,
+                    "ai_review_available": True,
+                    field: None,
+                }
+            )
 
 
 def test_respond_closure_after_omits_unset_fields() -> None:
@@ -2062,9 +2127,9 @@ def test_respond_closure_after_omits_unset_fields() -> None:
 
 
 async def test_legacy_guidance_result_omits_unset_paging_metadata() -> None:
-    from yoetz.mcp.server import dispatch_read_guidance
+    from finishup.mcp.server import dispatch_read_guidance
 
-    result = await dispatch_read_guidance({"uri": "yoetz://guidance/agent-instructions.md"})
+    result = await dispatch_read_guidance({"uri": "finishup://guidance/agent-instructions.md"})
     assert result.isError is False
     assert result.structuredContent is not None
     wire = result.structuredContent

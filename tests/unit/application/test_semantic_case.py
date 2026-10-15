@@ -25,14 +25,14 @@ from builders.policy_cases import (
     res,
 )
 from builders.replay import replay_records
-from yoetz.application import semantic_case as semantic_case_module
-from yoetz.application.check import (
+from finishup.application import semantic_case as semantic_case_module
+from finishup.application.check import (
     CheckScope,
     allocate_findings,
     prior_finding_ids,
     run_deterministic_policies,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     OVER_CASE_ITEM_LIMIT_REASON,
     REVIEW_PACKET_ITEM_ID,
     REVIEW_PHASE_QUESTIONS,
@@ -46,7 +46,7 @@ from yoetz.application.semantic_case import (
     semantic_case_to_candidate_context,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     MAX_TEXT_BYTES,
     ActionKind,
     ActionRecordedPayload,
@@ -65,31 +65,31 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import Finding
-from yoetz.domain.observation import ObservationContentKind, ObservationContentManifest
-from yoetz.domain.privacy import (
+from finishup.domain.findings import Finding
+from finishup.domain.observation import ObservationContentKind, ObservationContentManifest
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.receipts import SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP
-from yoetz.domain.values import EvidenceId, object_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.receipts import SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP
+from finishup.domain.values import EvidenceId, object_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     DeterministicCase,
     build_deterministic_case,
 )
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.kernel.reducers import replay
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.semantic import ExcerptDigestProvenance, SemanticCase
-from yoetz.ports.semantic_budget import SemanticBudgetProfile, select_semantic_budget_profile
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.coverage import EvidenceImmutability, LedgerFreshness
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import MAX_REVIEW_TEXT_BYTES, DataCategory
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.kernel.reducers import replay
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.semantic import ExcerptDigestProvenance, SemanticCase
+from finishup.ports.semantic_budget import SemanticBudgetProfile, select_semantic_budget_profile
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.coverage import EvidenceImmutability, LedgerFreshness
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import MAX_REVIEW_TEXT_BYTES, DataCategory
 
 
 class _Ids:
@@ -1904,7 +1904,7 @@ def test_no_review_question_presupposes_a_defect_or_hands_back_the_next_step() -
 def test_recorded_history_packet_keeps_process_rows_and_the_final_phase() -> None:
     """dateutil shape: earlier check and finding rows sit beside a completion claim.
 
-    The reviewer still sees Yoetz's own check/finding rows (they are history, and a response to a
+    The reviewer still sees FinishUP's own check/finding rows (they are history, and a response to a
     finding stays reviewable); the instruction, not a packet filter, tells it they are process
     state. The recorded replay vector supplies real event shapes rather than normalized envelopes.
     """

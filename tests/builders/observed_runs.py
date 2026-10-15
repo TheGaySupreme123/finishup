@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from yoetz.application.check import CheckScope, run_deterministic_policies
-from yoetz.application.observation_materialize import observation_author
-from yoetz.domain.command_segments import command_segment_commitments
-from yoetz.domain.events import (
+from finishup.application.check import CheckScope, run_deterministic_policies
+from finishup.application.observation_materialize import observation_author
+from finishup.domain.command_segments import command_segment_commitments
+from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -35,16 +35,16 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.observation import normalize_observed_command, observed_command_commitment
-from yoetz.domain.observation_selection import command_runner_class
-from yoetz.domain.receipts import (
+from finishup.domain.findings import FindingKind
+from finishup.domain.observation import normalize_observed_command, observed_command_commitment
+from finishup.domain.observation_selection import command_runner_class
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptSectionKey,
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     ClaimId,
@@ -65,17 +65,17 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     CaseGap,
     DeterministicAssessment,
     build_deterministic_case,
 )
-from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
-from yoetz.kernel.receipt_builder import ReceiptBuildContext, build_receipt
-from yoetz.kernel.reducers import replay
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.observed_failures import observed_action_description, observed_command_field
+from finishup.kernel.receipt_builder import ReceiptBuildContext, build_receipt
+from finishup.kernel.reducers import replay
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -86,7 +86,7 @@ from yoetz.protocol.coverage import (
     coverage_for_channel,
     coverage_to_json,
 )
-from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile
 
 __all__ = [
     "INSTALLATION_KEY",
@@ -493,7 +493,7 @@ def receipt_limitations(ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] =
         _SESSION,
         _NOW,
         ReceiptVersionSlice(
-            package_name="yoetz",
+            package_name="finishup",
             package_version="0.3.0",
             protocol_version="0.1",
             engine_version="0.1.0",

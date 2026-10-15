@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.hook_diagnostics import observe_exception_reason, record_hook_diagnostic
-from yoetz.cli.observe_hooks import handle_observe, handle_spool, map_hook_payload_to_envelope
-from yoetz.domain.observation import ObservationGapCode, ObservationStatusQuery
-from yoetz.observability.exception_reasons import EXCEPTION_REASON_TOKENS
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.hook_diagnostics import observe_exception_reason, record_hook_diagnostic
+from finishup.cli.observe_hooks import handle_observe, handle_spool, map_hook_payload_to_envelope
+from finishup.domain.observation import ObservationGapCode, ObservationStatusQuery
+from finishup.observability.exception_reasons import EXCEPTION_REASON_TOKENS
 
 
 def _reasons(state: Path) -> list[str]:

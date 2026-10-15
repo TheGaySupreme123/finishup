@@ -17,47 +17,50 @@ from typing import Any, cast
 
 import pytest
 
+import finishup.application.check_change as check_change_module
+import finishup.service.ready_composition as ready_composition_module
 import integration.service.test_semantic_fallback_dispatch as fallback
 import integration.service.test_semantic_non_dispatch as non_dispatch
-import yoetz.service.ready_composition as ready_composition_module
-from builders.ledger_adapters import append_command, memory_adapter, sqlite_adapter
+from builders.ledger_adapters import FixedClock, append_command, memory_adapter, sqlite_adapter
 from builders.policy_cases import evd, res
-from unit.application.test_review_follow_up import (
-    _captured_group_case,  # pyright: ignore[reportPrivateUsage]
-    _verification_case,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import (
     FinalSemanticEvaluation,
     _review_follow_up,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.egress import SemanticEgressProviderOutcome, SemanticEgressSuccess
-from yoetz.application.missing_for_assessment import ReviewFollowUp, plan_review_follow_up
-from yoetz.application.semantic_case import (
+from finishup.application.egress import SemanticEgressProviderOutcome, SemanticEgressSuccess
+from finishup.application.missing_for_assessment import ReviewFollowUp, plan_review_follow_up
+from finishup.application.semantic_case import (
+    CheckTimeChange,
     assemble_filtered_review_packet,
     review_packet_disclosure_result,
 )
-from yoetz.application.semantic_content import CapturedContentResolution
-from yoetz.domain.events import MissingForAssessmentItem
-from yoetz.domain.findings import SemanticDispatchKind, SemanticFailureClass
-from yoetz.domain.privacy import (
+from finishup.application.semantic_content import CapturedContentResolution
+from finishup.domain.events import MissingForAssessmentItem
+from finishup.domain.findings import SemanticDispatchKind, SemanticFailureClass
+from finishup.domain.privacy import (
     REVIEW_PACKET_ITEM_ID,
     CandidateContext,
     ProviderBinding,
     ReviewContextProfile,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.semantic import (
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.objects import ObjectKind
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.semantic import (
     MissingForAssessment,
     SemanticJudgment,
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
-from yoetz.protocol.canonical import strict_json_parse
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.canonical import strict_json_parse
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from unit.application.test_review_follow_up import (
+    _captured_group_case,  # pyright: ignore[reportPrivateUsage]
+    _verification_case,  # pyright: ignore[reportPrivateUsage]
+)
 
 _PROVIDER = non_dispatch._PROVIDER  # pyright: ignore[reportPrivateUsage]
 _Privacy = non_dispatch._Privacy  # pyright: ignore[reportPrivateUsage]
@@ -183,6 +186,7 @@ def _plan(case: DeterministicCase, first: FinalSemanticEvaluation) -> ReviewFoll
         ),
         previous=None,
         shown_refs=first.case_excerpt_refs,
+        shown_parts=first.case_excerpt_parts,
     )
     assert follow_up is not None
     return follow_up
@@ -218,6 +222,14 @@ def _at_lease_frontier(built: DeterministicCase, durable: FrozenCase) -> Determi
             claims={
                 key: replace(row, source_frontier=frontier.sequence)
                 for key, row in projection.claims.items()
+            },
+            obligations={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.obligations.items()
+            },
+            plans={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.plans.items()
             },
         ),
     )
@@ -265,8 +277,12 @@ async def test_a_follow_up_round_is_its_own_durable_job_and_replays_without_disp
     assert first is not None and first.status is SemanticStatus.SUCCEEDED
     assert first.judgment is not None and first.judgment.conclusion == "insufficient_packet"
     assert first.case_excerpt_refs is not None and str(evd(1)) not in first.case_excerpt_refs
+    # tb4n5: what the sent packet carried, part by part, read from the same provider manifest.
+    assert first.case_excerpt_parts is not None
+    assert not any(key.startswith(f"{evd(1)}#") for key in first.case_excerpt_parts)
     assert first.operation_lease is not None
     follow_up = _plan(case, first)
+    assert follow_up.shown_parts == first.case_excerpt_parts
 
     second = await evaluator(
         FrozenCase(case, first.operation_lease), (), runtime, follow_up=follow_up
@@ -283,6 +299,9 @@ async def test_a_follow_up_round_is_its_own_durable_job_and_replays_without_disp
     assert _REQUESTED not in first_items and _REQUESTED in second_items
     assert first_digest != second_digest
     assert str(evd(1)) in follow_up.added_by(second.case_excerpt_refs or ())
+    assert any(
+        key.startswith(f"{evd(1)}#") for key in follow_up.unseen(second.case_excerpt_parts or ())
+    )
     manifest = second.review_input_manifest
     assert manifest is not None and manifest.follow_up_round == 1
     assert [row.status for row in manifest.missing_inputs] == ["supplied"]
@@ -616,3 +635,213 @@ async def test_a_failed_follow_up_round_ends_like_a_failed_first_review(
     assert calls - 1 == reference_calls == 3
     assert failed.review_input_manifest is not None
     assert failed.review_input_manifest.follow_up_round == 1
+
+
+_CURRENT_MARKER = b"CURRENT_LEAD_STORE_MARKER"
+
+
+class _CurrentSectionPrivacy(_Privacy):
+    """A reviewer that needs the current ``leadStore.ts`` (tb4n5 react-lead-form).
+
+    It asks for the current diff of the stale edit that first added the file until a packet
+    carries the file's current content, then concludes. Every packet is sent whole.
+    """
+
+    def __init__(self, *, task_id: str) -> None:
+        super().__init__(task_id=task_id, profile=ReviewContextProfile.EXPANDED)
+        self.sent: list[frozenset[str]] = []
+
+    async def evaluate_semantic(self, candidate: object, deadline: object) -> object:
+        del deadline
+        assert type(candidate) is CandidateContext
+        self.calls += 1
+        content = {item.item_id: item.plaintext for item in candidate.items}
+        envelope = strict_json_parse(content.pop(REVIEW_PACKET_ITEM_ID))
+        assert isinstance(envelope, dict)
+        self.sent.append(frozenset(content))
+        disclosure = review_packet_disclosure_result(
+            assemble_filtered_review_packet(
+                envelope, content_by_id=content, included_item_ids=frozenset(content)
+            )
+        ).disclosure
+        assert disclosure is not None and disclosure.provider_input_manifest is not None
+        binding = cast(ProviderBinding, candidate.provider_binding)
+        digest = candidate.subject_digest
+        assert digest is not None
+        ordinal = self.calls
+        judgment = (
+            SemanticJudgment("no_material_discrepancy", (), review_summary="The store is shown.")
+            if any(_CURRENT_MARKER in text for text in content.values())
+            else SemanticJudgment(
+                "insufficient_packet",
+                (),
+                missing_for_assessment=(
+                    MissingForAssessment(
+                        "current_diff_for_path", (str(evd(1)),), "The current ledger store."
+                    ),
+                ),
+                review_summary="Only a stale edit of the ledger store is in the packet.",
+            )
+        )
+        return SemanticEgressSuccess(
+            request_id=candidate.request_id,
+            privacy_proposal_id=f"ppr_56000000-0000-4000-8000-00000000{ordinal:04d}",
+            authorization_id=f"aut_56000000-0000-4000-8000-00000000{ordinal:04d}",
+            dispatch_kind=SemanticDispatchKind.EXTERNAL,
+            result=SemanticResultSuccess(
+                judgment,
+                _provenance(binding, status=SemanticStatus.SUCCEEDED, failure_class=None),
+            ),
+            case_digest=digest,
+            privacy_receipt_id=f"egr_56000000-0000-4000-8000-00000000{ordinal:04d}",
+            request_commitment="hmac-sha256:" + "6" * 64,
+            disclosure=disclosure,
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "adapter_factory",
+    (memory_adapter, sqlite_adapter),
+    ids=("memory", "sqlite"),
+)
+async def test_a_current_section_round_is_durable_recorded_and_replays_without_dispatch(
+    adapter_factory: Callable[[object], MemoryLedgerAdapter | SqliteLedger],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n5 react-lead-form, end to end: the round answers a stale edit's current-diff request
+    with the current section from the frozen change, records that file as shown, and replays
+    from the durable jobs without another provider call (checker review)."""
+
+    from finishup.application.check_change import CheckChangeOutcome
+    from finishup.application.semantic_case import CHECK_TIME_SECTION_ITEM_PREFIX
+    from unit.application.test_review_follow_up import (
+        _LEAD,  # pyright: ignore[reportPrivateUsage]
+        _stale_edit_case,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    built, captured, scope, change = _stale_edit_case()
+    change = CheckTimeChange(change.object_ref, replace(change.capture, base_commit="a" * 40))
+    captures: list[str] = []
+
+    async def resolve(**kwargs: object) -> CapturedContentResolution:
+        del kwargs
+        return CapturedContentResolution(scope=scope, content=captured, gaps=())
+
+    def workspace(runtime: TaskRuntime) -> str:
+        del runtime
+        return scope.workspace_commitment
+
+    async def capture(**kwargs: object) -> CheckChangeOutcome:
+        del kwargs
+        captures.append("captured")
+        return CheckChangeOutcome(change=change)
+
+    async def recover(runtime: object, binding: object) -> CheckChangeOutcome:
+        del runtime, binding
+        return CheckChangeOutcome(change=change)
+
+    monkeypatch.setattr(ready_composition_module, "_observation_workspace_for_runtime", workspace)
+    monkeypatch.setattr(ready_composition_module, "resolve_captured_semantic_content", resolve)
+    monkeypatch.setattr(ready_composition_module, "capture_check_time_change", capture)
+    monkeypatch.setattr(ready_composition_module, "recover_check_time_change", recover)
+    monkeypatch.setattr(
+        ready_composition_module, "current_check_workspace_source", lambda: object()
+    )
+    adapter = adapter_factory(append_command())
+    durable, runtime = await _durable_semantic_case(adapter)
+    case = _at_lease_frontier(built, durable)
+    privacy = _CurrentSectionPrivacy(task_id=runtime.task_id)
+    factory = cast(
+        "Callable[..., _FollowUpEvaluator]",
+        getattr(ready_composition_module, "_privacy_gated_semantic_evaluator"),
+    )
+    evaluator = factory(
+        cast(Any, privacy),
+        FixedClock(),
+        non_dispatch._INSTALLATION,  # pyright: ignore[reportPrivateUsage]
+        _resolve_primary,
+        cast(
+            Any,
+            non_dispatch._Catalog(  # pyright: ignore[reportPrivateUsage]
+                non_dispatch._route_for(  # pyright: ignore[reportPrivateUsage]
+                    runtime.task_id, runtime.session_id
+                )
+            ),
+        ),
+        ready_composition_module.IdPort(),
+        change_capture=object(),
+    )
+
+    async def evaluate_semantic_check(
+        frozen: FrozenCase,
+        deterministic_findings: tuple[object, ...],
+        runtime: TaskRuntime | None = None,
+        lineage_evaluation: object | None = None,
+        follow_up: ReviewFollowUp | None = None,
+    ) -> FinalSemanticEvaluation | None:
+        del lineage_evaluation
+        return await evaluator(frozen, deterministic_findings, runtime, follow_up=follow_up)
+
+    app = SimpleNamespace(evaluate_semantic_check=evaluate_semantic_check)
+    request = SimpleNamespace(final_review=False, request_id=durable.lease.operation_id)
+
+    async def loop(result: FinalSemanticEvaluation) -> FinalSemanticEvaluation:
+        assert result.operation_lease is not None
+        final = await _review_follow_up(
+            cast(Any, app),
+            cast(Any, request),
+            runtime,
+            FrozenCase(case, result.operation_lease),
+            (),
+            result,
+            lineage_evaluation=None,
+            require_complete_specification=False,
+            task_fact_gaps=(),
+        )
+        assert type(final) is FinalSemanticEvaluation
+        return final
+
+    first = await evaluator(FrozenCase(case, durable.lease), (), runtime)
+
+    assert first is not None and first.judgment is not None
+    assert first.judgment.conclusion == "insufficient_packet"
+    assert first.case_current_section_parts is not None
+    assert str(evd(1)) in first.case_current_section_parts
+    final = await loop(first)
+
+    assert privacy.calls == 2 and captures == ["captured"]
+    assert [
+        item_id for item_id in privacy.sent[1] if item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX)
+    ] == [f"{CHECK_TIME_SECTION_ITEM_PREFIX}011"]
+    assert final.judgment is not None and final.judgment.conclusion == "no_material_discrepancy"
+    manifest = final.provider_input_manifest
+    assert manifest is not None
+    assert [row["status"] for row in cast(Any, manifest["missing_inputs"])] == ["supplied"]
+    # The served file is part of the record finding resolution compares (ADR-031 item 9).
+    files = final.check_change_files
+    first_files = first.check_change_files
+    assert files is not None and files.complete
+    assert first_files is not None and first_files.complete
+    domain = cast(bytes, getattr(check_change_module, "_SHOWN_FILE_DOMAIN"))
+    lead = await runtime.objects.commitment_for(
+        domain + b"a" * 40 + b"\x00" + f"diff --git a/{_LEAD} b/{_LEAD}".encode(),
+        ObjectKind.CHANGE_CAPTURE,
+    )
+    assert lead in files.fully_shown
+    assert lead not in first_files.fully_shown and lead not in first_files.partial_files()
+    # A repair review that showed only what the first packet showed never covers this one.
+    assert not first_files.covers(files)
+
+    # Replay of the same request: both reviews and the round recover; nothing is sent again.
+    assert final.operation_lease is not None
+    again = await evaluator(FrozenCase(case, final.operation_lease), (), runtime)
+    assert again is not None and again.judgment == first.judgment
+    replayed = await loop(again)
+    assert replayed.judgment == final.judgment
+    assert replayed.check_change_files == final.check_change_files
+    assert privacy.calls == 2 and captures == ["captured"]
+
+
+async def _resolve_primary() -> ProviderBinding | None:
+    return _PROVIDER

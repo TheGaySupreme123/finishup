@@ -14,25 +14,27 @@ from urllib.parse import urldefrag, urlparse
 
 import pytest
 
-from yoetz.protocol.canonical import canonical_encode, strict_json_parse
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.canonical import canonical_encode, strict_json_parse
+from finishup.protocol.errors import ProtocolValueError
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROOT_SCHEMA_DIR = _REPO_ROOT / "schemas"
-_PACKAGE_SCHEMA_DIR = resources.files("yoetz").joinpath("resources").joinpath("schemas")
+_PACKAGE_SCHEMA_DIR = resources.files("finishup").joinpath("resources").joinpath("schemas")
 _MANIFEST_PATH = "manifest.json"
 _SCHEMA_NAMESPACE = "https://schemas.yoetz.dev/0.1/"
 _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
-_EXPECTED_MEMBER_COUNT = 228
-_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 53
+# +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
+# ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
+_EXPECTED_MEMBER_COUNT = 230
+_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 54
 _EXPECTED_EVENT_VERSION_COUNT = 29
 
 
 def _schema_module() -> Any:
-    if importlib.util.find_spec("yoetz.protocol.schemas") is None:
-        pytest.skip("yoetz.protocol.schemas not implemented yet")
-    return importlib.import_module("yoetz.protocol.schemas")
+    if importlib.util.find_spec("finishup.protocol.schemas") is None:
+        pytest.skip("finishup.protocol.schemas not implemented yet")
+    return importlib.import_module("finishup.protocol.schemas")
 
 
 def _collect_traversable_files(root: Traversable, prefix: str = "") -> dict[str, bytes]:
@@ -302,6 +304,7 @@ def test_schema_registry_is_complete() -> None:
                     "events/plan-published-1.1.0.schema.json",
                     "events/plan-revised-1.1.0.schema.json",
                     "events/obligation-published-1.1.0.schema.json",
+                    "events/decision-recorded-1.1.0.schema.json",
                     "events/session-opened-1.1.0.schema.json",
                     "events/session-resumed-1.1.0.schema.json",
                     "findings/finding-1.1.0.schema.json",
@@ -512,7 +515,7 @@ def test_released_version_manifest_2_2_1_retains_the_0_2_3_inventory() -> None:
 
 
 def test_live_version_manifest_2_3_tracks_the_current_inventory() -> None:
-    from yoetz.version import REVIEWED_RESOURCE_COUNT
+    from finishup.version import REVIEWED_RESOURCE_COUNT
 
     document = _version_manifest_document("2.3.0")
 

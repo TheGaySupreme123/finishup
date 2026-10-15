@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.cli.app import control_failure
-from yoetz.cli.render import recovery_directive_json
-from yoetz.domain.coordination import CoordinationErrorCode
-from yoetz.ports.control import ControlError
-from yoetz.protocol.recovery import continuation_for_reason, directive_for
+from finishup.cli.app import control_failure
+from finishup.cli.render import recovery_directive_json
+from finishup.domain.coordination import CoordinationErrorCode
+from finishup.ports.control import ControlError
+from finishup.protocol.recovery import continuation_for_reason, directive_for
 
 
 def test_implicit_project_refusal_has_json_reason_and_invalid_request_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     emitted: list[object] = []
-    monkeypatch.setattr("yoetz.cli.app._stdout_json", emitted.append)
+    monkeypatch.setattr("finishup.cli.app._stdout_json", emitted.append)
 
     code = control_failure(ControlError("implicit_project_requires_opt_out"), json_output=True)
 
@@ -42,7 +42,7 @@ def test_implicit_project_refusal_has_human_opt_out_remedy(
     assert code == 2
     assert captured.out == ""
     assert "implicit_project_requires_opt_out" in captured.err
-    assert "yoetz project opt-out" in captured.err
+    assert "finishup project opt-out" in captured.err
 
 
 @pytest.mark.parametrize("reason", tuple(code.value for code in CoordinationErrorCode))
@@ -51,7 +51,7 @@ def test_every_project_reason_maps_to_invalid_request_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     emitted: list[object] = []
-    monkeypatch.setattr("yoetz.cli.app._stdout_json", emitted.append)
+    monkeypatch.setattr("finishup.cli.app._stdout_json", emitted.append)
 
     code = control_failure(ControlError(reason), json_output=True)
 

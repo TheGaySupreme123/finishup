@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.domain.bounded_text import (
+from finishup.domain.bounded_text import (
     DEFAULT_CUT_MARKER,
     Part,
     ascii_safe,

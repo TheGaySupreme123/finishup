@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
-from yoetz.protocol.canonical import JsonValue
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
+from finishup.protocol.canonical import JsonValue
 
 
 def test_project_summary_carries_generation_and_counts_without_content() -> None:
@@ -182,7 +182,7 @@ def test_check_summary_marks_preview_and_non_verdict_advice() -> None:
             "advisory_notes": [{"kind": "live_member_present"}],
         }
     )
-    assert "No issue detected within deterministic coverage" in text
+    assert "No issue detected within local coverage" in text
     assert "children (preview): 1" in text
     assert "project advice (non-verdict): 1" in text
     assert len(text.encode()) <= MAX_SUMMARY_BYTES

@@ -20,11 +20,11 @@ from builders.observed_runs import (
     omitted_results,
     receipt_limitations,
 )
-from yoetz.domain.events import ActionKind, ClaimRevisionMismatch, ResultOutcome
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import ResultId, SubjectStateRef
-from yoetz.kernel.claims import effective_claim_ids
-from yoetz.kernel.observed_failures import (
+from finishup.domain.events import ActionKind, ClaimRevisionMismatch, ResultOutcome
+from finishup.domain.findings import FindingKind
+from finishup.domain.values import ResultId, SubjectStateRef
+from finishup.kernel.claims import effective_claim_ids
+from finishup.kernel.observed_failures import (
     ObservedFailureState,
     ObservedRun,
     classify_observed_runs,
@@ -32,7 +32,7 @@ from yoetz.kernel.observed_failures import (
     observed_event_ids_from_records,
     observed_failure_states,
 )
-from yoetz.kernel.reducers import build_replay_index, replay
+from finishup.kernel.reducers import build_replay_index, replay
 
 # --- the shared predicate itself -------------------------------------------------------------
 
@@ -364,9 +364,9 @@ def test_ink_c_replay_keeps_the_final_full_suite_failure_visible_exactly_once() 
 
 
 def test_results_view_names_tool_occurrence_commitment_and_exit_status() -> None:
-    from yoetz.adapters.memory import ledger as memory_ledger
-    from yoetz.ports.ledger import ProjectionView
-    from yoetz.protocol.models import StatusResultItemModel
+    from finishup.adapters.memory import ledger as memory_ledger
+    from finishup.ports.ledger import ProjectionView
+    from finishup.protocol.models import StatusResultItemModel
 
     ledger = ObservedLedger()
     ledger.passes("pytest -q tests/x.py")

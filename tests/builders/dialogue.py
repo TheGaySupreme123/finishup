@@ -1,7 +1,7 @@
 """Builders for the tb4n3 finding-dialogue tests (issues #1024 and #1030).
 
 Small, explicit constructors for the shapes the recorded tb4n3 runs produced: a reviewer finding
-with its challenge, the agent's reasoned answers, a ``yoetz-verification-limit`` decision and a
+with its challenge, the agent's reasoned answers, a ``finishup-verification-limit`` decision and a
 projection holding them. Nothing here reads a ledger; the reducer-level tests build real ones with
 ``builders.observed_runs.ObservedLedger``.
 """
@@ -23,7 +23,7 @@ from builders.policy_cases import (
     obligation_record,
     record,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     ClaimKind,
@@ -35,7 +35,7 @@ from yoetz.domain.events import (
     ResponseRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -49,8 +49,8 @@ from yoetz.domain.findings import (
     SemanticProvenance,
     finding_policy_identity,
 )
-from yoetz.domain.values import ClaimId, EventId, FindingId, Frontier, ObligationId, actor_id
-from yoetz.kernel.projections import (
+from finishup.domain.values import ClaimId, EventId, FindingId, Frontier, ObligationId, actor_id
+from finishup.kernel.projections import (
     ClaimProjectionRecord,
     DecisionProjectionRecord,
     FindingProjectionRecord,
@@ -59,9 +59,9 @@ from yoetz.kernel.projections import (
     ProjectionState,
     empty_projection_state,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import CheckType, LedgerFreshness
-from yoetz.protocol.models import (
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import CheckType, LedgerFreshness
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,
@@ -158,7 +158,7 @@ def answer(
 
 
 def limit_decision(
-    number: int, obligation: ObligationId, kind: str = "yoetz-verification-limit"
+    number: int, obligation: ObligationId, kind: str = "finishup-verification-limit"
 ) -> DecisionProjectionRecord:
     payload = DecisionRecordedPayload(
         statement=f"Cannot be verified here.\n{kind}:{obligation}",

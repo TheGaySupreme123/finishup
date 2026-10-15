@@ -1,30 +1,30 @@
 # ADR-046 — One closure verdict, printed by every surface
 
-**Status:** Accepted for [issue #1026](https://github.com/TheGaySupreme123/yoetz/issues/1026)
+**Status:** Accepted for [issue #1026](https://github.com/TheGaySupreme123/finishup/issues/1026)
 (tb4n3 core issue RC-3, lane W2-A: sixteen of sixteen successful runs ended on "Nothing further to
 do" and then received a receipt below clean, and the same finding read four different ways on four
 surfaces). Maintainer acknowledgement (TheGaySupreme123, 2026-10-11 owner decisions Q1-Q4 on the
 RC-3 design): the predicted conclusion is a separate sentence appended after the owner-approved
-stop sentence, which stays byte for byte; Yoetz's own review-packet budgets are a disclosure only
+stop sentence, which stays byte for byte; FinishUP's own review-packet budgets are a disclosure only
 when the review succeeded and reported no insufficiency; `evidence_content_digest_only` keeps
 bounding; and a reviewer's request to state a limitation needs one agent acknowledgement before it
 settles. It adds optional fields to the unreleased `status-result` 1.4.0, `check-result` 1.4.0,
 `respond-result` and `receipt-document` 1.3.0, adds values to two closed enums
 (`request_ruling`; `disclose_limitations`, 2026-10-12), and changes no released wire shape. It grants no runtime, credential,
 disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/kernel/closure_class.py` (the classifier),
-`src/yoetz/kernel/gap_effect.py` (the gap table), `src/yoetz/kernel/receipt_prediction.py`,
-`src/yoetz/kernel/closure_verdict.py`, `src/yoetz/application/closure_basis.py`,
-`src/yoetz/kernel/closure_readiness.py`, `src/yoetz/kernel/receipt_builder.py`,
-`src/yoetz/kernel/deterministic_scope.py`, `src/yoetz/kernel/finding_todo.py`,
-`src/yoetz/kernel/receipt_capacity.py`, `src/yoetz/kernel/ranking.py`,
-`src/yoetz/kernel/check_totals.py`, `src/yoetz/domain/findings.py`
-(`is_limitation_request`, `finding_demands_work`), `src/yoetz/domain/receipts.py`,
-`src/yoetz/application/status.py`, `src/yoetz/application/check.py`,
-`src/yoetz/application/receipt.py`, `src/yoetz/adapters/memory/ledger.py`,
-`src/yoetz/protocol/models.py`, `src/yoetz/protocol/readiness_text.py`, `src/yoetz/mcp/summaries.py`,
-`src/yoetz/cli/render.py` (shared by the terminal panel), `src/yoetz/domain/closure.py`,
-`src/yoetz/domain/compaction_recap.py`, `scripts/generate_schemas.py`.
+**Implemented by:** `src/finishup/kernel/closure_class.py` (the classifier),
+`src/finishup/kernel/gap_effect.py` (the gap table), `src/finishup/kernel/receipt_prediction.py`,
+`src/finishup/kernel/closure_verdict.py`, `src/finishup/application/closure_basis.py`,
+`src/finishup/kernel/closure_readiness.py`, `src/finishup/kernel/receipt_builder.py`,
+`src/finishup/kernel/deterministic_scope.py`, `src/finishup/kernel/finding_todo.py`,
+`src/finishup/kernel/receipt_capacity.py`, `src/finishup/kernel/ranking.py`,
+`src/finishup/kernel/check_totals.py`, `src/finishup/domain/findings.py`
+(`is_limitation_request`, `finding_demands_work`), `src/finishup/domain/receipts.py`,
+`src/finishup/application/status.py`, `src/finishup/application/check.py`,
+`src/finishup/application/receipt.py`, `src/finishup/adapters/memory/ledger.py`,
+`src/finishup/protocol/models.py`, `src/finishup/protocol/readiness_text.py`, `src/finishup/mcp/summaries.py`,
+`src/finishup/cli/render.py` (shared by the terminal panel), `src/finishup/domain/closure.py`,
+`src/finishup/domain/compaction_recap.py`, `scripts/generate_schemas.py`.
 **Relates to:** ADR-032 (closure readiness checklist), ADR-033 (task facts and the Stop-time gate),
 ADR-034 (proof-limited findings), ADR-035 (declared delivered set), ADR-040 (reviewer
 disagreement), ADR-041 (obligation status re-derived), ADR-043 (bounded agent-facing text),
@@ -41,7 +41,7 @@ rule. They agreed only by accident, and tb4n3 (28 real Codex runs) measured the 
 | status line vs status line | The MCP text said "receipt-blocking findings: 1 ... Nothing further to do" in one breath. An acknowledged requirement was settled for readiness and blocking for the counter. |
 | readiness vs check next step | The check's next step called an acknowledged obligation open work (`review_recorded_work`) while status called it settled. |
 | status vs Stop gate | The gate offered repair or acknowledgement for a rejected finding that only a reviewer ruling could settle (ks S), and asked a re-read the status text never announced. |
-| receipt vs check verdict | A gap a full check tolerated bounded the receipt, and a Yoetz-side budget bounded the conclusion although the agent could do nothing about it (`check_time_change_truncated` and others). |
+| receipt vs check verdict | A gap a full check tolerated bounded the receipt, and a FinishUP-side budget bounded the conclusion although the agent could do nothing about it (`check_time_change_truncated` and others). |
 | receipt vs lineage vs recap | Child-task rollups and the post-compaction recap re-derived "blocking" again. |
 
 No surface was wrong about its own question. The defect is that nothing computed the receipt's
@@ -97,7 +97,7 @@ Rules the tables encode:
   means (owner decisions Q4 and 2026-10-12).** A `state_unresolved_limitation` challenge on a
   requirement-shaped kind is agent work with the single next action `acknowledge`, counted as
   "to disclose" and never as receipt-blocking work. A reasoned `acknowledged` (or a reasoned
-  `self_verified`, or a `yoetz-verification-limit:<obligation>` decision covering the obligation the
+  `self_verified`, or a `finishup-verification-limit:<obligation>` decision covering the obligation the
   finding concerns) says the requirement may be met but cannot be verified here: the item is
   `limitation_disclosed`, settled, and the receipt discloses it under "Verification limits" at
   `insufficient_coverage`. It is named once, as disclosed: never under "Acknowledged, not done",
@@ -171,14 +171,15 @@ Of the 213 recorded codes, 35 change; the rest keep today's behaviour under both
 conformance test freezes that against the table's own predecessor. The changes, each with its rule
 (the rule id travels in the table, the test names every changed code):
 
-* **G5 (eight codes, disclosed when the review succeeded).** Yoetz's own review-packet size budgets
+* **G5 (eight codes, disclosed when the review succeeded).** FinishUP's own review-packet size budgets
   (`check_time_change_truncated`, `semantic_case_content_over_item_limit`,
   `semantic_reference_scope_reduced`, `semantic_review_refs_reduced`, and four more) cannot be
   cleared by an agent action, so they no longer hold a conclusion below clean *when the review
   succeeded and the same check carries no reviewer-reported insufficiency* (owner decision Q2). The
   same code beside a reviewer-reported insufficiency, or without a successful review, stays
   bounding.
-* **G5b, G5c, G5d, G6 (twenty codes, disclosed).** The background advice pipeline's bounds, routine
+* **G5b, G5c, G5d, G6 (twenty-one codes, disclosed).** The background advice pipeline's bounds
+  (since #1019 r2 including `advice_semantic_preview_required`), routine
   read summarisation bounds, the prior-findings section's own bound and an owner privacy choice or
   placeholder redaction are not agent tasks and never hold a conclusion below clean.
 * **G7 (four codes).** `optional_semantic_review_blocked_by_policy`,
@@ -191,7 +192,7 @@ conformance test freezes that against the table's own predecessor. The changes, 
 * **G1 (`semantic_review_not_requested`).** Follows the route the check recorded.
 
 `evidence_content_digest_only` and `evidence_digest_subject_legacy_unknown` keep bounding (owner
-decision Q3): agent-supplied evidence Yoetz could only see by digest bounds what it proves.
+decision Q3): agent-supplied evidence FinishUP could only see by digest bounds what it proves.
 An unclassified code (a code this build does not know) is actionable, never clean.
 
 ### 3. The receipt's question, asked before the receipt
@@ -331,7 +332,7 @@ readiness it is given (ADR-033 amendment).
   reasons R2 and R5 name. A follow-up that wants the class on the manifest owns that wire bump.
 * **`resolved_deliverable_emptied` is produced.** An obligation recorded `resolved` whose declared
   deliverable the newest applicable check found emptied or truncated (the path-keyed fact
-  `declared_output_emptied`, ADR-045, not accepted by a `yoetz-assumption` decision) reads
+  `declared_output_emptied`, ADR-045, not accepted by a `finishup-assumption` decision) reads
   `resolved_deliverable_emptied` (agent work, `insufficient_coverage`) instead of `resolved`. A
   later material record (the file refilled by an edit tool or a shell write, the decision that accepts the path) supersedes that
   check, so the stale fact is not read and the obligation returns to `resolved` until the next
@@ -353,7 +354,7 @@ three host runbooks.
 Recorded from the maintainer's decisions of 2026-10-12 (TheGaySupreme123):
 
 1. **The agent's answer decides what a limitation request means.** `acknowledged` (with a reason), a
-   reasoned `self_verified` or a `yoetz-verification-limit:<obligation>` decision say the
+   reasoned `self_verified` or a `finishup-verification-limit:<obligation>` decision say the
    requirement may be met but cannot be verified here: `settled_disclosed` / `limitation_disclosed`,
    receipt at best `insufficient_coverage`, listed under "Verification limits".
    `acknowledged_not_done` says the requirement is not met: `settled_unmet` /
@@ -404,7 +405,7 @@ Two recorded gap codes join the table in place on the unreleased classification 
 tolerated by both absence proofs; listed as a changed row because it never bounded) and
 `semantic_review_deferred_before_first_edit` (G7, standing; disclosed where the deferred check
 recorded that its route did not require review and bounding where it did, exactly like the
-`semantic_review_not_requested` it rides with under G1, so a deferral Yoetz chose never reads worse
+`semantic_review_not_requested` it rides with under G1, so a deferral FinishUP chose never reads worse
 than a `deterministic_only` check on the same route; a changed row because it does not bound on
 that route, in the same G7 `D`/`B` family as `semantic_review_not_configured`). The finding kind
 `agent_criterion_unmet` reads through the existing limitation bases (`limitation_requested`,
@@ -413,7 +414,7 @@ that route, in the same G7 `D`/`B` family as `semantic_review_not_configured`). 
 continuation: an open one makes `overall_next.action` and `finding_checklist.next`
 `work_open_findings`, never `disclose_limitations`, while the counters still count it under
 `to_disclose`. Only the agent's own answer narrows it into `limitation_disclosed`: a
-`yoetz-verification-limit` decision neither discloses it nor marks its obligation
+`finishup-verification-limit` decision neither discloses it nor marks its obligation
 `externally_evaluated` (review of #1043). No basis, effect, token or earlier table row changed
 meaning. Decisions and predicates: ADR-040 amendment of 2026-10-12, which also has closure
 readiness ask for the closing review after a deferral where the deferred check's route requires

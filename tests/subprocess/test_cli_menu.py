@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.cli.menu as menu
-from yoetz.ports.control import ControlError
-from yoetz.ports.harness_mcp import HarnessBinary
-from yoetz.ports.integrations import HarnessId
+import finishup.cli.app as cli
+import finishup.cli.menu as menu
+from finishup.ports.control import ControlError
+from finishup.ports.harness_mcp import HarnessBinary
+from finishup.ports.integrations import HarnessId
 
 _RUNNER = CliRunner()
 
@@ -20,8 +20,8 @@ _RUNNER = CliRunner()
 def menu_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Fake TTY probes, discovery, marker path, and an unreachable service client."""
 
-    import yoetz.adapters.integrations.codex_discovery as discovery_module
-    import yoetz.cli.setup as setup_module
+    import finishup.adapters.integrations.codex_discovery as discovery_module
+    import finishup.cli.setup as setup_module
 
     marker = tmp_path / "setup-wizard.json"
     marker.write_text('{"outcome":"registered","schema":"yoetz.setup-wizard-marker/1"}')
@@ -56,7 +56,7 @@ def test_menu_without_tty_is_usage_failure() -> None:
 def test_menu_home_renders_overview_and_quits(menu_env: Path) -> None:
     result = _RUNNER.invoke(cli.app, ["menu"], input="q\n")
     assert result.exit_code == 0
-    assert "yoetz service run" in result.output
+    assert "finishup service run" in result.output
     assert "codex (0.144.5)" in result.output
     assert "First-run  complete" in result.output
     for section in ("Setup wizard", "Harness connection", "LLM provider", "Privacy", "Service"):
@@ -76,7 +76,7 @@ def test_menu_sections_navigate_back_to_home(menu_env: Path) -> None:
 def test_bare_tty_invocation_with_marker_opens_menu(
     menu_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     monkeypatch.setattr(setup_module, "should_offer_first_run", lambda: False)
     result = _RUNNER.invoke(cli.app, [], input="q\n")
@@ -97,10 +97,10 @@ def test_bare_invocation_without_tty_still_prints_help(
 def test_bare_tty_first_run_without_the_full_screen_ui_reaches_the_wizard(
     menu_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``YOETZ_TUI=0`` (or no Textual) on a first run must open the prompt wizard, not die
+    """``FINISHUP_TUI=0`` (or no Textual) on a first run must open the prompt wizard, not die
     with ``internal_error`` because the fallback call forgot a required argument (#766)."""
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     received: dict[str, object] = {}
 
@@ -108,7 +108,7 @@ def test_bare_tty_first_run_without_the_full_screen_ui_reaches_the_wizard(
         received.update(kwargs)
         return 0
 
-    monkeypatch.setenv("YOETZ_TUI", "0")
+    monkeypatch.setenv("FINISHUP_TUI", "0")
     monkeypatch.setattr(setup_module, "should_offer_first_run", lambda: True)
     monkeypatch.setattr(setup_module, "run_setup_wizard", fake_wizard)
     result = _RUNNER.invoke(cli.app, [], input="q\n")

@@ -19,18 +19,18 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.receipt import ReceiptInternalResult
-from yoetz.application.service import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.receipt import ReceiptInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     VerificationPolicy,
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.events import ReceiptRecordedPayload, RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.application.start import StartInternalResult
+from finishup.domain.events import ReceiptRecordedPayload, RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -46,7 +46,7 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptConclusion,
     ReceiptVersionSlice,
@@ -55,17 +55,17 @@ from yoetz.domain.receipts import (
     receipt_document_to_json,
     render_receipt_compact,
 )
-from yoetz.domain.values import Frontier, session_id
-from yoetz.ports.control import ControlClientKind, ControlError, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.coverage import coverage_to_json
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier, session_id
+from finishup.ports.control import ControlClientKind, ControlError, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.coverage import coverage_to_json
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
@@ -242,7 +242,7 @@ class _BlockingDocumentProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -427,7 +427,7 @@ async def test_receipt_request_result_parity() -> None:
     facts = await app.projection_binding_facts(ControlMethod.RECEIPT, receipt_wire, receipt)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
@@ -676,7 +676,12 @@ def test_reviewed_receipt_vectors_match_exact_document_and_compact_bytes(
     assert canonical_encode(cast(JsonValue, encoded)) == canonical_encode(cast(JsonValue, wire))
     assert canonical_digest(cast(JsonValue, encoded)) == expected_digest
     compact = render_receipt_compact(document)
-    assert compact == expected_compact
+    # The reviewed vectors are pre-rename receipts (``package_name: yoetz``) with their pre-rename
+    # rendering. The stored document is unchanged; only the product name the renderer prints is
+    # the current one (ADR-048).
+    assert compact == expected_compact.replace(
+        "Yoetz receipt at frontier ", "FinishUP receipt at frontier ", 1
+    )
 
 
 def test_wrapper_that_upgrades_receipt_conclusion_fails() -> None:
@@ -685,7 +690,7 @@ def test_wrapper_that_upgrades_receipt_conclusion_fails() -> None:
 
     from dataclasses import replace
 
-    from yoetz.domain.receipts import ReceiptConclusion
+    from finishup.domain.receipts import ReceiptConclusion
 
     wire = _variant("unresolved-findings.case.json", "mixed_open_responses")
     document = receipt_document_from_json(wire)
@@ -906,8 +911,8 @@ async def test_receipt_replay_integrity_mismatch_is_classified_at_application_si
 ) -> None:
     """Each bounded replay-binding mismatch retains an application-site diagnostic identity."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    from yoetz.observability.diagnostics import lookup_diagnostic_records
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.observability.diagnostics import lookup_diagnostic_records
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     app, runtime, _projection = _build_app(seed_offset=25)

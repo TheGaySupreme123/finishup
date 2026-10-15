@@ -10,8 +10,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from yoetz.adapters.memory.privacy import MemoryPrivacyCatalogState, MemoryPrivacyPolicyStore
-from yoetz.application.privacy_policy import (
+from finishup.adapters.memory.privacy import MemoryPrivacyCatalogState, MemoryPrivacyPolicyStore
+from finishup.application.privacy_policy import (
     GetPrivacyEffectiveRequest,
     GetPrivacyReceiptRequest,
     GetPrivacySetupRequest,
@@ -27,7 +27,7 @@ from yoetz.application.privacy_policy import (
     privacy_receipts_list,
     privacy_tighten_policy,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -39,15 +39,15 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.ports.privacy import (
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     PolicyCommitResult,
     PreparedPolicyTransition,
     PrivacyReceiptAudience,
     PrivacyReceiptPage,
 )
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 7, 19, tzinfo=UTC)
 _INSTALLATION = "ins_20000000-0000-4000-8000-000000000001"
@@ -463,7 +463,7 @@ def test_heuristic_opt_out_is_proposed_on_the_grant_and_never_moves_the_machine_
 
     from dataclasses import replace as _replace
 
-    from yoetz.domain.privacy import CredentialHeuristic
+    from finishup.domain.privacy import CredentialHeuristic
 
     state = MemoryPrivacyCatalogState()
     store = MemoryPrivacyPolicyStore(state, _Clock())
@@ -500,13 +500,160 @@ def test_heuristic_opt_out_is_proposed_on_the_grant_and_never_moves_the_machine_
     assert members[0].candidate_policy.credential_heuristic is CredentialHeuristic.DISABLED
 
 
+def test_a_repository_conversation_widening_never_moves_the_machine_default() -> None:
+    """ADR-049 review round 1 (P2-7): the setting belongs to the repository grant.
+
+    Widening one repository's tasks to AI-powered review on every task leaves the installation
+    row's setting where it was, so a new repository inherits nothing it was not asked about.
+    """
+
+    from dataclasses import replace as _replace
+
+    from finishup.domain.privacy import ConversationReview
+
+    state = MemoryPrivacyCatalogState()
+    store = MemoryPrivacyPolicyStore(state, _Clock())
+    repository_scope = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, _INSTALLATION, _REPOSITORY
+    )
+    app = PrivacyPolicyApplication(
+        store,
+        _Audit(),  # type: ignore[arg-type]
+        _Gateway([]),  # type: ignore[arg-type]
+        _Clock(),
+        _Ids(),
+        _scope(),
+    )
+    machine_seed = _replace(
+        _external_policy(), conversation_review=ConversationReview.LOCAL_AGENT_OPT_IN
+    )
+    candidate = _replace(_external_policy(), conversation_review=ConversationReview.AI_POWERED)
+
+    async def run() -> object:
+        await store.seed_if_absent(machine_seed)
+        authority = await store.repository_authority(repository_scope)
+        return await privacy_propose_policy(
+            app,
+            ProposePrivacyPolicyRequest(
+                authority.effective.effective_digest,
+                candidate,
+                authority.authority_digest,
+                repository_scope,
+            ),
+        )
+
+    result = asyncio.run(run())
+    assert type(result) is PolicyDecisionRequired
+    members = result.prepared.proposal.members
+    machine = [m for m in members if m.scope.kind is AuthorizationScopeKind.MACHINE]
+    assert all(
+        m.candidate_policy.conversation_review is ConversationReview.LOCAL_AGENT_OPT_IN
+        for m in machine
+    )
+    (repository,) = (m for m in members if m.scope.kind is AuthorizationScopeKind.WORKSPACE)
+    assert repository.candidate_policy.conversation_review is ConversationReview.AI_POWERED
+
+
+def _machine_member_after_repository_proposal(
+    machine_seed: PrivacyPolicy, candidate: PrivacyPolicy
+) -> PrivacyPolicy | None:
+    """The machine member a repository-bound proposal writes, or ``None`` when it writes none."""
+
+    state = MemoryPrivacyCatalogState()
+    store = MemoryPrivacyPolicyStore(state, _Clock())
+    repository_scope = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, _INSTALLATION, _REPOSITORY
+    )
+    app = PrivacyPolicyApplication(
+        store,
+        _Audit(),  # type: ignore[arg-type]
+        _Gateway([]),  # type: ignore[arg-type]
+        _Clock(),
+        _Ids(),
+        _scope(),
+    )
+
+    async def run() -> object:
+        await store.seed_if_absent(machine_seed)
+        authority = await store.repository_authority(repository_scope)
+        return await privacy_propose_policy(
+            app,
+            ProposePrivacyPolicyRequest(
+                authority.effective.effective_digest,
+                candidate,
+                authority.authority_digest,
+                repository_scope,
+            ),
+        )
+
+    result = asyncio.run(run())
+    assert type(result) is PolicyDecisionRequired
+    machine = [
+        member.candidate_policy
+        for member in result.prepared.proposal.members
+        if member.scope.kind is AuthorizationScopeKind.MACHINE
+    ]
+    return machine[0] if machine else None
+
+
+@pytest.mark.parametrize(
+    ("answer", "machine_setting"),
+    [
+        ("local_agent_opt_in", "local_agent_opt_in"),
+        ("ai_powered", "local_agent_opt_in"),
+        ("local_owner_approval", "local_owner_approval"),
+        (None, "local_agent_opt_in"),
+    ],
+)
+def test_a_fresh_installs_first_grant_never_leaves_other_repositories_on_every_task(
+    answer: str | None, machine_setting: str
+) -> None:
+    """ADR-049 review round 2 (P2-1): the installation row turns inference on with a setting.
+
+    On a fresh install the installation row is unset with inference off. The first repository
+    grant turns its inference channel on; left unset, every repository without its own grant
+    would read the released "every task" setting. The row gets the narrower of the answer and
+    the recommended hybrid, so an "every task" answer never widens other repositories.
+    """
+
+    from dataclasses import replace as _replace
+
+    from finishup.domain.privacy import ConversationReview
+
+    candidate = _replace(
+        _external_policy(),
+        conversation_review=None if answer is None else ConversationReview(answer),
+    )
+    machine = _machine_member_after_repository_proposal(_policy(), candidate)
+    assert machine is not None
+    assert machine.conversation_review is ConversationReview(machine_setting)
+
+
+def test_an_install_already_reviewing_keeps_its_released_installation_row() -> None:
+    """Upgrade rule: an installation row whose inference was already on stays unset."""
+
+    from dataclasses import replace as _replace
+
+    from finishup.domain.privacy import ConversationReview
+
+    candidate = _replace(
+        _external_policy(), conversation_review=ConversationReview.LOCAL_AGENT_OPT_IN
+    )
+    machine = _machine_member_after_repository_proposal(_external_policy(), candidate)
+    assert machine is None or machine.conversation_review is None
+    explicit = _replace(_policy(), conversation_review=ConversationReview.LOCAL_ONLY)
+    machine = _machine_member_after_repository_proposal(explicit, candidate)
+    assert machine is not None
+    assert machine.conversation_review is ConversationReview.LOCAL_ONLY
+
+
 def test_status_reports_the_grant_a_pending_migration_will_create() -> None:
     """Issue #982 review: a repository awaiting carry-forward reports that grant's outcome."""
 
     from dataclasses import replace as _replace
 
-    from yoetz.application.privacy_policy import credential_heuristic_state
-    from yoetz.domain.privacy import CredentialHeuristic
+    from finishup.application.privacy_policy import credential_heuristic_state
+    from finishup.domain.privacy import CredentialHeuristic
 
     repository_scope = AuthorizationScope(
         AuthorizationScopeKind.WORKSPACE, _INSTALLATION, _REPOSITORY

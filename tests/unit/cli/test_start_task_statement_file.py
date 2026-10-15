@@ -1,4 +1,4 @@
-"""``yoetz start --task-statement-file`` records the user's request verbatim (issue #908)."""
+"""``finishup start --task-statement-file`` records the user's request verbatim (issue #908)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.cli.app import (
+from finishup.cli.app import (
     _start_request_model,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import MAX_TASK_STATEMENT_BYTES, StartRequest
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import MAX_TASK_STATEMENT_BYTES, StartRequest
 
 _REQUEST = {
     "protocol_version": "0.1",

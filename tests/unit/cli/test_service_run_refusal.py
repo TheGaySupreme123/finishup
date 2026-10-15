@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.config.paths as paths
-import yoetz.service.daemon as daemon_module
-from yoetz.cli.exits import LIFECYCLE_PUBLIC_CODES, exit_code_for
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.service.lifecycle import LifecycleError
+import finishup.cli.app as cli
+import finishup.config.paths as paths
+import finishup.service.daemon as daemon_module
+from finishup.cli.exits import LIFECYCLE_PUBLIC_CODES, exit_code_for
+from finishup.protocol.errors import PublicErrorCode
+from finishup.service.lifecycle import LifecycleError
 
 _MAPPED_REASONS = tuple(sorted(LIFECYCLE_PUBLIC_CODES))
 
@@ -67,8 +67,8 @@ def test_service_already_running_names_the_commands_that_can_help(
     monkeypatch.setattr(daemon_module, "main", refuse)
     result = CliRunner().invoke(cli.app, ["service", "run"])
 
-    assert "yoetz service status" in result.stderr
-    assert "yoetz service stop" in result.stderr
+    assert "finishup service status" in result.stderr
+    assert "finishup service stop" in result.stderr
 
 
 @pytest.mark.usefixtures("no_singleton_stamp")
@@ -92,7 +92,7 @@ def test_holder_pid_is_reported_when_the_lock_stamp_resolves(
 ) -> None:
     import os
 
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.protocol.canonical import canonical_encode
 
     stamp = canonical_encode({"instance_id": "svc", "pid": os.getpid()}) + b"\n"
     lock = tmp_path / "service.lock"
@@ -134,7 +134,7 @@ _STARTUP_ID = "err_11111111-2222-4333-8444-555555555555"
 
 @pytest.fixture
 def startup_ring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     _redirect_state_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
@@ -146,7 +146,7 @@ def test_unexpected_startup_failure_prints_stage_class_origin_and_id(
 ) -> None:
     """The conda-image line was only ``internal_error``; the cause was unrecoverable (#1040)."""
 
-    from yoetz.service.startup_failure import ServiceStartupError, StartupFailure
+    from finishup.service.startup_failure import ServiceStartupError, StartupFailure
 
     seen: list[object] = []
 
@@ -157,7 +157,7 @@ def test_unexpected_startup_failure_prints_stage_class_origin_and_id(
                 stage="activation",
                 reason="exception_not_implemented_error",
                 correlation_id=_STARTUP_ID,
-                origin="yoetz.adapters.control.unix_socket:434",
+                origin="finishup.adapters.control.unix_socket:434",
             )
         )
 
@@ -170,7 +170,7 @@ def test_unexpected_startup_failure_prints_stage_class_origin_and_id(
     assert result.exit_code == exit_code_for(PublicErrorCode.INTERNAL_ERROR) == 70
     assert result.stderr.startswith(
         "internal_error: the service could not start (stage: activation; "
-        "exception_not_implemented_error; at yoetz.adapters.control.unix_socket:434); "
+        "exception_not_implemented_error; at finishup.adapters.control.unix_socket:434); "
         f"correlation_id {_STARTUP_ID}"
     )
     assert "the command could not be completed" not in result.stderr
@@ -182,9 +182,9 @@ def test_a_service_module_that_cannot_load_is_an_import_stage_failure(
 ) -> None:
     import sys
 
-    from yoetz.observability.diagnostics import lookup_diagnostic_records
+    from finishup.observability.diagnostics import lookup_diagnostic_records
 
-    monkeypatch.setitem(sys.modules, "yoetz.service.daemon", None)
+    monkeypatch.setitem(sys.modules, "finishup.service.daemon", None)
     result = CliRunner().invoke(
         cli.app, ["service", "run", "--startup-correlation-id", _STARTUP_ID]
     )
@@ -215,10 +215,10 @@ def test_an_invalid_startup_correlation_id_is_a_usage_error(
 def test_configuration_refusal_names_its_reason_like_every_other_command(
     startup_ring: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.config.models import ConfigError
+    from finishup.config.models import ConfigError
 
     def refuse(**_kwargs: object) -> None:
-        raise ConfigError("unknown_config_env_var", safe_name="YOETZ_PRIVATE_NAME")
+        raise ConfigError("unknown_config_env_var", safe_name="FINISHUP_PRIVATE_NAME")
 
     monkeypatch.setattr(daemon_module, "main", refuse)
     result = CliRunner().invoke(cli.app, ["service", "run"])

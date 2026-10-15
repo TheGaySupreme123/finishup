@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.cli.menu as menu
-import yoetz.tui as tui
+import finishup.cli.app as cli
+import finishup.cli.menu as menu
+import finishup.tui as tui
 
 _RUNNER = CliRunner()
 
@@ -33,10 +33,10 @@ def _gate(answer: bool) -> Callable[[Mapping[str, str] | None], bool]:
 def quiet_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A completed first run with no reachable service and no Codex on PATH."""
 
-    import yoetz.adapters.integrations.codex_discovery as discovery_module
-    import yoetz.cli.setup as setup_module
-    from yoetz.ports.control import ControlError
-    from yoetz.ports.harness_mcp import HarnessBinary
+    import finishup.adapters.integrations.codex_discovery as discovery_module
+    import finishup.cli.setup as setup_module
+    from finishup.ports.control import ControlError
+    from finishup.ports.harness_mcp import HarnessBinary
 
     marker = tmp_path / "setup-wizard.json"
     marker.write_text('{"outcome":"registered","schema":"yoetz.setup-wizard-marker/1"}')
@@ -58,7 +58,7 @@ def test_a_bare_non_tty_invocation_still_prints_help(quiet_environment: Path) ->
     result = _RUNNER.invoke(cli.app, [])
     assert result.exit_code == 0
     assert "Local-first evidence ledger and review engine." in result.output
-    assert "Type / for Yoetz commands" not in result.output
+    assert "Type / for FinishUP commands" not in result.output
 
 
 def test_help_output_is_untouched_by_the_terminal_ui() -> None:
@@ -70,7 +70,7 @@ def test_help_output_is_untouched_by_the_terminal_ui() -> None:
 
 
 def test_version_output_is_a_bare_version_string() -> None:
-    from yoetz import __version__
+    from finishup import __version__
 
     result = _RUNNER.invoke(cli.app, ["--version"])
     assert result.exit_code == 0
@@ -120,7 +120,7 @@ def test_an_interactive_terminal_opens_the_interface_instead_of_the_menu(
 def test_a_first_run_terminal_folds_setup_into_the_interface(
     quiet_environment: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     calls: list[bool] = []
     monkeypatch.setattr(setup_module, "should_offer_first_run", lambda: True)
@@ -178,8 +178,8 @@ def test_setup_status_json_stays_canonical(
 
     import json
 
-    import yoetz.adapters.integrations.codex_discovery as discovery_module
-    from yoetz.ports.harness_mcp import HarnessBinary
+    import finishup.adapters.integrations.codex_discovery as discovery_module
+    from finishup.ports.harness_mcp import HarnessBinary
 
     def no_binaries(*, _probe: object = None) -> tuple[HarnessBinary, ...]:
         return ()

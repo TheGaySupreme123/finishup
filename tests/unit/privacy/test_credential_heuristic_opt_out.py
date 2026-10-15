@@ -15,36 +15,36 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     _json,  # pyright: ignore[reportPrivateUsage]
     _local_receipt_from_bytes,  # pyright: ignore[reportPrivateUsage]
     _receipt_bytes,  # pyright: ignore[reportPrivateUsage]
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
-from yoetz.adapters.privacy.gateway import _final_scan  # pyright: ignore[reportPrivateUsage]
-from yoetz.adapters.privacy.local_enforcer import (
+from finishup.adapters.privacy.gateway import _final_scan  # pyright: ignore[reportPrivateUsage]
+from finishup.adapters.privacy.local_enforcer import (
     LocalPrivacyEnforcer,
     scan_exact_bytes,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     FinalSemanticEvaluation,
     _credential_heuristic_gaps,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.egress import (
+from finishup.application.egress import (
     _resume_scan_is_clean,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.privacy_control import encode_privacy_receipt_view
-from yoetz.application.privacy_policy import (
+from finishup.application.privacy_control import encode_privacy_receipt_view
+from finishup.application.privacy_policy import (
     _policy_for_scope,  # pyright: ignore[reportPrivateUsage]
     is_privacy_tightening,
     privacy_policy_changes,
 )
-from yoetz.config.privacy_desired import (
+from finishup.config.privacy_desired import (
     load_privacy_desired_canonical,
     render_privacy_desired_toml,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -71,16 +71,16 @@ from yoetz.domain.privacy import (
     ReviewSelectionPolicy,
     external_review_credential_heuristic,
 )
-from yoetz.domain.receipts import SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP
-from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
-from yoetz.kernel.finding_resolution import (
+from finishup.domain.receipts import SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP
+from finishup.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+from finishup.kernel.finding_resolution import (
     _DETERMINISTIC_PROOF_TOLERATED_GAPS,  # pyright: ignore[reportPrivateUsage]
     _SEMANTIC_PROOF_TOLERATED_GAPS,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.ports.privacy import EffectivePrivacyPolicy, LocalDisclosureReceiptView
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.ports.privacy import EffectivePrivacyPolicy, LocalDisclosureReceiptView
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from finishup.protocol.schemas import validate_schema_instance
 
 _INSTALLATION = "ins_10000000-0000-4000-8000-000000000001"
 _TASK = "tsk_10000000-0000-4000-8000-000000000002"
@@ -476,7 +476,7 @@ def test_egress_receipt_schema_admits_the_recorded_setting() -> None:
     from importlib.resources import files
 
     document = json.loads(
-        files("yoetz.resources")
+        files("finishup.resources")
         .joinpath("schemas/privacy/egress-receipt-1.1.0.schema.json")
         .read_bytes()
     )

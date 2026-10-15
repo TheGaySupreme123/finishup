@@ -36,11 +36,11 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.mcp.descriptors import TOOL_DESCRIPTORS, server_instructions
-from yoetz.mcp.resources import GUIDANCE_RESOURCES, GuidancePageAssembler, read_resource
-from yoetz.mcp.semantic_destination import disclose_semantic_destination
-from yoetz.protocol.canonical import JsonValue, canonical_digest
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.mcp.descriptors import TOOL_DESCRIPTORS, server_instructions
+from finishup.mcp.resources import GUIDANCE_RESOURCES, GuidancePageAssembler, read_resource
+from finishup.mcp.semantic_destination import disclose_semantic_destination
+from finishup.protocol.canonical import JsonValue, canonical_digest
+from finishup.protocol.errors import PublicErrorCode
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _PINNED_MCP = "1.28.1"
@@ -172,21 +172,21 @@ def _initialize_frame(protocol_version: object, request_id: int = 1) -> dict[str
 
 
 def _serve_command() -> list[str]:
-    candidate_python = os.environ.get("YOETZ_CANDIDATE_PYTHON", "").strip()
+    candidate_python = os.environ.get("FINISHUP_CANDIDATE_PYTHON", "").strip()
     if candidate_python:
-        return [candidate_python, "-m", "yoetz", "mcp", "serve"]
-    return ["uv", "run", "yoetz", "mcp", "serve"]
+        return [candidate_python, "-m", "finishup", "mcp", "serve"]
+    return ["uv", "run", "finishup", "mcp", "serve"]
 
 
 def test_candidate_python_is_the_server_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """Candidate CI must execute installed candidate bytes, not checkout ``uv run`` bytes."""
 
-    monkeypatch.setenv("YOETZ_CANDIDATE_PYTHON", "/candidate/bin/python")
+    monkeypatch.setenv("FINISHUP_CANDIDATE_PYTHON", "/candidate/bin/python")
 
     assert _serve_command() == [
         "/candidate/bin/python",
         "-m",
-        "yoetz",
+        "finishup",
         "mcp",
         "serve",
     ]
@@ -394,7 +394,7 @@ async def test_mcp_tools_list_exact(tmp_path: Path) -> None:
         assert len(listed.tools) == 8
         for tool, descriptor in zip(listed.tools, TOOL_DESCRIPTORS["policy"], strict=True):
             assert tool.description == descriptor.description
-            assert tool.inputSchema == _plain_json(descriptor.input_schema)
+            assert tool.inputSchema == _plain_json(descriptor.advertised_input_schema)
             assert tool.outputSchema == _plain_json(descriptor.output_schema)
             assert tool.annotations is not None
             assert tool.annotations.title == descriptor.title
@@ -567,7 +567,7 @@ def test_mcp_malformed_framing(tmp_path: Path) -> None:
 
     child = r"""
 import anyio
-from yoetz.adapters.mcp_stdio import bounded_stdio_server
+from finishup.adapters.mcp_stdio import bounded_stdio_server
 
 async def main():
     async with bounded_stdio_server(512) as (read_stream, write_stream):

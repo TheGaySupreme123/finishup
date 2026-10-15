@@ -1,26 +1,110 @@
 # Claude Code native integration
 
+MCP input advertisements use the same compact schema as Codex and Cursor, targeting 4,800 bytes
+per tool. Required fields, enums and event envelopes remain inline; payload variants, conditional
+field rules and full examples are available through `read_guidance` at
+`finishup://guidance/request-templates.md`. Read the matching template before authoring a payload.
+Deferred tool discovery uses this same advertisement. Full server validation, repair hints and
+output schemas remain unchanged; the smaller advertisement does not expand accepted requests.
+Descriptions remain when they fit, with priority field rules restored first for larger tools.
+If the description-free form exceeds the CI budget, the bridge emits
+`mcp_advertised_input_schema_over_budget` and still serves that minimal form; CI rejects the drift.
+
 Codex's external MCP removal reconciliation (issue #860) does not apply to Claude Code:
 Claude's plugin-managed MCP follows the plugin lifecycle below. No Claude mutation or outcome
 contract changes are required for that Codex-specific host command.
 
-For setup prerequisites, use `yoetz setup status --next --host claude` with the same
+For setup prerequisites, use `finishup setup status --next --host claude` with the same
 executable, configuration root and project. `--operation connection` inspects installation without
 provider sign-in; `local` and `review` inspect their respective vault/privacy prerequisites.
-Storage-only continuation is `yoetz setup vault` in a trusted terminal. This shared #737 path adds
+Storage-only continuation is `finishup setup vault` in a trusted terminal. This shared #737 path adds
 no new native-session capability; Linux/WSL first-use and storage acceptance remain bounded by
 [the platform runbook](linux-and-wsl.md#setup-and-vault-acceptance-still-owned-by-737).
 
 ## Guided desktop connection (issue #767)
 
-Prefer `yoetz setup run --host claude` for ordinary setup. It discovers the executable and
+Prefer `finishup setup run --host claude` for ordinary setup. It discovers the executable and
 configuration root, derives the cache and private marketplace paths, and previews installation
 plus enablement in one exact connection plan. Override the executable/configuration or project
 with `--host-path`, `--host-config-root`, and `--project`. Agent-driven setup uses
 `--non-interactive --json`, then repeats the preview's request ID and digest with `--accept`.
 The existing OS-authenticated artifact review still applies. Status and disconnect use
-`yoetz setup status|disconnect --host claude` with the same target options. Standalone `plugin
+`finishup setup status|disconnect --host claude` with the same target options. Standalone `plugin
 install` below retains its disabled-by-default behavior.
+
+**Several projects in one config root (issue #1058).** The marketplace source under
+`<config root>/plugins/marketplaces/finishup-local` and its `known_marketplaces.json` entry are shared
+by every project; each project has its own project-scope install, enable flag and
+`.claude/settings.json` `extraKnownMarketplaces` declaration. Verified with Claude Code 2.1.299
+against a scratch `CLAUDE_CONFIG_DIR`: `claude plugin list --json` lists one `finishup@finishup-local`
+row per project, each with its `projectPath`, from any working directory, and the unscoped
+`claude plugin marketplace remove finishup-local` removes every project's install. FinishUP therefore
+reads its own project's row only (other rows are not a conflict), and a disconnect while another
+project still has its row plans `uninstall_plugin` alone: the other projects keep the shared
+source and marketplace, the disconnected project's own exact `extraKnownMarketplaces`
+declaration is removed (Claude's project-scope uninstall keeps it; an edited declaration stays
+yours), and the preview's `status.shared_with` names them. A project detached before this fix
+still declares a source that the last disconnect removed; setup treats that exact declaration
+as repairable prior setup and connects over it. The last project's disconnect
+removes the marketplace and its source as before. Status reports `connected_projects`. Claude
+Code's own rows name the projects, so no FinishUP record is kept for this host. A second path to an
+already connected directory is refused as `project_connected_via_other_path`. Because the shared
+source carries the launcher and route, connecting a project with another route or launcher
+re-renders it for every project. `setup disconnect --remove-shared` is the explicit home-wide disconnect:
+it runs the marketplace removal even while other projects keep their rows, so they stop using
+FinishUP too. A disconnect whose approval file (`.claude/settings.local.json`) cannot be read safely,
+such as a symlink, stops before any change as `connection_admission_cleanup_failed`.
+Because Claude Code's rows are the membership, this host has no unknown membership (a Codex and
+Cursor state), no possible users or `membership_unverified` refusal (Codex only), and no
+connected-projects record (so no `connection_projects_record_invalid`). Claude Code keeps the row
+of a project whose directory was deleted; FinishUP counts only live projects, in the preview and in
+apply alike, so such a row holds nothing open and the last live project's disconnect (an unscoped
+`marketplace remove`) clears it too. A disconnect whose own project-scope install is already gone
+(Claude Code refuses to uninstall it again) plans only `remove_marketplace` and
+`remove_plugin_mcp`. Known gap (recorded 2026-10-15, #1058 review round 3; follow-up on #1058):
+such a project, or one that never had an install, can still remove the shared marketplace and
+source while the only other project's directory is missing for now (an unmounted volume, a
+moved checkout), because a missing directory counts as not live. Codex keeps the shared pieces
+in that case (its binding still names the missing project, and only a connected project may
+remove such a binding); Claude Code has no equivalent anchor yet. The unscoped marketplace
+removal also removes that project's install, so when its directory returns it needs connecting
+again. The preview names `remove_marketplace` before approval. The shared source carries the plugin MCP server's review mode for every
+project's install: connecting a project on another review mode re-renders it for all of them, and
+the preview names them (`status.route_profile_before`, `status.route_changes_for`, and a summary
+sentence with both modes). `integrate claude plugin preview` reports the same keys and sentence
+for an install or update on another review mode; its preview digest already binds every
+project's install row (`installed_plugins.json`), and its apply needs that digest and the OS
+password prompt. `integrate claude plugin remove` removes this project's install and, like
+`setup disconnect`, keeps the shared marketplace while another live project has its row. `--remove-shared` previews and the interactive consent say the
+disconnect is home-wide and name the projects that stop using FinishUP. The TUI has no
+`--remove-shared`; use `finishup setup disconnect --host claude --remove-shared`. Like every
+host, each setup apply holds FinishUP's per-configuration lock from revalidation through the last
+change: an exclusive `flock` on a 0600 file under FinishUP's own state directory
+(`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded, never inside
+the Claude config root. A lock that cannot be taken stops as `connection_lock_unavailable` before
+any change, naming the lock folder. It does not serialise a setup run by another FinishUP
+installation. Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`) or another
+network or FUSE filesystem (ADR-012 amendment item 7).
+
+Native evidence, Linux x86_64 (ext4), Claude Code 2.1.300, scratch `HOME`, `CLAUDE_CONFIG_DIR`,
+XDG and isolation root (2026-10-14 and, for the review fixes, 2026-10-15, #1058; these runs predate
+the FinishUP rename (ADR-048) and used the Yoetz names, shown below as their FinishUP equivalents,
+and were not re-run on the renamed build). Plans were
+prepared and applied through the same
+`prepare_selected`/`apply_connection` composition `setup run|disconnect --host claude` uses; the
+one substitution is the OS-presence review (the trusted PAM console prompt), which the container
+cannot provide, so a test stub consumed the exact plan digest. `setup status` and the disconnect
+preview were also read through the real CLI and agreed.
+
+| Scenario | Result |
+| --- | --- |
+| Connect A and B; disconnect A, then B; reconnect A | A's disconnect plans `uninstall_plugin` alone with `shared_with` B; B keeps its enabled row and `finishup-local` stays in `claude plugin marketplace list`; B's disconnect removes the marketplace; reconnecting A succeeds (no `destination_conflict`) and its row is enabled |
+| Connect A and B; disconnect B, then A; reconnect B, then A | Same in reverse: each step leaves the remaining project's row enabled; both reconnect, and the second reconnect lists the first in `shared_with` |
+| First setup with `CLAUDE_CONFIG_DIR` under parents that do not exist yet | Connects; the plugin row is listed |
+| Connect A and B; `rm -rf A`; disconnect B (2026-10-15) | the plan is `uninstall_plugin`, `remove_marketplace`, `remove_plugin_mcp`; apply removes the marketplace, and `claude plugin list` no longer shows A's dead row |
+| Connect A and B; `rm -rf A`; `claude plugin uninstall --scope project` in B; disconnect B | a second uninstall fails in Claude Code 2.1.300 (`not installed in project scope`); the plan is `remove_marketplace`, `remove_plugin_mcp` and completes with no marketplace left |
+| Connect A on `strict`; connect B on `policy` | B's plan discloses `route_profile_before: strict`, `route_changes_for: [A]`; the shared source's `.mcp.json` then runs the policy route |
+| Then `integrate claude plugin preview --claude-path ... --claude-config-root ... --cache-root ... --marketplace-root ... --project-root A --mcp-ownership plugin-managed --route-profile strict --action update` (round 2) | `route_profile_before: policy`, `route_changes_for: [B]`. A route profile needs `--mcp-ownership plugin-managed`; without it the command refuses as `claude_code_mcp_route_forbidden` |
 
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The
@@ -28,7 +112,7 @@ common connection code does not establish native acceptance on any OS. Track cur
 macOS/Linux/WSL installation, status, repeat setup, disconnect and reconnect evidence
 in #767. Provider authentication and model sessions are outside that installation acceptance. Existing capability records below remain bounded to their recorded cells. Ownership,
 configuration, enablement, session activation, observation and review remain separate proof layers.
-Claude may delete its private marketplace source during native removal; Yoetz accepts that
+Claude may delete its private marketplace source during native removal; FinishUP accepts that
 already-absent source and still verifies the final registration and installation state.
 The command sequence follows the [official marketplace CLI reference](https://code.claude.com/docs/en/plugin-marketplaces#manage-marketplaces-from-the-cli).
 
@@ -55,9 +139,9 @@ effective policy, or named acceptance criterion requiring independent AI-powered
 required review and all host/disclosure approval boundaries. Installed guidance bytes alone prove
 neither activation nor AI-powered review dispatch.
 
-The native plugin selects `skills/claude-code/yoetz/SKILL.md`. Its entrypoint names
-`/yoetz:yoetz`, uses the declared MCP namespace, reads installed references on demand, and refreshes
-Yoetz status after Claude resume or compaction. `SessionStart` additional context is a bounded cue;
+The native plugin selects `skills/claude-code/finishup/SKILL.md`. Its entrypoint names
+`/finishup:finishup`, uses the declared MCP namespace, reads installed references on demand, and refreshes
+FinishUP status after Claude resume or compaction. `SessionStart` additional context is a bounded cue;
 replayed session context does not establish the current ledger frontier. Plugin replacement uses
 Claude's documented `/reload-plugins` or a new session, followed by loaded-root and digest checks.
 
@@ -69,7 +153,7 @@ SessionStart context directs cooperative `start mode=attach` before `status` wit
 ids; unmapped context directs `start` before material work. Same-session compaction uses held
 current ids for `status`. Both startup messages route failures through exact continuations,
 same-request recovery, and a named one-time repair before a blocked-startup user handoff.
-A first non-retryable failure alone does not permit continuing without Yoetz; see
+A first non-retryable failure alone does not permit continuing without FinishUP; see
 [startup failure precedence](../../guidance/coverage-and-receipts.md#startup-failure-precedence).
 Native plugins can select `--startup-mode required` through the owner-reviewed lifecycle.
 See [required startup](required-startup.md) for current-plan gating, opt-out, recovery and native
@@ -93,10 +177,10 @@ rendered system-prompt attachment with the packaged text:
   remains a separate, host-independent follow-up recorded on the issue.
 - With about 200 registered tools, Claude Code defers MCP tool schemas: only names appear until the
   agent runs `ToolSearch` for them. The initialize block is therefore the only unsolicited cue.
-- The Yoetz server is often still connecting when the agent takes its first action; its tools
+- The FinishUP server is often still connecting when the agent takes its first action; its tools
   and instructions then arrive one message later.
 
-The bridge therefore serves a Claude-specific initialize body: `yoetz mcp serve --host claude`
+The bridge therefore serves a Claude-specific initialize body: `finishup mcp serve --host claude`
 renders `CLAUDE_CODE_INITIALIZE_INSTRUCTIONS` (at most `packaged_max_chars` = 964 characters),
 whose first two sentences are the trigger and the late-start rule, followed by the same route tail
 and startup-read destination disclosure (#479) as every other host. The bound is derived so that
@@ -117,11 +201,11 @@ Activation cues by connection mode:
 
 | Mode | How it is registered | Initialize instructions | SessionStart cue | Skill |
 | --- | --- | --- | --- | --- |
-| Plugin-managed | `yoetz setup run --host claude` (or `yoetz integrate claude plugin install`) renders the marketplace, hooks and plugin-owned `.mcp.json` | yes (compact body) | yes, once the plugin is enabled | `/yoetz:yoetz` |
-| Bare MCP | An owner-written `yoetz mcp serve --host claude` entry in Claude's own MCP configuration | yes (compact body when `--host claude` is present; generic body for a legacy bare `mcp serve` entry) | **no** | none |
+| Plugin-managed | `finishup setup run --host claude` (or `finishup integrate claude plugin install`) renders the marketplace, hooks and plugin-owned `.mcp.json` | yes (compact body) | yes, once the plugin is enabled | `/finishup:finishup` |
+| Bare MCP | An owner-written `finishup mcp serve --host claude` entry in Claude's own MCP configuration | yes (compact body when `--host claude` is present; generic body for a legacy bare `mcp serve` entry) | **no** | none |
 
 A bare entry delivers only the initialize block; it has no `SessionStart` context, no
-auto-attach, no hooks and no skill catalog entry. `yoetz setup status --json` names the mode
+auto-attach, no hooks and no skill catalog entry. `finishup setup status --json` names the mode
 per discovered Claude installation under `hosts[].activation_cues`: `mcp_mode`
 (`plugin_managed`, `bare_mcp`, `dual`, `absent`, `foreign`, `ambiguous`), `mcp_source`,
 `route_profile`, `host_profile` (`claude` for the compact initialize body, `generic` for a legacy
@@ -138,10 +222,10 @@ for material work in this checkout, since the highest-priority instruction layer
 
 Design basis, checked 2026-09-09: Claude's [skills guidance](https://code.claude.com/docs/en/skills)
 recommends a use-case-first description and concise instructions with supporting references.
-Yoetz keeps this workflow in the conversation because a forked skill lacks that conversation's
+FinishUP keeps this workflow in the conversation because a forked skill lacks that conversation's
 history. The [plugin guide](https://code.claude.com/docs/en/plugins) supplies the namespaced
 invocation; [hooks](https://code.claude.com/docs/en/hooks) and
-[sessions](https://code.claude.com/docs/en/sessions) explain the reload/resume context. Yoetz does
+[sessions](https://code.claude.com/docs/en/sessions) explain the reload/resume context. FinishUP does
 not add `allowed-tools` or an automatic fork. The independent startup cue and optional required
 gate are described in the required-startup runbook. The five shared
 references still own evidence, consent, and receipt semantics. These sources justify instruction
@@ -150,7 +234,7 @@ design, not a new tested Claude version or native behavioral acceptance result.
 Anthropic's own [example skill](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/example-plugin/skills/example-skill/SKILL.md)
 and [skill-development skill](https://github.com/anthropics/claude-code/blob/main/plugins/plugin-dev/skills/skill-development/SKILL.md)
 use focused activation descriptions, imperative procedures, and links to supporting files. The
-Claude Yoetz entrypoint follows those patterns and addresses Claude directly; it does not ask the
+Claude FinishUP entrypoint follows those patterns and addresses Claude directly; it does not ask the
 agent to identify which host is reading it or carry another host's restart instructions.
 
 
@@ -164,7 +248,7 @@ remote/web/cloud, synced/managed/user/local scopes, Agent SDK, or headless sessi
 Installation evidence (2026-09-20, issue #767): the installed 0.2.4 wheel passed preview,
 connect, status, repeat/no-op, disconnect and reconnect with Claude Code `2.1.261` on Ubuntu
 24.04 x86-64 and Ubuntu 24.04 inside actual WSL 2. Real PAM approval succeeded with disposable
-local accounts. The [acceptance record](https://github.com/TheGaySupreme123/yoetz/issues/767#issuecomment-5750168131)
+local accounts. The [acceptance record](https://github.com/TheGaySupreme123/finishup/issues/767#issuecomment-5750168131)
 binds the source, wheel digest and outcomes. Provider login and model runs were outside that
 installation acceptance.
 
@@ -174,14 +258,14 @@ without that cell refuse `human_authority_unavailable` on non-macOS hosts. Check
 preview's `authorization.human_presence` before proceeding. A supported presence mechanism is
 not native host evidence: Linux CLI activation and observation still need their own evidence.
 `preview` and `status` are read-only, and the rendered artifact is host-neutral. Claude Code
-inside WSL 2 can use Yoetz over MCP with its own `yoetz mcp serve` entry; that alone establishes
+inside WSL 2 can use FinishUP over MCP with its own `finishup mcp serve` entry; that alone establishes
 neither hook observation nor a proven cell. The reviewed evidence case stays `claude-code-cli-native-project-2.1.241-macos-arm64`;
 a Linux x86-64 evidence case for the CLI cell is outstanding and will be admitted alongside the
-macOS case, not in place of it. Windows-native Claude Code against a WSL Yoetz is untested and not
+macOS case, not in place of it. Windows-native Claude Code against a WSL FinishUP is untested and not
 claimed. Host facts shared with the other hosts (state location, keyring, sandbox, platform cells)
 are in [`linux-and-wsl.md`](linux-and-wsl.md).
 
-## What Yoetz generates
+## What FinishUP generates
 
 Claude Code keeps the native carrier's marker-bound launcher identity described below. The
 installed-RECORD proof added for Codex external registration in #654 does not classify Claude
@@ -192,21 +276,21 @@ The managed marketplace source contains:
 ```text
 .claude-plugin/marketplace.json
 .yoetz-claude-marketplace-install.json
-plugins/yoetz/.claude-plugin/plugin.json
-plugins/yoetz/skills/yoetz/SKILL.md
-plugins/yoetz/skills/yoetz/references/...
-plugins/yoetz/hooks/hooks.json
-plugins/yoetz/.mcp.json                 # plugin-managed mode only
+plugins/finishup/.claude-plugin/plugin.json
+plugins/finishup/skills/finishup/SKILL.md
+plugins/finishup/skills/finishup/references/...
+plugins/finishup/hooks/hooks.json
+plugins/finishup/.mcp.json                 # plugin-managed mode only
 ```
 
-The marketplace entry is `strict:true`, declares only relative source `./plugins/yoetz`, and does
+The marketplace entry is `strict:true`, declares only relative source `./plugins/finishup`, and does
 not redefine plugin components. The plugin manifest is authoritative and sets
 `defaultEnabled:false`. Every hook command and the plugin-owned `.mcp.json` entry launch the exact
-`yoetz` that rendered the plugin (absolute executable, or `<interpreter> -m yoetz`), recorded in the
-source marker; a bare PATH `yoetz` is never written, so the bridge, hooks, and service cannot come
-from different installations. Re-render (`update`) after moving or reinstalling Yoetz. The native
+`finishup` that rendered the plugin (absolute executable, or `<interpreter> -m finishup`), recorded in the
+source marker; a bare PATH `finishup` is never written, so the bridge, hooks, and service cannot come
+from different installations. Re-render (`update`) after moving or reinstalling FinishUP. The native
 entrypoint and five shared references come from their canonical packaged sources; the references
-are byte-identical across host projections. Yoetz writes no credentials, endpoints, user config, ledger,
+are byte-identical across host projections. FinishUP writes no credentials, endpoints, user config, ledger,
 vault, receipt, or provider state into the plugin, `${CLAUDE_PLUGIN_ROOT}`, or
 `${CLAUDE_PLUGIN_DATA}`.
 
@@ -226,7 +310,7 @@ CLAUDE_PATH=/absolute/path/to/resolved/claude
 PROJECT_ROOT=/absolute/path/to/project
 CLAUDE_CONFIG_ROOT=/absolute/path/to/claude-config
 CACHE_ROOT=/absolute/path/to/claude-config/plugins/cache
-MARKETPLACE_ROOT=/absolute/path/to/private/yoetz-marketplace
+MARKETPLACE_ROOT=/absolute/path/to/private/finishup-marketplace
 ```
 
 ## Preview and install disabled
@@ -234,7 +318,7 @@ MARKETPLACE_ROOT=/absolute/path/to/private/yoetz-marketplace
 For plugin-owned strict MCP, preview the exact operation:
 
 ```text
-yoetz integrate claude plugin preview \
+finishup integrate claude plugin preview \
   --claude-path "$CLAUDE_PATH" \
   --claude-config-root "$CLAUDE_CONFIG_ROOT" \
   --cache-root "$CACHE_ROOT" \
@@ -273,7 +357,7 @@ For dogfooding or CI, export the exact plugin root and load it for one session; 
 Claude config, marketplace, or cache changes, and no review authority is consumed:
 
 ```text
-yoetz integrate claude plugin export \
+finishup integrate claude plugin export \
   --output-root "$DEV_ROOT" \
   --mcp-ownership plugin-managed --route-profile strict \
   --development-enabled --json
@@ -287,10 +371,10 @@ session proves skill delivery, MCP binding/runtime, hooks, model use, AI-powered
 and receipts for the exact bytes, but never marketplace installation, discovery, enablement, or host
 activation.
 
-An isolated `CLAUDE_CONFIG_DIR` isolates only Claude Code. When the session's Yoetz must not touch
-the live install, also export `YOETZ_ISOLATED_ROOT` (ADR-026) into the session environment so the
+An isolated `CLAUDE_CONFIG_DIR` isolates only Claude Code. When the session's FinishUP must not touch
+the live install, also export `FINISHUP_ISOLATED_ROOT` (ADR-026) into the session environment so the
 plugin's MCP bridge, hook commands, and any service they spawn derive config, storage, state, and
-endpoints from the isolated root; prove it beforehand with `yoetz service isolation --json` run
+endpoints from the isolated root; prove it beforehand with `finishup service isolation --json` run
 under the same environment.
 
 Issue #561 does not add an external-registration mutation path for Claude Code. The supported
@@ -300,18 +384,18 @@ Codex registration status or `--env` behavior is inferred for Claude Code.
 
 Issue #604 (ADR-028) adds the executable-bound guard and, again, no mutation path. When the plugin's
 hook and MCP commands name the absolute launcher of a pinned test instance (one provisioned with
-`yoetz instance create --bind-runtime`, which `scripts/provision_test_instance.py` always does),
+`finishup instance create --bind-runtime`, which `scripts/provision_test_instance.py` always does),
 that launcher resolves the instance's own root even if Claude Code launches it without the exported
 variable, and refuses a conflicting variable (`isolation_root_conflict`). The everyday plugin
-installation must name the everyday launcher by absolute path, never a bare `yoetz` resolved
-through `PATH`, so that a test runtime earlier on `PATH` cannot become the host's Yoetz. Verify with
-`yoetz instance status --json` from the exact launcher the plugin names: `binding` must be
+installation must name the everyday launcher by absolute path, never a bare `finishup` resolved
+through `PATH`, so that a test runtime earlier on `PATH` cannot become the host's FinishUP. Verify with
+`finishup instance status --json` from the exact launcher the plugin names: `binding` must be
 `runtime_pin` or `environment_and_pin` for a test instance and `ambient` for the everyday install.
 See [`test-instances.md`](test-instances.md).
 
-## Upgrading Yoetz under a running service
+## Upgrading FinishUP under a running service
 
-The local-control handshake pins the exact schema-manifest digest, so after installing a new Yoetz
+The local-control handshake pins the exact schema-manifest digest, so after installing a new FinishUP
 build the previous build's service still owning the endpoint refuses the new bridge and CLI. The
 first plugin tool call (on-demand startup) replaces that service automatically: it asks the stale
 holder to shut down through its ordinary bounded path and starts this installation's service inside
@@ -320,15 +404,139 @@ the same 30-second budget. If that cannot complete, the tool returns `SERVICE_UN
 generation mismatch) and the repair command; run it on a local terminal:
 
 ```text
-yoetz service restart
+finishup service restart
 ```
 
-`yoetz service status` names the incompatible holder's pid, version, and manifest digest. Other
+`finishup service status` names the incompatible holder's pid, version, and manifest digest. Other
 hosts' sessions still running the previous build's bridge are refused after the switch until they
 restart; that is the intended outcome of an upgrade, not a defect. The cooperative MCP bridge
 latches that availability failure for the process and serializes the first on-demand attempt so
 concurrent tool calls share one diagnostic (issues #469, #476); that behaviour is shared across
 hosts that use this bridge, not Claude-Code-specific.
+
+## Legacy Yoetz registrations
+
+FinishUP was named Yoetz through 0.2.5 (ADR-048). A project connected by Yoetz carries the
+`yoetz-local` marketplace (a private source tree at `<config>/plugins/marketplaces/yoetz-local` with
+the frozen marker `.yoetz-claude-marketplace-install.json`), the plugin `yoetz@yoetz-local`, the
+skill `/yoetz:yoetz`, and possibly owner-written MCP entries under the `yoetz` key. FinishUP reads
+these; it writes only `finishup-local`, `finishup@finishup-local` and the `finishup` server name.
+Until migration the old plugin keeps working: hooks, start binding, the startup gate and tool
+classification accept `mcp__yoetz__*`, `mcp__plugin_yoetz_yoetz__*` and the `yoetz` skill ids.
+
+**Status.** `finishup integrate claude plugin status --json`, its previews and `finishup setup
+status --host claude` report `legacy_installation` for the plugin and marketplace, and the MCP block
+reports `legacy_registration` for the `yoetz` key:
+
+| Value | Meaning |
+|---|---|
+| `none` | Nothing under the legacy name for this project. |
+| `legacy_only` | The only FinishUP install still uses the legacy name: owned but outdated. |
+| `duplicate` | Owned installs under both names. |
+| `foreign` | Something under the legacy name FinishUP cannot prove is its own; reported, never touched. |
+
+A legacy install is this project's and FinishUP's only when the project's settings register
+`yoetz-local` or Claude lists `yoetz@yoetz-local` for this project, and the marketplace tree at the
+accepted location (beside the managed root) carries a valid marker naming `yoetz-local`. The preview
+binds that tree's digest. When the project's `.claude` directory is a symlink, status reads the
+legacy install as `foreign` and it is never uninstalled or edited, because FinishUP does not rewrite
+settings through a symlinked `.claude`: a plugin preview (and so connect, update or remove) refuses
+that `.claude` as `target_unsafe` before any command runs, the same project-settings ownership rule
+that refuses a `.claude` another account made or others can write. Before the rename is migrated,
+setup's activation cues read the plugin in `yoetz-local`.
+
+**Migration.** The guided connection (`finishup setup run --host claude`) and `finishup integrate
+claude plugin install|update|remove` (and disconnect) migrate an owned legacy install in the same
+reviewed preview (warning `legacy_installation_owned`; connection plan change
+`migrate_legacy_plugin`, or `remove_legacy_plugin` on disconnect). Before writing the new source,
+FinishUP retires this project's legacy install only, doing what the preview observed. When Claude
+lists the legacy plugin for this project, it runs:
+
+```text
+claude plugin uninstall yoetz@yoetz-local --scope project --keep-data
+```
+
+FinishUP then removes exactly `extraKnownMarketplaces["yoetz-local"]` and
+`enabledPlugins["yoetz@yoetz-local"]` from this project's `.claude/settings.json` (warning
+`legacy_project_registration_removed`) and leaves every other setting, its order and the file mode
+as they are; the file is rewritten with 2-space indentation, as Claude writes it. The preview binds
+each of those entries' digests: if either changed after the preview, the file is left untouched and
+the result is `outcome_unknown`, so preview again.
+
+The migration never runs Claude's unscoped `claude plugin marketplace remove yoetz-local`, which
+would delete the shared `<config>/plugins/marketplaces/yoetz-local` tree, Claude's user-level
+`known_marketplaces.json` entry and every other project's `yoetz@yoetz-local` install. That tree and
+that user-level registration stay for the other projects of the same Claude configuration root;
+status and previews note them as `legacy_marketplace_retained`, and each project migrates on its own
+connect. Update keeps the legacy plugin's enabled state, connect enables the renamed plugin, and
+install leaves it disabled as install always does.
+
+**Several projects in one configuration root (#1058).** The same per-project rule holds for the
+renamed marketplace: a disconnect retires this project's own legacy install (its `yoetz@yoetz-local`
+row and its declaration) whether or not other projects keep the shared `finishup-local` source, and
+the shared-source decision counts only `finishup@finishup-local` rows, so another project's legacy
+install neither keeps nor loses the renamed source. When other projects keep the renamed source,
+the disconnect also drops this project's own `finishup-local` declaration; the operation reaches
+`completed` only once the legacy install reads `absent` as well. A project whose only install is
+its Yoetz-era one (it reads `duplicate` beside another project's renamed install, with nothing of
+its own discovered) plans only `remove_legacy_plugin`: there is no FinishUP install of its own to
+uninstall, and apply skips that uninstall too.
+
+Decisions from the 0.3 port review (2026-10-15), per host: Claude Code lists every project-scope
+install itself (`claude plugin list`), so there is no Yoetz-era membership to infer here. The
+other hosts need it: Cursor keeps an owned `plugins/local/yoetz` found without a record until
+`--remove-shared`; Codex counts the project its Yoetz-era marketplace table names as a member,
+and Yoetz-era pieces found without a record only make trusted FinishUP checkouts possible users.
+The transport-less `mcp_servers.yoetz` leftover diagnosis, and keeping an owned `yoetz`
+registration while a project's Codex configuration still needs it (#1073), are Codex-only: a
+stale Claude approval entry does not stop Claude Code from loading its configuration, and Claude
+Code's MCP server comes with the plugin, not a user-level entry FinishUP moves. The step that
+names the `--remove-shared` preview after a completed or repeated disconnect appears on Codex and
+Cursor, when the shared pieces stay only for a project whose directory is missing or because
+membership is unknown; Claude Code lists its projects itself, so a Claude Code disconnect never
+needs it and never shows it. The rule that a disconnect never claims the admission sweep for a
+surface it does not edit (exact legacy entries count only on an otherwise absent surface, never on
+a foreign one) applies to Claude Code's `.claude/settings.local.json` as to every host.
+
+The one exception is an in-place update: `plugin update --marketplace-root <.../yoetz-local>` (the
+upgrade plan's form for an old install) names the old folder itself, which the renamed tree then
+replaces. Only there does FinishUP also run `claude plugin marketplace remove yoetz-local`, so
+Claude's registration does not point at a folder that now holds `finishup-local`; the preview warns
+`legacy_marketplace_replaced`. It runs and announces that remove only while this project's
+`.claude/settings.json` or Claude's user-level `known_marketplaces.json` still registers the old
+folder; with no registration left it neither runs nor announces it. While Claude lists the legacy plugin for another project or scope,
+that update is refused as `destination_conflict` with detail `legacy_marketplace_shared`: migrate
+those projects first, or prefer the default `finishup-local` root.
+
+**MCP.** FinishUP never edits Claude's own MCP configuration. Owner-written `yoetz` entries are
+recognized and reported (`legacy_only`, `duplicate`); rename them yourself. A legacy-only entry maps
+to no host-admission rule, and a plugin-managed connect over it is refused with
+`mcp_ownership_conflict` (detail `legacy_registration`), as before the rename.
+
+**Hooks and admission.** The rendered `PermissionDenied` matcher is
+`^mcp__(finishup|yoetz|plugin_finishup_finishup)__check$`. Claude hooks carry no isolation
+environment. Admission grant writes only the `finishup` forms; the exact legacy entries
+`mcp__yoetz__check` and `mcp__plugin_yoetz_yoetz__check` are reported as `legacy_entries`, removed
+by `admission revoke` and the removal sweeps, and retired by a grant once nothing FinishUP owns uses
+the `yoetz` name. A grant is refused with `legacy_registration_active` while Claude serves FinishUP
+only under `yoetz`.
+
+**Manual steps for state FinishUP cannot prove.** A `yoetz-local` registration or a listed
+`yoetz@yoetz-local` plugin without a marker-valid legacy tree (deleted or modified) is `foreign` and
+is never touched. Remove it yourself, for that project only:
+
+```text
+claude plugin uninstall yoetz@yoetz-local --scope project
+```
+
+then remove `yoetz-local` from `extraKnownMarketplaces` and `yoetz@yoetz-local` from
+`enabledPlugins` in that project's `.claude/settings.json` (or run `claude plugin marketplace remove
+yoetz-local --scope project` on a Claude version that supports `--scope` there). Do not run the bare
+`claude plugin marketplace remove yoetz-local` while another project still uses it: it removes the
+shared tree, the user-level registration and every project's legacy install. Once no project lists
+`yoetz@yoetz-local` any more (`claude plugin list`), the retained
+`<config>/plugins/marketplaces/yoetz-local` tree and its user-level registration can be removed by
+hand; FinishUP never deletes them.
 
 ## Static and host validation
 
@@ -339,10 +547,10 @@ CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_ROOT" "$CLAUDE_PATH" \
   plugin validate "$MARKETPLACE_ROOT" --strict
 CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_ROOT" "$CLAUDE_PATH" plugin list --json
 CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_ROOT" "$CLAUDE_PATH" \
-  plugin details yoetz@yoetz-local
+  plugin details finishup@finishup-local
 ```
 
-The validator covers the default manifest/hooks/skill paths. Yoetz separately validates exact
+The validator covers the default manifest/hooks/skill paths. FinishUP separately validates exact
 `.mcp.json` structure and cache bytes; neither static validator proves MCP connection or model use.
 `plugin details` should report one skill, five hooks, and one MCP server in plugin-managed mode.
 
@@ -369,11 +577,11 @@ Claude project session only after the enable read-back. If updating a running se
 `/reload-plugins` (and `--force` only when Claude explicitly requires cache invalidation), then prove
 the loaded root/digest in that session. Old concurrent sessions may retain the old plugin.
 
-The skill name is `/yoetz:yoetz`. The MCP server is `plugin:yoetz:yoetz`, and callable names are
-`mcp__plugin_yoetz_yoetz__<operation>`. A live proof needs a fresh session and correlated
+The skill name is `/finishup:finishup`. The MCP server is `plugin:finishup:finishup`, and callable names are
+`mcp__plugin_finishup_finishup__<operation>`. A live proof needs a fresh session and correlated
 `start`/`status` call through that scoped name; a list/details/MCP handshake alone is insufficient.
 
-Claude Code's native MCP profile (`yoetz mcp serve --host claude`) delivers
+Claude Code's native MCP profile (`finishup mcp serve --host claude`) delivers
 `structuredContent` for successful tools but only the bounded text `content` for `isError`
 results. Cooperative `EVENT_INVALID` therefore cannot rely on `safe_details` reaching the model.
 Decision for Claude Code (issue #579): supported here — the text summary names frozen
@@ -405,14 +613,14 @@ profile id with `--observation-profile`; the id is a mapping contract, not a cla
 installed Claude version.
 
 The [Claude hook contract](https://code.claude.com/docs/en/hooks) keeps permission
-requests separate from tool execution. `PermissionRequest` has no tool-call identifier, so Yoetz
+requests separate from tool execution. `PermissionRequest` has no tool-call identifier, so FinishUP
 retains an uncorrelated permission event without inventing a tool action. `PermissionDenied`
 reports auto-mode refusals; it does not cover manual dialog denial, deny rules, or a pre-tool hook
 blocking execution. `StopFailure` records an API-failed turn without ending the observed session,
 and emits no advice output. The ordinary Claude mapping is
 `claude-code-hooks-ordinary-v2`: Claude's `PostToolUse` event is an explicit host-tool success
 fact, so a successful `Read`, `Bash`, or other tool result is recorded as success even when the
-native result has no exit field. Yoetz never fabricates `exit_status: 0`; an exit status is retained
+native result has no exit field. FinishUP never fabricates `exit_status: 0`; an exit status is retained
 only when Claude supplies one. `PostToolUseFailure`, denial, interruption, error, invalid or
 unknown host status, and conflicting host fields override that event-level success. MCP result
 content is domain data: only its outer `isError`/`is_error` signal is an execution outcome; nested
@@ -458,7 +666,7 @@ Where only the result is observed, that single phase is the whole condition; no 
 fabricated.
 
 A successful `Bash` result on this profile is an explicit host-tool success fact and nothing more.
-Deterministic advice never promotes it to a verification check: only a current `passed`
+Local advice never promotes it to a verification check: only a current `passed`
 approved-check fact, or an explicit success from a dedicated verification tool, establishes or
 advances the verification baseline, and a routine read never does. A Claude session that edits and
 claims completion after successful `Bash` commands alone therefore keeps
@@ -466,7 +674,7 @@ claims completion after successful `Bash` commands alone therefore keeps
 (issue #681). Failed-command advice is unchanged and still reads every `Bash` outcome.
 
 Select these hooks with `--observation-profile ordinary` on the existing Claude plugin
-preview/install/update/status commands, or on `yoetz integrate claude plugin export` for a
+preview/install/update/status commands, or on `finishup integrate claude plugin export` for a
 development directory. Repeat the same profile when applying an exact preview. To return to
 scoped structural hooks, preview and apply an update with `--observation-profile structural`.
 Artifact selection does not grant content capture.
@@ -478,15 +686,15 @@ Native content remains a second, per-host consent arm. After granting structural
 operator can enable and later revoke it with the user-facing commands below:
 
 ```text
-yoetz observe content-enable --workspace /exact/project \
+finishup observe content-enable --workspace /exact/project \
   --profile claude-code-ordinary-observation-v1
-yoetz observe content-status --workspace /exact/project --json
-yoetz observe content-disable --workspace /exact/project \
+finishup observe content-status --workspace /exact/project --json
+finishup observe content-disable --workspace /exact/project \
   --profile claude-code-ordinary-observation-v1
 ```
 
 This arm persists through later structural grants in the same workspace: connecting Codex,
-rerunning Codex setup, or repeating `yoetz observe grant` keeps it and does not advance its content
+rerunning Codex setup, or repeating `finishup observe grant` keeps it and does not advance its content
 fence, so a capture in flight stays authorized (#835). Only `content-disable` or `observe revoke`
 removes it; after a revoke, enable it again explicitly.
 
@@ -541,16 +749,16 @@ the native hook/observation paths below.
 Cursor's explicit-start repair (issue #661) leaves Claude's binder and hook subscription unchanged.
 [Claude's hooks reference](https://code.claude.com/docs/en/hooks#posttooluse), checked 2026-09-08,
 specifies `tool_response` for successful `PostToolUse`. Claude continues to pass that field from
-its exact Yoetz-scoped tool to the shared binder; Cursor's `result_json` / `tool_output` and
+its exact FinishUP-scoped tool to the shared binder; Cursor's `result_json` / `tool_output` and
 server-key normalization are confined to the Cursor adapter. Cross-host regression checks cover
 Claude's structured result, single JSON text block, live-characterized JSON string, and failed
 start rejection.
 
-The native hook profile emits `SessionStart`, scoped-Yoetz `PostToolUse`, scoped-Yoetz
+The native hook profile emits `SessionStart`, scoped-FinishUP `PostToolUse`, scoped-FinishUP
 `PostToolUseFailure`, `Stop`, `SessionEnd`, `SubagentStart`, and `SubagentStop`. A bare MCP matcher is
-a negative control. Hooks call `yoetz hooks claude-observe` and are best-effort; timeouts/nonzero
+a negative control. Hooks call `finishup hooks claude-observe` and are best-effort; timeouts/nonzero
 exits never authorize or block Claude work. The child hooks retain only the bounded child identity;
-transcript, prompt, agent type, and path data stay outside the Yoetz envelope.
+transcript, prompt, agent type, and path data stay outside the FinishUP envelope.
 
 The renderer uses a lightweight entrypoint that avoids loading the full CLI application graph.
 Ordinary events have a five-second budget, `SessionStart` and `Stop` ten seconds, and teardown
@@ -574,13 +782,13 @@ evidence boundaries below remain in force.
 ### Parent liveness while native subagents run (#837)
 
 In the 2026-09-25 dogfood, a Claude parent's last accepted hook was a `SubagentStart`. Its
-native subagents then ran for about twelve minutes with no parent event. Yoetz abandoned the
+native subagents then ran for about twelve minutes with no parent event. FinishUP abandoned the
 parent while it kept working, and a later delegation was refused. Injected-clock conformance
 reproduces the same sequence on the released source. The per-profile decisions are:
 
 - **Structural profile (default).** These count as parent contact, each at its own receipt time:
   - workflow calls;
-  - scoped-Yoetz `PostToolUse` and `PostToolUseFailure`;
+  - scoped-FinishUP `PostToolUse` and `PostToolUseFailure`;
   - `SessionStart`, `Stop`, `SubagentStart`, and `SubagentStop`.
 
   Only `SessionEnd` ends contact. A `SubagentStart` recorded without its `SubagentStop` holds the
@@ -622,8 +830,8 @@ The final exact-wheel cell used `yoetz-0.1.0-py3-none-any.whl` at SHA256
 `2e8b0b48`, with 216 packaged resources (`sha256:1e4cc667456c1cf9ac579d7bc1db186937c29abd9637025c42569ffc7701895c`)
 and a strict plugin export (`sha256:f2f7249ef47e43cde1fb0004d2bb770125665c7fc15664c8c6d116242dec6fdb`) loaded
 through Claude's development `--plugin-dir` carrier in a fresh mode-0700 isolated root; this is not
-marketplace-installed activation. It completed a Yoetz parent `start`, `mode=delegate`, native
-child `Agent`, child `mode=attach`, one `publish_work`, deterministic `check`, and JSON `receipt`;
+marketplace-installed activation. It completed a FinishUP parent `start`, `mode=delegate`, native
+child `Agent`, child `mode=attach`, one `publish_work`, local `check`, and JSON `receipt`;
 the child receipt was `rcp_f567225d-a34f-4a07-beda-2866649a3b57` with digest
 `sha256:47a578bbdaedd7f93e3389ee7d212b84feb132dd44ff2f02a1c8d10e63ba3e3a` and the recorded
 conclusion `insufficient_coverage` (`semantic_review_not_requested`). The parent and child ledgers
@@ -636,7 +844,7 @@ recorded `claude_hook:true` but `mapping_present:false`, ten `mapping_missing` q
 `outbox_quarantined`/`unpaired_event` gaps, so this cell proves hook execution but does not claim
 attributed host observation or accepted hook coverage. The first `SessionStart` hook was cancelled;
 child and operation hooks returned success. The parent's advice/frontier remained independent and
-recommended `refresh_observation`. This proves the bounded host and Yoetz workflow under the
+recommended `refresh_observation`. This proves the bounded host and FinishUP workflow under the
 recorded limits; it does not promote either installed version to the pinned `2.1.241` capability
 cell or prove production model use.
 
@@ -683,7 +891,7 @@ The 2026-09-07 native cell used source `80d0d94c` and the development `0.1.0` wh
 files matched the wheel. Claude Code `2.1.263` ran with an isolated synthetic workspace and
 passphrase vault, the development `--plugin-dir` carrier, a strict MCP route, and a synthetic
 loopback Messages provider. The native host and driver exited `0` without timeout. Parent attach,
-delegation, native `Agent`, child attach, publication, deterministic check, and receipt completed;
+delegation, native `Agent`, child attach, publication, local check, and receipt completed;
 request/result models, child identity, operation ordering, and receipt/check bindings validated.
 `SessionStart`, `SubagentStart`, `SubagentStop`, and `Stop` hooks succeeded without cancellation.
 
@@ -697,7 +905,7 @@ hook ingress and retained structural state, not independently attested by the ou
 Final observation status showed Claude hook coverage, zero pending rows, zero quarantines, and a
 completed drain. One bounded `drain_budget_exhausted` diagnostic remained; a historical parent
 `mapping_missing` event did not recur in child callbacks. Public status retained
-`content_capture_unavailable`. The check and receipt used deterministic coverage with
+`content_capture_unavailable`. The check and receipt used local coverage with
 `semantic_review_not_requested`; their validation allowed later observation-related frontiers but
 did not independently prove the intervening digest chain. This cell proves the bounded native
 workflow and lane separation. Production model behavior, semantic advice content, marketplace
@@ -706,19 +914,19 @@ activation, and support for the pinned `2.1.241` capability cell remain outside 
 Advice uses Claude Code's documented output contract. `SessionStart`, `PostToolUse`, and
 `PostToolUseFailure` may emit `hookSpecificOutput.additionalContext`; at `Stop` that channel
 carries only the closure gate (#985). The failure event
-keeps `hookEventName: PostToolUseFailure` even though Yoetz normalizes its internal advice cadence
+keeps `hookEventName: PostToolUseFailure` even though FinishUP normalizes its internal advice cadence
 to `PostToolUse`. At `Stop`, additional context is Claude Code's non-error feedback channel: it
 continues through the same `stop_hook_active` loop guard as a blocking decision, but is labelled as
 feedback rather than an error, so ordinary advice there would spend the continuation the gate
 needs and is withheld until the next tool event or session start. Claude Code sets
 `stop_hook_active` when it is already continuing because of a Stop hook and still honours a
-further continuation; it has no fixed cap, so Yoetz's caps below bound it. Yoetz never emits
+further continuation; it has no fixed cap, so FinishUP's caps below bound it. FinishUP never emits
 `decision: block` to Claude Code. **Stop-time
 closure gate (host decision: supported).** When a mapped session stops while closure still requires
 agent action, `Stop` carries the gate text in that same `additionalContext` channel, which continues
 the conversation; after `stop_hook_active` is set only an announced re-check not yet asked, or a withdrawn
 deliverable not yet voiced, may follow, so the
-gate continues Claude Code at most twice per turn. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and Yoetz-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `yoetz-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that loads a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendment: the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references` and tells the agent to embed it, rebuild it at run time or declare it as a delivered output; disclosing the dependency does not clear it, and no path is remembered), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but Yoetz cannot prove (a Yoetz limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a Yoetz limit is never a `yoetz-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a Yoetz limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `yoetz-assumption:` or `yoetz-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `yoetz-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendment): Claude Code's Stop payload carries `last_assistant_message` (a documented host field; the pinned raw captures predate it), which the adapter hands to the gate beside the structural envelope, never inside it; the re-read is then asked only for the resolved obligations that message neither cites by id nor addresses (at least two thirds of the criterion's terms), and names them; one bounded `status view=obligations` read (750 ms) supplies the criteria and is trusted only when its resolved set matches the announced key; a fully addressed set is not asked and records `closure_gate_acceptance_covered`. A Stop without the field (an older Claude Code, an oversized payload) keeps the re-read for every resolved set. The message is never stored, sent or put in a diagnostic. Host decision: supported. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031. `SessionEnd`
+gate continues Claude Code at most twice per turn. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and FinishUP-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `finishup-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that may read a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendments: a name the deliverable provably only writes does not count, and a bare file name a declared file shares, or that nothing ties to the file's directory, is counted on the receipt as `deliverable_references_ambiguous_name` instead; the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references`, where a name the agent itself published in this session returns to it even when its privacy policy withholds repository excerpts, and tells the agent to embed it, rebuild it at run time or declare it, or the directory holding it, as a delivered output; when a name is withheld it says why and gives the agent's own shell command that lists the files its change created; disclosing the dependency does not clear it, and no path is remembered. Host decision for the tb4n5 naming: supported, same code path), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but FinishUP cannot prove (a FinishUP limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a FinishUP limit is never a `finishup-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `finishup-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a FinishUP limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `finishup observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `finishup-assumption:` or `finishup-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read the acceptance_criteria of each resolved obligation the ledger flags (since tb4n5, #1050: a requested item never attempted, evidence not linked to a declared item, or only self-asserted evidence; `closure_readiness.rechecks` rule `resolved_obligations_acceptance_risk`, and a ledger that flags none announces no re-read) against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `finishup-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per flagged set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendment): Claude Code's Stop payload carries `last_assistant_message` (a documented host field; the pinned raw captures predate it), which the adapter hands to the gate beside the structural envelope, never inside it; a `finishup-acceptance:<obligation id>:met` line in it answers the re-read for that announced obligation, so only the unattested ones are named; a message attesting every announced obligation is not asked and records `closure_gate_acceptance_covered`. The attestation binds to the set this Stop's status read announced and counts only when the announced list is the whole set its key names; no second status read is made (the tb4n4 word-coverage rule and its `status view=obligations` read are gone). A Stop without the field (an older Claude Code, an oversized payload) keeps the re-read for every announced obligation. The message is never stored, sent or put in a diagnostic. Host decision: supported. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031. `SessionEnd`
 emits `{}`. Provider-repair advice is standing advice (#844). Claude Code delivers it only on
 `SessionStart`, or on the first `PostToolUse` after a `Stop` that withheld it, as
 `additionalContext` and never as `decision: block`; `Stop` no longer carries it (#985).
@@ -728,7 +936,7 @@ provider-repair request. The service emits it only when verification is not disa
 endpoint is bound, network egress is permitted, and an LLM inference channel is enabled, and the
 provider is still structurally unusable, including when no factory id is available.
 
-Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Claude Code: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `finishup check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Claude Code: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012). The tb4n5 extension to rollout rows held for their hook post is Codex-only: Claude Code has no rollout stream, so there is nothing held to release.
 
 Observation-health advice follows the same boundary: `refresh_observation` for source lag, a stale
 cursor, a drain backlog, service unavailability, or a locked vault stays in operator status and
@@ -737,12 +945,12 @@ reserved for work advice.
 
 The rendered hook commands bind `--workspace "${CLAUDE_PROJECT_DIR}"`. When a hook ingests
 nothing it still exits 0 with `{}`, but records one payload-free `hook_diagnostics` reason that
-`yoetz observe status --workspace <project>` reports: `workspace_unresolvable` (the variable was
+`finishup observe status --workspace <project>` reports: `workspace_unresolvable` (the variable was
 unset or named a missing, symlinked, or unsafe path), `workspace_unconsented` (the canonical Git
 root of that path carries no active consent — note that a `git worktree` is its own Git root, so
 consent on the main checkout does not cover it), or `paused`. A successful ingest records no
 diagnostic, so read `recent_count` together with the envelopes: no new `claude_hook` envelopes and a
-zero `recent_count` after a session that ran Yoetz tools means the hooks never reached the ingress
+zero `recent_count` after a session that ran FinishUP tools means the hooks never reached the ingress
 or the runtime gate is disabled — not that they were dropped for binding.
 
 A consented `SessionStart` auto-attaches a ledger task without an explicit MCP `start`: the hook
@@ -794,7 +1002,7 @@ from a public workspace string.
 Busy host lifecycle changes are durable local work. State schema `/11` adds bounded pending
 session-lifecycle intents, and a READY or hook drain reconciles them under the workspace and
 session reservations before routing their rows; busy mapping writes use an atomic per-session
-handoff. Upgrade this state quiescently: stop the older Yoetz service and Claude Code hooks,
+handoff. Upgrade this state quiescently: stop the older FinishUP service and Claude Code hooks,
 install the new runtime, then restart the service and all Claude Code integrations before writing
 `/11` state. Mixed old and new writers are unsupported because a `/10` writer ignores the new
 pairing fields and can erase a deferred intent when it saves.
@@ -817,7 +1025,7 @@ procedure](migration-rollback.md). Migration allows valid pending envelopes to s
 delivery still requires a usable session mapping; it does not itself repair a retired session route
 or replay quarantined rows. An
 idempotent repeat of a committed envelope (lost acknowledgement, service restart, or a workflow
-reattach that rotates the mapped Yoetz session) is resolved task-wide and acknowledged, never
+reattach that rotates the mapped FinishUP session) is resolved task-wide and acknowledged, never
 quarantined. A pending row from an ended host session whose task was recovered by a successor
 session is delivered on the successor route (`session_superseded` is followed). A successor
 binding that cannot be followed quarantines that row as `session_superseded`, not
@@ -835,23 +1043,25 @@ in `quarantine_causes`, aggregate `delivery_causes`, and gaps;
 `hook_diagnostics`, while manual and supervisor drains remain visible through status. Neither case
 is repaired by restarting a service that already reports ready.
 
-Claude Code's hooks are scoped to Yoetz's own tools, so every `PostToolUse` it observes is Yoetz
+Claude Code's hooks are scoped to FinishUP's own tools, so every `PostToolUse` it observes is FinishUP
 observing itself (issue #564). The shared self-observation policy applies: a `PostToolUse` of
-`mcp__plugin_yoetz_yoetz__status`, `_receipt`, or `_read_guidance` is ingested into the bounded
+`mcp__plugin_finishup_finishup__status`, `_receipt`, or `_read_guidance` is ingested into the bounded
 local store but not enqueued for delivery; a `PostToolUse` of `_start`, `_publish_work`, `_check`,
 or `_respond` enqueues one row; every `PostToolUseFailure` enqueues one row. Claude sends no
 `PreToolUse` on this profile, so its reviewed pairing contract is post-only and there is no
-pre-event to hold back. Its `tool_use_id`, when present, identifies the observed result; no
+pre-event to hold back. The tb4 n5 self-observation gap (a Codex rollout's completed MCP item, and
+Cursor's server-less `MCP:<tool>`) does not exist here: every Claude Code spelling of a FinishUP tool
+names its server and arrives in an explicit hook phase. Its `tool_use_id`, when present, identifies the observed result; no
 missing-pre gap is created for a legacy post-only hook. The `PostToolUse` advice
 guard recognizes Claude's plugin spelling together with the other host spellings, so a self-owned
 hook without an explicit failure does not lease pending recommendation context for the call being
 observed. No hook delivers a frontier-motion notice (issue #915): every such notice described
 observation-authored motion, which leaves a held frontier admissible. Explicit self-call failures
 remain retained, enqueued, and eligible for pending advice. The manual
-`yoetz observe drain --json` reports `terminal: drained` once nothing is pending.
+`finishup observe drain --json` reports `terminal: drained` once nothing is pending.
 
 Grant observation separately for the exact project. Exercise every advertised event and inspect
-`yoetz observe status`. Only consented accepted `claude_hook` envelopes earn coverage. Raw
+`finishup observe status`. Only consented accepted `claude_hook` envelopes earn coverage. Raw
 transcript/prompt/assistant/path/cwd/tool input/tool output/result/error values are discarded before
 storage. The exact successful scoped `start` post-hook is the sole routing exception: it validates
 the returned task/session/writer identifiers and frontier to bind the Claude session, while storing
@@ -862,7 +1072,7 @@ require their own evidence.
 ### Hook cost and timing (issue #915)
 
 Every `hooks claude-observe` pass folds one sample into the bounded aggregate that
-`yoetz observe status --json` reports as `hook_diagnostics.pass_timings` (text: `hook_pass_timing`).
+`finishup observe status --json` reports as `hook_diagnostics.pass_timings` (text: `hook_pass_timing`).
 Entries are keyed by host `claude`, the raw Claude event (`PreToolUse`, `PostToolUse`,
 `PostToolUseFailure`, `SessionStart`, ...) and the rendered profile path (`structural` or
 `ordinary`), with `count`, `p50_ms_at_most`, `p95_ms_at_most` (histogram bucket bounds), `max_ms`,
@@ -873,14 +1083,14 @@ is filtered at ingress and counts as `not_ingested`; it still cost a process. Th
 `hooks startup-gate` and `hooks startup-context` commands are not in the aggregate, although each
 is its own synchronous process: `startup-context` on every `SessionStart`, and in required startup
 mode `startup-gate` on session, prompt and every tool event. The aggregate is therefore the cost of
-the observation hook only, not of every Yoetz hook Claude Code runs.
+the observation hook only, not of every FinishUP hook Claude Code runs.
 
 Registration decision on Claude Code (issue #915, recorded 2026-09-30): unchanged, and no latency
 improvement is claimed. Claude Code runs every hook as a synchronous command (5 s for tool events,
 10 s for `SessionStart`/`Stop`, 3 s for `SessionEnd`). The structural default subscribes
-`PostToolUse`/`PostToolUseFailure` only for the Yoetz workflow tools, so ordinary tool calls pay no
-Yoetz hook process. The ordinary profile subscribes `PreToolUse`, `PostToolUse` and
-`PostToolUseFailure` on `.*`, which is two synchronous Yoetz processes per tool call; required
+`PostToolUse`/`PostToolUseFailure` only for the FinishUP workflow tools, so ordinary tool calls pay no
+FinishUP hook process. The ordinary profile subscribes `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure` on `.*`, which is two synchronous FinishUP processes per tool call; required
 startup mode adds a `startup-gate` process to each of those events. Whether those hooks can be made
 cheaper (a minimal-import fast path or a narrower matcher) without losing ingress is decided from
 the aggregate of a Claude Code dogfood run in both profiles on macOS, Linux and WSL 2. Those
@@ -892,16 +1102,16 @@ change applies here unchanged: an ordinary-profile `PostToolUse` with no pending
 
 The Claude Code hook ingress cap is 1 MiB (`MAX_HOOK_STDIN_BYTES`, shared by every host); a body
 at or under it is parsed in full and its captured content stays bounded by the content budget. It
-was 256 KiB until tb4n1 (B5), when Yoetz's own `closure_prepare` replies, image reads, and large
+was 256 KiB until tb4n1 (B5), when FinishUP's own `closure_prepare` replies, image reads, and large
 outputs outgrew it and lost their PostToolUse rows, leaving the pre-events unpaired.
 
-`yoetz hooks claude-observe` now skims a complete body up to 8 MiB (`MAX_HOOK_SKIM_BYTES`) with the
+`finishup hooks claude-observe` now skims a complete body up to 8 MiB (`MAX_HOOK_SKIM_BYTES`) with the
 same safety rules as the full parse:
 
 - Image, audio, and video bytes (a `Read` of an image returns `type: image` with base64 under
   `file`; MCP tools return `image` blocks) are replaced with a fixed placeholder. If the body then
   fits the 1 MiB cap it is admitted whole and records no gap.
-- A Yoetz MCP tool (`mcp__plugin_yoetz_yoetz__*` or `mcp__yoetz__*`, `closure_prepare` included)
+- A FinishUP MCP tool (`mcp__plugin_finishup_finishup__*` or `mcp__finishup__*`, `closure_prepare` included)
   keeps a closed identity row: session, tool, call id, lineage ids, and outcome flags. Its content
   is never captured in any case, so the row is complete, pairs with its pre-event, and records no
   gap.
@@ -910,19 +1120,19 @@ same safety rules as the full parse:
   text, file contents, and output are not retained.
 
 A body over the skim cap, or a complete oversized body that fails the parse, is still refused
-before any row exists. The hook stays fail-open and the host continues. Yoetz records the bounded
-`claude_payload_too_large` reason against that event in `yoetz observe status` hook diagnostics,
+before any row exists. The hook stays fail-open and the host continues. FinishUP records the bounded
+`claude_payload_too_large` reason against that event in `finishup observe status` hook diagnostics,
 and notes the `payload_too_large` coverage gap on the consented workspace, where
-`yoetz observe status` shows it. That workspace gap does not yet reach task receipts: no row
+`finishup observe status` shows it. That workspace gap does not yet reach task receipts: no row
 exists, so a receipt simply has no evidence for the dropped event rather than naming the loss.
 The caps are fixed; raising them is not an operator control. A reader consumes at most
 cap-plus-one bytes, so the true size of a refused body is never measured and never recorded. The
 refusal costs exactly that one event; the next ordinary event still ingests.
 
 Matcher decision (tb4n1 B5): the ordinary profile keeps its `.*` tool matchers, and the structural
-profile keeps its Yoetz-scoped matcher. Excluding Yoetz tools from PostToolUse alone would leave
-their pre-events unpaired, excluding them from both would drop the delivered record of Yoetz
-mutations and failures, and the structural profile exists only to observe Yoetz's own tools. The
+profile keeps its FinishUP-scoped matcher. Excluding FinishUP tools from PostToolUse alone would leave
+their pre-events unpaired, excluding them from both would drop the delivered record of FinishUP
+mutations and failures, and the structural profile exists only to observe FinishUP's own tools. The
 size problem is fixed in the reader instead.
 
 Observed images (P3-2, issue #1013): A Claude Code `Read` of an image returns `type: image` with base64 under `file`, and MCP tools
@@ -940,7 +1150,7 @@ the 8 MiB skim cap.
 
 Claude's shared hook ingress applies the selector only to the generic tool stream exposed by the
 exact ordinary profile `claude-code-ordinary-observation-v1`. The structural profile remains
-scoped to the existing Yoetz events; selecting a retention mode does not widen that subscription.
+scoped to the existing FinishUP events; selecting a retention mode does not widen that subscription.
 With the ordinary profile, **Focused/standard (512)** is the default. A paired, proven successful
 routine `Read`, search, or inventory call may be summarized in Focused mode. Detailed keeps
 eligible routine calls as individual records while pressure is healthy. Capacity is independent
@@ -959,9 +1169,9 @@ post-only identity contract.
 Apply an owner choice from an exact preview:
 
 ```text
-yoetz observe selection-preview --workspace /exact/project \
+finishup observe selection-preview --workspace /exact/project \
   --detail detailed --capacity larger --session-id <claude-session-id> --json
-yoetz observe selection-apply --workspace /exact/project \
+finishup observe selection-apply --workspace /exact/project \
   --detail detailed --capacity larger --session-id <claude-session-id> \
   --accept --preview-digest <preview-digest> --json
 ```
@@ -976,7 +1186,7 @@ network authority. Under pressure, a selected Detailed session can be effectivel
 the owner setting remains Detailed.
 
 **Configurable capacity (issue #828) — Claude Code decision.** Claude Code uses the same local
-capacity path as every other host: `yoetz observe selection-preview` with `--capacity
+capacity path as every other host: `finishup observe selection-preview` with `--capacity
 standard|larger|largest`, `--capacity custom --queue-count <64..8192>`, or `--capacity none`, then
 `selection-apply --accept --preview-digest`, or the terminal interface's `/observe`. There is no
 Claude Code-specific capacity control, and repository or plugin configuration cannot raise capacity.
@@ -1049,22 +1259,22 @@ Claude Code's auto-mode classifier sees the tool name, the request JSON, user me
 can satisfy it. `permissions.allow` / `ask` / `deny` resolve before the classifier and are honored
 from the repository's `.claude/settings.local.json` (repository root, resolved through
 worktrees to the main checkout); a plugin cannot ship permission rules. Allow rules use the
-configured server name: `mcp__yoetz__check` for an external `yoetz` registration and
-`mcp__plugin_yoetz_yoetz__check` for the plugin-owned server. (`code.claude.com/docs/en/permissions`,
+configured server name: `mcp__finishup__check` for an external `finishup` registration and
+`mcp__plugin_finishup_finishup__check` for the plugin-owned server. (`code.claude.com/docs/en/permissions`,
 `/permission-modes`, `/hooks`, re-read 2026-08-30.)
 
 Host admission (issue #467) follows the exclusively observed MCP owner and writes exactly its
 `check` name into `permissions.allow` (or `permissions.ask` with `--checkpoint`), digest-bound to
-the file bytes. An external route must use the configured server key `yoetz`; a differently named
-exact Yoetz route remains visible to ownership status but refuses admission because its callable
+the file bytes. An external route must use the configured server key `finishup`; a differently named
+exact FinishUP route remains visible to ownership status but refuses admission because its callable
 permission name is not the fixed supported surface:
 
 ```text
-yoetz integrate claude admission preview --project-root "$PROJECT_ROOT" \
+finishup integrate claude admission preview --project-root "$PROJECT_ROOT" \
   --claude-path "$CLAUDE_PATH" --claude-config-root "$CLAUDE_CONFIG_ROOT" \
   --cache-root "$CACHE_ROOT" --marketplace-root "$MARKETPLACE_ROOT" \
   --mcp-ownership <external-registration|plugin-managed> --json
-yoetz integrate claude admission grant --project-root "$PROJECT_ROOT" ... --accept --preview-digest <digest>
+finishup integrate claude admission grant --project-root "$PROJECT_ROOT" ... --accept --preview-digest <digest>
 ```
 
 The Claude roots are what the route observation needs (`status` on the plugin); without them
@@ -1074,17 +1284,19 @@ refuses with `route_not_policy`; a grant that does not permit review with
 exact entry already sits in the other list is a mode change — `grant` after `grant --checkpoint`
 (or the reverse) moves the entry between `allow` and `ask` under the same digest-bound preview;
 only re-granting the mode already set is a `noop`. A wider rule
-(`mcp__plugin_yoetz_yoetz__*`, `mcp__plugin_yoetz_yoetz`), a deny rule, or the tool in both
+(`mcp__plugin_finishup_finishup__*`, `mcp__plugin_finishup_finishup`), a deny rule, or the tool in both
 `allow` and `ask` is `foreign` and never edited. A mutating preview warns
 `host_config_not_compare_and_swap`; keep Claude and other settings writers quiescent during apply.
-Yoetz rechecks the exact preimage immediately before mutation and verifies the result, but an
+FinishUP rechecks the exact preimage immediately before mutation and verifies the result, but an
 ordinary file cannot exclude a non-cooperating same-UID writer in the final syscall window. If
 `.claude/settings.local.json` is tracked in git or `.claude` is a symlink, Claude Code holds its
-rules until the folder is trusted; Yoetz itself refuses to edit through the symlink.
+rules until the folder is trusted; FinishUP itself refuses to edit through the symlink.
 
 Reverse: `admission revoke` removes both exact owner forms; `plugin remove` and a `plugin
 install|update` onto the strict route sweep it for `--project-root` and report
-`admission_cleanup`; a privacy commit that stops external review sweeps it; a leftover entry
+`admission_cleanup`; `setup disconnect --host claude` plans `remove_project_admission` for
+`--project`, sweeps it before the plugin removal and reports `status.admission_cleanup`
+(other projects are not enumerated; inspect them with `admission status --project-root`); a privacy commit that stops external review sweeps it; a leftover entry
 shows as `host_admission_drift` in `provider status`. That report walks from the launch
 directory to the repository root, so a subdirectory cwd does not read as `absent`.
 
@@ -1093,7 +1305,7 @@ external and plugin-owned `check` names. It fires after auto mode (or a rule or 
 the call and can allow nothing; the ingress keeps only a closed token and records one payload-free
 `hook_diagnostics` reason — `host_auto_review_denied` (`source: auto_mode` or absent) or
 `host_permission_rule_denied` (`permission_rule` / `hook`) — so `observe status` can show a held
-check as host authorization, never as an AI-powered review status. Yoetz deliberately ships no
+check as host authorization, never as an AI-powered review status. FinishUP deliberately ships no
 `PermissionRequest` hook returning `decision: allow`, which would make the plugin the authority over
 the host's own review.
 
@@ -1122,11 +1334,11 @@ The repository-bound grant read has a 2.5 s deadline covering connect, request a
 `observation/host-hold-retries.json` stores at most 64 session digests under the owner-only state
 directory. Old offers are never evicted to make room: at capacity, new sessions need human
 approval. Damaged or unsafe ledgers are preserved without offering another retry. Admission
-remains the durable owner choice; revoke it through `yoetz integrate claude admission revoke`.
+remains the durable owner choice; revoke it through `finishup integrate claude admission revoke`.
 A grant notice is not MCP route verification. The strict route still blocks external dispatch.
 SessionStart can deliver a separate first-hand grant snapshot to the model when the shared
 observation path is consented, local admission is absent, and spare context/time allows a fresh
-repository-bound read. It names `yoetz integrate claude admission grant` but explicitly leaves the
+repository-bound read. It names `finishup integrate claude admission grant` but explicitly leaves the
 active route and host approval unconfirmed. It does not prove the grant at a later denial or that
 the classifier consumed the notice. Local-only, deferred and unreadable paths add nothing.
 Policy-route attribution for a held call and the live Claude auto-mode approval/denial cell remain
@@ -1141,7 +1353,7 @@ admission, which stays with `permissions.allow`.
 ## Update
 
 A released plugin byte change requires a new generated manifest version. Preview `--action update`,
-consume a fresh exact review, and run `plugin update` with the same roots/ownership/route. Yoetz
+consume a fresh exact review, and run `plugin update` with the same roots/ownership/route. FinishUP
 rewrites only its exact marker-valid source, invokes marketplace update and qualified project plugin
 update, then verifies the new cache/version/digest. New cached bytes are not active until reload or
 a new session proves the loaded root. Preserve and report old/orphaned cache roots; do not delete
@@ -1153,12 +1365,12 @@ Disable is its own preview/review/action and proves only the effective setting. 
 preview-bound. It invokes:
 
 ```text
-claude plugin uninstall yoetz@yoetz-local --scope project --keep-data
-claude plugin marketplace remove yoetz-local
+claude plugin uninstall finishup@finishup-local --scope project --keep-data
+claude plugin marketplace remove finishup-local
 ```
 
 Then it removes only the exact marker-valid private marketplace source. It preserves plugin data,
-Yoetz ledgers, vault/keyring/provider state, privacy/workflow receipts, credentials, other scopes,
+FinishUP ledgers, vault/keyring/provider state, privacy/workflow receipts, credentials, other scopes,
 foreign marketplaces/MCP entries, modified sources, and orphaned caches. A lost/nonzero CLI result
 is `outcome_unknown` — as is any post-mutation state the read-back cannot confirm, even on exit 0;
 run status and reconcile rather than guessing rollback. Replacement and removal revalidate the
@@ -1167,7 +1379,7 @@ tree; interrupted stage/rollback material surfaces in status as `recovery_requir
 
 ## Proof checklist
 
-Claude Code is not an allowlisted `yoetz consent authorize` attestation client in v0.1. It may show
+Claude Code is not an allowlisted `finishup consent authorize` attestation client in v0.1. It may show
 the agent-safe pending status and direct the user to a supported Codex attestation or local trusted
 command, but it must not emulate `vault_initialize` or `vault_passphrase_rotate` authorization.
 It still guides setup, installation, and settings choices in normal conversation and leaves each
@@ -1180,11 +1392,11 @@ provider, or model.
 First-run start continuation (issue #512): on a never-initialized install, the agent's first MCP
 `start` returns non-retryable `VAULT_LOCKED` carrying
 `safe_details.continuation: vault_initialization_required`. The Claude Code flow is trusted-local:
-run `yoetz consent prepare vault_initialize`, show the returned danger text to the user, direct
-them to run `yoetz consent review` on a local terminal (the `authorize_command` the generic
+run `finishup consent prepare vault_initialize`, show the returned danger text to the user, direct
+them to run `finishup consent review` on a local terminal (the `authorize_command` the generic
 profile advertises is valid only for an allowlisted agent-chat client, which Claude Code is not),
 wait for the ceremony's terminal result, then replay the exact original `start` request ID and
-body once. On denial or expiry the agent states the boundary and continues without Yoetz.
+body once. On denial or expiry the agent states the boundary and continues without FinishUP.
 
 Record source/render/marketplace/cache/executable digests, exact Claude version/OS/architecture,
 scope, settings state, component inventory, enabled state, loaded root and session boundary, MCP
@@ -1203,11 +1415,14 @@ AI-powered review attempt/runtime evidence, privacy receipt, corrective influenc
 receipt as separate claims.
 
 Evaluator runtime retention and repair (issue #855) is host-independent. From a Claude Code
-session, the prompt menu, or `/provider`, `yoetz provider codex-subscription repair` and
+session, the prompt menu, or `/provider`, `finishup provider codex-subscription repair` and
 `runtime status|install|remove` behave exactly as documented in the
 [subscription evaluator runbook](codex-subscription-evaluator.md#evaluator-runtime-retention-and-repair).
 Decision for this host: supported through the shared provider surfaces, with no Claude-specific
 step. Native Claude acceptance of a post-repair check is pending.
+Capability admission of the evaluator's Codex release (ADR-006, 2026-10-13: the newest installed
+Codex at or above `0.157.1` that passes the check, adopted by the next `repair` or `setup`) is
+equally host-independent; nothing in the Claude host integration changes.
 
 Fallback endpoint pairing (issue #582) is host-independent: whether the evaluator or a paired
 API provider serves a given attempt is a service-side dispatch decision recorded in provenance
@@ -1250,7 +1465,7 @@ attempt. Select a smaller claim/obligation scope for a new check. Shorter prose 
 structural capacity.
 
 For `coordinator_failure`, use the check's original request ID with
-`yoetz service diagnostics --request-id req_…` to read bounded failure stages. Dispatch entry can
+`finishup service diagnostics --request-id req_…` to read bounded failure stages. Dispatch entry can
 have an unknown outcome, even with null provenance. A missing record is a diagnostic coverage gap,
 not proof of non-dispatch. Preserve the original request/attempt identity and existing retry rules.
 These shared-path regressions do not certify a fresh installed native-host session.
@@ -1283,9 +1498,9 @@ explicit selection. It inventories one pinned status frontier or prepares one ex
 never appends, judges work, or claims completion. The complete response frame is bounded: an
 draft phases echo only the rows the selection names, and an oversized inventory returns
 `LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
-use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
+use `finishup closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
 `--output <file>` outside the repository. This shared route is supported through the local bridge
-on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,
+on macOS, Linux, and WSL 2; native Windows has no supported FinishUP MCP route. MCP discovery,
 activation, and native host dogfood remain separate evidence.
 
 ### Observation limitation findings and closure rechecks (issue #911)
@@ -1342,10 +1557,10 @@ recorded yet. That gap is owned by issue #913.
 
 ### What follows the last check on Claude Code (tb4n3 RC-6, #1029)
 
-Claude Code names Yoetz's tools `mcp__plugin_yoetz_yoetz__<tool>` (or `mcp__yoetz__<tool>` for an
-external registration); both are read as Yoetz's own calls. `Read`, `Grep` and `Glob` are the
+Claude Code names FinishUP's tools `mcp__plugin_finishup_finishup__<tool>` (or `mcp__finishup__<tool>` for an
+external registration); both are read as FinishUP's own calls. `Read`, `Grep` and `Glob` are the
 hook's `exploration` class; `Edit`, `Write`, `MultiEdit` and `NotebookEdit` are edits that
-supersede a check unless every path is scratch or a Yoetz receipt; `Bash` is classified by its
+supersede a check unless every path is scratch or a FinishUP receipt; `Bash` is classified by its
 command (`exploration` only for a closed read-only set, otherwise `other`). The `Stop` hook's
 completion-signal evidence names no tool call. Decision: supported, same service-side rule as
 Codex; tested through the real ingress in
@@ -1354,30 +1569,48 @@ Codex; tested through the real ingress in
 
 ### Inspection check on Claude Code (#1048)
 
-`check` with `"mode": "inspect"` is a read inside Yoetz: it records nothing, mints no finding, runs
-no review and needs no Yoetz disclosure decision, so a lost answer is answered by asking again with
+`check` with `"mode": "inspect"` is a read inside FinishUP: it records nothing, mints no finding, runs
+no review and needs no FinishUP disclosure decision, so a lost answer is answered by asking again with
 a fresh `request_id`. One call returns what is left to close (the `status` readiness split, then
 every unresolved obligation and finding with what it lacks and whose move it is), the
 hook-observed actions since the last check, and whether each obligation's resolution evidence links
 to its declared deliverables or requested commands (`evidence_off_declared_items` when it does
 not). Use it instead of a series of `status` reads; no status read or `dry_run` is required before
 `publish_work`. The startup read is the operating card (`agent-instructions.md`); the larger pages
-are read on demand. ADR-047. The MCP `check` tool and `yoetz check` carry the mode, and the same
+are read on demand. ADR-047. The MCP `check` tool and `finishup check` carry the mode, and the same
 text is printed on both. The `Edit`/`Write` hooks record a write class, never a path, so observed
 edits are listed by class.
 
-Host approval is per tool, not per mode. An inspection is a call of `mcp__yoetz__check` or
-`mcp__plugin_yoetz_yoetz__check`, so Claude Code applies the `check` rule
+Host approval is per tool, not per mode. An inspection is a call of `mcp__finishup__check` or
+`mcp__plugin_finishup_finishup__check`, so Claude Code applies the `check` rule
 ([Auto mode and host admission](#auto-mode-and-host-admission)): admission in `permissions.allow`
 runs it without a prompt, admission with `--checkpoint` (`permissions.ask`) prompts on every
 `check`, inspection included, and without admission (always so on the strict route, which
 admission refuses with `route_not_policy`) the permission mode decides; auto mode's classifier sees
 the tool name and the request JSON, never the descriptor. Decision: supported behind the `check`
-rule. A held inspection leaves nothing pending in Yoetz and no review to protect, so the agent reads
+rule. A held inspection leaves nothing pending in FinishUP and no review to protect, so the agent reads
 `status` instead and continues; the review-hold rules do not apply to it (guidance `review.md`).
 The `PermissionDenied` hook skips its advisory for `mode: inspect` as it does for
 `mode: deterministic_only`: a denied inspection shows no AI-powered review notice and spends no
 retry offer.
+
+### Guidance delivery on Claude Code (tb4n5)
+
+- **Closure trigger in the skill description.** The skill description ends "Also use when a
+  FinishUP finding, Stop message or receipt needs an answer", so a host that selects skills by
+  description can load the skill again at closure. Decision: supported; whether this host
+  re-selects the skill at closure is unmeasured until its dogfood lane runs.
+- **Initialize body.** The Claude body already said "Do not list resources"; it drops its cadence
+  sentence, which the operating card states once (ADR-047 amendment). The skill keeps one start
+  sentence that names its antecedent, the card pointer and the closure judgment rules; the capacity
+  procedure is the catalogued topic `workflow.md#change-local-retention-capacity`. Decision:
+  supported.
+- **Page-zero sections.** Page zero of a paged `read_guidance` read appends the section list after
+  its end marker (`FINISHUP_GUIDANCE_SECTIONS ...`, one `#<anchor> <bytes>` line each) and carries
+  `structuredContent.sections`. The list is outside the page bytes, so `GuidancePageAssembler`
+  verifies the page as before. Decision: supported.
+- **Check-cell deadline at closure.** Not applicable: Claude Code runs a tool call to completion,
+  so there is no yielding cell to stale a check. The Stop gate text is unchanged on this host.
 
 ### Bounded workflow recovery examples (#613)
 
@@ -1422,6 +1655,10 @@ them from memory, `CLAUDE.md`, or the live store.
   instead of creating another sibling.
 
 
+## Runtime another account can write
+
+A runtime another account can write (ADR-007, 2026-10-14) stops `finishup mcp serve` with `release_runtime_group_writable` or `release_runtime_world_writable` and the exact `chmod -R go-w` repair on stderr (`/mcp` shows the server as failed; `claude --debug` shows its stderr). Its hooks exit 20 with no stdout, so they make no allow or block decision (exit 2 is the only blocking code); Claude Code shows a non-blocking hook error; their stderr names the token without local paths and points at `finishup service run`, which prints the repair. Group write through the user's own private group (the Ubuntu/Fedora umask 0002 default) is accepted.
+
 ## Observation recovery diagnostics
 
 Claude Code uses the shared selected-admission and outbox store. New native input obeys current hard
@@ -1460,7 +1697,7 @@ same-cause attempts; owner-action conditions such as a forbidden method or incom
 protocol stay pending until corrected. Retrying does not establish whether an earlier request
 committed; exact source/cursor identity supplies replay deduplication.
 
-`yoetz observe status --workspace . --json` includes `hook_diagnostics.drain_failures`: up to
+`finishup observe status --workspace . --json` includes `hook_diagnostics.drain_failures`: up to
 32 retained causal records with source/session commitments, generation and position, original
 control reason and retryability, adapter stage, final disposition and correlation ID when supplied.
 A `control` stage does not identify which side of the socket failed; `request_encode` and
@@ -1483,7 +1720,7 @@ SessionEnd (3 seconds); each wait
 is still capped at two seconds. A pass whose capture cannot take the lock in time still exits
 with the host's ordinary fail-open output, does not retain that input, and records a
 `store_lock_timeout` diagnostic naming the holder's role, store phase and hold time (listed
-under `store_lock_events` in `yoetz observe status`); holds of one second or more are recorded
+under `store_lock_events` in `finishup observe status`); holds of one second or more are recorded
 as `store_lock_long_hold`. Neither is reported as `observe` or `workspace_unconsented`.
 
 This host shares the observe pass: an unexpected exception is recorded as
@@ -1523,8 +1760,8 @@ required core first (verdict or error identity and location, the `overall next` 
 review status/reason, the frontier with its head digest) and never raises. A text that cannot be
 built never fails a committed call: the omitted clause is named
 (`summary_render_failed:<builder>.<clause>`), a service diagnostic records it, and the structured
-result is returned. Hook `additionalContext` over Yoetz's own 2,000-character cap ends with a cut
-marker; no Claude Code document available here states a limit, so the cap is Yoetz's own. The
+result is returned. Hook `additionalContext` over FinishUP's own 2,000-character cap ends with a cut
+marker; no Claude Code document available here states a limit, so the cap is FinishUP's own. The
 behavior is the same on macOS, Linux and WSL 2.
 
 This is the host where the gap was observed: before ADR-030 a `VAULT_LOCKED` result whose
@@ -1538,7 +1775,7 @@ lists are not protocol safe-detail keys. A timed-out `start` receives `start_tim
 returned.
 
 No Claude-specific behavior is configured: the projection is host-neutral and lives in
-`yoetz.mcp.summaries`.
+`finishup.mcp.summaries`.
 
 
 ### First-start contention and long review recovery
@@ -1556,7 +1793,7 @@ inventing session or writer IDs. `start_pending_same_identity` instead means a l
 wait up to 60 seconds before the one exact replay. If still busy or pending, retain the original
 request and report the unresolved start. These continuations do not authorize a new task.
 
-**CLI JSON (issue #741).** When an agent in this host runs `yoetz` in a shell with `--json`, a
+**CLI JSON (issue #741).** When an agent in this host runs `finishup` in a shell with `--json`, a
 CLI-owned JSON error body carries a `recovery` object resolved from the same registry. A workflow
 command (`start`, `publish-work`, `check`, `respond`, `status`, `receipt`) also prints JSON when
 stdout is not a TTY; its failure keeps the exact wire body on stdout and writes the directive
@@ -1592,7 +1829,7 @@ failure leaves the held-ids cue unchanged. `startup`, `resume` and `clear` start
 
 No `PreCompact` hook is registered, and none is needed: the recap is composed after the compaction from
 the ledger, and the ordinary pass already drained the outbox when the last tool hook ran. Claude
-Code's own limit on hook context size is not asserted here; the 4,000-character bound is Yoetz's.
+Code's own limit on hook context size is not asserted here; the 4,000-character bound is FinishUP's.
 Native acceptance of the recap on an installed Claude Code remains a pending dogfood lane; the
 behavior is covered by hook-level tests only.
 
@@ -1681,7 +1918,7 @@ disable continue to stop admission through the existing shared controls.
 ### Check-time change
 
 When the review recipe selects diff excerpts (`assisted`, `expanded`, or a custom recipe that keeps
-the `diff` kind), each check carries a **check-time change** (ADR-031): the Yoetz service reads the
+the `diff` kind), each check carries a **check-time change** (ADR-031): the FinishUP service reads the
 task's repository once, when the check runs, and puts the result ahead of every other excerpt in the
 review packet. It covers committed and uncommitted changes to tracked files since the commit
 recorded when the task started, plus untracked files Git does not ignore (`.gitignore`,
@@ -1699,7 +1936,7 @@ shown. Script edits (`sed -i`, Python rewrites, `git apply <file>`), commits and
 fired are therefore reviewed even though no capture exists for them.
 
 The directory is the one the check's own connection named: the project directory Claude Code started
-the Yoetz MCP bridge in, or the working directory of `yoetz check`. The service reads that directory
+the FinishUP MCP bridge in, or the working directory of `finishup check`. The service reads that directory
 only when it resolves to the task's own repository, and never runs a shell, hook, filter, external
 diff, credential helper or network transport. The task-start commit is recorded when `start` creates
 the task. A task created before this version, or from a connection that named no workspace, has
@@ -1715,9 +1952,9 @@ inference channel does not allow that category never sends them, and the check r
 credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar, a name heuristic) are listed
 by name only, and a change larger than the packet reports `check_time_change_truncated`. The whole
 capture has 20 seconds. It is `check_time_change_unavailable` for a linked Git worktree or a
-submodule checkout opened as the repository (its `.git` is a file), a group- or world-writable
-repository root, a repository whose effective Git config defines a filter or an include (for example
-a repository-local Git LFS or git-crypt setup), a partial clone, Git older than 2.26, a repository
+submodule checkout opened as the repository (its `.git` is a file), a repository root another
+account can write (group write through the owner's own private group is fine, ADR-007), a repository whose effective Git config defines a filter or an include (for example
+a repository-local Git LFS or git-crypt setup), a partial clone, a system Git older than 2.25, a repository
 whose object store is reached through a link or borrowed from another repository (`.git/commondir`
 or alternates), a repository whose Git settings point its working tree elsewhere (`core.worktree`),
 a repository directory replaced at the same path between Git commands, or a working tree that kept
@@ -1725,13 +1962,13 @@ changing through three attempts to read it. A changed file, tracked or untracked
 has a second name is listed but neither its content nor its line counts are shown. Object files a
 local `git clone` hard-linked are read normally, because every Git object a shown diff uses must
 match its own name. Beside `check_time_change_unavailable` the check records a reason code such as
-`check_time_change_unavailable_changed_during_capture`, and the check result, `yoetz status` and the
+`check_time_change_unavailable_changed_during_capture`, and the check result, `finishup status` and the
 receipt each state that reason in one plain sentence. A later review clears an AI-powered finding
 despite these limits only when it saw each file the raising review saw, whole or through an
 identical view; for a file shown in part each check records a keyed commitment to where its
 redactions and hunks lay, never its content, so a moved redaction or hunk keeps the finding open. A
 replayed or resumed check reviews the change captured when it first ran, not the tree as it is
-later. `yoetz service diagnostics` counts the parts that reached the packet as
+later. `finishup service diagnostics` counts the parts that reached the packet as
 `semantic_check_change_parts_selected`.
 
 ### Caller digests and capture binding (#912)
@@ -1739,7 +1976,7 @@ later. `yoetz service diagnostics` counts the parts that reached the packet as
 A `content_digest` the agent publishes through ordinary publication is recorded as `caller_asserted`
 with `digest_only` (or `withheld`) availability. On this host, as on every host, it raises no local
 finding; the receipt's limitations name once, with a count, the cited evidence items whose
-caller-asserted digests Yoetz did not verify, keeping digest-only items (the bytes were not
+caller-asserted digests FinishUP did not verify, keeping digest-only items (the bytes were not
 retained) apart from withheld items (the publisher recorded the bytes as withheld). The
 service-side binding that would upgrade a caller digest matching captured bytes to verified
 provenance (#912 part (b)) is not implemented yet, so
@@ -1755,10 +1992,16 @@ is issue #912.
 
 ## Background semantic advice controls
 
+The shared service offers frozen advice through the same approved review-packet assembly as
+explicit checks (#1019). Rule metadata and scoped gaps are structural; finding summaries require
+approval of `finding_summary`. Invalid or withheld advice stays blocked, and privacy receipt
+category lists describe actual category denials separately from the request's failure reason.
+This is shared dispatch behavior; the host's hook adapter and ordinary advice delivery are unchanged.
+
 Background review is on by default wherever AI-powered review is configured
 (`[verification] semantic` `required` or `optional`); an explicit `[observation]
 semantic_advice_enabled` always wins, and `false` turns it off (issue #888, maintainer decision
-2026-09-30). `yoetz provider status` (`background_advice`), `yoetz setup status --next`
+2026-09-30). `finishup provider status` (`background_advice`), `finishup setup status --next`
 (`facts.background_advice`) and the terminal interface status view show the effective state and
 its closed reason. When on,
 background review uses the shared service's routine budget, condition deduplication and durable
@@ -1767,7 +2010,7 @@ per-session interval on macOS, Linux and Windows through WSL 2. See
 resume and interval settings. The setting gates recovered pending work as well as new scheduling:
 while it resolves off, startup closes rows an earlier service left pending as `cancelled` with no
 provider identity (nothing sent), so re-enabling never replays them. Explicit checks and
-deterministic advice retain their independent behavior.
+local advice retain their independent behavior.
 
 Background review is also admitted only while a provider is usable: an endpoint bound, the machine
 policy admitting `llm_inference`, the configured credential present, and an ACTIVE task route
@@ -1777,17 +2020,82 @@ Background review never engages a declared fallback endpoint, so its readiness r
 primary. Without them
 the service writes no advice rows and reports `advice_semantic_unavailable`, not
 `advice_semantic_pending`; rows queued earlier close as `provider_unavailable` without provider
-work. A foreground-cancelled call that may have started names its provider on the `cancelled` row
+work. Under a preview-required policy (the metadata-only recipe, or `preview_required` on the LLM
+channel) background advice is skipped with `advice_semantic_preview_required`: no row, no pending
+approval, no provider identity (#1019 round 2). Supported identically on this host; the host
+adapter is unchanged. A foreground-cancelled call that may have started names its provider on the `cancelled` row
 (usage unknown). This is service-side and identical on every host and supported OS; hook advice
 rendering is unchanged.
+
+## Root-owned project roots (non-root container users)
+
+Claude Code project setup, hooks and MCP use the shared project-root rule (ADR-007, 2026-10-14): a
+non-root user may use a root-owned project root that no other account can write, or a sticky one.
+Files FinishUP writes inside the project must still be the user's own. Verified for Codex in a Boat
+container as `nobody` and `agent`; the same check path is unit-tested for this host.
+
+**Runtime another account installed.** Decision for Claude Code: same path as every host (shared entry
+and setup code; no host-specific change). A runtime root installed and a non-root user runs stops
+`finishup mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
+of `release_runtime_unavailable: permission_denied` or "could not be verified". `/mcp` shows the server as failed and `claude --debug` shows its stderr; its hooks exit 20 with no stdout, so they make no allow or block decision and Claude Code shows a non-blocking hook error. Terminal
+commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
+without local paths. Every connect path refuses to connect Claude Code to such a runtime (or one another
+account can write) with that reason and leaves status and disconnect available. `finishup instance create --bind-runtime` on such a runtime
+is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
+2026-10-14 amendment). Install FinishUP as the user, or see the Linux runbook for the one-user
+`.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
+hook paths, not a Claude Code session); the Claude Code connect refusal is unit-tested.
+
+**Review fixes (independent review of #1071).** Decisions for Claude Code: (1) a checkout root
+made (`/app/.git` owned by root) is the project, used as a plain directory, through the shared
+workspace binding (same path as every host); (2) Claude-specific: every plugin mutation runs
+`claude plugin ... --scope project`, which writes `<project>/.claude/settings.json`, so preview
+(and therefore apply) now refuses a `.claude` another account created or others can write
+(`target_unsafe`) before any command runs; an absent `.claude` is left for Claude Code to create
+(in a sticky root another account could create it in the instant before Claude Code does, which
+FinishUP cannot fence; root can pre-create `.claude` for the user to close it);
+(3) host admission never writes `.claude/settings.local.json` into such a `.claude` (same path as
+every host; refined in round 2 below). Not changed: Claude Code's executable must
+still be the user's own, so a root-installed `claude` is refused (`target_unsafe`) for a non-root
+user, unlike the Codex launcher, which accepts a root-owned executable. Covered by tests through the
+public preview/apply functions (connect and remove in 0755 and sticky root-owned projects, and a
+squatted `.claude`) with simulated ownership.
+
+**Review fixes, round 2.** Decisions for Claude Code (same path as every host unless named): (1) a
+checkout root made (`/app` and `/app/.git` root-owned), or the user's own `git init` in a sticky
+root-owned `/app`, now passes the service handshake: the service commits the plain directory
+identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
+Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
+is not trusted. (2) A `.claude` root committed to the image is read normally: admission status is
+`absent` (typically) and host admission's own reverse sweep (the privacy ceremony) reports nothing to remove instead of `write_failed`; a
+grant into it is refused `target_unsafe`. A `.claude` another account made, or one others can
+write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
+`.claude/settings.local.json` go through the host folder pinned by descriptor, never a link swapped in after the
+check. (3) `setup run --host claude` and the full-screen interface's `/connect` refuse before any `claude plugin` command runs. Covered by tests through the public paths with simulated ownership, and the
+repository identity with a real Git checkout owned by another uid.
+
+**Review fixes, round 3.** Decisions for Claude Code: (1) the plain directory identity of a root-built
+checkout is now its top's (the directory holding `.git`), the same from any subdirectory, so a
+session started below the top meets its own hooks instead of `repository_identity_mismatch`
+(same path as every host). (2) Check-time change capture reports `unsafe_root` for such a
+checkout; the receipt reads "the repository failed a safety check (a link, another owner, ...)",
+not "not a Git repository" (same path as every host). (3) `integrate claude plugin preview|install|update|enable` (any connect action) now refuses a runtime
+that cannot serve this account with exit 20 and the token, before host discovery or any `claude
+plugin` command; `disable`, `remove`, the removal preview and `status` stay open. Not covered:
+`integrate claude plugin export`, a development carrier for `claude --plugin-dir`, not a
+connection. Known gap: a `.claude` root committed to the image is refused `target_unsafe` by
+every Claude Code plugin change (install, update, enable, disable, remove; status still reads it),
+because each requires the user's own `.claude`; have root make it the user's (`chown -R <user>
+<project>/.claude`). Follow-up: let removal read a root-owned `.claude` no other account can
+write.
 
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the
 common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 30 seconds and
 `check` keeps 300 seconds (a `check` with `mode: inspect` is a read and takes the `status`
-deadline). Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
-`YOETZ_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
+deadline). Set `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (one tool) or
+`FINISHUP_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
 the MCP server environment to change them;
 values are milliseconds, clamped to 1,000-900,000. Keep them below the host's own tool timeout.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
@@ -1804,7 +2112,7 @@ This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers ma
 Decision for Claude Code: supported, service-side, identical on every host. `credential_heuristic` is a
 field of the current repository's privacy grant that the service applies only to external
 AI-reviewer egress; agent-context projection and the local model keep the filter. Claude Code needs no
-host-specific step and gets no write path: `yoetz privacy credential-heuristic disable` is a
+host-specific step and gets no write path: `finishup privacy credential-heuristic disable` is a
 widening that applies only after the trusted-terminal decision (walking the grant-creation
 ceremony when the repository has no grant), `enable` is an immediate per-repository tightening,
 and `--machine-default` moves only the default for new grants. MCP `status` carries
@@ -1814,14 +2122,14 @@ external receipt's `secret_scan.credential_heuristic`). No Claude Code capabilit
 
 ## Privacy receipts listing (issue #921)
 
-`yoetz privacy receipts list` and `get` are host-agnostic: every host's sessions write receipts
+`finishup privacy receipts list` and `get` are host-agnostic: every host's sessions write receipts
 into the same local audit, and the operator reads them through the same CLI and control method.
 Pages over 64 KiB now cross the local control socket in bounded chunks, an unreadable stored
 receipt is skipped, counted and named (exit 40) instead of failing the page, and a store-side
 failure is `privacy_audit_unreadable` rather than `invalid_request`. In-process tests drive the
 real service, socket and client. Open evidence gap, owned by #921: a dogfood run on Claude Code
 (macOS, Linux and WSL 2) that completes an AI-powered review session and then shows that
-session's `network_egress` receipts in `yoetz privacy receipts list`.
+session's `network_egress` receipts in `finishup privacy receipts list`.
 
 ## Status page cost (issue #916)
 
@@ -1837,10 +2145,10 @@ Decision for Claude Code: nothing is host-specific, and the behaviour is identic
 The excerpt count is a privacy-policy and review-packet limit. It is enforced by the service, not by
 hook or MCP adapters. From privacy policy 1.2.0 the Expanded recipe allows up to 64 excerpts within
 its unchanged byte budget (16 KiB each, 128 KiB in total). An Expanded policy approved earlier keeps
-16 until the owner re-approves through `yoetz --privacy`. A packet above the approved count or bytes
+16 until the owner re-approves through `finishup --privacy`. A packet above the approved count or bytes
 is refused as `policy_denied`, never trimmed. A case that would exceed the per-case channel ceiling
 is planned with fewer excerpts and discloses `content_unselected` instead of being refused.
-`yoetz privacy show` shows the current limits beside
+`finishup privacy show` shows the current limits beside
 the proposed ones. To go back to 16, choose Assisted or propose the earlier Expanded limits; that is
 a narrowing, so it needs no new approval. The selection order within the budget (issue #907 Phase
 1a) is recorded separately.
@@ -1849,7 +2157,7 @@ a narrowing, so it needs no new approval. The selection order within the budget 
 
 Decision for Claude Code: supported through the agent-supplied field, identical on every host and OS.
 The agent passes the user's request verbatim as `start.task_statement` (MCP `start` or
-`yoetz start --task-statement-file`). To revise it, the agent calls `start` again with
+`finishup start --task-statement-file`). To revise it, the agent calls `start` again with
 `mode=attach`, the `session_id` it holds, a fresh `request_id` and the whole amended request; a CLI
 publisher may instead carry it in a `plan_revised` 1.1.0 payload. A resume that does not change the
 request omits the field, and the recorded statement stays current. The review packet carries it as
@@ -1882,9 +2190,23 @@ after #917 (pinned by a replay of real `PostToolUse` payloads), and a post never
 pre. The opt-in ordinary profile (`claude-code-ordinary-observation-v1`) is on the conservative
 paired contract, so it receives the same fixes as Codex: an individually delivered `PreToolUse` and
 its post share one action (described as observed via Claude Code hook), and a post with no open pre
-keeps the standing `unpaired_event` record and triggers one "Yoetz notice (no response needed)"
+keeps the standing `unpaired_event` record and triggers one "FinishUP notice (no response needed)"
 per new orphan scope instead of a recurring stale-observation advisory. Claude Code has no
-code-mode cell, so the stream wrapper rule does not apply.
+code-mode cell, so the stream wrapper rule does not apply; for the same reason the tb4n5 yielded-
+and tool-less-cell decisions (ADR-029 amendment of 2026-10-13) are Codex-only, and Claude Code has
+no `clock.sleep` tool (the `clocksleep` no-activity spelling is Codex's hook name). The same
+amendment's rejected-call record is host-agnostic: on the paired ordinary profile, a pending
+`mcp__plugin_yoetz_yoetz__*` attempt whose call FinishUP's MCP server answered with an error closes as
+`rejected_by_yoetz` (after a 5 s grace in which a post, if Claude Code sends one, still pairs, or at
+once when the session ends or its generation advances). The Claude Code adapter commits to the call
+(tool, FinishUP session, writer and `request_id`) from the hook's `tool_input` before structural
+normalization drops it, and passes only that commitment on; a body too large to keep its
+`tool_input` keeps the ordinary expiry;
+`observe status` names every ending under `pending_attempt_endings`, and local ring eviction is
+`local_retention`, never `truncated_payload`. Post-only profiles keep no pending attempt, so
+nothing changes there. The hook drain diagnostic `drain_budget_exhausted` is renamed
+`drain_pass_delivered_nothing` and `observe status` reports the outbox `delivery_lag` (enqueue to
+acceptance) for Claude Code hooks exactly as for Codex (ADR-022 amendment of 2026-10-13).
 
 ### Limitation requests, `reopened` and one dialogue per concern on Claude Code (tb4n3 RC-1 and RC-7, #1024, #1030)
 
@@ -1896,7 +2218,7 @@ other hosts. The Stop hook and the MCP `respond` tool take the shared path; a Cl
   repair work. `kernel/limitation.limitation_standing` reads it; `finding_blocks_receipt` is false
   for it. The agent's answer decides what it means (owner decision 2026-10-12, ADR-040 and ADR-046
   amendments): one reasoned `respond` `acknowledged` (or `self_verified`) or a
-  `yoetz-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
+  `finishup-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
   verified here, and settles it as a disclosed verification limit with no recorded resolution
   attempt required (never clean, at best `insufficient_coverage`); `acknowledged_not_done` says the
   requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement. When an
@@ -1940,3 +2262,155 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Claude Code transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+### Receipt privacy ceiling (N5)
+
+Shared service projection, no host-specific path. Every receipt an agent can request (the MCP
+`receipt` tool, or `finishup receipt` run by the agent, under a pseudo-terminal or not) is the agent
+projection: normal prose, titles, codes and counts stay; undeclared repository names the policy
+withholds become `(receipt prose withheld: repository_excerpt)`, including `./` and full-path
+spellings (from `/`, `~`, `$VAR` or `file://`; quoted when a directory has spaces) of any name, a
+top-level name without an extension included, and an exact name the requesting writer published itself returns. Large receipts stay
+valid: omission lists coalesce and an over-long field is cut visibly. The owner's full receipt is
+`finishup receipt --owner-view` (or *Your full receipt* in the terminal interface), which needs the
+`owner_receipt_view` reauthentication. Verified by in-process tests on macOS, including a real
+pseudo-terminal; Linux and Windows through WSL 2 run the same service code but were not exercised
+for this change.
+
+Owner-view presence decision for Claude Code (#1073): same path as every host, because the owner view is
+a CLI and terminal-interface flow, never an MCP tool or hook. On macOS the service itself raises a
+LocalAuthentication dialog (Touch ID or the login password) showing the confirmation code the
+command prints, on either vault mode, including setup's system-keychain choice. A vault passphrase
+the owner chose is asked for once when the service cannot show a dialog, or directly with
+`--use-passphrase`; a passphrase kept in the system credential store is never prompted for on its
+own. On Linux and WSL 2 there is no presence provider: only a vault passphrase the owner types
+completes it, and a vault without one, or with one kept in the credential store, fails closed with
+`owner_view_unavailable`. Run directly, Claude Code's Bash tool gives the command no terminal, so an
+agent-run `--owner-view` ends with `owner_view_requires_terminal` before any dialog opens; the
+owner runs it in their own terminal. The agent can still wrap the command in a pseudo-terminal
+(for example with `script`), and then the dialog appears on the owner's screen as it does under
+Codex: cancel any dialog whose code you did not just see in your own terminal. If an agent's own ceremony is open, the owner's command reports
+`owner_view_busy` with its own code, and any dialog on screen is not the owner's. The dialog itself is covered only by stub-helper tests until
+the manual check in [test-instances.md](test-instances.md#owner-view-with-touch-id-manual-check-on-a-real-mac-1073)
+runs on a real Mac.
+## Per-task review mode and agent opt-in (ADR-049)
+
+**Decision for Claude Code: supported, the same MCP path as every host.** A task starts with local
+checks under the owner's recommended setting (`conversation_review = local_agent_opt_in`); the agent
+turns on AI-powered review for its own task with one `publish_work` draft, `decision_recorded`
+version `1.1.0` with `review_mode: "ai_powered"` (`"local"` turns it back off), and then checks
+without `mode`. `check` and `status` carry `review_mode`; the receipt names each switch. Guidance:
+`finishup://guidance/review.md` (when to turn it on, when to stay local, the exact draft). Nothing
+Claude Code-specific is involved: no hook, skill or registration field changes.
+
+- **Owner setting.** `finishup privacy conversations agent-opt-in|owner-approval|local-only|ai-powered|status`
+  for the current repository; first-run setup records it from its three answers. Owner approval
+  makes each review the agent turns on wait for `finishup privacy decide-disclosure`, the same
+  `awaiting_human` path as **Ask every time**.
+- **Route.** Every interactive setup answer now registers the policy route. A registration made by
+  an earlier local-only setup is on the strict route: an opted-in task there (or any task under
+  "every task") runs local with `route_local_only`, and the check prints the fix,
+  `finishup setup run --route-profile policy`; the Claude Code form is
+  `finishup setup run --host claude --route-profile policy`. Then start a fresh Claude Code
+  session.
+  Non-interactive setup keeps the strict default for a fresh registration. The plugin's MCP route
+  lives in the marketplace source every project of the configuration root shares (#1058), so
+  re-rendering it on the policy route changes it for the other connected projects too; the
+  preview names them (`route_changes_for`).
+- **Not set up.** Where no reviewer or repository policy exists, an opted-in task runs local with
+  `ai_review_not_set_up` and the one-time owner commands (`finishup --set`, or
+  `finishup provider codex-subscription setup`, then `finishup --privacy`).
+- **Host auto-review.** A local-only owner on the policy route sends nothing, but `check` is still
+  advertised as open-world; an automatic reviewer that holds every `check` (see the host admission
+  section) holds these too until the owner grants admission or re-registers on the strict route.
+- **Upgrade.** A policy approved before the setting existed keeps its behaviour, and its checks and
+  receipts are unchanged, until the owner chooses a setting or an agent switches a task.
+- **Every task.** Under `ai_powered`, or a policy approved before the setting existed with its
+  inference channel on, a `review_mode: "local"` switch is recorded but changes nothing: checks
+  that omit `mode` still run AI-powered review, and a check that names `deterministic_only` keeps a
+  required review as a bounding gap (review round 1).
+- **Closing review.** A task that already used AI-powered review and now runs local (it switched
+  back, or one check named an AI-powered `mode`) still owes its closing review; the Stop gate's
+  `check` with `final_review: true` and no `mode` runs it (recorded `source: check_request`).
+  Where the owner has since chosen local only, that check records `owner_local_only` and the
+  closing review is no longer owed.
+- **Enforced at dispatch.** The privacy gateway refuses AI-powered review (and background advice)
+  under an explicit `local_only`, including a check already in flight when the owner narrows; a
+  failed read of the setting runs a check that omits `mode` local, with any required review left
+  as a bounding gap. Background advice is admitted only under `ai_powered`.
+- **Receipt and status.** Each switch names the actor the ledger recorded, its actor type and
+  assurance, and the declared authority; a task whose check recorded a mode says how it ran even
+  without a switch. A policy that predates the setting and reads as local only says AI-powered
+  review is not set up, not that agents may not opt in. Review turned off in the verification
+  settings has its own reason, `review_disabled`.
+- **First-run privacy.** The first and third setup answers list the privacy options with Assisted
+  review as the default (marked recommended only for a provider with reviewed data-use terms);
+  Private stays selectable and says that tasks stay local under it. The terminal interface's
+  `/connect` for Claude Code now runs the chosen answer's setup after connecting, as first run
+  does (it asked the question and dropped the answer before).
+- **Other repositories (review round 2).** A fresh install's first repository grant gives the
+  installation row the hybrid (or the narrower answer), so another project or an independent clone
+  starts local; a repository without its own privacy grant reports "AI-powered review is not set
+  up for this repository" (`ai_review_available` false) and an opt-in there records
+  `ai_review_not_set_up` until the owner approves that repository's grant (terminal or chat; a chat
+  grant starts on the same first-grant default). Installations whose row already sent work keep
+  the released repository-grant handoff.
+- **Agent-driven setup.** Preview with `finishup setup run --host claude --route-profile policy
+  --non-interactive --json` for every answer; without `--route-profile policy` a fresh
+  non-interactive registration is strict and every task stays local (`route_local_only`).
+- **Round 3.** In a repository without its own grant, `finishup privacy conversations
+  agent-opt-in` (or `owner-approval`) walks that repository's privacy grant with the setting
+  included (a local terminal is required; otherwise `local_terminal_required` and the command
+  names `finishup --privacy`). With a reviewer bound, `finishup --privacy` lists the AI-powered
+  review options (Assisted review by default) on a first grant and under agent opt-in or owner
+  approval. Switching back to local after the closing review costs one more closing review
+  (`review.md` says so). The MCP receipt summary's review-mode pointer is JSON-receipt only.
+  Same path on Claude Code; no host-specific change.
+- **Round 3 verification.** A first Private grant in a repository reads as local only (an explicit
+  `local_only` where it inherits an earlier repository's hybrid). `finishup --privacy`'s
+  AI-powered review listing words Assisted review for the route: on a route without reviewed
+  data-use terms it is the default, not recommended, and its draft records no evidence
+  requirement. Where the released carry-forward is pending, status says the installation's earlier
+  permission is carried forward when a task first starts in the repository.
+  Same on Claude Code.
+
+## Setup refresh and suggested reviewer model (FinishUP 0.3, #1067)
+
+Decision for Claude Code: supported. The shared setup path changed, and every item below
+applies on macOS, Linux and Windows through WSL 2.
+
+- **Plan summary.** The connection preview describes each change in a plain sentence ("Install the
+  FinishUP plugin, Enable the FinishUP plugin") as Codex plans already did. The plan body's change
+  tokens and its digest are unchanged, so an accepted preview still binds the same bytes.
+- **Agent list.** The guided list shows each installation's executable path and says one agent is
+  connected per run. The default is the Codex a plain `codex` command runs when one is
+  installed, otherwise the first entry.
+- **Suggested reviewer model.** Codex-subscription AI-powered review suggests `gpt-6.1-sol` at
+  `medium` (final and routine) for a new binding, falling back to `gpt-6-luna` with a printed
+  reason when the Codex FinishUP runs does not list it (ADR-006 amendment of 2026-10-14). The
+  evaluator is a separate Codex runtime, never the connected agent, so this is the same path on
+  every host. An explicit `--model` and an existing binding are never substituted.
+- **Project folder first.** `finishup setup run` checks the project folder before the review and
+  privacy questions; on a machine where only Codex is installed (or with `--codex-path`) it does so
+  before the Codex wizard's first question. Run from the home folder, the filesystem root or a
+  symlinked path, a terminal user may type a project folder, and registration, the privacy step
+  (local-only, or the provider's disclosure policy) and an API key's repository binding then use
+  that folder; otherwise setup stops with `workspace_locator_invalid` and a next step (it used to
+  fail as `internal_error` after every answer).
+- **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held credential
+  (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20, shows the bound
+  model and any fallback, asks no API-key verification question, and prints its own layer report
+  (the sign-in stays in the dedicated evaluator home; no live review is demonstrated) instead of the
+  API-key vault report. A declined or failed privacy step is incomplete on every provider path
+  (`finishup --set`, the guided connection and the Codex-only wizard): exit 20, its reason, and a
+  `finishup --privacy` next step, plus the credential step when an API key was never stored, with no
+  setup marker written. A completed step ends with "start a fresh agent session" instead of the
+  former Codex-only "Preview Codex MCP registration again".
+- **Ambiguous or missing installation.** Connect and disconnect name the installations to pass
+  with `--host-path` (or say none was found) instead of the misleading "trusted local terminal"
+  step.
+
+Verification: `tests/unit/cli/test_setup_wizard_smoothness.py`,
+`tests/unit/cli/test_host_connection.py` and `tests/unit/cli/test_codex_subscription.py`. The vault
+and provider steps of `finishup setup run` were not walked end to end for this change (the
+sandbox walk had no macOS keychain), and no native Claude Code session was recorded for it.

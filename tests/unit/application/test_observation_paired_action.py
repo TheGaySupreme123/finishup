@@ -5,19 +5,18 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, cast
 
-from fixture_loader import load_fixture_json
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     PAIRED_ACTION_ROLE,
     materialize_observation_envelope,
     paired_action_link,
     paired_action_linked_roles,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionRecordedPayload,
     EvidenceRecordedPayload,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
     ObservationCursor,
@@ -25,7 +24,8 @@ from yoetz.domain.observation import (
     ObservationGapCode,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
+from fixture_loader import load_fixture_json
 
 _TASK = "tsk_2c7e5a91-4b3d-4e8f-a1c6-0d9b8e7f6a52"
 _SESSION = f"hmac-sha256:{'5d' * 32}"
@@ -157,7 +157,7 @@ def test_unpaired_and_post_only_batches_have_no_paired_action() -> None:
         is None
     )
     claude = replace(
-        _codex("PostToolUse", "claude:post", tool="mcp__plugin_yoetz_yoetz__check"),
+        _codex("PostToolUse", "claude:post", tool="mcp__plugin_finishup_finishup__check"),
         source=ObservationSource.CLAUDE_HOOK,
     )
     batch = materialize_observation_envelope(claude, task_id=_TASK)

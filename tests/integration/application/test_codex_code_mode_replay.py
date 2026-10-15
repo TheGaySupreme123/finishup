@@ -3,7 +3,7 @@
 The hook payloads and rollout lines use the shapes a Codex 0.157.1 code-mode
 session produces (issue #917 examples 1-3 and the issue #910 evidence): one
 custom ``exec`` tool per model turn, nested ``tools.exec_command`` /
-``tools.apply_patch`` / ``tools.mcp__yoetz__*`` calls that each fire their own
+``tools.apply_patch`` / ``tools.mcp__finishup__*`` calls that each fire their own
 ``Bash`` / ``apply_patch`` / MCP hooks, and a session rollout that records the
 outer cell plus the nested ``CommandExecution`` items. Nothing is pre-normalised:
 every hook payload goes through ``observe_hooks.handle_observe``, every rollout
@@ -37,10 +37,10 @@ from builders.codex_replay import Recorder as _Recorder
 from builders.codex_replay import Replay as _Replay
 from builders.codex_replay import build_coordinator as _coordinator
 from builders.observed_runs import ObservedLedger, omissions, omitted_results, receipt_limitations
-from yoetz.adapters.integrations.observation_admission import build_routine_read_summary
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.domain.events import (
+from finishup.adapters.integrations.observation_admission import build_routine_read_summary
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -49,13 +49,13 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationEnvelope,
     ObservationGapCode,
     ObservationIngestRequest,
     ObservationSource,
 )
-from yoetz.protocol.coverage import PublicationChannel
+from finishup.protocol.coverage import PublicationChannel
 
 
 def _code_mode_session(cell: _Replay) -> dict[str, int]:
@@ -113,14 +113,14 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         )
     )
 
-    # Example 2 (#917): one cell, two nested Yoetz publish_work calls. Their pres
+    # Example 2 (#917): one cell, two nested FinishUP publish_work calls. Their pres
     # stay local by contract (#564); each post carries the call.
     cell.advance(2.0)
     cell.append(
         exec_cell(
             "call_cellPublish",
-            "await tools.mcp__yoetz__publish_work({dry_run:true});"
-            "await tools.mcp__yoetz__publish_work({dry_run:false});\n",
+            "await tools.mcp__finishup__publish_work({dry_run:true});"
+            "await tools.mcp__finishup__publish_work({dry_run:false});\n",
             "2026-09-29T17:55:00.355Z",
         )
     )
@@ -128,14 +128,14 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         publish_input = {"dry_run": index == 0, "request_id": f"req_public_{index}"}
         cell.hook(
             "PreToolUse",
-            tool_name="mcp__yoetz__publish_work",
+            tool_name="mcp__finishup__publish_work",
             tool_use_id=call,
             tool_input=publish_input,
         )
         cell.advance(0.3)
         cell.hook(
             "PostToolUse",
-            tool_name="mcp__yoetz__publish_work",
+            tool_name="mcp__finishup__publish_work",
             tool_use_id=call,
             tool_input=publish_input,
             tool_response={"content": [{"text": "published", "type": "text"}], "isError": False},
@@ -987,7 +987,7 @@ async def test_pending_item_evicted_from_the_envelope_ring_is_delivered_unpaired
     exit stays visible as unpaired evidence.
     """
 
-    from yoetz.adapters.integrations import observation_local
+    from finishup.adapters.integrations import observation_local
 
     session_start(replay)
     command = {"command": "cargo test"}
@@ -1022,7 +1022,7 @@ async def test_pending_items_over_the_bound_are_delivered_unpaired(
 ) -> None:
     """#910: the bounded pending account delivers its oldest item instead of dropping it."""
 
-    from yoetz.adapters.integrations import codex_session_stream
+    from finishup.adapters.integrations import codex_session_stream
 
     monkeypatch.setattr(codex_session_stream, "MAX_PENDING_ROLLOUT_ITEMS", 1, raising=False)
     session_start(replay)
@@ -1052,7 +1052,7 @@ async def test_pending_items_over_the_bound_are_delivered_unpaired(
 def _flood_until_items_are_oldest(cell: _Replay, monkeypatch: pytest.MonkeyPatch) -> None:
     """Evict the ring's oldest rows, one per new hook row, until a rollout item is the oldest."""
 
-    from yoetz.adapters.integrations import observation_local
+    from finishup.adapters.integrations import observation_local
 
     capacity = observation_local._MAX_ENVELOPES
     monkeypatch.setattr(observation_local, "_MAX_ENVELOPES", 1)
@@ -1187,7 +1187,7 @@ async def test_item_of_a_silent_session_is_released_after_idle_reconciles(
 ) -> None:
     """#910: a carrier waiting behind a call that never finishes is released by an age bound."""
 
-    from yoetz.adapters.integrations.codex_session_stream import (
+    from finishup.adapters.integrations.codex_session_stream import (
         PENDING_ROLLOUT_IDLE_RECONCILES,
         CodexSessionStreamLocator,
         reconcile_session_stream,

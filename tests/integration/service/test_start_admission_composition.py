@@ -12,7 +12,15 @@ from typing import Literal, cast
 
 import pytest
 
-import yoetz.mcp.server as bridge
+import finishup.mcp.server as bridge
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.service import Application
+from finishup.cli import observe_hooks
+from finishup.ports.control import ControlClientKind, WorkspaceLocator
+from finishup.ports.start_catalog import StartIdentityInput
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import StartRequest, StartSuccessModel
+from finishup.service.client import ServiceClient, connect_service
 from integration.service.test_start_contention_composition import (
     _body,  # pyright: ignore[reportPrivateUsage]
     _logical_result,  # pyright: ignore[reportPrivateUsage]
@@ -20,14 +28,6 @@ from integration.service.test_start_contention_composition import (
     ready,  # noqa: F401  # pyright: ignore[reportUnusedImport]
     runtime_directory,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.service import Application
-from yoetz.cli import observe_hooks
-from yoetz.ports.control import ControlClientKind, WorkspaceLocator
-from yoetz.ports.start_catalog import StartIdentityInput
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import StartRequest, StartSuccessModel
-from yoetz.service.client import ServiceClient, connect_service
 
 pytestmark = pytest.mark.anyio
 

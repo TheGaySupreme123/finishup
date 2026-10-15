@@ -8,12 +8,12 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.integrations.artifact_presence import describe_artifact_presence
-from yoetz.adapters.integrations.portable_plugin import prepare_portable_artifact_review
-from yoetz.cli.app import app
-from yoetz.cli.cursor_integration import run_cursor_plugin_command
-from yoetz.ports.plugin_artifacts import ArtifactAuthority
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.adapters.integrations.artifact_presence import describe_artifact_presence
+from finishup.adapters.integrations.portable_plugin import prepare_portable_artifact_review
+from finishup.cli.app import app
+from finishup.cli.cursor_integration import run_cursor_plugin_command
+from finishup.ports.plugin_artifacts import ArtifactAuthority
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 
 class _Presence:
@@ -82,7 +82,7 @@ def test_cursor_plugin_cli_binds_preview_install_status_and_remove(
     # This scripted CLI lifecycle represents a legacy ambient install. Mock
     # only the adapter lookup; the process still runs with its isolated root.
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: None
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
     )
     runner = CliRunner()
     config = tmp_path / "cursor-testing-home" / ".cursor"
@@ -103,7 +103,7 @@ def test_cursor_plugin_cli_binds_preview_install_status_and_remove(
     assert preview["authorization"] == {
         "operation": "plugin_artifact_apply",
         "prepare_command": [
-            "yoetz",
+            "finishup",
             "consent",
             "prepare",
             "plugin_artifact_apply",
@@ -214,7 +214,7 @@ def test_cursor_plugin_cli_binds_preview_install_status_and_remove(
     assert removed_body["installed_digest"] is None
     assert removed_body["installed_startup_mode"] is None
     assert len(presence.seen) == 3
-    assert not (config / "plugins" / "local" / "yoetz").exists()
+    assert not (config / "plugins" / "local" / "finishup").exists()
     assert sentinel.read_text("utf-8") == "untouched\n"
 
     # Each review is single-shot: the pending is gone and a replay cannot reuse it.
@@ -239,7 +239,7 @@ def test_cursor_plugin_cli_preview_surfaces_isolated_root(
 ) -> None:
     root = tmp_path / "isolated-root"
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.cursor_integration.isolated_root", lambda: root
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: root
     )
     runner = CliRunner()
     preview_result = runner.invoke(
@@ -273,7 +273,7 @@ def test_accept_without_a_prepared_review_cannot_mutate_through_the_typer_surfac
     """``--accept`` is operator acceptance of an exact digest, never human authority."""
 
     monkeypatch.setattr(
-        "yoetz.service.elevated_bootstrap.state_dir", lambda: tmp_path / "private-state"
+        "finishup.service.elevated_bootstrap.state_dir", lambda: tmp_path / "private-state"
     )
     runner = CliRunner()
     config = tmp_path / "cursor-testing-home" / ".cursor"
@@ -298,7 +298,7 @@ def test_accept_without_a_prepared_review_cannot_mutate_through_the_typer_surfac
 
     assert installed.exit_code == 1
     assert installed.stderr == "authority_required\n"
-    assert not (config / "plugins" / "local" / "yoetz").exists()
+    assert not (config / "plugins" / "local" / "finishup").exists()
 
 
 def test_prepared_review_denied_by_os_presence_fails_closed_before_any_mutation(
@@ -317,7 +317,7 @@ def test_prepared_review_denied_by_os_presence_fails_closed_before_any_mutation(
         return subprocess.CompletedProcess([], 0, b"denied\n", b"")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.macos_artifact_presence.subprocess.run",
+        "finishup.adapters.integrations.macos_artifact_presence.subprocess.run",
         deny_presence,
     )
 
@@ -335,7 +335,7 @@ def test_prepared_review_denied_by_os_presence_fails_closed_before_any_mutation(
         )
         == 1
     )
-    assert not (config / "plugins" / "local" / "yoetz").exists()
+    assert not (config / "plugins" / "local" / "finishup").exists()
 
 
 def test_wedged_install_replay_reconciles_through_the_cli_without_a_second_review(
@@ -382,20 +382,20 @@ def test_wedged_install_replay_reconciles_through_the_cli_without_a_second_revie
 def test_invoking_launcher_preserves_module_entrypoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz
-    from yoetz.cli import cursor_integration as cli_module
+    import finishup
+    from finishup.cli import cursor_integration as cli_module
 
-    package_main = str(Path(yoetz.__file__).parent / "__main__.py")
+    package_main = str(Path(finishup.__file__).parent / "__main__.py")
     monkeypatch.setattr(cli_module.sys, "argv", [package_main])
     assert cli_module._invoking_launcher() == (  # pyright: ignore[reportPrivateUsage]
         cli_module.sys.executable,
         "-m",
-        "yoetz",
+        "finishup",
     )
 
-    monkeypatch.setattr(cli_module.sys, "argv", ["/opt/tools/yoetz"])
+    monkeypatch.setattr(cli_module.sys, "argv", ["/opt/tools/finishup"])
     assert cli_module._invoking_launcher() == (  # pyright: ignore[reportPrivateUsage]
-        "/opt/tools/yoetz"
+        "/opt/tools/finishup"
     )
 
     monkeypatch.setattr(cli_module.sys, "argv", ["/usr/bin/unrelated"])
@@ -411,10 +411,10 @@ def test_a_strict_preview_discloses_the_project_host_admission_it_would_revoke(
     project = tmp_path / "project"
     (project / ".cursor").mkdir(parents=True)
     (project / ".cursor" / "permissions.json").write_text(
-        json.dumps({"mcpAllowlist": ["yoetz:check"]}), encoding="utf-8"
+        json.dumps({"mcpAllowlist": ["finishup:check"]}), encoding="utf-8"
     )
     (project / ".cursor" / "cli.json").write_text(
-        json.dumps({"permissions": {"allow": ["Mcp(plugin-yoetz-yoetz:check)"]}}),
+        json.dumps({"permissions": {"allow": ["Mcp(plugin-finishup-finishup:check)"]}}),
         encoding="utf-8",
     )
     runner = CliRunner()
@@ -447,10 +447,10 @@ def test_default_presence_cell_follows_the_platform_and_fails_closed_before_muta
 ) -> None:
     from types import SimpleNamespace
 
-    from yoetz.adapters.integrations import artifact_presence
-    from yoetz.adapters.integrations.artifact_presence import describe_artifact_presence
-    from yoetz.adapters.integrations.linux_artifact_presence import LinuxArtifactUserPresence
-    from yoetz.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
+    from finishup.adapters.integrations import artifact_presence
+    from finishup.adapters.integrations.artifact_presence import describe_artifact_presence
+    from finishup.adapters.integrations.linux_artifact_presence import LinuxArtifactUserPresence
+    from finishup.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
 
     config = tmp_path / "cursor-testing-home" / ".cursor"
     project = tmp_path / "project"
@@ -490,4 +490,31 @@ def test_default_presence_cell_follows_the_platform_and_fails_closed_before_muta
         == 1
     )
     assert called == expected
-    assert not (config / "plugins" / "local" / "yoetz").exists()
+    assert not (config / "plugins" / "local" / "finishup").exists()
+
+
+def test_cursor_plugin_cli_reports_a_legacy_tree_in_status_and_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Yoetz-era tree under ``plugins/local/yoetz`` (ADR-048) shows up in both surfaces.
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
+    )
+    runner = CliRunner()
+    config = tmp_path / ".cursor"
+    project = tmp_path / "project"
+    project.mkdir()
+    legacy = config / "plugins" / "local" / "yoetz"
+    legacy.mkdir(parents=True)
+    (legacy / "notes.txt").write_text("not a managed tree\n", encoding="utf-8")
+
+    status = runner.invoke(app, _args(config, project, "status"))
+    assert status.exit_code == 0, status.output
+    body = json.loads(status.stdout)
+    assert body["legacy_installation"] == "foreign"
+    assert body["mcp"]["legacy_registration"] == "none"
+    preview = runner.invoke(app, _args(config, project, "preview"))
+    assert preview.exit_code == 0, preview.output
+    preview_body = json.loads(preview.stdout)
+    assert preview_body["legacy_installation"] == "foreign"
+    assert "legacy_installation_foreign" in preview_body["warnings"]

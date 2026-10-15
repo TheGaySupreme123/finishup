@@ -28,7 +28,7 @@ from typing import Literal, cast
 
 import pytest
 
-import yoetz.application.service as service_module
+import finishup.application.service as service_module
 from builders.observed_runs import ObservedLedger
 from builders.projection_workflow import (
     build_projection_application,
@@ -36,31 +36,31 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.application.check import FinalSemanticEvaluation, build_overall_next
-from yoetz.application.service import (
+from finishup.application.check import FinalSemanticEvaluation, build_overall_next
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectedControlBody,
     ProjectionRenderMode,
 )
-from yoetz.domain.findings import Finding, FindingKind, SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.privacy import PrivacyPolicy
-from yoetz.domain.values import JsonObject
-from yoetz.kernel.check_totals import build_check_totals
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.findings import Finding, FindingKind, SemanticDispatchKind, SemanticProvenance
+from finishup.domain.privacy import PrivacyPolicy
+from finishup.domain.values import JsonObject
+from finishup.kernel.check_totals import build_check_totals
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     build_deterministic_case,
     case_coverage,
 )
-from yoetz.kernel.finding_todo import FindingTodoCounts
-from yoetz.kernel.reducers import replay
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.ledger import CheckCommitResult, CheckFindingChecklist, FrozenCase
-from yoetz.ports.semantic import ReviewerChallenge, SamplingParams, SemanticJudgment
-from yoetz.protocol.canonical import MAX_JSON_DEPTH, JsonValue, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.kernel.finding_todo import FindingTodoCounts
+from finishup.kernel.reducers import replay
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.ledger import CheckCommitResult, CheckFindingChecklist, FrozenCase
+from finishup.ports.semantic import ReviewerChallenge, SamplingParams, SemanticJudgment
+from finishup.protocol.canonical import MAX_JSON_DEPTH, JsonValue, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     MAX_FINDINGS_LIMIT,
     CheckProjectedFindingModel,
     CheckRequest,

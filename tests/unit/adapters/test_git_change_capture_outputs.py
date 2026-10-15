@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
-import yoetz.adapters.git_change_capture as capture_module
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.ports.change_capture import CheckChangeCapture
+import finishup.adapters.git_change_capture as capture_module
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.ports.change_capture import CheckChangeCapture
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -42,9 +42,9 @@ def _repository(tmp_path: Path) -> Path:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -167,9 +167,9 @@ def _commit_all(repository: Path) -> None:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -227,3 +227,213 @@ def test_object_verification_budget_never_withholds_a_declared_output(
     )
 
     assert "+RESULT = 1" in text
+
+
+# --- Generated, build and minified output ranks last (tb4n5 react-lead-form) ------------------
+
+
+def _bundle(size: int, lines: int = 46) -> str:
+    """Minified build output: ``size`` bytes in ``lines`` very long lines, like a Vite bundle."""
+
+    row = (size // lines) - 1
+    return "".join(f"var b{index}=" + "x" * (row - 8) + ";\n" for index in range(lines))
+
+
+def _source(name: str, size: int) -> str:
+    """Ordinary hand-written source: short lines that sum to about ``size`` bytes."""
+
+    return "".join(f"export const {name}_{row} = {row};\n" for row in range(size // 32))
+
+
+def _body(capture: CheckChangeCapture) -> str:
+    return _text(capture).split("End of header. The unified diff follows.\n", 1)[1]
+
+
+def test_a_built_bundle_ranks_after_the_source_it_was_built_from(tmp_path: Path) -> None:
+    """tb4n5 react-lead-form: ``dist/assets/index-*.js`` (145 KB) sorted path-first ahead of
+    ``src/lib/leadStore.ts``; the packet carried the bundle's head and never the ledger code."""
+
+    repository = _repository(tmp_path)
+    (repository / "dist" / "assets").mkdir(parents=True)
+    (repository / "dist" / "assets" / "index-Bxb0DgZR.js").write_text(
+        _bundle(145_000), encoding="utf-8"
+    )
+    (repository / "src" / "lib").mkdir(parents=True)
+    (repository / "src" / "lib" / "leadStore.ts").write_text(
+        _source("lead", 9_800), encoding="utf-8"
+    )
+    (repository / "src" / "components").mkdir(parents=True)
+    (repository / "src" / "components" / "LeadForm.tsx").write_text(
+        _source("form", 4_400), encoding="utf-8"
+    )
+    (repository / "README.md").write_text("# Leads\n", encoding="utf-8")
+
+    capture = GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+
+    body = _body(capture)
+    # Small files first, then the larger sources smallest first, then the bundle.
+    assert (
+        body.index("b/README.md")
+        < body.index("b/src/components/LeadForm.tsx")
+        < body.index("b/src/lib/leadStore.ts")
+        < body.index("b/dist/assets/index-Bxb0DgZR.js")
+    )
+    # Never dropped for being generated: shown, listed and noted in the header.
+    header = _text(capture).split("End of header.", 1)[0]
+    (listed,) = [line for line in header.split("\n") if "dist/assets/index-Bxb0DgZR.js" in line]
+    assert listed.endswith(
+        "untracked; generated, build or minified output, placed after the other files"
+    )
+    assert "src/lib/leadStore.ts" in header
+    assert "placed after" not in next(
+        line for line in header.split("\n") if "src/lib/leadStore.ts" in line
+    )
+    assert not capture.truncated
+
+
+def test_a_declared_build_output_keeps_its_first_place(tmp_path: Path) -> None:
+    """A requested output under ``dist/`` is the work under review, not incidental output."""
+
+    repository = _repository(tmp_path)
+    (repository / "dist").mkdir()
+    (repository / "dist" / "bundle.min.js").write_text(_bundle(40_000), encoding="utf-8")
+    (repository / "src").mkdir()
+    (repository / "src" / "core.ts").write_text(_source("core", 10_000), encoding="utf-8")
+
+    capture = GitChangeCaptureAdapter().capture(
+        os.fspath(repository), None, priority_paths=("dist/bundle.min.js",)
+    )
+
+    body = _body(capture)
+    assert body.startswith("diff --git a/dist/bundle.min.js b/dist/bundle.min.js")
+    assert body.index("b/dist/bundle.min.js") < body.index("b/src/core.ts")
+    assert "placed after the other files" not in _text(capture)
+
+
+def test_minified_text_outside_a_build_directory_still_ranks_last(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    (repository / "a_vendor.js").write_text(_bundle(50_000, lines=3), encoding="utf-8")
+    (repository / "z_core.ts").write_text(_source("core", 10_000), encoding="utf-8")
+
+    body = _body(GitChangeCaptureAdapter().capture(os.fspath(repository), None))
+
+    assert body.index("b/z_core.ts") < body.index("b/a_vendor.js")
+
+
+def test_larger_files_rank_by_size_so_several_sources_fit_ahead_of_one_large_file(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "a_big.py").write_text(_source("big", 60_000), encoding="utf-8")
+    (repository / "m_mid.py").write_text(_source("mid", 12_000), encoding="utf-8")
+    (repository / "z_small.py").write_text(_source("small", 6_000), encoding="utf-8")
+
+    body = _body(GitChangeCaptureAdapter().capture(os.fspath(repository), None))
+
+    assert body.index("b/z_small.py") < body.index("b/m_mid.py") < body.index("b/a_big.py")
+
+
+@pytest.mark.parametrize("whole_diff_limit", [None, 1_024])
+def test_a_lockfile_change_ranks_after_source_in_both_read_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, whole_diff_limit: int | None
+) -> None:
+    """Tracked files: the whole diff, and the per-file fallback that reads in rank order."""
+
+    repository = _repository(tmp_path)
+    (repository / "package-lock.json").write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
+    (repository / "src").mkdir()
+    (repository / "src" / "app.ts").write_text("export const app = 0;\n", encoding="utf-8")
+    _commit_all(repository)
+    (repository / "package-lock.json").write_text(
+        "".join(f'  "node_modules/pkg-{row}": {{"version": "1.0.{row}"}},\n' for row in range(900)),
+        encoding="utf-8",
+    )
+    (repository / "src" / "app.ts").write_text(_source("app", 12_000), encoding="utf-8")
+    if whole_diff_limit is not None:
+        monkeypatch.setattr(capture_module, "_WHOLE_DIFF_LIMIT", whole_diff_limit)
+        # The per-file read budget reaches the source first and the lockfile not at all.
+        monkeypatch.setattr(capture_module, "_MAX_PER_FILE_DIFFS", 1)
+
+    capture = GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+
+    text = _text(capture)
+    assert "+export const app_1 = 1;" in text
+    header = text.split("End of header.", 1)[0]
+    assert "package-lock.json" in header
+    if whole_diff_limit is None:
+        body = _body(capture)
+        assert body.index("b/src/app.ts") < body.index("b/package-lock.json")
+    else:
+        assert "b/package-lock.json" not in _body(capture)
+        assert capture.truncated
+
+
+def test_generated_output_is_read_after_source_under_the_untracked_file_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "build").mkdir()
+    for index in range(4):
+        (repository / "build" / f"chunk_{index}.js").write_text("x();\n", encoding="utf-8")
+    (repository / "src").mkdir()
+    (repository / "src" / "main.py").write_text(_source("main", 9_000), encoding="utf-8")
+    monkeypatch.setattr(capture_module, "_MAX_UNTRACKED_FILES", 2)
+
+    capture = GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+
+    assert "+export const main_1 = 1;" in _text(capture)
+    assert capture.untracked_files == 5
+
+
+def test_generated_path_rules_match_whole_components_and_exact_names() -> None:
+    generated: Any = getattr(capture_module, "_generated_path")
+    for path in (
+        b"dist/assets/index.js",
+        b"api/build/x.py",
+        b"web/node_modules/a/index.js",
+        b"app.min.js",
+        b"styles/site.min.css",
+        b"app.js.map",
+        b"package-lock.json",
+        b"sub/uv.lock",
+        b"dist/",
+    ):
+        assert generated(path), path
+    for path in (
+        b"src/distance.ts",
+        b"builder/x.py",
+        b"src/build.ts",
+        b"docs/roadmap.md",
+        b"src/lib/leadStore.ts",
+        b"locks/package-lock.json.txt",
+    ):
+        assert not generated(path), path
+
+
+def test_hand_maintained_long_line_json_keeps_its_place_by_size(tmp_path: Path) -> None:
+    """Checker review (tb4n5): only bundler output is judged by line length. Undeclared JSON kept
+    on long lines (a fixture table, a requested output) is not ranked last as minified; a
+    script of the same shape is."""
+
+    repository = _repository(tmp_path)
+    (repository / "data").mkdir()
+    records = ",".join(f'{{"id": {row}, "name": "lead {row}"}}' for row in range(700))
+    (repository / "data" / "records.json").write_text("[" + records + "]\n", encoding="utf-8")
+    (repository / "public").mkdir()
+    (repository / "public" / "vendor.js").write_text(_bundle(26_000, lines=2), encoding="utf-8")
+    (repository / "src").mkdir()
+    (repository / "src" / "big.ts").write_text(_source("big", 30_000), encoding="utf-8")
+
+    capture = GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+
+    body = _body(capture)
+    assert (
+        body.index("b/data/records.json")
+        < body.index("b/src/big.ts")
+        < body.index("b/public/vendor.js")
+    )
+    header = _text(capture).split("End of header.", 1)[0]
+    (json_line,) = [line for line in header.split("\n") if "data/records.json" in line]
+    assert "placed after the other files" not in json_line
+    (script_line,) = [line for line in header.split("\n") if "public/vendor.js" in line]
+    assert script_line.endswith("placed after the other files")

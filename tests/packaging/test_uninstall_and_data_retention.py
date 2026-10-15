@@ -12,7 +12,7 @@ foreground passphrase-vault ceremony, which needs a genuine controlling TTY
 security (not a gap in this file), and is exercised in ``test_clean_install.py``/
 ``test_offline_reinstall.py`` instead. This file's own invariant -- "package removal never deletes
 user ledger/object/backup/key data" -- does not require an unlocked vault to prove: it is proven by
-placing synthetic-but-realistic bytes at the exact contractual paths ``yoetz.config.paths`` computes
+placing synthetic-but-realistic bytes at the exact contractual paths ``finishup.config.paths`` computes
 (``bundle_root()``, ``catalog_path()``, ``task_bundle_dir()``), recording their digests, and showing
 ``uv tool uninstall``/reinstall never touches anything outside its own isolated tool environment.
 """
@@ -69,7 +69,7 @@ def _tree_digests(root: Path) -> dict[str, str]:
 
 
 def _bundle_root(python: Path, home: Path) -> Path:
-    probe = "from yoetz.config.paths import bundle_root; print(bundle_root())"
+    probe = "from finishup.config.paths import bundle_root; print(bundle_root())"
     result = subprocess.run(
         [str(python), "-c", probe],
         capture_output=True,
@@ -88,7 +88,7 @@ def _tool_install(
     *,
     extras: tuple[str, ...] = (),
 ) -> tuple[Path, dict[str, str]]:
-    """Install (offline, warming the shared cache once if needed) and return (yoetz_exe, env)."""
+    """Install (offline, warming the shared cache once if needed) and return (finishup_exe, env)."""
 
     tool_dir = root / "tool"
     bin_dir = root / "bin"
@@ -146,12 +146,12 @@ def _tool_install(
         )
         result = _install(offline=True)
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
-    return bin_dir / "yoetz", env
+    return bin_dir / "finishup", env
 
 
 def _tool_uninstall(env: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
-        ["uv", "tool", "uninstall", "yoetz"],
+        ["uv", "tool", "uninstall", "finishup"],
         capture_output=True,
         timeout=60,
         env=env,
@@ -171,15 +171,15 @@ def test_base_uninstall_preserves_bundle_and_catalog_bytes(
     home = root / "home"
     home.mkdir(parents=True)
 
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
-    assert yoetz_exe.is_file()
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
+    assert finishup_exe.is_file()
 
     help_result = subprocess.run(
-        [str(yoetz_exe), "--help"], capture_output=True, timeout=15, env=env, check=False
+        [str(finishup_exe), "--help"], capture_output=True, timeout=15, env=env, check=False
     )
     assert help_result.returncode == 0
 
-    bundle = _bundle_root(root / "tool" / "yoetz" / "bin" / "python", home)
+    bundle = _bundle_root(root / "tool" / "finishup" / "bin" / "python", home)
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "catalog.sqlite3").write_bytes(b"sqlite-format-3\x00synthetic-catalog-bytes")
     task_dir = bundle / "tasks" / "tsk_0000000000000000000000000001"
@@ -194,8 +194,8 @@ def test_base_uninstall_preserves_bundle_and_catalog_bytes(
     uninstall_result = _tool_uninstall(env)
     assert uninstall_result.returncode == 0, uninstall_result.stderr
 
-    assert not yoetz_exe.exists()
-    assert not (root / "tool" / "yoetz").exists()
+    assert not finishup_exe.exists()
+    assert not (root / "tool" / "finishup").exists()
 
     after = _tree_digests(bundle)
     assert after == before
@@ -207,13 +207,13 @@ def test_base_uninstall_removes_the_tool_bin_and_environment(
     root = tmp_path / "install-root"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
-    assert yoetz_exe.is_file()
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
+    assert finishup_exe.is_file()
     result = _tool_uninstall(env)
     assert result.returncode == 0, result.stderr
-    assert not yoetz_exe.exists()
+    assert not finishup_exe.exists()
     remaining_tools = list((root / "tool").glob("*")) if (root / "tool").exists() else []
-    assert "yoetz" not in {path.name for path in remaining_tools}
+    assert "finishup" not in {path.name for path in remaining_tools}
 
 
 # ---------------------------------------------------------------------------
@@ -225,17 +225,19 @@ def test_extra_uninstall_preserves_bundle_bytes_too(built_dist: _BuiltDist, tmp_
     root = tmp_path / "install-root"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home, extras=("portable-recovery",))
-    assert yoetz_exe.is_file()
+    finishup_exe, env = _tool_install(
+        built_dist.directory, root, home, extras=("portable-recovery",)
+    )
+    assert finishup_exe.is_file()
 
-    bundle = _bundle_root(root / "tool" / "yoetz" / "bin" / "python", home)
+    bundle = _bundle_root(root / "tool" / "finishup" / "bin" / "python", home)
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "catalog.sqlite3").write_bytes(b"extra-cell-synthetic-bytes")
     before = _tree_digests(bundle)
 
     result = _tool_uninstall(env)
     assert result.returncode == 0, result.stderr
-    assert not yoetz_exe.exists()
+    assert not finishup_exe.exists()
     assert _tree_digests(bundle) == before
 
 
@@ -250,18 +252,18 @@ def test_uninstall_never_touches_a_workspace_integrated_skill_copy(
     root = tmp_path / "install-root"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
 
     # A workspace-integrated skill copy lives entirely outside the tool env / bundle root.
     workspace = tmp_path / "workspace"
-    skill_dir = workspace / ".codex" / "skills" / "yoetz"
+    skill_dir = workspace / ".codex" / "skills" / "finishup"
     skill_dir.mkdir(parents=True)
-    packaged_skill = _REPO_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md"
+    packaged_skill = _REPO_ROOT / "skills" / "codex" / "finishup" / "SKILL.md"
     (skill_dir / "SKILL.md").write_bytes(packaged_skill.read_bytes())
     identical_digest_before = _digest(skill_dir / "SKILL.md")
 
     modified_dir = tmp_path / "workspace-modified"
-    modified_skill_dir = modified_dir / ".codex" / "skills" / "yoetz"
+    modified_skill_dir = modified_dir / ".codex" / "skills" / "finishup"
     modified_skill_dir.mkdir(parents=True)
     (modified_skill_dir / "SKILL.md").write_bytes(
         packaged_skill.read_bytes() + b"\n<!-- locally modified by a user -->\n"
@@ -270,7 +272,7 @@ def test_uninstall_never_touches_a_workspace_integrated_skill_copy(
 
     result = _tool_uninstall(env)
     assert result.returncode == 0, result.stderr
-    assert not yoetz_exe.exists()
+    assert not finishup_exe.exists()
 
     assert _digest(skill_dir / "SKILL.md") == identical_digest_before
     assert _digest(modified_skill_dir / "SKILL.md") == modified_digest_before
@@ -287,16 +289,16 @@ def test_reinstall_from_the_same_offline_wheel_reattaches_preserved_data(
     root = tmp_path / "install-root"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
 
-    bundle = _bundle_root(root / "tool" / "yoetz" / "bin" / "python", home)
+    bundle = _bundle_root(root / "tool" / "finishup" / "bin" / "python", home)
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "catalog.sqlite3").write_bytes(b"reinstall-preserved-bytes")
     before = _tree_digests(bundle)
 
     uninstall_result = _tool_uninstall(env)
     assert uninstall_result.returncode == 0, uninstall_result.stderr
-    assert not yoetz_exe.exists()
+    assert not finishup_exe.exists()
     assert _tree_digests(bundle) == before
 
     reinstalled_exe, _ = _tool_install(built_dist.directory, root, home)

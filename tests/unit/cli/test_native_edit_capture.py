@@ -21,11 +21,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope, workspace_relative_edit_path
-from yoetz.domain.observation import ObservationContentKind, ObservationSource
-from yoetz.protocol.canonical import JsonValue
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope, workspace_relative_edit_path
+from finishup.domain.observation import ObservationContentKind, ObservationSource
+from finishup.protocol.canonical import JsonValue
 
 _KEY = b"k" * 32
 _CODEX = ObservationSource.CODEX_HOOK

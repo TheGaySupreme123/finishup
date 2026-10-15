@@ -9,14 +9,14 @@ import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from yoetz.adapters.keys.encrypted_vault import (
+from finishup.adapters.keys.encrypted_vault import (
     EncryptedVaultError,
     EncryptedVaultStore,
     VaultRecordKind,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretConsumer, SecretPurpose
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretConsumer, SecretPurpose
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 _INSTALLATION_ID = "ins_00000000-0000-4000-8000-000000000001"
 _TASK_ID = "tsk_00000000-0000-4000-8000-000000000002"

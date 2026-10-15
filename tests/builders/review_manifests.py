@@ -8,7 +8,7 @@ success; it describes an empty packet and never stands in for real provider byte
 
 from __future__ import annotations
 
-from yoetz.domain.values import JsonObject
+from finishup.domain.values import JsonObject
 
 
 def provider_bound_manifest() -> JsonObject:

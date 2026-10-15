@@ -37,21 +37,21 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.privacy.catalog import CatalogPrivacyAudit, CatalogPrivacyPolicyStore
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.adapters.sqlite.migrations import initialize_catalog
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.observation_materialize import observation_author
-from yoetz.application.service import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.privacy.catalog import CatalogPrivacyAudit, CatalogPrivacyPolicyStore
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.adapters.sqlite.migrations import initialize_catalog
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.observation_materialize import observation_author
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.domain.events import (
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
     ActionKind,
     ActionRecordedPayload,
@@ -64,8 +64,8 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.privacy import PrivacyPolicy
-from yoetz.domain.values import (
+from finishup.domain.privacy import PrivacyPolicy
+from finishup.domain.values import (
     Frontier,
     action_id,
     event_id,
@@ -74,12 +74,16 @@ from yoetz.domain.values import (
     result_id,
     timestamp_from_datetime,
 )
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.ledger import AppendCommand, AppendEntry, CheckCommitResult, OperationKind
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.coverage import EvidenceImmutability, PublicationChannel, coverage_for_channel
-from yoetz.protocol.models import (
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.ledger import AppendCommand, AppendEntry, CheckCommitResult, OperationKind
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.coverage import (
+    EvidenceImmutability,
+    PublicationChannel,
+    coverage_for_channel,
+)
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     StatusRequest,

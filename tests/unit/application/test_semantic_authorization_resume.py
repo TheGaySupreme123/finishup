@@ -10,15 +10,15 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.adapters.privacy.local_enforcer import SecretScanRuleset
-from yoetz.application.egress import (
+from finishup.adapters.privacy.local_enforcer import SecretScanRuleset
+from finishup.application.egress import (
     PrivacyCoordinator,
     SemanticEgressAttemptUnknown,
     SemanticEgressAwaitingHuman,
     SemanticEgressBlocked,
     SemanticEgressSuccess,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ConsentSource,
@@ -29,9 +29,9 @@ from yoetz.domain.privacy import (
     PrivacyReason,
     ProviderBinding,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.privacy import (
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
     OutboundGatewayPort,
@@ -42,8 +42,8 @@ from yoetz.ports.privacy import (
     PrivacyPolicyStorePort,
     RepositoryPrivacyAuthority,
 )
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.ids import IdKind
+from finishup.ports.semantic import Deadline
+from finishup.protocol.ids import IdKind
 
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 _INSTALLATION = "ins_54000000-0000-4000-8000-000000000001"
@@ -529,7 +529,7 @@ async def test_missing_proposal_does_not_look_like_a_clean_unknown_recovery() ->
 
 
 def _packet_with_excerpts(count: int) -> bytes:
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
+    from finishup.protocol.canonical import JsonValue, canonical_encode
 
     rows = [
         {"content_bytes": 32, "item_id": f"excerpt-{index:03d}", "section": "excerpt"}
@@ -563,8 +563,8 @@ async def test_resume_rechecks_the_current_limits_before_dispatch(
 ) -> None:
     """Issue #907 Phase 1b: a stored proposal answers to the policy in force at resume."""
 
-    from yoetz.domain.privacy import DataClass, LocalDisclosureSink
-    from yoetz.protocol.models import DataCategory
+    from finishup.domain.privacy import DataClass, LocalDisclosureSink
+    from finishup.protocol.models import DataCategory
 
     proposal = replace(
         _proposal(expires_at=_NOW + timedelta(minutes=5)),
@@ -651,10 +651,10 @@ async def test_approved_resume_names_what_the_approved_prepared_packet_carried()
     same sent references a first-pass dispatch of those bytes would.
     """
 
-    from yoetz.adapters.providers.fake import scripted_success
-    from yoetz.domain.privacy import EgressAuthorization, EgressChannel
-    from yoetz.ports.semantic import SemanticJudgment
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
+    from finishup.adapters.providers.fake import scripted_success
+    from finishup.domain.privacy import EgressAuthorization, EgressChannel
+    from finishup.ports.semantic import SemanticJudgment
+    from finishup.protocol.canonical import JsonValue, canonical_encode
 
     shown = "evd_54000000-0000-4000-8000-000000000011"
     withheld = "evd_54000000-0000-4000-8000-000000000012"
@@ -681,7 +681,7 @@ async def test_approved_resume_names_what_the_approved_prepared_packet_carried()
     coordinator = _coordinator(
         "approved", expires_at=_NOW + timedelta(minutes=5), proposal=proposal
     )
-    from yoetz.protocol.ids import new_id
+    from finishup.protocol.ids import new_id
 
     class _FreshIds:
         def new(self, kind: IdKind) -> str:

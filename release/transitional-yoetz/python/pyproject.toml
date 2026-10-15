@@ -1,0 +1,50 @@
+# Transitional "yoetz" distribution (ADR-048).
+#
+# FinishUP shipped on PyPI as "yoetz" through 0.2.5. The released 0.2.x upgrade command runs
+# `uv tool upgrade yoetz`, which keeps exact pins; pre-rename 0.3 development builds instead run
+# `uv tool install --upgrade yoetz>=V` and verify `<tool>/bin/yoetz --version`. Connected hosts
+# run `<tool>/bin/yoetz` or `<python> -m yoetz`. Once an eligible unpinned tool is upgraded, or a
+# pinned requirement is explicitly replaced, this distribution keeps those launchers working:
+# it installs the same-version `finishup` and declares only `yoetz`. Never declare `finishup`
+# too: a yoetz tool environment exposing it makes `uv tool install finishup` fail
+# ("Executables already exist"). Version, dependency pin and extras stay in lockstep with the root
+# pyproject.toml; scripts/check_transitional_yoetz.py and the release workflow enforce it.
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12"]
+build-backend = "uv_build"
+
+[project]
+# Frozen legacy identifier (ADR-048): the PyPI name released installs upgrade through.
+name = "yoetz"
+version = "0.3.0"
+description = "Deprecated name of FinishUP: installs finishup and keeps the yoetz command for one release"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Shay Ben Shabtay" }]
+classifiers = [
+    "Development Status :: 7 - Inactive",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = ["finishup==0.3.0"]
+
+[project.optional-dependencies]
+# Extras recorded in existing uv tool receipts (`yoetz[semantic-openai]`) must keep resolving.
+portable-recovery = ["finishup[portable-recovery]==0.3.0"]
+semantic-openai = ["finishup[semantic-openai]==0.3.0"]
+
+[project.scripts]
+# Frozen legacy identifier (ADR-048): the deprecated alias command.
+yoetz = "finishup.cli.entry:main"
+
+[project.urls]
+Homepage = "https://finishup.dev"
+Repository = "https://github.com/TheGaySupreme123/finishup"
+Issues = "https://github.com/TheGaySupreme123/finishup/issues"
+
+[tool.uv.build-backend]
+module-name = "yoetz"

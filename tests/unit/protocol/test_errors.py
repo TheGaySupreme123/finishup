@@ -15,9 +15,9 @@ from typing import TypeAliasType, cast
 
 import pytest
 
-import yoetz.protocol.errors as errors_module
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import (
+import finishup.protocol.errors as errors_module
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import (
     PROTOCOL_REASON_CODES,
     SAFE_DETAIL_KEYS,
     ProtocolValueError,
@@ -26,7 +26,7 @@ from yoetz.protocol.errors import (
     SafeDetailValue,
     normalize_safe_details,
 )
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import validate_schema_instance
 
 _VALID_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000000"
 _OTHER_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000001"
@@ -355,6 +355,7 @@ semantic_provenance_json_shape_invalid
 semantic_redacted_values_invalid
 service_draining
 service_generation_changed
+service_handshake_failed
 service_incompatible
 service_stamp_required
 service_start_failed
@@ -546,7 +547,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 346
+    assert len(source_values) == 347
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)
@@ -554,10 +555,10 @@ def test_protocol_reason_registry_is_exact_and_import_order_independent() -> Non
     assert not hasattr(errors_module, "register_protocol_reason")
     before = PROTOCOL_REASON_CODES
     for name in (
-        "yoetz.protocol.canonical",
-        "yoetz.protocol.ids",
-        "yoetz.protocol.coverage",
-        "yoetz.protocol.schemas",
+        "finishup.protocol.canonical",
+        "finishup.protocol.ids",
+        "finishup.protocol.coverage",
+        "finishup.protocol.schemas",
     ):
         if importlib.util.find_spec(name) is not None:
             importlib.import_module(name)
@@ -570,16 +571,16 @@ def test_protocol_reason_registry_is_exact_and_import_order_independent() -> Non
     consumers = tuple(
         name
         for name in (
-            "yoetz.protocol.canonical",
-            "yoetz.protocol.ids",
-            "yoetz.protocol.coverage",
-            "yoetz.protocol.schemas",
+            "finishup.protocol.canonical",
+            "finishup.protocol.ids",
+            "finishup.protocol.coverage",
+            "finishup.protocol.schemas",
         )
         if importlib.util.find_spec(name) is not None
     )
-    orders = [("yoetz.protocol.errors", *consumers)]
+    orders = [("finishup.protocol.errors", *consumers)]
     orders.extend(
-        (consumer, "yoetz.protocol.errors", *(name for name in consumers if name != consumer))
+        (consumer, "finishup.protocol.errors", *(name for name in consumers if name != consumer))
         for consumer in consumers
     )
     for order in dict.fromkeys(orders):
@@ -588,7 +589,7 @@ def test_protocol_reason_registry_is_exact_and_import_order_independent() -> Non
                 "import importlib",
                 f"order = {order!r}",
                 "for name in order: importlib.import_module(name)",
-                "import yoetz.protocol.errors as errors",
+                "import finishup.protocol.errors as errors",
                 f"expected = {_EXPECTED_REASON_CODES!r}",
                 "actual = tuple(sorted(errors.PROTOCOL_REASON_CODES, key=lambda value: value.encode('ascii')))",
                 "assert actual == expected",
@@ -618,7 +619,9 @@ def test_dependency_root_has_no_internal_imports() -> None:
             if node.module is not None:
                 imported_modules.append(node.module)
     assert relative_imports == 0
-    assert not any(module == "yoetz" or module.startswith("yoetz.") for module in imported_modules)
+    assert not any(
+        module == "finishup" or module.startswith("finishup.") for module in imported_modules
+    )
 
 
 def test_literal_protocol_refusals_use_registered_reasons() -> None:
@@ -871,7 +874,7 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
         {
             "actual_version": "1.0.0+local",
             "blocking_reasons": ("issue_returned_again",),
-            "authorize_command": "yoetz consent authorize",
+            "authorize_command": "finishup consent authorize",
             "availability": "terminal_unavailable",
             "availability_inherited": True,
             "availability_request_id": "req_00000000-0000-4000-8000-000000000001",
@@ -889,12 +892,12 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
             "operation": _SafeEnum.READY,
             "pending_ttl_seconds": 900,
             "phase": _SafeEnum.READY,
-            "prepare_command": "yoetz consent prepare vault_initialize",
+            "prepare_command": "finishup consent prepare vault_initialize",
             "quarantine_code": "operation_lease_shape_invalid",
             "reason_code": "invalid_digest",
             "replay_request_id": "req_00000000-0000-4000-8000-000000000001",
             "retry_after_ms": 1,
-            "review_command": "yoetz consent review",
+            "review_command": "finishup consent review",
             "schema_name": "accepted-event",
             "sequence": 5,
             "session_id": "ses_00000000-0000-4000-8000-000000000001",
@@ -1003,31 +1006,31 @@ def test_initialization_continuation_details_are_closed_literals() -> None:
 
     accepted = normalize_safe_details(
         {
-            "authorize_command": "yoetz consent authorize",
+            "authorize_command": "finishup consent authorize",
             "continuation": "vault_initialization_required",
             "pending_ttl_seconds": 900,
-            "prepare_command": "yoetz consent prepare vault_initialize",
+            "prepare_command": "finishup consent prepare vault_initialize",
             "replay_request_id": "req_00000000-0000-4000-8000-000000000001",
-            "review_command": "yoetz consent review",
+            "review_command": "finishup consent review",
         }
     )
     assert dict(accepted) == {
-        "authorize_command": "yoetz consent authorize",
+        "authorize_command": "finishup consent authorize",
         "continuation": "vault_initialization_required",
         "pending_ttl_seconds": 900,
-        "prepare_command": "yoetz consent prepare vault_initialize",
+        "prepare_command": "finishup consent prepare vault_initialize",
         "replay_request_id": "req_00000000-0000-4000-8000-000000000001",
-        "review_command": "yoetz consent review",
+        "review_command": "finishup consent review",
     }
     hostile = (
         # A plausible near-miss of the admitted token, chosen so it stays unregistered: issue
         # #741 minted a real ``vault_unlock_required``, which is no longer hostile.
         ("continuation", "vault_initialization_optional"),
         ("continuation", "vault_initialization_required "),
-        ("prepare_command", "yoetz consent prepare vault_passphrase_rotate"),
-        ("prepare_command", "rm -rf /; yoetz consent prepare vault_initialize"),
-        ("review_command", "yoetz consent review --yolo"),
-        ("authorize_command", "yoetz consent authorize --warning-acknowledged"),
+        ("prepare_command", "finishup consent prepare vault_passphrase_rotate"),
+        ("prepare_command", "rm -rf /; finishup consent prepare vault_initialize"),
+        ("review_command", "finishup consent review --yolo"),
+        ("authorize_command", "finishup consent authorize --warning-acknowledged"),
         ("replay_request_id", "ses_00000000-0000-4000-8000-000000000001"),
         ("replay_request_id", "req_not_a_uuid"),
         ("pending_ttl_seconds", "900"),
@@ -1152,3 +1155,24 @@ def test_blocking_reasons_detail_admits_only_bounded_closed_tokens() -> None:
     public = error.as_public_dict()
     assert public["safe_details"] == {"blocking_reasons": ["issue_returned_again"]}
     validate_schema_instance("public-error", "1.0.0", cast(JsonValue, public))
+
+
+@pytest.mark.parametrize(
+    ("key", "current"),
+    (
+        ("authorize_command", "finishup consent authorize"),
+        ("prepare_command", "finishup consent prepare vault_initialize"),
+        ("review_command", "finishup consent review"),
+    ),
+)
+def test_consent_command_details_render_the_current_launcher_for_either_head(
+    key: str, current: str
+) -> None:
+    """A pre-rename service named the ``yoetz`` alias; the detail names ``finishup`` (ADR-048)."""
+
+    legacy = "yoetz " + current.removeprefix("finishup ")
+    assert normalize_safe_details({key: current}) == {key: current}
+    assert normalize_safe_details({key: legacy}) == {key: current}
+    assert normalize_safe_details({key: "yoetzz " + legacy}) == {}
+    other = "review_command" if key != "review_command" else "authorize_command"
+    assert normalize_safe_details({other: legacy}) == {}

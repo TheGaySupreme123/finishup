@@ -17,20 +17,20 @@ from typing import cast
 
 import pytest
 
-import yoetz.application.start as start_module
+import finishup.application.start as start_module
 from builders.multi_agent import ScenarioClock, private_service_root
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
-from yoetz.application.service import Application
-from yoetz.application.status import StatusInternalResult
-from yoetz.config.models import YoetzConfig
-from yoetz.domain.coordination import WorkState
-from yoetz.ports.control import RepositoryPrivacyContext, ServiceState
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.adapters.keys.vault_passphrase import VaultRootEnvelope
+from finishup.application.service import Application
+from finishup.application.status import StatusInternalResult
+from finishup.config.models import FinishUpConfig
+from finishup.domain.coordination import WorkState
+from finishup.ports.control import RepositoryPrivacyContext, ServiceState
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -38,9 +38,9 @@ from yoetz.protocol.models import (
     StatusLineagePageModel,
     StatusRequest,
 )
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.ready_composition import build_ready_application_factory
-from yoetz.service.vault import VaultMode, VaultService
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.ready_composition import build_ready_application_factory
+from finishup.service.vault import VaultMode, VaultService
 
 pytestmark = pytest.mark.anyio
 
@@ -144,7 +144,7 @@ class _RestartableReadyInstallation:
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(self.root),
             clock=self.clock,
             secret_memory=memory,

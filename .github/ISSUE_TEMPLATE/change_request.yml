@@ -36,7 +36,7 @@ body:
     attributes:
       label: Affected area or code path (if known)
       description: Path under `src/`, `schemas/`, or `docs/`, or `unknown — needs triage`.
-      placeholder: src/yoetz/...
+      placeholder: src/finishup/...
     validations:
       required: true
   - type: dropdown

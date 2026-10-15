@@ -9,9 +9,12 @@ from typing import cast
 import pytest
 
 from builders.tui_runtime import CLI, DESKTOP
-from yoetz.adapters.workspace_binding import canonical_workspace_locator
-from yoetz.tui.models import HarnessOption
-from yoetz.tui.runtime import YoetzRuntime, _WorkSession  # pyright: ignore[reportPrivateUsage]
+from finishup.adapters.workspace_binding import canonical_workspace_locator
+from finishup.tui.models import HarnessOption
+from finishup.tui.runtime import (
+    FinishUpRuntime,
+    _WorkSession,  # pyright: ignore[reportPrivateUsage]
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -43,7 +46,7 @@ async def test_host_ownership_requires_complete_configuration_off_event_loop(
 ) -> None:
     import threading
 
-    from yoetz.cli import host_connection
+    from finishup.cli import host_connection
 
     event_thread = threading.get_ident()
 
@@ -60,24 +63,24 @@ async def test_host_ownership_requires_complete_configuration_off_event_loop(
 
     monkeypatch.setattr(host_connection, "prepare_selected", prepare)
     option = HarnessOption("/opt/agent", "1.0.0", "Agent", "", host=host)
-    assert await YoetzRuntime(cwd=tmp_path).mcp_state(option) == expected
+    assert await FinishUpRuntime(cwd=tmp_path).mcp_state(option) == expected
 
 
 @pytest.mark.parametrize("host", ["claude", "cursor-ide", "cursor-cli"])
 async def test_non_codex_plugin_layers_use_selected_host_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, host: str
 ) -> None:
-    from yoetz.tui.models import LayerState
+    from finishup.tui.models import LayerState
 
     seen: list[str] = []
 
-    async def status(_self: YoetzRuntime, option: HarnessOption) -> dict[str, object]:
+    async def status(_self: FinishUpRuntime, option: HarnessOption) -> dict[str, object]:
         seen.append(option.host)
         return {"installed": True, "configured": True, "enabled": True}
 
-    monkeypatch.setattr(YoetzRuntime, "_host_connection_status", status)
+    monkeypatch.setattr(FinishUpRuntime, "_host_connection_status", status)
     option = HarnessOption("/opt/agent", "1.0.0", "Selected agent", "", host=host)
-    layers = await YoetzRuntime(cwd=tmp_path)._host_plugin_layers(option)  # pyright: ignore[reportPrivateUsage]
+    layers = await FinishUpRuntime(cwd=tmp_path)._host_plugin_layers(option)  # pyright: ignore[reportPrivateUsage]
     assert seen == [host]
     assert layers[0].state is LayerState.VERIFIED
     assert layers[0].detail == "Selected agent"
@@ -88,21 +91,21 @@ async def test_detect_reports_connected_when_the_second_installation_is_owned(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = YoetzRuntime(cwd=tmp_path)
+    runtime = FinishUpRuntime(cwd=tmp_path)
 
-    def harnesses(_self: YoetzRuntime) -> tuple[HarnessOption, ...]:
+    def harnesses(_self: FinishUpRuntime) -> tuple[HarnessOption, ...]:
         return (DESKTOP, CLI)
 
     monkeypatch.setattr(
-        YoetzRuntime,
+        FinishUpRuntime,
         "discover_harnesses",
         harnesses,
     )
 
-    async def state(_self: YoetzRuntime, option: HarnessOption) -> str:
+    async def state(_self: FinishUpRuntime, option: HarnessOption) -> str:
         return "yoetz_owned" if option is CLI else "absent"
 
-    monkeypatch.setattr(YoetzRuntime, "mcp_state", state)
+    monkeypatch.setattr(FinishUpRuntime, "mcp_state", state)
 
     detection = await runtime.detect()
 
@@ -112,8 +115,8 @@ async def test_detect_reports_connected_when_the_second_installation_is_owned(
 async def test_service_client_uses_ui_kind_and_runtime_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import yoetz.cli.app as cli_app
-    from yoetz.ports.control import ControlClientKind, WorkspaceLocator
+    import finishup.cli.app as cli_app
+    from finishup.ports.control import ControlClientKind, ProjectionRenderMode, WorkspaceLocator
 
     observed: list[tuple[ControlClientKind, WorkspaceLocator]] = []
 
@@ -125,13 +128,18 @@ async def test_service_client_uses_ui_kind_and_runtime_cwd(
         client_kind: ControlClientKind,
         *,
         workspace_locator: WorkspaceLocator | None = None,
+        projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
+        output_is_controlling_tty: bool = False,
     ) -> Client:
         assert workspace_locator is not None
+        # Agent-facing by default (ADR-009 round 3): the TUI asserts no terminal authority.
+        assert projection_render_mode is ProjectionRenderMode.MACHINE_READABLE
+        assert not output_is_controlling_tty
         observed.append((client_kind, workspace_locator))
         return Client()
 
     monkeypatch.setattr(cli_app, "build_service_client", build)
-    runtime = YoetzRuntime(cwd=tmp_path)
+    runtime = FinishUpRuntime(cwd=tmp_path)
 
     async with runtime._client():  # pyright: ignore[reportPrivateUsage]
         pass
@@ -145,7 +153,7 @@ async def test_provider_posture_reads_at_the_repository_root_not_the_launch_dire
     """PR #478 review: host admission files live at the repository root, so a subdirectory
     launch must hand the resolved root, not the launch directory, to the status report."""
 
-    from yoetz.cli import provider_status
+    from finishup.cli import provider_status
 
     (tmp_path / ".git").mkdir()
     subdirectory = tmp_path / "src" / "nested"
@@ -157,7 +165,7 @@ async def test_provider_posture_reads_at_the_repository_root_not_the_launch_dire
         return {}
 
     monkeypatch.setattr(provider_status, "provider_status_report", report)
-    runtime = YoetzRuntime(cwd=subdirectory)
+    runtime = FinishUpRuntime(cwd=subdirectory)
 
     await runtime.provider_posture()
 
@@ -165,7 +173,7 @@ async def test_provider_posture_reads_at_the_repository_root_not_the_launch_dire
 
 
 def test_work_detail_preserves_unknown_open_obligation_count(tmp_path: Path) -> None:
-    runtime = YoetzRuntime(cwd=tmp_path)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     session = _WorkSession(
         task_id="tsk_00000000-0000-4000-8000-000000000001",
         session_id="ses_00000000-0000-4000-8000-000000000002",
@@ -220,15 +228,15 @@ async def test_store_provider_credential_supplies_the_scoped_reauthentication_se
         observed.append((credential, reauthentication))
         return SimpleNamespace(activation_status="stored")
 
-    monkeypatch.setattr("yoetz.config.load.load_config", configuration)
-    monkeypatch.setattr("yoetz.cli.privacy_setup.get_privacy_setup_snapshot", snapshot)
-    monkeypatch.setattr("yoetz.cli.unlock.set_provider_credential", ceremony)
+    monkeypatch.setattr("finishup.config.load.load_config", configuration)
+    monkeypatch.setattr("finishup.cli.privacy_setup.get_privacy_setup_snapshot", snapshot)
+    monkeypatch.setattr("finishup.cli.unlock.set_provider_credential", ceremony)
     monkeypatch.setattr(
-        "yoetz.cli.unlock.load_auto_unlock_reauthentication",
+        "finishup.cli.unlock.load_auto_unlock_reauthentication",
         lambda: bytearray(b"scoped-reauth"),
     )
 
-    status = await YoetzRuntime(cwd=tmp_path).store_provider_credential()
+    status = await FinishUpRuntime(cwd=tmp_path).store_provider_credential()
 
     assert status == "stored"
     assert observed_workspaces == [tmp_path]
@@ -244,9 +252,9 @@ def test_every_reviewed_provider_preset_gets_a_friendly_picker_label(tmp_path: P
     shows its raw provider id; both regress silently, so the map is locked to
     the preset registry rather than to a hand-maintained list."""
 
-    from yoetz.config.write import PROVIDER_PRESETS
+    from finishup.config.write import PROVIDER_PRESETS
 
-    options = {option.choice: option for option in YoetzRuntime(cwd=tmp_path).provider_options()}
+    options = {option.choice: option for option in FinishUpRuntime(cwd=tmp_path).provider_options()}
 
     missing = sorted(set(PROVIDER_PRESETS) - set(options))
     assert missing == [], f"presets without a picker entry: {missing}"
@@ -269,8 +277,8 @@ def test_every_reviewed_provider_preset_gets_a_friendly_picker_label(tmp_path: P
 def test_secure_storage_probe_names_the_reason_from_the_vault_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.keys import os_keyring
-    from yoetz.tui import runtime as runtime_module
+    from finishup.adapters.keys import os_keyring
+    from finishup.tui import runtime as runtime_module
 
     monkeypatch.setattr(
         os_keyring,
@@ -284,18 +292,18 @@ def test_secure_storage_probe_names_the_reason_from_the_vault_allowlist(
 
     assert available is False
     assert "keyring.backends.null.Keyring" in reason
-    assert reason.endswith("Yoetz needs macOS Keychain")
+    assert reason.endswith("FinishUP needs macOS Keychain")
 
 
 def test_host_entries_report_platform_sandbox_and_storage_without_mutating(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.version as version_module
-    from yoetz.adapters import check_sandbox
-    from yoetz.adapters.keys import os_keyring
-    from yoetz.ports.check_sandbox import CheckSandboxAvailability, CheckSandboxStatus
-    from yoetz.tui import runtime as runtime_module
-    from yoetz.tui.models import LayerState
+    import finishup.version as version_module
+    from finishup.adapters import check_sandbox
+    from finishup.adapters.keys import os_keyring
+    from finishup.ports.check_sandbox import CheckSandboxAvailability, CheckSandboxStatus
+    from finishup.tui import runtime as runtime_module
+    from finishup.tui.models import LayerState
 
     monkeypatch.setattr(version_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(version_module.platform, "machine", lambda: "aarch64")
@@ -321,7 +329,9 @@ def test_host_entries_report_platform_sandbox_and_storage_without_mutating(
     assert by_key["check_sandbox"].detail.startswith("bwrap_missing")
     assert "apt install bubblewrap" in by_key["check_sandbox"].remediation
     assert by_key["secure_storage"].state is LayerState.NOT_CONFIGURED
-    assert by_key["secure_storage"].detail == "no credential store is loaded; Yoetz needs a store"
+    assert (
+        by_key["secure_storage"].detail == "no credential store is loaded; FinishUP needs a store"
+    )
     assert "passphrase" in by_key["secure_storage"].remediation
 
     ready = CheckSandboxAvailability(CheckSandboxStatus.READY, "seatbelt", "ready", "")
@@ -344,10 +354,10 @@ def test_host_entries_report_platform_sandbox_and_storage_without_mutating(
 async def test_integration_preview_uses_activation_home_for_mcp(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.adapters.integrations import codex_mcp
-    from yoetz.cli import setup
-    from yoetz.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
-    from yoetz.tui.runtime import RuntimeError_
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.cli import setup
+    from finishup.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
+    from finishup.tui.runtime import RuntimeError_
 
     selected = tmp_path / "selected"
     resolved = tmp_path / "resolved"
@@ -366,18 +376,46 @@ async def test_integration_preview_uses_activation_home_for_mcp(
 
     monkeypatch.setattr(setup, "codex_activation_preview", activation)
     monkeypatch.setattr(codex_mcp, "CodexMcpAdapter", StopAtPreview)
-    runtime = YoetzRuntime(cwd=tmp_path)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     with pytest.raises(RuntimeError_):
         await runtime.integration_plan(CLI, selected, "strict")
     assert seen == [resolved]
 
 
+async def test_the_codex_integration_preview_refuses_a_runtime_that_cannot_serve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The first-run and ``/connect`` Codex path previews nothing for such a runtime."""
+
+    from finishup.adapters import release_runtime
+    from finishup.cli import setup
+    from finishup.tui.runtime import RuntimeError_
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+
+    def no_preview(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("previewed a registration for a runtime that cannot serve")
+
+    monkeypatch.setattr(setup, "codex_activation_preview", no_preview)
+    runtime = FinishUpRuntime(cwd=tmp_path)
+    with pytest.raises(RuntimeError_) as refused:
+        await runtime.integration_plan(CLI, tmp_path / "codex-home", "strict")
+    assert refused.value.reason == "release_runtime_not_owned"
+    assert any(
+        "must belong to the account running FinishUP" in line for line in refused.value.details
+    )
+
+
 def _isolated_observation_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> tuple[YoetzRuntime, Path]:
+) -> tuple[FinishUpRuntime, Path]:
     """Point the runtime's store at an isolated state root, never the live install."""
 
-    from yoetz.adapters.integrations import observation_local
+    from finishup.adapters.integrations import observation_local
 
     real_store = observation_local.LocalObservationStore
     state = tmp_path / "isolated"
@@ -388,7 +426,7 @@ def _isolated_observation_store(
         return real_store(_state=state)
 
     monkeypatch.setattr(observation_local, "LocalObservationStore", isolated_store)
-    return YoetzRuntime(cwd=workspace), state
+    return FinishUpRuntime(cwd=workspace), state
 
 
 async def test_capacity_preview_and_apply_persist_the_workspace_selection(
@@ -396,8 +434,8 @@ async def test_capacity_preview_and_apply_persist_the_workspace_selection(
 ) -> None:
     """The TUI changes the workspace selection only, through the owning preview/apply path."""
 
-    from yoetz.adapters.integrations.observation_local import LocalObservationStore
-    from yoetz.domain.observation_budget import CapacityRequest, ObservationCapacity
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.domain.observation_budget import CapacityRequest, ObservationCapacity
 
     runtime, state = _isolated_observation_store(monkeypatch, tmp_path)
     request = CapacityRequest.for_capacity(ObservationCapacity(1_024))
@@ -437,8 +475,8 @@ async def test_capacity_paths_refuse_a_workspace_the_command_line_refuses(
 ) -> None:
     """A root the CLI's canonicalization rejects is refused here too, never hashed raw."""
 
-    from yoetz.domain.observation_budget import CapacityRequest, ObservationCapacity
-    from yoetz.tui.runtime import RuntimeError_
+    from finishup.domain.observation_budget import CapacityRequest, ObservationCapacity
+    from finishup.tui.runtime import RuntimeError_
 
     runtime, _state = _isolated_observation_store(monkeypatch, tmp_path)
     runtime.project_root().chmod(0o777)
@@ -461,8 +499,8 @@ async def test_capacity_paths_refuse_a_workspace_the_command_line_refuses(
 async def test_capacity_apply_refuses_a_stale_digest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.domain.observation_budget import CapacityRequest, ObservationCapacity
-    from yoetz.tui.runtime import RuntimeError_
+    from finishup.domain.observation_budget import CapacityRequest, ObservationCapacity
+    from finishup.tui.runtime import RuntimeError_
 
     runtime, _state = _isolated_observation_store(monkeypatch, tmp_path)
     request = CapacityRequest.for_capacity(ObservationCapacity(2_048))
@@ -476,9 +514,9 @@ async def test_capacity_apply_refuses_a_stale_digest(
 async def test_capacity_no_cap_is_a_typed_outcome_that_changes_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.adapters.integrations.observation_local import LocalObservationStore
-    from yoetz.domain.observation_budget import CapacityRequest
-    from yoetz.tui.runtime import ObservationCapacityUnavailable
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.domain.observation_budget import CapacityRequest
+    from finishup.tui.runtime import ObservationCapacityUnavailable
 
     runtime, state = _isolated_observation_store(monkeypatch, tmp_path)
 
@@ -486,7 +524,7 @@ async def test_capacity_no_cap_is_a_typed_outcome_that_changes_nothing(
         await runtime.preview_observation_selection(CapacityRequest("no_cap", None))
 
     assert raised.value.reason == "capacity_no_cap_unsupported"
-    assert raised.value.lines[0].startswith("No Yoetz cap is not available")
+    assert raised.value.lines[0].startswith("No FinishUP cap is not available")
     assert "--capacity largest" in raised.value.alternative_command
     assert "--workspace <workspace>" in raised.value.alternative_command
     store = LocalObservationStore(_state=state)

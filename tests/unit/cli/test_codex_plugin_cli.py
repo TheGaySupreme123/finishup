@@ -8,16 +8,16 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup.adapters.integrations.codex_marketplace import (
     ActivationInspection,
     ActivationState,
     RemovalOutcome,
     RemovalPreview,
     RemovalResult,
 )
-from yoetz.cli.app import app
-from yoetz.ports.harness_mcp import HarnessBinary
-from yoetz.ports.integrations import HarnessId, IntegrationError, IntegrationReason
+from finishup.cli.app import app
+from finishup.ports.harness_mcp import HarnessBinary
+from finishup.ports.integrations import HarnessId, IntegrationError, IntegrationReason
 
 _RUNNER = CliRunner()
 _DIGEST = "sha256:" + "a" * 64
@@ -40,14 +40,14 @@ def _preview(home: Path, executable: Path) -> RemovalPreview:
         codex_version="0.148.0-alpha.6",
         codex_home=home,
         probe_command=("--version",),
-        inventory_command=("plugin", "list", "--marketplace", "yoetz", "--json"),
-        plugin_remove_command=("plugin", "remove", "yoetz@yoetz", "--json"),
-        marketplace_remove_command=("plugin", "marketplace", "remove", "yoetz", "--json"),
+        inventory_command=("plugin", "list", "--marketplace", "finishup", "--json"),
+        plugin_remove_command=("plugin", "remove", "finishup@finishup", "--json"),
+        marketplace_remove_command=("plugin", "marketplace", "remove", "finishup", "--json"),
         probe_environment="temporary_owner_private_home",
         activation_environment=(("CODEX_HOME", str(home)), ("CODEX_TESTING_HOME", str(home))),
         marketplace_preimage_digest="sha256:" + "c" * 64,
         config_preimage_digest="sha256:" + "d" * 64,
-        config_toml_block='[marketplaces.yoetz]\nsource_type = "local"\n',
+        config_toml_block='[marketplaces.finishup]\nsource_type = "local"\n',
     )
 
 
@@ -64,7 +64,7 @@ def test_codex_plugin_cli_preserves_symlinked_project_root_for_adapter_rejection
     executable.write_text("#!/bin/sh\nprintf 'codex-cli 0.149.1\\n'\n", encoding="utf-8")
     executable.chmod(0o700)
 
-    import yoetz.cli.codex_plugin as module
+    import finishup.cli.codex_plugin as module
 
     target = module._target(project_link)  # pyright: ignore[reportPrivateUsage]
     assert Path(target.project_root) == project_link.absolute()
@@ -100,7 +100,7 @@ def test_codex_plugin_cli_preview_status_and_remove(
             False,
         )
 
-    import yoetz.cli.codex_plugin as module
+    import finishup.cli.codex_plugin as module
 
     monkeypatch.setattr(module, "discover_codex_binaries", fake_discover)
     monkeypatch.setattr(module, "preview_removal", fake_preview)
@@ -158,7 +158,7 @@ def test_codex_plugin_cli_names_remove_refused_conflict(
     def refuse(*_args: object, **_kwargs: object) -> RemovalPreview:
         raise IntegrationError(IntegrationReason.REMOVE_REFUSED, {"conflict": "cache"})
 
-    import yoetz.cli.codex_plugin as module
+    import finishup.cli.codex_plugin as module
 
     monkeypatch.setattr(module, "discover_codex_binaries", fake_discover)
     monkeypatch.setattr(module, "preview_removal", refuse)
@@ -192,7 +192,7 @@ def test_codex_plugin_cli_status_reports_foreign_without_previewing_removal(
     def absent_skill(_target: object) -> str:
         return "absent"
 
-    import yoetz.cli.codex_plugin as module
+    import finishup.cli.codex_plugin as module
 
     monkeypatch.setattr(module, "discover_codex_binaries", fake_discover)
     monkeypatch.setattr(module, "inspect_activation", foreign_inspection)
@@ -223,7 +223,7 @@ def test_codex_plugin_cli_remove_requires_exact_preview_acceptance(
     def fake_preview(*_args: object, **_kwargs: object) -> RemovalPreview:
         return preview
 
-    import yoetz.cli.codex_plugin as module
+    import finishup.cli.codex_plugin as module
 
     monkeypatch.setattr(module, "discover_codex_binaries", fake_discover)
     monkeypatch.setattr(module, "preview_removal", fake_preview)

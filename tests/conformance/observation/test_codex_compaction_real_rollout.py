@@ -3,7 +3,7 @@
 ``tests/fixtures/codex/rollout-compaction-0.159.3.jsonl`` is a trimmed slice of a real tb4n3
 Codex 0.159.3 rollout (sglang S): four commands, a ``compacted`` record with its
 ``ContextCompaction`` item, then eleven more commands, the last a failing ``pytest`` (exit 1),
-with code-mode cells and Yoetz MCP calls in between. Output bodies, diffs, instructions and MCP
+with code-mode cells and FinishUP MCP calls in between. Output bodies, diffs, instructions and MCP
 arguments are stripped; ids, command argv, exit codes, record types, order and timestamps are the
 recorded ones. ``builders.codex_rollout_replay`` rebuilds the hooks Codex fired around each nested
 item and drives them, the rollout and the outbox through the real coordinator into a task ledger,
@@ -25,7 +25,7 @@ import pytest
 from builders.codex_replay import Replay
 from builders.codex_replay import replay_cell as replay_cell  # noqa: F401  (registers ``replay``)
 from builders.codex_rollout_replay import command_items, drive_rollout, summarize, tool_item
-from yoetz.domain.events import AcceptedEvent
+from finishup.domain.events import AcceptedEvent
 
 _ROLLOUT = (
     Path(__file__).resolve().parents[2] / "fixtures" / "codex" / "rollout-compaction-0.159.3.jsonl"
@@ -93,7 +93,9 @@ async def test_recorded_cells_pair_on_call_id_and_hooked_cells_stay_local(replay
 
     On 98f62af this slice delivered every one of its 28 cell outputs as an
     ``Unpaired observed tool result`` with no tool identity, which the later-material rule counts
-    as ``other``. Now only the cells that ran no nested tool at all keep a wrapper record.
+    as ``other``. After #1038 only the cells that ran no nested tool at all kept a wrapper record;
+    since the tb4n5 owner decision (ADR-029 amendment of 2026-10-13) a cell with no observable tool
+    call, in a session whose rollout records tool items, is no workspace activity and keeps none.
     """
 
     records = _records()
@@ -108,4 +110,5 @@ async def test_recorded_cells_pair_on_call_id_and_hooked_cells_stay_local(replay
     descriptions = [str(getattr(row.payload, "description", "")) for row in observed]
     assert not [text for text in descriptions if text.startswith("Unpaired observed tool result")]
     wrappers = [text for text in descriptions if "(tool exec)" in text]
-    assert len(wrappers) == _itemless_cells(records) == 3
+    assert _itemless_cells(records) == 3
+    assert wrappers == []

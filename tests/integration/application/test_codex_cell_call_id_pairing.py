@@ -1,9 +1,9 @@
-"""Codex 0.159.3 code-mode cells pair on ``call_id``, so Yoetz's own cells never bound a receipt (#1038).
+"""Codex 0.159.3 code-mode cells pair on ``call_id``, so FinishUP's own cells never bound a receipt (#1038).
 
 Codex 0.159.3 names every response-item row itself (``custom_tool_call`` ``id: ctc_...``, its output
 ``id: ctco_...``) beside the ``call_id`` the two rows share. Pairing on ``id`` never joined a cell's
 output to its call: the output was delivered as an unpaired result with no tool identity, the #917
-hold never applied, and ``later_material`` read the agent's own ``mcp__yoetz__*`` cells as ``other``.
+hold never applied, and ``later_material`` read the agent's own ``mcp__finishup__*`` cells as ``other``.
 In tb4n4's deterministic arm that kept ``check_current_as_of_earlier_frontier`` on 35 of 60 final
 receipts. These replays drive 0.159.3-shaped rows (both ids, as the recorded slice
 ``tests/fixtures/codex/rollout-compaction-0.159.3.jsonl`` carries them) through the real hook
@@ -30,11 +30,11 @@ from builders.codex_replay import (
     sweep_all,
 )
 from builders.observed_runs import ObservedLedger
-from yoetz.domain.events import AcceptedEvent, ActionRecordedPayload, EventPayload, LedgerRecord
-from yoetz.domain.observation import ObservationGapCode, ObservationSource
-from yoetz.domain.values import EventId
-from yoetz.kernel.later_material import classify_later_material, counted_later_material
-from yoetz.kernel.reducers import replay as replay_ledger
+from finishup.domain.events import AcceptedEvent, ActionRecordedPayload, EventPayload, LedgerRecord
+from finishup.domain.observation import ObservationGapCode, ObservationSource
+from finishup.domain.values import EventId
+from finishup.kernel.later_material import classify_later_material, counted_later_material
+from finishup.kernel.reducers import replay as replay_ledger
 
 pytestmark = pytest.mark.anyio
 
@@ -48,10 +48,10 @@ def _ids(n: int) -> tuple[str, str, str]:
     return f"call_cell{n:02d}", f"ctc_cell{n:02d}", f"ctco_cell{n:02d}"
 
 
-def _yoetz_cell(
+def _finishup_cell(
     cell: _Replay, n: int, tool: str, timestamp: str, *, read_after_hooks: bool = False
 ) -> None:
-    """One code-mode cell whose only nested call is ``tools.mcp__yoetz__<tool>``.
+    """One code-mode cell whose only nested call is ``tools.mcp__finishup__<tool>``.
 
     By default the reader sees the cell's call before its nested hooks fire (each hook triggers
     its own reconcile), as on an idle host. ``read_after_hooks`` writes the whole cell first, so
@@ -60,11 +60,11 @@ def _yoetz_cell(
     """
 
     call_id, ctc, ctco = _ids(n)
-    name = f"mcp__yoetz__{tool}"
+    name = f"mcp__finishup__{tool}"
     tool_input: dict[str, Any] = {"request_id": f"req_public_{n}"}
     rows = (
         exec_cell(call_id, f"await tools.{name}({{}});\n", timestamp, item_id=ctc),
-        mcp_tool_call(f"exec-yoetz-{n:02d}", tool, timestamp),
+        mcp_tool_call(f"exec-finishup-{n:02d}", tool, timestamp),
         exec_cell_output(call_id, '{"ok":true}', timestamp, item_id=ctco),
     )
     if read_after_hooks:
@@ -154,7 +154,7 @@ async def _checked(cell: _Replay) -> int:
     """Run the session up to and including a code-mode ``check``; return the ledger boundary."""
 
     session_start(cell, cli_version=_VERSION)
-    _yoetz_cell(cell, 1, "check", "2026-10-09T08:43:39.717Z")
+    _finishup_cell(cell, 1, "check", "2026-10-09T08:43:39.717Z")
     await sweep_all(cell)
     return len(_observed_ledger(cell).records)
 
@@ -166,15 +166,19 @@ async def test_own_cells_after_the_check_do_not_bound_the_receipt(
     replay: _Replay, read_after_hooks: bool
 ) -> None:
     boundary = await _checked(replay)
-    _yoetz_cell(replay, 2, "status", "2026-10-09T08:44:45.674Z", read_after_hooks=read_after_hooks)
-    _yoetz_cell(replay, 3, "status", "2026-10-09T08:49:22.029Z", read_after_hooks=read_after_hooks)
+    _finishup_cell(
+        replay, 2, "status", "2026-10-09T08:44:45.674Z", read_after_hooks=read_after_hooks
+    )
+    _finishup_cell(
+        replay, 3, "status", "2026-10-09T08:49:22.029Z", read_after_hooks=read_after_hooks
+    )
     replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
     recorder = await sweep_all(replay)
 
     stream = [e for e in recorder.delivered if e.source is ObservationSource.CODEX_SESSION_STREAM]
     # Every cell output paired with its call: none is an orphan without a tool identity.
     assert not any(ObservationGapCode.UNPAIRED_EVENT.value in e.gap_codes for e in stream)
-    # The cells' record is their nested Yoetz calls: no wrapper reaches the ledger.
+    # The cells' record is their nested FinishUP calls: no wrapper reaches the ledger.
     assert not any(e.structural_payload.get("tool_name") == "exec" for e in stream)
     records, later = _after_check(replay, boundary)
     assert later, "the later cells must have reached the ledger"
@@ -183,7 +187,7 @@ async def test_own_cells_after_the_check_do_not_bound_the_receipt(
 
 async def test_a_post_check_workspace_edit_still_makes_the_check_stale(replay: _Replay) -> None:
     boundary = await _checked(replay)
-    _yoetz_cell(replay, 2, "status", "2026-10-09T08:44:45.674Z")
+    _finishup_cell(replay, 2, "status", "2026-10-09T08:44:45.674Z")
     _patch_cell(replay, 3, "2026-10-09T08:49:53.093Z")
     replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
     await sweep_all(replay)
@@ -200,7 +204,7 @@ async def test_a_post_check_workspace_edit_still_makes_the_check_stale(replay: _
 
 
 async def test_a_cell_that_also_ran_a_command_keeps_its_own_record(replay: _Replay) -> None:
-    """Only a cell whose every nested call is Yoetz's own is Yoetz's own; a mixed cell is not."""
+    """Only a cell whose every nested call is FinishUP's own is FinishUP's own; a mixed cell is not."""
 
     boundary = await _checked(replay)
     call_id, ctc, ctco = _ids(2)
@@ -208,11 +212,11 @@ async def test_a_cell_that_also_ran_a_command_keeps_its_own_record(replay: _Repl
     replay.append(
         exec_cell(
             call_id,
-            "await tools.mcp__yoetz__status({});\n",
+            "await tools.mcp__finishup__status({});\n",
             "2026-10-09T08:45:00.000Z",
             item_id=ctc,
         ),
-        mcp_tool_call("exec-yoetz-02", "status", "2026-10-09T08:45:00.100Z"),
+        mcp_tool_call("exec-finishup-02", "status", "2026-10-09T08:45:00.100Z"),
         rollout_row(
             "event_msg",
             {
@@ -254,21 +258,21 @@ async def test_a_cell_that_also_ran_a_command_keeps_its_own_record(replay: _Repl
     [(None, True), ("github", False), ("ci__bot", False)],
     ids=["server-less", "another-server", "unscopable-server"],
 )
-async def test_a_server_less_yoetz_item_keeps_its_cell_yoetz_own(
+async def test_a_server_less_finishup_item_keeps_its_cell_finishup_own(
     replay: _Replay, server: str | None, own: bool
 ) -> None:
     """An ``McpToolCall`` without a ``server`` is named by its tool alone (``status``).
 
-    The later-material rule reads that bare Yoetz name as Yoetz's own call, so the cell reads it
+    The later-material rule reads that bare FinishUP name as FinishUP's own call, so the cell reads it
     alike: its output adds no ``exec`` action. Another server's ``status`` is named
-    ``mcp__github__status`` and is not Yoetz's, so its cell keeps its own record; so does one
+    ``mcp__github__status`` and is not FinishUP's, so its cell keeps its own record; so does one
     under a server the reader cannot fold into that spelling (``ci__bot``), which names no tool.
     The nested hooks land only after the whole cell was written, so hook timing decides nothing.
     """
 
     boundary = await _checked(replay)
     call_id, ctc, ctco = _ids(2)
-    hooked = f"mcp__{server or 'yoetz'}__status"
+    hooked = f"mcp__{server or 'finishup'}__status"
     tool_input = {"request_id": "req_public_2"}
     replay.append(
         exec_cell(

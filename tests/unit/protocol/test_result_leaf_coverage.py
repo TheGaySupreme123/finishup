@@ -16,7 +16,7 @@ from typing import Annotated, Union, cast, get_args, get_origin
 import pytest
 from pydantic.fields import FieldInfo
 
-import yoetz.protocol.models as models
+import finishup.protocol.models as models
 
 _STATUS_VIEW_BY_PAGE_MODEL = {
     "StatusAdvicePageModel": "advice",

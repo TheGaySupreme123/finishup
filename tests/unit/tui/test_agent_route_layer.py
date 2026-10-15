@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from yoetz.tui.models import LayerState, PrivacyPosture, ProviderPosture
-from yoetz.tui.runtime import YoetzRuntime
+from finishup.tui.models import LayerState, PrivacyPosture, ProviderPosture
+from finishup.tui.runtime import FinishUpRuntime
 
 
 def _provider(**overrides: object) -> ProviderPosture:
@@ -26,13 +26,13 @@ _PRIVACY = PrivacyPosture(profile="assisted_review", llm_inference_enabled=True,
 
 
 def _layer(provider: ProviderPosture) -> LayerState:
-    runtime = YoetzRuntime()
+    runtime = FinishUpRuntime()
     layers = runtime._provider_layers(provider, _PRIVACY)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     return next(layer for layer in layers if layer.key == "agent_route_review_ready").state
 
 
 def _detail(provider: ProviderPosture) -> str:
-    runtime = YoetzRuntime()
+    runtime = FinishUpRuntime()
     layers = runtime._provider_layers(provider, _PRIVACY)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     return next(layer for layer in layers if layer.key == "agent_route_review_ready").detail
 
@@ -46,13 +46,13 @@ def test_a_strict_registration_is_reported_without_calling_the_install_unready()
 
     provider = _provider(agent_route_semantic_ready=False, registered_route_profile="strict")
 
-    runtime = YoetzRuntime()
+    runtime = FinishUpRuntime()
     layers = runtime._provider_layers(provider, _PRIVACY)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     by_key = {layer.key: layer.state for layer in layers}
 
     assert by_key["semantic_review_ready"] is LayerState.VERIFIED
     assert by_key["agent_route_review_ready"] is LayerState.NOT_CONFIGURED
-    assert "yoetz integrate codex mcp preview" in _detail(provider)
+    assert "finishup integrate codex mcp preview" in _detail(provider)
 
 
 def test_a_policy_registration_reports_the_route_as_ready() -> None:
@@ -70,7 +70,7 @@ def test_an_unread_registration_is_unknown_rather_than_a_blocker() -> None:
 
 
 def _admission_layer(provider: ProviderPosture) -> tuple[LayerState, str]:
-    runtime = YoetzRuntime()
+    runtime = FinishUpRuntime()
     layers = runtime._provider_layers(provider, _PRIVACY)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     layer = next(layer for layer in layers if layer.key == "host_admission")
     return layer.state, layer.detail
@@ -96,7 +96,7 @@ def test_host_admission_is_its_own_layer_and_names_each_host() -> None:
     )
     state, detail = _admission_layer(absent)
     assert state is LayerState.NOT_CONFIGURED
-    assert "yoetz integrate <host> admission preview" in detail
+    assert "finishup integrate <host> admission preview" in detail
 
     unreadable = _provider(host_admission=(("claude", "unknown"), ("codex", "absent")))
     assert _admission_layer(unreadable)[0] is LayerState.UNKNOWN
@@ -130,12 +130,12 @@ def test_genuine_strict_route_keeps_terminal_detail() -> None:
 
     provider = _provider(agent_route_semantic_ready=False, registered_route_profile="strict")
     assert _detail(provider) == (
-        "registered on the strict route; 'yoetz integrate codex mcp preview' to change it"
+        "registered on the strict route; 'finishup integrate codex mcp preview' to change it"
     )
 
 
 def _advice_layer(provider: ProviderPosture) -> tuple[LayerState, str]:
-    runtime = YoetzRuntime()
+    runtime = FinishUpRuntime()
     layers = runtime._provider_layers(provider, _PRIVACY)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     layer = next(layer for layer in layers if layer.key == "background_advice")
     return layer.state, layer.detail

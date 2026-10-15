@@ -8,18 +8,18 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as observation_local
-import yoetz.cli.observe as observe_cli
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import setup
-from yoetz.domain.observation import ObservationRevokeCommand
-from yoetz.domain.observation_profiles import (
+import finishup.adapters.integrations.observation_local as observation_local
+import finishup.cli.observe as observe_cli
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import setup
+from finishup.domain.observation import ObservationRevokeCommand
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.tui.models import LayerState
-from yoetz.tui.runtime import YoetzRuntime
+from finishup.protocol.canonical import JsonValue
+from finishup.tui.models import LayerState
+from finishup.tui.runtime import FinishUpRuntime
 
 _CLAUDE = CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
 _CURSOR = CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
@@ -182,7 +182,7 @@ def test_setup_summary_names_the_content_arms_consent_kept(
 
 
 def test_terminal_interface_consent_layer_names_the_kept_arms(tmp_path: Path) -> None:
-    runtime = YoetzRuntime(cwd=tmp_path)
+    runtime = FinishUpRuntime(cwd=tmp_path)
 
     def consent_layer(profiles: list[str]) -> tuple[LayerState, str]:
         outcome = runtime._integration_outcome(  # pyright: ignore[reportPrivateUsage]

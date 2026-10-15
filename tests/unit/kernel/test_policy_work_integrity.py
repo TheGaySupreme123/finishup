@@ -23,7 +23,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -46,7 +46,7 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     FindingOrigin,
@@ -54,31 +54,31 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     SubjectStateRef,
     actor_id,
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     REQUESTED_OUTPUT_ABSENT_FACT,
     CaseGap,
     DeterministicCase,
     render_deterministic_finding_text,
     run_deterministic_policies,
 )
-from yoetz.kernel.policies.work_integrity import (
+from finishup.kernel.policies.work_integrity import (
     WORK_INTEGRITY_POLICY_PACK,
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     ContradictionKey,
     ContradictionRecord,
     DecisionProjectionRecord,
 )
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _NOW = timestamp_from_string("2026-01-01T00:00:00.000Z")
 _DIGEST_A = "sha256:" + "1" * 64
@@ -86,8 +86,8 @@ _DIGEST_B = "sha256:" + "2" * 64
 
 
 def _decision_record(payload: DecisionRecordedPayload) -> DecisionProjectionRecord:
-    from yoetz.domain.events import encode_payload
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
 
     return DecisionProjectionRecord(
         payload=payload,
@@ -407,7 +407,14 @@ def test_absent_requested_output_is_reported_even_when_an_action_names_it() -> N
     assert found[0].basis.required_but_missing_facts == ()
     detail = found[0].candidate.detail
     assert "best-effort artifact" in detail
-    assert "revise" not in found[0].candidate.detail.lower()
+    # Writing the file is the default repair; revising the obligation is never offered as one
+    # (ADR-033 decision 3). The one plan correction is narrow and named (tb4n5 amendment): a file
+    # the request asks for only under a condition the final state does not meet.
+    assert "revise its obligation" not in detail.lower()
+    assert detail.index("Write each requested file") < detail.index("only under a condition")
+    assert "Never write an empty or placeholder file" in detail
+    assert "A file the request asks for unconditionally stays required:" in detail
+    assert "stays requested on the superseded obligation" in detail
 
 
 def test_pre_work_check_reports_no_absent_requested_output() -> None:
@@ -490,7 +497,7 @@ def test_blocked_obligation_raises_no_requested_item_finding() -> None:
     obligation = _open_obligation(1, requested="item-1")
     plan = PlanPublishedPayload(1, "Plan", (obl(1),))
     blocker = DecisionRecordedPayload(
-        statement="yoetz-blocker:credential",
+        statement="finishup-blocker:credential",
         rationale="The registry token is the operator's.",
         authority=actor_id("agt_codex"),
         affected_obligation_ids=(obl(1),),
@@ -683,6 +690,82 @@ def test_action_without_result_requires_later_disjoint_work() -> None:
     assert FindingKind.ACTION_WITHOUT_RESULT in _kinds(trigger)
     latest_only = make_case(actions={act(1): record(unresolved, 1)})
     assert FindingKind.ACTION_WITHOUT_RESULT not in _kinds(latest_only)
+
+
+def _subsequent_work(case: DeterministicCase) -> tuple[tuple[str, ...], ...]:
+    result = run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK)
+    return tuple(
+        tuple(str(ref) for ref in fact.subject_refs)
+        for assessment in result.assessments
+        if assessment.candidate.kind is FindingKind.ACTION_WITHOUT_RESULT
+        for fact in assessment.basis.observed_facts
+        if fact.fact_code == "subsequent_unrelated_work_present"
+    )
+
+
+def test_a_sibling_action_of_the_same_batch_is_not_later_work() -> None:
+    """tb4n5 medical S L95 (owner decision 2026-10-13): one ``publish_work`` batch recorded an
+    edit action, a command action and evidence; the next check raised ``action_without_result``
+    on the edit only because its sibling had a later sequence. 8 of 15 tb4n5 findings were this
+    shape. A sibling in the same batch is never "subsequent unrelated work"."""
+
+    batch = make_case(
+        actions={act(1): record(_action(1, 1), 1), act(2): record(_action(2, 2), 2)},
+        results={res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3)},
+    )
+    assert FindingKind.ACTION_WITHOUT_RESULT in _kinds(batch)  # separate batches: the old rule
+    same = replace(batch, action_batches=((evt(1), evt(2)),))
+    assert FindingKind.ACTION_WITHOUT_RESULT not in _kinds(same)
+
+
+def test_an_unaccounted_action_is_still_raised_once_a_later_batch_moves_on() -> None:
+    """The negative: the result is still owed. The next batch's unrelated work raises it, and
+    the sibling is never named as that later work."""
+
+    case = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 4),
+        },
+        results={
+            res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3),
+            res(3): record(_result(3, 3, ResultOutcome.SUCCESS), 5),
+        },
+        extra_refs=(evt(4),),
+    )
+    batched = replace(case, action_batches=((evt(1), evt(2)),))
+    assert _subsequent_work(batched) == ((str(act(1)), str(act(3))),)
+    # Both siblings unpaired: each is raised by the later batch, never by the other.
+    unpaired = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 4),
+        },
+        results={res(3): record(_result(3, 3, ResultOutcome.SUCCESS), 5)},
+    )
+    assert _subsequent_work(replace(unpaired, action_batches=((evt(1), evt(2)),))) == (
+        (str(act(1)), str(act(3))),
+        (str(act(2)), str(act(3))),
+    )
+
+
+def test_an_unrelated_result_in_the_batch_never_counts_as_the_actions_outcome() -> None:
+    """Evidence, a decision or another action's result in the same batch says nothing about
+    this action: only a result whose ``action_id`` names it links it."""
+
+    case = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 6),
+        },
+        results={res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3)},
+        evidence={evd(1): evidence_record(_evidence(1, None), 4)},
+    )
+    batched = replace(case, action_batches=((evt(1), evt(2)),))
+    assert FindingKind.ACTION_WITHOUT_RESULT in _kinds(batched)
 
 
 @pytest.mark.parametrize(

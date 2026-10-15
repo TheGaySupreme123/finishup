@@ -38,20 +38,22 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [031](ADR-031-check-time-change-capture.md) | The service captures the check-time change as one reviewed object |
 | [032](ADR-032-closure-readiness-checklist-and-material-dependency-coverage.md) | Closure readiness as a checklist, and material-dependency coverage (proposed) |
 | [034](ADR-034-proof-limited-findings-self-verified.md) | Proof-limited findings: the `self_verified` respond disposition |
-| [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route |
+| [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route; the local rule owns action/result pairing (tb4n5) |
 | [041](ADR-041-obligation-status-re-derived-and-refusal-reasons.md) | Obligation status re-derived from current evidence, one obligation version rule, refusals that say why |
 | [043](ADR-043-bounded-agent-facing-text.md) | Bounded agent-facing text: one never-failing composer, and a committed operation never fails on its text |
-| [044](ADR-044-post-compaction-recap.md) | A bounded, sourced recap of Yoetz state when a host resumes after compaction |
+| [044](ADR-044-post-compaction-recap.md) | A bounded, sourced recap of FinishUP state when a host resumes after compaction |
 | [045](ADR-045-derived-facts-history-and-lineage.md) | Derived facts carry history (path-keyed deliverable state) and lineage; canonical command commitments; attempts; binary by content first |
 | [046](ADR-046-one-closure-verdict.md) | One closure verdict: finding and obligation classes with receipt effects, one gap-effect table, a predicted receipt conclusion every surface prints |
 | [047](ADR-047-inspection-check-and-operating-card.md) | The read-only inspection check (`mode: inspect`): what is left and why, what hooks observed, whether evidence links to declared items; no mandatory status read or dry run; an operating card instead of a startup reading list |
+| [048](ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md) | FinishUP rebrand: identifiers frozen under protocol 0.1, legacy Yoetz spellings recognized beside the new ones, the transitional `yoetz` distribution and its one-release alias window |
+| [049](ADR-049-per-conversation-review-mode-and-hybrid-default.md) | Per-task review mode: every task starts local, the agent turns on AI-powered review for a task with one `decision_recorded` 1.1.0 switch, the owner's `conversation_review` setting (hybrid recommended, local only, owner approval, every task), and three first-run answers on the policy route |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.
 
 ## A note on the retired spec tree
 
-Yoetz was built spec-first: every planned file had one Markdown owner at a mirrored path under
+FinishUP was built spec-first: every planned file had one Markdown owner at a mirrored path under
 `specs/`. That tree completed its purpose — all 626 declared files were built — and was retired on
 2026-07-25 rather than maintained as a second copy of a shipped system.
 

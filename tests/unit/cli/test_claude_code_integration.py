@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.cli.claude_code_integration import (
+from finishup.cli.claude_code_integration import (
     _operation_exit_code,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.ports.plugin_artifacts import PluginOperationState
+from finishup.ports.plugin_artifacts import PluginOperationState
 
 
 @pytest.mark.parametrize(

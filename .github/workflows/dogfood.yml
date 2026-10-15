@@ -12,7 +12,7 @@
 # artifact and, when the R2 secrets exist, copied to the bucket for later analysis.
 #
 # Green means "installed and the main paths did not break on this runner". It is not evidence of
-# correctness or usefulness; a native model that ignores Yoetz is recorded, not treated as red,
+# correctness or usefulness; a native model that ignores FinishUP is recorded, not treated as red,
 # unless the strict_agent input is set. Secrets are used only inside the lane process, never
 # written to config, argv, artifacts, or logs (the lane redacts every saved file).
 
@@ -46,7 +46,7 @@ on:
         type: string
         default: latest
       semantic_model:
-        description: Fireworks model for Yoetz's AI-powered review (Responses API, structured judgment).
+        description: Fireworks model for FinishUP's AI-powered review (Responses API, structured judgment).
         required: false
         type: string
         default: accounts/fireworks/models/minimax-m3
@@ -225,7 +225,7 @@ jobs:
 
   # ---------------------------------------------------------------------------------------------
   # lane-wsl — Ubuntu 24.04 under WSL 2 on a Windows Server 2025 runner, one host per job.
-  # Everything Yoetz-related runs inside the distribution as an unprivileged user with a
+  # Everything FinishUP-related runs inside the distribution as an unprivileged user with a
   # run-scoped password; Windows only hosts the runner and uploads the evidence.
   # ---------------------------------------------------------------------------------------------
   lane-wsl:

@@ -1,20 +1,20 @@
 # ADR-033 — Deterministic task facts, explicit blockers, and the Stop-time closure gate
 
-**Status:** Accepted for [issue #977](https://github.com/TheGaySupreme123/yoetz/issues/977). The
+**Status:** Accepted for [issue #977](https://github.com/TheGaySupreme123/finishup/issues/977). The
 owner requested this design-gated work explicitly in the 2026-10-06 session that reviewed TB4 run
 tb4f1; the issue records that acknowledgement. It covers host hook behaviour, the control-request
-structural fields, the work-integrity policy-pack version, and the change to "Yoetz is not an
+structural fields, the work-integrity policy-pack version, and the change to "FinishUP is not an
 enforcement system". It grants no runtime, credential, disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/kernel/task_facts.py`, `src/yoetz/kernel/closure_readiness.py`,
-`src/yoetz/kernel/policies/work_integrity.py`, `src/yoetz/kernel/deterministic_checks.py`,
-`src/yoetz/kernel/observed_failures.py`, `src/yoetz/application/check.py`,
-`src/yoetz/application/check_change.py`, `src/yoetz/adapters/git_change_capture.py`,
-`src/yoetz/adapters/memory/ledger.py`, `src/yoetz/application/observation_materialize.py`,
-`src/yoetz/cli/runtime_facts.py`, `src/yoetz/cli/closure_gate.py`, `src/yoetz/cli/observe_hooks.py`,
-`src/yoetz/kernel/policies/observation_advice.py`, `src/yoetz/service/ready_composition.py`,
-`src/yoetz/domain/observation.py`, `src/yoetz/domain/receipts.py` (`TASK_FACT_GAP_SENTENCES`),
-`src/yoetz/cli/hook_diagnostics.py`, `src/yoetz/mcp/summaries.py` (rejected-outcome hint),
-`src/yoetz/protocol/policy_packs.py`, `src/yoetz/kernel/finding_resolution.py`, the control-request
+**Implemented by:** `src/finishup/kernel/task_facts.py`, `src/finishup/kernel/closure_readiness.py`,
+`src/finishup/kernel/policies/work_integrity.py`, `src/finishup/kernel/deterministic_checks.py`,
+`src/finishup/kernel/observed_failures.py`, `src/finishup/application/check.py`,
+`src/finishup/application/check_change.py`, `src/finishup/adapters/git_change_capture.py`,
+`src/finishup/adapters/memory/ledger.py`, `src/finishup/application/observation_materialize.py`,
+`src/finishup/cli/runtime_facts.py`, `src/finishup/cli/closure_gate.py`, `src/finishup/cli/observe_hooks.py`,
+`src/finishup/kernel/policies/observation_advice.py`, `src/finishup/service/ready_composition.py`,
+`src/finishup/domain/observation.py`, `src/finishup/domain/receipts.py` (`TASK_FACT_GAP_SENTENCES`),
+`src/finishup/cli/hook_diagnostics.py`, `src/finishup/mcp/summaries.py` (rejected-outcome hint),
+`src/finishup/protocol/policy_packs.py`, `src/finishup/kernel/finding_resolution.py`, the control-request
 2.9.0 structural payload, and the work-integrity 0.3.0 pack identity.
 **Relates to:** ADR-019 (completion scope), ADR-022 (observation authorship), ADR-031 (check-time
 change capture), ADR-032 (closure readiness), and issues #909, #910, #913.
@@ -28,10 +28,10 @@ atrx-vep-crispr cleared it by publishing an attempt and never wrote its report. 
 an agent with work left: pretrain-shard-corruption stopped with three open obligations and
 `closure_readiness.state = action_required`, while guidance let it "record the blocker" and the
 result enum had no `blocked` outcome to record. Meanwhile the hooks already saw facts that matter
-for delivery: packages installed into Yoetz's own interpreter, files written outside the
+for delivery: packages installed into FinishUP's own interpreter, files written outside the
 workspace, verification run only as root.
 
-The owner's direction: deterministic Yoetz makes few judgments but must calculate and surface facts
+The owner's direction: deterministic FinishUP makes few judgments but must calculate and surface facts
 the agent can act on; self-generated evidence stays admissible (that is a deliberate difference
 from AI-powered review); blockers are acceptable only when outside the agent's control; and the
 agent must not be able to stop silently with known work left.
@@ -116,7 +116,9 @@ agent must not be able to stop silently with known work left.
    change (tb4n1: `/app/src` with four new files was reported unchanged and `/app` outside; #987).
    A file that does not exist, and is not a tracked file the change deletes, raises
    `requested_item_never_attempted` with the fact `requested_output_absent`, whatever was
-   published: naming a file in `attempted_items` does not create it. It is raised only once a
+   published: naming a file in `attempted_items` does not create it (a file the request asks for
+   only under a condition is runtime behavior, corrected in the plan, not the deliverable: see the
+   tb4n5 amendment on conditional outputs). It is raised only once a
    completion claim covers that obligation (it names it, or names no obligation), or acting has
    started and one of the agent's own `edit`, `command` or `other` actions is attributed to it
    (an action with no `obligation_refs` is global; hook-observed actions name no obligation and
@@ -198,13 +200,14 @@ agent must not be able to stop silently with known work left.
    `test`, `lint`, `typecheck` or `build`, or any published action. Investigation commands
    (exploration, version control, and the unclassified `other`/`compound` shells) are not acting. Its repair text no longer
    offers "or revise its obligation" as the default exit; an absent output's text asks for a
-   best-effort artifact and names the blocker form. These rule changes move the work-integrity pack
+   best-effort artifact and names the blocker form, and (tb4n5 amendment) names the one plan
+   correction for a conditional output. These rule changes move the work-integrity pack
    to `0.3.0`; earlier versions stay decodable and form one lineage.
 4. **Blockers are explicit and closed.** A readable, unsuperseded `decision_recorded` whose
-   statement holds the exact line `yoetz-blocker:<kind>`, for a kind in `authority`, `consent`,
+   statement holds the exact line `finishup-blocker:<kind>`, for a kind in `authority`, `consent`,
    `credential`, `dependency_unavailable`, records that the obligations in its
    `affected_obligation_ids` are blocked by something outside the agent's control. No event schema
-   changes (the same marker pattern as `yoetz-no-material-work`). Yoetz cannot verify the claim:
+   changes (the same marker pattern as `finishup-no-material-work`). FinishUP cannot verify the claim:
    it honours it and discloses it. Readiness reports open obligations that are all so named as the
    standing `obligation_blocked_outside_agent_control` instead of `obligations_open`; their
    requested items raise no never-attempted or absent-output finding; the Stop gate does not list
@@ -239,7 +242,7 @@ agent must not be able to stop silently with known work left.
    `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten` (amendment),
    `closure_gate_not_required`, `closure_gate_repeat_suppressed`,
    `closure_gate_turn_end_after_continue` (first recorded as `closure_gate_loop_guard`, renamed by
-   the 2026-10-11 amendment), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`,
+   the 2026-10-11 amendment), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `finishup observe status`,
    beside the Stop drain's own `stop_drain_complete` / `stop_drain_incomplete` (#994).
 6. **Per-host delivery.** Codex: `decision: block` with `reason` (its only model-visible Stop
    channel). Claude Code: `hookSpecificOutput.additionalContext` at Stop, the documented non-error
@@ -251,8 +254,8 @@ agent must not be able to stop silently with known work left.
    `write_scope` (`outside_workspace`) and `effective_user` (`root`, `non_root`) to the structural
    payload; the control-request 2.9.0 schema and the domain envelope admit exactly these values.
    Interpreter resolution uses the hook process's `PATH` (the agent's); an interpreter under the
-   hook's own `sys.prefix` is Yoetz's runtime. Every other install is judged against the *task
-   interpreter*: Yoetz records none, so the hook resolves the first `python3` and `python` on that
+   hook's own `sys.prefix` is FinishUP's runtime. Every other install is judged against the *task
+   interpreter*: FinishUP records none, so the hook resolves the first `python3` and `python` on that
    `PATH` outside its own runtime. Environments compare by root (the executable's directory's
    parent, following directory links but never the executable's own link). The task's own
    environment is `system` (no fact); another virtual environment, or any interpreter outside a
@@ -281,7 +284,7 @@ agent must not be able to stop silently with known work left.
    them. Observation advice delivers `install_into_yoetz_runtime`, `install_into_private_env` and
    `write_outside_workspace` once each at the next advice-bearing event (advice only, never a
    ledger finding); observation-advice moves to `0.1.8`.
-8. **"Not an enforcement system" is narrowed, not reversed.** Yoetz still blocks no tool call and
+8. **"Not an enforcement system" is narrowed, not reversed.** FinishUP still blocks no tool call and
    gates no receipt; a check is still not correctness. The one active behaviour is the Stop
    continuation above, bounded to once per frontier and per host turn, honouring declared
    blockers, and never claiming work is incorrect.
@@ -356,7 +359,7 @@ quiet. The owner decided the following, with no prerequisite such as a prior fai
    (`closure_gate_memory_unwritten` when the memory below cannot be written). Nothing judges the
    claim here.
 2. **"Re-confirmed" means the agent stopped again, with no new protocol field.** Once the gate
-   that named a pair is delivered, the hook remembers `<obligation id>:<kind>` for that Yoetz
+   that named a pair is delivered, the hook remembers `<obligation id>:<kind>` for that FinishUP
    session in a second owner-only file (`observation/closure-gate-blockers.json`, at most 64
    keys per session and 128 sessions). The pair is then honoured at every later Stop, whatever the
    frontier. A second Stop, or recording the same blocker again, is the re-confirmation. A
@@ -395,8 +398,8 @@ the hook recorded the loop guard (`closure_gate_loop_guard`, now
 `closure_gate_turn_end_after_continue`) without reading status and the re-check of decision 1
 above never ran. Codex honours repeated Stop blocks within one turn (codex-rs `turn.rs` sets
 `stop_hook_active` once per turn and keeps honouring blocks; its test
-`stop_hook_can_block_multiple_times_in_same_turn` asserts it); the limit was Yoetz's own. The gate
-also fired on receipt-blocking findings the agent could not clear because of Yoetz's own limits,
+`stop_hook_can_block_multiple_times_in_same_turn` asserts it); the limit was FinishUP's own. The gate
+also fired on receipt-blocking findings the agent could not clear because of FinishUP's own limits,
 and its text offered the blocker as the exit. The owner decided:
 
 1. **Active Stops re-ask new blockers, capped.** A Stop the host already continued this turn
@@ -414,22 +417,22 @@ and its text offered the blocker as the exit. The owner decided:
    when an active Stop emitted nothing. A blocker row readiness reports as `confirmation:
    confirmed` (the agent re-published the same line in a later decision) is never re-asked, and
    the readiness token `obligation_blocker_unconfirmed` is a gate item like `obligations_open`.
-   How to confirm a blocker (publish the same `yoetz-blocker` line again in a later decision) is
+   How to confirm a blocker (publish the same `finishup-blocker` line again in a later decision) is
    told only after the challenge: in the re-check, or in a later gate whose blocker was already
    re-asked. The offer that introduces the blocker line never says it, so publishing the line
    twice up front cannot skip the challenge (the kernel rule that a repeat confirms only after
-   the challenge is owned by the blockers change). The re-check tells the agent that a Yoetz
+   the challenge is owned by the blockers change). The re-check tells the agent that a FinishUP
    limit is never a blocker: finish the obligation and disclose any limit in the final answer
    (`self_verified` is for findings only).
-2. **Repair first; a Yoetz limit is never a blocker (#984).** For receipt-blocking findings the
-   text says: repair what you can; for a finding you repaired that Yoetz still cannot prove (its
-   resolution names a Yoetz limit such as redaction, observation loss or a review-packet limit),
+2. **Repair first; a FinishUP limit is never a blocker (#984).** For receipt-blocking findings the
+   text says: repair what you can; for a finding you repaired that FinishUP still cannot prove (its
+   resolution names a FinishUP limit such as redaction, observation loss or a review-packet limit),
    verify it yourself, record that evidence and respond `self_verified` with how you verified it
    and the evidence ids (ADR-034); respond `acknowledged_not_done` only if you truly cannot or will
-   not do it. Every gate says a Yoetz limit is never a `yoetz-blocker`. The blocker sentence, with
+   not do it. Every gate says a FinishUP limit is never a `finishup-blocker`. The blocker sentence, with
    "Data the task says is recoverable is not such a blocker" and the confirmation step, is offered
    only when open obligations (or an unconfirmed blocker) remain, never for a findings-only gate.
-   The text never exceeds Yoetz's 2,000-character bound (its own cap, not a documented host
+   The text never exceeds FinishUP's 2,000-character bound (its own cap, not a documented host
    limit): whole optional sentences are dropped (the drain note first, then the long obligation
    sentence, then the required limitation ids, then the premise ask) and the re-check sentence is
    always kept; it names at most three blocked obligations. A planned-verification hint is a
@@ -471,7 +474,7 @@ and its text offered the blocker as the exit. The owner decided:
 tb4n1 showed three more blocker defects. In the deterministic arm one blocker line on every open
 obligation turned readiness `ready_with_limitations` with nothing left to do although the main
 deliverable was undone (pretrain-shard-corruption, payments-pipeline-fix; both scored 0).
-Thirty-one of 38 blocker attempts named only finished obligations to excuse findings Yoetz could
+Thirty-one of 38 blocker attempts named only finished obligations to excuse findings FinishUP could
 not clear; such a blocker changed nothing yet read as a claim. And the closing review accepted
 every blocker it was shown, including one the task statement contradicted. The owner decisions for
 C2 (challenge a blocker when it is published) and C4/C5 apply:
@@ -480,7 +483,7 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    only *claims* it. It stays agent work: readiness lists the agent-actionable Stop-gate token
    `obligation_blocker_unconfirmed` instead of `obligations_open`, and a claimed blocker
    suppresses no task fact or `requested_item_never_attempted`. It becomes the standing
-   `obligation_blocked_outside_agent_control` only when the same `yoetz-blocker:<kind>` line for
+   `obligation_blocked_outside_agent_control` only when the same `finishup-blocker:<kind>` line for
    that obligation arrives in a later publish batch, which is necessarily after the publish-time
    challenge below (and, if the agent stopped, the Stop re-ask). A repeat in the same batch, two
    lines in one decision, or a dry run never confirms. A later decision of a different kind for
@@ -497,7 +500,7 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    `completion_plan_not_claimed` is disclosed as standing too (C9).
 2. **Publish-time challenge and no-effect notice.** A `publish_work` result, dry runs included,
    carries `blocker_notices` with fixed text per `(obligation, kind)`: `blocker_claimed` (repair
-   first; a Yoetz limit is never a blocker, respond `self_verified`; data the task says is
+   first; a FinishUP limit is never a blocker, respond `self_verified`; data the task says is
    recoverable is not a blocker; how to confirm), `blocker_confirmed`, or
    `blocker_without_effect` for a blocker naming no open obligation. The last is accepted (no
    protocol break) and changes no readiness, gap, finding or receipt section; it points to
@@ -507,14 +510,14 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    tells the reviewer to quote the blocked obligation's own description and evidence expectation
    from its privacy-gated packet item and requires a challenge when the statement says the
    outcome is achievable or the data recoverable, the obvious prerequisite was not attempted, the
-   material contradicts the blocker, or it names a Yoetz or review limit. Being the task's main
+   material contradicts the blocker, or it names a FinishUP or review limit. Being the task's main
    deliverable calls for close scrutiny, not an automatic challenge: a genuine credential or
    authority blocker on it may stand. The question itself carries ids and fixed text only, never the obligation text,
    because questions are not privacy-scanned. A golden question pins the tb4n1 pretrain case.
 4. **Blocker texts agree (#984 F1).** The `requested_item_never_attempted` repair text, the MCP
    outcome hint, the approved-checks continuation, the guidance and the skills all say: repair
-   first; for a Yoetz limit, verify yourself and respond `self_verified`; `acknowledged_not_done`
-   is the last resort; `yoetz-blocker` only for an open obligation genuinely blocked outside your
+   first; for a FinishUP limit, verify yourself and respond `self_verified`; `acknowledged_not_done`
+   is the last resort; `finishup-blocker` only for an open obligation genuinely blocked outside your
    control. Only the `blocker_claimed` notice and the Stop re-check say how to confirm one.
 5. **One clean-compatible gap list (#986 E2).** `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`
    (standing in `GAP_CLASSIFICATION` and tolerated by the deterministic local absence proof,
@@ -541,8 +544,8 @@ Owner-approved 2026-10-07 (issue #995; L5 request D7a under #984).
 1. **Disclosure lines (#995).** tb4n1 agents declared blockers on finished work because a hidden
    verifier or a private trace was out of reach (ks-solver, lake-temp-glm, vpp-loss-divergence), or
    blocked repeatedly on a choice a best-effort assumption could make (cargo-flight-dispatch). A
-   `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
-   `yoetz-verification-limit:<obligation id>` (exact line, well-formed id; the rationale carries
+   `decision_recorded` statement line `finishup-assumption:<obligation id>` or
+   `finishup-verification-limit:<obligation id>` (exact line, well-formed id; the rationale carries
    the text) now records that instead (`task_facts.disclosure_declarations`). It never blocks,
    resolves, or changes an obligation's status; the earliest unsuperseded decision records each
    `(obligation, kind)`, a decision superseded through `supersedes_event_id` withdraws it (as for
@@ -608,8 +611,8 @@ This replaces the earlier statement in this ADR that the receipt cannot apply th
 ## Amendment (2026-10-08): finer stale rule and a gate token for edits after verification (#1018)
 
 ADR-042 refines decisions here without replacing them. An observed edit whose every path is scratch
-(a temporary root outside the workspace) or Yoetz's own material (a saved receipt or export, Yoetz state,
-the packaged Yoetz trees) carries `write_scope` `scratch` or `yoetz_owned` and never advances the
+(a temporary root outside the workspace) or FinishUP's own material (a saved receipt or export, FinishUP state,
+the packaged FinishUP trees) carries `write_scope` `scratch` or `yoetz_owned` and never advances the
 latest edit, so it never makes `planned_verification_stale` or `edited_after_last_verification`
 fire and is not acting. `python -m pytest` and the other verification modules are verification
 runs; an interpreter-run script is never a build by its file name. `edited_after_last_verification`
@@ -649,7 +652,7 @@ impossibility research. The owner decided:
    awaiting a ruling, or beside a withdrawn deliverable, whether or not that Stop names the item (an
    already-continued Stop does not): it then stays unasked and is asked at a later Stop. Its sentence gains the verification-limit branch: when the criteria can only be
    checked outside this environment (a hidden verifier, a withheld artifact) and the agent did the
-   work, keep the obligation resolved and record `yoetz-verification-limit:<obligation id>`; "I
+   work, keep the obligation resolved and record `finishup-verification-limit:<obligation id>`; "I
    could not find it" never qualifies, so the pretrain S rescue is unchanged.
 3. **No invite-then-challenge.** An `acknowledgement` re-check whose `since_frontier` (the frontier
    of the agent's current acknowledgement) is later than the earliest acceptance invite this session
@@ -768,7 +771,7 @@ remediation PR.
    acknowledgement is not its exit), like a withdrawn deliverable.
 2. **The acceptance re-read asks only what the final message did not address (#1050).** tb4n4: the
    re-read fired in 60 of 60 deterministic attempts (61 of 65 continuations); 41 attempts then did
-   only Yoetz bookkeeping and none edited a deliverable (median cost 1.3 minutes, worst 12.9). Its
+   only FinishUP bookkeeping and none edited a deliverable (median cost 1.3 minutes, worst 12.9). Its
    one real value was five honest downgrades of overstated claims. The re-read stays, keyed and
    remembered as in the 2026-10-11 amendment, but where the host's Stop payload carries the agent's
    final message it is asked only for the resolved obligations that message does not address, and
@@ -838,3 +841,190 @@ requested, so the code is no longer recorded for it at all:
    the recorded coverage, so none lists the code for such a check. The check's own result still
    states `semantic_status: not_requested` and the receipt conclusion names deterministic coverage
    only (`no_unresolved_deterministic_findings`). Same on every host.
+
+## Amendment (2026-10-13, tb4n5, issue #1050): the acceptance re-read asks only what the ledger flags
+
+Owner decision of 2026-10-13 (recorded in the tb4n5 follow-ups): re-read only the resolved
+obligations the ledger flags as risky, and delete the word-coverage check. It supersedes item 2's
+rule of the tb4n4 amendment above; the downgrade, verification-limit and once-only confirmation
+paths are kept.
+
+tb4n5 measured the tb4n4 rule: the re-read fired in 18 of 18 attempts and
+`closure_gate_acceptance_covered` was never recorded. Replaying `uncovered_acceptance` on the real
+pre-gate final messages covered 1 of 110 resolved obligations: real final messages (345-742
+characters) summarize results in other words and never cite an obligation id, and real criteria
+are long (a median of 14 terms), so a message reached 0-45% of a criterion's terms against the 2/3
+threshold. No lexical threshold works: at one third of the terms no attempt is fully covered. The
+rule's fixtures were short criteria and near-verbatim restatements.
+
+1. **The service flags; the gate names.** `kernel.acceptance_risk` derives, per request from the
+   projection and its record prefix, which resolved obligations (closure basis `resolved`) the
+   ledger flags, with three closed reasons: `requested_item_never_attempted` (a non-input requested
+   item with no attempt in any spelling and, for a command, no matching hook-observed run: the
+   work-integrity attempt test), `evidence_not_linked_to_declared_items` (it declares deliverables
+   or commands and no cited resolution evidence traces through a recorded link to an action naming
+   one: the inspection's `evidence_off_declared_items` or `evidence_unattributed`, now computed by
+   the shared `kernel.evidence_alignment`), and `evidence_self_asserted_only` (no cited reference
+   is a hook-observed run or its result, observation-captured evidence, an approved check or an
+   import report, and no requested command item has a matching observed attempt).
+   `ClosureReadinessFacts.acceptance_risk_obligation_ids` carries the set; the `acceptance` recheck
+   names only it (rule `resolved_obligations_acceptance_risk`, key `accept:<h8>` over that set, so
+   a changed flagged set asks again) and is absent when nothing is flagged. An unreadable resolved
+   obligation is flagged with every reason (fail closed). A fact set without the list (hand-built,
+   older) keeps every resolved obligation under the old rule token.
+2. **The word-coverage check is deleted.** `uncovered_acceptance`, its token and stopword rules and
+   the bounded `status view=obligations` read at Stop are removed: the gate reads compact status
+   once.
+3. **An explicit per-obligation attestation answers it.** A final message line
+   `finishup-acceptance:<obligation id>:met` (also inline or in a bullet; `:not_met` or any other
+   outcome is not one) for an announced obligation answers the re-read for it. The attestation is
+   bound to the set this Stop's status read announces: an id outside it is ignored, and it counts
+   only when the announced subjects hash to the announced key (at most eight; a longer or older
+   list is asked in full). The gate names only the unattested obligations; a message attesting all
+   of them is not asked and records `closure_gate_acceptance_covered`. The re-read text, and the
+   status directive's re-check note, name the line. An attestation is the agent's statement: it
+   records nothing, never changes a closure class, a finding, a receipt conclusion or coverage, and
+   never suppresses an independent finding or another gate item; a not-met outcome is answered by
+   the downgrade path (republish `acknowledged_not_done`) or the verification-limit decision,
+   unchanged.
+4. **Unchanged.** Keys, memory and once-per-session asking; the exclusions (never beside open
+   obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared
+   dependency); the once-only confirmation sentence where the re-read rides alone; the
+   acknowledgement-after-invite rule. Hosts: the service side is host-independent; Codex and Claude
+   Code pass the final message (attestations read), Cursor's `stop` carries none (every announced
+   obligation asked; issue #1050 owns the `afterAgentResponse` follow-up). Each runbook records it.
+
+Measured on tb4n5 (an approximate replay of the agent-published records before each first gate,
+with observed results and observation-captured evidence from the exports; the kernel's keyed
+command matcher was approximated by the exported command-attempt relation): 12 of 18 attempts and
+40 of 111 resolved obligations would still be asked (21 flagged `evidence_self_asserted_only`, 21
+`evidence_not_linked_to_declared_items`), against 18 of 18 and 110 of 110. Live-database S (every
+resolution self-asserted) is still asked. **Known gap:** formal-crypto S's honest downgrade
+followed a re-read of an obligation whose resolution cited an observed run of the requested
+command with the requested output attempted; the ledger flags nothing there (the shortfall was in
+the output, not in the record), so under this rule that downgrade relies on the closing review and
+the agent's own final answer, not on the gate.
+
+Verification: `tests/unit/kernel/test_tb4n5_acceptance_risk.py` (a clean resolution and one per
+flag in one ledger: the clean one no longer triggers, each flagged one does, the key names exactly
+the flagged set, a clean-only ledger announces none); `tests/unit/cli/test_closure_gate.py`
+(realistic tb4n5 summaries, attestation parsing, partial and stale attestations, a `:not_met`
+answer, the tb4n2 false-completion message, an incomplete list, an older service, absent host
+message per host, no second status read).
+
+Check follow-up (2026-10-13, Codex check D3): `acceptance_risk` runs on every status read, inside
+the Stop gate's 4,000 ms status deadline. The first version resolved every cited evidence id
+against the whole result inventory per obligation (200 resolved obligations, eight evidence refs
+each, 20,003 results: about 4.5 s, 9.1 s on a loaded host). The inventories are now indexed once
+per read (`evidence_alignment.results_by_evidence`, one pass over actions for attempted items, the
+command-attempt fallback only for an obligation that requests a command), and an identical call
+(same projection, prefix, resolved set and command-identity key generation) is answered from a
+one-entry memo; the same shape now takes about 0.02 s. No risk decision changed. Round 2 (check
+D3-R2): each cited reference's source actions are resolved once per read and deduplicated by
+action identity, so 200 obligations sharing eight items, one of them behind 1,000 linked actions
+(21,003 results), take about 0.07 s instead of about 9.3 s.
+`tests/unit/kernel/test_tb4n5_acceptance_risk_cost.py` holds it under one second and counts one
+index build per read.
+
+## Amendment (tb4n5, react-lead-form): a conditional output is corrected in the plan, never by a placeholder
+
+tb4n5/tb4n4 react-lead-form, 5 of 5 FinishUP attempts: the task asked for `incomplete_leads.json`
+only when a contactable lead is incomplete and for `rejected_ledgers.json` only when an existing
+ledger is malformed. Each agent declared both as unconditional `file` outputs; the final input was a
+complete, accepted lead, so neither existed and `requested_output_absent` (decision 2) blocked the
+receipt. The finding offered only "write each requested file", a reasoned `rejected` never rules on
+a deterministic finding, and `self_verified` was refused, so each agent invented an exit: a false
+`acknowledged_not_done` for work it had done (n4 D), an undocumented plan reclassification (n4 S
+twice, n5 S), or deliverable code that wrote empty ledgers on every accepted submit and tests
+rewritten from "absent" to "empty" (n5 D). Owner decision (2026-10-13): document the honest exit; no
+new protocol role.
+
+1. **What distinguishes them.** A `file` item with `role: output` is a promise to deliver that file
+   now. A file the request asks for only under a runtime condition is behavior of the deliverable,
+   not a delivered file: it is modelled as a `change` item whose value names the condition and the
+   path, beside `file` items (`role: output`) for the source files that implement it. The check
+   probes only `file` and `directory` items, so a `change` item is never reported absent.
+2. **The documented correction.** When a conditional output was declared as a `file` and the final
+   state does not meet the condition, the agent publishes a new obligation with the same acceptance
+   criteria modelled as in 1, supersedes the old one with `plan_revised` (`change: superseded`, a
+   reason, `replacement_obligation_ids`), records the work with each new item value in
+   `attempted_items`, resolves the new obligation with its evidence and replaces the completion
+   claim with one naming it. The old obligation leaves the effective plan, so the next qualifying
+   check does not return the issue and resolves the historical finding; nothing waives it
+   and no response resolves it. The `requested_output_absent` detail
+   (`render_deterministic_finding_text`), `workflow.md`, `publication-policy.md`,
+   `request-templates.md` and the operating card name this route, and every one forbids writing an
+   empty or placeholder file, or changing when the deliverable writes the file, to satisfy the
+   declaration. The decision-3 sentence "its repair is the deliverable itself, never a revised
+   obligation" keeps holding for every other absent output.
+3. **The claim follows the plan.** The claim-revision invariant `scope_overlap_required` now counts
+   the replacements a `plan_revised` supersession recorded (the replay-derived
+   `superseded_by_obligation_ids`, transitively) as overlap with the superseded claim's scope, so a
+   claim that named only the corrected obligations can be replaced by one naming only their
+   replacements. A replacement the plan never recorded is still refused. The same ancestry carries
+   failure disclosure (checker review): the claim scope plus every obligation a supersession
+   replaced by one in it, transitively (`claim_limitations.scope_with_supersession_ancestry`), is
+   the scope for admissible `limitation_refs` (always: a relaxation), for
+   `limitation_refs_complete` on a replacement whose overlap with a target exists only through a
+   supersession (the case this change newly admits, so no recorded ledger holds one), and for the
+   work-integrity failed-work relevance read at check time. A failure recorded on the superseded
+   obligation must therefore still be disclosed by the replacement claim, and naming it there is
+   admissible; a fresh claim over the replacement that omits it still replays as before and is
+   reported by the check. Recorded ledgers replay unchanged.
+4. **What does not change, and what a correction cannot drop.** A file the request asks for
+   unconditionally stays required: the replacement obligation that still declares it (or any other
+   obligation that does) raises the same `requested_output_absent`. A requested `file` or
+   `directory` item (role `output` or none) of an obligation a `plan_revised` superseded with
+   replacements stays requested on the superseded obligation
+   (`task_facts.superseded_unnamed_outputs`) unless a replacement, transitively, re-declares it as
+   a `file`/`directory` item that is not `role: input`, or releases it in the documented
+   correction form: a `change` item that spells its declared path (the same path, a longer
+   absolute spelling, or for an absolute declaration its tail with a directory; a bare file name
+   in another directory does not count), names none of the superseded obligation's other requested
+   outputs, states a condition (`when`, `if`, `unless`) and never calls it unconditional. Anything
+   else is ambiguous and keeps it required (checker R2: a basename mentioned in incidental prose,
+   or an output re-declared as an input, released a missing unconditional file). The check probes
+   a kept output and reports it absent exactly as before, so dropping a missing deliverable from
+   the correction does not launder it. A
+   supersession without replacements, and a waiver, are explicit plan decisions outside this rule.
+   `declared_output_removed`, `declared_output_emptied` and the closure gate are unchanged; the gate
+   still says "Do not reshape your work for FinishUP". No event schema, wire field or pack version
+   changes.
+
+Tests: `tests/integration/closure/test_conditional_output_shape.py` (the react shape: two
+conditional ledgers absent on an accepted lead resolve after the correction with no file written;
+an unconditional missing output still blocks; with a real repository, the production workspace
+probe and the real final receipt, the honest correction closes and a correction that drops an
+unconditional missing output reads `unresolved_findings_remain`, as does one whose change item
+mentions it in incidental prose or that re-declares it as an input) and
+`tests/unit/kernel/test_claim_correction_replay.py` (the supersession carries claim scope only to
+recorded replacements, and a failure or partial result on a superseded obligation, one or two
+supersessions back, must still be disclosed and may be).
+
+## Amendment (2026-10-14, issue #1050 follow-up): Cursor is never told to use the acceptance line
+
+The 2026-10-13 amendment left Cursor asking every flagged set, but its text still told the agent
+to end the final answer with `finishup-acceptance:<obligation id>:met`, a line Cursor's `stop`
+payload (status and `loop_count` only) can never carry to the gate.
+
+1. **`afterAgentResponse` is not registered.** Cursor's hook documentation gives it the response
+   text, but Cursor acknowledges that its CLI and Cloud Agents do not dispatch it, and it
+   documents no order between it and `stop`. Registering it would make the line work only on some
+   Cursor surfaces, and would change the advertised Cursor event set (ADR-010) and add a
+   cross-process memory of the attested ids. Revisit when Cursor dispatches it everywhere with a
+   documented order before `stop`.
+2. **Host-aware text, no new record.** The acceptance re-read sentence and the re-check note take
+   the host. On `cursor` they say that Cursor passes FinishUP no final answer, that a met criterion
+   stays resolved and is confirmed in the final answer, and that the re-read is not asked again for
+   the set; that is the existing per-session, per-key memory, so the continued Stop passes and a
+   later Stop with the same flagged set is not asked. The MCP bridge passes its host profile to
+   `closure_prepare` and to the status and `closure_prepare` summary text (so Cursor's summary
+   fallback and a generic bridge follow it too); the CLI and TUI, which do not know the agent's host, name Codex and Claude
+   Code as the hosts that read the line. Codex and Claude Code text is unchanged. No protocol,
+   schema or ledger record changes: a ledger-recorded acceptance answer would need a new event or
+   disposition and is not part of this amendment.
+
+Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the host-aware text),
+`tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host),
+`tests/integration/application/test_closure_composer.py` (the `closure_prepare` host) and
+`tests/unit/mcp/test_tb4n3_closure_verdict_text.py` (the MCP summaries per host).

@@ -26,15 +26,15 @@ from builders.projection_workflow import (
 )
 from builders.review_manifests import provider_bound_manifest
 from builders.start_application import protocol_id, start_request
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.service import Application
-from yoetz.domain.findings import Finding, SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.privacy import ReviewContextProfile
-from yoetz.domain.receipts import SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP
-from yoetz.ports.ledger import CheckCommitResult, FrozenCase
-from yoetz.ports.semantic import SamplingParams, SemanticJudgment
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.service import Application
+from finishup.domain.findings import Finding, SemanticDispatchKind, SemanticProvenance
+from finishup.domain.privacy import ReviewContextProfile
+from finishup.domain.receipts import SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP
+from finishup.ports.ledger import CheckCommitResult, FrozenCase
+from finishup.ports.semantic import SamplingParams, SemanticJudgment
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     SemanticReason,
@@ -188,15 +188,15 @@ async def _check(
 
 
 def _body(result: CheckCommitResult) -> Mapping[str, Any]:
-    from yoetz.application.check import check_internal_json
+    from finishup.application.check import check_internal_json
 
     return check_internal_json(result)  # type: ignore[return-value]
 
 
 async def test_a_plan_time_check_defers_the_review_and_the_first_edit_rearms_it() -> None:
-    from yoetz.cli.render import render_human_check
-    from yoetz.mcp.summaries import summary_for_check
-    from yoetz.protocol.models import CheckSuccessModel, CoverageModel
+    from finishup.cli.render import render_human_check
+    from finishup.mcp.summaries import summary_for_check
+    from finishup.protocol.models import CheckSuccessModel, CoverageModel
 
     seed = 10461
     reviewer = _Reviewer()

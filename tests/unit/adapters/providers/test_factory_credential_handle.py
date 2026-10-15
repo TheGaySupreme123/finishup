@@ -15,18 +15,18 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.providers.factory import external_factory_builders_from_config
-from yoetz.adapters.providers.openai_responses_factory import provider_binding_from_config
-from yoetz.config.models import ProviderProfileConfig
-from yoetz.config.write import anthropic_provider, fireworks_provider
-from yoetz.domain.privacy import ApprovedOutboundCase, DataCategory
-from yoetz.ports.secret_memory import (
+from finishup.adapters.providers.factory import external_factory_builders_from_config
+from finishup.adapters.providers.openai_responses_factory import provider_binding_from_config
+from finishup.config.models import ProviderProfileConfig
+from finishup.config.write import anthropic_provider, fireworks_provider
+from finishup.domain.privacy import ApprovedOutboundCase, DataCategory
+from finishup.ports.secret_memory import (
     ProviderAttemptAuthBinding,
     ProviderAuthTransportCallback,
     ProviderCredentialHandle,
 )
-from yoetz.ports.semantic import ExternalRuntimeAuthority
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.ports.semantic import ExternalRuntimeAuthority
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _DIGEST = "sha256:" + "c" * 64
 
@@ -40,7 +40,7 @@ class _Clock:
 
 
 class _VaultLikeHandle:
-    """Shaped like ``yoetz.service.vault._ProviderHandle``: only ``authorize_attempt``."""
+    """Shaped like ``finishup.service.vault._ProviderHandle``: only ``authorize_attempt``."""
 
     async def authorize_attempt[T](
         self,

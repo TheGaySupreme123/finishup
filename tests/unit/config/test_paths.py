@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from platformdirs import PlatformDirs
 
-from yoetz.config.paths import (
+from finishup.config.paths import (
     PathSafetyError,
     _PathProbe,  # pyright: ignore[reportPrivateUsage]
     ensure_owner_only_dir,
@@ -37,7 +37,7 @@ def _probe(
         home=tmp_path,
         shared_temp=private_temp,
         fixed_shared_temps=(),
-        platform_dirs=PlatformDirs(appname="yoetz", appauthor=False, roaming=False),
+        platform_dirs=PlatformDirs(appname="finishup", appauthor=False, roaming=False),
         mount_table=lambda: mount_table,
         macos_fstype=lambda _path: None,
         diagnostic=lambda _reason: None,
@@ -145,7 +145,7 @@ def test_windows_drive_and_vm_share_transports_are_refused_like_a_network_share(
 ) -> None:
     """WSL 1 (drvfs), WSL 2 (9p), and virtiofs shares proxy locks across a VM boundary (#723)."""
 
-    shared = tmp_path / "mnt" / "c" / "yoetz"
+    shared = tmp_path / "mnt" / "c" / "finishup"
     shared.mkdir(mode=0o700, parents=True)
     escaped = str(tmp_path / "mnt" / "c").replace(" ", "\\040")
     probe = _probe(
@@ -158,6 +158,6 @@ def test_windows_drive_and_vm_share_transports_are_refused_like_a_network_share(
         verify_private_local_bundle(shared, _probe=probe)
     assert error.value.reason_code == "path_on_network_filesystem"
 
-    local = tmp_path / "home" / "yoetz"
+    local = tmp_path / "home" / "finishup"
     local.mkdir(mode=0o700, parents=True)
     verify_private_local_bundle(local, _probe=probe)

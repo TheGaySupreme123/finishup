@@ -15,11 +15,11 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.cli.closure import PREPARATION_REMEDIATIONS, Selection, prepare_closure
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import (
+from finishup.cli.closure import PREPARATION_REMEDIATIONS, Selection, prepare_closure
+from finishup.ports.control import ControlMethod
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -32,7 +32,9 @@ from yoetz.protocol.models import (
 pytestmark = pytest.mark.anyio
 
 
-async def test_composer_paginates_and_requires_explicit_attempt_and_resolution() -> None:
+async def test_composer_paginates_and_requires_explicit_attempt_and_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app, _ = await build_projection_application()
     app = replace(app, status_cursor_key=b"synthetic-closure-cursor-key-32-bytes")
     started = await app.start(start_request(8700, title="Synthetic closure"))
@@ -144,6 +146,23 @@ async def test_composer_paginates_and_requires_explicit_attempt_and_resolution()
     # MCP delegates to the same pinned inventory composer as the CLI; transport identity does not
     # alter the inventory, readiness, or the preparatory-only boundary.
     assert mcp_inventory == inventory
+    # The re-check note is the one host-aware line (#1050 follow-up): the MCP bridge passes its
+    # host profile, so a Cursor agent is never told to answer with a line Cursor cannot deliver;
+    # the CLI does not know its host and names which hosts read it.
+    import finishup.domain.closure as closure_domain
+
+    def tagged(readiness: object, *, host: str | None = None) -> str:
+        return f"re-check note for {host}"
+
+    monkeypatch.setattr(closure_domain, "recheck_note", tagged)
+    cli_default = await prepare_closure(status, started.session_id, started.writer_id, Selection())
+    assert "re-check note for generic" in cast(list[str], cli_default["notes"])
+    for host in ("cursor", "codex"):
+        hosted = await prepare_closure(
+            status, started.session_id, started.writer_id, Selection(), host=host
+        )
+        assert f"re-check note for {host}" in cast(list[str], hosted["notes"])
+    monkeypatch.undo()
     continued = [call for call in calls if call.cursor is not None]
     assert continued and all(
         call.limit == "100" and call.at_frontier == str(frontier.sequence) for call in continued

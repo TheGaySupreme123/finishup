@@ -22,6 +22,13 @@ from typing import Any
 import pytest
 
 from builders.start_application import protocol_id
+from finishup.cli.closure_gate import (
+    ACCEPTANCE_RECHECK_ITEM,
+    PREMISE_RECHECK_ITEM,
+    closure_gate_from_readiness,
+)
+from finishup.domain.findings import FindingKind
+from finishup.protocol.canonical import JsonValue
 from integration.closure.test_closure_shapes import (
     _INSUFFICIENT,
     _UNRESOLVED,
@@ -35,13 +42,6 @@ from integration.closure.test_closure_shapes import (
     assert_surfaces_agree,
     receipt_artifact_1_3_0,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
-from yoetz.cli.closure_gate import (
-    ACCEPTANCE_RECHECK_ITEM,
-    PREMISE_RECHECK_ITEM,
-    closure_gate_from_readiness,
-)
-from yoetz.domain.findings import FindingKind
-from yoetz.protocol.canonical import JsonValue
 
 pytestmark = pytest.mark.anyio
 
@@ -91,7 +91,7 @@ def _limit_decision(run: _Run) -> dict[str, JsonValue]:
     return run.draft(
         "decision_recorded",
         {
-            "statement": f"Cannot be verified here.\nyoetz-verification-limit:{_OBLIGATION}",
+            "statement": f"Cannot be verified here.\nfinishup-verification-limit:{_OBLIGATION}",
             "rationale": "The reference is withheld by the task design.",
             "authority": "harness:codex",
             "affected_obligation_ids": [_OBLIGATION],
@@ -128,9 +128,9 @@ async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_rep
     agent-facing sentence must be true, and a limitation request is never repair work (Q4). The
     text also says how the answer decides what it means."""
 
-    from yoetz.application.check import check_internal_json
-    from yoetz.cli.render import render_human_check
-    from yoetz.protocol.models import (
+    from finishup.application.check import check_internal_json
+    from finishup.cli.render import render_human_check
+    from finishup.protocol.models import (
         CheckFindingChecklistModel,
         CheckOverallNextModel,
         CheckSuccessModel,
@@ -172,7 +172,7 @@ async def test_the_check_text_asks_to_disclose_a_limitation_request_never_to_rep
     assert "Overall next [action_required]: Disclose" in text
 
     # The MCP text carries the same token as the wire.
-    from yoetz.mcp.summaries import summary_for_check
+    from finishup.mcp.summaries import summary_for_check
 
     summary = summary_for_check(
         {
@@ -397,7 +397,7 @@ async def test_a_limitation_request_cannot_be_acknowledged_without_a_reason() ->
     """Owner decision Q4: the disclosure is made "with reason"; a bare acknowledgement is refused,
     so the request stays something to disclose rather than becoming an answered, undisclosed one."""
 
-    from yoetz.protocol.errors import PublicOperationError
+    from finishup.protocol.errors import PublicOperationError
 
     run, checked = await _run_with(_LIMIT, 89)
     finding = _reviewer_finding(checked)
@@ -437,7 +437,7 @@ async def test_an_acknowledged_obligation_disclosed_as_external_is_listed_once_a
         readiness.obligation_counts.disclosed,
     ) == ("0", "0", "1")
     assert _OBLIGATION not in tuple(readiness.acknowledged_not_done or ())
-    from yoetz.mcp.summaries import summary_for_status
+    from finishup.mcp.summaries import summary_for_status
 
     assert "acknowledged not done (not open)" not in summary_for_status(
         gathered.status["compact"].as_json()

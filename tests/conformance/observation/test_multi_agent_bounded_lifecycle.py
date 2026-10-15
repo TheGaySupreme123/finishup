@@ -17,38 +17,38 @@ from typing import cast
 
 import pytest
 
-import yoetz.application.start as start_module
+import finishup.application.start as start_module
 from builders.multi_agent import (  # pyright: ignore[reportPrivateUsage]
     MultiAgentService,
     _Paths,  # pyright: ignore[reportPrivateUsage]
     multi_agent_service,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.application.observation_verification import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.application.observation_verification import (
     ObservationVerificationSupervisor,
     ObservationVerificationWorker,
     VerificationDrainHandle,
 )
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.config.models import YoetzConfig
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.diagnostics import RuntimeCapability, StartupCheckResult
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRootSnapshot, ObjectSource
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.ports.start_catalog import TaskRouteState
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.config.models import FinishUpConfig
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.diagnostics import RuntimeCapability, StartupCheckResult
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRootSnapshot, ObjectSource
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.ports.start_catalog import TaskRouteState
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
     StartRequest,
     StatusRequest,
 )
-from yoetz.service.ready_composition import build_ready_application_factory
+from finishup.service.ready_composition import build_ready_application_factory
 
 pytestmark = pytest.mark.anyio
 
@@ -225,7 +225,7 @@ async def _relock_and_reopen(service: MultiAgentService) -> LocalSecretMemory:
         factory = build_ready_application_factory(
             lifecycle=service.lifecycle,
             vault=service.vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(service.root),
             clock=service.clock,
             secret_memory=memory,

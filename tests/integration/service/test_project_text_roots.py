@@ -9,11 +9,11 @@ from typing import cast
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
-from yoetz.domain.coordination import ProjectTextRef
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.service.ready_composition import (
+from finishup.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
+from finishup.domain.coordination import ProjectTextRef
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.service.ready_composition import (
     _BundleInspection,  # pyright: ignore[reportPrivateUsage]
     _root_snapshot,  # pyright: ignore[reportPrivateUsage]
 )

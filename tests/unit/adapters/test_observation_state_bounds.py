@@ -3,30 +3,31 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.codex_session_stream as stream_mod
-import yoetz.adapters.integrations.observation_local as local_mod
+import finishup.adapters.integrations.codex_session_stream as stream_mod
+import finishup.adapters.integrations.observation_local as local_mod
 from builders.codex_rollout import encode_lines, response_item, session_meta
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_session_stream import (
     STREAM_MAPPING_VERSION,
     SessionStreamReader,
     default_stream_profile,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 
 _DROPPED_GAP = "_local_stream_partial_dropped"
 _MAX_PARTIAL = local_mod._MAX_STREAM_PARTIAL_BYTES  # pyright: ignore[reportPrivateUsage]
@@ -350,8 +351,24 @@ def test_envelope_eviction_persists_retention_provenance_for_pairing_reconciliat
         state, ObservationGapCode.UNPAIRED_EVENT.value
     )
     both_size = len(store._encode_state(workspace, state))  # pyright: ignore[reportPrivateUsage]
-    state.envelopes = [legacy_post_only]
-    one_size = len(store._encode_state(workspace, state))  # pyright: ignore[reportPrivateUsage]
+    # The eviction records its local-retention reason (tb4n5), so the one-envelope state it
+    # leaves carries that reason too.
+    measured = store._load(workspace)  # pyright: ignore[reportPrivateUsage]
+    measured.envelopes = [legacy_post_only]
+    store._note_gap_state(  # pyright: ignore[reportPrivateUsage]
+        measured, ObservationGapCode.UNPAIRED_EVENT.value
+    )
+    store._note_gap_state(  # pyright: ignore[reportPrivateUsage]
+        measured,
+        local_mod._LOCAL_ENVELOPE_RETENTION_GAP,  # pyright: ignore[reportPrivateUsage]
+    )
+    store._note_session_gap_state(  # pyright: ignore[reportPrivateUsage]
+        measured,
+        session,
+        local_mod._LOCAL_ENVELOPE_RETENTION_GAP,  # pyright: ignore[reportPrivateUsage]
+    )
+    measured.envelopes_truncated = True
+    one_size = len(store._encode_state(workspace, measured))  # pyright: ignore[reportPrivateUsage]
     state.envelopes = [legacy_post_only, true_orphan]
     cap = one_size + max(64, (both_size - one_size) // 2)
     if cap >= both_size:
@@ -381,26 +398,51 @@ def test_envelope_eviction_persists_retention_provenance_for_pairing_reconciliat
     assert history[ObservationGapCode.UNPAIRED_EVENT.value]["active"] is True
 
 
-def test_truncation_gap_clears_once_the_store_stops_shedding_history(
+def test_state_bound_eviction_is_local_retention_not_truncation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#310: the eviction gap had no resolution path and latched forever."""
+    """tb4n5: shedding local envelope copies cut no delivered payload.
+
+    #310 gave the eviction gap a resolution path; tb4n5 showed the gap itself was the wrong
+    name. The shed rows are local copies of accepted inputs, so the eviction is recorded under
+    its own local-retention reason and never as ``truncated_payload``.
+    """
 
     store, workspace, session = _consented_store(tmp_path)
     _force_envelope_eviction(store, workspace, session, monkeypatch, tmp_path)
     truncated = ObservationGapCode.TRUNCATED_PAYLOAD.value
+    assert truncated not in store.status(ObservationStatusQuery(workspace)).gaps
+    retention = store.local_retention(workspace)
+    assert isinstance(retention["envelope_ring"], Mapping)
+    assert truncated not in store.session_gap_codes(workspace, session)
+
+    # Renewed shedding is retention again, still never truncation.
+    monkeypatch.setattr(local_mod, "_MAX_STATE_BYTES", 1_048_576)
+    store.note_coverage_gap(workspace, ObservationGapCode.SERVICE_UNAVAILABLE.value)
+    _force_envelope_eviction(store, workspace, session, monkeypatch, tmp_path)
+    assert truncated not in store.status(ObservationStatusQuery(workspace)).gaps
+
+
+def test_a_truncation_flag_left_by_an_older_store_clears_once_the_bound_has_headroom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upgraded store's retention-era ``truncated_payload`` is not pinned by retention any more.
+
+    Before tb4n5 the ring and the state bound recorded ``truncated_payload`` beside their own
+    retention reason, and the retention reason kept the flag active for good. With headroom the
+    live flag clears; history keeps the moment it was seen.
+    """
+
+    store, workspace, session = _consented_store(tmp_path)
+    _force_envelope_eviction(store, workspace, session, monkeypatch, tmp_path)
+    truncated = ObservationGapCode.TRUNCATED_PAYLOAD.value
+    # The older writer's flag, beside the retention reason that used to pin it.
+    store.note_coverage_gap(workspace, truncated)
     assert truncated in store.status(ObservationStatusQuery(workspace)).gaps
 
-    # Still pressed against the bound: landing merely under it proves nothing.
-    store.note_coverage_gap(workspace, ObservationGapCode.SOURCE_LAG.value)
-    assert truncated in store.status(ObservationStatusQuery(workspace)).gaps
-
-    # Pressure gone: the next save lands with headroom and sheds nothing.
     monkeypatch.setattr(local_mod, "_MAX_STATE_BYTES", 1_048_576)
     store.note_coverage_gap(workspace, ObservationGapCode.SERVICE_UNAVAILABLE.value)
     assert truncated not in store.status(ObservationStatusQuery(workspace)).gaps
-
-    # Cleared, not erased: the loss stays in history with the moment it happened.
     persisted = _state_json(tmp_path)
     history = cast(dict[str, dict[str, object]], persisted["gap_history"])
     assert history[truncated]["active"] is False
@@ -409,20 +451,37 @@ def test_truncation_gap_clears_once_the_store_stops_shedding_history(
     assert truncated not in reopened.status(ObservationStatusQuery(workspace)).gaps
 
 
-def test_renewed_shedding_reopens_the_truncation_gap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Clearing is a live signal, not a one-way retirement."""
+def test_a_long_session_past_the_ring_bound_reports_no_truncation(tmp_path: Path) -> None:
+    """tb4n5: 376-2262 observed rows per attempt crossed the 256-row ring in all 18 attempts."""
 
     store, workspace, session = _consented_store(tmp_path)
-    truncated = ObservationGapCode.TRUNCATED_PAYLOAD.value
-    _force_envelope_eviction(store, workspace, session, monkeypatch, tmp_path)
-    monkeypatch.setattr(local_mod, "_MAX_STATE_BYTES", 1_048_576)
-    store.note_coverage_gap(workspace, ObservationGapCode.SERVICE_UNAVAILABLE.value)
-    assert truncated not in store.status(ObservationStatusQuery(workspace)).gaps
+    for ordinal in range(1, 301):
+        store.ingest(_envelope(session=session, identity=f"hook:long:{ordinal}", ordinal=ordinal))
 
-    _force_envelope_eviction(store, workspace, session, monkeypatch, tmp_path)
-    assert truncated in store.status(ObservationStatusQuery(workspace)).gaps
+    assert len(store.list_envelopes(workspace)) == 256
+    assert (
+        ObservationGapCode.TRUNCATED_PAYLOAD.value
+        not in store.status(ObservationStatusQuery(workspace)).gaps
+    )
+    assert isinstance(store.local_retention(workspace)["envelope_ring"], Mapping)
+
+
+def test_a_cut_payload_still_discloses_truncation(tmp_path: Path) -> None:
+    """Real clipping keeps its disclosure: the clipped row carries the gap to its ledger record."""
+
+    store, workspace, session = _consented_store(tmp_path)
+    store.ingest(
+        _envelope(
+            session=session,
+            identity="hook:cut",
+            gap_codes=(ObservationGapCode.TRUNCATED_PAYLOAD.value,),
+        )
+    )
+    (retained,) = store.list_envelopes(workspace)
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value in retained.gap_codes
+    history = cast(dict[str, dict[str, object]], _state_json(tmp_path)["gap_history"])
+    assert history[ObservationGapCode.TRUNCATED_PAYLOAD.value]["first_seen"]
+    assert store.local_retention(workspace) == {"dedup_fence": None, "envelope_ring": None}
 
 
 def test_pairing_history_does_not_reconcile_after_envelope_eviction(

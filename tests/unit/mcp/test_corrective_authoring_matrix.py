@@ -1,8 +1,8 @@
 """A rejected request must be repairable from the public output alone, on the next call.
 
-The 2026-08-03 `codex-testing` dogfood rejected 9 of 17 Yoetz operations. Validation was
+The 2026-08-03 `codex-testing` dogfood rejected 9 of 17 FinishUP operations. Validation was
 fail-closed and safe throughout, but three failure classes did not say how to author the next
-request, so the agent guessed four times and then read Yoetz product source -- the one thing the
+request, so the agent guessed four times and then read FinishUP product source -- the one thing the
 packaged workflow forbids.
 
 Every row here replays one of those classes and asserts two things: the public output names every
@@ -19,15 +19,15 @@ import pytest
 from pydantic import ValidationError
 
 from builders.replay import replay_records
-from yoetz.application.publish_work import Application, prepare_publication
-from yoetz.domain.events import EventPayload, encode_payload
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.mcp.errors import safe_validation_locations
-from yoetz.mcp.server import invalid_request_message
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.coverage import PublicationChannel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import CheckRequestModel, PublishWorkRequestModel
+from finishup.application.publish_work import Application, prepare_publication
+from finishup.domain.events import EventPayload, encode_payload
+from finishup.mcp.descriptors import descriptor_for
+from finishup.mcp.errors import safe_validation_locations
+from finishup.mcp.server import invalid_request_message
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.coverage import PublicationChannel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import CheckRequestModel, PublishWorkRequestModel
 
 type _Request = dict[str, JsonValue]
 
@@ -277,7 +277,7 @@ def test_a_broken_reference_mirror_names_the_field_and_the_rule(
     # The pointer names the exact list to fix, not just which draft failed.
     assert details["field"] == f"/event_drafts/1/{envelope_field}"
     assert envelope_field in error.message
-    assert "yoetz://guidance/publication-policy.md" in error.message
+    assert "finishup://guidance/publication-policy.md" in error.message
     assert error.message != "The event batch is invalid. Correct the event payload before retrying."
 
 

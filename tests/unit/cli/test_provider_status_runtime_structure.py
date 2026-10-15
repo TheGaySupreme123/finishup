@@ -9,50 +9,38 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from builders.codex_capability import LINUX, binding_for, record_for
+from finishup.adapters.providers.codex_capability import codex_source_identity
+from finishup.adapters.providers.codex_evaluator_runtime import (
+    CodexBindingDiagnosis,
+    managed_runtime_path,
+)
+from finishup.cli import codex_subscription
+from finishup.cli import provider_status as module
+from finishup.config.models import (
+    ExternalRuntimeProfileConfig,
+    FinishUpConfig,
+    SemanticFallbackConfig,
+    VerificationConfig,
+)
 from unit.cli.test_provider_status import (
     _UNREAD_ROUTE,  # pyright: ignore[reportPrivateUsage]
     _Client,  # pyright: ignore[reportPrivateUsage]
     _policy,  # pyright: ignore[reportPrivateUsage]
     _provider,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.providers.codex_app_server import (
-    CODEX_EVALUATOR_RUNTIME_VERSION,
-    codex_evaluator_cell_for_platform,
-)
-from yoetz.adapters.providers.codex_evaluator_runtime import (
-    CodexBindingDiagnosis,
-    managed_runtime_path,
-)
-from yoetz.cli import codex_subscription
-from yoetz.cli import provider_status as module
-from yoetz.config.models import (
-    ExternalRuntimeProfileConfig,
-    SemanticFallbackConfig,
-    VerificationConfig,
-    YoetzConfig,
-)
-from yoetz.config.write import codex_subscription_runtime
 
 pytestmark = pytest.mark.anyio
 
-_REPAIR = "yoetz provider codex-subscription repair"
+_REPAIR = "finishup provider codex-subscription repair"
 
 
-def _runtime(executable: str = "/opt/npm/lib/node_modules/@openai/codex/bin/codex.js"):
-    cell = codex_evaluator_cell_for_platform("linux", "x86_64")
-    return codex_subscription_runtime(
-        executable_path=executable,
-        executable_sha256=cell.executable_sha256,
-        runtime_version=CODEX_EVALUATOR_RUNTIME_VERSION,
-        source_identity=cell.source_identity,
-        app_server_schema_sha256=cell.app_server_schema_sha256,
-        capability_cell_sha256=cell.capability_cell_sha256,
-        isolated_config_sha256=cell.isolated_config_sha256,
-        capability_profile=cell.capability_profile,
-        capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/opt/yoetz/codex-home",
-        model="gpt-5.6-luna",
-        reasoning_effort="high",
+def _runtime(
+    executable: str = "/opt/npm/lib/node_modules/@openai/codex/bin/codex.js",
+) -> ExternalRuntimeProfileConfig:
+    record = record_for(b"codex", b"host", platform=LINUX)
+    return binding_for(
+        record, Path(executable), Path("/opt/finishup/codex-home"), model="gpt-5.6-luna"
     )
 
 
@@ -75,7 +63,7 @@ def _install(
     capabilities: tuple[str, ...],
     fact: dict[str, object],
 ) -> None:
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="codex-subscription" if primary != "api_provider" else "local-openai",
         verification=VerificationConfig(semantic=cast(Any, "optional")),
         provider=None if primary is None else _provider(),
@@ -84,7 +72,7 @@ def _install(
     )
     client = _Client(capabilities, _policy(llm_inference_enabled=True))
 
-    def load(*_args: object) -> YoetzConfig:
+    def load(*_args: object) -> FinishUpConfig:
         return config
 
     async def connect(_kind: object, *, workspace_locator: object = None) -> _Client:
@@ -99,7 +87,7 @@ def _install(
     monkeypatch.setattr(module, "connect_service", connect)
     monkeypatch.setattr(module, "mcp_route_observation", observe)
 
-    def runtime_fact(_config: YoetzConfig) -> dict[str, object]:
+    def runtime_fact(_config: FinishUpConfig) -> dict[str, object]:
         return fact
 
     monkeypatch.setattr(module, "external_runtime_fact", runtime_fact)
@@ -196,9 +184,9 @@ def test_the_runtime_fact_is_local_and_reports_role_and_ownership(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(codex_subscription.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
 
-    def runtime_bundle(_config: YoetzConfig | None = None) -> Path:
+    def runtime_bundle(_config: FinishUpConfig | None = None) -> Path:
         return tmp_path
 
     monkeypatch.setattr(codex_subscription, "runtime_bundle", runtime_bundle)
@@ -207,10 +195,9 @@ def test_the_runtime_fact_is_local_and_reports_role_and_ownership(
         return CodexBindingDiagnosis("ready", "current", "admitted", "ready")
 
     monkeypatch.setattr(codex_subscription, "diagnose_bound_runtime", diagnose)
-    cell = codex_evaluator_cell_for_platform("linux", "x86_64")
-    managed = str(managed_runtime_path(tmp_path, cell))
+    managed = str(managed_runtime_path(tmp_path, codex_source_identity(LINUX, "0.159.0")))
 
-    host_bound = YoetzConfig(profile="codex-subscription", external_runtime=_runtime())
+    host_bound = FinishUpConfig(profile="codex-subscription", external_runtime=_runtime())
     fact = module.external_runtime_fact(host_bound)
     assert fact is not None
     assert (fact["role"], fact["state"], fact["uses_managed_runtime"]) == (
@@ -220,8 +207,8 @@ def test_the_runtime_fact_is_local_and_reports_role_and_ownership(
     )
     assert fact["next_command"] == _REPAIR
 
-    retained = YoetzConfig(profile="codex-subscription", external_runtime=_runtime(managed))
+    retained = FinishUpConfig(profile="codex-subscription", external_runtime=_runtime(managed))
     fact = module.external_runtime_fact(retained)
     assert fact is not None
     assert (fact["uses_managed_runtime"], fact["next_command"]) == (True, None)
-    assert module.external_runtime_fact(YoetzConfig()) is None
+    assert module.external_runtime_fact(FinishUpConfig()) is None

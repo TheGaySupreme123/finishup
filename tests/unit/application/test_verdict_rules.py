@@ -16,7 +16,7 @@ from builders.policy_cases import (
     make_case,
     record,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     CheckScope,
     FinalSemanticEvaluation,
     allocate_findings,
@@ -24,7 +24,7 @@ from yoetz.application.check import (
     case_coverage,
     run_deterministic_policies,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -32,14 +32,14 @@ from yoetz.domain.events import (
     ResponseDisposition,
     ResponseRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     CheckVerdict,
     Finding,
     FindingKind,
     FindingOrigin,
     WaiverScope,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
@@ -48,18 +48,18 @@ from yoetz.domain.receipts import (
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
 )
-from yoetz.domain.values import EventId, object_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.values import EventId, object_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import (
     CaseGap,
     DeterministicAssessment,
     DeterministicCase,
     FindingBasisRef,
 )
-from yoetz.kernel.projections import LatestTestedState
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.protocol.coverage import Coverage, EvidenceImmutability
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.kernel.projections import LatestTestedState
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.protocol.coverage import Coverage, EvidenceImmutability
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 
 class _Ids:
@@ -346,9 +346,9 @@ def test_semantic_status_reason_cross_pair_is_rejected() -> None:
 
 
 def test_deterministic_only_marks_semantic_not_requested_gap_without_verdict_change() -> None:
-    from yoetz.application.check import semantic_coverage_gap_code
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
-    from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+    from finishup.application.check import semantic_coverage_gap_code
+    from finishup.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+    from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 
     gap = semantic_coverage_gap_code(
         SemanticStatus.NOT_REQUESTED, SemanticReason.DETERMINISTIC_MODE
@@ -366,7 +366,7 @@ def test_deterministic_only_marks_semantic_not_requested_gap_without_verdict_cha
     # Simulate check merge: add gap, CURRENT -> PARTIAL, COVERAGE_INCOMPLETE
     gaps = set(coverage.known_gaps)
     gaps.add(gap)
-    from yoetz.protocol.coverage import LedgerFreshness as LF
+    from finishup.protocol.coverage import LedgerFreshness as LF
 
     freshness = coverage.ledger_freshness
     if freshness is LF.CURRENT:
@@ -534,11 +534,11 @@ def test_judgment_rejection_preserves_the_truncation_disclosure() -> None:
     stays the case that was truncated, so the disclosure must survive the restatement.
     """
 
-    from yoetz.application.check import (
+    from finishup.application.check import (
         _judgment_rejected_evaluation,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.findings import SamplingParams, SemanticDispatchKind, SemanticProvenance
-    from yoetz.ports.semantic import SemanticJudgment
+    from finishup.domain.findings import SamplingParams, SemanticDispatchKind, SemanticProvenance
+    from finishup.ports.semantic import SemanticJudgment
 
     digest = "sha256:" + "a" * 64
     succeeded = FinalSemanticEvaluation(
@@ -586,13 +586,13 @@ def test_judgment_rejection_preserves_the_truncation_disclosure() -> None:
 def test_only_a_completed_reduced_review_records_its_included_references() -> None:
     """Issue #904: the check records what a reduced packet included, and nothing it cannot bound."""
 
-    from yoetz.application.check import (
+    from finishup.application.check import (
         _judgment_rejected_evaluation,  # pyright: ignore[reportPrivateUsage]
         semantic_included_refs,
     )
-    from yoetz.domain.events import MAX_SEMANTIC_INCLUDED_REFS
-    from yoetz.domain.findings import SamplingParams, SemanticDispatchKind, SemanticProvenance
-    from yoetz.ports.semantic import SemanticJudgment
+    from finishup.domain.events import MAX_SEMANTIC_INCLUDED_REFS
+    from finishup.domain.findings import SamplingParams, SemanticDispatchKind, SemanticProvenance
+    from finishup.ports.semantic import SemanticJudgment
 
     digest = "sha256:" + "a" * 64
     refs = frozenset(

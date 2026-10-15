@@ -17,10 +17,10 @@ from typing import cast
 
 import pytest
 
-import yoetz.mcp.server as bridge
-from yoetz.ports.control import ControlError, ServiceState, ServiceStatus, WorkspaceLocator
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import StartRequest, StartResult
+import finishup.mcp.server as bridge
+from finishup.ports.control import ControlError, ServiceState, ServiceStatus, WorkspaceLocator
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import StartRequest, StartResult
 
 _REQUEST = "req_00000000-0000-4000-8000-000000000021"
 _CORRELATION = "err_00000000-0000-4000-8000-000000000022"
@@ -98,7 +98,7 @@ class _ProbeClient:
 
 
 def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, connections: list[object]) -> list[str]:
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     attempts: list[str] = []
@@ -148,17 +148,17 @@ async def test_uninitialized_vault_start_carries_the_typed_continuation(
     assert attempts == ["connect", "connect"]
     details = cast(dict[str, object], error["safe_details"])
     assert details == {
-        "authorize_command": "yoetz consent authorize",
+        "authorize_command": "finishup consent authorize",
         "continuation": "vault_initialization_required",
         "pending_ttl_seconds": 900,
-        "prepare_command": "yoetz consent prepare vault_initialize",
+        "prepare_command": "finishup consent prepare vault_initialize",
         "replay_request_id": _REQUEST,
-        "review_command": "yoetz consent review",
+        "review_command": "finishup consent review",
     }
     message = cast(str, error["message"])
     assert "uninitialized" in message
     assert "bounded initialization-required continuation" in message
-    assert "yoetz consent prepare vault_initialize" in message
+    assert "finishup consent prepare vault_initialize" in message
     assert "replay this exact request_id and body once" in message
     assert "never request, receive, or transmit a secret" in message
     assert "allowlisted first-party attestation client" in message
@@ -178,10 +178,10 @@ async def test_cursor_profile_receives_only_the_trusted_local_continuation(
     details = cast(dict[str, object], error["safe_details"])
     assert "authorize_command" not in details
     assert details["continuation"] == "vault_initialization_required"
-    assert details["review_command"] == "yoetz consent review"
+    assert details["review_command"] == "finishup consent review"
     message = cast(str, error["message"])
-    assert "yoetz consent authorize" not in message
-    assert "yoetz consent review" in message
+    assert "finishup consent authorize" not in message
+    assert "finishup consent review" in message
 
 
 @pytest.mark.anyio
@@ -205,7 +205,7 @@ async def test_probe_failure_degrades_to_the_plain_hard_lock_answer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # The reconnect probe finds no service: never assert an initialization state that was not
-    # read. The plain non-retryable message still names `yoetz setup` for a human.
+    # read. The plain non-retryable message still names `finishup setup` for a human.
     attempts = _wire(monkeypatch, tmp_path, [_LockedClient(retryable=False)])
     runtime = bridge.build_bridge_runtime()
 

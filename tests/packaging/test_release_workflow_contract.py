@@ -109,11 +109,12 @@ def test_npm_release_is_built_once_published_after_pypi_and_download_verified() 
     # (issue #776), matching tests/packaging/test_npm_launcher.py.
     assert (
         "tool install --quiet --python 3.14 "
-        "yoetz==${{ needs.validate-release-source.outputs.version }}"
+        "finishup==${{ needs.validate-release-source.outputs.version }}"
     ) in verify
-    assert '"--python 3.14 yoetz version --json"' in verify
+    assert '"--python 3.14 finishup version --json"' in verify
     assert (
-        "yoetz==${{ needs.validate-release-source.outputs.version }} version --json" not in verify
+        "finishup==${{ needs.validate-release-source.outputs.version }} version --json"
+        not in verify
     )
 
 
@@ -167,7 +168,7 @@ def test_post_publication_smoke_uses_python314_and_reinstalls_the_approved_wheel
     assert "uv python install 3.14" in verify
     assert 'uv venv --python 3.14 "$venv"' in verify
     assert 'uv pip install --python "$venv/bin/python" "$wheel"' in verify
-    assert 'uv pip uninstall --python "$venv/bin/python" yoetz' in verify
+    assert 'uv pip uninstall --python "$venv/bin/python" finishup' in verify
     assert '--no-index --no-deps --find-links "${{ runner.temp }}/published"' in verify
 
 
@@ -186,7 +187,7 @@ def test_release_bundle_carries_the_scanned_cyclonedx_sbom_into_github_assets() 
     assert (
         'source="${{ runner.temp }}/inputs/security-dependency-evidence/sbom.cdx.json"' in assemble
     )
-    assert "yoetz-${{ needs.validate-release-source.outputs.version }}.sbom.cdx.json" in assemble
+    assert "finishup-${{ needs.validate-release-source.outputs.version }}.sbom.cdx.json" in assemble
     assert "Public-boundary scan the assembled evidence" in assemble
     assert "${{ runner.temp }}/release-assets/**/*.json" in publish
 
@@ -237,14 +238,14 @@ def test_platform_verifiers_split_suites_and_bound_linux_alpha_claims() -> None:
         1,
     )[0]
 
-    assert 'export HOME="${RUNNER_TEMP}/yoetz-home"' not in linux
-    assert 'export HOME="${RUNNER_TEMP}/yoetz-home"' not in macos
+    assert 'export HOME="${RUNNER_TEMP}/finishup-home"' not in linux
+    assert 'export HOME="${RUNNER_TEMP}/finishup-home"' not in macos
     for verifier in (linux, macos):
         assert "uv run --locked pytest tests/packaging \\" in verifier
         assert 'tagged_uv_wrapper="${{ runner.temp }}/tagged-uv-bin"' in verifier
         assert 'if [[ "$argument" == "--no-index" ]]' in verifier
         assert 'set -- --no-index "$@"' in verifier
-        assert 'exec "${YOETZ_REAL_UV:?}" pip install "$@"' in verifier
+        assert 'exec "${FINISHUP_REAL_UV:?}" pip install "$@"' in verifier
         assert 'pip install --no-index "$@"' not in verifier
         assert 'PATH="$tagged_uv_wrapper:$PATH" \\' in verifier
         assert 'UV_CACHE_DIR="${{ runner.temp }}/tagged-offline-cache" \\' in verifier
@@ -254,14 +255,16 @@ def test_platform_verifiers_split_suites_and_bound_linux_alpha_claims() -> None:
         assert "pytest tests/subprocess \\" in verifier
         assert "pytest tests/integration \\" in verifier
         # Actual vault composition rejects shared /tmp even when its leaf directory is 0700.
-        assert '(Path(os.environ["RUNNER_TEMP"]) / "yoetz-integration").resolve()' in verifier
+        assert '(Path(os.environ["RUNNER_TEMP"]) / "finishup-integration").resolve()' in verifier
         integration = verifier.split("pytest tests/integration", 1)[1]
         assert '--basetemp "$release_test_root"' in integration.split("\n      - name:", 1)[0]
         assert "export YZCI_DENY_NETWORK" not in verifier
-        assert "export YOETZ_CANDIDATE_PYTHON" not in verifier
+        assert "export FINISHUP_CANDIDATE_PYTHON" not in verifier
         assert verifier.count("YZCI_DENY_NETWORK=1 \\") == 2
         assert (
-            verifier.count('YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \\')
+            verifier.count(
+                'FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \\'
+            )
             == 2
         )
         assert '--runtime-tree "$installed_root"' in verifier
@@ -318,3 +321,62 @@ def test_release_manifest_comparison_allows_only_new_members(
         manifest.write_text(json.dumps({"members": members}))
         with pytest.raises(SystemExit, match="released schema manifest entry changed"):
             exec(script, {})
+
+
+def test_transitional_yoetz_is_built_once_and_published_after_finishup() -> None:
+    """The deprecated `yoetz` names (ADR-048) ride the same approval and never precede finishup."""
+
+    workflow = _WORKFLOW.read_text(encoding="utf-8")
+    build = workflow.split("  build-transitional:\n", 1)[1].split(
+        "  # ---------------------------------------------------------------------------------------------\n  # verify-linux",
+        1,
+    )[0]
+    assert "uv run --locked python scripts/check_transitional_yoetz.py\n" in build
+    assert "scripts/check_transitional_yoetz.py \\\n            --dist" in build
+    assert "uv build --no-sources release/transitional-yoetz/python" in build
+    assert "npm pack ./release/transitional-yoetz/npm" in build
+    assert 'expected = ["README.md", "bin/yoetz.js", "package.json"]' in build
+    assert "candidate-${{ needs.validate-release-source.outputs.version }}" in build
+    assert '"$venv/bin/python" -m yoetz --version' in build
+    assert "from yoetz.adapters.release_runtime import adopt_release_lease" in build
+
+    approval = workflow.split("  approve-publication:\n", 1)[1].split("  publish-pypi:\n", 1)[0]
+    assert "- build-transitional" in approval
+    assert "transitional-digest" in approval and "transitional-npm-digest" in approval
+
+    pypi = workflow.split("  publish-transitional-pypi:\n", 1)[1].split(
+        "  publish-transitional-npm:\n", 1
+    )[0]
+    assert (
+        "needs: [validate-release-source, build-transitional, approve-publication, publish-pypi]"
+        in pypi
+    )
+    assert "packages-dir: ${{ runner.temp }}/transitional-pypi-dist" in pypi
+    assert "skip-existing: false" in pypi
+    assert "https://pypi.org/pypi/yoetz/${version}/json" in pypi
+    assert "published transitional PyPI bytes differ from recovery candidate" in pypi
+
+    npm = workflow.split("  publish-transitional-npm:\n", 1)[1].split(
+        "  verify-transitional-published:\n", 1
+    )[0]
+    assert "publish-transitional-pypi]" in npm
+    assert "environment: npm" in npm
+    assert "npm pack" not in npm
+    assert "published transitional npm bytes differ from recovery candidate" in npm
+
+    verify = workflow.split("  verify-transitional-published:\n", 1)[1].split(
+        "  # ---------------------------------------------------------------------------------------------\n  # release-required",
+        1,
+    )[0]
+    assert "cmp -s" in verify
+    assert "tool install --quiet --python 3.14 yoetz==${version}" in verify
+    assert "--force" not in build + pypi + npm + verify
+
+    required = workflow.split("  release-required:\n", 1)[1]
+    for job in (
+        "build-transitional",
+        "publish-transitional-pypi",
+        "publish-transitional-npm",
+        "verify-transitional-published",
+    ):
+        assert f"[{job}]=" in required

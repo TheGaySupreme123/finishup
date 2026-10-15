@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from builders.observed_runs import ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -21,7 +21,7 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     ObligationId,
     ResultId,
     action_id,
@@ -29,10 +29,10 @@ from yoetz.domain.values import (
     obligation_id,
     result_id,
 )
-from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
-from yoetz.kernel.claims import effective_claim_ids
-from yoetz.kernel.observed_failures import observed_event_ids_from_records
-from yoetz.kernel.reducers import replay
+from finishup.kernel.claim_limitations import required_limitation_ids_for_projection
+from finishup.kernel.claims import effective_claim_ids
+from finishup.kernel.observed_failures import observed_event_ids_from_records
+from finishup.kernel.reducers import replay
 
 _ACTION = EventSchema("action_recorded", "1.0.0")
 _RESULT = EventSchema("result_recorded", "1.0.0")

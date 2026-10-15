@@ -212,6 +212,7 @@ def _gates(raw_records: Sequence[str]) -> dict[str, object]:
 
 def _support_cells(path: Path, candidate_digest: str) -> list[dict[str, object]]:
     document = _read_json(path)
+    # Frozen legacy identifier (ADR-048): capability-matrix format tag of release inputs.
     if document.get("schema") != "yoetz.capability-matrix/1":
         raise ReleaseInputError("support_matrix_schema_invalid", detail=str(path))
     if document.get("candidate_artifact_digest") != candidate_digest:
@@ -239,6 +240,7 @@ def _support_cells(path: Path, candidate_digest: str) -> list[dict[str, object]]
 
 def _limitations(path: Path) -> list[dict[str, str]]:
     document = _read_json(path, expected_keys=frozenset({"schema", "limitations"}))
+    # Frozen legacy identifier (ADR-048): format tag of release/known-limitations.json.
     if document["schema"] != "yoetz.release-known-limitations/1":
         raise ReleaseInputError("limitations_schema_invalid", detail=str(path))
     raw_items = document["limitations"]

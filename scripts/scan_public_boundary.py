@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 __all__ = [
     "BoundaryFinding",
@@ -800,6 +800,7 @@ def build_report(
             for finding in ordered
         ],
         "finding_count": len(ordered),
+        # Frozen legacy identifier (ADR-048): public-boundary report format tag.
         "schema": "yoetz.public-boundary-report/1",
         "target_kind": target_kind,
         "target_label": _redact_canary_text(target_label, canary),

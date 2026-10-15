@@ -6,7 +6,7 @@ from pathlib import Path
 
 import apsw
 
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     Migration,
     current_schema_version,

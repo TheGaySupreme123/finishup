@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from yoetz.domain.values import event_id, obligation_id
-from yoetz.kernel.fact_lineage import FactLineage, lineage_to_wire
+from finishup.domain.values import event_id, obligation_id
+from finishup.kernel.fact_lineage import FactLineage, lineage_to_wire
 
 __all__ = [
     "BOUNDING",

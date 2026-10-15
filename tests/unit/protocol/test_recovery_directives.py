@@ -8,14 +8,14 @@ from typing import cast
 
 import pytest
 
-from yoetz.cli.render import render_human_error
-from yoetz.mcp import resources
-from yoetz.mcp.resources import MAX_GUIDANCE_PAGE_SIZE
-from yoetz.mcp.summaries import (
+from finishup.cli.render import render_human_error
+from finishup.mcp import resources
+from finishup.mcp.resources import MAX_GUIDANCE_PAGE_SIZE
+from finishup.mcp.summaries import (
     _MAX_SUMMARY_BYTES,  # pyright: ignore[reportPrivateUsage]
     summary_for_public_error,
 )
-from yoetz.protocol.errors import (
+from finishup.protocol.errors import (
     ADMITTED_CLAIM_REVISION_INVARIANTS,
     PROTOCOL_REASON_CODES,
     REASON_CODE_CONTINUATIONS,
@@ -24,8 +24,8 @@ from yoetz.protocol.errors import (
     PublicOperationError,
     normalize_safe_details,
 )
-from yoetz.protocol.models import PublicErrorModel
-from yoetz.protocol.recovery import (
+from finishup.protocol.models import PublicErrorModel
+from finishup.protocol.recovery import (
     CLAIM_REVISION_CORRECTIONS,
     CONTINUATION_TOKENS,
     LOCAL_REASON_CONTINUATION_PREFIXES,
@@ -76,7 +76,7 @@ class TestRatchet:
     def test_local_reasons_cannot_shadow_operation_dependent_protocol_reasons(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import yoetz.protocol.recovery as recovery
+        import finishup.protocol.recovery as recovery
 
         monkeypatch.setattr(
             recovery,
@@ -138,7 +138,7 @@ class TestRegistryBounds:
         entry = RECOVERY_DIRECTIVES[token]
         if entry.guidance_uri is None:
             pytest.skip("directive carries no guidance pointer")
-        name, _, anchor = entry.guidance_uri.removeprefix("yoetz://guidance/").partition("#")
+        name, _, anchor = entry.guidance_uri.removeprefix("finishup://guidance/").partition("#")
         document = _GUIDANCE_ROOT / name
         assert document.is_file()
         if anchor:
@@ -273,15 +273,15 @@ class TestNativeTextProjection:
                     "correlation_id": _CORRELATION_ID,
                     "safe_details": {
                         "continuation": "vault_initialization_required",
-                        "prepare_command": "yoetz consent prepare vault_initialize",
-                        "review_command": "yoetz consent review",
+                        "prepare_command": "finishup consent prepare vault_initialize",
+                        "review_command": "finishup consent review",
                     },
                 }
             }
         )
         assert "vault_initialization_required" in summary
-        assert "yoetz consent prepare vault_initialize" in summary
-        assert "yoetz consent review" in summary
+        assert "finishup consent prepare vault_initialize" in summary
+        assert "finishup consent review" in summary
 
     def test_projection_never_copies_the_public_error_message(self) -> None:
         summary = summary_for_public_error(
@@ -303,9 +303,9 @@ class TestNativeTextProjection:
         summary = summary_for_public_error(
             _error(
                 continuation=token,
-                prepare_command="yoetz consent prepare vault_initialize",
-                review_command="yoetz consent review",
-                authorize_command="yoetz consent authorize",
+                prepare_command="finishup consent prepare vault_initialize",
+                review_command="finishup consent review",
+                authorize_command="finishup consent authorize",
             )
         )
         assert len(summary.encode("ascii")) <= _MAX_SUMMARY_BYTES
@@ -374,7 +374,7 @@ class TestSafeDetailBounds:
     def test_real_producers_stay_inside_the_per_instance_cap(self) -> None:
         """Every error a producer actually builds must still validate against the schema."""
 
-        from yoetz.domain.events import (
+        from finishup.domain.events import (
             ClaimRevisionMismatch,
             public_error_for_claim_revision_mismatch,
         )
@@ -395,7 +395,7 @@ class TestClaimRevisionCorrections:
     def test_invariant_rides_as_a_typed_detail_not_only_in_the_message(self) -> None:
         """ADR-030: the fact the MCP projector used to recover by regex is now structural."""
 
-        from yoetz.domain.events import (
+        from finishup.domain.events import (
             ClaimRevisionMismatch,
             public_error_for_claim_revision_mismatch,
         )
@@ -453,7 +453,7 @@ class TestLocalReasonRatchet:
     """
 
     def test_every_remediation_and_refusal_reason_resolves_to_a_directive(self) -> None:
-        from yoetz.cli.exits import CEREMONY_REFUSAL_MESSAGES, REMEDIATION_MESSAGES
+        from finishup.cli.exits import CEREMONY_REFUSAL_MESSAGES, REMEDIATION_MESSAGES
 
         for reason in sorted(set(REMEDIATION_MESSAGES) | set(CEREMONY_REFUSAL_MESSAGES)):
             assert local_reason_has_disposition(reason), reason
@@ -461,7 +461,7 @@ class TestLocalReasonRatchet:
     def test_every_reason_the_cli_can_print_resolves_to_a_directive(self) -> None:
         """Lifecycle and instance public-code tables reach an operator too."""
 
-        from yoetz.cli.exits import LOCAL_REASONS
+        from finishup.cli.exits import LOCAL_REASONS
 
         for reason in sorted(LOCAL_REASONS):
             assert local_reason_has_disposition(reason), reason
@@ -474,7 +474,7 @@ class TestLocalReasonRatchet:
         enforces.
         """
 
-        from yoetz.cli.exits import LOCAL_REASONS
+        from finishup.cli.exits import LOCAL_REASONS
 
         through_protocol = {
             reason
@@ -485,7 +485,7 @@ class TestLocalReasonRatchet:
         assert through_protocol == {"service_draining"}
 
     def test_a_new_local_reason_without_a_directive_fails_at_import(self) -> None:
-        import yoetz.cli.exits as exits
+        import finishup.cli.exits as exits
 
         original = exits.LOCAL_REASONS
         exits.LOCAL_REASONS = frozenset(original | {"a_reason_nobody_dispositioned"})

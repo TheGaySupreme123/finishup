@@ -2,7 +2,7 @@
 
 This runbook is the safe operator procedure for creating a frontier-pinned encrypted bundle backup
 and restoring it into a new target that passes every structural, cryptographic, replay, and
-route-switch check before Yoetz atomically switches the active route to it. Follow it exactly — do
+route-switch check before FinishUP atomically switches the active route to it. Follow it exactly — do
 not improvise a shortcut such as copying a live database, overwriting the active bundle, calling a
 machine-bound backup portable, or treating a manifest checksum as a signature.
 
@@ -16,7 +16,7 @@ recovery mode, key, and a clean-profile drill (see section 7).
 
 Backups are sensitive even though payloads are encrypted: structural metadata (IDs, sizes, times,
 versions) and ciphertext both remain readable as bytes. Store a backup owner-only, outside
-repositories, cloud-synced folders, network shares, or shared temp directories. Yoetz rejects
+repositories, cloud-synced folders, network shares, or shared temp directories. FinishUP rejects
 obviously unsafe destinations at preview time.
 
 ## 2. Choose machine-bound or portable recovery
@@ -30,12 +30,12 @@ Neither mode protects against a compromised active account, root, or live proces
 deletion is never forensic erasure — see [`key-recovery.md`](key-recovery.md).
 
 These are one-task bundle backups. They do not recover the installation vault. For compact or
-self-contained installation recovery, use the separate ADR-024 `yoetz service recovery` lifecycle;
+self-contained installation recovery, use the separate ADR-024 `finishup service recovery` lifecycle;
 do not relabel a bundle `portable_recovery` artifact as an installation set.
 
 ## 3. Preconditions and capacity
 
-- Verify a supported package/platform: `yoetz version --json`.
+- Verify a supported package/platform: `finishup version --json`.
 - Identify the exact task and a stable new destination with capacity and owner-only permissions.
 - Ensure no competing maintenance operation is running against the same installation.
 
@@ -43,13 +43,13 @@ do not relabel a bundle `portable_recovery` artifact as an installation set.
 
 1. Prepare a strict request with a stable `request_id`, session, destination, mode, and an optional
    expected frontier. Never place a recovery secret in this request.
-2. `yoetz backup preview --input <request.json> --json`. For portable mode, enter the recovery
+2. `finishup backup preview --input <request.json> --json`. For portable mode, enter the recovery
    secret only through the foreground no-echo confidential helper after reviewing the exact plan —
    v0.1 has no inherited-descriptor or password-file-descriptor channel.
 3. Review the preview: actual task frontier/head, mode, whether the target is new, object
    count/bytes, versions, warnings, and the plan digest. If work or the frontier changes, preview
    again before confirming.
-4. Confirm the exact plan digest explicitly: `yoetz backup execute --input <plan.json> --json`.
+4. Confirm the exact plan digest explicitly: `finishup backup execute --input <plan.json> --json`.
    Never mint a new request ID after a timeout — the same ID resolves to the same operation.
 5. Wait for the terminal result. Success records the manifest, object-set, database, and (for
    portable mode) recovery-artifact digests, plus the pinned frontier. Do not rename an
@@ -66,7 +66,7 @@ the manifest **last**, atomically publishing into the destination. It never copi
 
 1. Preserve the current installation/bundle — do not move, delete, or edit it. Verify the package
    and platform, and confirm you own the source backup.
-2. `yoetz restore preview --input <request.json> --json`. Review the source manifest's
+2. `finishup restore preview --input <request.json> --json`. Review the source manifest's
    task/frontier/database/object/key/version integrity, the current active route/frontier, any
    required supported migration, the generated new-target identity, the retained prior route,
    warnings, and the plan digest. A task mismatch, a newer unsupported version, tamper evidence, or
@@ -74,7 +74,7 @@ the manifest **last**, atomically publishing into the destination. It never copi
 
 ## 6. Restore into a new target
 
-1. Confirm the exact plan: `yoetz restore execute --input <plan.json> --json`. Restore creates a
+1. Confirm the exact plan: `finishup restore execute --input <plan.json> --json`. Restore creates a
    fresh, generated, quarantined target, uses the SQLite Backup API into a new database, copies and
    authenticates ciphertext objects, resolves the key, verifies chains and integrity, replays the
    full ledger, and reopens normally. It never merges histories and never overwrites active files.

@@ -11,13 +11,13 @@ from pathlib import Path
 _CHILD = r"""
 import sys
 from pathlib import Path
-import yoetz.service.elevated_bootstrap as bootstrap
+import finishup.service.elevated_bootstrap as bootstrap
 
 root = Path(sys.argv[1])
 bootstrap.state_dir = lambda: root
 
-from yoetz.cli.app import app
-app(args=sys.argv[2:], prog_name="yoetz")
+from finishup.cli.app import app
+app(args=sys.argv[2:], prog_name="finishup")
 """
 
 
@@ -40,7 +40,7 @@ def test_redirected_stdin_cannot_approve_or_consume_pending(tmp_path: Path) -> N
     prepared = _run(tmp_path, ["consent", "prepare", "vault_initialize"])
     assert prepared.returncode == 0
     projection = json.loads(prepared.stdout)
-    assert projection["pending"]["review_command"] == ["yoetz", "consent", "review"]
+    assert projection["pending"]["review_command"] == ["finishup", "consent", "review"]
 
     pending = tmp_path / "elevated-bootstrap" / "elevated-bootstrap-pending.json"
     before = pending.read_bytes()

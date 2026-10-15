@@ -21,25 +21,25 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.values import Frontier, session_id
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.service import Application, VerificationPolicy
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.values import Frontier, session_id
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import (
     CheckCommitResult,
     CheckPhase,
     OperationLease,
     OperationState,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import CheckRequest, FrontierModel, PublishWorkRequest
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import CheckRequest, FrontierModel, PublishWorkRequest
 
 pytestmark = pytest.mark.anyio
 

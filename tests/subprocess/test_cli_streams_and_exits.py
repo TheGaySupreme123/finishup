@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.cli.exits import PUBLIC_EXIT_CODES, exit_code_for
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.cli.exits import PUBLIC_EXIT_CODES, exit_code_for
+from finishup.protocol.errors import PublicErrorCode
 
 _EXPECTED = {
     PublicErrorCode.INVALID_REQUEST: 2,

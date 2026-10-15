@@ -9,19 +9,19 @@ import pytest
 
 from builders.privacy_policies import disabled_channel, minimal_external_policy
 from builders.privacy_widenings import llm_channel, other_provider, with_llm
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     _CHANGE_IMPACT,  # pyright: ignore[reportPrivateUsage]
     PRIVACY_CHANGE_FIELDS,
     ChannelPolicy,
     EgressChannel,
     ProviderBinding,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.schemas import validate_schema_instance
 
 
 def _llm() -> ChannelPolicy:

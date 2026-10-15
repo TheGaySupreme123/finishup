@@ -3,7 +3,7 @@
 Non-live cells prove verified skill resource digests, isolated preview/modification protection via
 an injected self-consistent skill source, and that app-server discovery claims stay unsupported
 while harness profiles are unfrozen. Live ``skills/list`` / trigger cells require
-``YOETZ_LIVE_CODEX=1``.
+``FINISHUP_LIVE_CODEX=1``.
 """
 
 from __future__ import annotations
@@ -22,16 +22,16 @@ from capability.evidence import (
     record_and_write,
     runtime_capability_context,
 )
-from yoetz.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
-from yoetz.adapters.integrations.codex_skill import (
+from finishup.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
+from finishup.adapters.integrations.codex_skill import (
     CODEX_HARNESS_PROFILE,
     CodexSkillIntegration,
     build_managed_marker,
     expected_skill_member_paths,
     load_packaged_skill_source,
 )
-from yoetz.domain.values import request_id
-from yoetz.ports.integrations import (
+from finishup.domain.values import request_id
+from finishup.ports.integrations import (
     HarnessId,
     IntegrationAction,
     IntegrationError,
@@ -43,8 +43,8 @@ from yoetz.ports.integrations import (
     SkillPreviewCommand,
     SkillStatusCommand,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.version import read_verified_resource
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.version import read_verified_resource
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _VERSION = "0.139.0"
@@ -65,8 +65,8 @@ def _injectable_skill_resources() -> _Resources:
     """Build a self-consistent skill/resource bundle for isolated integration probes."""
 
     skill = (
-        b"---\nname: yoetz\ndescription: Durable evidence guidance.\n"
-        b"metadata:\n  short-description: Yoetz guidance\n---\n\n# Yoetz\n"
+        b"---\nname: finishup\ndescription: Durable evidence guidance.\n"
+        b"metadata:\n  short-description: FinishUP guidance\n---\n\n# FinishUP\n"
     )
     skill_manifest_body: dict[str, JsonValue] = {
         **dict(skill_manifest_capability_fields()),
@@ -75,21 +75,21 @@ def _injectable_skill_resources() -> _Resources:
         "managed_members": [],
         "protocol_version": "0.1",
         "schema": "yoetz.codex-skill-manifest/1",
-        "skill": "yoetz",
+        "skill": "finishup",
         "skill_version": "0.1.0",
     }
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
     # Derived from the adapter's own expected inventory so the fixture cannot go stale.
     installed_paths = {
-        logical: "skills/codex/yoetz/SKILL.md"
+        logical: "skills/codex/finishup/SKILL.md"
         if logical == "SKILL.md"
         else logical.replace("references/", "guidance/", 1)
         for logical in expected_skill_member_paths()
         if logical != "manifest.json"
     }
     files: dict[str, bytes] = {
-        "skills/codex/yoetz/SKILL.md": skill,
-        "skills/codex/yoetz/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
+        "skills/codex/finishup/SKILL.md": skill,
+        "skills/codex/finishup/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
     }
     for package_path in installed_paths.values():
         if package_path not in files:
@@ -120,7 +120,7 @@ def _injectable_skill_resources() -> _Resources:
     skill_manifest_body["managed_members"] = managed_members
     skill_manifest_body.pop("member_digest")
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
-    files["skills/codex/yoetz/manifest.json"] = canonical_encode(skill_manifest_body) + b"\n"
+    files["skills/codex/finishup/manifest.json"] = canonical_encode(skill_manifest_body) + b"\n"
     entries: list[JsonValue] = []
     for package_path, data in sorted(files.items(), key=lambda item: item[0].encode("ascii")):
         entries.append(
@@ -138,7 +138,7 @@ def _injectable_skill_resources() -> _Resources:
         )
     manifest_body: dict[str, JsonValue] = {
         "entries": entries,
-        "package": "yoetz",
+        "package": "finishup",
         "resource_set_version": "0.1.0",
         "schema": "yoetz.resource-manifest/1",
     }
@@ -155,16 +155,16 @@ def anyio_backend() -> str:
 def test_verified_skill_resources_have_stable_digests(tmp_path: Path) -> None:
     evidence_root = tmp_path / "evidence"
     evidence_root.mkdir(mode=0o700)
-    skill = read_verified_resource("skills/codex/yoetz/SKILL.md")
-    manifest = read_verified_resource("skills/codex/yoetz/manifest.json")
+    skill = read_verified_resource("skills/codex/finishup/SKILL.md")
+    manifest = read_verified_resource("skills/codex/finishup/manifest.json")
     assert skill.startswith(b"---")
-    assert b"name: yoetz" in skill
-    assert CODEX_HARNESS_PROFILE.skill_root == ".agents/skills/yoetz/"
+    assert b"name: finishup" in skill
+    assert CODEX_HARNESS_PROFILE.skill_root == ".agents/skills/finishup/"
 
     context = runtime_capability_context(
         fixture_digest=bytes_digest(skill + manifest),
         test_revision=_TEST_REVISION,
-        config_profile_digest=canonical_digest({"skill_root": "agents_skills_yoetz"}),
+        config_profile_digest=canonical_digest({"skill_root": "agents_skills_finishup"}),
         external_tool="codex",
         external_version=_VERSION,
         integration_channel="codex_skill",
@@ -195,11 +195,11 @@ def test_verified_skill_resources_have_stable_digests(tmp_path: Path) -> None:
 
 
 def test_skill_and_guidance_define_exact_agent_attested_chat_authorization() -> None:
-    skill = read_verified_resource("skills/codex/yoetz/SKILL.md").decode("utf-8")
+    skill = read_verified_resource("skills/codex/finishup/SKILL.md").decode("utf-8")
     guidance = read_verified_resource("guidance/agent-instructions.md").decode("utf-8")
 
     for entrypoint in (skill, guidance):
-        assert "yoetz://guidance/request-templates.md" in entrypoint
+        assert "finishup://guidance/request-templates.md" in entrypoint
     for document in (read_verified_resource("guidance/request-templates.md").decode("utf-8"),):
         assert "agent-attested trust model, not host-verified proof" in document
         assert "explicitly instructs you in the current chat" in document
@@ -237,7 +237,7 @@ async def test_preview_and_modified_copy_protection_in_isolated_repo(tmp_path: P
     assert b"/Users/" not in marker
     assert b"project_root" not in marker
 
-    skill_dir = project / ".agents" / "skills" / "yoetz"
+    skill_dir = project / ".agents" / "skills" / "finishup"
     skill_dir.mkdir(parents=True, mode=0o700)
     (skill_dir / "SKILL.md").write_bytes(b"user-modified-skill\n")
     before = (skill_dir / "SKILL.md").read_bytes()

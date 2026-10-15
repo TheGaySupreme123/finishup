@@ -7,9 +7,9 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.domain.privacy import PrivacyPolicyChange, PrivacyPolicyChangeValue
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.service.confidential_protocol import (
+from finishup.domain.privacy import PrivacyPolicyChange, PrivacyPolicyChangeValue
+from finishup.protocol.canonical import canonical_digest
+from finishup.service.confidential_protocol import (
     CEREMONY_EXPIRY_SECONDS,
     MAX_HUMAN_CONTROL_FRAME_BYTES,
     MAX_SECRET_BYTES,

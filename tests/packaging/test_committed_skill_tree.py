@@ -1,6 +1,6 @@
 """The activated project skill must equal a real trusted-project skill install.
 
-``.agents/skills/yoetz`` is the Codex-discoverable tree for this repository. The adjacent plugin
+``.agents/skills/finishup`` is the Codex-discoverable tree for this repository. The adjacent plugin
 source tree is not an activated plugin, so keeping only that generated tree current can leave fresh
 Codex sessions reading stale guidance. These tests bind the committed activation tree, its managed
 marker, and its canonical owners to the supported ``CodexSkillIntegration`` installer.
@@ -13,14 +13,14 @@ from typing import Final
 
 import pytest
 
-from yoetz.adapters.integrations.codex_skill import (
+from finishup.adapters.integrations.codex_skill import (
     CodexSkillIntegration,
     build_managed_marker,
     load_packaged_skill_members,
     load_packaged_skill_source,
 )
-from yoetz.domain.values import request_id
-from yoetz.ports.integrations import (
+from finishup.domain.values import request_id
+from finishup.ports.integrations import (
     HarnessId,
     IntegrationAction,
     IntegrationScope,
@@ -30,8 +30,8 @@ from yoetz.ports.integrations import (
 )
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
-_COMMITTED_TREE: Final = _REPO_ROOT / ".agents/skills/yoetz"
-_CANONICAL_TREE: Final = _REPO_ROOT / "skills/codex/yoetz"
+_COMMITTED_TREE: Final = _REPO_ROOT / ".agents/skills/finishup"
+_CANONICAL_TREE: Final = _REPO_ROOT / "skills/codex/finishup"
 _GUIDANCE_DIR: Final = _REPO_ROOT / "guidance"
 _MARKER_NAME: Final = ".yoetz-install.json"
 
@@ -54,14 +54,14 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 def test_the_committed_activation_tree_exists() -> None:
     assert _COMMITTED_TREE.is_dir(), (
-        ".agents/skills/yoetz is missing; regenerate it with CodexSkillIntegration "
+        ".agents/skills/finishup is missing; regenerate it with CodexSkillIntegration "
         "(replace_modified=True, allow_untested=True)"
     )
 
 
 def test_the_committed_activation_tree_matches_packaged_members_and_marker() -> None:
     assert _tree(_COMMITTED_TREE) == _expected_tree(), (
-        ".agents/skills/yoetz has drifted from the supported skill installer output; regenerate "
+        ".agents/skills/finishup has drifted from the supported skill installer output; regenerate "
         "the whole tree rather than editing its managed files or marker"
     )
 
@@ -102,4 +102,4 @@ async def test_a_real_skill_install_reproduces_the_committed_activation_tree(
     )
 
     assert result.state_after.value == "installed_exact"
-    assert _tree(tmp_path / ".agents/skills/yoetz") == _tree(_COMMITTED_TREE)
+    assert _tree(tmp_path / ".agents/skills/finishup") == _tree(_COMMITTED_TREE)

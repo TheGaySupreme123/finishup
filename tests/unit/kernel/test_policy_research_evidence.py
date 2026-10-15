@@ -17,7 +17,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -33,11 +33,11 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import Finding, FindingKind, FindingOrigin
-from yoetz.domain.values import SubjectStateRef, object_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import case_coverage, run_deterministic_policies
-from yoetz.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
-from yoetz.protocol.coverage import (
+from finishup.domain.findings import Finding, FindingKind, FindingOrigin
+from finishup.domain.values import SubjectStateRef, object_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import case_coverage, run_deterministic_policies
+from finishup.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
+from finishup.protocol.coverage import (
     EvidenceImmutability,
     PublicationChannel,
     coverage_for_channel,
@@ -238,7 +238,7 @@ def test_material_limitation_omitted_and_exact_link_nontrigger() -> None:
 def _hook_observed_coverage() -> object:
     from dataclasses import replace as dc_replace
 
-    from yoetz.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
+    from finishup.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
 
     base = coverage_for_channel(PublicationChannel.HOOK_OBSERVED)
     return dc_replace(base, known_gaps=(HOST_OUTCOME_UNAVAILABLE_GAP,))
@@ -258,7 +258,7 @@ def test_outcome_less_observation_results_collapse_to_one_coverage_condition() -
     material_limitation_omitted candidates and one bounded coverage code, while
     an explicit observed FAILURE stays individually actionable."""
 
-    from yoetz.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
+    from finishup.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
 
     hook_coverage = _hook_observed_coverage()
     count = 70  # deliberately above the 64-gap/ref bounds in the acceptance criteria

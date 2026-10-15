@@ -1,6 +1,6 @@
 """An upgraded installation must replace a stale running service on its first call.
 
-The 2026-08-27 Claude Code dogfood installed a new Yoetz build while the previous build's
+The 2026-08-27 Claude Code dogfood installed a new FinishUP build while the previous build's
 service still owned the one per-user control endpoint. The handshake pins the schema-manifest
 digest, so the old service rejected every hello from the new bridge, the new CLI could not even
 ask it to stop, and the agent saw an opaque ``INTERNAL_ERROR``. This test runs a real daemon
@@ -32,21 +32,21 @@ _FOREIGN_DIGEST = "sha256:" + "f" * 64
 # The real production daemon, presenting a schema-manifest digest of another installation in
 # both places an incompatible peer would: its handshake and its singleton stamp.
 _STALE_DAEMON_PROBE = rf"""
-import yoetz.protocol.schemas as schemas
-import yoetz.service.control_protocol as control_protocol
+import finishup.protocol.schemas as schemas
+import finishup.service.control_protocol as control_protocol
 schemas.schema_manifest_digest = lambda: "{_FOREIGN_DIGEST}"
 control_protocol._manifest_digest = lambda: "{_FOREIGN_DIGEST}"
-from yoetz.service.daemon import main
+from finishup.service.daemon import main
 main()
 """
 
 # A status probe that speaks the stale daemon's digest, used only to wait for its readiness.
 _STALE_STATUS_PROBE = rf"""
 import anyio, json
-import yoetz.service.control_protocol as control_protocol
+import finishup.service.control_protocol as control_protocol
 control_protocol._manifest_digest = lambda: "{_FOREIGN_DIGEST}"
-from yoetz.ports.control import ControlClientKind
-from yoetz.service.client import connect_service
+from finishup.ports.control import ControlClientKind
+from finishup.service.client import connect_service
 
 async def run():
     client = await connect_service(ControlClientKind.CLI)
@@ -61,10 +61,10 @@ anyio.run(run)
 
 _CURRENT_ON_DEMAND_PROBE = r"""
 import anyio, json, time
-from yoetz.config.paths import state_dir
-from yoetz.ports.control import ControlClientKind, ControlError
-from yoetz.service.client import connect_service_on_demand
-from yoetz.service.lifecycle import SINGLETON_LOCK_NAME, probe_singleton_holder_identity
+from finishup.config.paths import state_dir
+from finishup.ports.control import ControlClientKind, ControlError
+from finishup.service.client import connect_service_on_demand
+from finishup.service.lifecycle import SINGLETON_LOCK_NAME, probe_singleton_holder_identity
 
 async def run():
     started = time.monotonic()

@@ -9,16 +9,16 @@ from datetime import UTC, datetime
 
 import pytest
 
-from yoetz.adapters.privacy.local_enforcer import (
+from finishup.adapters.privacy.local_enforcer import (
     LocalPrivacyEnforcer,
     scan_exact_bytes,
     scan_exact_bytes_with_confidence,
 )
-from yoetz.application.egress import (
+from finishup.application.egress import (
     PrivacyCoordinator,
     _heuristic_only_item_ids,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -39,10 +39,10 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.privacy import EffectivePrivacyPolicy
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.models import DataCategory
+from finishup.domain.values import Frontier
+from finishup.ports.privacy import EffectivePrivacyPolicy
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.models import DataCategory
 
 _INSTALLATION = "ins_10000000-0000-4000-8000-000000000001"
 _TASK = "tsk_10000000-0000-4000-8000-000000000002"
@@ -334,7 +334,7 @@ def test_mixed_case_keeps_concrete_credentials_as_whole_case_findings() -> None:
 
 
 def test_semantic_heuristic_omission_keeps_review_packet_reference_closure() -> None:
-    from yoetz.protocol.canonical import strict_json_parse
+    from finishup.protocol.canonical import strict_json_parse
 
     clean_ref = "evd_10000000-0000-4000-8000-000000000010"
     withheld_ref = "evd_10000000-0000-4000-8000-000000000011"
@@ -522,11 +522,11 @@ def test_malformed_semantic_envelope_cannot_dispatch_empty_fallback() -> None:
 
 
 def test_non_targeted_redaction_is_bound_in_provider_manifest() -> None:
-    from yoetz.application.semantic_case import (
+    from finishup.application.semantic_case import (
         assemble_filtered_review_packet,
         review_packet_disclosure_result,
     )
-    from yoetz.protocol.canonical import strict_json_parse
+    from finishup.protocol.canonical import strict_json_parse
 
     source_ref = "evd_10000000-0000-4000-8000-000000000014"
 
@@ -974,7 +974,7 @@ def test_surviving_heuristic_withholds_only_the_offending_item(
 ) -> None:
     """Partial withholding (issue #976): one offending item is withheld, the rest is reviewed."""
 
-    import yoetz.adapters.privacy.local_enforcer as enforcer_module
+    import finishup.adapters.privacy.local_enforcer as enforcer_module
 
     # Simulate a redaction that leaves a heuristic in the prepared bytes.
     monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
@@ -999,8 +999,8 @@ def test_surviving_heuristic_redacts_only_the_value_in_place(
     fixed placeholder that says it may be a credential. The rest of the item is still sent.
     """
 
-    import yoetz.adapters.privacy.local_enforcer as enforcer_module
-    from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+    import finishup.adapters.privacy.local_enforcer as enforcer_module
+    from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 
     real = enforcer_module.redact_heuristic_spans
     calls = {"count": 0}
@@ -1030,7 +1030,7 @@ def test_surviving_heuristic_redacts_only_the_value_in_place(
 def test_heuristic_in_structural_envelope_still_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.adapters.privacy.local_enforcer as enforcer_module
+    import finishup.adapters.privacy.local_enforcer as enforcer_module
 
     monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
     candidate = _two_excerpt_semantic_candidate(b"clean evidence", b"plain words")
@@ -1051,7 +1051,7 @@ _SUSPECT_REF = "evd_10000000-0000-4000-8000-000000000021"
 def test_raw_pass_reports_replaced_value_lines_and_ref_never_the_value() -> None:
     """PL2-1 (issue #982): item ref plus 1-based lines in the item's own text, never the value."""
 
-    from yoetz.protocol.redacted_values import SemanticRedactedValue
+    from finishup.protocol.redacted_values import SemanticRedactedValue
 
     minimized = _minimize_all(
         _two_excerpt_semantic_candidate(
@@ -1070,8 +1070,8 @@ def test_raw_pass_reports_replaced_value_lines_and_ref_never_the_value() -> None
 
 
 def test_encoded_pass_reports_replaced_value_lines(monkeypatch: pytest.MonkeyPatch) -> None:
-    import yoetz.adapters.privacy.local_enforcer as enforcer_module
-    from yoetz.protocol.redacted_values import SemanticRedactedValue
+    import finishup.adapters.privacy.local_enforcer as enforcer_module
+    from finishup.protocol.redacted_values import SemanticRedactedValue
 
     real = enforcer_module.redact_heuristic_spans
     calls = {"count": 0}
@@ -1095,8 +1095,8 @@ def test_encoded_pass_reports_replaced_value_lines(monkeypatch: pytest.MonkeyPat
 
 
 def test_withheld_item_reports_its_ref_and_matched_lines(monkeypatch: pytest.MonkeyPatch) -> None:
-    import yoetz.adapters.privacy.local_enforcer as enforcer_module
-    from yoetz.protocol.redacted_values import SemanticRedactedValue
+    import finishup.adapters.privacy.local_enforcer as enforcer_module
+    from finishup.protocol.redacted_values import SemanticRedactedValue
 
     monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
     minimized = _minimize_all(
@@ -1116,7 +1116,7 @@ def test_clean_case_reports_no_redacted_values() -> None:
 
 
 def test_heuristic_value_lines_reads_raw_and_json_string_forms() -> None:
-    from yoetz.observability.privacy import heuristic_value_lines
+    from finishup.observability.privacy import heuristic_value_lines
 
     text = 'first\nAPI_KEY=abcdefgh1234zz\nok\n  password: "hunter2-long-value"\n'
     assert heuristic_value_lines(text.encode()) == (2, 4)

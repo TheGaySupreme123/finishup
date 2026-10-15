@@ -24,16 +24,16 @@ is fatal. Native completion is required only with `strict_agent`. Without those 
 corresponding steps are recorded as skipped and the lane is an install-and-mechanics smoke, not
 the full path.
 
-It does **not** mean Yoetz is correct or useful. A native model that ignores the Yoetz tools,
+It does **not** mean FinishUP is correct or useful. A native model that ignores the FinishUP tools,
 times out, or exits nonzero is recorded in the lane report (`agent_ok: false`) and the lane stays
 green unless the `strict_agent` input is set, because model compliance with a one-paragraph prompt
 is not what this lane certifies. `agent_ok: true` requires zero exit, an observation mapping,
-and confirmed completion. For Codex, the native JSONL must record successful Yoetz MCP `start`
+and confirmed completion. For Codex, the native JSONL must record successful FinishUP MCP `start`
 with the exact full probe statement, an accepted/projected plan publication, a terminal check,
 and a receipt for the same task/session/writer, followed
 by a completed turn. Model text cannot replace those calls; later hook disclosures do not undo
 them. `native_mcp_completed` records this proof separately from the informational `done_marker`.
-Claude and Cursor return a `YOETZ_NATIVE_BINDING` locator in their successful final response.
+Claude and Cursor return a `FINISHUP_NATIVE_BINDING` locator in their successful final response.
 The lane uses it to read the original native session through the public status API, verifies its
 frontier, and exhausts pinned history pages. Completion requires an ordered MCP plan publication,
 engine-recorded check with the exact provider-bound statement, and engine-recorded receipt.
@@ -71,7 +71,7 @@ Anthropic-compatible Messages endpoint (`ANTHROPIC_BASE_URL`); Cursor's CLI cann
 provider, so it uses the Cursor account behind `DOGFOOD_CURSOR_API_KEY` with the `cursor_model`
 input (default `gpt-5.6-luna-low`, the lowest reasoning tier the CLI lists for that model).
 The Codex and Claude sessions use the `agent_model` input (default
-`accounts/fireworks/models/glm-5p3-flash`). AI-powered review inside Yoetz uses the reviewed
+`accounts/fireworks/models/glm-5p3-flash`). AI-powered review inside FinishUP uses the reviewed
 `fireworks-responses` profile with the `semantic_model` input (default
 `accounts/fireworks/models/minimax-m3`, a catalog-suggested model; `glm-5p3-flash` reached
 Fireworks but its answers were rejected as `response_content_invalid` on every cell, and
@@ -95,7 +95,7 @@ trusted-console ceremonies from a pseudo-terminal. Phases, in order, each record
    credential, the lane then uses the product-owned admission preview→grant flow for the
    disposable project's trusted `.codex/config.toml`, accepting the exact preview digest and
    re-reading admission status. The generated rule is only
-   `[mcp_servers.yoetz.tools.check] approval_mode = "approve"`; no server-wide default or
+   `[mcp_servers.finishup.tools.check] approval_mode = "approve"`; no server-wide default or
    approval/sandbox bypass is used. A fresh `codex exec -C <project>` is still required by the
    native phase, so project trust and the active per-tool policy are exercised by the host itself.
    Credential-free lanes keep the private recipe and skip this external-review admission. The
@@ -118,7 +118,7 @@ trusted-console ceremonies from a pseudo-terminal. Phases, in order, each record
    operation's packaged guidance, and asks the host to copy the full probe request into
    `start.task_statement`. A prompt instruction alone does not prove reviewer delivery; inspect
    the recorded check's input manifest before claiming that coverage. Host discovery
-   and execution wrappers are allowed solely to reach deferred Yoetz tools; empty resource lists
+   and execution wrappers are allowed solely to reach deferred FinishUP tools; empty resource lists
    do not prove tool absence. Every native child receives the disposable pinned runtime first
    on `PATH`, so packaged hooks and recovery commands resolve that instance. Then
    `observe status`, `observe drain`, `observe status`, `service status`. A
@@ -209,7 +209,7 @@ symlinked path) or at a base inside a repository.
   A self-hosted macOS runner with an unlocked session could close this; not planned.
 - Codex hooks in `codex exec` run only with `--dangerously-bypass-hook-trust`; interactive hook
   trust is a per-user Codex decision that a runner cannot make, so the lane passes that flag and
-  records it. Hook evidence from the Codex cell therefore proves the Yoetz ingress, not Codex's
+  records it. Hook evidence from the Codex cell therefore proves the FinishUP ingress, not Codex's
   trust flow.
 - The Cursor CLI has no supported custom-provider option, so its cell costs Cursor credits.
 - WSL 2 is exercised here for the first time in CI; the certified cells (ADR-007) are unchanged,

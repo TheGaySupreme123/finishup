@@ -32,9 +32,9 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.adapters.integrations.observation_local import session_commitment_from_codex_id
-from yoetz.application import semantic_case as semantic_case_module
-from yoetz.application.semantic_case import (
+from finishup.adapters.integrations.observation_local import session_commitment_from_codex_id
+from finishup.application import semantic_case as semantic_case_module
+from finishup.application.semantic_case import (
     MAX_PRIOR_FINDINGS,
     CapturedContentScope,
     CapturedSemanticContent,
@@ -46,9 +46,9 @@ from yoetz.application.semantic_case import (
     review_packet_disclosure_result,
     semantic_case_to_prepared_payload,
 )
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.events import (
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -66,14 +66,14 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
     ObservationSource,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
-from yoetz.domain.values import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
+from finishup.domain.values import (
     ActionId,
     EvidenceId,
     FindingId,
@@ -81,17 +81,17 @@ from yoetz.domain.values import (
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase, FindingBasisRef
-from yoetz.kernel.projections import (
+from finishup.kernel.deterministic_checks import DeterministicCase, FindingBasisRef
+from finishup.kernel.projections import (
     EvidenceProjectionRecord,
     FindingProjectionRecord,
     PendingMissingForAssessment,
     ProjectionRecord,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.coverage import EvidenceImmutability
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.coverage import EvidenceImmutability
 
 type Host = Literal["codex", "claude", "cursor"]
 
@@ -838,7 +838,7 @@ def test_no_excerpt_concatenates_several_recorded_outputs(host: Host) -> None:
         item = next(item for item in semantic.items if item.item_id == excerpt.excerpt_item_id)
         source = sources[item.source_ref]
         # Whole, one part of, or the marked head and tail of exactly this one source.
-        pieces = item.content.split(b"\n[yoetz: ")
+        pieces = item.content.split(b"\n[finishup: ")
         assert source.startswith(pieces[0]) or pieces[0] in source
         others = [
             content

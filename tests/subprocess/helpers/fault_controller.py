@@ -344,14 +344,14 @@ def assert_fault_hooks_unavailable_in_release(installed_env: Mapping[str, str]) 
     environment = dict(installed_env)
     environment.update(
         {
-            "YOETZ_FAULT_POINT": FaultPoint.BEFORE_COMMIT.value,
-            "YOETZ_FAULT_MODE": FaultMode.SIGKILL.value,
-            "YOETZ_TEST_BUILD": "1",
+            "FINISHUP_FAULT_POINT": FaultPoint.BEFORE_COMMIT.value,
+            "FINISHUP_FAULT_MODE": FaultMode.SIGKILL.value,
+            "FINISHUP_TEST_BUILD": "1",
         }
     )
     environment.pop("PYTHONPATH", None)
     probe = (
-        "import yoetz.service.daemon as d; "
+        "import finishup.service.daemon as d; "
         "names={'FaultPoint','FaultPlan','arm_fault','fault_hook'}; "
         "assert not names.intersection(d.__dict__); "
         "print('fault_hooks_unavailable')"

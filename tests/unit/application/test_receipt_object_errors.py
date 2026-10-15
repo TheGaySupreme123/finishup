@@ -12,22 +12,22 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.receipt import (  # noqa: SLF001
+from finishup.application.receipt import (  # noqa: SLF001
     _abandon_preappend_objects,  # pyright: ignore[reportPrivateUsage]
     _finalize_object,  # pyright: ignore[reportPrivateUsage]
     _read_object,  # pyright: ignore[reportPrivateUsage]
     _stage_object,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.observability.diagnostics import diagnostic_log_path, lookup_diagnostic_records
-from yoetz.ports.objects import (
+from finishup.observability.diagnostics import diagnostic_log_path, lookup_diagnostic_records
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
     ObjectSource,
     StagedObject,
 )
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.ports.runtime import TaskRuntime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 pytestmark = pytest.mark.anyio
 
@@ -36,7 +36,7 @@ _REQUEST_ID = "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 @pytest.fixture(autouse=True)
 def _diagnostic_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:  # pyright: ignore[reportUnusedFunction]
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     return tmp_path

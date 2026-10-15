@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-from yoetz.mcp.descriptors import (
+from finishup.mcp.descriptors import (
     CLAUDE_CODE_INITIALIZE_INSTRUCTIONS,
     COMPACT_INITIALIZE_INSTRUCTIONS,
 )
@@ -20,7 +20,7 @@ from yoetz.mcp.descriptors import (
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _CARD: Final = _REPO_ROOT / "guidance" / "agent-instructions.md"
 _PACKAGED_CARD: Final = (
-    _REPO_ROOT / "src" / "yoetz" / "resources" / "guidance" / "agent-instructions.md"
+    _REPO_ROOT / "src" / "finishup" / "resources" / "guidance" / "agent-instructions.md"
 )
 _CARD_BUDGET_BYTES: Final = 8_192
 _PROCEDURE_PAGES: Final = (
@@ -48,9 +48,9 @@ def test_the_card_says_it_is_enough_and_names_the_inspection_check() -> None:
     assert "This card is enough for ordinary work." in text
     assert "a prior `status` read or `dry_run` is optional" in text
     assert "`check` `mode: inspect` (records nothing)" in text
-    assert "This card is `yoetz://guidance/agent-instructions.md`; on demand only:" in text
+    assert "This card is `finishup://guidance/agent-instructions.md`; on demand only:" in text
     for page in _PROCEDURE_PAGES:
-        assert f"yoetz://guidance/{page}" in text, page
+        assert f"finishup://guidance/{page}" in text, page
     # The old mandates are gone.
     assert "Read review/coverage before `check`" not in text
     assert "Before material evidence or a completion claim, read `status`" not in text
@@ -63,7 +63,7 @@ def test_the_startup_surface_reads_procedure_pages_only_on_demand() -> None:
         assert "before `publish_work`" not in collapsed
         assert "before `check`" not in collapsed
     for host in ("claude-code", "codex", "cursor", "portable"):
-        skill = _collapsed(_REPO_ROOT / "skills" / host / "yoetz" / "SKILL.md")
+        skill = _collapsed(_REPO_ROOT / "skills" / host / "finishup" / "SKILL.md")
         assert "that core is the operating card" in skill, host
         assert "other pages only when a result names them" in skill, host
         assert "before `publish_work`" not in skill, host

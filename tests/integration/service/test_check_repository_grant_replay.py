@@ -21,31 +21,31 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.sqlite.connection as connection_module
+import finishup.adapters.sqlite.connection as connection_module
 from builders.privacy_policies import minimal_external_policy
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.application.privacy_policy import (
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.application.privacy_policy import (
     DecidePrivacyPolicyRequest,
     PolicyDecisionRequired,
     ProposePrivacyPolicyRequest,
     decide_privacy_policy,
     privacy_propose_policy,
 )
-from yoetz.application.service import Application
-from yoetz.config.models import YoetzConfig
-from yoetz.config.write import fireworks_provider
-from yoetz.domain.privacy import AuthorizationScope, AuthorizationScopeKind
-from yoetz.ports.control import RepositoryPrivacyContext, ServiceState
-from yoetz.ports.diagnostics import StartupCheckResult
-from yoetz.ports.ledger import CheckAwaitingHuman, CheckCommitResult
-from yoetz.ports.privacy import HumanAuthorityCapability, HumanPolicyDecision
-from yoetz.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
-from yoetz.protocol.canonical import JsonValue, canonical_digest
-from yoetz.protocol.models import CheckRequest, PublishWorkRequest, StartRequest, StatusRequest
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.ready_composition import build_ready_application_factory
-from yoetz.service.vault import VaultMode, VaultService, provider_credential_profile_binding
+from finishup.application.service import Application
+from finishup.config.models import FinishUpConfig
+from finishup.config.write import fireworks_provider
+from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind
+from finishup.ports.control import RepositoryPrivacyContext, ServiceState
+from finishup.ports.diagnostics import StartupCheckResult
+from finishup.ports.ledger import CheckAwaitingHuman, CheckCommitResult
+from finishup.ports.privacy import HumanAuthorityCapability, HumanPolicyDecision
+from finishup.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
+from finishup.protocol.canonical import JsonValue, canonical_digest
+from finishup.protocol.models import CheckRequest, PublishWorkRequest, StartRequest, StatusRequest
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.ready_composition import build_ready_application_factory
+from finishup.service.vault import VaultMode, VaultService, provider_credential_profile_binding
 
 _INSTALLATION_ID = "ins_00000000-0000-4000-8000-000000000001"
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000002"
@@ -294,7 +294,7 @@ async def test_same_request_replay_after_repository_grant_reaches_terminal_resul
     initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
     await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
     provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-    config = YoetzConfig(profile="local-openai", provider=provider)
+    config = FinishUpConfig(profile="local-openai", provider=provider)
     app = None
     try:
         factory = build_ready_application_factory(

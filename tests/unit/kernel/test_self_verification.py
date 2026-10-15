@@ -3,8 +3,8 @@
 The reason sets below are the ones tb4n1 agents met at closure: deterministic findings left
 unresolved by ``command_attempt_uncorroborated``, ``content_redacted`` and
 ``observation_input_loss``, and AI-powered findings left unresolved by
-``semantic_packet_insufficient`` and ``semantic_reference_scope_reduced``. Every one was a Yoetz
-limit the agent could not repair, and the agents filed false ``yoetz-blocker`` claims instead.
+``semantic_packet_insufficient`` and ``semantic_reference_scope_reduced``. Every one was a FinishUP
+limit the agent could not repair, and the agents filed false ``finishup-blocker`` claims instead.
 """
 
 from __future__ import annotations
@@ -16,14 +16,14 @@ from typing import cast
 import pytest
 
 from builders.policy_cases import evd, evt, finding_record, fnd, obl, record
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     LedgerRecord,
     PolicyVersion,
     ResponseRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     SELF_VERIFIED_GUIDANCE,
     CheckVerdict,
@@ -32,34 +32,34 @@ from yoetz.domain.findings import (
     FindingOrigin,
     ResponseDisposition,
 )
-from yoetz.domain.values import Frontier
-from yoetz.kernel.closure_readiness import (
+from finishup.domain.values import Frontier
+from finishup.kernel.closure_readiness import (
     FINDING_SELF_VERIFIED_GAP,
     GAP_CLASSIFICATION,
     ClosureReadinessFacts,
     GapClass,
     derive_closure_readiness,
 )
-from yoetz.kernel.finding_resolution import (
+from finishup.kernel.finding_resolution import (
     UNRESOLVED_FINDING_NEXT_STEPS,
     finding_resolution_explanation,
 )
-from yoetz.kernel.finding_todo import (
+from finishup.kernel.finding_todo import (
     TERMINAL_TODO_STATES,
     FindingTodoState,
     finding_blocks_receipt,
     finding_todo_state,
     todo_counts,
 )
-from yoetz.kernel.projections import ProjectionState, empty_projection_state
-from yoetz.kernel.self_verification import (
+from finishup.kernel.projections import ProjectionState, empty_projection_state
+from finishup.kernel.self_verification import (
     FINDING_NOT_PROOF_LIMITED,
     FINDING_NOT_RECHECKED,
     finding_proof_limited,
     reasons_proof_limited,
     self_verification_refusal,
 )
-from yoetz.protocol.coverage import (
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -68,7 +68,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import (
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,
@@ -180,7 +180,7 @@ def _records(*rows: object) -> tuple[LedgerRecord, ...]:
 @pytest.mark.parametrize(
     ("origin", "reasons"),
     [
-        # tb4n1 deterministic closures: every remaining reason is a standing Yoetz limit.
+        # tb4n1 deterministic closures: every remaining reason is a standing FinishUP limit.
         (_DET, ("coverage:command_attempt_uncorroborated",)),
         (_DET, ("coverage:content_redacted",)),
         (_DET, ("coverage:observation_input_loss",)),
@@ -204,7 +204,7 @@ def _records(*rows: object) -> tuple[LedgerRecord, ...]:
         (_SEM, ("reviewer_verdict_answered_not_fixed", "reviewer_assessment_incomplete")),
     ],
 )
-def test_only_yoetz_limits_are_self_verifiable(
+def test_only_finishup_limits_are_self_verifiable(
     origin: FindingOrigin, reasons: tuple[str, ...]
 ) -> None:
     assert reasons_proof_limited(reasons, origin) is True
@@ -212,7 +212,7 @@ def test_only_yoetz_limits_are_self_verifiable(
 
 def test_a_review_that_cannot_complete_is_a_limit_only_when_durable() -> None:
     reasons = ("semantic_review_not_completed", "coverage:semantic_relevance_review_not_run")
-    # A policy, privacy or configuration block no retry removes: a Yoetz limit.
+    # A policy, privacy or configuration block no retry removes: a FinishUP limit.
     assert reasons_proof_limited(reasons, _SEM, review_undeliverable=True) is True
     # A timeout, rate limit or unavailable transport is transient: run check again.
     assert reasons_proof_limited(reasons, _SEM) is False
@@ -245,7 +245,7 @@ def test_a_review_that_cannot_complete_is_a_limit_only_when_durable() -> None:
         (_SEM, ("findings_suppressed", "semantic_packet_insufficient")),
     ],
 )
-def test_yoetz_still_seeing_it_or_agent_work_is_refused(
+def test_finishup_still_seeing_it_or_agent_work_is_refused(
     origin: FindingOrigin, reasons: tuple[str, ...]
 ) -> None:
     assert reasons_proof_limited(reasons, origin) is False
@@ -283,12 +283,12 @@ def test_no_later_check_is_finding_not_rechecked() -> None:
         ("command_attempt_uncorroborated",),
         # L2 #982: capture-time ``content_redacted`` no longer vetoes a local absence proof, so it
         # alone leaves nothing unproven; it stays a limit beside the others below.
-        # Lead request: case-wide observation loss is a standing Yoetz limit.
+        # Lead request: case-wide observation loss is a standing FinishUP limit.
         ("observation_input_loss",),
         ("command_attempt_uncorroborated", "content_redacted", "observation_input_loss"),
     ],
 )
-def test_a_repair_only_a_yoetz_limit_keeps_unproven_is_eligible(gaps: tuple[str, ...]) -> None:
+def test_a_repair_only_a_finishup_limit_keeps_unproven_is_eligible(gaps: tuple[str, ...]) -> None:
     # tb4n1's typical leftover: a requested-item finding raised before work started.
     state = _state(_finding(kind=FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED))
     records = _records(_row(10, _check(gaps=gaps)))
@@ -374,14 +374,14 @@ def test_unresolved_explanation_orders_repair_then_self_verification_then_acknow
     verify = explanation.index("respond `self_verified`")
     acknowledge = explanation.index("acknowledged_not_done only if you truly will not")
     assert repair < verify < acknowledge
-    assert "never a `yoetz-blocker`" in explanation
+    assert "never a `finishup-blocker`" in explanation
 
 
 # -- A later positive sighting is never hidden under the terminal row (adversarial review) ---
 
 
 def test_a_rule_that_fires_again_after_self_verification_mints_a_new_finding() -> None:
-    from yoetz.application.check import prior_finding_ids
+    from finishup.application.check import prior_finding_ids
 
     finding = _finding()
     key = (finding.kind, finding.policy_id, finding.subject_refs)

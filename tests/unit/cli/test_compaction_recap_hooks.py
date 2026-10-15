@@ -16,20 +16,20 @@ from typing import Any
 import pytest
 
 from builders.status_wire import CompactStatus, compact_status, obligations_status
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli.hooks import handle_session_start
-from yoetz.cli.observe_hooks import (
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli.hooks import handle_session_start
+from finishup.cli.observe_hooks import (
     handle_claude_observe,
     handle_cursor_observe,
     handle_observe,
     map_hook_payload_to_envelope,
 )
-from yoetz.domain.compaction_recap import RECAP_CONTEXT_LIMIT
-from yoetz.domain.observation import ObservationSource
-from yoetz.protocol.models import StatusCompactPageModel, StatusSuccessModel
+from finishup.domain.compaction_recap import RECAP_CONTEXT_LIMIT
+from finishup.domain.observation import ObservationSource
+from finishup.protocol.models import StatusCompactPageModel, StatusSuccessModel
 
-_HELD_IDS_CUE = "For compaction in an already-started host session, use your held current ids"
+_HELD_IDS_CUE = "for compaction in an already-started host session, use your held current ids"
 
 
 class _Service:
@@ -154,7 +154,7 @@ def test_codex_compaction_start_carries_the_sourced_recap_after_the_held_ids_cue
     assert service.views[:2] == ["compact", "obligations"]
     assert service.views.count("obligations") == 1
     assert _HELD_IDS_CUE in context
-    assert context.index(_HELD_IDS_CUE) < context.index("Yoetz recap after context compaction")
+    assert context.index(_HELD_IDS_CUE) < context.index("FinishUP recap after context compaction")
     for needle in (
         service.compact.task_id,
         service.compact.session_id,
@@ -184,7 +184,7 @@ def test_codex_resume_start_keeps_the_plain_reground_without_a_recap(tmp_path: P
 
     assert "obligations" not in service.views
     assert _HELD_IDS_CUE in context
-    assert "Yoetz recap" not in context
+    assert "FinishUP recap" not in context
 
 
 def test_the_recap_names_deliverables_unavailable_when_the_second_read_fails(
@@ -201,7 +201,7 @@ def test_the_recap_names_deliverables_unavailable_when_the_second_read_fails(
 def test_the_obligations_read_is_skipped_when_the_host_window_has_no_room_for_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.cli import hooks as hooks_module
+    from finishup.cli import hooks as hooks_module
 
     monkeypatch.setattr(hooks_module, "_RECAP_WINDOW_SECONDS", -1.0)
     service = _service()
@@ -328,7 +328,7 @@ def test_pending_rows_are_counted_before_the_status_is_read(
     """Codex review of #1027: rows the delegated observe pass drains afterwards are still the
     rows the facts could not include, so the count is taken before the read."""
 
-    from yoetz.cli import hooks as hooks_module
+    from finishup.cli import hooks as hooks_module
 
     service = _service()
     order: list[str] = []
@@ -358,7 +358,7 @@ def test_the_shared_pass_counts_pending_rows_before_it_reads_status(
     """Codex review of #1027: Claude Code and the Codex observe pass sample the backlog before the
     read too, so rows the sweeper acknowledges mid-read are still disclosed."""
 
-    from yoetz.cli import compaction_recap as recap_module
+    from finishup.cli import compaction_recap as recap_module
 
     service = _service()
     order: list[str] = []
@@ -410,7 +410,7 @@ def test_a_status_without_a_frontier_or_page_leaves_the_startup_context_unchange
 
     assert _HELD_IDS_CUE in context
     assert "frontier 3:sha256:" in context
-    assert "Yoetz recap after context compaction" in context  # frontier present: recap composes
+    assert "FinishUP recap after context compaction" in context  # frontier present: recap composes
     # ...and says what the status did not carry instead of inventing it
     assert "plan: not reported by this status" in context
     assert "readiness: not reported by this status" in context
@@ -476,7 +476,7 @@ def test_claude_code_compaction_start_carries_the_recap(tmp_path: Path) -> None:
     context, views = _claude_context(tmp_path, service, source="compact")
 
     assert views[:2] == ["compact", "obligations"]
-    assert "Yoetz recap after context compaction" in context
+    assert "FinishUP recap after context compaction" in context
     assert service.compact.finding_ids[0] in context
     assert "out/result.json" in context
     assert len(context) <= RECAP_CONTEXT_LIMIT
@@ -487,7 +487,7 @@ def test_claude_code_other_starts_carry_no_recap(tmp_path: Path, source: str) ->
     service = _service()
     context, views = _claude_context(tmp_path, service, source=source)
 
-    assert "Yoetz recap" not in context
+    assert "FinishUP recap" not in context
     assert "obligations" not in views
 
 
@@ -521,7 +521,7 @@ def test_cursor_compaction_start_carries_the_recap_when_the_host_reports_it(
     assert code == 0
     context = json.loads(stdout.getvalue().decode())["additional_context"]
 
-    assert "Yoetz recap after context compaction" in context
+    assert "FinishUP recap after context compaction" in context
     assert service.compact.finding_ids[0] in context
 
 
@@ -558,7 +558,7 @@ def test_the_codex_observe_pass_carries_the_recap_when_it_holds_the_lifecycle_lo
     context = json.loads(stdout.getvalue().decode())["hookSpecificOutput"]["additionalContext"]
 
     assert _HELD_IDS_CUE in context
-    assert "Yoetz recap after context compaction" in context
+    assert "FinishUP recap after context compaction" in context
     assert service.views[:2] == ["compact", "obligations"]
 
 
@@ -567,7 +567,7 @@ def test_the_reground_hook_defers_to_an_observe_pass_that_holds_the_lifecycle_lo
 ) -> None:
     """The losing hook neither reads status nor repeats the recap: one recap, from the winner."""
 
-    from yoetz.adapters.integrations.codex_lifecycle import acquire_session_lock
+    from finishup.adapters.integrations.codex_lifecycle import acquire_session_lock
 
     service = _service()
     _consented(tmp_path)
@@ -586,13 +586,13 @@ def test_the_reground_hook_defers_to_an_observe_pass_that_holds_the_lifecycle_lo
         )
     assert code == 0
     assert service.views == []  # the lock holder, not this hook, reads status and carries it
-    assert "Yoetz recap" not in stdout.getvalue().decode()
+    assert "FinishUP recap" not in stdout.getvalue().decode()
 
 
 def test_the_recap_never_reaches_the_default_context_bound_by_accident() -> None:
     """Only a caller that asks for the recap bound gets it; every other context stays at 2,000."""
 
-    from yoetz.cli.hook_io import claude_context_output, context_output, cursor_context_output
+    from finishup.cli.hook_io import claude_context_output, context_output, cursor_context_output
 
     def text(output: object, *path: str) -> str:
         node: Any = output
@@ -629,7 +629,7 @@ def test_the_recap_never_reaches_the_default_context_bound_by_accident() -> None
 def _recap_block(context: str) -> str:
     """The recap proper: from its header to the end of the context."""
 
-    start = context.index("Yoetz recap after context compaction")
+    start = context.index("FinishUP recap after context compaction")
     return context[start:]
 
 
@@ -643,7 +643,7 @@ def test_every_host_and_every_carrier_states_the_same_recap_for_the_same_status(
     they say about the latest check is what the CLI status render prints for it.
     """
 
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     service = _service()
     compact_root = service.compact.result.root

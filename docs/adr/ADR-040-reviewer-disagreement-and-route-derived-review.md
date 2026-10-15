@@ -2,13 +2,14 @@
 
 - Status: accepted (2026-10-08)
 - Issues: #1020 (tb4n2 R1), #1021 (tb4n2 R6), #1024 (tb4n3 RC-1), #1030 (tb4n3 RC-7), #1042, #1043,
-  #1046 (tb4n4, amendment of 2026-10-12 below)
+  #1046 (tb4n4, amendment of 2026-10-12 below); tb4n5 follow-ups of #1042 and #1046 and the
+  action/result pairing rule (amendment of 2026-10-13 below)
 - Amends: ADR-034 (finding to-do states), ADR-033 amendment of 2026-10-08 (#986, "record route;
   don't block"), ADR-006 (reviewer instruction)
 - Maintainer acknowledgement: the owner approved all tb4n2 core issues R1-R10, design changes
   included, on 2026-10-08 (maintainer TheGaySupreme123: "all r been agreed").
 - Implemented by: `kernel/later_material.py`, `kernel/check_standing.py`, `kernel/reducers.py`
-  (`invalidates_recorded_check`), `domain/yoetz_tools.py` (tb4n3 RC-6, #1029),
+  (`invalidates_recorded_check`), `domain/finishup_tools.py` (tb4n3 RC-6, #1029),
   `application/check.py` (`_admit_prior_verdicts`, `_disputed_after_rebuttal`,
   `_record_restatement`, `_restated_finding`, `semantic_route_required`), `kernel/concern.py`,
   `kernel/limitation.py`, `application/review_concern.py` (tb4n3 RC-1 and RC-7, amendment below),
@@ -20,11 +21,18 @@
   `_review_skip_gaps`), `kernel/task_facts.py` (`material_edit_recorded`),
   `kernel/finding_resolution.py` (`_TASK_FACT_GAPS_TOLERATED_WHEN_FIXED`), `domain/findings.py`
   (`AGENT_CRITERION_UNMET`, `is_limitation_request`), `kernel/closure_class.py`,
-  `kernel/gap_effect.py` and `kernel/closure_readiness.py` (`_closing_review_facts`).
+  `kernel/gap_effect.py` and `kernel/closure_readiness.py` (`_closing_review_facts`). tb4n5
+  amendment: `kernel/policies/work_integrity.py` (`_unresolved_action_findings`),
+  `kernel/deterministic_checks.py` (`action_batches`), `kernel/finding_resolution.py`
+  (`_action_result_link_proven`), `application/publish_work.py` (`_action_notices`),
+  `protocol/models.py` (`PUBLISH_ACTION_NOTICE_TEXTS`), `mcp/summaries.py`,
+  `kernel/review_frame.py` (`local_rule_owned`), `application/check.py`
+  (`SEMANTIC_REJECTED_LOCAL_RULE_OWNED`, `_ruling_material`, `_DISAGREEING_RULINGS`),
+  `kernel/review_round.py` (`unassessable_review_exhausted`), `application/respond.py`.
 
 ## Context
 
-Yoetz exists to catch incomplete work. It is not a bug finder, and the worst outcome is Yoetz
+FinishUP exists to catch incomplete work. It is not a bug finder, and the worst outcome is FinishUP
 steering the agent wrong. In the tb4n2 benchmark the AI-powered reviewer did exactly that:
 
 - **formal-crypto (semantic arm, 2 of 2 runs).** The reviewer raised `task_requirement_unmet`
@@ -51,7 +59,9 @@ nothing told the reviewer that the artifact it asks for must be obtainable.
 ### 1. `disputed_after_rebuttal` (code rule, issue #1020)
 
 A reviewer ruling that keeps an AI-powered finding open (`still_present`, `answered_not_fixed` or
-`unassessable`) is recorded by Yoetz as the ruling `disputed_after_rebuttal` when all of these hold:
+`unassessable`) is recorded by FinishUP as the ruling `disputed_after_rebuttal` when all of these hold
+(amended 2026-10-13, tb4n5: `unassessable`, and an unsupported `fixed` demoted to it, never are;
+see the amendment of 2026-10-13 below):
 
 - the finding was shown to the reviewer as a rulable prior finding;
 - the agent's latest readable response is `rejected` with a non-blank reason;
@@ -145,19 +155,19 @@ builder. Classes:
 
 | class | what it is | effect |
 |---|---|---|
-| `yoetz_own_call` | the observation of a call to one of Yoetz's own MCP tools, any host spelling (`mcp__yoetz__x`, `mcp__plugin_yoetz_yoetz__x`, bare `x`, `yoetz:x`, `plugin-yoetz-yoetz:x`, Cursor's generic `MCP:x` by the closed basenames) | ignored |
+| `yoetz_own_call` | the observation of a call to one of FinishUP's own MCP tools, any host spelling (`mcp__finishup__x`, `mcp__plugin_finishup_finishup__x`, bare `x`, `finishup:x`, `plugin-finishup-finishup:x`, Cursor's generic `MCP:x` by the closed basenames) | ignored |
 | `exploration` | an observed run of the hook's `exploration` runner class, a native read tool, a routine-read summary | ignored |
 | `no_tool_activity` | host stream bookkeeping that names no tool call: `Opaque observation kind=<Codex wrapper kind>`, `Observed completion signal kind=...`; and a host poll tool that returns the output of work started earlier (Codex `wait`, a poll output that follows the last check in 18 of 27 tb4n2/tb4n3 semantic-arm attempts) | ignored |
-| `non_counting_write` | an observed edit whose every path is scratch or Yoetz-owned (ADR-042) | ignored |
+| `non_counting_write` | an observed edit whose every path is scratch or FinishUP-owned (ADR-042) | ignored |
 | `response` | a cooperative answer to a finding | advisory (above) |
 | `edit_or_write` | an observed deliverable, workspace or outside-workspace edit | supersedes the check: `check_not_applicable`, freshness `stale_after_material_change`, closing review required again |
-| `other` | anything Yoetz cannot prove harmless: an unclassified command or tool, an unpaired host result, a subagent, a lineage manifest | keeps the bounding disclosure |
+| `other` | anything FinishUP cannot prove harmless: an unclassified command or tool, an unpaired host result, a subagent, a lineage manifest | keeps the bounding disclosure |
 
-A result is classified by the action it answers. A Yoetz receipt or export the agent saved is
+A result is classified by the action it answers. A FinishUP receipt or export the agent saved is
 exempt even when a declared output directory would otherwise make a lexical `yoetz_owned` write
 count for verification staleness (ADR-042 decision 1): it is the output about the check, so no
 check could cover it, and counting it would invalidate the check that produced it. The exemption
-ends where a declared output is itself a packaged Yoetz tree (`.agents/...`): a write there may be
+ends where a declared output is itself a packaged FinishUP tree (`.agents/...`): a write there may be
 the deliverable and keeps counting.
 
 Readiness keeps `check_current_as_of_earlier_frontier` a standing disclosure (the gap table and
@@ -166,7 +176,7 @@ receipt. The tb4n2 B5 proposal to list it as agent work ("one more check removes
 examined and not adopted: every variant of it can regenerate after the check it asks for, and an
 instruction an agent cannot complete is the worst outcome (steered wrong). Reproduced regenerators:
 Cursor's structural `afterMCPExecution` result of every call (including each check's own) carries
-no tool identity; an agent running the Yoetz CLI through its shell (`yoetz check ...`) records a
+no tool identity; an agent running the FinishUP CLI through its shell (`finishup check ...`) records a
 named command after every check; a late-delivered observation lands after any check. The receipt
 still discloses and bounds, and the limitations text names the first bounding record; wave 2's
 `gap_effect` decides with the host facts. Content the host captured for a call (tool output, a
@@ -233,7 +243,7 @@ tb4n3 RC-3 change (ADR-046), not here.
   receipt-blocking, never a Stop-gate token. Its only next action is one answer.
 - **limitation_disclosed**: the agent says the requirement may be met but cannot be verified here,
   by a reasoned `respond` (`acknowledged`, or `self_verified`, which already requires a reason and
-  the agent's evidence) or by a recorded `yoetz-verification-limit:<obligation id>` decision on an
+  the agent's evidence) or by a recorded `finishup-verification-limit:<obligation id>` decision on an
   obligation the finding concerns. Acknowledging a limitation request needs no recorded resolution
   attempt (this relaxes the #885 rule for that class only; repair demands keep it). It is settled and
   never clean: closure readiness and the receipt list it, and a re-raise of the same concern folds
@@ -243,7 +253,7 @@ tb4n3 RC-3 change (ADR-046), not here.
   requirement like any other, not a verification limit.
 
 Guards, each tested: **G1** a challenge asking the agent to `act` is never a limitation request, even
-beside a `yoetz-verification-limit` decision (the reviewer sees an obtainable path). **G2** nothing
+beside a `finishup-verification-limit` decision (the reviewer sees an obtainable path). **G2** nothing
 reads the agent's own words, so an agent that answers an `act` finding "I could not find it" does not
 turn it into a limitation (the pretrain-shard-corruption rescue, where the acknowledgement re-check
 sent the agent back and it recovered the inputs, is kept). **G3** `declared_output_emptied` is
@@ -253,7 +263,7 @@ emptied. **G4** the class is never clean.
 Reviewer instruction (same change): the final-phase question and the standing instruction say that a
 requirement only a hidden evaluator or an unobtainable artifact can establish is a `not_assessable`
 row once the packet shows the agent disclosed it (an obligation acknowledged as not done, a
-`yoetz-verification-limit` decision, or a limitation request it acknowledged); a requirement
+`finishup-verification-limit` decision, or a limitation request it acknowledged); a requirement
 quantified over unbounded inputs is judged on the tested part (`supported`) with the remainder stated
 as a limitation, never `not_supported`; the acknowledged-obligation question keeps the genuine-blocker
 carve-outs; and "a reasoned fallback ... may be approved" is replaced by: a working partial solution
@@ -306,7 +316,10 @@ above is the narrowest the recorded facts allow.
 a rejection that stands; a `fixed` whose citations are trimmed but stay supported stays `fixed`; a
 `still_present` or `answered_not_fixed` that loses a citation is `unassessable`; an unsupported
 downgrade over a standing position that cites no concern material is recorded `disputed_after_rebuttal`;
-a ruling on a resolved item or a disclosed limitation is set aside.
+a ruling on a resolved item or a disclosed limitation is set aside. (Amended 2026-10-13, tb4n5: only
+an unsupported `still_present` or `answered_not_fixed` becomes the dispute; an unsupported `fixed`
+or `withdrawn`, and an `unassessable`, stay `unassessable`. A `fixed` may cite the repair by the
+event that recorded it.)
 
 **Reverse edges** (ADR-034 amendment): `acknowledged_not_done` and `self_verified` are not one-way
 doors; see there. The respond text for a refused answer names the state and the way out and no longer
@@ -336,7 +349,7 @@ means.
 | Agent answer | Meaning | State and class | Receipt |
 |---|---|---|---|
 | none yet | to disclose | `limitation_requested`, `agent_work`, next action `acknowledge` | counted "to disclose", never repair work (unchanged) |
-| `acknowledged` with a reason; a reasoned `self_verified`; a `yoetz-verification-limit:<obligation>` decision | the requirement may be met but cannot be verified here | `limitation_disclosed`, `settled_disclosed` | at best `insufficient_coverage`, listed under "Verification limits" (as before) |
+| `acknowledged` with a reason; a reasoned `self_verified`; a `finishup-verification-limit:<obligation>` decision | the requirement may be met but cannot be verified here | `limitation_disclosed`, `settled_disclosed` | at best `insufficient_coverage`, listed under "Verification limits" (as before) |
 | `acknowledged_not_done` | the requirement is NOT met | `limitation_acknowledged_not_done`, `settled_unmet` | `unresolved_findings_remain`, listed with the requirements acknowledged as not done, never under "Verification limits" |
 
 Why: the Q4 reading moved lake S (`fnd_8bdad2d0`, reward 0, accuracy really unmet) from
@@ -372,7 +385,7 @@ that request is the acknowledgement these design-gated changes need. tb4n4 measu
 arm: of 79 reviewer findings 34% were correctness opinions outside the frame and only 35% were
 in-frame incomplete-work catches; 19% were wrong (agents rejected 14 of 15 with evidence, so the
 cost was time). 5 `action_without_result` and 4 premature "nothing implemented yet" findings were
-about Yoetz's own process state although the instruction forbids it (section 5 dropped only "never
+about FinishUP's own process state although the instruction forbids it (section 5 dropped only "never
 attempted"). On interleaved-vigenere S the reviewer turned failures of the agent's own oversized
 stress runs (12 streams, seed lengths 9-32, beyond the sample family) into
 `task_requirement_unmet`; the agent spent about forty minutes adding a language model that loaded
@@ -389,7 +402,7 @@ or emptied output, a done or ran claim the packet does not show, an early stop);
 started is not a defect; a correctness concern is returned as `code_defect`. The check enforces the
 frame without extra packet bytes: `validate_semantic_judgment(..., review_phase="routine")` records a
 `code_defect` challenge that would mint a new finding as an advisory note, appended to the fenced
-`review_summary` under a fixed Yoetz header and counted in `advisory_notes` (the accounting is
+`review_summary` under a fixed FinishUP header and counted in `advisory_notes` (the accounting is
 returned = accepted + rejected + suppressed + advisory). A re-raise of a recorded finding still folds
 onto it. No gap is added: the review saw everything and the note is kept whole. The final phase
 (`final_review`, or any completion claim) is unchanged: correctness and completeness are findings
@@ -401,11 +414,17 @@ a caller that passes none keeps the earlier rules.
 `kernel/review_frame.py` decides from the frozen projection and the challenge's resolved subjects,
 never the reviewer's words; anything unreadable keeps the challenge.
 
-- `yoetz_process_state_only`: every subject is the hook observation of a call to one of Yoetz's own
+- `finishup_process_state_only`: every subject is the hook observation of a call to one of FinishUP's own
   tools (or its result), or, for `action_without_result`, any hook-observed action (pairing a hook
-  observation with its result is Yoetz's capture; the `check` call is always in flight). A
+  observation with its result is FinishUP's capture; the `check` call is always in flight). A
   description is trusted only on a service-stamped observation. Reason `yoetz_process_state`, every
   phase.
+- Amended 2026-10-13 (tb4n5 follow-up): the local rule owns the action/result relation for every
+  readable action or result, published or observed. `local_rule_owned` drops an
+  `action_without_result` or `result_without_action` challenge that cites a readable action or
+  result event and nothing unreadable, reason `local_rule_owned`, every phase; see the amendment of
+  2026-10-13 below. The restriction to hook-observed subjects above stays only for
+  `yoetz_process_state`.
 - Section 5 now reads the phase the packet named: during a routine review an AI-powered
   `requested_item_never_attempted` is dropped (reason `routine_completeness`); the closing review
   keeps it even when the agent stops without a completion claim, which is exactly the early stop
@@ -419,7 +438,7 @@ yet started is not a defect; whether that covers all four tb4n4 cases needs the 
 
 Both reasons disclose the new standing code `semantic_process_state_filtered` (gap table G5d,
 disclosed on both routes, tolerated by both absence proofs) instead of `semantic_challenges_rejected`,
-which keeps bounding for every other dropped challenge: a challenge about Yoetz's state is not
+which keeps bounding for every other dropped challenge: a challenge about FinishUP's state is not
 material the check failed to carry. Item 3 of #1042 (wrong-finding and in-frame rates per run) is
 the maintainer's harness measurement; the bounded `semantic_review_accounting` record now carries
 `semantic_challenges_advisory`, `semantic_agent_criteria` and `semantic_rejected_yoetz_process_state`
@@ -439,7 +458,7 @@ next actions `acknowledge` and `repair`; a reasoned `acknowledged` narrows it in
 `acknowledged_not_done` is `limitation_acknowledged_not_done`; a later check that proves it absent
 resolves it. The finding explanation says "Your own criterion ... fix it, or narrow the criterion".
 Two parts of that lifecycle belong to the reviewer's request to state a hidden evaluator's limit and
-never apply to the agent's own criterion (review of #1043). A `yoetz-verification-limit` decision
+never apply to the agent's own criterion (review of #1043). A `finishup-verification-limit` decision
 neither discloses it nor marks its obligation `externally_evaluated` (`kernel.limitation`, G1): the
 probe fails here, and only the agent's own answer to that finding narrows it, so an unrelated
 decision line recorded for a hidden grader can no longer settle it unanswered. And the check never
@@ -504,7 +523,7 @@ The deferral is not a failed review: the verdict reads from the local checks, ne
 `semantic_review_not_requested` it rides with (ADR-046 rule G1): where the check recorded
 `semantic_route_required: false` (a route that does not require review) both are disclosed, so the
 check, status and receipt read as a `deterministic_only` check on that route would, and a deferral
-Yoetz chose never reads worse than a local-only check the agent chose; where review is required
+FinishUP chose never reads worse than a local-only check the agent chose; where review is required
 both bound (`insufficient_coverage`) until a review is current. The next check after the first
 edit reviews as configured. Where the deferred check's route requires review, that review stays
 owed: the deferred check counts as a use of AI-powered review for `closing_review_required` (it
@@ -526,7 +545,8 @@ receipt's limitations sentence say "AI-powered review deferred".
 `verification_only_as_root`, `install_into_private_env`, `install_into_yoetz_runtime` and the
 planned-verification observer heuristics (`agent_linked`, `matched_by_prefix`, `outcome_unknown`,
 `unobservable`). Admission already requires a `fixed` ruling to cite evidence or a result recorded
-after the finding. The facts stay on the receipt (gap table G4) and the resolved finding's
+after the finding (by its own id or, since the amendment of 2026-10-13, by the event that recorded
+it). The facts stay on the receipt (gap table G4) and the resolved finding's
 explanation names the ones its resolving check carried. Facts about the deliverable
 (`requested_output_*`, `declared_output_*`, `deliverable_references_undeclared_file`), every
 agent-actionable fact and a silent review keep blocking.
@@ -536,3 +556,132 @@ unreleased classification version `"8"`, with #1044's `G0c` row (ADR-046). Hosts
 instruction, so Codex, Claude Code and Cursor behave the same; no host adapter changed. Acceptance
 on the tb4n4 exports (replaying the 60 exports for the wrong-finding and in-frame rates) remains for
 the maintainer.
+
+## Amendment 2026-10-13 (tb4n5 follow-ups of #1042 and #1046): the findings lifecycle
+
+Evidence: the tb4n5 rerun on 0.3 at 0291f441d (#1054), 18 attempts, read by two independent
+reviews. Owner decisions of 2026-10-13: state the action/result pairing rule and return a
+publish-time notice; a sibling action in the same publish batch does not trigger
+`action_without_result`; a plain ledger link resolves it under capture gaps, disclosed on the
+receipt; the local rule owns `action_without_result`/`result_without_action` and the AI duplicates
+are dropped; `evt_` citations map to the result or evidence they recorded and an unsupported
+`fixed` never becomes a dispute; an acknowledgement may still count as a rebuttal.
+
+### 1. Every published action is paired with its result
+
+tb4n5 raised `action_without_result` in 13 of 18 attempts (15 local findings), each on an action
+the agent itself published, 8 edits, 4 research actions and 3 commands. None was a lost link: every
+agent published the result after the finding asked for it. Agents conveyed outcomes through
+evidence and decisions, which link nothing, and no guidance said up front that an
+`action_recorded` needs a `result_recorded` naming its `act_` id.
+
+- **Guidance.** `workflow.md` step 5 and the pre-flight, the operating card, `publication.md` and
+  `request-templates.md` (a completed-action example publishing the result in the same batch) state
+  the pairing rule: a result whose payload `action_id` is the action's id, any outcome, normally in
+  the same batch; evidence, decisions and causal parents do not link an action.
+- **Publish-time notice.** `publish_work` (and its dry run) returns `action_notices` naming each
+  action the batch recorded that no result names yet, with one fixed text (`result_not_linked`).
+  It admits as many rows as a batch admits drafts (100), so a full batch is never cut, records
+  nothing and changes no finding. Golden vectors: fixture `CAN-018`
+  (`scripts/generate_publish_action_notices_fixture.py`, checked by the resource ripple).
+- **Same-batch siblings.** A sibling action of the same cooperative `publish_work` batch is never
+  "subsequent unrelated work" (8 of 15 tb4n5 findings fired only on one, medical S L95). The frozen
+  case carries the batches (`DeterministicCase.action_batches`, emitted only when present); the
+  work-integrity pack stays `0.3.0`, unreleased and amended in place. A genuinely unaccounted action
+  is still raised by unrelated work in a later batch, and only a result naming the action links it.
+- **A ledger link resolves it under capture gaps.** A readable result naming the readable
+  action at the tested frontier proves a deterministic `action_without_result` absent even under
+  `truncated_payload` or `content_capture_unavailable` (tb4n5 react S stayed open under them after
+  the agent linked the result and had to answer `self_verified`); the codes stay on the check and
+  receipt. The owner's decision names capture gaps only, so `command_attempt_uncorroborated` and
+  `command_attempt_mismatch` keep #682's obligation partition (INTERFACES, "Command-gap
+  independence"): tb4n5 formal S, an unbound action under `command_attempt_mismatch`, still reads
+  `command_relation_independence_unproven`; the owner may widen this later. Redacted or unavailable
+  ledger rows, a later result and every ordinary qualification rule still block.
+
+Hosts: the rule, notice and guidance are shared (check, kernel, publish and the MCP text channel),
+so Codex, Claude Code and Cursor behave the same; the CLI returns the same JSON field. No host
+adapter changed.
+
+### 2. The local rule owns the action/result relation (#1042 follow-up)
+
+In 3 of 9 S tasks the reviewer raised "action has no linked result" beside the local finding on the
+same agent-published action: vigenere S cited the local subject plus an evidence event, live-db S
+the identical subject, and medical S cited the sibling command while its text named the engine
+edit. #1042's filter dropped such a challenge only when every subject was hook-observed, so all
+three were minted; each local twin resolved after the agent linked the result, and each AI twin
+latched `disputed_after_rebuttal` (never clean), and the agent's corrective `self_verified` was
+refused with `finding_terminal`. The reviewer sees a bounded packet and cannot know that a result
+outside it exists; the local rule reads the whole ledger and decides the relation exactly.
+
+The label is never proof: a reviewer can file a false completion or an unrun verification under
+`action_without_result`. `kernel.review_frame.local_rule_owned` is therefore true only when the
+cited records show nothing but the pairing gap the local rule decides: an `action_without_result`
+challenge whose every cited event recorded a readable action that no readable result names (at
+least one), or a `result_without_action` challenge whose every cited event recorded a readable,
+successful result whose action is absent (at least one); either may also cite events of readable
+evidence that no claim and no result that did not succeed cites (the vigenere S shape). Every other
+subject keeps the challenge as the reviewer gave it: an action that already has a result (the
+concern is not the missing link), a claim or an obligation (a completion, requirement or
+planned-verification concern), a result or evidence of a run that did not succeed (a failure
+concern), a decision, or anything unreadable or unknown. A dropped challenge is counted under the
+rejection reason `local_rule_owned` (`semantic_rejected_local_rule_owned` in the accounting record)
+and disclosed through the existing standing code `semantic_process_state_filtered` (G5d: never
+bounding, never vetoing an absence proof). Every other kind about the same action is reviewed as
+before. This supersedes the "agent-published actions are kept" rule of section 2 above for these
+two kinds only. Residual: a concern about an unpaired action that cites nothing else (for example
+"the verification never ran" filed as `action_without_result` on the unpaired command) is dropped;
+the local rule raises the missing result once later work exists, the publish notice names it at
+once, and the planned-verification task facts still report an unobserved or outcome-unknown run.
+The reviewer instruction is unchanged; the gloss of both kinds still describes them.
+
+### 3. A cited repair resolves; only a held-open ruling is a dispute (#1046 follow-up)
+
+tb4n5 S ended with 8 of 11 AI findings `disputed_after_rebuttal` and none `verified_resolved`.
+kv-live-surgery S `fnd_c96c2b9f` is the concrete case: the agent published the repair result
+(`res_fc7a82cf`, event `evt_3318a99d`), acknowledged the finding with a reason citing it, and the
+next reviewer supported the repair citing `evt_3318a99d`; the row latched as a dispute, carried
+`semantic_prior_verdicts_unsupported`, and its detail still said "repair it, then check" or
+`self_verified`, both refused on a final item. The exports omit raw reviewer rulings, so the other
+seven are not all proven agreed repairs; the admission hole and the terminal text are.
+
+- `_ruling_supported("fixed")` resolves an `evt_` citation to the evidence or result that event
+  recorded before the after-the-finding test. The packet offers both by event id; tb4n5 reviewers
+  cited `res_` 0 times in 41 reviews. An event that recorded anything else never supports `fixed`.
+- Ruling admission records `disputed_after_rebuttal` only for a `still_present` or
+  `answered_not_fixed` ruling (supported or not) over a standing position with nothing newer. An
+  unsupported `fixed` (the reviewer says the issue is gone), an unsupported `withdrawn`, and the
+  reviewer's own `unassessable` (it could not judge) are recorded `unassessable`: an open round the
+  next review can rule on, never a disagreement the agent can no longer answer. Section 1 and the
+  RC-7 ruling-admission rule are amended accordingly.
+- That open round has a hard bound (`kernel.review_round.unassessable_review_exhausted`, the
+  insufficient-packet stop of tb4n1 D3 applied to one finding): after two completed reviews in a
+  row ruled one AI-powered finding `unassessable` with no edit since the older of them, or four in
+  a row whatever was edited, later checks skip the AI-powered review and record the existing
+  standing code `semantic_review_skipped_insufficient_packet`, whose CLI, MCP and receipt text now
+  say "could not assess the packet or a finding you answered". The finding is never resolved or
+  turned into a dispute by this: it stays open, the receipt reads `unresolved_findings_remain` and
+  discloses the skip, closure readiness demands no further review, and the gap is a FinishUP limit,
+  so the agent may answer `self_verified` for a repair it verified itself. A recorded edit re-arms
+  one more review until the cap of four. As for insufficient packets, a `semantic_required` check
+  still runs the review the user or policy requires; the bound stops the reviews FinishUP would
+  otherwise keep requesting. (The tb4n5 Codex check reproduced the unbounded form: budget 2,
+  seven completed reviews, eight provider calls.)
+- No-repeat protection is unchanged: an acknowledgement with a reason still counts as a rebuttal
+  (owner, 2026-10-13); a held-open ruling or a restatement of the concern over it that cites
+  nothing newer still latches the dispute; a restatement that contradicts a `fixed` ruling still
+  does too.
+- The resolution explanation of a `disputed_after_rebuttal` row no longer requires the latest
+  answer to be `rejected`: an acknowledged item reads "Disputed after rebuttal ... takes no further
+  response" instead of the unresolved repair instruction; its `next_actions` stay `none`.
+
+### 4. A repeated answer on a resolved finding gets a precise hint
+
+Four of the seven tb4n5 `finding_terminal` refusals were an `acknowledged` sent after a recheck had
+already proved a local `action_without_result` absent. `respond` still records nothing and still
+returns `finding_terminal` (no wire change), but the message for `verified_resolved` now says the
+issue was proved absent, nothing is owed and not to retry, and the one for
+`disputed_after_rebuttal` says what the state means.
+
+Not changed here: #1043 (`agent_criterion_unmet` routing for agent-published probes) stays as
+decided; the formal-crypto case is not shown to be beyond the task's scope.

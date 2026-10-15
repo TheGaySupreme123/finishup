@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from yoetz.protocol.models import StatusClosureReadinessModel
+from finishup.protocol.models import StatusClosureReadinessModel
 
 _OBL = "obl_97700000-0000-4000-8000-00000000000{}"
 _EVT = "evt_97700000-0000-4000-8000-000000000009"

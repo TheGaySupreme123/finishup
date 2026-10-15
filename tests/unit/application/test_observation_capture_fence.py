@@ -10,12 +10,12 @@ from types import SimpleNamespace
 import apsw
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationContentChunk,
     ObservationContentKind,
@@ -24,10 +24,10 @@ from yoetz.domain.observation import (
     ObservationIngestRequest,
     ObservationSource,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.ports.objects import ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.ports.objects import ObjectMetadata, ObjectRef, ObjectSource
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 _TASK = "tsk_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 _COMMITMENT = "hmac-sha256:" + "c" * 64

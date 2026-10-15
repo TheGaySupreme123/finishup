@@ -12,8 +12,8 @@ from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from builders.readiness import with_checklist
-from yoetz.mcp import resources as resource_module
-from yoetz.mcp.descriptors import (
+from finishup.mcp import resources as resource_module
+from finishup.mcp.descriptors import (
     ADVERTISED_SURFACE_BUDGET,
     INITIALIZE_GUIDANCE_URIS,
     ORDINARY_MCP_PUBLISH_EVENT_FAMILIES,
@@ -29,34 +29,34 @@ from yoetz.mcp.descriptors import (
     presentation_schema_metrics,
     server_instructions,
 )
-from yoetz.mcp.errors import (
+from finishup.mcp.errors import (
     build_last_resort_internal_error_result,
     build_public_error_result,
     safe_validation_locations,
     sanitize_unknown_tool_name,
 )
-from yoetz.mcp.resources import (
+from finishup.mcp.resources import (
     GUIDANCE_RESOURCES,
     GuidanceResourceError,
     list_resources,
     read_resource,
 )
-from yoetz.mcp.semantic_destination import (
+from finishup.mcp.semantic_destination import (
     DISCLOSURE_PREFIX,
     MAX_DISCLOSURE_ENCODED_BYTES,
     SemanticDestinationDisclosure,
 )
-from yoetz.mcp.summaries import render_safe_compact_summary
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import SAFE_DETAIL_KEYS, PublicErrorCode
-from yoetz.protocol.models import (
+from finishup.mcp.summaries import render_safe_compact_summary
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import SAFE_DETAIL_KEYS, PublicErrorCode
+from finishup.protocol.models import (
     FRONTIER_LEAVES,
     REGISTERED_GUIDANCE_URIS,
     PublishWorkRequest,
     StartRequest,
     StatusRequest,
 )
-from yoetz.protocol.schemas import (
+from finishup.protocol.schemas import (
     load_schema_catalog,
     request_result_schema_versions,
     validate_schema_instance,
@@ -81,11 +81,11 @@ _WORKFLOW_TOOL_NAMES = (
     "receipt",
 )
 _EXPECTED_RESOURCE_URIS = (
-    "yoetz://guidance/agent-instructions.md",
-    "yoetz://guidance/workflow.md",
-    "yoetz://guidance/publication-policy.md",
-    "yoetz://guidance/coverage-and-receipts.md",
-    "yoetz://guidance/request-templates.md",
+    "finishup://guidance/agent-instructions.md",
+    "finishup://guidance/workflow.md",
+    "finishup://guidance/publication-policy.md",
+    "finishup://guidance/coverage-and-receipts.md",
+    "finishup://guidance/request-templates.md",
 )
 _FORBIDDEN_DESCRIPTOR_CLAIMS = re.compile(
     r"\b(?:authenticated|enforces?|gates?|observes?|proved|proves?|verified)\b",
@@ -246,7 +246,7 @@ def test_rejected_event_draft_is_located_by_ordinal() -> None:
 
     assert any(item["field"] == "/event_drafts/1/payload/action_kind" for item in locations)
     assert secret not in repr(locations)
-    from yoetz.mcp.errors import authoring_hint
+    from finishup.mcp.errors import authoring_hint
 
     hint = authoring_hint(descriptor_for("publish_work").input_schema, locations)
     assert "action_kind admits" in hint
@@ -304,21 +304,21 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:6311e9b21741e5c0e9ef998e062198ecb6df6f24d51d88435d6aed94de3fe604",
-        "strict": "sha256:d5bf01594f41c378a8a0502ffb883b3915ebafb18ab3d3a5a1493ed96ac252c4",
+        "policy": "sha256:7c02f2c13206ab2fe6be1ebd311a64dc2d3b7f561c2856a18c06cf0ac6e30973",
+        "strict": "sha256:9759d058cee7128b17c2f207ca63d785a5aa5fc11d7ed1da33ff625e7184caa4",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
         assert tuple(TOOL_DESCRIPTOR_DIGESTS[profile]) == _EXPECTED_TOOL_NAMES
     for name in _EXPECTED_TOOL_NAMES:
-        assert "yoetz://guidance/" in descriptor_for(name).description
+        assert "finishup://guidance/" in descriptor_for(name).description
     # The check descriptor carries the full mode decision rule, including semantic_required.
     check_description = descriptor_for("check").description
     assert "semantic_if_configured only when review is known to be optional" in check_description
     assert "semantic_required when the user, effective policy or acceptance requires it" in (
         check_description
     )
-    assert "Omit mode to preserve the configured default" in check_description
+    assert "Omit mode to run in the task's review mode" in check_description
     respond_description = descriptor_for("respond").description
     # Issue #911: any in-chain frontier at or after the record is accepted, so the descriptor
     # never implies the exact check result frontier that sent agents hunting through history.
@@ -327,11 +327,11 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "result frontier of the check that returned it" not in respond_description
     assert "not its subject_frontier" in respond_description
     for local_description in (descriptor_for("publish_work").description, respond_description):
-        assert "local Yoetz ledger" in local_description
+        assert "local FinishUP ledger" in local_description
         assert "does not publish to GitHub" in local_description
         assert "run an AI-powered evaluation" in local_description
     assert descriptor_for("start").description.startswith(
-        "First read yoetz://guidance/agent-instructions.md."
+        "First read finishup://guidance/agent-instructions.md."
     )
     # The two argument conventions a first-time caller cannot infer from prose alone. Both cost a
     # rejected start call in the 2026-07-30 dogfood before the descriptor named them.
@@ -398,10 +398,10 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "Service accepted_at" in descriptor_for("publish_work").description
     assert "frontier-bound" in descriptor_for("publish_work").description
     assert "ingestion sequence" in descriptor_for("publish_work").description
-    base_instructions = read_resource("yoetz://guidance/agent-instructions.md").decode("utf-8")
-    workflow = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
-    coverage = read_resource("yoetz://guidance/coverage-and-receipts.md").decode("utf-8")
-    assert INITIALIZE_GUIDANCE_URIS == ("yoetz://guidance/agent-instructions.md",)
+    base_instructions = read_resource("finishup://guidance/agent-instructions.md").decode("utf-8")
+    workflow = read_resource("finishup://guidance/workflow.md").decode("utf-8")
+    coverage = read_resource("finishup://guidance/coverage-and-receipts.md").decode("utf-8")
+    assert INITIALIZE_GUIDANCE_URIS == ("finishup://guidance/agent-instructions.md",)
     assert server_instructions().startswith(base_instructions.rstrip())
     assert server_instructions() == f"{base_instructions.rstrip()}\n\nRoute profile: policy. " + (
         "External AI-powered review follows the configured policy.\n"
@@ -411,13 +411,13 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert workflow.rstrip() not in server_instructions()
     assert coverage.rstrip() not in server_instructions()
     assert "Route profile: policy." in server_instructions()
-    assert "Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance" in (
+    assert "Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance" in (
         server_instructions()
     )
     # The on-demand catalog is only reachable because the inlined document names both the URI set
     # and the read_guidance recovery path. Losing either line strands the un-inlined documents.
-    assert "yoetz://guidance/workflow.md" in server_instructions()
-    assert "yoetz://guidance/coverage-and-receipts.md" in server_instructions()
+    assert "finishup://guidance/workflow.md" in server_instructions()
+    assert "finishup://guidance/coverage-and-receipts.md" in server_instructions()
     assert "call `read_guidance` with the same URI" in server_instructions()
     strict_instructions = server_instructions("strict")
     assert "Route profile: strict." in strict_instructions
@@ -675,7 +675,7 @@ def _subscription_receipt_result() -> dict[str, Any]:
         "conclusion": "unresolved_findings_remain",
         "suppressed_finding_count": 0,
         "versions": {
-            "package_name": "yoetz",
+            "package_name": "finishup",
             "package_version": "0.1.0",
             "protocol_version": "0.1",
             "engine_version": "0.1.0",
@@ -782,9 +782,10 @@ def test_advertised_outputs_accept_subscription_runtime_provenance(
 
 
 def test_respond_agent_surface_names_every_admitted_disposition() -> None:
-    """The advertised respond text is the only place an MCP caller learns the per-disposition
-    field rules: ``_mcp_presentation_schema`` drops respond-request's ``allOf`` before advertising
-    it. A disposition added to the enum without a rule here is an undiscoverable wire value."""
+    """Full authoring descriptions retain disposition rules for server-side repair hints.
+
+    The compact advertisement points callers to guidance instead of repeating these rules.
+    """
 
     descriptor = descriptor_for("respond")
     schema = cast(dict[str, Any], dict(descriptor.input_schema))
@@ -803,17 +804,17 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert "allOf" not in schema
     rules = cast(str, disposition["description"]).lower()
     for value in admitted:
-        assert value in rules, f"{value} has no advertised field rule"
+        assert value in rules, f"{value} has no authoring field rule"
     assert "requires reason" in rules
     # The tool description is the first text a caller reads, and it is digest-pinned.
     assert "provenance dispute" in descriptor.description
     assert "provenance_disputed" in descriptor.description
-    # Issue #984: repair first, self-verify a Yoetz limit, acknowledge only as the last resort.
+    # Issue #984: repair first, self-verify a FinishUP limit, acknowledge only as the last resort.
     text = descriptor.description
     assert text.index("repair it and check first") < text.index("respond self_verified")
     assert text.index("respond self_verified") < text.index("acknowledged_not_done only if")
-    assert "never a yoetz-blocker" in text
-    # Issue #996: the link target is advertised with its rule, and the text says what it does.
+    assert "never a finishup-blocker" in text
+    # Issue #996: retain the link target's repair rule and describe what it does in tool text.
     target = cast(
         dict[str, Any], cast(dict[str, Any], schema["properties"])["duplicate_of_finding_id"]
     )
@@ -851,9 +852,9 @@ def test_resource_uri_is_a_key_not_a_path(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(resource_module, "read_verified_resource", _unexpected_read)
     invalid_uris = (
         "guidance/workflow.md",
-        "yoetz://guidance/{name}.md",
-        "yoetz://guidance/../workflow.md",
-        "yoetz://guidance//workflow.md",
+        "finishup://guidance/{name}.md",
+        "finishup://guidance/../workflow.md",
+        "finishup://guidance//workflow.md",
         "file:///guidance/workflow.md",
     )
     for uri in invalid_uris:
@@ -893,7 +894,7 @@ def test_mcp_can_amend_review_input_without_replacing_the_session(
 def test_advertised_input_schemas_honor_presentation_keyword_budgets() -> None:
     for descriptor in TOOL_DESCRIPTORS["policy"]:
         schema_name = f"{descriptor.name.replace('_', '-')}-request"
-        metrics = presentation_schema_metrics(descriptor.input_schema)
+        metrics = presentation_schema_metrics(descriptor.advertised_input_schema)
         budget = PRESENTATION_INPUT_SCHEMA_BUDGETS[schema_name]
         assert metrics["oneof_nodes"] <= budget["max_oneof_nodes"]
         assert metrics["oneof_branches"] <= budget["max_oneof_branches"]
@@ -902,7 +903,7 @@ def test_advertised_input_schemas_honor_presentation_keyword_budgets() -> None:
         assert metrics["defs_count"] <= budget["max_defs_count"]
         assert metrics["defs_nest_depth"] <= budget["max_defs_nest_depth"]
         assert metrics["encoded_bytes"] <= budget["max_encoded_bytes"]
-        encoded = repr(dict(descriptor.input_schema))
+        encoded = repr(dict(descriptor.advertised_input_schema))
         assert "common/client-info" not in encoded
         assert "common/actor-assertion" not in encoded
         assert "common/frontier" not in encoded
@@ -1019,8 +1020,9 @@ def test_presentation_examples_admit_under_catalog_models() -> None:
 def test_publish_work_examples_validate_against_advertised_input_schema() -> None:
     """Worked examples must validate against the contract MCP clients actually receive."""
 
-    schema = descriptor_for("publish_work").input_schema
-    examples = cast(list[JsonValue], schema["examples"])
+    descriptor = descriptor_for("publish_work")
+    schema = descriptor.advertised_input_schema
+    examples = cast(list[JsonValue], descriptor.input_schema["examples"])
     validator = cast(Any, Draft202012Validator(cast(Any, schema)))
 
     for index, example in enumerate(examples):
@@ -1030,7 +1032,7 @@ def test_publish_work_examples_validate_against_advertised_input_schema() -> Non
 
 def test_presentation_input_schema_is_projection_of_catalog_shape() -> None:
     for descriptor in TOOL_DESCRIPTORS["policy"]:
-        presented = descriptor.input_schema
+        presented = descriptor.advertised_input_schema
         catalog = descriptor.catalog_input_schema
         assert presented["type"] == catalog["type"]
         assert presented["additionalProperties"] == catalog["additionalProperties"]
@@ -1044,7 +1046,7 @@ def test_presentation_input_schema_is_projection_of_catalog_shape() -> None:
         assert isinstance(catalog_properties, dict)
         assert set(presented_required) == set(catalog_required)
         assert set(presented_properties) == set(catalog_properties)
-        # tools/list may attach examples; catalog admission schemas do not require them.
+        # Worked examples live in the full authoring schema, outside compact tools/list.
         assert "examples" not in catalog
 
 
@@ -1058,6 +1060,6 @@ def test_read_guidance_descriptor_is_read_only_and_names_a_guidance_uri() -> Non
     assert descriptor.annotations.idempotent is True
     assert descriptor.annotations.destructive is False
     assert descriptor.annotations.open_world is False
-    assert "yoetz://guidance/" in descriptor.description
+    assert "finishup://guidance/" in descriptor.description
     assert "bounded 4096-byte summary" in descriptor.description
     assert "not a ledger operation" in descriptor.description

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import (
+from finishup.mcp.summaries import (
     MAX_SUMMARY_BYTES,
     summary_for_check,
     summary_for_receipt,
@@ -21,7 +21,7 @@ def test_summary_for_deterministic_only_leads_with_semantic_not_requested() -> N
             "result_frontier": {"sequence": "3", "head_digest": "sha256:" + "a" * 64},
         }
     )
-    assert text.startswith("No issue detected within deterministic coverage;")
+    assert text.startswith("No issue detected within local coverage;")
     assert "AI-powered review was not requested" in text
 
 
@@ -130,7 +130,7 @@ _REDACTED_VALUES = [
 def test_check_summary_names_redacted_value_lines_and_the_fixed_agent_line() -> None:
     """PL2-1 (issue #982): refs and lines, never values, and the agent line exactly once."""
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         SEMANTIC_REDACTED_VALUES_AGENT_LINE,
         SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     )
@@ -158,7 +158,7 @@ def test_check_summary_names_redacted_value_lines_and_the_fixed_agent_line() -> 
 
 
 def test_receipt_and_status_summaries_carry_the_fixed_agent_line() -> None:
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         SEMANTIC_REDACTED_VALUES_AGENT_LINE,
         SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     )

@@ -10,7 +10,7 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.openai_responses import (
     OPENAI_MAX_RESPONSE_BODY_BYTES,
     OneAttemptCredentialTransport,
     OpenAIProfile,
@@ -18,16 +18,16 @@ from yoetz.adapters.providers.openai_responses import (
     owner_declared_data_use_profile,
     render_case,
 )
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
-from yoetz.ports.secret_memory import ProviderAttemptAuthBinding, ProviderAuthTransportCallback
-from yoetz.ports.semantic import (
+from finishup.domain.findings import SemanticFailureClass
+from finishup.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
+from finishup.ports.secret_memory import ProviderAttemptAuthBinding, ProviderAuthTransportCallback
+from finishup.ports.semantic import (
     Deadline,
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
-from yoetz.protocol.models import SemanticStatus
+from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.protocol.models import SemanticStatus
 
 _NOW = datetime(2026, 7, 25, tzinfo=UTC)
 _DIGEST = "sha256:" + "c" * 64
@@ -349,7 +349,7 @@ async def test_evaluator_dispatches_the_audited_rendered_body_verbatim() -> None
     assert type(result) is SemanticResultSuccess
     assert capture.request_body == rendered.body
     assert capture.authorization == "Bearer nonsecret-test-credential"
-    assert "yoetz-fixed-nonsecret-sentinel" not in capture.authorization
+    assert "finishup-fixed-nonsecret-sentinel" not in capture.authorization
     # The adapter reports the policy that authorized the dispatch, never a minted placeholder.
     assert result.provenance.policy_digest == case.policy_digest
     assert result.provenance.privacy_policy_digest == case.policy_digest

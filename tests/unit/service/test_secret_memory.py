@@ -6,8 +6,8 @@ import copy
 
 import pytest
 
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretConsumer, SecretMemoryError, SecretPurpose
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretConsumer, SecretMemoryError, SecretPurpose
 
 
 def test_capture_overwrites_source_and_consumes_once() -> None:

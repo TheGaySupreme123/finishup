@@ -8,16 +8,16 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     ObservationOutboxRow,
 )
-from yoetz.application.observation_drain import (
+from finishup.application.observation_drain import (
     ObservationIngestCoordinator,
     ObservationOutboxSweeper,
 )
-from yoetz.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
+from finishup.domain.values import JsonObject, Timestamp
 
 
 def row(session: str, ordinal: int, attempts: int) -> ObservationOutboxRow:

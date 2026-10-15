@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.privacy import EgressReceipt, LocalDisclosureReceipt
-from yoetz.ports.privacy import (
+from finishup.domain.privacy import EgressReceipt, LocalDisclosureReceipt
+from finishup.ports.privacy import (
     LocalDisclosureReceiptView,
     NetworkEgressReceiptView,
     PrivacyReceiptPage,

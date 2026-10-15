@@ -12,8 +12,34 @@ Each obligation's `source_refs` cites the task-statement event (see `startup.md`
 an existing obligation: to map a missed requirement, publish a new obligation.
 Then publish material transitions, results, evidence, and a completion claim. Keep one transition together in a small
 batch. `work_closed` closes work; a receipt never does. Every retryable write carries its
-idempotency identity and expected frontier. Reuse exact request and event ids only for the allowed
-same-body recovery path.
+idempotency identity and expected frontier: the `frontier` `start` returned for the first plan,
+then the `result_frontier` of your last accepted write (read `status` for one only when you hold
+none). Reuse exact request and event ids only for the allowed same-body recovery path.
+
+## Before you send a batch
+
+Check each line. Each one names the refusal or finding it prevents.
+
+1. `expected_frontier` is the frontier you hold, never `null` (`expected_frontier_required`).
+2. Every `action_recorded` has a `result_recorded` naming its `action_id`, normally in the same
+   batch, with `outcome` `success`, `failure`, `partial` or `unknown` (`action_without_result`).
+3. A `result_recorded` lists only `evd_` ids in `evidence_refs`. A `res_` id belongs in a claim's
+   `supporting_refs` or `limitation_refs`, or in an obligation's `resolution_evidence_refs`.
+4. Each `digest_binding.subject` fits its `evidence_kind`. `artifact` takes `artifact_bytes`,
+   `bounded_excerpt` or `source_diff`. `command_output` takes `command_stdout`, `test_stdout`,
+   `test_report` or `static_analysis_report`. `test_result` takes `test_stdout`, `test_report` or
+   `static_analysis_report`. `research_source` takes `artifact_bytes` or `bounded_excerpt`.
+   `other` takes `bounded_excerpt`.
+5. Every reference list holds unique ids in ascending ASCII order (`unsorted_set_field`).
+6. `attempted_items` appears only on `action_recorded`, and each value is copied exactly from a
+   `requested_items` `value`.
+7. An obligation is resolved once. Do not republish a `resolved` obligation as `resolved` to add
+   evidence (`obligation_resolution_mismatch`); cite the new evidence from the claim. If its work
+   no longer holds, republish it `open`, or `acknowledged_not_done` with the reason, repeating
+   every meaning field.
+8. `occurred_at` is the real current UTC time with milliseconds, never a template's example time.
+9. A file the task writes only under a condition is a `change` item that names the condition and
+   the path. Never create an empty or placeholder file for it.
 
 Do not publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history,
 credentials, secrets, whole files/repositories, or broad unrelated source. A digest is provenance,
@@ -33,6 +59,8 @@ For completion scope, put admissible evidence in `supporting_refs`, partial/fail
 in `limitation_refs`, and the named in-scope obligations in `obligation_refs`. Mirror
 `evidence_refs` and `artifact_refs` exactly where the event family requires it. Record every
 requested item attempted on `action_recorded.attempted_items`; it does not belong on a claim.
+Publish each action's outcome as a `result_recorded` whose `action_id` names it, normally in the
+same batch as the action; evidence and decisions do not link an action.
 
 Do not change an existing test's assertion or expectation, rename it, skip it, or delete it to make
 the implementation pass. Change pre-existing test code only for broken setup, an outdated fixture,
@@ -47,12 +75,14 @@ statement with that file item, carry it with `plan_revised`, record an `edit` ac
 verification run after your last edit, and supersede the completion claim with one naming it in
 `obligation_refs`; then check. Otherwise, for a justified
 pre-existing test edit, put this exact line in a later decision statement, after the edit action:
-`yoetz:test-change:<action_id>:sha256:<path_digest>`. `<action_id>` is the exact edit action id;
+`finishup:test-change:<action_id>:sha256:<path_digest>`. `<action_id>` is the exact edit action id;
 `<path_digest>` is `sha256:` plus the lowercase SHA-256 of the captured path's UTF-8 spelling. Do
 not rely on free-form prose or repeat the raw path: generic prose does not clear the structural
 edit finding.
 
 Before replacing evidence or a claim, read `status`, cite IDs from your own publication, and link
 the replacement with the prior effective claim. A claim is an assertion, not a conclusion. Read the
-complete event bodies and field ownership in [`publication-policy.md`](publication-policy.md) and
-use [`request-templates.md`](request-templates.md) when schema metadata is missing.
+complete event bodies and field ownership in [`publication-policy.md`](publication-policy.md).
+When schema metadata is missing, read one section of
+[`request-templates.md`](request-templates.md), such as `#publish-work-claim`; the page opens with
+a map from each operation and event family to its section.

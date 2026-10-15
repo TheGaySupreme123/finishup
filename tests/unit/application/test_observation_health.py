@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from yoetz.application.observation_health import (
+from finishup.application.observation_health import (
     ObservationHealthSignals,
     ObservationHealthThresholds,
     compute_observation_lifecycle,
 )
-from yoetz.domain.observation import ObservationLifecycle, ObservationSource
+from finishup.domain.observation import ObservationLifecycle, ObservationSource
 
 
 def _signals(**overrides: object) -> ObservationHealthSignals:

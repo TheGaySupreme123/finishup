@@ -15,11 +15,11 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.application.receipt import (
+from finishup.application.receipt import (
     _finding_states,  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
 )
-from yoetz.domain.events import ResponseRecordedPayload, encode_payload
-from yoetz.domain.findings import (
+from finishup.domain.events import ResponseRecordedPayload, encode_payload
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
@@ -27,7 +27,7 @@ from yoetz.domain.findings import (
     ResponseDisposition,
     WaiverScope,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Frontier,
     event_id,
     evidence_id,
@@ -35,15 +35,15 @@ from yoetz.domain.values import (
     obligation_id,
     timestamp_from_string,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     FindingProjectionRecord,
     ProjectionRecord,
     empty_projection_state,
     unanswered_finding_count,
 )
-from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,

@@ -26,14 +26,14 @@ from typing import Any
 import pytest
 
 from builders.status_text import BOUNDING, HEAD, SUPERSEDED, VIEWS, status_wire
-from yoetz.mcp import summaries
-from yoetz.mcp.summaries import (
+from finishup.mcp import summaries
+from finishup.mcp.summaries import (
     _check_cause_variants,
     _operation_progress_clause,
     render_safe_compact_summary,
     render_safe_compact_summary_detailed,
 )
-from yoetz.protocol.readiness_text import readiness_directive
+from finishup.protocol.readiness_text import readiness_directive
 
 _STOP = "Request the receipt."
 _SHORT_STOP = "Nothing further to do. Request the receipt."

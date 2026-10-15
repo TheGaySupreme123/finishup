@@ -16,11 +16,11 @@ from tests.unit.protocol.test_models_and_schemas import (
     _check_result_wire,  # pyright: ignore[reportPrivateUsage]
 )
 
-from yoetz.cli.render import render_human_check
-from yoetz.domain.findings import CheckVerdict
-from yoetz.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES
-from yoetz.protocol.models import CheckResult, CheckSuccessModel, public_model_to_wire
+from finishup.cli.render import render_human_check
+from finishup.domain.findings import CheckVerdict
+from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES
+from finishup.protocol.models import CheckResult, CheckSuccessModel, public_model_to_wire
 
 _CLOSING_OVERALL: dict[str, Any] = {
     "action": "request_receipt",
@@ -63,8 +63,8 @@ def test_the_json_verdict_is_the_verdict_in_the_mcp_text_and_the_cli(verdict: st
         )
         if scoped_local:
             # Coverage-bounded wording is the same sentence on both text surfaces.
-            assert "No issue detected within deterministic coverage" in text
-            assert "no issue detected within deterministic coverage" in cli
+            assert "No issue detected within local coverage" in text
+            assert "no issue detected within local coverage" in cli
         else:
             assert verdict in text, text
             assert f"Verdict: {verdict}" in cli

@@ -4,7 +4,7 @@ Proves the documented contributor workflow end to end against real installed lau
 synthetic everyday (ambient) installation and two disposable snapshots provisioned by
 ``scripts/provision_test_instance.py`` from two different source revisions run at the same time,
 each with its own runtime, service singleton, endpoint, and state; a snapshot launched without
-``YOETZ_ISOLATED_ROOT`` resolves its own root through the runtime pin and never the ambient
+``FINISHUP_ISOLATED_ROOT`` resolves its own root through the runtime pin and never the ambient
 install; a conflicting environment fails closed; a re-pointed pin refuses to serve; restarting one
 snapshot leaves the others untouched; disposing one snapshot stops only its service and leaves the
 other instances' identity records byte-identical and their services reachable; and disposal is
@@ -71,7 +71,7 @@ def _short_home(tag: str) -> Path:
 
 
 def _clean_env(home: Path) -> dict[str, str]:
-    env = {name: value for name, value in os.environ.items() if not name.startswith("YOETZ_")}
+    env = {name: value for name, value in os.environ.items() if not name.startswith("FINISHUP_")}
     env["HOME"] = str(home)
     env["UV_CACHE_DIR"] = _real_cache_dir()
     return env
@@ -96,7 +96,7 @@ def _tool_install(dist_dir: Path, root: Path, home: Path) -> tuple[Path, dict[st
     if result.returncode != 0:
         result = _install(offline=False)
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
-    return bin_dir / "yoetz", env
+    return bin_dir / "finishup", env
 
 
 @pytest.fixture(scope="module")
@@ -139,7 +139,7 @@ def _second_revision(destination: Path) -> str:
         "-C",
         str(destination),
         "-c",
-        "user.name=yoetz-test",
+        "user.name=finishup-test",
         "-c",
         "user.email=t@e.invalid",
     ]
@@ -319,7 +319,7 @@ def test_permanent_install_and_two_pinned_snapshots_coexist_and_dispose_independ
             assert (state / "state" / "service.lock").is_file()
             assert (state / "run" / "control.sock").is_socket()
         assert (
-            home / "Library" / "Caches" / "TemporaryItems" / "yoetz" / "control.sock"
+            home / "Library" / "Caches" / "TemporaryItems" / "finishup" / "control.sock"
         ).is_socket() or (sys.platform.startswith("linux"))
         stamp = json.loads((a_state / "state" / "service.lock").read_bytes())
         assert stamp["instance_lifecycle"] == "disposable"
@@ -341,7 +341,9 @@ def test_permanent_install_and_two_pinned_snapshots_coexist_and_dispose_independ
 
         # A conflicting environment fails closed: snapshot a's runtime never serves b's root.
         conflict = _cli(
-            a_exe, ["service", "isolation", "--json"], {**env, "YOETZ_ISOLATED_ROOT": str(b_state)}
+            a_exe,
+            ["service", "isolation", "--json"],
+            {**env, "FINISHUP_ISOLATED_ROOT": str(b_state)},
         )
         assert conflict.returncode == 2
         assert b"isolation_invalid: isolation_root_conflict" in conflict.stderr
@@ -385,9 +387,9 @@ def test_permanent_install_and_two_pinned_snapshots_coexist_and_dispose_independ
             assert after["service_generation"] == before[name]["service_generation"]
 
         # Dispose a: only a's service stops, only a's tree disappears, only a's pin goes.
-        permanent_state = home / "Library" / "Application Support" / "yoetz"
+        permanent_state = home / "Library" / "Application Support" / "finishup"
         if sys.platform.startswith("linux"):
-            permanent_state = home / ".local" / "state" / "yoetz"
+            permanent_state = home / ".local" / "state" / "finishup"
         permanent_before = _identity_snapshot(permanent_state)
         b_before = _identity_snapshot(b_state / "state")
         a_service = services.pop()
@@ -433,7 +435,7 @@ def test_permanent_install_and_two_pinned_snapshots_coexist_and_dispose_independ
                     env={
                         name: value
                         for name, value in os.environ.items()
-                        if not name.startswith("YOETZ_")
+                        if not name.startswith("FINISHUP_")
                     },
                     check=False,
                 )

@@ -8,26 +8,26 @@ from types import ModuleType
 
 import pytest
 
-import yoetz.cli.bootstrap as bootstrap
-import yoetz.cli.entry as entry
-import yoetz.cli.observe_hooks as observe_hooks
-import yoetz.config.paths as paths
-import yoetz.service.client as client_module
-from yoetz.ports.control import ServiceState, ServiceStatus
+import finishup.cli.bootstrap as bootstrap
+import finishup.cli.entry as entry
+import finishup.cli.observe_hooks as observe_hooks
+import finishup.config.paths as paths
+import finishup.service.client as client_module
+from finishup.ports.control import ServiceState, ServiceStatus
 
 
 @pytest.fixture
 def isolated_cli_modules() -> Iterator[None]:
     """Temporarily remove the full Typer graph without poisoning later test imports.
 
-    The fast path must prove that ``yoetz.cli.app`` is absent while it connects.  Restoring both
+    The fast path must prove that ``finishup.cli.app`` is absent while it connects.  Restoring both
     ``sys.modules`` and the package attributes matters because another test may already hold a
     function imported from the original module; leaving a newly re-imported module attached to the
     package makes string-based monkeypatching target a different module instance.
     """
 
-    package = sys.modules["yoetz.cli"]
-    module_names = ("yoetz.cli.app", "yoetz.cli.project")
+    package = sys.modules["finishup.cli"]
+    module_names = ("finishup.cli.app", "finishup.cli.project")
     sentinel = object()
     saved_modules: dict[str, ModuleType | None] = {
         name: sys.modules.get(name) for name in module_names
@@ -159,7 +159,7 @@ def test_service_status_fast_path_connects_before_loading_full_cli(
             closed = True
 
     async def connect(*_args: object, **_kwargs: object) -> FakeClient:
-        assert "yoetz.cli.app" not in sys.modules
+        assert "finishup.cli.app" not in sys.modules
         return FakeClient()
 
     monkeypatch.setattr(client_module, "connect_service", connect)
@@ -171,8 +171,8 @@ def test_service_status_fast_path_connects_before_loading_full_cli(
         == 0
     )
     assert closed
-    assert "yoetz.cli.app" not in sys.modules
-    assert "yoetz.cli.project" not in sys.modules
+    assert "finishup.cli.app" not in sys.modules
+    assert "finishup.cli.project" not in sys.modules
     payload = json.loads(capsys.readouterr().out)
     assert payload["service_version"] == "0.1.0"
     assert payload["state"] == "locked"
@@ -201,11 +201,11 @@ def test_service_status_fast_path_preserves_silent_service_guidance(
         entry._service_status_fast_path([])  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         == 20
     )
-    assert "yoetz.cli.app" not in sys.modules
-    assert "yoetz.cli.project" not in sys.modules
+    assert "finishup.cli.app" not in sys.modules
+    assert "finishup.cli.project" not in sys.modules
     captured = capsys.readouterr()
     assert "did not answer within 5 seconds" in captured.err
-    assert "Do not run 'yoetz service run'" in captured.err
+    assert "Do not run 'finishup service run'" in captured.err
 
 
 def test_service_status_fast_path_bounds_rendering_failure_without_retry(
@@ -334,7 +334,7 @@ def test_claude_fast_path_falls_through_for_non_exact_arguments(arguments: list[
 
 
 def test_main_dispatches_claude_before_loading_full_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["yoetz", "hooks", "claude-observe", "--event", "Stop"])
+    monkeypatch.setattr(sys, "argv", ["finishup", "hooks", "claude-observe", "--event", "Stop"])
 
     def fast_path(_arguments: list[str]) -> int:
         return 9
@@ -402,7 +402,7 @@ def test_posix_never_hits_the_platform_refusal(
 def test_main_refuses_before_loading_the_full_cli_on_native_windows(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(sys, "argv", ["yoetz", "privacy", "show"])
+    monkeypatch.setattr(sys, "argv", ["finishup", "privacy", "show"])
     monkeypatch.setattr(entry.os, "name", "nt")
 
     def never() -> None:
@@ -418,7 +418,7 @@ def test_main_refuses_before_loading_the_full_cli_on_native_windows(
 
 
 def test_main_falls_through_to_the_full_cli_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["yoetz", "privacy", "show"])
+    monkeypatch.setattr(sys, "argv", ["finishup", "privacy", "show"])
     monkeypatch.setattr(entry.os, "name", "posix")
     calls: list[str] = []
     monkeypatch.setattr(entry, "_run_full_cli", lambda: calls.append("cli"))
@@ -431,13 +431,15 @@ def test_main_falls_through_to_the_full_cli_on_posix(monkeypatch: pytest.MonkeyP
 def test_runtime_isolation_failure_does_not_emit_a_hook_allow(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from yoetz.adapters import release_runtime
+    from finishup.adapters import release_runtime
 
     def refuse(_arguments: list[str]) -> None:
         raise release_runtime.ReleaseRuntimeError("release_runtime_busy")
 
     monkeypatch.setattr(release_runtime, "enter_release_runtime", refuse)
-    monkeypatch.setattr(sys, "argv", ["yoetz", "hooks", "cursor-observe", "--event", "preToolUse"])
+    monkeypatch.setattr(
+        sys, "argv", ["finishup", "hooks", "cursor-observe", "--event", "preToolUse"]
+    )
     with pytest.raises(SystemExit) as error:
         entry.main()
     assert error.value.code == 20
@@ -449,14 +451,14 @@ def test_runtime_isolation_failure_does_not_emit_a_hook_allow(
 def test_runtime_cleanup_does_not_take_its_own_serving_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters import release_runtime
+    from finishup.adapters import release_runtime
 
     def unexpected(_arguments: list[str]) -> None:
         raise AssertionError("cleanup must not lease its own generation")
 
     monkeypatch.setattr(release_runtime, "enter_release_runtime", unexpected)
     monkeypatch.setattr(entry, "_run_full_cli", lambda: None)
-    monkeypatch.setattr(sys, "argv", ["yoetz", "upgrade", "--prune-runtimes"])
+    monkeypatch.setattr(sys, "argv", ["finishup", "upgrade", "--prune-runtimes"])
     entry.main()
 
 
@@ -466,13 +468,13 @@ def test_runtime_cleanup_does_not_take_its_own_serving_lease(
 def test_runtime_os_failure_has_bounded_reason_without_private_text(
     os_errno: int, reason: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from yoetz.adapters import release_runtime
+    from finishup.adapters import release_runtime
 
     def refuse(_arguments: list[str]) -> None:
         raise OSError(os_errno, "PRIVATE_ERROR_CANARY", "PRIVATE_PATH_CANARY")
 
     monkeypatch.setattr(release_runtime, "enter_release_runtime", refuse)
-    monkeypatch.setattr(sys, "argv", ["yoetz", "service", "run"])
+    monkeypatch.setattr(sys, "argv", ["finishup", "service", "run"])
     with pytest.raises(SystemExit) as error:
         entry.main()
     assert error.value.code == 20
@@ -491,7 +493,7 @@ def test_runtime_io_phase_excludes_source_exception_text(
 ) -> None:
     from typing import Literal, cast
 
-    from yoetz.adapters import release_runtime
+    from finishup.adapters import release_runtime
 
     def refuse(_arguments: list[str]) -> None:
         raise release_runtime.ReleaseRuntimeIOError(
@@ -500,10 +502,228 @@ def test_runtime_io_phase_excludes_source_exception_text(
         )
 
     monkeypatch.setattr(release_runtime, "enter_release_runtime", refuse)
-    monkeypatch.setattr(sys, "argv", ["yoetz", "service", "run"])
+    monkeypatch.setattr(sys, "argv", ["finishup", "service", "run"])
     with pytest.raises(SystemExit):
         entry.main()
     captured = capsys.readouterr()
     assert captured.out == ""
     assert f"{phase}_permission_denied" in captured.err
     assert "PRIVATE" not in captured.err
+
+
+def _refuse_foreign_write(monkeypatch: pytest.MonkeyPatch, token: str) -> None:
+    from finishup.adapters import release_runtime
+
+    def refuse(_arguments: list[str]) -> None:
+        raise release_runtime.ReleaseRuntimeError(token, area="environment")
+
+    monkeypatch.setattr(release_runtime, "enter_release_runtime", refuse)
+
+
+@pytest.mark.parametrize(
+    "argv", [["service", "run"], ["mcp", "serve"], ["upgrade"]], ids=["service", "mcp", "upgrade"]
+)
+@pytest.mark.parametrize(
+    "token", ["release_runtime_group_writable", "release_runtime_world_writable"]
+)
+def test_foreign_writable_runtime_names_its_token_and_exact_repair(
+    argv: list[str],
+    token: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import shlex
+
+    prefix = tmp_path / "tools" / "yoetz"
+    base = tmp_path / "python" / "cpython-3.14.6"
+    (prefix / "bin").mkdir(parents=True)
+    (base / "bin").mkdir(parents=True)
+    (base / "bin/python3.14").write_bytes(b"")
+    (prefix / "bin/python").symlink_to(base / "bin/python3.14")
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    _refuse_foreign_write(monkeypatch, token)
+    monkeypatch.setattr(sys, "argv", ["yoetz", *argv])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{token}: ")
+    assert "could not be verified" not in captured.err
+    repair = shlex.join(["chmod", "-R", "go-w", str(prefix.resolve()), str(base.resolve())])
+    assert f"  {repair}\n" in captured.err
+    assert "umask 022" in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["hooks", "observe", "--event", "PreToolUse"],
+        ["hooks", "claude-observe", "--event", "Stop"],
+        ["hooks", "cursor-observe", "--event", "preToolUse"],
+    ],
+    ids=["codex", "claude", "cursor"],
+)
+def test_foreign_writable_runtime_hook_names_token_without_paths_or_decision(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "PRIVATE_PREFIX"))
+    _refuse_foreign_write(monkeypatch, "release_runtime_group_writable")
+    monkeypatch.setattr(sys, "argv", ["yoetz", *argv])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    # Same non-blocking exit as every runtime refusal: never 2 (a block) and no allow on stdout.
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("release_runtime_group_writable: ")
+    assert "PRIVATE_PREFIX" not in captured.err
+    assert "finishup service run" in captured.err
+
+
+def test_spawned_service_records_the_refusal_for_the_client_that_started_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from finishup.protocol.ids import IdKind, new_id
+    from finishup.service import startup_failure
+
+    recorded: list[tuple[str, str | None, str | None]] = []
+
+    def record(
+        _exc: BaseException,
+        *,
+        stage: str,
+        correlation_id: str | None = None,
+        reason_code: str | None = None,
+        unexpected: bool = False,
+    ) -> object:
+        recorded.append((stage, correlation_id, reason_code))
+        return None
+
+    monkeypatch.setattr(startup_failure, "record_startup_failure", record)
+    correlation_id = new_id(IdKind.CORRELATION)
+    _refuse_foreign_write(monkeypatch, "release_runtime_group_writable")
+    monkeypatch.setattr(
+        sys, "argv", ["yoetz", "service", "run", "--startup-correlation-id", correlation_id]
+    )
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    assert recorded == [("import", correlation_id, "release_runtime_group_writable")]
+    assert capsys.readouterr().err.startswith("release_runtime_group_writable: ")
+
+
+def _refuse_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    from finishup.adapters import release_runtime
+
+    def refuse(_arguments: list[str]) -> None:
+        raise release_runtime.ReleaseRuntimeError("release_runtime_not_owned")
+
+    monkeypatch.setattr(release_runtime, "enter_release_runtime", refuse)
+
+
+@pytest.mark.parametrize(
+    "argv", [["service", "run"], ["mcp", "serve"], ["upgrade"]], ids=["service", "mcp", "upgrade"]
+)
+@pytest.mark.parametrize(
+    ("installation", "directory", "repair"),
+    [
+        ("root", "absent", "Install FinishUP as this account"),
+        ("root", "root", "Install FinishUP as this account"),
+        ("mine", "root", "Remove it, or have its owner remove it"),
+        ("mine", "absent", "Have the owner of the directory that holds this installation"),
+    ],
+    ids=["root_install", "root_install_root_dir", "own_install_sudo_dir", "own_install_no_dir"],
+)
+def test_another_accounts_runtime_names_its_token_and_the_directory_it_needs(
+    argv: list[str],
+    installation: str,
+    directory: str,
+    repair: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """A runtime whose retained-runtime directory is another account's (before:
+    "permission_denied"), with the repair that fits who owns what."""
+
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    prefix = tmp_path.resolve() / "opt" / "yoetz"
+    (prefix / "bin").mkdir(parents=True)
+    releases = prefix.parent / ".yoetz-releases"
+    owners: dict[Path, int] = {}
+    if installation == "root":
+        owners[prefix] = SUPERUSER
+    if directory == "root":
+        releases.mkdir(mode=0o700)
+        owners[releases] = SUPERUSER
+    present_owners(monkeypatch, owners)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    _refuse_not_owned(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["yoetz", *argv])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("release_runtime_not_owned: ")
+    assert "release_runtime_unavailable" not in captured.err
+    assert f"  {releases}\n" in captured.err
+    assert repair in captured.err
+
+
+def test_another_accounts_runtime_hook_names_token_without_paths(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "PRIVATE_PREFIX"))
+    _refuse_not_owned(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["yoetz", "hooks", "observe", "--event", "PreToolUse"])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("release_runtime_not_owned: ")
+    assert "PRIVATE_PREFIX" not in captured.err
+    assert "finishup service run" in captured.err
+
+
+def test_spawned_service_records_the_not_owned_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from finishup.protocol.ids import IdKind, new_id
+    from finishup.service import startup_failure
+
+    recorded: list[str | None] = []
+
+    def record(_exc: BaseException, *, reason_code: str | None = None, **_kwargs: object) -> None:
+        recorded.append(reason_code)
+
+    monkeypatch.setattr(startup_failure, "record_startup_failure", record)
+    correlation_id = new_id(IdKind.CORRELATION)
+    _refuse_not_owned(monkeypatch)
+    monkeypatch.setattr(
+        sys, "argv", ["yoetz", "service", "run", "--startup-correlation-id", correlation_id]
+    )
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    assert recorded == ["release_runtime_not_owned"]
+    assert capsys.readouterr().err.startswith("release_runtime_not_owned: ")
+
+
+def test_startup_failure_line_carries_the_runtime_token() -> None:
+    from finishup.service.startup_failure import StartupFailure
+
+    failure = StartupFailure(
+        stage="import",
+        reason="exception_unknown",
+        correlation_id="err_00000000-0000-4000-8000-000000000001",
+        reason_code="release_runtime_group_writable",
+    )
+    assert "release_runtime_group_writable" in failure.describe()

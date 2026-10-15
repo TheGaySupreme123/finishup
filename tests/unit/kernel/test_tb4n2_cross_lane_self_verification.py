@@ -23,26 +23,26 @@ from builders.policy_cases import (
     obligation_record,
     plan_record,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     LedgerRecord,
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
     FindingOrigin,
     finding_policy_identity,
 )
-from yoetz.domain.values import EventId, Frontier, ObligationId
-from yoetz.kernel import self_verification, task_fact_scope
-from yoetz.kernel.finding_resolution import ResolutionAttempt
-from yoetz.kernel.projections import ProjectionState, empty_projection_state
-from yoetz.kernel.task_fact_scope import scoped_resolution_reasons
-from yoetz.kernel.task_facts import TaskFactSignals
-from yoetz.protocol.coverage import (
+from finishup.domain.values import EventId, Frontier, ObligationId
+from finishup.kernel import self_verification, task_fact_scope
+from finishup.kernel.finding_resolution import ResolutionAttempt
+from finishup.kernel.projections import ProjectionState, empty_projection_state
+from finishup.kernel.task_fact_scope import scoped_resolution_reasons
+from finishup.kernel.task_facts import TaskFactSignals
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -53,7 +53,7 @@ from yoetz.protocol.coverage import (
 )
 
 _DIGEST = "sha256:" + "c" * 64
-_LIMIT = "coverage:content_redacted"  # a standing Yoetz limit: proof-limited on its own
+_LIMIT = "coverage:content_redacted"  # a standing FinishUP limit: proof-limited on its own
 _NOT_OBSERVED = "coverage:planned_verification_not_observed"
 _STALE = "coverage:planned_verification_stale"
 _EALV = "coverage:edited_after_last_verification"

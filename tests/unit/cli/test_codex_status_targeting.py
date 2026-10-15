@@ -10,13 +10,13 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.integrations import codex_mcp
-from yoetz.adapters.integrations.codex_marketplace import ActivationInspection, ActivationState
-from yoetz.adapters.integrations.codex_session_stream import resolve_codex_home
-from yoetz.cli import codex_plugin, provider_status, setup
-from yoetz.cli.app import app
-from yoetz.ports.harness_mcp import HarnessBinary
-from yoetz.ports.integrations import HarnessId
+from finishup.adapters.integrations import codex_mcp
+from finishup.adapters.integrations.codex_marketplace import ActivationInspection, ActivationState
+from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
+from finishup.cli import codex_plugin, provider_status, setup
+from finishup.cli.app import app
+from finishup.ports.harness_mcp import HarnessBinary
+from finishup.ports.integrations import HarnessId
 
 
 @pytest.mark.parametrize("selection", ["explicit", "environment", "testing", "default"])
@@ -69,7 +69,7 @@ async def test_mcp_and_provider_probes_bind_explicit_home(
     binary = HarnessBinary(HarnessId.CODEX, "/test/codex", "0.150.1", "untested")
     monkeypatch.setattr(setup, "discover_codex_binaries", lambda: (binary,))
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: (binary,)
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: (binary,)
     )
     seen: list[Path | None] = []
 
@@ -113,7 +113,7 @@ async def test_provider_probe_binds_testing_home_when_no_home_is_passed(
     monkeypatch.setenv("CODEX_TESTING_HOME", str(testing))
     binary = HarnessBinary(HarnessId.CODEX, "/test/codex", "0.150.1", "untested")
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: (binary,)
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: (binary,)
     )
     seen: list[Path | None] = []
 
@@ -156,8 +156,8 @@ def test_discovery_and_connection_honor_testing_home_before_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations.codex_discovery import default_codex_home
-    from yoetz.adapters.integrations.host_discovery import host_config_root
+    from finishup.adapters.integrations.codex_discovery import default_codex_home
+    from finishup.adapters.integrations.host_discovery import host_config_root
 
     default = tmp_path / ".codex"
     testing = tmp_path / "testing"
@@ -179,7 +179,7 @@ def test_setup_disconnect_accepts_the_selected_codex_home(
         captured.update(kwargs)
         return 0
 
-    monkeypatch.setattr("yoetz.cli.host_connection.run_host_connection", disconnect)
+    monkeypatch.setattr("finishup.cli.host_connection.run_host_connection", disconnect)
     home = tmp_path / "selected-home"
     result = CliRunner().invoke(
         app,

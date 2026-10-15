@@ -20,16 +20,14 @@ from typing import cast
 
 import pytest
 
-from integration.application import test_native_capture_pipeline as native
-from integration.service import test_capture_inventory_recovery as inventory
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_drain import ObservationCaptureRecoveryOutcome
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.application.semantic_content import resolve_captured_semantic_content
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_drain import ObservationCaptureRecoveryOutcome
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     CaptureHandoffRetirementReason,
     CaptureHandoffRetirementStage,
@@ -44,16 +42,18 @@ from yoetz.domain.observation import (
     ObservationSource,
     observation_capture_ticket_id,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, timestamp_from_datetime
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import BundleRuntimePort, TaskRuntime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
+from finishup.domain.values import JsonObject, timestamp_from_datetime
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import BundleRuntimePort, TaskRuntime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
+from integration.application import test_native_capture_pipeline as native
+from integration.service import test_capture_inventory_recovery as inventory
 
 _STRANDED_AGE_SECONDS = 61
 _PROFILES: Mapping[str, str | None] = {

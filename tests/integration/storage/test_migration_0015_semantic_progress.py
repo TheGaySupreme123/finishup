@@ -5,8 +5,8 @@ from __future__ import annotations
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.connection import verify_schema_identity
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.connection import verify_schema_identity
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     current_schema_version,
     run_migrations,

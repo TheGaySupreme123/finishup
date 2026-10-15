@@ -1,6 +1,6 @@
 """Opt-in latency benchmark for issue #886: late-session respond/receipt/status at large ledgers.
 
-Skipped by default. Run with ``YOETZ_BENCH_886=1`` (optionally ``YOETZ_BENCH_886_SIZES=1500,3000``)
+Skipped by default. Run with ``FINISHUP_BENCH_886=1`` (optionally ``FINISHUP_BENCH_886_SIZES=1500,3000``)
 and ``-s`` to see the ``BENCH`` lines. Each call is timed alongside a 5 ms asyncio ticker whose
 largest gap is the worst event-loop stall the call caused. The assertions are generous ceilings
 that catch a regression back to per-call genesis replay, not a precise performance contract.
@@ -16,22 +16,22 @@ from typing import Literal
 
 import pytest
 
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.domain.values import Frontier, event_id, evidence_id, timestamp_from_datetime
+from finishup.protocol.canonical import canonical_encode
 from integration.application import test_respond_status_receipt as h
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.values import Frontier, event_id, evidence_id, timestamp_from_datetime
-from yoetz.protocol.canonical import canonical_encode
 
 pytestmark = [
     pytest.mark.anyio,
     pytest.mark.skipif(
-        os.environ.get("YOETZ_BENCH_886") != "1",
-        reason="opt-in latency benchmark; set YOETZ_BENCH_886=1",
+        os.environ.get("FINISHUP_BENCH_886") != "1",
+        reason="opt-in latency benchmark; set FINISHUP_BENCH_886=1",
     ),
 ]
 
 _SIZES = tuple(
-    int(value) for value in os.environ.get("YOETZ_BENCH_886_SIZES", "1500,3000").split(",")
+    int(value) for value in os.environ.get("FINISHUP_BENCH_886_SIZES", "1500,3000").split(",")
 )
 _BATCH = 100
 _CALL_CEILING_SECONDS = 30.0

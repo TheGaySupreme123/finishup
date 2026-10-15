@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.control as control_package
-import yoetz.service.daemon as daemon_module
-from yoetz.adapters.control.unix_socket import (
+import finishup.adapters.control as control_package
+import finishup.service.daemon as daemon_module
+from finishup.adapters.control.unix_socket import (
     CONTROL_ENDPOINT_BASENAME,
     ENDPOINT_MODE,
     HUMAN_CONTROL_ENDPOINT_BASENAME,
@@ -34,8 +34,8 @@ from yoetz.adapters.control.unix_socket import (
     connect_secret,
     remove_stale_endpoint,
 )
-from yoetz.ports.control import ServiceState
-from yoetz.service.lifecycle import ServiceLifecycle
+from finishup.ports.control import ServiceState
+from finishup.service.lifecycle import ServiceLifecycle
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000071"
 _COMMITMENT = "sha256:" + "7" * 64
@@ -51,7 +51,7 @@ def runtime_directory(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     runtime = Path(tempfile.mkdtemp(prefix=".yctl-", dir=Path.cwd()))
     runtime.chmod(RUNTIME_DIRECTORY_MODE)
     monkeypatch.setattr(
-        "yoetz.adapters.control.unix_socket._runtime_directory",
+        "finishup.adapters.control.unix_socket._runtime_directory",
         lambda: runtime,
     )
     try:
@@ -326,7 +326,7 @@ async def test_endpoints_bind_owner_only_where_no_follow_chmod_is_unavailable(
 def test_no_follow_fallback_never_chmods_through_a_replaced_entry(
     runtime_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.control.unix_socket import (
+    from finishup.adapters.control.unix_socket import (
         _restrict_bound_endpoint,  # pyright: ignore[reportPrivateUsage]
     )
 

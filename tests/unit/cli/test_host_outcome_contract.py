@@ -18,33 +18,33 @@ from typing import Any, Final, cast
 
 import pytest
 
-from fixture_loader import load_fixture_json
-from yoetz.adapters.integrations.claude_code_integration import CLAUDE_CODE_ORDINARY_HOOK_EVENTS
-from yoetz.adapters.integrations.codex_session_stream import SessionStreamReader
-from yoetz.adapters.integrations.cursor_integration import CURSOR_ORDINARY_HOOK_EVENTS
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.claude_code_integration import CLAUDE_CODE_ORDINARY_HOOK_EVENTS
+from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
+from finishup.adapters.integrations.cursor_integration import CURSOR_ORDINARY_HOOK_EVENTS
+from finishup.adapters.integrations.observation_local import (
     STREAM_MAPPING_VERSION,
     LocalObservationStore,
 )
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     HOST_OUTCOME_UNAVAILABLE_GAP,
     MaterializedObservationBatch,
     materialize_observation_envelope,
     materialize_observation_outcome_correction,
 )
-from yoetz.cli.observe_hooks import (
+from finishup.cli.observe_hooks import (
     handle_claude_observe,
     handle_cursor_observe,
     handle_observe,
     map_hook_payload_to_envelope,
 )
-from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
-from yoetz.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
-from yoetz.domain.observation_profiles import (
+from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+from finishup.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from fixture_loader import load_fixture_json
 
 _CODEX: Final = "observations/codex-post-tool-outcomes-0.157.1.case.json"
 _CLAUDE: Final = "observations/claude-code-bash-outcomes.case.json"
@@ -596,8 +596,8 @@ def test_codex_command_error_bit_only_ever_fails_a_result(
 
 
 def _advice_unresolved(envelopes: tuple[ObservationEnvelope, ...]) -> list[tuple[str, ...]]:
-    from yoetz.domain.observation import ObservationLifecycle
-    from yoetz.kernel.policies.observation_advice import (
+    from finishup.domain.observation import ObservationLifecycle
+    from finishup.kernel.policies.observation_advice import (
         ObservationAdviceContext,
         observation_advice_findings,
     )
@@ -707,7 +707,7 @@ def test_codex_stream_mcp_item_failure_wins(
                 {
                     "arguments": {},
                     "id": "call_910_mcp_item",
-                    "server": "yoetz",
+                    "server": "finishup",
                     "tool": "publish_work",
                     "type": "McpToolCall",
                     **item,

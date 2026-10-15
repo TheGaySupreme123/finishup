@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 
 from builders.policy_cases import evt, finding_record, fnd, obl, record
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     EventDraft,
@@ -16,7 +16,7 @@ from yoetz.domain.events import (
     PolicyVersion,
     ResponseRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -27,14 +27,14 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.values import FindingId, Frontier, timestamp_from_string
-from yoetz.kernel.finding_resolution import (
+from finishup.domain.values import FindingId, Frontier, timestamp_from_string
+from finishup.kernel.finding_resolution import (
     apply_check_resolution,
     apply_check_rulings,
     finding_is_resolved,
     reopen_findings_resolved_by,
 )
-from yoetz.kernel.finding_todo import (
+from finishup.kernel.finding_todo import (
     ABSOLUTELY_FINAL_TODO_STATES,
     TERMINAL_TODO_STATES,
     TODO_TRANSITIONS,
@@ -44,7 +44,7 @@ from yoetz.kernel.finding_todo import (
     finding_todo_state,
     todo_counts,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     DecisionProjectionRecord,
     FindingProjectionRecord,
     ProjectionRecord,
@@ -53,9 +53,9 @@ from yoetz.kernel.projections import (
     projection_from_snapshot,
     projection_snapshot,
 )
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -64,8 +64,8 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,
@@ -424,7 +424,7 @@ def _kind_finding(number: int, kind: FindingKind) -> Finding:
 def test_a_coverage_limitation_never_drives_the_checklist_next_step() -> None:
     """D3(a): an open non-actionable row is not a to-do, even past the budget."""
 
-    from yoetz.application.check import build_finding_checklist
+    from finishup.application.check import build_finding_checklist
 
     limitation = replace(
         finding_record(_kind_finding(1, FindingKind.LEDGER_STALE_OR_INCOMPLETE), 4),
@@ -439,7 +439,7 @@ def test_a_coverage_limitation_never_drives_the_checklist_next_step() -> None:
 def test_the_checklist_counts_and_next_cover_items_past_the_listed_hundred() -> None:
     """D3(b): an open blocking item beyond the first 100 rows keeps ``next`` honest."""
 
-    from yoetz.application.check import build_finding_checklist
+    from finishup.application.check import build_finding_checklist
 
     rows: dict[FindingId, FindingProjectionRecord] = {}
     for number in range(1, 101):
@@ -458,7 +458,7 @@ def test_the_checklist_counts_and_next_cover_items_past_the_listed_hundred() -> 
 def test_the_resolution_explanation_names_terminal_states() -> None:
     """D4: a final item explains itself as final, not as a disputed or unreadable response."""
 
-    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+    from finishup.kernel.finding_resolution import finding_resolution_explanation
 
     not_done = _state(
         {fnd(1): finding_record(_semantic(1), 4)},
@@ -501,7 +501,7 @@ def test_a_final_item_never_gains_review_rounds() -> None:
 
 
 def _premise(number: int, next_step: str = "act") -> Finding:
-    from yoetz.domain.findings import FindingChallenge, finding_policy_identity
+    from finishup.domain.findings import FindingChallenge, finding_policy_identity
 
     kind = FindingKind.TASK_REQUIREMENT_UNMET
     policy_id, policy_version = finding_policy_identity(kind)
@@ -522,17 +522,17 @@ def _premise(number: int, next_step: str = "act") -> Finding:
 
 
 def _blocker_decision(obligation: object) -> DecisionProjectionRecord:
-    from yoetz.domain.events import DecisionRecordedPayload
-    from yoetz.domain.values import actor_id
+    from finishup.domain.events import DecisionRecordedPayload
+    from finishup.domain.values import actor_id
 
     payload = DecisionRecordedPayload(
-        statement="The fixture service is unreachable.\nyoetz-blocker:dependency_unavailable",
+        statement="The fixture service is unreachable.\nfinishup-blocker:dependency_unavailable",
         rationale="No network in the sandbox.",
         authority=actor_id("agent"),
         affected_obligation_ids=(obligation,),  # type: ignore[arg-type]
     )
-    from yoetz.domain.events import encode_payload
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
 
     return DecisionProjectionRecord(
         payload=payload,
@@ -548,13 +548,13 @@ def test_an_acknowledged_premise_challenge_is_a_dispute_only_with_a_recorded_anc
     but not every acknowledged requirement finding is one the reviewer still disputes.
 
     The rule is structural (no prose is read): the item is an acknowledged premise challenge and
-    either cites a ``yoetz-blocker`` decision or the obligation it blocks (``blocker_cited``), or
+    either cites a ``finishup-blocker`` decision or the obligation it blocks (``blocker_cited``), or
     a review re-raised it after the acknowledgement (``give_up_reraised``). A disclosure-only
     request, a local finding, an open item, another kind and an unanchored acknowledgement are
     not premise disputes.
     """
 
-    from yoetz.kernel.finding_todo import (
+    from finishup.kernel.finding_todo import (
         PREMISE_DISPUTE_BLOCKER_CITED,
         PREMISE_DISPUTE_GIVE_UP_RERAISED,
         is_premise_challenge,
@@ -586,7 +586,7 @@ def test_an_acknowledged_premise_challenge_is_a_dispute_only_with_a_recorded_anc
     assert standing_premise_disputes(state) == (fnd(1), fnd(6))
     # Cross-lane (L4 D7a, #984): closure readiness binds this predicate and names the same ids,
     # which the Stop gate asks about once (``finding_premise_disputed``).
-    from yoetz.kernel import closure_readiness
+    from finishup.kernel import closure_readiness
 
     assert closure_readiness._standing_premise_disputes is standing_premise_disputes  # pyright: ignore[reportPrivateUsage]
     assert closure_readiness.premise_disputed_finding_ids(state) == (fnd(1), fnd(6))
@@ -633,7 +633,7 @@ def test_a_self_verified_answer_counts_as_a_rebuttal() -> None:
     """D7b: the agent's ``self_verified`` answer (C1, issue #984) disputes the reviewer's standing
     claim like ``rejected`` does; matched by wire value so the fold reads either ledger."""
 
-    from yoetz.kernel.reducers import (
+    from finishup.kernel.reducers import (
         _REBUTTAL_DISPOSITION_VALUES,  # pyright: ignore[reportPrivateUsage]
     )
 

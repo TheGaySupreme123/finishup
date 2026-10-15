@@ -19,12 +19,12 @@ from typing import Any, Final
 
 import pytest
 
-import yoetz.application.closure_basis as closure_basis
-import yoetz.application.status as status_module
+import finishup.application.closure_basis as closure_basis
+import finishup.application.status as status_module
 from builders.status_render_cost import CodexStatusLedger, build_codex_status_ledger
-from yoetz.application.closure_basis import clear_closure_basis_memo
-from yoetz.cli.closure import Selection, prepare_closure
-from yoetz.protocol.models import StatusRequest, StatusResult, public_model_to_wire
+from finishup.application.closure_basis import clear_closure_basis_memo
+from finishup.cli.closure import Selection, prepare_closure
+from finishup.protocol.models import StatusRequest, StatusResult, public_model_to_wire
 
 pytestmark = pytest.mark.anyio
 

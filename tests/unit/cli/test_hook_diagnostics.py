@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.cli.hook_diagnostics import (
+from finishup.cli.hook_diagnostics import (
     hook_diagnostic_summary,
     record_hook_diagnostic,
     record_hook_timing,
@@ -157,7 +157,7 @@ def test_discards_an_externally_oversized_active_file(tmp_path: Path) -> None:
 def test_concurrent_processes_preserve_bound_and_json_lines(tmp_path: Path) -> None:
     script = (
         "from pathlib import Path; "
-        "from yoetz.cli.hook_diagnostics import record_hook_diagnostic; "
+        "from finishup.cli.hook_diagnostics import record_hook_diagnostic; "
         f"root=Path({str(tmp_path)!r}); "
         "[record_hook_diagnostic('service_unavailable','PostToolUse',_state=root) "
         "for _ in range(180)]"
@@ -456,11 +456,11 @@ def test_host_hold_advisory_outcomes_are_admitted_tokens_on_the_permission_denie
 
 
 def test_drain_diagnostics_keep_cause_without_payload_and_report_rotation(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.observation_local import LocalObservationStore
-    from yoetz.application.observation_drain import observation_control_failure
-    from yoetz.cli.hook_diagnostics import record_drain_failure
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-    from yoetz.ports.control import ControlError
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.application.observation_drain import observation_control_failure
+    from finishup.cli.hook_diagnostics import record_drain_failure
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     envelope = map_hook_payload_to_envelope(
@@ -495,11 +495,11 @@ def test_drain_diagnostics_keep_cause_without_payload_and_report_rotation(tmp_pa
 def test_drain_diagnostic_write_failure_is_explicit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations.observation_local import LocalObservationStore
-    from yoetz.application.observation_drain import observation_control_failure
-    from yoetz.cli import hook_diagnostics
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-    from yoetz.ports.control import ControlError
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.application.observation_drain import observation_control_failure
+    from finishup.cli import hook_diagnostics
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     envelope = map_hook_payload_to_envelope(
@@ -524,11 +524,11 @@ def test_drain_diagnostic_write_failure_is_explicit(
 
 @pytest.mark.parametrize("reason", ["invalid_request", "frame_invalid", "request_timeout"])
 def test_control_reason_survives_diagnostic_roundtrip(tmp_path: Path, reason: str) -> None:
-    from yoetz.adapters.integrations.observation_local import LocalObservationStore
-    from yoetz.application.observation_drain import observation_control_failure
-    from yoetz.cli.hook_diagnostics import record_drain_failure
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-    from yoetz.ports.control import ControlError
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.application.observation_drain import observation_control_failure
+    from finishup.cli.hook_diagnostics import record_drain_failure
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     envelope = map_hook_payload_to_envelope(
@@ -550,7 +550,7 @@ def test_control_reason_survives_diagnostic_roundtrip(tmp_path: Path, reason: st
 
 
 def _lock_timeout_event(**overrides: object) -> object:
-    from yoetz.adapters.integrations.observation_local import (
+    from finishup.adapters.integrations.observation_local import (
         ObservationStoreLockEvent,
         ObservationStoreLockTimeout,
     )
@@ -575,8 +575,8 @@ def _lock_timeout_event(**overrides: object) -> object:
 def test_store_lock_rows_name_the_holder_and_count_as_reasons(tmp_path: Path) -> None:
     """#689: a lock timeout is named with its holder, never folded into `observe`."""
 
-    from yoetz.adapters.integrations.observation_local import ObservationStoreLockEvent
-    from yoetz.cli.hook_diagnostics import record_store_lock_event
+    from finishup.adapters.integrations.observation_local import ObservationStoreLockEvent
+    from finishup.cli.hook_diagnostics import record_store_lock_event
 
     assert record_store_lock_event("PreToolUse", _lock_timeout_event(), _state=tmp_path)
     assert record_store_lock_event(
@@ -626,7 +626,7 @@ def test_store_lock_rows_name_the_holder_and_count_as_reasons(tmp_path: Path) ->
     ),
 )
 def test_store_lock_rows_refuse_open_values(tmp_path: Path, overrides: dict[str, object]) -> None:
-    from yoetz.cli.hook_diagnostics import record_store_lock_event
+    from finishup.cli.hook_diagnostics import record_store_lock_event
 
     assert not record_store_lock_event(
         "PreToolUse", _lock_timeout_event(**overrides), _state=tmp_path
@@ -635,7 +635,7 @@ def test_store_lock_rows_refuse_open_values(tmp_path: Path, overrides: dict[str,
 
 
 def test_tampered_store_lock_rows_are_dropped_on_read(tmp_path: Path) -> None:
-    from yoetz.cli.hook_diagnostics import record_store_lock_event
+    from finishup.cli.hook_diagnostics import record_store_lock_event
 
     assert record_store_lock_event("PreToolUse", _lock_timeout_event(), _state=tmp_path)
     path = tmp_path / "observation/hook-diagnostics.jsonl"

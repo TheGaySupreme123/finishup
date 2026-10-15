@@ -4,20 +4,20 @@
 binding for v0.1 specification work. Lifecycle, peer-authentication, and crash-takeover proofs
 remain release gates.
 **Implemented by:** `docs/adr/ADR-008-local-service-vault-trust-boundary.md`,
-`src/yoetz/service/daemon.py`, `src/yoetz/service/lifecycle.py`,
-`src/yoetz/service/control_protocol.py`, `src/yoetz/ports/runtime.py`,
-`src/yoetz/adapters/runtime.py`, and the service subprocess suites under `tests/subprocess/`.
+`src/finishup/service/daemon.py`, `src/finishup/service/lifecycle.py`,
+`src/finishup/service/control_protocol.py`, `src/finishup/ports/runtime.py`,
+`src/finishup/adapters/runtime.py`, and the service subprocess suites under `tests/subprocess/`.
 
 ## Context
 
-CLI, MCP, and a future UI are communication surfaces, not independent Yoetz runtimes. Letting each
+CLI, MCP, and a future UI are communication surfaces, not independent FinishUP runtimes. Letting each
 surface open SQLite and the key backend would put decrypted state and unlock behavior in untrusted
 or agent-facing processes, make safe passphrase-based MCP operation impractical, and recreate the
 multi-writer race the generation fence is meant to prevent.
 
 ## Decision
 
-One persistent, per-user local Yoetz service is the only process allowed to own the installation
+One persistent, per-user local FinishUP service is the only process allowed to own the installation
 catalog, task-bundle writer connections, key handles, decrypted objects, provider adapters, or the
 application facade.
 
@@ -109,7 +109,7 @@ operation lease and recovery contract.
 
 ## Lifecycle contract
 
-v0.1 ships a foreground `yoetz service run` entrypoint suitable for an explicit terminal or
+v0.1 ships a foreground `finishup service run` entrypoint suitable for an explicit terminal or
 an external per-user supervisor. Normal CLI commands do not secretly spawn, daemonize, or unlock a
 service. Native launchd/systemd-user installation and automatic startup are product conveniences,
 not correctness prerequisites, and require separate reviewed packaging files before they can be

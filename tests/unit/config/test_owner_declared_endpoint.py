@@ -9,19 +9,19 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.openai_responses import (
     OpenAIProfile,
     owner_declared_data_use_profile,
 )
-from yoetz.cli.provider_binding import apply_provider_endpoint_choice
-from yoetz.config.models import (
+from finishup.cli.provider_binding import apply_provider_endpoint_choice
+from finishup.config.models import (
     OWNER_DECLARED_ENDPOINT_PROFILE_ID,
     ConfigError,
+    FinishUpConfig,
     ProviderProfileConfig,
-    YoetzConfig,
     parse_https_origin,
 )
-from yoetz.config.write import (
+from finishup.config.write import (
     PROVIDER_PRESETS,
     anthropic_provider,
     clear_external_runtime_binding,
@@ -137,7 +137,7 @@ def test_provider_rejects_free_base_url_and_secrets() -> None:
 def test_toml_round_trip_official_and_owner_declared(tmp_path: Path) -> None:
     official = official_openai_provider(model="gpt-4.1-mini")
     path = write_provider_binding(official, path=tmp_path / "official.toml")
-    loaded = YoetzConfig.model_validate(tomllib.loads(path.read_text()), strict=True)
+    loaded = FinishUpConfig.model_validate(tomllib.loads(path.read_text()), strict=True)
     assert loaded.provider is not None
     assert loaded.provider.endpoint_profile_id == "openai-responses"
     assert loaded.provider.owner_declared_endpoint is None
@@ -149,7 +149,7 @@ def test_toml_round_trip_official_and_owner_declared(tmp_path: Path) -> None:
     text = path2.read_text()
     assert "https_origin" in text
     assert "api_key" not in text
-    loaded2 = YoetzConfig.model_validate(tomllib.loads(text), strict=True)
+    loaded2 = FinishUpConfig.model_validate(tomllib.loads(text), strict=True)
     assert loaded2.provider is not None
     assert loaded2.provider.endpoint_profile_id == OWNER_DECLARED_ENDPOINT_PROFILE_ID
     assert loaded2.provider.owner_declared_endpoint is not None
@@ -170,13 +170,13 @@ def test_codex_subscription_round_trip_and_rollback_keep_only_nonsecret_binding(
         isolated_config_sha256=_DIGEST,
         capability_profile="codex-evaluator/0.150.1/v1",
         capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/opt/Yoetz Tools/codex-home",
+        codex_home="/opt/FinishUP Tools/codex-home",
         model="gpt-5.6-sol",
         reasoning_effort="high",
     )
     path = write_external_runtime_binding(runtime, path=tmp_path / "codex.toml")
     text = path.read_text()
-    loaded = YoetzConfig.model_validate(tomllib.loads(text), strict=True)
+    loaded = FinishUpConfig.model_validate(tomllib.loads(text), strict=True)
 
     assert loaded.profile == "codex-subscription"
     assert loaded.external_runtime == runtime
@@ -185,7 +185,7 @@ def test_codex_subscription_round_trip_and_rollback_keep_only_nonsecret_binding(
     assert "api_key" not in text
 
     clear_external_runtime_binding(path=path, base=loaded)
-    rolled_back = YoetzConfig.model_validate(tomllib.loads(path.read_text()), strict=True)
+    rolled_back = FinishUpConfig.model_validate(tomllib.loads(path.read_text()), strict=True)
     assert rolled_back.profile == "strict-local"
     assert rolled_back.external_runtime is None
 
@@ -255,7 +255,7 @@ def test_bundled_provider_presets_write_exact_nonsecret_bindings(
     preset = provider_preset(choice)
     provider = factory(model=preset.default_model)
     path = write_provider_binding(provider, path=tmp_path / f"{choice}.toml")
-    loaded = YoetzConfig.model_validate(tomllib.loads(path.read_text()), strict=True)
+    loaded = FinishUpConfig.model_validate(tomllib.loads(path.read_text()), strict=True)
 
     assert choice in PROVIDER_PRESETS
     assert loaded.profile == "local-openai"

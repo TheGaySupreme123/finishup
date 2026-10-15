@@ -1,4 +1,4 @@
-"""Assemble the deterministic release proof bundle for one tagged Yoetz candidate.
+"""Assemble the deterministic release proof bundle for one tagged FinishUP candidate.
 
 Assembles the evidence that justifies a specific public-alpha artifact and its bounded support
 claims: artifact checksums, build/test/scan gate results, resource identity, platform/SQLite
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 __all__ = [
     "GateResult",
@@ -324,6 +324,7 @@ def render_evidence_json(evidence: ReleaseEvidence) -> bytes:
             }
             for gate in evidence.gates
         ],
+        # Frozen legacy identifier (ADR-048): release-evidence format tag.
         "schema": "yoetz.release-evidence/1",
         "signature_status": "not_provided",
     }

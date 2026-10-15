@@ -1,4 +1,4 @@
-"""Installed version/provenance truthfulness of ``yoetz version --json``.
+"""Installed version/provenance truthfulness of ``finishup version --json``.
 
 Builds the candidate wheel, installs it into a clean isolated tool environment (never the
 development checkout via ``PYTHONPATH``), and invokes the installed console script and module
@@ -35,7 +35,7 @@ def _project_version() -> str:
 
 
 def _source_resource_manifest() -> Any:  # raw JSON document, deliberately untyped
-    manifest_path = _REPO_ROOT / "src" / "yoetz" / "resources" / "manifest.json"
+    manifest_path = _REPO_ROOT / "src" / "finishup" / "resources" / "manifest.json"
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
@@ -43,7 +43,7 @@ def _source_resource_manifest() -> Any:  # raw JSON document, deliberately untyp
 class InstalledCandidate:
     venv_dir: Path
     python: Path
-    yoetz: Path
+    finishup: Path
     unrelated_cwd: Path
 
 
@@ -93,7 +93,7 @@ def installed_candidate(tmp_path_factory: pytest.TempPathFactory) -> InstalledCa
     return InstalledCandidate(
         venv_dir=venv_dir,
         python=python,
-        yoetz=venv_dir / "bin" / "yoetz",
+        finishup=venv_dir / "bin" / "finishup",
         unrelated_cwd=unrelated_cwd,
     )
 
@@ -101,7 +101,7 @@ def installed_candidate(tmp_path_factory: pytest.TempPathFactory) -> InstalledCa
 def _run(
     installed: InstalledCandidate, arguments: list[str], *, module: bool = False
 ) -> subprocess.CompletedProcess[bytes]:
-    launcher = [str(installed.python), "-m", "yoetz"] if module else [str(installed.yoetz)]
+    launcher = [str(installed.python), "-m", "finishup"] if module else [str(installed.finishup)]
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -147,7 +147,7 @@ def test_json_version_package_identity_matches_pinned_project_metadata(
 ) -> None:
     completed = _run(installed_candidate, ["version", "--json"])
     manifest = json.loads(completed.stdout)
-    assert manifest["package_name"] == "yoetz"
+    assert manifest["package_name"] == "finishup"
     assert manifest["package_version"] == _project_version()
 
 

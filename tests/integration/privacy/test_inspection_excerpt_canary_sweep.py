@@ -13,26 +13,26 @@ from typing import TYPE_CHECKING
 import apsw
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import build_inspection_excerpt_manifest
-from yoetz.domain.values import Timestamp
-from yoetz.observability.privacy import scan_for_sensitive_content
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.objects import (
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_coordinator import build_inspection_excerpt_manifest
+from finishup.domain.values import Timestamp
+from finishup.observability.privacy import scan_for_sensitive_content
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
     ObjectRootSnapshot,
     ObjectSource,
 )
-from yoetz.ports.secret_memory import SecretConsumer, SecretMemoryCapability, SecretPurpose
-from yoetz.ports.workspace_inspect import InspectedArtifact
-from yoetz.protocol.ids import IdKind
+from finishup.ports.secret_memory import SecretConsumer, SecretMemoryCapability, SecretPurpose
+from finishup.ports.workspace_inspect import InspectedArtifact
+from finishup.protocol.ids import IdKind
 
 if TYPE_CHECKING:
-    from yoetz.ports.secret_memory import SecretHandle
+    from finishup.ports.secret_memory import SecretHandle
 
 _DIGEST = "sha256:" + "0" * 64
 _TASK_ID = "tsk_30000000-0000-4000-8000-000000000001"

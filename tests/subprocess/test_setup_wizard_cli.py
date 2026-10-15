@@ -14,34 +14,35 @@ from typing import Literal, cast
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.cli.setup as _setup_module_at_import
-from yoetz.adapters.integrations.codex_marketplace import (
+import finishup.cli.app as cli
+import finishup.cli.setup as _setup_module_at_import
+from finishup.adapters.integrations.codex_marketplace import (
     ActivationInspection,
     ActivationPreview,
     ActivationState,
 )
-from yoetz.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
+from finishup.adapters.integrations.observation_local import (
     LocalContentCaptureAuthority,
     LocalObservationStore,
 )
-from yoetz.application.harness_mcp import HarnessMcpService
-from yoetz.domain.observation import ObservationRevokeCommand
-from yoetz.domain.observation_budget import LARGEST_CAPACITY
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.observation_settings import (
+from finishup.application.harness_mcp import HarnessMcpService
+from finishup.domain.observation import ObservationRevokeCommand
+from finishup.domain.observation_budget import LARGEST_CAPACITY
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.observation_settings import (
     ObservationDetailProfile,
     ObservationSelection,
     ObservationSelectionSettings,
 )
-from yoetz.ports.control import ControlClientKind, ControlError
-from yoetz.ports.harness_mcp import (
+from finishup.domain.privacy import ConversationReview
+from finishup.ports.control import ControlClientKind, ControlError
+from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
     MCP_STRICT_SERVE_COMMAND,
     HarnessBinary,
 )
-from yoetz.ports.integrations import (
+from finishup.ports.integrations import (
     HarnessId,
     IntegrationError,
     IntegrationReason,
@@ -49,9 +50,9 @@ from yoetz.ports.integrations import (
     IntegrationTarget,
     SkillSource,
 )
-from yoetz.ports.plugin_artifacts import ArtifactAuthority
-from yoetz.protocol.canonical import JsonValue
-from yoetz.service.client import ServiceClient
+from finishup.ports.plugin_artifacts import ArtifactAuthority
+from finishup.protocol.canonical import JsonValue
+from finishup.service.client import ServiceClient
 
 _RUNNER = CliRunner()
 # ``wizard_env`` replaces the consent step with a canned report; the issue #835 composition
@@ -84,19 +85,32 @@ def _binary(path: str = "/opt/harness/bin/codex") -> HarnessBinary:
 
 
 class _ScriptedRunner:
+    """Scripted Codex subprocess stand-in.
+
+    Every MCP observation lists the host's entries once to read the legacy ``yoetz`` key
+    (ADR-048). After a successful named ``get`` that list is answered with no entries instead
+    of the scripted queue, so each script names only the calls it is about.
+    """
+
     def __init__(self, outputs: list[CommandOutput]) -> None:
         self.outputs = outputs
         self.calls: list[tuple[str, ...]] = []
+        self._after_found_get = False
 
     def __call__(self, argv: tuple[str, ...]) -> CommandOutput:
         self.calls.append(argv)
-        return self.outputs.pop(0)
+        if argv[1:3] == ("mcp", "list") and self._after_found_get:
+            self._after_found_get = False
+            return CommandOutput(0, b"[]")
+        output = self.outputs.pop(0)
+        self._after_found_get = argv[1:3] == ("mcp", "get") and output.exit_code == 0
+        return output
 
 
-def _yoetz_entry(
+def _finishup_entry(
     route_profile: Literal["policy", "strict"] = "strict",
     *,
-    launcher: str = "yoetz",
+    launcher: str = "finishup",
 ) -> CommandOutput:
     command = MCP_STRICT_SERVE_COMMAND if route_profile == "strict" else MCP_SERVE_COMMAND
     return CommandOutput(0, json.dumps({"command": launcher, "args": list(command[1:])}).encode())
@@ -113,12 +127,12 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
     """Fake discovery, adapter subprocesses, service client, and marker path."""
     # The legacy Codex wizard fixtures must not probe real Claude/Cursor installations.
     # Shared multi-host discovery and explicit setup are exercised in their own tests.
-    monkeypatch.setattr("yoetz.adapters.integrations.host_discovery.discover_hosts", lambda: ())
+    monkeypatch.setattr("finishup.adapters.integrations.host_discovery.discover_hosts", lambda: ())
 
     # These scripted entries model the legacy embedded/bare-launcher cell, not whichever
     # wheel happens to host pytest. Absolute installation proof is supplied explicitly in
     # the absolute CLI regression below and exercised for real by the packaged Codex test.
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
 
     state: dict[str, object] = {
         "binaries": (_binary(),),
@@ -169,8 +183,8 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
     class _FakePluginService:
         def preview(self, target: object, *, codex_version: str | None = None) -> object:
             del target, codex_version
-            from yoetz.adapters.integrations.codex_plugin import PluginHookPresence
-            from yoetz.application.codex_plugin import CodexPluginPreview
+            from finishup.adapters.integrations.codex_plugin import PluginHookPresence
+            from finishup.application.codex_plugin import CodexPluginPreview
 
             return CodexPluginPreview(
                 presence_before=PluginHookPresence.ABSENT,
@@ -182,7 +196,7 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
 
         def inspect(self, target: object, *, codex_version: str | None = None) -> object:
             del target, codex_version
-            from yoetz.adapters.integrations.codex_plugin import (
+            from finishup.adapters.integrations.codex_plugin import (
                 PluginHookPresence,
                 PluginInspection,
             )
@@ -196,7 +210,7 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
 
         def install(self, target: object, **kwargs: object) -> object:
             del target, kwargs
-            from yoetz.adapters.integrations.codex_plugin import (
+            from finishup.adapters.integrations.codex_plugin import (
                 PluginHookPresence,
                 PluginInspection,
             )
@@ -208,9 +222,9 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
                 ("codex_hook_trust_not_observable_from_installation_state",),
             )
 
-    import yoetz.cli.privacy_setup as privacy_setup_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.service.client as service_client_module
+    import finishup.cli.privacy_setup as privacy_setup_module
+    import finishup.cli.setup as setup_module
+    import finishup.service.client as service_client_module
 
     monkeypatch.setattr(setup_module, "discover_codex_binaries", fake_discover)
     monkeypatch.setattr(setup_module, "CodexMcpAdapter", fake_adapter)
@@ -241,20 +255,20 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
         _target: object, *, executable_path: str, codex_home: Path
     ) -> ActivationPreview:
         return ActivationPreview(
-            b'{"name":"yoetz","plugins":[]}\n',
-            '[plugins."yoetz@yoetz"]\nenabled = true\n',
+            b'{"name":"finishup","plugins":[]}\n',
+            '[plugins."finishup@finishup"]\nenabled = true\n',
             activation_digest,
             ActivationInspection(False, False, ActivationState.INSTALLED_NOT_ACTIVATED),
             "sha256:" + "e" * 64,
             codex_home,
-            codex_home / "plugins/cache/yoetz/yoetz/0.1.0",
+            codex_home / "plugins/cache/finishup/finishup/0.1.0",
             "sha256:" + "f" * 64,
             Path(executable_path),
             "sha256:" + "a" * 64,
             "0.148.0-alpha.6",
             ("--version",),
-            ("plugin", "list", "--marketplace", "yoetz", "--json"),
-            ("plugin", "add", "yoetz@yoetz", "--json"),
+            ("plugin", "list", "--marketplace", "finishup", "--json"),
+            ("plugin", "add", "finishup@finishup", "--json"),
             "temporary_owner_private_home",
             (("CODEX_HOME", str(codex_home)), ("CODEX_TESTING_HOME", str(codex_home))),
             "sha256:" + "b" * 64,
@@ -288,7 +302,7 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
         "inspect_destination",
         absent_skill_destination,
     )
-    from yoetz.adapters.integrations.codex_plugin import (
+    from finishup.adapters.integrations.codex_plugin import (
         PluginHookPresence,
         PluginInspection,
     )
@@ -321,7 +335,7 @@ def wizard_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, obj
     )
     # The applied-route record lives under the ambient state directory by default; keep
     # CLI-invoked flows (``setup run``, ``integrate mcp``) inside the test tree.
-    import yoetz.application.applied_mcp_route as applied_route_module
+    import finishup.application.applied_mcp_route as applied_route_module
 
     isolated_state = tmp_path / "isolated-state"
     monkeypatch.setattr(applied_route_module, "state_dir", lambda: isolated_state)
@@ -341,12 +355,12 @@ def _wire_composed_provider_setup(
 ) -> dict[str, object]:
     """Keep the real composed wizard/provider flow and fake only external boundaries."""
 
-    import yoetz.cli.privacy_setup as privacy_setup_module
-    import yoetz.cli.provider_binding as provider_binding_module
-    import yoetz.cli.provider_status as provider_status_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
+    import finishup.cli.privacy_setup as privacy_setup_module
+    import finishup.cli.provider_binding as provider_binding_module
+    import finishup.cli.provider_status as provider_status_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
 
     provider = SimpleNamespace(
         provider_id="fireworks",
@@ -395,7 +409,12 @@ def _wire_composed_provider_setup(
         offer_recommended: bool = False,
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
+        conversation_review: ConversationReview | None = None,
+        workspace_locator: Path | None = None,
+        ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
+        state["conversation_review"] = conversation_review
+        state["ai_review_add_on"] = ai_review_add_on
         cast(list[tuple[str | None, bool, bool, bool | None]], state["privacy_calls"]).append(
             (
                 recipe_hint,
@@ -413,7 +432,8 @@ def _wire_composed_provider_setup(
             reason=None,
         )
 
-    async def provider_status() -> dict[str, object]:
+    async def provider_status(*, workspace_locator: Path | None = None) -> dict[str, object]:
+        del workspace_locator
         state["status_reads"] = cast(int, state["status_reads"]) + 1
         if state["status_reads"] == 1:
             return {"credential_connected": False}
@@ -424,7 +444,7 @@ def _wire_composed_provider_setup(
                 {
                     "condition": "provider_credential",
                     "state": "not_connected",
-                    "next_command": "yoetz provider credential set",
+                    "next_command": "finishup provider credential set",
                 },
             )
         return {
@@ -489,14 +509,14 @@ def test_wizard_ambient_configuration_resolves_inside_the_hermetic_home() -> Non
     ``conftest`` provides so a regression fails here rather than three unrelated cases below.
     """
 
-    from yoetz.config.load import default_config_file_path, load_config
+    from finishup.config.load import default_config_file_path, load_config
 
     config_home = Path(os.environ["XDG_CONFIG_HOME"])
-    assert default_config_file_path() == config_home / "yoetz" / "config.toml"
+    assert default_config_file_path() == config_home / "finishup" / "config.toml"
     assert not default_config_file_path().exists()
     assert Path.home() == Path(os.environ["HOME"])
     assert Path(os.environ["HOME"]).parent == config_home.parent
-    assert not [name for name in os.environ if name.startswith("YOETZ_")]
+    assert not [name for name in os.environ if name.startswith("FINISHUP_")]
     config = load_config({}, os.environ, None)
     assert config.external_runtime is None
     assert config.provider is None
@@ -512,9 +532,9 @@ def test_non_interactive_without_accept_is_a_dry_run(wizard_env: dict[str, objec
     assert not cast(Path, wizard_env["marker"]).exists()
     # Honest next steps always include the confidential ceremonies it cannot run.
     steps = " ".join(report["next_steps"])
-    assert "yoetz --privacy" in steps
-    assert "yoetz provider credential set" in steps
-    assert "yoetz service run" in steps
+    assert "finishup --privacy" in steps
+    assert "finishup provider credential set" in steps
+    assert "finishup service run" in steps
     # A non-interactive run is what a coding agent sees; it is pointed at the agent guide.
     assert "docs/usage/agent-start.md" in steps
 
@@ -539,8 +559,8 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
 ) -> None:
     """An older enabled policy cannot override this run's NO or failed ceremony."""
 
-    import yoetz.cli.privacy_setup as privacy_setup_module
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.privacy_setup as privacy_setup_module
+    import finishup.cli.setup as setup_module
 
     wizard_env["binaries"] = ()
     network_calls: list[bool] = []
@@ -548,6 +568,8 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
 
     async def privacy_setup(**kwargs: object) -> SimpleNamespace:
         assert kwargs["update_checks_override"] is choice
+        # ADR-049: the local-only answer is recorded as the owner's explicit setting.
+        assert kwargs["conversation_review"] is ConversationReview.LOCAL_ONLY
         return SimpleNamespace(
             outcome=privacy_outcome,
             profile="local_only",
@@ -565,7 +587,7 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
             "latest_version": None,
             "outcome": "skipped_policy",
             "source": "none",
-            "upgrade_command": "uv tool upgrade yoetz",
+            "upgrade_command": "finishup upgrade",
         }
 
     async def recommendations(**kwargs: object) -> dict[str, JsonValue]:
@@ -592,7 +614,7 @@ def test_non_interactive_accept_registers_and_writes_marker(
         *_absent_mcp(),  # preview: confirmed absent
         *_absent_mcp(),  # apply re-preview: confirmed absent
         CommandOutput(0, b""),  # add
-        _yoetz_entry(),  # verify get
+        _finishup_entry(),  # verify get
     ]
     result = _RUNNER.invoke(cli.app, ["setup", "run", "--non-interactive", "--accept", "--json"])
     assert result.exit_code == 0, (result.output, result.exception)
@@ -627,9 +649,9 @@ def test_interactive_generic_accept_does_not_authorize_unshown_activation(
         *_absent_mcp(),
         *_absent_mcp(),
         CommandOutput(0, b""),
-        _yoetz_entry(),
+        _finishup_entry(),
     ]
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     result = _RUNNER.invoke(
@@ -648,8 +670,9 @@ def test_already_registered_mcp_still_installs_plugin_and_grants_consent(
     wizard_env: dict[str, object],
 ) -> None:
     wizard_env["outputs"] = [
-        _yoetz_entry(),  # preview get: already yoetz-owned
-        _yoetz_entry(),  # status verify after plugin install
+        _finishup_entry(),  # preview get: already finishup-owned
+        _finishup_entry(),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry(),  # status verify after plugin install
     ]
     result = _RUNNER.invoke(cli.app, ["setup", "run", "--non-interactive", "--accept", "--json"])
     assert result.exit_code == 0, (result.output, result.exception)
@@ -674,23 +697,24 @@ def test_foreign_entry_is_preserved_and_reported(wizard_env: dict[str, object]) 
     assert report["registration"]["skill"]["outcome"] == "skipped"
     # No mutating `mcp add` ever ran.
     for calls in cast(list[list[tuple[str, ...]]], wizard_env["calls"]):
-        assert all(call[1:3] == ("mcp", "get") for call in calls)
+        assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
 @pytest.mark.anyio
 async def test_tui_apply_refuses_a_skill_preview_digest_not_shown_to_the_user(
     wizard_env: dict[str, object],
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
-    preview_runner = _ScriptedRunner([_yoetz_entry()])
+    preview_runner = _ScriptedRunner([_finishup_entry()])
     mcp_preview = await HarnessMcpService(
         CodexMcpAdapter(
             preview_runner, route_profile="strict", codex_home=cast(Path, wizard_env["codex_home"])
         )
     ).preview(_binary())
     workspace = cast(Path, wizard_env["marker"]).parent
-    wizard_env["outputs"] = [_yoetz_entry()]
+    # Preview get, then the observe get that reads the registered route.
+    wizard_env["outputs"] = [_finishup_entry(), _finishup_entry()]
 
     report = await setup_module.apply_codex_integration(
         _binary(),
@@ -724,7 +748,7 @@ async def test_a_preview_and_apply_that_disagree_on_the_route_refuse_as_stale(
     can explain the refusal.
     """
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     workspace = cast(Path, wizard_env["marker"]).parent
     skill_preview = await setup_module.project_skill_preview(workspace)
@@ -763,7 +787,7 @@ async def test_a_preview_and_apply_on_the_same_route_register(
     as proof of a route problem.
     """
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     workspace = cast(Path, wizard_env["marker"]).parent
     skill_preview = await setup_module.project_skill_preview(workspace)
@@ -781,8 +805,8 @@ async def test_a_preview_and_apply_on_the_same_route_register(
         *_absent_mcp(),  # step preview: confirmed absent
         *_absent_mcp(),  # adapter install re-preview: confirmed absent
         CommandOutput(0, b""),  # add
-        _yoetz_entry("strict"),  # verify get
-        _yoetz_entry("strict"),  # applied-route record observation
+        _finishup_entry("strict"),  # verify get
+        _finishup_entry("strict"),  # applied-route record observation
     ]
     report = await setup_module.apply_codex_integration(
         _binary(),
@@ -798,7 +822,7 @@ async def test_a_preview_and_apply_on_the_same_route_register(
     assert report["reason"] is None
     assert report["outcome"] == "registered"
     # The successful apply durably records the strict route it verified post-write.
-    from yoetz.application.applied_mcp_route import read_applied_route
+    from finishup.application.applied_mcp_route import read_applied_route
 
     record = read_applied_route(_state=cast(Path, wizard_env["isolated_state"]))
     assert record is not None
@@ -827,18 +851,19 @@ def test_interactive_wizard_selects_harness_then_installation_and_requires_y_or_
         *_absent_mcp(),  # preview: confirmed absent
         *_absent_mcp(),  # apply re-preview: confirmed absent
         CommandOutput(0, b""),  # add
-        _yoetz_entry(),  # verify get
+        # ADR-049: local only registers the policy route too; the privacy policy keeps it local.
+        _finishup_entry("policy"),  # verify get
     ]
 
-    import yoetz.cli.provider_binding as provider_binding
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.provider_binding as provider_binding
+    import finishup.cli.setup as setup_module
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(
         provider_binding, "prompt_provider_endpoint_binding", _skip_provider_binding
     )
 
-    # Harness 1, installation 2, local-only, update checks yes, then strict setup confirmation.
+    # Harness 1, installation 2, local-only, update checks yes, then policy setup confirmation.
     result = _RUNNER.invoke(
         cli.app,
         ["setup", "run"],
@@ -848,14 +873,14 @@ def test_interactive_wizard_selects_harness_then_installation_and_requires_y_or_
     assert result.exit_code == 0
     assert "Automatically detected harnesses:" in result.stdout
     assert "1. Codex (2 installations)" in result.stdout
-    assert "Select a harness to connect to Yoetz" in result.stdout
+    assert "Select a harness to connect to FinishUP" in result.stdout
     assert "Detected Codex installations:" in result.stdout
     assert "Select the Codex installation to configure" in result.stdout
     assert "Codex home used by /b/codex" in result.stdout
-    assert "Choose how Yoetz should review work:" in result.stdout
-    assert "complete Yoetz Codex project integration" in result.stdout
-    assert "MCP server name: yoetz" in result.stdout
-    assert "Command: yoetz mcp serve --host codex --semantic off" in result.stdout
+    assert "Choose how FinishUP should review work:" in result.stdout
+    assert "complete FinishUP Codex project integration" in result.stdout
+    assert "MCP server name: finishup" in result.stdout
+    assert "Command: finishup mcp serve --host codex\n" in result.stdout
     assert "Codex executable: /b/codex" in result.stdout
     assert "Confirm Codex project setup? [Y/N]" in result.stdout
     assert "Observation consent for this workspace" in result.stdout
@@ -878,8 +903,8 @@ def test_interactive_registration_n_declines_without_mutation(
     wizard_env: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.provider_binding as provider_binding
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.provider_binding as provider_binding
+    import finishup.cli.setup as setup_module
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(
@@ -902,21 +927,21 @@ def test_interactive_registration_n_declines_without_mutation(
         assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
-def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
+def test_semantic_first_run_lists_the_ai_review_recipes_for_the_privacy_draft(
     wizard_env: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as privacy_setup_module
-    import yoetz.cli.provider_status as provider_status_module
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.privacy_setup as privacy_setup_module
+    import finishup.cli.provider_status as provider_status_module
+    import finishup.cli.setup as setup_module
 
     wizard_env["outputs"] = [
         *_absent_mcp(),  # preview: confirmed absent
         *_absent_mcp(),  # apply re-preview: confirmed absent
         CommandOutput(0, b""),  # add
-        _yoetz_entry("policy"),  # verify get
+        _finishup_entry("policy"),  # verify get
     ]
-    privacy_calls: list[tuple[str | None, bool, bool, bool | None]] = []
+    privacy_calls: list[tuple[str | None, bool, bool, bool | None, object, bool]] = []
 
     async def ready(*, start_if_absent: bool = False) -> dict[str, object]:
         del start_if_absent
@@ -928,8 +953,9 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
         provider_choice: str | None = None,
         model: str | None = None,
         before_credential: Callable[[], Awaitable[str | None]] | None = None,
+        project: Path | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
-        del provider_choice, model
+        del provider_choice, model, project
         assert before_credential is not None
         # None means the privacy step did not block the credential step.
         assert await before_credential() is None
@@ -941,6 +967,9 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
         offer_recommended: bool = False,
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
+        conversation_review: ConversationReview | None = None,
+        workspace_locator: Path | None = None,
+        ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
         privacy_calls.append(
             (
@@ -948,6 +977,8 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
                 offer_recommended,
                 credential_probe_authorized,
                 update_checks_override,
+                conversation_review,
+                ai_review_add_on,
             )
         )
         return SimpleNamespace(
@@ -957,7 +988,8 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
             reason=None,
         )
 
-    async def provider_status() -> dict[str, object]:
+    async def provider_status(*, workspace_locator: Path | None = None) -> dict[str, object]:
+        del workspace_locator
         return {"semantic_ready": True}
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
@@ -975,14 +1007,17 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
     )
 
     assert result.exit_code == 0, (result.output, result.exception)
-    assert privacy_calls == [("assisted_review", True, True, True)]
+    # ADR-049: the recommended first answer drafts the hybrid conversation setting, and its
+    # privacy step lists the AI-powered review recipes (Assisted review by default), never the
+    # released Private recommendation a subscription reviewer gets (review round 1, P2-3).
+    assert privacy_calls == [(None, False, True, True, ConversationReview.LOCAL_AGENT_OPT_IN, True)]
     assert "Privacy: configured (confirm_every_request)" in result.stdout
 
 
 def test_visible_consent_prompt_never_reflects_credential_shaped_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     fake_credential = "sk-fake-issue-165-never-repeat"
     answers = iter((fake_credential, "yes"))
@@ -1043,7 +1078,7 @@ def test_visible_consent_prompt_never_reflects_credential_shaped_input(
     ],
 )
 def test_provider_setup_reason_is_bounded_and_allowlisted(reason: str, expected: str) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     assert (
         setup_module._allowlisted_provider_setup_reason(  # pyright: ignore[reportPrivateUsage]
@@ -1058,14 +1093,14 @@ def test_composed_wizard_preserves_privacy_when_hidden_credential_input_is_empty
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     fake_credential = "sk-fake-issue-165-must-never-appear"
     wizard_env["outputs"] = [
         *_absent_mcp(),
         *_absent_mcp(),
         CommandOutput(0, b""),
-        _yoetz_entry("policy"),
+        _finishup_entry("policy"),
     ]
     state = _wire_composed_provider_setup(
         monkeypatch,
@@ -1117,7 +1152,9 @@ def test_composed_wizard_preserves_privacy_when_hidden_credential_input_is_empty
     assert semantic_status["repository_grant_state"] == "granted"
     assert report["marker_written"] is False
     assert state["binding_embedded_flags"] == [False]
-    assert state["privacy_calls"] == [("assisted_review", True, True, True)]
+    # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
+    assert state["privacy_calls"] == [(None, False, True, True)]
+    assert state["ai_review_add_on"] is True
     assert state["status_reads"] == 2
     assert state["restart_calls"] == 1
     assert state["stored"] is False
@@ -1131,9 +1168,9 @@ def test_composed_wizard_preserves_privacy_when_hidden_credential_input_is_empty
     assert "repository grant: granted" in result.stdout
     assert "Credential: not stored" in result.stdout
     assert "Credential reason: empty_input" in result.stdout
-    assert "next: run 'yoetz provider credential set'" not in result.stdout
-    assert "restart the Yoetz service" not in " ".join(cast(list[str], report["next_steps"]))
-    assert "yoetz --privacy" not in " ".join(cast(list[str], report["next_steps"]))
+    assert "next: run 'finishup provider credential set'" not in result.stdout
+    assert "restart the FinishUP service" not in " ".join(cast(list[str], report["next_steps"]))
+    assert "finishup --privacy" not in " ".join(cast(list[str], report["next_steps"]))
     assert fake_credential not in result.output
     assert fake_credential not in json.dumps(report)
     secret_bytes = fake_credential.encode("utf-8")
@@ -1151,7 +1188,7 @@ def test_composed_wizard_reaches_semantic_readiness_after_hidden_credential_stor
         *_absent_mcp(),
         *_absent_mcp(),
         CommandOutput(0, b""),
-        _yoetz_entry("policy"),
+        _finishup_entry("policy"),
     ]
     state = _wire_composed_provider_setup(
         monkeypatch,
@@ -1186,7 +1223,9 @@ def test_composed_wizard_reaches_semantic_readiness_after_hidden_credential_stor
     assert report["next_steps"] == []
     assert report["marker_written"] is True
     assert state["binding_embedded_flags"] == [False]
-    assert state["privacy_calls"] == [("assisted_review", True, True, True)]
+    # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
+    assert state["privacy_calls"] == [(None, False, True, True)]
+    assert state["ai_review_add_on"] is True
     assert state["status_reads"] == 2
     assert state["restart_calls"] == 2
     assert state["stored"] is True
@@ -1211,13 +1250,13 @@ def test_no_codex_found_still_completes_with_guidance(wizard_env: dict[str, obje
 
 
 def test_setup_status_is_read_only(wizard_env: dict[str, object]) -> None:
-    wizard_env["outputs"] = [_yoetz_entry()]
+    wizard_env["outputs"] = [_finishup_entry()]
     result = _RUNNER.invoke(cli.app, ["setup", "status", "--json"])
     assert result.exit_code == 0
     report = json.loads(result.stdout)
     assert report["schema"] == "yoetz.setup-status/2"
     assert report["discovered"][0]["registration_state"] == "yoetz_owned"
-    # `yoetz_owned` reads the same for both serve commands, so the row has to name the route.
+    # `finishup_owned` reads the same for both serve commands, so the row has to name the route.
     assert report["discovered"][0]["registered_route_profile"] == "strict"
     assert report["marker_present"] is False
     assert report["service"]["reachable"] is False
@@ -1266,14 +1305,14 @@ def test_setup_status_is_read_only(wizard_env: dict[str, object]) -> None:
 def test_setup_status_reports_invalid_packaged_skill_source(
     wizard_env: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     monkeypatch.setattr(
         setup_module,
         "load_packaged_skill_source",
         lambda: (_ for _ in ()).throw(IntegrationError(IntegrationReason.SOURCE_INVALID, {})),
     )
-    wizard_env["outputs"] = [_yoetz_entry()]
+    wizard_env["outputs"] = [_finishup_entry()]
     result = _RUNNER.invoke(cli.app, ["setup", "status", "--json"])
     assert result.exit_code == 0
     report = json.loads(result.stdout)
@@ -1288,12 +1327,12 @@ def test_setup_status_reports_invalid_packaged_skill_source(
 
 
 def test_installed_hooks_use_nested_plugin_hook_path(tmp_path: Path) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
-    hooks_path = tmp_path / ".agents" / "plugins" / "yoetz" / "hooks" / "hooks.json"
+    hooks_path = tmp_path / ".agents" / "plugins" / "finishup" / "hooks" / "hooks.json"
     hooks_path.parent.mkdir(parents=True)
     hooks_path.write_text(
-        '{"hooks":{"SessionStart":[{"command":"yoetz hooks observe '
+        '{"hooks":{"SessionStart":[{"command":"finishup hooks observe '
         '--event SessionStart --workspace ."}]}}'
     )
 
@@ -1308,7 +1347,7 @@ def test_integrate_mcp_status_preview_install(wizard_env: dict[str, object]) -> 
     assert status.exit_code == 0
     absent_status = json.loads(status.stdout)
     assert absent_status["state"] == "absent"
-    # An absent entry has no Yoetz route to describe; the field is present and null, never guessed.
+    # An absent entry has no FinishUP route to describe; the field is present and null, never guessed.
     assert absent_status["route_profile"] is None
 
     wizard_env["outputs"] = _absent_mcp()
@@ -1322,7 +1361,7 @@ def test_integrate_mcp_status_preview_install(wizard_env: dict[str, object]) -> 
         *_absent_mcp(),
         *_absent_mcp(),
         CommandOutput(0, b""),
-        _yoetz_entry(),
+        _finishup_entry(),
     ]
     install = _RUNNER.invoke(
         cli.app,
@@ -1351,7 +1390,7 @@ def test_integrate_mcp_status_names_the_registered_route(
     """
 
     for route_profile in ("strict", "policy"):
-        wizard_env["outputs"] = [_yoetz_entry(route_profile)]
+        wizard_env["outputs"] = [_finishup_entry(route_profile)]
         result = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "status", "--json"])
         assert result.exit_code == 0
         body = json.loads(result.stdout)
@@ -1377,7 +1416,7 @@ def test_integrate_mcp_refuses_foreign_entry(wizard_env: dict[str, object]) -> N
 
 @pytest.mark.parametrize("exit_code", [0, 1])
 def test_integrate_mcp_remove_owned_entry(wizard_env: dict[str, object], exit_code: int) -> None:
-    wizard_env["outputs"] = [_yoetz_entry()]
+    wizard_env["outputs"] = [_finishup_entry()]
     previewed = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "preview-remove", "--json"])
     assert previewed.exit_code == 0, (previewed.output, previewed.exception)
     preview = json.loads(previewed.stdout)
@@ -1387,20 +1426,20 @@ def test_integrate_mcp_remove_owned_entry(wizard_env: dict[str, object], exit_co
     assert preview["warnings"] == ["host_remove_not_compare_and_swap"]
     assert preview["preview_digest"].startswith("sha256:")
 
-    wizard_env["outputs"] = [_yoetz_entry()]
+    wizard_env["outputs"] = [_finishup_entry()]
     refused = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "remove", "--json"])
     assert refused.exit_code == 2
     assert "confirmation_required" in refused.stderr
 
-    wizard_env["outputs"] = [_yoetz_entry()]
+    wizard_env["outputs"] = [_finishup_entry()]
     unbound = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "remove", "--accept", "--json"])
     assert unbound.exit_code == 2
     assert "confirmation_required" in unbound.stderr
 
     wizard_env["outputs"] = [
-        _yoetz_entry(),
-        _yoetz_entry(),
-        _yoetz_entry(),
+        _finishup_entry(),
+        _finishup_entry(),
+        _finishup_entry(),
         CommandOutput(exit_code, b""),
         CommandOutput(1, b""),
         CommandOutput(0, b"[]"),
@@ -1428,12 +1467,12 @@ def test_integrate_mcp_remove_owned_entry(wizard_env: dict[str, object], exit_co
 def test_integrate_mcp_interactive_remove_surfaces_complete_warning_bound_preview(
     wizard_env: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     wizard_env["outputs"] = [
-        _yoetz_entry(),
-        _yoetz_entry(),
-        _yoetz_entry(),
+        _finishup_entry(),
+        _finishup_entry(),
+        _finishup_entry(),
         CommandOutput(0, b""),
         *_absent_mcp(),
     ]
@@ -1443,7 +1482,7 @@ def test_integrate_mcp_interactive_remove_surfaces_complete_warning_bound_previe
     result = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "remove"])
 
     assert result.exit_code == 0, (result.output, result.exception)
-    assert "Command: yoetz mcp serve --host codex --semantic off" in result.output
+    assert "Command: finishup mcp serve --host codex --semantic off" in result.output
     assert "MCP route profile: strict" in result.output
     assert "Warning: host_remove_not_compare_and_swap" in result.output
     assert "Preview digest: sha256:" in result.output
@@ -1454,7 +1493,7 @@ def test_integrate_mcp_remove_absent_entry_is_noop(wizard_env: dict[str, object]
     config = project / ".codex" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
+        '[mcp_servers.finishup.tools.check]\napproval_mode = "approve"\n',
         encoding="utf-8",
     )
     wizard_env["outputs"] = _absent_mcp()
@@ -1503,10 +1542,11 @@ def test_integrate_mcp_strict_install_noop_still_revokes_host_admission(
     config = project / ".codex" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
+        '[mcp_servers.finishup.tools.check]\napproval_mode = "approve"\n',
         encoding="utf-8",
     )
-    wizard_env["outputs"] = [_yoetz_entry("strict")]
+    # Preview get, then the observe get that reads the registered route.
+    wizard_env["outputs"] = [_finishup_entry("strict"), _finishup_entry("strict")]
     result = _RUNNER.invoke(
         cli.app,
         [
@@ -1539,7 +1579,7 @@ def test_integrate_mcp_remove_refuses_foreign_entry(wizard_env: dict[str, object
 def test_integrate_mcp_remove_refuses_stale_preview_digest(
     wizard_env: dict[str, object],
 ) -> None:
-    wizard_env["outputs"] = [_yoetz_entry()]
+    wizard_env["outputs"] = [_finishup_entry()]
     result = _RUNNER.invoke(
         cli.app,
         [
@@ -1563,9 +1603,10 @@ def test_non_interactive_accept_preserves_existing_policy_route(
     """#389: ``--accept`` without an explicit route never rewrites an owned registration."""
 
     wizard_env["outputs"] = [
-        _yoetz_entry("policy"),  # tentative strict preview get: owned, other route
-        _yoetz_entry("policy"),  # preserved policy re-preview get: noop
-        _yoetz_entry("policy"),  # status verify after plugin install
+        _finishup_entry("policy"),  # tentative strict preview get: owned, other route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("policy"),  # preserved policy re-preview get: noop
+        _finishup_entry("policy"),  # status verify after plugin install
     ]
     result = _RUNNER.invoke(cli.app, ["setup", "run", "--non-interactive", "--accept", "--json"])
     assert result.exit_code == 0, (result.output, result.exception)
@@ -1576,7 +1617,7 @@ def test_non_interactive_accept_preserves_existing_policy_route(
     assert report["registration"]["serve_command"] == list(MCP_SERVE_COMMAND)
     # No mutating ``mcp add`` ever ran: the existing policy route survives.
     for calls in cast(list[list[tuple[str, ...]]], wizard_env["calls"]):
-        assert all(call[1:3] == ("mcp", "get") for call in calls)
+        assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
 def test_explicit_route_profile_flag_reregisters_and_reports_the_transition(
@@ -1585,10 +1626,11 @@ def test_explicit_route_profile_flag_reregisters_and_reports_the_transition(
     """#389: only an explicit ``--route-profile`` may change an existing owned route."""
 
     wizard_env["outputs"] = [
-        _yoetz_entry("policy"),  # preview get: owned on the policy route
-        _yoetz_entry("policy"),  # adapter apply re-preview get
+        _finishup_entry("policy"),  # preview get: owned on the policy route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("policy"),  # adapter apply re-preview get
         CommandOutput(0, b""),  # add
-        _yoetz_entry("strict"),  # verify get
+        _finishup_entry("strict"),  # verify get
     ]
     result = _RUNNER.invoke(
         cli.app,
@@ -1623,21 +1665,23 @@ def test_interactive_preview_surfaces_a_route_profile_transition(
 ) -> None:
     """#389: a route change must be visible in the preview the human confirms."""
 
-    import yoetz.cli.provider_binding as provider_binding
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.provider_binding as provider_binding
+    import finishup.cli.setup as setup_module
 
     wizard_env["outputs"] = [
-        _yoetz_entry("policy"),  # preview get: owned on the policy route
-        _yoetz_entry("policy"),  # adapter apply re-preview get
+        _finishup_entry("strict"),  # preview get: owned on the strict route (an earlier setup)
+        _finishup_entry("strict"),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("strict"),  # adapter apply re-preview get
         CommandOutput(0, b""),  # add
-        _yoetz_entry("strict"),  # verify get
+        _finishup_entry("policy"),  # verify get
     ]
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(
         provider_binding, "prompt_provider_endpoint_binding", _skip_provider_binding
     )
 
-    # Installation, home, local-only review (strict), update checks yes, confirm.
+    # Installation, home, local-only review, update checks yes, confirm. ADR-049: every answer
+    # registers the policy route, so an earlier strict registration visibly moves to it.
     result = _RUNNER.invoke(
         cli.app,
         ["setup", "run"],
@@ -1645,8 +1689,8 @@ def test_interactive_preview_surfaces_a_route_profile_transition(
     )
 
     assert result.exit_code == 0, (result.output, result.exception)
-    assert "MCP route profile change: policy -> strict" in result.stdout
-    assert "MCP route profile: strict (changed from policy)" in result.stdout
+    assert "MCP route profile change: strict -> policy" in result.stdout
+    assert "MCP route profile: policy (changed from strict)" in result.stdout
 
 
 def test_failed_activation_preview_reports_bound_home_and_real_reason(
@@ -1656,7 +1700,7 @@ def test_failed_activation_preview_reports_bound_home_and_real_reason(
 ) -> None:
     """#390: an explicit ``--codex-home`` failure must not read as ``codex_home_required``."""
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     codex = tmp_path / "codex-testing"
     codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -1672,7 +1716,7 @@ def test_failed_activation_preview_reports_bound_home_and_real_reason(
         *_absent_mcp(),  # preview: confirmed absent
         *_absent_mcp(),  # apply re-preview: confirmed absent
         CommandOutput(0, b""),  # add
-        _yoetz_entry(),  # verify get
+        _finishup_entry(),  # verify get
     ]
 
     result = _RUNNER.invoke(
@@ -1712,8 +1756,9 @@ def test_integrate_mcp_install_without_route_input_preserves_owned_policy_route(
     """#389: the ``integrate codex mcp`` surface must not rewrite an owned route either."""
 
     wizard_env["outputs"] = [
-        _yoetz_entry("policy"),  # derived-strict preview get: owned, other route
-        _yoetz_entry("policy"),  # preserved policy re-preview get: noop
+        _finishup_entry("policy"),  # derived-strict preview get: owned, other route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("policy"),  # preserved policy re-preview get: noop
     ]
     result = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "install", "--accept", "--json"])
     assert result.exit_code == 0, (result.output, result.exception)
@@ -1721,15 +1766,16 @@ def test_integrate_mcp_install_without_route_input_preserves_owned_policy_route(
     assert body["action"] == "noop"
     assert body["state_after"] == "yoetz_owned"
     for calls in cast(list[list[tuple[str, ...]]], wizard_env["calls"]):
-        assert all(call[1:3] == ("mcp", "get") for call in calls)
+        assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
 def test_integrate_mcp_preview_names_the_observed_route_before(
     wizard_env: dict[str, object],
 ) -> None:
     wizard_env["outputs"] = [
-        _yoetz_entry("policy"),
-        _yoetz_entry("policy"),
+        _finishup_entry("policy"),
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("policy"),
     ]
     result = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "preview", "--json"])
     assert result.exit_code == 0
@@ -1743,10 +1789,11 @@ def test_integrate_mcp_explicit_route_profile_reregisters(
     wizard_env: dict[str, object],
 ) -> None:
     wizard_env["outputs"] = [
-        _yoetz_entry("policy"),  # preview get: owned on the policy route
-        _yoetz_entry("policy"),  # adapter apply re-preview get
+        _finishup_entry("policy"),  # preview get: owned on the policy route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("policy"),  # adapter apply re-preview get
         CommandOutput(0, b""),  # add
-        _yoetz_entry("strict"),  # verify get
+        _finishup_entry("strict"),  # verify get
     ]
     result = _RUNNER.invoke(
         cli.app,
@@ -1770,12 +1817,12 @@ def test_integrate_mcp_explicit_route_profile_reregisters(
 def test_absolute_mcp_cli_preserves_launcher_and_route(
     wizard_env: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    launcher = "/test/Yoetz Runtime/bin/yoetz"
+    launcher = "/test/FinishUP Runtime/bin/finishup"
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_mcp.installed_launcher",
+        "finishup.adapters.integrations.codex_mcp.installed_launcher",
         lambda: (launcher, "sha256:" + "e" * 64),
     )
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
     wizard_env["outputs"] = _absent_mcp()
     preview = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "preview", "--json"])
     assert preview.exit_code == 0, (preview.output, preview.exception)
@@ -1784,8 +1831,8 @@ def test_absolute_mcp_cli_preserves_launcher_and_route(
         *_absent_mcp(),
         *_absent_mcp(),
         CommandOutput(0, b""),
-        _yoetz_entry(launcher=launcher),
-        _yoetz_entry(launcher=launcher),
+        _finishup_entry(launcher=launcher),
+        _finishup_entry(launcher=launcher),
     ]
     installed = _RUNNER.invoke(
         cli.app, ["integrate", "codex", "mcp", "install", "--accept", "--json"]
@@ -1801,8 +1848,11 @@ def test_absolute_mcp_cli_preserves_launcher_and_route(
     # No explicit route input must retain the existing policy route, even though setup's
     # configured default in this fixture is strict.
     wizard_env["outputs"] = [
-        _yoetz_entry("policy", launcher=launcher),
-        _yoetz_entry("policy", launcher=launcher),
+        _finishup_entry("policy", launcher=launcher),
+        _finishup_entry(
+            "policy", launcher=launcher
+        ),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("policy", launcher=launcher),
     ]
     noop = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "install", "--accept", "--json"])
     assert noop.exit_code == 0, (noop.output, noop.exception)
@@ -1856,7 +1906,7 @@ def test_root_privacy_shortcut_rejects_provider_setup_options() -> None:
 def test_root_set_fireworks_dispatches_simple_provider_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     received: dict[str, object] = {}
 
@@ -1885,7 +1935,7 @@ def test_root_set_fireworks_dispatches_simple_provider_setup(
 def test_root_set_dispatches_new_provider_setup_without_secret_argument(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     received: dict[str, object] = {}
 
@@ -1910,7 +1960,7 @@ def test_root_set_dispatches_new_provider_setup_without_secret_argument(
 def test_root_set_grok_dispatches_simple_provider_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     received: dict[str, object] = {}
 
@@ -1936,8 +1986,8 @@ def test_provider_flags_require_set() -> None:
 def test_provider_setup_success_reports_layers_without_ready_overclaim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.setup as setup_module
-    from yoetz.cli.privacy_setup import PrivacySetupReport
+    import finishup.cli.setup as setup_module
+    from finishup.cli.privacy_setup import PrivacySetupReport
 
     async def fake_reachability(*, start_if_absent: bool = False) -> dict[str, object]:
         del start_if_absent
@@ -1949,8 +1999,9 @@ def test_provider_setup_success_reports_layers_without_ready_overclaim(
         provider_choice: str | None = None,
         model: str | None = None,
         before_credential: Callable[[], Awaitable[str | None]] | None = None,
+        project: Path | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
-        del provider_choice, model
+        del provider_choice, model, project
         assert before_credential is not None
         # None means the privacy step did not block the credential step.
         assert await before_credential() is None
@@ -1962,12 +2013,12 @@ def test_provider_setup_success_reports_layers_without_ready_overclaim(
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(setup_module, "_service_reachability", fake_reachability)
     monkeypatch.setattr(setup_module, "_interactive_provider_setup", fake_interactive)
-    monkeypatch.setattr("yoetz.cli.privacy_setup.run_privacy_setup", fake_privacy_setup)
+    monkeypatch.setattr("finishup.cli.privacy_setup.run_privacy_setup", fake_privacy_setup)
 
     result = _RUNNER.invoke(cli.app, ["--set", "--fireworks", "--model", "m"], input="Y\n")
     plain = _plain(result.output)
     assert result.exit_code == 0
-    assert "Yoetz is ready to use this provider." not in plain
+    assert "FinishUP is ready to use this provider." not in plain
     assert "Provider binding and vault credential storage succeeded" in plain
     assert "SDK extra (semantic-openai):" in plain
     assert "_semantic_not_configured" in plain
@@ -1994,9 +2045,9 @@ def test_secure_set_paths_share_provider_model_picker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.config.load as config_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.setup as setup_module
+    import finishup.config.load as config_module
 
     picked: list[str] = []
     applied: list[tuple[str, str]] = []
@@ -2034,12 +2085,12 @@ def test_uninitialized_provider_setup_provisions_auto_unlock(
 ) -> None:
     """The wizard must keep the auto-unlock write side reachable in product code."""
 
-    import yoetz.adapters.keys.os_keyring as keyring_module
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
-    import yoetz.config.paths as paths_module
+    import finishup.adapters.keys.os_keyring as keyring_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
+    import finishup.config.paths as paths_module
 
     calls: list[str] = []
     supplied: list[bytes] = []
@@ -2122,12 +2173,12 @@ def test_uninitialized_setup_refuses_preexisting_auto_unlock_entry(
     import base64
     import hashlib
 
-    import yoetz.adapters.keys.os_keyring as keyring_module
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
-    import yoetz.config.paths as paths_module
+    import finishup.adapters.keys.os_keyring as keyring_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
+    import finishup.config.paths as paths_module
 
     # Known secret that must not become the vault root passphrase.
     planted = bytearray(b"attacker-known-vault-secret-0123456789abcdef!!!!")
@@ -2206,7 +2257,7 @@ def test_uninitialized_setup_refuses_preexisting_auto_unlock_entry(
     stderr = capsys.readouterr().err
     assert "yoetz.auto-unlock.v1" in stderr
     assert username in stderr
-    assert "yoetz setup" in stderr
+    assert "finishup setup" in stderr
     assert encoded not in stderr
     assert planted.decode("ascii") not in stderr
 
@@ -2216,11 +2267,11 @@ def test_uninitialized_setup_stops_after_write_with_failed_readback(
 ) -> None:
     """An ambiguous committed entry must never trigger a different manual passphrase."""
 
-    import yoetz.adapters.keys.os_keyring as keyring_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
-    import yoetz.config.paths as paths_module
+    import finishup.adapters.keys.os_keyring as keyring_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
+    import finishup.config.paths as paths_module
 
     class _WriteThenUnreadable:
         def __init__(self) -> None:
@@ -2280,14 +2331,14 @@ def test_ready_auto_unlock_vault_reuses_scoped_secret_for_provider_reauthenticat
 ) -> None:
     """Fresh Keychain-backed setup must ask only for the provider credential."""
 
-    import yoetz.adapters.keys.os_keyring as keyring_module
-    import yoetz.cli.privacy_setup as privacy_setup_module
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
-    import yoetz.config.paths as paths_module
-    import yoetz.config.write as write_module
+    import finishup.adapters.keys.os_keyring as keyring_module
+    import finishup.cli.privacy_setup as privacy_setup_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
+    import finishup.config.paths as paths_module
+    import finishup.config.write as write_module
 
     loaded: list[bytes] = []
     supplied_reauthentication: list[bytes | None] = []
@@ -2351,7 +2402,7 @@ def test_ready_auto_unlock_vault_reuses_scoped_secret_for_provider_reauthenticat
     monkeypatch.setattr(unlock_module, "set_provider_credential", fake_set)
     monkeypatch.setattr(setup_module, "_service_reachability", fake_reachability)
     monkeypatch.setattr(setup_module, "_restart_service_for_semantic_composition", fake_restart)
-    import yoetz.cli.provider_status as provider_status_module
+    import finishup.cli.provider_status as provider_status_module
 
     monkeypatch.setattr(provider_status_module, "provider_status_report", fake_provider_status)
     monkeypatch.setattr(
@@ -2378,12 +2429,12 @@ def test_ready_auto_unlock_vault_reuses_scoped_secret_for_provider_reauthenticat
 def test_existing_bound_credential_can_be_reused_without_requesting_it_again(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.provider_status as provider_status_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
-    import yoetz.config.write as write_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.provider_status as provider_status_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
+    import finishup.config.write as write_module
 
     provider = SimpleNamespace(
         provider_id="fireworks",
@@ -2453,14 +2504,14 @@ def test_existing_bound_credential_replacement_does_not_inherit_old_presence(
     result_lost: bool,
     expected_credential: str,
 ) -> None:
-    import yoetz.cli.privacy_setup as privacy_setup_module
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.provider_status as provider_status_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
-    import yoetz.config.write as write_module
-    from yoetz.service.confidential_client import ConfidentialClientError
+    import finishup.cli.privacy_setup as privacy_setup_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.provider_status as provider_status_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
+    import finishup.config.write as write_module
+    from finishup.service.confidential_client import ConfidentialClientError
 
     provider = SimpleNamespace(
         provider_id="fireworks",
@@ -2533,14 +2584,14 @@ def test_existing_bound_credential_replacement_does_not_inherit_old_presence(
 def test_lost_credential_result_recovers_from_recomposed_presence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import yoetz.cli.privacy_setup as privacy_setup_module
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.provider_status as provider_status_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.cli.unlock as unlock_module
-    import yoetz.config.load as config_module
-    import yoetz.config.write as write_module
-    from yoetz.service.confidential_client import ConfidentialClientError
+    import finishup.cli.privacy_setup as privacy_setup_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.provider_status as provider_status_module
+    import finishup.cli.setup as setup_module
+    import finishup.cli.unlock as unlock_module
+    import finishup.config.load as config_module
+    import finishup.config.write as write_module
+    from finishup.service.confidential_client import ConfidentialClientError
 
     provider = SimpleNamespace(
         provider_id="fireworks",
@@ -2607,7 +2658,7 @@ def test_human_report_states_why_the_credential_was_not_stored(
 ) -> None:
     """The JSON report already carried the cause; the human run showed a blank credential."""
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     setup_module._emit_human_report(  # pyright: ignore[reportPrivateUsage]
         {
@@ -2631,7 +2682,7 @@ def test_human_report_states_why_the_credential_was_not_stored(
 def test_human_report_omits_a_credential_reason_once_the_credential_is_stored(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     setup_module._emit_human_report(  # pyright: ignore[reportPrivateUsage]
         {
@@ -2656,7 +2707,7 @@ def test_human_report_states_whether_the_codex_sign_in_was_reused(
 ) -> None:
     """First-run must say when setup reused the dedicated home's existing Codex login (#534)."""
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     setup_module._emit_human_report(  # pyright: ignore[reportPrivateUsage]
         {
@@ -2682,10 +2733,10 @@ def test_blocked_privacy_step_reports_its_own_reason_for_the_credential(
 ) -> None:
     """privacy_setup_incomplete hid the exact privacy cause the report already knew."""
 
-    import yoetz.cli.provider_binding as binding_module
-    import yoetz.cli.setup as setup_module
-    import yoetz.config.load as config_module
-    import yoetz.config.write as write_module
+    import finishup.cli.provider_binding as binding_module
+    import finishup.cli.setup as setup_module
+    import finishup.config.load as config_module
+    import finishup.config.write as write_module
 
     def fake_write(_choice: str, *, model: str) -> tuple[Path, object]:
         del model
@@ -2732,8 +2783,8 @@ def test_blocked_privacy_step_reports_its_own_reason_for_the_credential(
 def test_set_reports_the_underlying_privacy_reason_rather_than_a_generic_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.setup as setup_module
-    from yoetz.cli.privacy_setup import PrivacySetupReport
+    import finishup.cli.setup as setup_module
+    from finishup.cli.privacy_setup import PrivacySetupReport
 
     async def fake_reachability(*, start_if_absent: bool = False) -> dict[str, object]:
         del start_if_absent
@@ -2745,8 +2796,9 @@ def test_set_reports_the_underlying_privacy_reason_rather_than_a_generic_block(
         provider_choice: str | None = None,
         model: str | None = None,
         before_credential: Callable[[], Awaitable[str | None]] | None = None,
+        project: Path | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
-        del provider_choice, model
+        del provider_choice, model, project
         assert before_credential is not None
         reason = await before_credential()
         return service, {
@@ -2761,7 +2813,7 @@ def test_set_reports_the_underlying_privacy_reason_rather_than_a_generic_block(
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(setup_module, "_service_reachability", fake_reachability)
     monkeypatch.setattr(setup_module, "_interactive_provider_setup", fake_interactive)
-    monkeypatch.setattr("yoetz.cli.privacy_setup.run_privacy_setup", fake_privacy_setup)
+    monkeypatch.setattr("finishup.cli.privacy_setup.run_privacy_setup", fake_privacy_setup)
 
     result = _RUNNER.invoke(cli.app, ["--set", "--fireworks", "--model", "m"], input="Y\n")
 
@@ -2773,14 +2825,16 @@ def test_set_reports_the_underlying_privacy_reason_rather_than_a_generic_block(
 def test_interactive_setup_reconfirms_mcp_entry_exposed_by_plugin_activation(
     wizard_env: dict[str, object], monkeypatch: pytest.MonkeyPatch, approved: bool
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
+    # ADR-049: the local-only answer registers the policy route, so an activation that exposes
+    # a strict entry is the different one the owner must reconfirm.
     wizard_env["outputs"] = [
         *_absent_mcp(),
-        _yoetz_entry("policy"),  # Activation exposes the bundled entry after the first preview.
-        _yoetz_entry("policy"),  # The replacement preview must describe that actual entry.
+        _finishup_entry("strict"),  # Activation exposes the bundled entry after the first preview.
+        _finishup_entry("strict"),  # The replacement preview must describe that actual entry.
         *(
-            [_yoetz_entry("policy"), CommandOutput(0, b""), _yoetz_entry("strict")]
+            [_finishup_entry("strict"), CommandOutput(0, b""), _finishup_entry("policy")]
             if approved
             else []
         ),
@@ -2808,7 +2862,7 @@ def test_interactive_setup_reconfirms_mcp_entry_exposed_by_plugin_activation(
 def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
     wizard_env: dict[str, object], expected_transition: bool
 ) -> None:
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     binary = _binary()
     home = cast(Path, wizard_env["codex_home"])
@@ -2820,13 +2874,13 @@ def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
         return preview, skill
 
     preview, skill = asyncio.run(prepare())
-    generated = _yoetz_entry("policy")
+    generated = _finishup_entry("policy")
     wizard_env["outputs"] = [
         *_absent_mcp(),
         generated,
-        generated if expected_transition else _yoetz_entry("strict"),
+        generated if expected_transition else _finishup_entry("strict"),
         *(
-            [generated, generated, CommandOutput(0, b""), _yoetz_entry("strict")]
+            [generated, generated, CommandOutput(0, b""), _finishup_entry("strict")]
             if expected_transition
             else []
         ),
@@ -2861,9 +2915,16 @@ class _CodexMcpHost:
         self.calls.append(argv)
         verb = argv[1:3]
         if verb == ("mcp", "get"):
-            return _yoetz_entry("strict") if self.registered else CommandOutput(1, b"")
-        if verb == ("mcp", "list") and not self.registered:
-            return CommandOutput(0, b"[]")
+            return _finishup_entry("strict") if self.registered else CommandOutput(1, b"")
+        if verb == ("mcp", "list"):
+            # Every observation also lists entries for the legacy ``yoetz`` key (ADR-048).
+            if not self.registered:
+                return CommandOutput(0, b"[]")
+            entry = {
+                "name": "finishup",
+                "transport": {"command": "finishup", "args": list(MCP_STRICT_SERVE_COMMAND[1:])},
+            }
+            return CommandOutput(0, json.dumps([entry]).encode())
         if verb == ("mcp", "add"):
             self.registered = True
             return CommandOutput(0, b"")
@@ -2876,8 +2937,8 @@ def consent_arm_env(
 ) -> dict[str, object]:
     """The composed Codex connection with its real consent step on a disposable store."""
 
-    import yoetz.adapters.integrations.observation_local as observation_local
-    import yoetz.cli.setup as setup_module
+    import finishup.adapters.integrations.observation_local as observation_local
+    import finishup.cli.setup as setup_module
 
     host = _CodexMcpHost()
 
@@ -2888,8 +2949,8 @@ def consent_arm_env(
     ) -> CodexMcpAdapter:
         return CodexMcpAdapter(host, route_profile=route_profile, codex_home=codex_home)
 
-    import yoetz.adapters.integrations.codex_mcp as codex_mcp_module
-    import yoetz.cli.codex_connection as codex_connection_module
+    import finishup.adapters.integrations.codex_mcp as codex_mcp_module
+    import finishup.cli.codex_connection as codex_connection_module
 
     monkeypatch.setattr(setup_module, "CodexMcpAdapter", adapter)
     # The host-connection preview and its terminal-interface plan reach the same host.
@@ -2922,7 +2983,7 @@ def consent_arm_env(
 async def _connect_codex(env: dict[str, object]) -> dict[str, JsonValue]:
     """Preview and apply exactly as the host connection and terminal interface do."""
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     workspace = cast(Path, env["workspace"])
     home = cast(Path, env["codex_home"])
@@ -2953,12 +3014,12 @@ class _NoOsPresenceReview:
 
 
 def _host_connect_codex(env: dict[str, object]) -> tuple[bool, dict[str, JsonValue]]:
-    """Run ``yoetz connect codex``'s prepare/accept/apply composition; report if it applied."""
+    """Run ``finishup connect codex``'s prepare/accept/apply composition; report if it applied."""
 
-    from yoetz.adapters.integrations.host_discovery import HostInstallation
-    from yoetz.application.host_connection import ConnectionPlan, apply_connection
-    from yoetz.cli.codex_connection import prepare_codex_connection
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.application.host_connection import ConnectionPlan, apply_connection
+    from finishup.cli.codex_connection import prepare_codex_connection
+    from finishup.protocol.ids import IdKind, new_id
 
     binary = _binary()
     installation = HostInstallation(
@@ -2993,7 +3054,7 @@ def _host_connect_codex(env: dict[str, object]) -> tuple[bool, dict[str, JsonVal
 def _approve_claude_capture(env: dict[str, object]) -> None:
     """The documented Claude steps: structural grant, then the explicit content arm."""
 
-    import yoetz.cli.observe as observe_cli
+    import finishup.cli.observe as observe_cli
 
     workspace = str(cast(Path, env["workspace"]))
     assert observe_cli.grant_observation(workspace=workspace) == 0
@@ -3086,7 +3147,7 @@ def test_claude_arm_added_after_codex_survives_codex_reconnection(
     codex_only = _authority(env)
     assert codex_only.profiles == ()
 
-    import yoetz.cli.observe as observe_cli
+    import finishup.cli.observe as observe_cli
 
     # Claude's structural grant repeats an effective consent: Codex's own profileless hook
     # authority is not re-fenced by it.
@@ -3148,7 +3209,7 @@ def test_revocation_after_connection_fences_and_reconnection_infers_no_arm(
 def test_host_connection_codex_after_claude_keeps_claude_capture(
     consent_arm_env: dict[str, object],
 ) -> None:
-    """Issue #835 through ``yoetz connect codex``: preview, accept, apply, and reconnect."""
+    """Issue #835 through ``finishup connect codex``: preview, accept, apply, and reconnect."""
 
     env = consent_arm_env
     _approve_claude_capture(env)

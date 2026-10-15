@@ -5,7 +5,7 @@ from __future__ import annotations
 from hypothesis import given
 from hypothesis import strategies as st
 
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -13,9 +13,9 @@ from yoetz.domain.findings import (
     FindingOrigin,
     finding_policy_identity,
 )
-from yoetz.domain.values import Frontier, finding_id, obligation_id
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Frontier, finding_id, obligation_id
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,

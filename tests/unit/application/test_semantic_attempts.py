@@ -11,7 +11,7 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.application.semantic_attempts import (
+from finishup.application.semantic_attempts import (
     SemanticAttemptAccounting,
     attempt_accounting_from_rows,
     attempt_accounting_to_json,
@@ -23,9 +23,9 @@ from yoetz.application.semantic_attempts import (
     run_durable_semantic_attempts,
     should_retry_after,
 )
-from yoetz.domain.findings import RuntimeTokenUsage, SemanticFailureClass
-from yoetz.domain.values import Frontier
-from yoetz.ports.ledger import (
+from finishup.domain.findings import RuntimeTokenUsage, SemanticFailureClass
+from finishup.domain.values import Frontier
+from finishup.ports.ledger import (
     AttemptOutcome,
     CheckPhase,
     OperationLease,
@@ -34,10 +34,10 @@ from yoetz.ports.ledger import (
     SemanticDisclosureWait,
     SemanticJobRecord,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.semantic import Deadline
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _JOB = "job_40000000-0000-4000-8000-000000000001"
 _ATT1 = "att_40000000-0000-4000-8000-000000000001"
@@ -2242,7 +2242,7 @@ async def test_repair_shares_the_physical_budget_with_transient_retries() -> Non
 async def test_exception_stage_survives_cleanup_and_is_request_joined(
     stage: str, cleanup_fails: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.observability.diagnostics import lookup_diagnostic_records
+    from finishup.observability.diagnostics import lookup_diagnostic_records
 
     lease = _lease()
     job = SemanticJobRecord(

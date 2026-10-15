@@ -16,7 +16,7 @@ from anyio.abc import ObjectSendStream
 from anyio.lowlevel import checkpoint
 from mcp.shared.message import SessionMessage
 
-import yoetz.adapters.mcp_stdio as transport
+import finishup.adapters.mcp_stdio as transport
 
 
 @pytest.fixture
@@ -284,7 +284,7 @@ def test_sigterm_while_idle_emits_no_partial_frame_or_traceback() -> None:
     child = r"""
 import anyio
 import sys
-from yoetz.adapters.mcp_stdio import bounded_stdio_server
+from finishup.adapters.mcp_stdio import bounded_stdio_server
 
 async def main():
     async with bounded_stdio_server(512) as (read_stream, write_stream):

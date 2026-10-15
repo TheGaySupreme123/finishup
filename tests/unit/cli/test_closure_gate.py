@@ -17,23 +17,23 @@ from builders.gate_readiness import (
     blocker_recheck,
     premise_recheck,
 )
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import closure_gate as gate_module
-from yoetz.cli import observe_hooks
-from yoetz.cli.closure_gate import (
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import closure_gate as gate_module
+from finishup.cli import observe_hooks
+from finishup.cli.closure_gate import (
     closure_gate_already_delivered,
     closure_gate_from_readiness,
     record_closure_gate_delivered,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationIngestDisposition,
     ObservationIngestResult,
     observation_ingest_result_to_json,
 )
-from yoetz.kernel.task_facts import STOP_GATE_TOKENS
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.kernel.task_facts import STOP_GATE_TOKENS
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
 
 _DIGEST = "sha256:" + "d" * 64
 
@@ -66,8 +66,8 @@ def test_every_stop_gate_token_fires(token: str) -> None:
     assert gate.identity == f"7:{_DIGEST}"
     # The blocker exit is offered only for open obligations (F1, #984).
     offers_blocker = token in {"obligations_open", gate_module.BLOCKER_UNCONFIRMED_TOKEN}
-    assert ("yoetz-blocker:<" in gate.text) is offers_blocker
-    assert "A Yoetz limit is never a `yoetz-blocker`" in gate.text
+    assert ("finishup-blocker:<" in gate.text) is offers_blocker
+    assert "A FinishUP limit is never a `finishup-blocker`" in gate.text
     assert len(gate.text) <= 2000
     assert "/" not in gate.text.replace("<authority|consent|credential|dependency_unavailable>", "")
 
@@ -181,7 +181,8 @@ class _Harness:
         self.readiness: Any = _readiness()
         self.sequence = "5"
         self.status_calls = 0
-        # #1050: the resolved obligations an ``obligations`` view read returns (None: it fails).
+        # #1050 (tb4n4): the gate once read an ``obligations`` view here; tb4n5 removed it, and
+        # ``views`` proves no second read is made.
         self.obligation_rows: tuple[Any, ...] | None = ()
         self.views: list[str] = []
         harness = self
@@ -273,7 +274,7 @@ class _Host:
         else:
             assert set(output) == {"followup_message"}
             text = output["followup_message"]
-        assert "Yoetz closure gate" in text
+        assert "FinishUP closure gate" in text
         assert "open obligation" in text
         return cast(str, text)
 
@@ -342,7 +343,7 @@ def test_unreachable_status_lets_the_agent_stop(tmp_path: Path, host: _Host) -> 
 def test_closing_review_requirement_continues_with_the_final_review_repair() -> None:
     from types import SimpleNamespace
 
-    from yoetz.cli.closure_gate import closure_gate_from_readiness
+    from finishup.cli.closure_gate import closure_gate_from_readiness
 
     gate = closure_gate_from_readiness(
         SimpleNamespace(
@@ -520,7 +521,7 @@ def test_blocker_published_after_the_gate_is_reasked_once_on_the_active_stop(
     h.sequence = "6"
     second = _stop(h, host, session, guarded=True)
     text = _text(host, second)
-    assert text.startswith("Yoetz closure gate (shown once for these blockers)")
+    assert text.startswith("FinishUP closure gate (shown once for these blockers)")
     assert f"{_OBL} (dependency_unavailable)" in text
     # Ordinary items never ride an active Stop.
     assert "open obligation(s)" not in text
@@ -613,8 +614,8 @@ def test_unconfirmed_blocker_token_gates_and_confirms_only_in_the_recheck() -> N
     assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN, gate_module.BLOCKER_RECHECK_ITEM)
     # The confirm instruction appears once, inside the re-check that challenges the blocker.
     recheck = gate.text.index("Blocker re-check (asked once)")
-    assert gate.text.count("same yoetz-blocker line again") == 1
-    assert gate.text.index("same yoetz-blocker line again") > recheck
+    assert gate.text.count("same finishup-blocker line again") == 1
+    assert gate.text.index("same finishup-blocker line again") > recheck
     # An obligation is never `self_verified`: the re-check says to finish it and disclose.
     assert "self_verified" not in gate.text[recheck:]
     assert "finish the obligation and disclose any limit in your final answer" in gate.text
@@ -633,7 +634,7 @@ def test_unconfirmed_blocker_already_rechecked_says_how_to_confirm() -> None:
     assert gate is not None
     assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN,)
     assert "You were already asked about your recorded blocker" in gate.text
-    assert "same yoetz-blocker line again" in gate.text
+    assert "same finishup-blocker line again" in gate.text
 
 
 def test_full_recheck_never_offers_self_verified_for_an_obligation() -> None:
@@ -851,7 +852,28 @@ def test_a_withheld_path_reads_withheld_and_an_older_service_still_gets_the_repa
     gate = _gate(older)
     assert gate is not None and gate.items == (_UNDECLARED,)
     assert "Undeclared files" not in gate.text
-    assert "declare it as a delivered output" in gate.text
+    assert "declare it, or the directory holding it, as a delivered output" in gate.text
+
+
+def test_a_withheld_name_carries_the_listing_continuation_and_says_why() -> None:
+    """tb4n5 biped D: 8 of 8 shown names were withheld and the gate said only "(path withheld)",
+    so the agent spent about a dozen guidance reads guessing. A withheld name now says why and how
+    to list the files with the agent's own shell, without widening any privacy setting."""
+
+    withheld = SimpleNamespace(omitted=True, category="repository_excerpt", reason="x")
+    gate = _gate(_undeclared_readiness(withheld, withheld, total="18"))
+    assert gate is not None
+    assert f"{_OBL_REF} item 0 names (path withheld), (path withheld) and 16 more." in gate.text
+    assert (
+        "Your privacy policy withheld these names (FinishUP returns only a name you published"
+        " yourself)" in gate.text
+    )
+    assert "`git status --porcelain --untracked-files=all`" in gate.text
+    assert "or their directory" in gate.text
+    # Named paths need no continuation.
+    named = _gate(_undeclared_readiness("checks/a.npz", total="1"))
+    assert named is not None
+    assert "git status" not in named.text
 
 
 def test_the_acceptance_invitation_waits_beside_an_undeclared_dependency() -> None:
@@ -861,117 +883,181 @@ def test_the_acceptance_invitation_waits_beside_an_undeclared_dependency() -> No
     assert not any(key.startswith("accept:") for key in gate.blocker_keys)
 
 
-# --- tb4n4 (#1050): the acceptance re-read only for what the final message does not address --
+# --- tb4n5 (#1050): the re-read names only ledger-flagged obligations; an attestation answers it -
 
 _RESOLVED_A = "obl_97700000-0000-4000-8000-000000000200"
 _RESOLVED_B = "obl_97700000-0000-4000-8000-000000000201"
-_CRITERIA_A = "The cracker prints the decrypted plaintext for each ciphertext within 60 seconds."
-_CRITERIA_B = "Recovered keys match the reference keys for every sample in tests/keys."
+_RESOLVED_C = "obl_97700000-0000-4000-8000-000000000202"
+_RISK = "resolved_obligations_acceptance_risk"
+# Real tb4n5 pre-gate final messages (interleaved-vigenere D, live-database S): concise result
+# summaries that never restate a criterion or cite an obligation id. The word-coverage rule of
+# #1054 asked every one of them (18 of 18 attempts; 1 of 110 obligations covered).
+_INTERLEAVED_D = (
+    "Created [cracker.py](/app/cracker.py) and an empty [requirements.txt](/app/requirements.txt)."
+    "\n\n- Exact recovery on the sample and all 60 fresh-key prose tests.\n- Tested runs completed"
+    " under one second.\n- Case, punctuation, byte length, newline handling, and CLI errors"
+    " passed.\n\nRun: `python /app/cracker.py <ciphertext_file>`\n\nYoetz's deterministic receipt"
+    " covers frontier 243: 0 actionable or unanswered findings, 1 resolved. Coverage remains"
+    " limited by host observation gaps, unselected content, and root-only testing. AI review was"
+    " not requested; hidden evaluation remains unverified."
+)
+_LIVE_DB_S = (
+    "PostgreSQL is live, including fresh starts, with dependencies pinned.\n\n**Strict zero"
+    " downtime was not achieved:** one monitored request reset during the final worker reload."
+    "\n\n- 1,093 byte-for-byte response comparisons passed.\n- All 14 endpoints met the measured"
+    " p95 target; largest increase: **0.29ms**.\n- Fenced cutover pause: **781ms**."
+)
+# tb4n2 FH A-12 (cargo D): the obligation stood resolved while the agent's own output said the
+# outcome was infeasible. The re-read exists for this message.
+_FALSE_COMPLETION = (
+    "The solver reports the instance infeasible under the given constraints, so no schedule was"
+    " written; all other checks passed."
+)
 
 
-def _resolved_row(obligation: str, criteria: object, description: str = "Deliver it") -> Any:
-    return SimpleNamespace(
-        obligation_id=obligation,
-        status="resolved",
-        closure_basis="resolved",
-        acceptance_criteria=criteria,
-        description=description,
+def _attest(*obligations: str, outcome: str = "met") -> str:
+    return "\n".join(f"finishup-acceptance:{obligation}:{outcome}" for obligation in obligations)
+
+
+def _flagged(*obligations: str, rule: str = _RISK) -> Any:
+    invite = acceptance_recheck(obligations)
+    invite.rule = rule
+    return invite
+
+
+def _flagged_readiness(*obligations: str, actionable: tuple[str, ...] = ()) -> Any:
+    announced = _readiness(
+        state="action_required" if actionable else "ready_with_limitations", actionable=actionable
     )
+    announced.rechecks = (_flagged(*obligations),)
+    return announced
 
 
-def test_the_addressed_rule_is_deterministic_and_conservative() -> None:
-    rows = ((_RESOLVED_A, _CRITERIA_A), (_RESOLVED_B, _CRITERIA_B))
-    # A message that restates the criteria with its result addresses it.
-    message = (
-        "The cracker prints the decrypted plaintext for each ciphertext; the slowest took"
-        " 12 seconds, well within 60 seconds."
-    )
-    assert gate_module.uncovered_acceptance(message, rows) == (_RESOLVED_B,)
-    # Citing the obligation id covers it whatever else the message says.
-    assert gate_module.uncovered_acceptance(f"{_RESOLVED_B}: done.", rows) == (_RESOLVED_A,)
-    # "Done." addresses nothing; a third of the terms is not enough.
-    assert gate_module.uncovered_acceptance("Done. All tests pass.", rows) == rows_ids(rows)
-    assert gate_module.uncovered_acceptance("The cracker works.", rows) == rows_ids(rows)
-    # A withheld text, or one with no term, is covered only by its id.
-    withheld = ((_RESOLVED_A, None), (_RESOLVED_B, "It is ok."))
-    assert gate_module.uncovered_acceptance("ok it is", withheld) == rows_ids(withheld)
-    assert gate_module.uncovered_acceptance(f"{_RESOLVED_A} {_RESOLVED_B}", withheld) == ()
-
-
-def rows_ids(rows: tuple[tuple[str, object], ...]) -> tuple[str, ...]:
-    return tuple(row[0] for row in rows)
-
-
-def test_the_reread_names_the_uncovered_obligations_and_ends_on_a_pure_confirmation() -> None:
-    announced = _readiness(state="ready_with_limitations", actionable=())
-    announced.rechecks = (acceptance_recheck((_RESOLVED_A, _RESOLVED_B)),)
-    named = closure_gate_from_readiness(
-        announced,
+def _decide(readiness: object, message: str | None) -> Any:
+    return closure_gate_from_readiness(
+        readiness,
         frontier_sequence="7",
         frontier_digest=_DIGEST,
         observation_pending=False,
-        acceptance_uncovered=(_RESOLVED_B,),
+        final_message=message,
     )
-    assert named is not None
-    assert named.items == (gate_module.ACCEPTANCE_RECHECK_ITEM,)
-    assert f"acceptance criteria of resolved obligation(s) {_RESOLVED_B}." in named.text
-    assert _RESOLVED_A not in named.text
-    # The downgrade path is unchanged (#1050 item 3) ...
-    assert "republish that obligation as `acknowledged_not_done`" in named.text
-    assert "`yoetz-verification-limit:<obligation id>`" in named.text
-    # ... and a pure confirmation is the end of it (item 2): no new record, check or receipt.
-    assert "that confirmation alone needs no new record, check or receipt" in named.text
-    # Every resolved obligation addressed: nothing to ask, the agent stops.
-    assert (
-        closure_gate_from_readiness(
-            announced,
-            frontier_sequence="7",
-            frontier_digest=_DIGEST,
-            observation_pending=False,
-            acceptance_uncovered=(),
+
+
+def test_only_the_exact_met_line_attests() -> None:
+    message = (
+        f"Done.\n- finishup-acceptance:{_RESOLVED_A}:met\n`yoetz-acceptance:{_RESOLVED_B}:met`.\n"
+        f"finishup-acceptance:{_RESOLVED_C}:not_met\nfinishup-acceptance:{_RESOLVED_C}:metric\n"
+        "finishup-acceptance:obl_not-an-id:met"
+    )
+    assert gate_module.attested_acceptance(message) == frozenset({_RESOLVED_A, _RESOLVED_B})
+    # Prose that restates every criterion attests nothing.
+    assert gate_module.attested_acceptance(_INTERLEAVED_D) == frozenset()
+
+
+def test_a_realistic_summary_without_attestation_is_asked_for_the_flagged_obligations_only() -> (
+    None
+):
+    """The service announces only the flagged set; the gate names it, never the clean ones."""
+
+    for message in (_INTERLEAVED_D, _LIVE_DB_S, None):
+        gate = _decide(_flagged_readiness(_RESOLVED_A, _RESOLVED_B), message)
+        assert gate is not None
+        assert gate.items == (gate_module.ACCEPTANCE_RECHECK_ITEM,)
+        assert (
+            f"FinishUP flags the recorded resolution of obligation(s) {_RESOLVED_A}, {_RESOLVED_B}:"
+            in (gate.text)
         )
-        is None
+        assert "evidence not linked to a declared item, or only self-asserted evidence" in gate.text
+        # The downgrade and verification-limit paths are unchanged ...
+        assert "republish that obligation as `acknowledged_not_done`" in gate.text
+        assert "`finishup-verification-limit:<obligation id>`" in gate.text
+        # ... the attestation that answers it is named, and so is the once-only shortcut.
+        assert "`finishup-acceptance:<obligation id>:met`" in gate.text
+        assert "that confirmation alone needs no new record, check or receipt" in gate.text
+        assert len(gate.text) <= 2000
+    # A ledger that flags nothing announces no acceptance re-read: a realistic summary stops.
+    clean = _readiness(state="ready_with_limitations", actionable=())
+    clean.rechecks = ()
+    assert _decide(clean, _INTERLEAVED_D) is None
+
+
+def test_attesting_every_flagged_obligation_skips_the_reread_and_partial_names_the_rest() -> None:
+    announced = _flagged_readiness(_RESOLVED_A, _RESOLVED_B)
+    message = _INTERLEAVED_D + "\n\n" + _attest(_RESOLVED_A, _RESOLVED_B)
+    assert _decide(announced, message) is None
+    partial = _decide(announced, _INTERLEAVED_D + "\n" + _attest(_RESOLVED_A))
+    assert partial is not None
+    assert f"obligation(s) {_RESOLVED_B}:" in partial.text
+    assert _RESOLVED_A not in partial.text
+    # The attestation is bound to the set this Stop's status announced: one for an earlier set
+    # (A and C) covers only A, and B is still asked.
+    stale = _decide(announced, _attest(_RESOLVED_A, _RESOLVED_C))
+    assert stale is not None
+    assert f"obligation(s) {_RESOLVED_B}:" in stale.text
+    # A not-met answer is not an attestation: the downgrade path is the honest record.
+    not_met = _decide(
+        announced, _FALSE_COMPLETION + "\n" + _attest(_RESOLVED_A, _RESOLVED_B, outcome="not_met")
     )
-    # Without a final message the re-read is asked as before, for every resolved obligation.
-    today = _gate(announced)
-    assert today is not None
-    assert "read each resolved obligation's acceptance_criteria" in today.text
-    assert "that confirmation alone needs no new record" in today.text
+    assert not_met is not None
+    assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in not_met.text
+
+
+def test_the_original_false_completion_is_still_asked() -> None:
+    """tb4n2 cargo D: flagged (its resolution was only self-asserted), so it is asked."""
+
+    gate = _decide(_flagged_readiness(_RESOLVED_A), _FALSE_COMPLETION)
+    assert gate is not None
+    assert f"obligation(s) {_RESOLVED_A}:" in gate.text
+    assert "for example it reports infeasible, skipped or partial" in gate.text
+
+
+def test_an_incomplete_announced_list_cannot_be_attested() -> None:
+    """More than eight flagged obligations (or an older service's list): every one is asked."""
+
+    many = tuple(f"obl_97700000-0000-4000-8000-{index:012d}" for index in range(300, 310))
+    truncated = acceptance_recheck(many)
+    truncated.subjects = many[:8]
+    truncated.rule = _RISK
+    announced = _readiness(state="ready_with_limitations", actionable=())
+    announced.rechecks = (truncated,)
+    gate = _decide(announced, _attest(*many))
+    assert gate is not None
+    assert "and 5 more" in gate.text
+
+
+def test_an_older_service_reread_is_named_without_the_flag_sentence() -> None:
+    announced = _readiness(state="ready_with_limitations", actionable=())
+    announced.rechecks = (
+        _flagged(_RESOLVED_A, _RESOLVED_B, rule="resolved_obligations_acceptance_reread"),
+    )
+    gate = _decide(announced, None)
+    assert gate is not None
+    assert (
+        f"read the acceptance_criteria of resolved obligation(s) {_RESOLVED_A}, {_RESOLVED_B}"
+        in (gate.text)
+    )
+    assert "FinishUP flags" not in gate.text
+    assert _decide(announced, _attest(_RESOLVED_A, _RESOLVED_B)) is None
 
 
 def test_beside_an_item_that_needs_a_check_the_named_reread_promises_no_shortcut() -> None:
-    announced = _readiness(actionable=("closing_review_required",))
-    announced.rechecks = (acceptance_recheck((_RESOLVED_A, _RESOLVED_B)),)
-    gate = closure_gate_from_readiness(
-        announced,
-        frontier_sequence="7",
-        frontier_digest=_DIGEST,
-        observation_pending=False,
-        acceptance_uncovered=(_RESOLVED_A,),
+    announced = _flagged_readiness(
+        _RESOLVED_A, _RESOLVED_B, actionable=("closing_review_required",)
     )
+    gate = _decide(announced, _attest(_RESOLVED_B))
     assert gate is not None
     assert gate.items == ("closing_review_required", gate_module.ACCEPTANCE_RECHECK_ITEM)
-    assert f"resolved obligation(s) {_RESOLVED_A}." in gate.text
+    assert f"obligation(s) {_RESOLVED_A}:" in gate.text
     assert "needs no new record, check or receipt" not in gate.text
-    covered = closure_gate_from_readiness(
-        announced,
-        frontier_sequence="7",
-        frontier_digest=_DIGEST,
-        observation_pending=False,
-        acceptance_uncovered=(),
-    )
+    covered = _decide(announced, _attest(_RESOLVED_A, _RESOLVED_B))
     assert covered is not None and covered.items == ("closing_review_required",)
 
 
 def _acceptance_harness(tmp_path: Path, host: _Host, session: str) -> tuple[_Harness, Any]:
     h = _Harness(tmp_path, host.key(session))
-    invite = acceptance_recheck((_RESOLVED_A, _RESOLVED_B))
+    invite = _flagged(_RESOLVED_A, _RESOLVED_B)
     h.readiness = _readiness(state="ready_with_limitations", actionable=())
     h.readiness.rechecks = (invite,)
-    h.obligation_rows = (
-        _resolved_row(_RESOLVED_A, _CRITERIA_A),
-        _resolved_row(_RESOLVED_B, _CRITERIA_B),
-    )
     return h, invite
 
 
@@ -984,40 +1070,32 @@ def _final_stop(
     return h.run(host.handler(), host.event(), body)
 
 
-_ADDRESSED_BOTH = (
-    "The cracker prints the decrypted plaintext for each ciphertext within 60 seconds"
-    f" (slowest 12 seconds). {_RESOLVED_B}: recovered keys match the reference keys."
-)
-
-
-def test_a_final_message_that_addresses_every_criterion_skips_the_reread(
+def test_a_final_message_that_attests_every_flagged_obligation_skips_the_reread(
     tmp_path: Path, host: _Host
 ) -> None:
-    """60 of 60 tb4n4 deterministic attempts were asked; 41 then only did Yoetz bookkeeping.
-
-    Codex and Claude Code pass the final message: an addressed set is not asked and the gate
-    records ``closure_gate_acceptance_covered``. Cursor's ``stop`` carries none, so it keeps the
-    re-read as before (per-host decision in the runbooks).
-    """
+    """Codex and Claude Code pass the final message: attesting every flagged obligation is not
+    asked, records ``closure_gate_acceptance_covered`` and makes no second status read. Cursor's
+    ``stop`` carries none, so it keeps the re-read (per-host decision in the runbooks)."""
 
     session = "gate-acceptance-covered"
     h, invite = _acceptance_harness(tmp_path, host, session)
-    output = _final_stop(h, host, session, _ADDRESSED_BOTH)
+    output = _final_stop(h, host, session, _LIVE_DB_S + "\n\n" + _attest(_RESOLVED_A, _RESOLVED_B))
+    assert h.views == ["compact"]
     if host.name == "cursor":
         text = _text(host, output)
-        assert "read each resolved obligation's acceptance_criteria" in text
-        assert "obligations" not in h.views  # no second read without a final message
+        assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in text
+        # Cursor is never told to use a line its Stop cannot deliver (#1050 follow-up).
+        assert "finishup-acceptance" not in text
         assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
         return
     assert "closure gate" not in json.dumps(output)
-    assert h.views == ["compact", "obligations"]
     assert h.reasons() == ["closure_gate_acceptance_covered", "closure_gate_not_required"]
-    # Nothing was asked, so nothing is remembered: a later message that drops it is asked.
+    # Nothing was asked, so nothing is remembered: a later message without the lines is asked.
     assert gate_module.closure_gate_reasked_blockers(h.session_id, _state=tmp_path) == frozenset()
     h.sequence = "6"
-    later = _final_stop(h, host, session, "Done.")
+    later = _final_stop(h, host, session, _LIVE_DB_S)
     text = _text(host, later)
-    assert f"{_RESOLVED_A}, {_RESOLVED_B}." in text
+    assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in text
     assert gate_module.closure_gate_reasked_blockers(h.session_id, _state=tmp_path) == frozenset(
         {f"{invite.key}@6"}
     )
@@ -1026,44 +1104,118 @@ def test_a_final_message_that_addresses_every_criterion_skips_the_reread(
 def test_the_reread_names_only_what_the_message_missed_and_the_downgrade_still_counts(
     tmp_path: Path, host: _Host
 ) -> None:
-    """#1050 items 1 and 3: the uncovered obligation is named; the agent's acknowledgement answers
-    the invite (the acknowledgement re-check does not challenge it); a pure confirmation needs no
-    second round: the next Stop at the same frontier passes."""
+    """The unattested obligation is named; a pure confirmation needs no second round (the next
+    Stop at the same frontier passes); an acknowledgement after the invite is not challenged."""
 
     if host.name == "cursor":
         pytest.skip("Cursor's stop carries no final message (asked as before, test above)")
     session = "gate-acceptance-named"
     h, invite = _acceptance_harness(tmp_path, host, session)
-    message = "The cracker prints the decrypted plaintext for each ciphertext within 60 seconds."
-    text = _text(host, _final_stop(h, host, session, message))
-    assert f"resolved obligation(s) {_RESOLVED_B}." in text
+    text = _text(host, _final_stop(h, host, session, _INTERLEAVED_D + "\n" + _attest(_RESOLVED_A)))
+    assert f"obligation(s) {_RESOLVED_B}:" in text
     assert _RESOLVED_A not in text
     assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
 
-    # A pure "criteria confirmed" answer records nothing: the same frontier passes, and the
-    # already-continued Stop asks nothing more.
-    confirmed = _final_stop(h, host, session, f"{_RESOLVED_B}: confirmed met.", guarded=True)
+    confirmed = _final_stop(h, host, session, _attest(_RESOLVED_B), guarded=True)
     assert "closure gate" not in json.dumps(confirmed)
     assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
 
-    # The downgrade path: the agent republishes the unmet obligation acknowledged_not_done after
-    # the invite; status announces the acknowledgement, and it is not challenged.
     h.sequence = "9"
     h.readiness.rechecks = (invite, ack_recheck(_RESOLVED_B, since=8))
     after = _final_stop(h, host, session, "Acknowledged as not done.")
     assert "closure gate" not in json.dumps(after)
 
 
-def test_an_unreadable_obligations_view_keeps_the_reread(tmp_path: Path, host: _Host) -> None:
-    if host.name == "cursor":
-        pytest.skip("Cursor's stop carries no final message")
-    session = "gate-acceptance-unreadable"
-    h, _invite = _acceptance_harness(tmp_path, host, session)
-    h.obligation_rows = None  # the second read fails
-    text = _text(host, _final_stop(h, host, session, _ADDRESSED_BOTH))
-    assert "read each resolved obligation's acceptance_criteria" in text
-    # A page whose resolved set is not the one the key names (a later frontier) is not trusted.
-    h2, _ = _acceptance_harness(tmp_path / "other", host, session + "-2")
-    h2.obligation_rows = (_resolved_row(_RESOLVED_A, _CRITERIA_A),)
-    text = _text(host, _final_stop(h2, host, session + "-2", _ADDRESSED_BOTH))
-    assert "read each resolved obligation's acceptance_criteria" in text
+def test_cursor_acceptance_reread_names_a_path_that_works_and_following_it_ends_the_reread(
+    tmp_path: Path,
+) -> None:
+    """#1050 follow-up: Cursor's ``stop`` carries no final message, so the re-read never asks for
+    the ``finishup-acceptance`` line there. The instruction it gives (confirm in the final answer and
+    stop) ends the re-read: the continued Stop passes, and a later Stop at a new frontier with the
+    same flagged set is not asked again."""
+
+    host = _Host("cursor")
+    session = "gate-acceptance-cursor"
+    h, invite = _acceptance_harness(tmp_path, host, session)
+    text = _text(host, _stop(h, host, session))
+    assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in text
+    assert "finishup-acceptance" not in text
+    assert "say so in your final answer" in text
+    assert "Cursor passes FinishUP no final answer" in text
+    assert "that confirmation alone needs no new record, check or receipt" in text
+    # The downgrade and verification-limit paths are the same on every host.
+    assert "republish that obligation as `acknowledged_not_done`" in text
+    assert "`finishup-verification-limit:<obligation id>`" in text
+    assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
+    assert gate_module.closure_gate_reasked_blockers(h.session_id, _state=tmp_path) == frozenset(
+        {f"{invite.key}@{h.sequence}"}
+    )
+
+    # The agent follows it: a confirmation and a Stop. Cursor continues the turn (loop_count 1).
+    confirmed = _stop(h, host, session, guarded=True)
+    assert "closure gate" not in json.dumps(confirmed)
+    assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
+    # A later turn with the same flagged set at a new frontier is not asked the re-read again.
+    h.sequence = str(int(h.sequence) + 3)
+    later = _stop(h, host, session)
+    assert "closure gate" not in json.dumps(later)
+    assert h.reasons()[-1] == "closure_gate_not_required"
+
+
+def test_the_acceptance_answer_is_host_aware_and_codex_claude_text_is_unchanged() -> None:
+    """The Stop gate names the line only where the host passes the final message."""
+
+    announced = _flagged_readiness(_RESOLVED_A, _RESOLVED_B)
+    texts = {
+        host: closure_gate_from_readiness(
+            announced,
+            frontier_sequence="7",
+            frontier_digest=_DIGEST,
+            observation_pending=False,
+            host=host,
+        )
+        for host in ("codex", "claude", "cursor", None)
+    }
+    for host in ("codex", "claude", None):
+        gate = texts[host]
+        assert gate is not None
+        assert gate.text.count(" If it is met, end your final answer with the line") == 1
+        assert "`finishup-acceptance:<obligation id>:met` for it." in gate.text
+        assert "Cursor" not in gate.text
+    assert texts["codex"] is not None and texts["claude"] is not None
+    assert texts["claude"].text == texts[None].text  # type: ignore[union-attr]
+    cursor = texts["cursor"]
+    assert cursor is not None
+    assert "finishup-acceptance" not in cursor.text
+    assert cursor.items == texts["claude"].items  # type: ignore[union-attr]
+    assert cursor.blocker_keys == texts["claude"].blocker_keys  # type: ignore[union-attr]
+    # Beside an item that needs a check (no once-only shortcut), Cursor still gets no line.
+    beside = closure_gate_from_readiness(
+        _flagged_readiness(_RESOLVED_A, actionable=("closing_review_required",)),
+        frontier_sequence="7",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        host="cursor",
+    )
+    assert beside is not None
+    assert gate_module.ACCEPTANCE_RECHECK_ITEM in beside.items
+    assert "finishup-acceptance" not in beside.text
+    assert "Cursor passes FinishUP no final answer" in beside.text
+
+
+def test_only_the_codex_stop_gate_repeats_the_check_cell_deadline(
+    tmp_path: Path, host: _Host
+) -> None:
+    """tb4n5 (P6): a yielded Codex `check` cell stales its own check; the gate names the pragma."""
+
+    from finishup.protocol.readiness_text import CODEX_CHECK_CELL_PRAGMA
+
+    session = "gate-pragma"
+    h = _Harness(tmp_path, host.key(session))
+    text = host.assert_gate(_stop(h, host, session))
+    if host.name == "codex":
+        assert f"starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}`" in text
+    else:
+        # Claude Code and Cursor run a tool call to completion: their close text is unchanged.
+        assert "yield_time_ms" not in text
+        assert gate_module._CLOSE_TEXT in text  # pyright: ignore[reportPrivateUsage]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from yoetz.adapters.integrations.observation_admission import (
+from finishup.adapters.integrations.observation_admission import (
     AdmissionBuffer,
     BufferedInput,
     admission_buffer_from_json,
@@ -13,9 +13,9 @@ from yoetz.adapters.integrations.observation_admission import (
     flush_admission,
     plan_admission,
 )
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
+from finishup.domain.values import JsonObject, Timestamp
 
 FENCE = "sha256:" + "1" * 64
 
