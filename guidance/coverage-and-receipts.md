@@ -680,17 +680,15 @@ what answers each kind (path evidence first for a new, untracked file; never sta
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
-report the named limitation instead. Hook-captured tool output never counts as the agent having
-supplied it. When the reviewer asks for verification output, FinishUP may include hook-captured
-output of a command the agent ran in the follow-up packet, within the privacy policy and the
-existing excerpt limits. Private sends nothing. Output of a command the agent did not run is never
-included. The packet marks that output as observed, not an agent-published result. A named
+report the named limitation instead. Hook-captured output never counts as supplied. On a
+verification follow-up, FinishUP may include observed output of a command the agent ran, within
+the privacy policy and excerpt limits. Private sends nothing. Output of a command the agent did
+not run is never included, and included output is marked observed. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names
-recorded run output, an exact command, a captured edit the packet had no room for, or verification
-output of a command the agent ran, FinishUP sends the packet again with that content first, up to
-three times. A manifest with `follow_up_round` shows the
+recorded run output, an exact command or a captured edit the packet had no room for, FinishUP sends the
+packet again with that content first, up to three times. A manifest with `follow_up_round` shows the
 recorded review answered such a follow-up; its `missing_inputs` name what FinishUP added
 (`supplied_refs`). Do not publish that material again; what `missing_for_assessment` still lists is
 what remained after the follow-up.
@@ -729,7 +727,8 @@ AI-powered review finding unless `evidence_refs` cites evidence or a result reco
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or
 “limitation accepted” is not a repair, a verification result, or a finding resolution. After an
-`insufficient_packet` result, if `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit (never a `deterministic_only` fallback).
+`insufficient_packet` result, follow the `agent_suppliable` step above (never a
+`deterministic_only` fallback).
 
 The reviewer verifies from what its packet carries. When a completed review other than
 `insufficient_packet` raised nothing about verification whose readable output the packet carried,
