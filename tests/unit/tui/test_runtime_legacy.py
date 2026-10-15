@@ -136,8 +136,9 @@ async def test_a_kept_legacy_entry_is_named_and_not_promised_as_migrated(
 ) -> None:
     """A project's Codex configuration still needs the owned ``yoetz`` entry (a Yoetz 0.2
     approval table): the adapter keeps it beside ``finishup``, and the plan must say so instead
-    of promising the migration (#1073)."""
+    of promising the migration, with the revoke and the explicit way out (#1073)."""
 
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
     from finishup.ports.harness_mcp import (
         McpRegistrationAction,
         McpRegistrationPreview,
@@ -145,6 +146,9 @@ async def test_a_kept_legacy_entry_is_named_and_not_promised_as_migrated(
     )
     from finishup.ports.integrations import HarnessId
 
+    dependent = tmp_path / "a"
+    (dependent / ".codex").mkdir(parents=True, mode=0o700)
+    (dependent / ".codex" / "config.toml").write_text(CODEX_LEGACY_ADMISSION_TABLES[0])
     preview = McpRegistrationPreview(
         HarnessId.CODEX,
         McpRegistrationAction.REREGISTER,
@@ -153,19 +157,60 @@ async def test_a_kept_legacy_entry_is_named_and_not_promised_as_migrated(
         "sha256:" + "8" * 64,
         legacy_registration="legacy_only",
         route_profile_before="policy",
-        legacy_kept_for=("/work/a",),
+        legacy_kept_for=(str(dependent),),
         legacy_route_profile="policy",
     )
     _stub_plan_inputs(monkeypatch, tmp_path, preview)
 
     plan = await FinishUpRuntime(cwd=tmp_path).integration_plan(CLI, tmp_path, "policy")
 
-    assert plan.legacy_registration_kept_for == ("/work/a",)
+    assert plan.legacy_registration_kept_for == (str(dependent),)
     assert plan.legacy_registration_route_profile == "policy"
     assert "connecting migrates it" not in plan.state_before
     assert "kept" in plan.state_before
     assert not any("Move the MCP registration" in line for line in plan.replacements)
-    assert any("/work/a" in line and "yoetz" in line for line in plan.replacements)
+    assert any("yoetz" in line and "Keep" in line for line in plan.replacements)
+    lines = "\n".join(plan.legacy_registration_kept_lines)
+    assert str(dependent) in lines
+    assert "--action revoke" in lines
+    assert "integrate codex mcp preview-remove" in lines
+
+
+async def test_an_unreadable_dependent_is_not_promised_a_revoke(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from finishup.ports.harness_mcp import (
+        McpRegistrationAction,
+        McpRegistrationPreview,
+        McpRegistrationState,
+    )
+    from finishup.ports.integrations import HarnessId
+
+    dependent = tmp_path / "a"
+    (dependent / ".codex").mkdir(parents=True, mode=0o700)
+    real = tmp_path / "shared.toml"
+    real.write_text('model = "o3"\n')
+    (dependent / ".codex" / "config.toml").symlink_to(real)
+    preview = McpRegistrationPreview(
+        HarnessId.CODEX,
+        McpRegistrationAction.REREGISTER,
+        McpRegistrationState.FINISHUP_OWNED,
+        ("legacy_registration_kept", "legacy_registration_owned"),
+        "sha256:" + "8" * 64,
+        legacy_registration="legacy_only",
+        route_profile_before="policy",
+        legacy_kept_for=(str(dependent),),
+        legacy_kept_unreadable=(str(dependent),),
+        legacy_route_profile="policy",
+    )
+    _stub_plan_inputs(monkeypatch, tmp_path, preview)
+
+    plan = await FinishUpRuntime(cwd=tmp_path).integration_plan(CLI, tmp_path, "policy")
+
+    lines = "\n".join(plan.legacy_registration_kept_lines)
+    assert "could not read its .codex/config.toml safely (a symlink)" in lines
+    assert "--action revoke" not in lines
+    assert not any("revoke" in line for line in plan.replacements)
 
 
 async def test_the_observed_route_before_names_a_route_change(
@@ -256,18 +301,23 @@ async def test_codex_registration_reports_its_legacy_key(
     assert await FinishUpRuntime(cwd=tmp_path).mcp_registration(other) == ("absent", "none")
 
 
-@pytest.mark.parametrize("kept", [False, True], ids=["migrates", "kept"])
+@pytest.mark.parametrize("kept", ["none", "needed", "unread"])
 async def test_the_readiness_words_do_not_promise_a_migration_connecting_keeps_back(
-    monkeypatch: pytest.MonkeyPatch, kept: bool
+    monkeypatch: pytest.MonkeyPatch, kept: str
 ) -> None:
     """The ``MCP registered`` layer names the earlier ``yoetz`` key; while a project's Codex
-    settings still need it, connecting keeps it, so the words must say so (#1073)."""
+    settings still need it, or not every project could be read, connecting keeps it, and the
+    words say which (#1073)."""
 
     from finishup.adapters.integrations import codex_mcp
     from finishup.tui import runtime as runtime_module
 
-    def dependents(_home: object) -> tuple[tuple[str, ...], bool]:
-        return (("/work/a",), False) if kept else ((), False)
+    def dependents(_home: object) -> codex_mcp.LegacyRegistrationUse:
+        return codex_mcp.LegacyRegistrationUse(
+            needed_by=("/work/a",) if kept == "needed" else (),
+            unreadable=(),
+            unread=("user_config_unreadable",) if kept == "unread" else (),
+        )
 
     monkeypatch.setattr(codex_mcp, "legacy_registration_dependents", dependents)
     words = runtime_module._codex_legacy_registration_text  # pyright: ignore[reportPrivateUsage]
@@ -275,8 +325,9 @@ async def test_the_readiness_words_do_not_promise_a_migration_connecting_keeps_b
     assert words("none") is None
     text = words("legacy_only")
     assert text is not None
-    assert ("kept" in text) is kept
-    assert ("connecting migrates it" in text) is not kept
+    assert ("connecting migrates it" in text) is (kept == "none")
+    assert ("a project's Codex settings still use it" in text) is (kept == "needed")
+    assert ("not every project of this Codex home could be read" in text) is (kept == "unread")
 
 
 async def test_the_plan_carries_every_yoetz_era_removal_it_binds(

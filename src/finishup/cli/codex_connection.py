@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Literal, cast
@@ -27,6 +28,7 @@ from finishup.adapters.integrations.codex_mcp import (
     legacy_registration_dependents,
     legacy_registration_shaped,
     probe_project_config_load,
+    project_config_unreadable_reason,
     project_transport_dependence,
     read_bounded_toml,
 )
@@ -149,18 +151,30 @@ def prepare_codex_connection(
         )
         if legacy_kept:
             kept_status = legacy_kept_disclosure(
-                legacy.legacy_registration_kept_for, legacy.legacy_registration_kept_unchecked
+                legacy.legacy_registration_kept_for,
+                legacy.legacy_registration_kept_unread,
+                codex_home=installation.config_root,
+                way_out=legacy_way_out(
+                    str(installation.executable), installation.config_root, project, route
+                ),
             )
             legacy_route = legacy.legacy_registration_route_profile
             if legacy_route is not None and legacy_route != route:
                 # The kept entry serves every project of the home on its own review mode: a
-                # different one here would leave both running side by side. Nothing changed.
+                # different one here would leave both running side by side. Nothing changed;
+                # either mode stays reachable (keep this one, or the explicit way out).
                 raise ConnectionError(
                     "connection_legacy_registration_route_kept",
                     status={
                         "route_profile_before": legacy_route,
                         "route_profile": route,
                         **kept_status,
+                        "keep_route_arguments": legacy_way_out(
+                            str(installation.executable),
+                            installation.config_root,
+                            project,
+                            legacy_route,
+                        )["reconnect_arguments"],
                     },
                 )
             admission.disclosure.update(kept_status)
@@ -282,7 +296,13 @@ def prepare_codex_connection(
                     project,
                     legacy_registration=registration.legacy_registration,
                 ),
-                **legacy_kept_status(installation.config_root, registration.legacy_registration),
+                **legacy_kept_status(
+                    installation.config_root,
+                    registration.legacy_registration,
+                    way_out=legacy_way_out(
+                        str(installation.executable), installation.config_root, project, route
+                    ),
+                ),
             }
     else:
         removal_report: dict[str, JsonValue] | None = None
@@ -376,7 +396,22 @@ def prepare_codex_connection(
             # An explicit home-wide disconnect still never breaks Codex in another project.
             raise ConnectionError(
                 "connection_other_projects_need_registration",
-                status={"admission_other_projects": needing, **enumeration},
+                status={
+                    "admission_other_projects": needing,
+                    **enumeration,
+                    **(
+                        {
+                            "mcp_removal_preview_arguments": legacy_way_out(
+                                str(installation.executable),
+                                installation.config_root,
+                                project,
+                                None,
+                            )["mcp_removal_preview_arguments"]
+                        }
+                        if enumeration.get("admission_other_projects_unread")
+                        else {}
+                    ),
+                },
             )
         keep_transport = removes_transport and (bool(needing) or unproven)
         if removes_transport and not keep_transport:
@@ -453,6 +488,11 @@ def prepare_codex_connection(
             # Not every known project was read: absence from the list is not proof.
             admission.disclosure.update(enumeration)
             warnings.append("other_projects_partially_checked")
+            if enumeration.get("admission_other_projects_unread"):
+                # Kept because an input could not be read: name the explicit way out too.
+                admission.disclosure["mcp_removal_preview_arguments"] = legacy_way_out(
+                    str(installation.executable), installation.config_root, project, None
+                )["mcp_removal_preview_arguments"]
         # Projects that may use the shared pieces though no record names them: an ordinary
         # disconnect keeps the pieces for them, --remove-shared removes them anyway.
         admission.disclosure.update(
@@ -631,14 +671,23 @@ def prepare_codex_connection(
 _OTHER_PROJECTS_LIMIT = 32
 
 
-def legacy_kept_disclosure(roots: tuple[str, ...], unchecked: bool) -> dict[str, JsonValue]:
-    """Who keeps the owned ``yoetz`` entry, and the exact revoke that releases each (#1073).
+def legacy_kept_disclosure(
+    roots: tuple[str, ...],
+    unread: tuple[str, ...],
+    *,
+    codex_home: Path,
+    way_out: Mapping[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    """Who keeps the owned ``yoetz`` entry, why, and what releases it (#1073).
 
     An entry names the project and how its ``.codex/config.toml`` depends on the ``yoetz``
-    transport (``depends``, or ``unknown`` when it cannot be read safely). Only a project whose
+    transport: ``depends`` (it names the server without a transport of its own) or ``unknown``
+    with the closed reason it could not be read safely (``unreadable``). Only a project whose
     dependence ends once its exact earlier-name approval tables are swept carries the revoke
-    (``integrate codex admission preview --action revoke`` removes exactly those); anything
-    else naming that server is the owner's to edit.
+    (``next_arguments``: ``integrate codex admission preview --action revoke`` removes exactly
+    those); edited tables are the owner's to remove. ``unread`` names what of the home itself
+    could not be read. ``way_out`` carries the explicit removal under both names and the connect
+    that follows it (``legacy_way_out``).
     """
 
     entries: list[JsonValue] = []
@@ -648,7 +697,11 @@ def legacy_kept_disclosure(roots: tuple[str, ...], unchecked: bool) -> dict[str,
             path, after_sweep=False, names=(LEGACY_MCP_SERVER_NAME,)
         )
         entry: dict[str, JsonValue] = {"project_root": root, "dependence": dependence}
-        if dependence == "depends" and (
+        if dependence == "unknown":
+            reason = project_config_unreadable_reason(path)
+            if reason is not None:
+                entry["unreadable"] = reason
+        elif dependence == "depends" and (
             project_transport_dependence(path, after_sweep=True, names=(LEGACY_MCP_SERVER_NAME,))
             == "none"
         ):
@@ -656,25 +709,79 @@ def legacy_kept_disclosure(roots: tuple[str, ...], unchecked: bool) -> dict[str,
                 list[JsonValue], admission_revoke_arguments("codex", path)
             )
         entries.append(entry)
-    disclosure: dict[str, JsonValue] = {"legacy_registration_kept_for": entries}
-    if unchecked:
+    disclosure: dict[str, JsonValue] = {
+        "legacy_registration_kept_for": entries,
+        "legacy_registration_codex_home": str(codex_home),
+    }
+    if unread:
         disclosure["legacy_registration_kept_unchecked"] = True
+        disclosure["legacy_registration_kept_unread"] = cast(list[JsonValue], list(unread))
+    if way_out:
+        disclosure.update(way_out)
     return disclosure
 
 
-def legacy_kept_status(codex_home: Path, legacy_registration: str | None) -> dict[str, JsonValue]:
-    """Status facts for an owned ``yoetz`` entry that stays because projects still need it.
+def legacy_way_out(
+    executable: str,
+    codex_home: Path,
+    project: Path | None,
+    route: str | None,
+    *,
+    low_level: bool = False,
+) -> dict[str, JsonValue]:
+    """The explicit way past a kept ``yoetz`` entry, as structural continuations (#1073).
 
-    Read now, so it names who still holds the migration back; empty once nothing does (the next
+    ``mcp_removal_preview_arguments`` previews removing FinishUP's MCP registration from this
+    Codex home under both names (the low-level ``integrate codex mcp preview-remove``; its
+    ``remove`` form applies that preview's digest). ``reconnect_arguments`` is the connect that
+    follows: ``setup run`` for the selected installation and project, or, for the low-level path,
+    its own ``integrate codex mcp install``. Both carry the selected executable and Codex home.
+    """
+
+    low = ["--codex-path", executable, "--codex-home", str(codex_home)]
+    reconnect: list[str] = (
+        ["integrate", "codex", "mcp", "install", *low]
+        if low_level
+        else [
+            "setup",
+            "run",
+            "--host",
+            "codex",
+            "--host-path",
+            executable,
+            "--host-config-root",
+            str(codex_home),
+            *(["--project", str(project)] if project is not None else []),
+        ]
+    )
+    if route is not None:
+        reconnect += ["--route-profile", route]
+    return {
+        "mcp_removal_preview_arguments": cast(
+            list[JsonValue], ["integrate", "codex", "mcp", "preview-remove", *low]
+        ),
+        "reconnect_arguments": cast(list[JsonValue], reconnect),
+    }
+
+
+def legacy_kept_status(
+    codex_home: Path,
+    legacy_registration: str | None,
+    *,
+    way_out: Mapping[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    """Status facts for an owned ``yoetz`` entry that stays because projects may still need it.
+
+    Read now, so it names what still holds the migration back; empty once nothing does (the next
     connect then completes the migration, and the last disconnect removes both keys).
     """
 
     if legacy_registration not in _OWNED_LEGACY_REGISTRATIONS:
         return {}
-    roots, unchecked = legacy_registration_dependents(codex_home)
-    if not roots and not unchecked:
+    use = legacy_registration_dependents(codex_home)
+    if not use.keeps:
         return {}
-    return legacy_kept_disclosure(roots, unchecked)
+    return legacy_kept_disclosure(use.kept_for, use.unread, codex_home=codex_home, way_out=way_out)
 
 
 def _current_route(binary: HarnessBinary, codex_home: Path) -> Literal["policy", "strict"]:
@@ -707,7 +814,7 @@ def _other_projects_needing_transport(
     read as proof.
     """
 
-    candidates, _complete = home_project_candidates(codex_home)
+    candidates, unread = home_project_candidates(codex_home)
     # Missing directories and other paths to this same project are filtered before the bound,
     # so stale trust entries do not use up the read window.
     eligible = [
@@ -737,6 +844,10 @@ def _other_projects_needing_transport(
         if len(eligible) > len(inspected)
         else {}
     )
+    if unread:
+        # What could not be read is not proof that nobody needs the transport: the connect keeps
+        # the earlier entry for the same reason (#1073 round 3).
+        enumeration["admission_other_projects_unread"] = cast(list[JsonValue], list(unread))
     return found, enumeration
 
 

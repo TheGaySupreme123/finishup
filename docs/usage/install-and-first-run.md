@@ -21,9 +21,14 @@ the `--remove-shared` command that removes them. For Cursor that includes a plug
 set up before the rename, even when only one project used it. For Codex, a project's own Yoetz-era
 setup goes with its own disconnect; what the projects share stays only while another project, or
 a trusted project carrying FinishUP's plugin files, may still use it. When a project's Codex
-settings still use the MCP entry under the earlier name yoetz (an approval Yoetz 0.2 granted),
-connecting keeps that entry beside the new one and tells you which project and the command that
-releases it; connect again afterwards to finish the move. For
+settings may still use the MCP entry under the earlier name yoetz (an approval Yoetz 0.2 granted,
+or a project file FinishUP cannot read), connecting keeps that entry beside the new one and tells
+you which project and what releases it: the command that revokes an approval FinishUP or Yoetz
+wrote, what to fix in a file it could not read, or the settings to remove yourself. Connect again
+once nothing it names holds the entry, and the move finishes. You can also remove the earlier
+entry yourself, as an explicit choice, with the command it names; every project then stops using
+FinishUP until one connects again, and a project whose Codex settings still use the earlier entry
+stops loading them until those settings are removed. For
 Codex, FinishUP still remembers the projects it connected itself, and a disconnect that would leave
 only projects it cannot verify stops before changing anything and offers two ways on: connect
 again the project you use, or preview removing the shared pieces for every project with

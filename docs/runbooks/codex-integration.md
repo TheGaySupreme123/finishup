@@ -53,7 +53,10 @@ and gives no command. Disconnect also reads the projects this home knows
 directories and other paths to this project are skipped first, then at most 32 are read; more are
 reported as `admission_other_projects_known`/`_inspected` with the warning
 `other_projects_partially_checked`, and because an unread project may depend on it the
-registration then stays, and `--remove-shared` refuses) and keeps the user-level registration when another project's
+registration then stays, and `--remove-shared` refuses; the same holds when the user
+`config.toml`, the connected-projects record or a project path cannot be read,
+`admission_other_projects_unread`, and the plan says which and names the explicit low-level
+removal) and keeps the user-level registration when another project's
 layer names the server without a transport of its own or cannot be read: the preview lists them
 in `status.admission_other_projects` (with a revoke continuation where only exact FinishUP tables
 remain) and warns `mcp_registration_kept_for_other_projects`. Projects with only the plugin-scoped
@@ -1407,32 +1410,62 @@ removal cannot be verified, or the entry changed after preview, the error's safe
 grant` wrote `[mcp_servers.yoetz.tools.check]` into a project's `.codex/config.toml`. That table has
 no transport of its own; Codex takes it from the user-level `yoetz` entry, and once that entry is
 gone Codex refuses to load the project ("invalid transport in `mcp_servers.yoetz`"). So before it
-migrates an owned `yoetz` entry, the adapter reads the projects this home knows (its trust rows and
-verified members, including the Yoetz-era bound project; at most 32) for a `.codex/config.toml`
-that names `mcp_servers.yoetz` without a transport, or that cannot be read. If one does, or not
-every project could be read, the entry stays beside `finishup`: the preview writes only `finishup`
-(warning `legacy_registration_kept`, `legacy_kept_for`, `legacy_kept_unchecked`, digest tag `/6`
-binding both), apply leaves `yoetz` alone, and a connect that finds `finishup` already current
-changes nothing more. The guided connect plan drops `migrate_legacy_mcp_registration`, warns
-`legacy_registration_kept`, and lists `legacy_registration_kept_for` with each project and, when
-only exact earlier-name approval tables hold it, the revoke that releases it:
+migrates an owned `yoetz` entry, the adapter reads every project this home knows (its trust rows
+and verified members, including the Yoetz-era bound project; each project file is a bounded 64 KiB
+read, and the user `config.toml` is read within Codex's own 1 MiB bound). The entry stays beside
+`finishup` when a readable `.codex/config.toml` names `mcp_servers.yoetz` without a transport
+(`depends`), when a project's file cannot be read safely (a symlink, not a regular file, over
+64 KiB, or not valid TOML), or when the home's own inputs cannot be read: the user `config.toml`,
+the connected-projects record, or a project path holding a control character (that path is never
+read or echoed). The preview then writes only `finishup` (warning `legacy_registration_kept`,
+`legacy_kept_for`, `legacy_kept_unreadable`, `legacy_kept_unchecked`, `legacy_kept_unread`,
+digest tag `/6` binding them all), apply leaves `yoetz` alone, and a connect that finds
+`finishup` already current changes nothing more. The guided connect plan drops
+`migrate_legacy_mcp_registration`, warns `legacy_registration_kept`, and lists
+`legacy_registration_kept_for`, saying for each project what holds the entry and what releases it:
+
+- only exact earlier-name approval tables: the revoke (`next_arguments`)
+
+  ```text
+  finishup integrate codex admission preview --project-root <project> --action revoke
+  ```
+
+- a file it could not read (`dependence: "unknown"`, `unreadable` names why): make it a regular
+  file you own, under 64 KiB, with valid TOML, or remove that project's trust entry from
+  `<codex home>/config.toml`;
+- tables you edited under `mcp_servers.yoetz`: remove them yourself.
+
+`legacy_registration_kept_unread` names what of the home could not be read, with what makes it
+readable. "After those revokes, connect again" is promised only when the revokes are all that
+hold the entry; otherwise the step says to connect again once nothing listed holds it. Every kept
+case also names the explicit way out, as the owner's choice: remove FinishUP's MCP registration
+from this Codex home under both names with the low-level preview and its digest, then connect
+again (`mcp_removal_preview_arguments`, `reconnect_arguments`):
 
 ```text
-finishup integrate codex admission preview --project-root <project> --action revoke
+finishup integrate codex mcp preview-remove --codex-path <codex> --codex-home <home>
+finishup integrate codex mcp remove --codex-path <codex> --codex-home <home> --accept --preview-digest <digest>
+finishup setup run --host codex --host-path <codex> --host-config-root <home> --project <project>
 ```
 
-`setup status --host codex` reports the same list (read now) while the owned `yoetz` entry exists,
-with the same continuation; the menu summary and the terminal interface's `MCP registered` line
-say the entry is kept instead of promising that setup migrates it. After the revokes, the next connect migrates as before. Tables you
-edited under `mcp_servers.yoetz` are yours to remove. A disconnect keeps both keys while any project
-needs either (`admission_other_projects`), and the last one, after its own sweep removes the exact
-earlier-name table, removes both. The kept `yoetz` entry serves every project of the home on its
-own review mode, so a connect that would register `finishup` on another one stops before any
-change with `connection_legacy_registration_route_kept` (`route_profile_before` is the kept entry's
-mode), naming the revokes and the same connect with that `--route-profile`; the terminal interface
-blocks before its approval screen, the shared integration step behind the wizard and both applies
-fails with that reason, and `integrate codex mcp install` exits 2 with
-`mcp_registration_legacy_registration_route_kept`.
+Every project of the home loses FinishUP until one connects again, and a project whose Codex
+settings still name the removed `yoetz` server stops loading its Codex configuration until those
+tables go (`setup status --host codex` there names the step); the text says so. `setup status
+--host codex` reports the same facts (read now) while the owned `yoetz` entry exists, and the
+menu summary and the terminal interface's `MCP registered` line say the entry is kept, and
+whether a project still uses it or only not every project could be read. The interactive `finishup
+setup` approval and `integrate codex mcp install` say it is kept (with the same lines), and their
+results carry the facts. A disconnect keeps both keys while any project needs either
+(`admission_other_projects`), and the last one, after its own sweep removes the exact earlier-name
+table, removes both. The kept `yoetz` entry serves every project of the home on its own review
+mode, so a connect that would register `finishup` on another one stops before any change with
+`connection_legacy_registration_route_kept` (`route_profile_before` is the kept entry's mode). The
+refusal keeps either mode reachable: the same command on the kept mode (`keep_route_arguments`,
+built with the selected `--host-path`, `--host-config-root` and `--project`), or the way out above
+and then the requested mode. The terminal interface blocks before its approval screen, the shared
+integration step behind the wizard and both applies fails with that reason, and `integrate codex
+mcp install` exits 2 with `mcp_registration_legacy_registration_route_kept`, naming its own
+`install` rerun on each mode.
 
 **Plugin activation.** The project's Yoetz-era activation (the exact legacy
 `.agents/plugins/marketplace.json`, byte-identical `[marketplaces.yoetz]` and

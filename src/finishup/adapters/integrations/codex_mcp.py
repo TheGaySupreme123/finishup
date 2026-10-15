@@ -36,6 +36,7 @@ from finishup.config.paths import (
 from finishup.domain.values import JsonValue
 from finishup.legacy_names import LAUNCHER_NAMES, LEGACY_LAUNCHER_NAME
 from finishup.ports.harness_mcp import (
+    LEGACY_UNREAD_REASONS,
     MCP_LEGACY_SERVER_NAME,
     MCP_SERVE_COMMAND,
     MCP_SERVER_NAME,
@@ -60,8 +61,12 @@ __all__ = [
     "CommandOutput",
     "codex_project_mcp_leftover",
     "codex_project_mcp_leftovers",
+    "LEGACY_UNREAD_REASONS",
+    "PROJECT_CONFIG_UNREADABLE_REASONS",
+    "LegacyRegistrationUse",
     "home_project_candidates",
     "legacy_registration_dependents",
+    "project_config_unreadable_reason",
     "legacy_registration_shaped",
     "read_bounded_toml",
     "probe_project_config_load",
@@ -69,9 +74,13 @@ __all__ = [
 ]
 
 _COMMAND_TIMEOUT_SECONDS: Final = 10.0
-# At most this many of the home's projects are read before an owned ``yoetz`` entry is migrated;
-# past it the entry is kept, since absence from a partial read is not proof (#1073).
-_LEGACY_SCAN_LIMIT: Final = 32
+# The user configuration is read with Codex's own bound (as the marketplace adapter reads it):
+# trust rows for many projects can exceed the 64 KiB a project file is allowed (#1073 round 3).
+_USER_CONFIG_LIMIT_BYTES: Final = 1_048_576
+# Why one project's ``.codex/config.toml`` could not be read safely (closed tokens).
+PROJECT_CONFIG_UNREADABLE_REASONS: Final = frozenset(
+    {"symlink", "not_regular_file", "oversized", "unreadable", "not_valid_toml"}
+)
 _OUTPUT_LIMIT_BYTES: Final = 65_536
 # Both spellings of the isolation root a registration may carry (ADR-048). New registrations
 # write both with one value so an older bare ``yoetz`` launcher resolved through PATH still
@@ -569,10 +578,13 @@ class CodexMcpAdapter:
         # An owned legacy-key entry migrates unless a project's Codex configuration still names
         # the ``yoetz`` server without a transport of its own: removing it would stop Codex
         # loading there, so it stays beside ``finishup`` until those tables go (#1073).
-        kept_for, unchecked = (
-            legacy_registration_dependents(self._codex_home) if legacy_owned else ((), False)
+        use = (
+            legacy_registration_dependents(self._codex_home)
+            if legacy_owned
+            else LegacyRegistrationUse((), (), ())
         )
-        keep_legacy = bool(kept_for) or unchecked
+        kept_for, unchecked = use.kept_for, use.unchecked
+        keep_legacy = use.keeps
         legacy_route = (
             mcp_command_profile(registrations.legacy.command)
             if keep_legacy and registrations.legacy.command is not None
@@ -637,6 +649,8 @@ class CodexMcpAdapter:
                 schema=str(digest_input["schema"]).rsplit("/", 1)[0] + "/6",
                 legacy_kept_for=list(kept_for),
                 legacy_kept_unchecked=unchecked,
+                legacy_kept_unreadable=list(use.unreadable),
+                legacy_kept_unread=list(use.unread),
             )
         digest = canonical_digest(cast(JsonValue, digest_input))
         return McpRegistrationPreview(
@@ -655,6 +669,8 @@ class CodexMcpAdapter:
             kept_for,
             unchecked,
             legacy_route,
+            use.unreadable,
+            use.unread,
         )
 
     async def preview_registration(self, binary: HarnessBinary) -> McpRegistrationPreview:
@@ -1013,15 +1029,11 @@ def project_transport_dependence(
     )
     from finishup.adapters.integrations.toml_tables import strip_exact_table
 
-    path = project / ".codex" / "config.toml"
-    if not os.path.lexists(path):
-        return "none"
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > _OUTPUT_LIMIT_BYTES:
-            return "unknown"
-        raw = path.read_bytes()
-    except OSError:
+    raw, problem = _read_project_config(project)
+    if problem is not None:
         return "unknown"
+    if raw is None:
+        return "none"
     if after_sweep and codex_sweep_edits(raw):
         for table in (
             CODEX_EXTERNAL_ADMISSION_TABLE,
@@ -1045,6 +1057,46 @@ def project_transport_dependence(
     return "none"
 
 
+def _read_project_config(project: Path) -> tuple[bytes | None, str | None]:
+    """The bytes of ``<project>/.codex/config.toml`` (``None`` when absent), or why not.
+
+    The reason is a closed token: ``symlink``, ``not_regular_file``, ``oversized`` (over 64 KiB),
+    ``unreadable``; parsing is the caller's (``not_valid_toml``).
+    """
+
+    path = project / ".codex" / "config.toml"
+    try:
+        if not os.path.lexists(path):
+            return None, None
+        if path.is_symlink():
+            return None, "symlink"
+        if not path.is_file():
+            return None, "not_regular_file"
+        if path.stat().st_size > _OUTPUT_LIMIT_BYTES:
+            return None, "oversized"
+        return path.read_bytes(), None
+    except OSError:
+        return None, "unreadable"
+
+
+def project_config_unreadable_reason(project: Path) -> str | None:
+    """Why ``<project>/.codex/config.toml`` cannot be read safely, or ``None`` when it can.
+
+    One of ``PROJECT_CONFIG_UNREADABLE_REASONS``; an absent file is readable (nothing in it).
+    """
+
+    import tomllib
+
+    raw, problem = _read_project_config(project)
+    if problem is not None or raw is None:
+        return problem
+    try:
+        tomllib.loads(raw.decode("utf-8"))
+    except UnicodeError, tomllib.TOMLDecodeError:
+        return "not_valid_toml"
+    return None
+
+
 def legacy_registration_shaped(config: Mapping[str, object]) -> bool:
     """Whether a user-level Codex config holds a FinishUP-shaped ``mcp_servers.yoetz`` entry.
 
@@ -1063,13 +1115,37 @@ def legacy_registration_shaped(config: Mapping[str, object]) -> bool:
     return tokens is not None and mcp_command_profile(tokens) is not None
 
 
-def home_project_candidates(codex_home: Path) -> tuple[tuple[str, ...], bool]:
-    """The existing project directories this Codex home knows, and whether that list is whole.
+def _has_control_character(text: str) -> bool:
+    return any(ord(char) < 32 or ord(char) == 127 for char in text)
+
+
+def _read_user_config(path: Path) -> Mapping[str, object] | None:
+    """The user ``config.toml`` within Codex's own bound, ``{}`` when absent, ``None`` when unsafe."""
+
+    import tomllib
+
+    try:
+        if not os.path.lexists(path):
+            return {}
+        if path.is_symlink() or not path.is_file():
+            return None
+        if path.stat().st_size > _USER_CONFIG_LIMIT_BYTES:
+            return None
+        return tomllib.loads(path.read_bytes().decode("utf-8"))
+    except OSError, UnicodeError, tomllib.TOMLDecodeError:
+        return None
+
+
+def home_project_candidates(codex_home: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The existing project directories this Codex home knows, and what could not be read.
 
     Candidates are the ``[projects."<path>"]`` rows of the user ``config.toml`` and the home's
     verified members (the FinishUP marketplace binding, the connected-projects record, and a
-    Yoetz-era bound project, ADR-012). The second value is false when the user configuration or
-    the members could not be read, so a caller never reads the list as complete.
+    Yoetz-era bound project, ADR-012). The second value lists, as closed tokens
+    (``LEGACY_UNREAD_REASONS``), why the list may not be whole: the user configuration
+    (``user_config_unreadable``) or the members (``connected_projects_unreadable``) could not be
+    read, or a known path holds a control character (``project_path_unsafe``) and was neither
+    read nor returned, so it never reaches text or a preview.
     """
 
     from finishup.adapters.integrations.codex_marketplace import connected_projects
@@ -1077,10 +1153,11 @@ def home_project_candidates(codex_home: Path) -> tuple[tuple[str, ...], bool]:
 
     if not os.path.lexists(codex_home):
         # A home that does not exist knows no projects (and holds no registration).
-        return (), True
-    path = codex_home / "config.toml"
-    config = read_bounded_toml(path)
-    complete = config is not None or not os.path.lexists(path)
+        return (), ()
+    unread: set[str] = set()
+    config = _read_user_config(codex_home / "config.toml")
+    if config is None:
+        unread.add("user_config_unreadable")
     candidates: set[str] = set()
     projects = (config or {}).get("projects")
     if isinstance(projects, Mapping):
@@ -1088,41 +1165,75 @@ def home_project_candidates(codex_home: Path) -> tuple[tuple[str, ...], bool]:
     try:
         candidates.update(connected_projects(codex_home))
     except IntegrationError:
-        complete = False
+        # The members are read from that configuration too: name the record only when the
+        # configuration itself was readable, so the first fix named is the one that helps.
+        if config is not None:
+            unread.add("connected_projects_unreadable")
+    if any(_has_control_character(candidate) for candidate in candidates):
+        unread.add("project_path_unsafe")
     return (
         tuple(
             sorted(
                 candidate
                 for candidate in candidates
-                if Path(candidate).is_absolute() and Path(candidate).is_dir()
+                if not _has_control_character(candidate)
+                and Path(candidate).is_absolute()
+                and Path(candidate).is_dir()
             )
         ),
-        complete,
+        tuple(sorted(unread)),
     )
 
 
-def legacy_registration_dependents(codex_home: Path | None) -> tuple[tuple[str, ...], bool]:
-    """Projects whose Codex layer still needs the user-level ``yoetz`` transport (ADR-048).
+@dataclass(frozen=True, slots=True)
+class LegacyRegistrationUse:
+    """Why an owned ``yoetz`` entry must stay beside ``finishup`` (ADR-048, #1073).
+
+    ``needed_by``: projects whose readable ``.codex/config.toml`` names ``mcp_servers.yoetz``
+    without a transport of its own. ``unreadable``: projects whose ``.codex/config.toml`` cannot be
+    read safely. ``unread``: closed tokens for what of the home itself could not be read.
+    """
+
+    needed_by: tuple[str, ...]
+    unreadable: tuple[str, ...]
+    unread: tuple[str, ...]
+
+    @property
+    def kept_for(self) -> tuple[str, ...]:
+        return tuple(sorted({*self.needed_by, *self.unreadable}))
+
+    @property
+    def unchecked(self) -> bool:
+        return bool(self.unread)
+
+    @property
+    def keeps(self) -> bool:
+        return bool(self.needed_by or self.unreadable or self.unread)
+
+
+def legacy_registration_dependents(codex_home: Path | None) -> LegacyRegistrationUse:
+    """Which projects still need the user-level ``yoetz`` transport, read in full (ADR-048).
 
     Such a project's ``.codex/config.toml`` names ``mcp_servers.yoetz`` without a ``command`` or
     ``url`` of its own (the exact ``[mcp_servers.yoetz.tools.check]`` a Yoetz 0.2
     ``integrate codex admission grant`` wrote, for example), or cannot be read safely. Removing
-    the owned ``yoetz`` entry would stop Codex loading configuration there (#1073). At most
-    ``_LEGACY_SCAN_LIMIT`` projects are read; the second value is true when that read was not
-    whole, so the entry is kept rather than assumed unused.
+    the owned ``yoetz`` entry would stop Codex loading configuration there (#1073). Every project
+    the home knows is read: each read is a bounded small file (64 KiB), so there is no window to
+    fall outside of; only an input that cannot be read leaves the answer unchecked.
     """
 
-    candidates, complete = home_project_candidates(_selected_codex_home(codex_home))
-    inspected = candidates[:_LEGACY_SCAN_LIMIT]
-    dependents = tuple(
-        candidate
-        for candidate in inspected
-        if project_transport_dependence(
+    candidates, unread = home_project_candidates(_selected_codex_home(codex_home))
+    needed_by: list[str] = []
+    unreadable: list[str] = []
+    for candidate in candidates:
+        dependence = project_transport_dependence(
             Path(candidate), after_sweep=False, names=(MCP_LEGACY_SERVER_NAME,)
         )
-        != "none"
-    )
-    return dependents, not complete or len(candidates) > len(inspected)
+        if dependence == "depends":
+            needed_by.append(candidate)
+        elif dependence == "unknown":
+            unreadable.append(candidate)
+    return LegacyRegistrationUse(tuple(needed_by), tuple(unreadable), unread)
 
 
 def codex_project_mcp_leftovers(

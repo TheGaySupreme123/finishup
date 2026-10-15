@@ -46,6 +46,7 @@ class _Plan:
     legacy_registration_kept_for: tuple[str, ...] = ()
     legacy_registration_kept_unchecked: bool = False
     legacy_registration_route_profile: str | None = None
+    legacy_registration_kept_unread: tuple[str, ...] = ()
 
 
 def _observation(legacy: str) -> McpRegistrationObservation:
@@ -419,15 +420,30 @@ def test_menu_summary_does_not_promise_a_migration_setup_keeps_back(
         type("Adapter", (_Adapter,), {"legacy": legacy}),
     )
 
-    def dependents(_home: object) -> tuple[tuple[str, ...], bool]:
-        return ("/work/a",), False
+    from finishup.adapters.integrations.codex_mcp import LegacyRegistrationUse
+
+    def needed(_home: object) -> LegacyRegistrationUse:
+        return LegacyRegistrationUse(needed_by=("/work/a",), unreadable=(), unread=())
 
     monkeypatch.setattr(
-        "finishup.adapters.integrations.codex_mcp.legacy_registration_dependents", dependents
+        "finishup.adapters.integrations.codex_mcp.legacy_registration_dependents", needed
     )
     (line,) = anyio.run(menu._harness_summary)  # pyright: ignore[reportPrivateUsage]
     assert "kept: a project's Codex settings still use it" in line
     assert "setup migrates" not in line and "setup removes" not in line
+
+    # Only an incomplete read keeps it: say that, not that a project uses it (round 3).
+    def unread(_home: object) -> LegacyRegistrationUse:
+        return LegacyRegistrationUse(
+            needed_by=(), unreadable=(), unread=("user_config_unreadable",)
+        )
+
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.legacy_registration_dependents", unread
+    )
+    (line,) = anyio.run(menu._harness_summary)  # pyright: ignore[reportPrivateUsage]
+    assert "kept: not every project of this Codex home could be read" in line
+    assert "still use it" not in line
 
 
 def test_disconnecting_beside_a_yoetz_era_project_keeps_the_registration_it_uses(
@@ -669,6 +685,7 @@ def _connect_through_adapter(
                 legacy_registration_kept_for=preview.legacy_kept_for,
                 legacy_registration_kept_unchecked=preview.legacy_kept_unchecked,
                 legacy_registration_route_profile=preview.legacy_route_profile,
+                legacy_registration_kept_unread=preview.legacy_kept_unread,
             )
 
     async def apply_codex(
@@ -1047,3 +1064,217 @@ def test_a_removed_plugin_beside_a_yoetz_era_member_names_who_loses_it(
     assert "[marketplaces.finishup]" not in config.read_text()
     status = plan.status()
     assert status["shared_with"] == [str(root_a)]
+
+
+def _remove_under_both_names(monkeypatch: pytest.MonkeyPatch, home: Path, host: _KeyedHost) -> None:
+    """Follow the named way out: the low-level `integrate codex mcp preview-remove`, then
+    `remove --accept --preview-digest` with that preview's digest."""
+
+    emitted: list[dict[str, object]] = []
+
+    def emit(value: dict[str, object], *, json_output: bool) -> None:
+        del json_output
+        emitted.append(dict(value))
+
+    def adapter(
+        route_profile: str | None = None, *, codex_home: Path | None = None
+    ) -> CodexMcpAdapter:
+        return CodexMcpAdapter(
+            host.run,  # type: ignore[arg-type]
+            route_profile="strict" if route_profile is None else route_profile,  # type: ignore[arg-type]
+            codex_home=codex_home,
+        )
+
+    monkeypatch.setattr(setup, "_emit", emit)
+    monkeypatch.setattr(setup, "discover_codex_binaries", lambda: (_CODEX,))
+    monkeypatch.setattr(setup, "_mcp_adapter", adapter)
+
+    async def run(action: str, digest: str | None = None) -> int:
+        return await setup.integrate_mcp(
+            action,
+            "codex",
+            codex_path=None,
+            codex_home=home,
+            accept=digest is not None,
+            preview_digest=digest,
+            json_output=True,
+            _state=home.parent,
+        )
+
+    assert anyio.run(run, "preview-remove") == 0
+    digest = emitted[-1]["preview_digest"]
+    assert isinstance(digest, str)
+    assert anyio.run(run, "remove", digest) == 0
+
+
+def test_an_unreadable_project_config_gets_its_own_step_and_the_way_out_works(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A's .codex/config.toml is a symlink: FinishUP cannot tell whether it needs the `yoetz`
+    server, so the entry stays. The step says why and what makes it readable (never "remove the
+    tables"), and names the explicit way out, which works: the low-level removal under both
+    names, then a connect (#1073 round 3)."""
+
+    from finishup.cli.host_connection import connection_summary
+
+    home, root_a, root_b = _yoetz_era_home_with_grant(tmp_path)
+    real = tmp_path / "dotfiles-codex.toml"
+    real.write_text('model = "o3"\n')
+    (root_a / ".codex" / "config.toml").unlink()
+    (root_a / ".codex" / "config.toml").symlink_to(real)
+    host = _KeyedHost(home)
+
+    plan = _connect_through_adapter(monkeypatch, home, root_b, host)
+
+    assert plan.disclosure["legacy_registration_kept_for"] == [
+        {"project_root": str(root_a), "dependence": "unknown", "unreadable": "symlink"}
+    ]
+    summary = "\n".join(connection_summary(plan))
+    assert "could not read its .codex/config.toml safely (a symlink)" in summary
+    assert "regular file you own" in summary
+    assert "remove the [mcp_servers.yoetz] tables" not in summary
+    assert "After those revokes" not in summary
+    assert "integrate codex mcp preview-remove --codex-path /opt/codex-testing" in summary
+    assert f"--codex-home {home}" in summary
+    assert "your explicit choice" in summary
+
+    plan.apply_reviewed_steps()
+    assert set(host.entries) == {"finishup", "yoetz"}
+    _remove_under_both_names(monkeypatch, home, host)
+    assert host.entries == {}
+    again = _connect_through_adapter(monkeypatch, home, root_b, host)
+    assert "legacy_registration_kept_for" not in again.disclosure
+    again.apply_reviewed_steps()
+    assert set(host.entries) == {"finishup"}
+
+
+def test_a_strict_kept_entry_leaves_a_path_to_ai_powered_review(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A strict (local-only) `yoetz` entry is kept for A; first-run setup and the wizard always
+    ask for the policy route. The refusal keeps either mode reachable: keep local only (the full
+    selected command), or remove the earlier entry as an explicit choice and connect again."""
+
+    from finishup.adapters.integrations.codex_mcp import codex_project_mcp_leftovers
+    from finishup.application.host_connection import ConnectionError as SetupConnectionError
+    from finishup.cli.host_connection import refusal_step, rendered_status
+    from finishup.ports.harness_mcp import MCP_LEGACY_STRICT_SERVE_COMMAND
+
+    home, root_a, root_b = _yoetz_era_home_with_grant(tmp_path)
+    host = _KeyedHost(home)
+    host.entries["yoetz"] = json.dumps(
+        {"command": "yoetz", "args": list(MCP_LEGACY_STRICT_SERVE_COMMAND[1:])}
+    ).encode()
+    host._mirror()  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(SetupConnectionError) as caught:
+        _connect_through_adapter(monkeypatch, home, root_b, host, route="policy")
+
+    step = refusal_step(str(caught.value), rendered_status(caught.value.status or {}))
+    assert step is not None
+    selection = f"--host-path /opt/codex-testing --host-config-root {home}"
+    assert f"setup run --host codex {selection} --project {root_b} --route-profile strict" in step
+    assert "integrate codex mcp preview-remove" in step
+    assert f"--project {root_b} --route-profile policy" in step
+    assert "finishup setup run --host codex --route-profile" not in step
+
+    _remove_under_both_names(monkeypatch, home, host)
+    plan = _connect_through_adapter(monkeypatch, home, root_b, host, route="policy")
+    plan.apply_reviewed_steps()
+    assert set(host.entries) == {"finishup"}
+    # The consequence the way out names: A's earlier-name table now has no transport.
+    assert codex_project_mcp_leftovers(home, root_a) == (("yoetz", "tools_only"),)
+
+
+@pytest.mark.parametrize("edited", [False, True], ids=["exact", "edited"])
+def test_the_revoke_promise_is_given_only_when_the_revokes_release_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, edited: bool
+) -> None:
+    from finishup.cli.host_connection import connection_summary
+
+    home, root_a, root_b = _yoetz_era_home_with_grant(tmp_path)
+    if edited:
+        (root_a / ".codex" / "config.toml").write_text(
+            '[mcp_servers.yoetz.tools.check]\napproval_mode = "prompt"\n'
+        )
+    host = _KeyedHost(home)
+
+    summary = "\n".join(
+        connection_summary(_connect_through_adapter(monkeypatch, home, root_b, host))
+    )
+
+    promise = "After those revokes, connect again to finish moving to FinishUP."
+    assert (promise in summary) is not edited
+    assert ("--action revoke" in summary) is not edited
+    assert ("remove them yourself" in summary) is edited
+
+
+def test_a_disconnect_reads_a_large_home_config_and_keeps_what_others_need(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A user config over 64 KiB (but within Codex's own 1 MiB bound) is still read: B's
+    disconnect keeps the registration A's Yoetz-era approval table needs. A is only a trusted
+    project here (no Yoetz-era activation), so nothing else keeps it (#1073 round 3)."""
+
+    from tests.unit.adapters.test_codex_multi_project import (
+        _home,  # pyright: ignore[reportPrivateUsage]
+        _project,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+
+    home = _home(tmp_path)
+    _target_a, root_a = _project(tmp_path, "a")
+    _target_b, root_b = _project(tmp_path, "b")
+    (home / "config.toml").write_text(
+        f'[projects."{root_a}"]\ntrust_level = "trusted"\n'
+        f'\n[projects."{root_b}"]\ntrust_level = "trusted"\n'
+    )
+    (root_a / ".codex").mkdir(mode=0o700)
+    (root_a / ".codex" / "config.toml").write_text(CODEX_LEGACY_ADMISSION_TABLES[0])
+    host = _KeyedHost(home)
+    _connect_through_adapter(monkeypatch, home, root_b, host).apply_reviewed_steps()
+    config = home / "config.toml"
+    config.write_text("# padding\n" * 8000 + config.read_text())
+    assert config.stat().st_size > 65_536
+    installation = _wire_disconnect(monkeypatch, home, host)
+
+    plan = codex_connection.prepare_codex_connection(
+        installation,
+        root_b,
+        action="disconnect",
+        route="policy",
+        request_value="req_52e989dd-b118-4f49-a359-707a6b32bfa4",
+    )
+
+    assert "remove_mcp_registration" not in cast_list(plan.body["changes"])
+    others = cast_list(plan.disclosure["admission_other_projects"])
+    assert [item["project_root"] for item in others if isinstance(item, dict)] == [str(root_a)]
+    plan.apply_reviewed_steps()
+    assert set(host.entries) == {"finishup", "yoetz"}
+
+
+def test_an_unread_record_never_reads_as_nobody_needs_the_registration(tmp_path: Path) -> None:
+    """The disconnect scan treats an unreadable input as the connect does: unproven, so an
+    ordinary disconnect keeps the transport and says why (#1073 round 3)."""
+
+    from tests.unit.adapters.test_codex_multi_project import (
+        _home,  # pyright: ignore[reportPrivateUsage]
+        _project,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    home = _home(tmp_path)
+    _target, root_b = _project(tmp_path, "b")
+    (home / "config.toml").write_text(f'[projects."{root_b}"]\ntrust_level = "trusted"\n')
+    record = home / CONNECTED_PROJECTS_FILE
+    record.write_text("not json")
+    record.chmod(0o600)
+
+    needing, enumeration = codex_connection._other_projects_needing_transport(  # pyright: ignore[reportPrivateUsage]
+        home, root_b, ("finishup", "yoetz")
+    )
+
+    assert needing == []
+    assert enumeration.get("admission_other_projects_unread") == ["connected_projects_unreadable"]

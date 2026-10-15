@@ -193,6 +193,11 @@ class IntegrationPlan:
     legacy_registration_kept_for: tuple[str, ...] = ()
     legacy_registration_kept_unchecked: bool = False
     legacy_registration_route_profile: Literal["policy", "strict"] | None = None
+    # Why the home's own inputs could not all be read (closed tokens), and the plain-language
+    # lines this approval shows: per project why it keeps the entry and what releases it, and
+    # the explicit removal under both names as the owner's choice (#1073 round 3).
+    legacy_registration_kept_unread: tuple[str, ...] = ()
+    legacy_registration_kept_lines: tuple[str, ...] = ()
 
     @property
     def legacy_registration_kept(self) -> bool:
@@ -241,13 +246,13 @@ class IntegrationPlan:
             lines.append(
                 "Keep the MCP registration under the earlier name yoetz beside finishup: "
                 + (
-                    "the Codex configuration of "
+                    "the Codex settings of "
                     + ", ".join(self.legacy_registration_kept_for)
-                    + " still uses it (revoke its earlier-name approval there, then connect "
-                    "again to finish moving)"
+                    + " may still use it"
                     if self.legacy_registration_kept_for
-                    else "not every project of this Codex home could be checked"
+                    else "not every project of this Codex home could be read"
                 )
+                + " (why, and the way on, below)"
             )
         elif self.legacy_registration == "legacy_only":
             lines.append("Move the MCP registration from the earlier name yoetz to finishup")

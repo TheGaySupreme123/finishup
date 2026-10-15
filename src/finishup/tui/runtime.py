@@ -80,11 +80,21 @@ _LEGACY_REGISTRATION_TEXT: Final = {
 _KEPT_LEGACY_REGISTRATION_TEXT: Final = {
     "legacy_only": (
         "registered under the earlier name yoetz (kept beside finishup: a project's Codex "
-        "configuration still uses it)"
+        "settings still use it)"
     ),
     "duplicate": (
-        "also registered under the earlier name yoetz (kept: a project's Codex configuration "
-        "still uses it)"
+        "also registered under the earlier name yoetz (kept: a project's Codex settings still "
+        "use it)"
+    ),
+}
+_UNREAD_LEGACY_REGISTRATION_TEXT: Final = {
+    "legacy_only": (
+        "registered under the earlier name yoetz (kept: not every project of this Codex home "
+        "could be read)"
+    ),
+    "duplicate": (
+        "also registered under the earlier name yoetz (kept: not every project of this Codex "
+        "home could be read)"
     ),
 }
 # A Cursor project registration whose earlier-name entry lives outside the project's own file,
@@ -106,6 +116,35 @@ _LEGACY_INSTALLATION_TEXT: Final = {
 }
 
 
+def _legacy_kept_plan_lines(
+    preview: McpRegistrationPreview,
+    *,
+    executable: str,
+    codex_home: Path,
+    project: Path,
+    route: str,
+) -> tuple[str, ...]:
+    """Why an approval keeps the owned ``yoetz`` entry, per project, and every way on (#1073).
+
+    The same words `setup run` shows: the revoke only where it releases the entry, what makes an
+    unreadable file readable, and the explicit removal under both names as the owner's choice.
+    """
+
+    if not (preview.legacy_kept_for or preview.legacy_kept_unchecked):
+        return ()
+    from finishup.cli.codex_connection import legacy_kept_disclosure, legacy_way_out
+    from finishup.cli.host_connection import legacy_kept_lines
+
+    return legacy_kept_lines(
+        legacy_kept_disclosure(
+            preview.legacy_kept_for,
+            preview.legacy_kept_unread,
+            codex_home=codex_home,
+            way_out=legacy_way_out(executable, codex_home, project, route),
+        )
+    )
+
+
 def _codex_legacy_registration_text(legacy: str) -> str | None:
     """Words for the ambient Codex ``yoetz`` key, matched to what connecting will do.
 
@@ -116,9 +155,12 @@ def _codex_legacy_registration_text(legacy: str) -> str | None:
     if legacy in _KEPT_LEGACY_REGISTRATION_TEXT:
         from finishup.adapters.integrations.codex_mcp import legacy_registration_dependents
 
-        kept, unchecked = legacy_registration_dependents(None)
-        if kept or unchecked:
+        use = legacy_registration_dependents(None)
+        if use.needed_by:
             return _KEPT_LEGACY_REGISTRATION_TEXT[legacy]
+        if use.keeps:
+            # Nothing found to need it; only an incomplete read keeps it (round 3).
+            return _UNREAD_LEGACY_REGISTRATION_TEXT[legacy]
     return _LEGACY_REGISTRATION_TEXT.get(legacy)
 
 
@@ -1018,9 +1060,13 @@ class FinishUpRuntime:
             root,
             before=route_before,
         )
+        # Kept beside ``finishup`` because a project's Codex settings still use it, or because
+        # not every project of the home could be read (#1073): the words say which.
+        needed = set(mcp_preview.legacy_kept_for) - set(mcp_preview.legacy_kept_unreadable)
         legacy_text = (
-            # Kept beside ``finishup``: a project's Codex configuration still uses it (#1073).
             _KEPT_LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
+            if needed
+            else _UNREAD_LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
             if mcp_preview.legacy_kept_for or mcp_preview.legacy_kept_unchecked
             else _LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
         )
@@ -1095,6 +1141,14 @@ class FinishUpRuntime:
             legacy_registration_kept_for=mcp_preview.legacy_kept_for,
             legacy_registration_kept_unchecked=mcp_preview.legacy_kept_unchecked,
             legacy_registration_route_profile=mcp_preview.legacy_route_profile,
+            legacy_registration_kept_unread=mcp_preview.legacy_kept_unread,
+            legacy_registration_kept_lines=_legacy_kept_plan_lines(
+                mcp_preview,
+                executable=binary.executable_path,
+                codex_home=activation_preview.codex_home,
+                project=root,
+                route=route,
+            ),
         )
 
     async def apply_integration(

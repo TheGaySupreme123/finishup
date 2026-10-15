@@ -16,6 +16,7 @@ from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.errors import PROTOCOL_REASON_CODES, ProtocolValueError
 
 __all__ = [
+    "LEGACY_UNREAD_REASONS",
     "MCP_LEGACY_SERVER_NAME",
     "MCP_SERVE_COMMAND",
     "MCP_STRICT_SERVE_COMMAND",
@@ -46,8 +47,12 @@ MCP_LEGACY_SERVE_COMMAND: Final = ("finishup", "mcp", "serve")
 MCP_LEGACY_STRICT_SERVE_COMMAND: Final = (*MCP_LEGACY_SERVE_COMMAND, "--semantic", "off")
 
 _MAX_PATH_CHARS: Final = 4_096
-# The adapter reads at most this many projects for one registration decision.
-_MAX_KEPT_FOR: Final = 32
+# A bound on the projects one preview names as keeping an owned ``yoetz`` entry.
+_MAX_KEPT_FOR: Final = 4_096
+# Why a Codex home's own inputs could not all be read for that decision (#1073 round 3).
+LEGACY_UNREAD_REASONS: Final = frozenset(
+    {"user_config_unreadable", "connected_projects_unreadable", "project_path_unsafe"}
+)
 _MAX_VERSION_CHARS: Final = 64
 _MAX_WARNINGS: Final = 16
 _TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$", re.ASCII)
@@ -195,6 +200,10 @@ class McpRegistrationPreview:
     legacy_kept_for: tuple[str, ...] = ()
     legacy_kept_unchecked: bool = False
     legacy_route_profile: Literal["policy", "strict"] | None = None
+    # The subset of ``legacy_kept_for`` whose ``.codex/config.toml`` cannot be read safely, and the
+    # closed reasons the home's own inputs could not all be read (``legacy_kept_unchecked``).
+    legacy_kept_unreadable: tuple[str, ...] = ()
+    legacy_kept_unread: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.harness_id) is not HarnessId:
@@ -216,6 +225,11 @@ class McpRegistrationPreview:
             )
             or type(self.legacy_kept_unchecked) is not bool
             or self.legacy_route_profile not in {None, "policy", "strict"}
+            or type(self.legacy_kept_unreadable) is not tuple
+            or not set(self.legacy_kept_unreadable) <= set(self.legacy_kept_for)
+            or type(self.legacy_kept_unread) is not tuple
+            or not set(self.legacy_kept_unread) <= LEGACY_UNREAD_REASONS
+            or bool(self.legacy_kept_unread) is not self.legacy_kept_unchecked
             or (
                 (self.legacy_kept_for or self.legacy_kept_unchecked)
                 and self.legacy_registration not in {"legacy_only", "duplicate"}

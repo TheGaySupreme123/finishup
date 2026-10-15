@@ -582,8 +582,11 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    `shared_registration_retained`. The disconnect status follows it whatever kept the registration
    (other projects' use of the shared pieces, another project's own Codex configuration, or a scan
    stopped at its bound): a project that is not connected reports `configured` only while its plan
-   still removes the registration. Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
-   that stopped at its bound of 32, keep them on an ordinary disconnect. A Codex disconnect that
+   still removes the registration. Uncertainty keeps the pieces: unknown Cursor membership, a
+   Codex scan of other projects that stopped at its bound of 32, and (2026-10-15, round 3) a
+   Codex home whose own `config.toml`, connected-projects record or a project path could not be
+   read keep them on an ordinary disconnect, which says which and names the low-level removal as
+   the owner's explicit way out. A Codex disconnect that
    would leave possible users but no verified member to carry the binding refuses before any
    change (`remove_refused` with `conflict: membership_unverified`; CLI reason
    `membership_unverified`) rather than guess: its continuation names the possible users and

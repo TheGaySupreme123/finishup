@@ -1194,6 +1194,7 @@ def test_connect_status_reports_the_shared_registration_as_retained_when_not_con
                 legacy_registration_kept_for=(),
                 legacy_registration_kept_unchecked=False,
                 legacy_registration_route_profile=None,
+                legacy_registration_kept_unread=(),
             )
 
     async def observe(self: object, _binary: object) -> McpRegistrationObservation:

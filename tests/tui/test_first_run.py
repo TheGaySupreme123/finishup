@@ -496,6 +496,9 @@ async def test_a_kept_yoetz_entry_on_another_review_mode_blocks_before_approval(
         assert "The earlier yoetz registration stays, on its own review mode" in text
         assert "/work/a" in text
         assert "--route-profile strict" in text
+        # The policy route the first run asks for stays reachable, as an explicit choice.
+        assert "integrate codex mcp preview-remove" in text
+        assert "--route-profile policy" in text
 
 
 async def test_a_failed_registration_is_reported_as_a_failure(make_app: MakeApp) -> None:

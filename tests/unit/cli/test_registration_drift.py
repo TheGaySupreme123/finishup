@@ -434,8 +434,13 @@ async def test_low_level_install_stops_on_a_kept_entry_serving_another_review_mo
     whole home with AI-powered review; a strict install next to it would run both review modes.
     The home-wide low-level install stops before any change and names the way on (#1073)."""
 
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+
     home = tmp_path / "home"
     home.mkdir(mode=0o700)
+    dependent = tmp_path / "a"
+    (dependent / ".codex").mkdir(parents=True, mode=0o700)
+    (dependent / ".codex" / "config.toml").write_text(CODEX_LEGACY_ADMISSION_TABLES[0])
     preview = McpRegistrationPreview(
         HarnessId.CODEX,
         McpRegistrationAction.REREGISTER,
@@ -451,7 +456,7 @@ async def test_low_level_install_stops_on_a_kept_entry_serving_another_review_mo
         None,
         "legacy_only",
         "policy",
-        ("/work/a",),
+        (str(dependent),),
         False,
         "policy",
     )
@@ -485,4 +490,10 @@ async def test_low_level_install_stops_on_a_kept_entry_serving_another_review_mo
     assert code == 2
     err = capsys.readouterr().err
     assert "mcp_registration_legacy_registration_route_kept" in err
-    assert "/work/a" in err
+    assert str(dependent) in err
+    # Its own rerun keeps the kept mode; the explicit way out reaches the requested one.
+    selection = f"--codex-path /opt/harness/bin/codex --codex-home {home}"
+    assert f"integrate codex mcp install {selection} --route-profile policy" in err
+    assert f"integrate codex mcp preview-remove {selection}" in err
+    assert f"integrate codex mcp install {selection} --route-profile strict" in err
+    assert "finishup setup run --host codex --route-profile" not in err
