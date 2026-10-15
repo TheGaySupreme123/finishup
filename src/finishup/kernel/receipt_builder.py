@@ -107,7 +107,7 @@ from finishup.domain.values import (
     finding_id,
 )
 from finishup.kernel.check_standing import CheckStanding, LaterRecord
-from finishup.kernel.claim_verification import claim_verification_lines
+from finishup.kernel.claim_verification import claim_verification_report
 from finishup.kernel.claims import (
     claim_discloses_result,
     effective_claim_items,
@@ -2152,6 +2152,7 @@ def _sections(
     review_mode_sentence: str = "",
     coordinator_failure_sentence: str = "",
     claim_verification: tuple[str, ...] = (),
+    claim_verification_limitation: str = "",
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2476,6 +2477,10 @@ def _sections(
     # is the closing-review limit (unchanged failure, no later material delta).
     if coordinator_failure_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + coordinator_failure_sentence
+    # #1079: a holed projection omits the pairing for that obligation. The limitation is ids
+    # only, or one fixed sentence, so the receipt still renders.
+    if claim_verification_limitation:
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + claim_verification_limitation
 
     policy_rows = "; ".join(
         f"{entry.policy_id} {entry.policy_version}" for entry in versions.policy_versions
@@ -2803,6 +2808,9 @@ def build_receipt(
         )
     )
     proof_state_cache: dict[tuple[int, int, str], ProjectionState | None] = {}
+    claim_pairing, claim_pairing_limitation = claim_verification_report(
+        context.projection, context.records
+    )
     # The export profiles clear gap details; the sections they keep never copy a path (#1044).
     name_paths = redaction_profile is ReceiptRedactionProfile.FULL_LOCAL
     sections = _sections(
@@ -2902,7 +2910,8 @@ def build_receipt(
         coordinator_failure_sentence=(
             COORDINATOR_FAILURE_SENTENCE if _unchanged_coordinator_failure(context) else ""
         ),
-        claim_verification=claim_verification_lines(context.projection, context.records),
+        claim_verification=claim_pairing,
+        claim_verification_limitation=claim_pairing_limitation,
     )
     suppressed_count = (
         0 if context.applicable_check is None else context.applicable_check.suppressed_count

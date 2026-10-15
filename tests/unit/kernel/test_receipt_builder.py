@@ -2764,11 +2764,11 @@ def test_claim_verification_pairing_renders_in_json_markdown_and_text(
     assert header not in evidence.body
     assert header not in render_receipt_compact(plain)
 
-    def _paired(_projection: object, _records: object) -> tuple[str, ...]:
-        return (header, line)
+    def _paired(_projection: object, _records: object) -> tuple[tuple[str, ...], str]:
+        return ((header, line), "")
 
     monkeypatch.setattr(
-        "finishup.kernel.receipt_builder.claim_verification_lines",
+        "finishup.kernel.receipt_builder.claim_verification_report",
         _paired,
     )
     receipt = _build(context)
@@ -2785,6 +2785,49 @@ def test_claim_verification_pairing_renders_in_json_markdown_and_text(
     assert header in render_receipt_human(receipt, markdown=True)
     assert line in render_receipt_human(receipt, markdown=False)
     assert header not in render_receipt_compact(receipt)
+
+
+def test_a_holed_projection_omits_claim_pairing_and_names_the_limit() -> None:
+    """A redacted obligation must not raise the receipt. Pairing is omitted; the limitation
+    names only the obligation id, in JSON, markdown and text. Compact wording stays frozen."""
+
+    from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
+
+    obligation = ObligationPublishedPayload(
+        obligation_id("obl_00000000-0000-4000-8000-0000000000c2"),
+        "Deliver the requested outcome",
+        "A recorded run",
+        ObligationStatus.RESOLVED,
+        resolution_evidence_refs=(result_id("res_00000000-0000-4000-8000-0000000000c2"),),
+    )
+    plan = PlanPublishedPayload(1, "Verified task", (obligation.obligation_id,), ())
+    receipt = _build(
+        _context(
+            check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()),
+            plan=plan,
+            obligation=obligation,
+            obligation_redacted=True,
+        )
+    )
+    sentence = f"The claim-verification pairing could not be read for {obligation.obligation_id}."
+    limitations = next(
+        section
+        for section in receipt.sections
+        if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
+    )
+    evidence = next(
+        section
+        for section in receipt.sections
+        if section.key is ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS
+    )
+    assert sentence in limitations.body
+    assert CLAIM_VERIFICATION_HEADER not in evidence.body
+    assert "Deliver the requested outcome" not in limitations.body
+    encoded = str(receipt_document_to_json(receipt))
+    assert sentence in encoded
+    assert sentence in render_receipt_human(receipt, markdown=True)
+    assert sentence in render_receipt_human(receipt, markdown=False)
+    assert sentence not in render_receipt_compact(receipt)
 
 
 def test_an_unchanged_coordinator_failure_is_named_on_the_receipt() -> None:

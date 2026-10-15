@@ -1076,7 +1076,9 @@ recheck; the receipt still lists it.
 section in JSON, markdown and text: a header that a generic all-met claim does not stand in, then
 one line per flagged obligation with its reason tokens and `verification_limit` or
 `no_verification_limit`. A final-message line does not create the ledger link the receipt
-reports. Compact receipt wording is unchanged.
+reports. Compact receipt wording is unchanged. A projection hole does not fail the receipt: the
+pairing for that obligation is omitted and the limitations section says the pairing could not
+be read, naming only the obligation id when the scope can still be read.
 
 ## Amendment (2026-10-15, issue #1079 item 7): the cited id must be a recorded link
 
