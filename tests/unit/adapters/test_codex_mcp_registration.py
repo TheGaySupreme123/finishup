@@ -1769,26 +1769,116 @@ def test_a_kept_entry_on_another_review_mode_is_named(tmp_path: Path) -> None:
     assert preview.legacy_route_profile == "policy"
 
 
-def test_an_unchecked_home_keeps_the_legacy_entry(tmp_path: Path) -> None:
-    from finishup.adapters.integrations import codex_mcp
+def test_a_home_with_many_known_projects_still_migrates(tmp_path: Path) -> None:
+    """Every known project is read for this decision (no 32-project window): a home with more
+    projects than that, none of which needs the ``yoetz`` key, migrates it (#1073 round 3)."""
 
-    limit = codex_mcp._LEGACY_SCAN_LIMIT  # pyright: ignore[reportPrivateUsage]
-    home, project = _home_with_legacy_grant(tmp_path, trusted=limit + 1)
+    home, project = _home_with_legacy_grant(tmp_path, trusted=40)
     (project / ".codex" / "config.toml").write_text("", encoding="utf-8")
     host = _KeyedHost(legacy=_legacy_entry())
     adapter = CodexMcpAdapter(host, codex_home=home)
 
     preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
 
-    # Not every project was read: absence from the list is not proof nobody needs it.
     assert preview.legacy_kept_for == ()
+    assert preview.legacy_kept_unchecked is False
+    assert preview.warnings == ("legacy_registration_owned",)
+    anyio.run(
+        lambda: adapter.apply_registration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert set(host.entries) == {"finishup"}
+
+
+def test_a_dependent_past_the_first_32_projects_is_still_found(tmp_path: Path) -> None:
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+
+    home, project = _home_with_legacy_grant(tmp_path, trusted=40)
+    (project / ".codex" / "config.toml").write_text("", encoding="utf-8")
+    last = tmp_path / "zz-last"
+    (last / ".codex").mkdir(parents=True, mode=0o700)
+    (last / ".codex" / "config.toml").write_text(CODEX_LEGACY_ADMISSION_TABLES[0])
+    with (home / "config.toml").open("a", encoding="utf-8") as handle:
+        handle.write(f'\n[projects."{last}"]\ntrust_level = "trusted"\n')
+
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _KeyedHost(legacy=_legacy_entry()), codex_home=home
+        ).preview_registration(_BINARY)
+    )
+
+    assert preview.legacy_kept_for == (str(last),)
+    assert preview.legacy_kept_unchecked is False
+
+
+def test_an_unreadable_home_config_keeps_the_entry_and_says_why(tmp_path: Path) -> None:
+    """Only a genuinely unreadable input leaves the decision unchecked; the preview names it."""
+
+    home, project = _home_with_legacy_grant(tmp_path)
+    (project / ".codex" / "config.toml").write_text("", encoding="utf-8")
+    config = home / "config.toml"
+    real = tmp_path / "dotfiles-config.toml"
+    real.write_text(config.read_text(), encoding="utf-8")
+    config.unlink()
+    config.symlink_to(real)
+    host = _KeyedHost(legacy=_legacy_entry())
+    adapter = CodexMcpAdapter(host, codex_home=home)
+
+    preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
+
     assert preview.legacy_kept_unchecked is True
+    assert preview.legacy_kept_unread == ("user_config_unreadable",)
     anyio.run(
         lambda: adapter.apply_registration(
             _BINARY, McpRegistrationCommand(preview.preview_digest, True)
         )
     )
     assert set(host.entries) == {"finishup", "yoetz"}
+
+
+def test_an_unreadable_project_config_is_kept_for_and_named_unreadable(tmp_path: Path) -> None:
+    home, project = _home_with_legacy_grant(tmp_path)
+    real = tmp_path / "shared.toml"
+    real.write_text('model = "o3"\n', encoding="utf-8")
+    (project / ".codex" / "config.toml").unlink()
+    (project / ".codex" / "config.toml").symlink_to(real)
+
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _KeyedHost(legacy=_legacy_entry()), codex_home=home
+        ).preview_registration(_BINARY)
+    )
+
+    assert preview.legacy_kept_for == (str(project),)
+    assert preview.legacy_kept_unreadable == (str(project),)
+    assert preview.legacy_kept_unchecked is False
+
+
+def test_a_control_character_project_path_never_fails_the_preview(tmp_path: Path) -> None:
+    """A trusted path with a control character is not read and never echoed: the entry stays,
+    with a bounded reason, and the preview itself still works (#1073 round 3)."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+
+    home, project = _home_with_legacy_grant(tmp_path)
+    (project / ".codex" / "config.toml").write_text("", encoding="utf-8")
+    weird = tmp_path / "a\tb"
+    (weird / ".codex").mkdir(parents=True, mode=0o700)
+    (weird / ".codex" / "config.toml").write_text(CODEX_LEGACY_ADMISSION_TABLES[0])
+    with (home / "config.toml").open("a", encoding="utf-8") as handle:
+        handle.write('\n[projects."' + str(weird).replace("\t", "\\t") + '"]\n')
+        handle.write('trust_level = "trusted"\n')
+
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _KeyedHost(legacy=_legacy_entry()), codex_home=home
+        ).preview_registration(_BINARY)
+    )
+
+    assert preview.legacy_kept_for == ()
+    assert preview.legacy_kept_unread == ("project_path_unsafe",)
+    assert preview.legacy_kept_unchecked is True
 
 
 def test_no_project_needing_the_legacy_key_leaves_the_migration_unchanged(

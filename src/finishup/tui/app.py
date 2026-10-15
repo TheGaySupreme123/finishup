@@ -939,10 +939,11 @@ class FinishUpTui(App[int]):
         if plan.legacy_registration_route_conflict:
             # The owned ``yoetz`` entry a project still needs stays beside ``finishup`` and
             # serves the whole home on its own review mode: never run both modes (#1073).
-            from finishup.cli.codex_connection import legacy_kept_disclosure
+            from finishup.cli.codex_connection import legacy_kept_disclosure, legacy_way_out
             from finishup.cli.host_connection import refusal_step
 
             reason = "connection_legacy_registration_route_kept"
+            home, project = Path(plan.codex_home), Path(plan.project_root)
             text = refusal_step(
                 reason,
                 {
@@ -950,8 +951,18 @@ class FinishUpTui(App[int]):
                     "route_profile": plan.route_profile,
                     **legacy_kept_disclosure(
                         plan.legacy_registration_kept_for,
-                        plan.legacy_registration_kept_unchecked,
+                        plan.legacy_registration_kept_unread,
+                        codex_home=home,
+                        way_out=legacy_way_out(
+                            plan.executable_path, home, project, plan.route_profile
+                        ),
                     ),
+                    "keep_route_arguments": legacy_way_out(
+                        plan.executable_path,
+                        home,
+                        project,
+                        plan.legacy_registration_route_profile,
+                    )["reconnect_arguments"],
                 },
             )
             self.say(

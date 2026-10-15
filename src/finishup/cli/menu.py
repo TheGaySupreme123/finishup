@@ -173,6 +173,12 @@ _KEPT_LEGACY_REGISTRATION_TEXT: Final = {
     "duplicate": "also registered under the earlier name yoetz (kept: a project's Codex "
     "settings still use it)",
 }
+_UNREAD_LEGACY_REGISTRATION_TEXT: Final = {
+    "legacy_only": "registered under the earlier name yoetz (kept: not every project of this "
+    "Codex home could be read)",
+    "duplicate": "also registered under the earlier name yoetz (kept: not every project of this "
+    "Codex home could be read)",
+}
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -219,10 +225,13 @@ async def _harness_summary() -> tuple[str, ...]:
                 state += f", isolation: {observation.isolation_binding}"
             words = _LEGACY_REGISTRATION_TEXT
             if observation.legacy_registration in _KEPT_LEGACY_REGISTRATION_TEXT:
-                # Setup keeps it while a project's Codex settings still need it (#1073).
-                kept, unchecked = legacy_registration_dependents(None)
-                if kept or unchecked:
+                # Setup keeps it while a project's Codex settings still need it, or while not
+                # every project of the home could be read (#1073): the words say which.
+                use = legacy_registration_dependents(None)
+                if use.needed_by:
                     words = _KEPT_LEGACY_REGISTRATION_TEXT
+                elif use.keeps:
+                    words = _UNREAD_LEGACY_REGISTRATION_TEXT
             legacy = words.get(observation.legacy_registration)
             if legacy is not None:
                 state += f", {legacy}"

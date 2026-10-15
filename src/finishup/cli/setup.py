@@ -996,7 +996,11 @@ def _emit_registration_preview(
     typer.echo("  2. Install structural plugin / hook sources under .agents/plugins/finishup")
     typer.echo("  3. Register the FinishUP MCP server with Codex")
     typer.echo("  MCP server name: finishup")
-    _emit_legacy_registration(getattr(mcp_preview, "legacy_registration", "none"))
+    _emit_legacy_registration(
+        getattr(mcp_preview, "legacy_registration", "none"),
+        mcp_preview if isinstance(mcp_preview, McpRegistrationPreview) else None,
+        executable=binary.executable_path,
+    )
     serve_command = getattr(mcp_preview, "serve_command", ())
     typer.echo(f"  Command: {shlex.join(serve_command)}")
     isolated_root = getattr(mcp_preview, "isolated_root", None)
@@ -1090,10 +1094,28 @@ def _emit_registration_preview(
         typer.echo("  the exact digest above. Any byte change suspends execution.")
 
 
-def _emit_legacy_registration(legacy_registration: object) -> None:
-    """Name what the approval does with an entry under the pre-rename key (ADR-048)."""
+def _emit_legacy_registration(
+    legacy_registration: object,
+    preview: McpRegistrationPreview | None = None,
+    *,
+    executable: str | None = None,
+) -> None:
+    """Name what the approval does with an entry under the pre-rename key (ADR-048).
 
-    if legacy_registration in {"legacy_only", "duplicate"}:
+    An owned entry a project may still need is kept beside ``finishup`` (#1073): the approval
+    says so, names who keeps it and why, and every way on.
+    """
+
+    if legacy_registration in {"legacy_only", "duplicate"} and (
+        preview is not None and (preview.legacy_kept_for or preview.legacy_kept_unchecked)
+    ):
+        typer.echo(
+            "  Legacy MCP server name: yoetz (FinishUP-owned from an earlier install; kept "
+            "beside finishup by this change)"
+        )
+        for line in _legacy_kept_text(preview, executable=executable):
+            typer.echo(f"    {line.strip()}")
+    elif legacy_registration in {"legacy_only", "duplicate"}:
         typer.echo(
             "  Legacy MCP server name: yoetz (FinishUP-owned from an earlier install; "
             "this change removes it)"
@@ -1462,19 +1484,86 @@ def _readiness_layers(
     }
 
 
-def _legacy_route_kept_step(preview: McpRegistrationPreview) -> str:
-    """The way on when a kept ``yoetz`` entry serves another review mode (#1073)."""
+def _legacy_kept_facts(
+    preview: McpRegistrationPreview,
+    *,
+    executable: str | None,
+    codex_home: Path | None = None,
+    project: Path | None = None,
+    low_level: bool = False,
+) -> dict[str, JsonValue]:
+    """The kept ``yoetz`` entry's per-project reasons and every way on (#1073 round 3)."""
 
-    from finishup.cli.codex_connection import legacy_kept_disclosure
+    from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
+    from finishup.cli.codex_connection import legacy_kept_disclosure, legacy_way_out
+
+    home = (codex_home if codex_home is not None else resolve_codex_home(None)).absolute()
+    return legacy_kept_disclosure(
+        preview.legacy_kept_for,
+        preview.legacy_kept_unread,
+        codex_home=home,
+        way_out=(
+            legacy_way_out(executable, home, project, preview.route_profile, low_level=low_level)
+            if executable is not None
+            else None
+        ),
+    )
+
+
+def _legacy_kept_text(
+    preview: McpRegistrationPreview,
+    *,
+    executable: str | None,
+    codex_home: Path | None = None,
+    project: Path | None = None,
+) -> tuple[str, ...]:
+    from finishup.cli.host_connection import legacy_kept_lines
+
+    return legacy_kept_lines(
+        _legacy_kept_facts(preview, executable=executable, codex_home=codex_home, project=project)
+    )
+
+
+def _legacy_route_kept_step(
+    preview: McpRegistrationPreview,
+    *,
+    executable: str,
+    codex_home: Path | None,
+    project: Path | None,
+    low_level: bool = False,
+) -> str:
+    """The way on when a kept ``yoetz`` entry serves another review mode (#1073).
+
+    Either mode stays reachable: the same command on the kept entry's mode, or the explicit
+    removal under both names and then the requested one. Every command carries the selected
+    executable, Codex home and project; the low-level path names its own rerun.
+    """
+
+    from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
+    from finishup.cli.codex_connection import legacy_way_out
     from finishup.cli.host_connection import refusal_step
 
+    home = (codex_home if codex_home is not None else resolve_codex_home(None)).absolute()
     return (
         refusal_step(
             "connection_legacy_registration_route_kept",
             {
                 "route_profile_before": preview.legacy_route_profile,
                 "route_profile": preview.route_profile,
-                **legacy_kept_disclosure(preview.legacy_kept_for, preview.legacy_kept_unchecked),
+                **_legacy_kept_facts(
+                    preview,
+                    executable=executable,
+                    codex_home=home,
+                    project=project,
+                    low_level=low_level,
+                ),
+                "keep_route_arguments": legacy_way_out(
+                    executable,
+                    home,
+                    project,
+                    preview.legacy_route_profile,
+                    low_level=low_level,
+                )["reconnect_arguments"],
             },
         )
         or ""
@@ -1661,7 +1750,12 @@ async def _codex_integration_step(
         return {
             "outcome": "failed",
             "reason": "connection_legacy_registration_route_kept",
-            "next_step": _legacy_route_kept_step(mcp_preview),
+            "next_step": _legacy_route_kept_step(
+                mcp_preview,
+                executable=binary.executable_path,
+                codex_home=bound_home,
+                project=Path(project.project_root),
+            ),
             "state": None,
             "plugin": {"outcome": "skipped", "presence": None},
             "plugin_activation": {"outcome": "skipped", "state": "unknown"},
@@ -2151,6 +2245,22 @@ async def _codex_integration_step(
         "skill": skill_report,
         "observation_consent": observation,
         "check_policy": check_policy,
+        # The earlier ``yoetz`` entry stayed beside ``finishup``: the summary names who keeps
+        # it, why, and every way on (#1073).
+        **(
+            {
+                "next_step": "\n".join(
+                    _legacy_kept_text(
+                        mcp_preview,
+                        executable=binary.executable_path,
+                        codex_home=bound_home,
+                        project=Path(project.project_root),
+                    )
+                )
+            }
+            if mcp_preview.legacy_kept_for or mcp_preview.legacy_kept_unchecked
+            else {}
+        ),
     }
 
 
@@ -4044,15 +4154,9 @@ async def integrate_mcp(
                     "inspected_codex_home": str(selected_home),
                     "isolated_root": preview.isolated_root,
                     "legacy_registration": preview.legacy_registration,
-                    # An owned ``yoetz`` entry kept beside ``finishup`` for these projects (#1073).
-                    **(
-                        {
-                            "legacy_registration_kept_for": list(preview.legacy_kept_for),
-                            "legacy_registration_kept_unchecked": preview.legacy_kept_unchecked,
-                        }
-                        if preview.legacy_kept_for or preview.legacy_kept_unchecked
-                        else {}
-                    ),
+                    # An owned ``yoetz`` entry kept beside ``finishup``: who keeps it, why, and
+                    # every way on (#1073).
+                    **_low_level_kept_report(preview, chosen.executable_path, selected_home),
                     "preview_digest": shown_digest,
                     "route_profile": preview.route_profile,
                     "route_profile_before": route_profile_before,
@@ -4070,6 +4174,11 @@ async def integrate_mcp(
             sentence = _route_change_sentence(route_change, preview.route_profile)
             if sentence is not None and not json_output:
                 typer.echo(sentence)
+            if not json_output and (preview.legacy_kept_for or preview.legacy_kept_unchecked):
+                for line in _legacy_kept_text(
+                    preview, executable=chosen.executable_path, codex_home=selected_home
+                ):
+                    typer.echo(line)
             return 0
         if preview_digest is not None and preview_digest != shown_digest:
             return _mcp_error_exit("preview_stale")
@@ -4078,7 +4187,16 @@ async def integrate_mcp(
         if "legacy_registration_route_kept" in preview.warnings:
             # The kept ``yoetz`` entry would go on serving another review mode (#1073).
             typer.echo("mcp_registration_legacy_registration_route_kept", err=True)
-            typer.echo(_legacy_route_kept_step(preview), err=True)
+            typer.echo(
+                _legacy_route_kept_step(
+                    preview,
+                    executable=chosen.executable_path,
+                    codex_home=selected_home,
+                    project=None,
+                    low_level=True,
+                ),
+                err=True,
+            )
             return 2
         if route_change and accept and preview_digest is None:
             # Other projects' review mode would change: only the exact preview may approve it.
@@ -4187,10 +4305,25 @@ async def integrate_mcp(
             "inspected_codex_home": str(selected_home),
             "state_after": result.state_after.value,
             "state_before": result.state_before.value,
+            **_low_level_kept_report(preview, chosen.executable_path, selected_home),
         },
         json_output=json_output,
     )
     return 0
+
+
+def _low_level_kept_report(
+    preview: McpRegistrationPreview, executable: str, codex_home: Path
+) -> dict[str, JsonValue]:
+    """The low-level install's kept ``yoetz`` facts, with its own continuations (#1073)."""
+
+    if not (preview.legacy_kept_for or preview.legacy_kept_unchecked):
+        return {}
+    from finishup.cli.host_connection import rendered_status
+
+    return rendered_status(
+        _legacy_kept_facts(preview, executable=executable, codex_home=codex_home, low_level=True)
+    )
 
 
 def _admission_cleanup_preview(project_root: Path | None) -> JsonValue:

@@ -178,7 +178,7 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
         *removal_warning,
         *_shared_summary(body),
         *_admission_summary(body),
-        *_legacy_kept_lines(body),
+        *legacy_kept_lines(body),
     )
 
 
@@ -377,6 +377,14 @@ def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
             f"Only {inspected} of {body.get('admission_other_projects_known')} projects this "
             "Codex home knows were checked; others may also use the registration, so it stays."
         )
+    unread = _unread_lines(body.get("admission_other_projects_unread"), body.get("config_root"))
+    if unread:
+        # Not read is never "nobody needs it": the registration stays, and the plan says why.
+        lines.append("The FinishUP MCP registration stays: other projects may also use it.")
+        lines.extend(unread)
+        way_out = _removal_way_out_line(body, kept_legacy=False)
+        if way_out is not None:
+            lines.append(way_out)
     return tuple(lines)
 
 
@@ -385,14 +393,7 @@ _PER_PROJECT_CONTINUATIONS = ("admission_other_projects", "legacy_registration_k
 
 
 def _rendered_disclosure(disclosure: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    rendered = dict(disclosure)
-    for key in _PER_PROJECT_CONTINUATIONS:
-        items = rendered.get(key)
-        if isinstance(items, list):
-            rendered[key] = [
-                _rendered_status(item) if isinstance(item, dict) else item for item in items
-            ]
-    return rendered
+    return _rendered_status(disclosure)
 
 
 def _rendered_status(status: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -405,11 +406,14 @@ def _rendered_status(status: dict[str, JsonValue]) -> dict[str, JsonValue]:
             rendered[key] = [
                 _rendered_status(item) if isinstance(item, dict) else item for item in items
             ]
-    arguments = rendered.get("next_arguments")
-    if not isinstance(arguments, list):
-        return rendered
-    rendered.pop("next_arguments")
-    rendered["next_command"] = continuation([str(item) for item in arguments])
+    # Every structural ``<name>_arguments`` continuation renders as ``<name>_command``.
+    for key in [name for name in rendered if name.endswith("_arguments")]:
+        arguments = rendered[key]
+        if isinstance(arguments, list):
+            rendered.pop(key)
+            rendered[key.removesuffix("_arguments") + "_command"] = continuation(
+                [str(item) for item in arguments]
+            )
     return rendered
 
 
@@ -477,7 +481,7 @@ def kept_pieces_steps(
         if step is not None:
             steps.append(step)
     else:
-        lines = _legacy_kept_lines(status)
+        lines = legacy_kept_lines(status)
         if lines:
             steps.append("\n".join(lines))
     return tuple(steps)
@@ -782,50 +786,131 @@ def _leftover_next_step(status: dict[str, JsonValue]) -> str | None:
     return " ".join(parts)
 
 
-def _legacy_kept_lines(body: Mapping[str, JsonValue]) -> tuple[str, ...]:
-    """The owned ``yoetz`` registration kept beside ``finishup``, and how each project releases it.
+# Why a project's .codex/config.toml could not be read safely, in words (closed tokens).
+_UNREADABLE_WORDS: dict[str, str] = {
+    "symlink": "a symlink",
+    "not_regular_file": "not a regular file",
+    "oversized": "over 64 KiB",
+    "unreadable": "it could not be opened",
+    "not_valid_toml": "not valid TOML",
+}
 
-    It stays while a project's Codex configuration still names that server without a transport
-    of its own (#1073); revoking those exact earlier-name approval tables, then connecting again,
-    finishes moving to FinishUP.
+
+def _command(body: Mapping[str, JsonValue], name: str) -> str | None:
+    """The continuation ``<name>_arguments`` names, rendered (or already rendered)."""
+
+    arguments = body.get(f"{name}_arguments")
+    if isinstance(arguments, list):
+        return continuation([str(item) for item in arguments])
+    rendered = body.get(f"{name}_command")
+    return rendered if isinstance(rendered, str) else None
+
+
+def _unread_lines(tokens: object, home: object) -> list[str]:
+    """What of a Codex home could not be read, and what makes it readable (#1073 round 3)."""
+
+    from finishup.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    where = str(home) if isinstance(home, str) and home else "the Codex home"
+    words = {
+        "user_config_unreadable": (
+            f"FinishUP could not read {where}/config.toml safely (a symlink, not a regular file, "
+            "over 1 MiB, or not valid TOML), so it cannot tell which projects use the "
+            "registration; make it a regular file you own, under 1 MiB, with valid TOML."
+        ),
+        "connected_projects_unreadable": (
+            "FinishUP could not read which projects it connected to this Codex home "
+            f"({where}/{CONNECTED_PROJECTS_FILE}); make that file owner-only again, or restore "
+            "it."
+        ),
+        "project_path_unsafe": (
+            f"A project path in {where}/config.toml contains a control character, so FinishUP "
+            "did not read that project; remove that trust entry if you no longer use the "
+            "project, or move the project to a plain path."
+        ),
+    }
+    named = [str(token) for token in cast(list[object], tokens)] if isinstance(tokens, list) else []
+    return [words[token] for token in named if token in words]
+
+
+def _removal_way_out_line(body: Mapping[str, JsonValue], *, kept_legacy: bool) -> str | None:
+    """The explicit home-wide removal as the owner's choice, and what it costs (#1073 round 3)."""
+
+    preview = _command(body, "mcp_removal_preview")
+    if preview is None:
+        return None
+    reconnect = _command(body, "reconnect")
+    names = "under both names (finishup and the earlier yoetz)" if kept_legacy else ""
+    return (
+        "Or, as your explicit choice, remove FinishUP's MCP registration from this Codex home"
+        + (f" {names}" if names else "")
+        + f": preview it with {preview}, then run that command again as `remove` with "
+        "`--accept --preview-digest <digest>` and the preview's digest"
+        + (f"; then connect again: {reconnect}" if reconnect is not None else "")
+        + ". Every project of this Codex home loses FinishUP until one connects again, and a "
+        "project whose Codex settings still name the removed server stops loading its Codex "
+        "configuration until those tables are removed (`setup status --host codex` in that "
+        "project names the step)."
+    )
+
+
+def legacy_kept_lines(body: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """The owned ``yoetz`` registration kept beside ``finishup``: why, and every way on.
+
+    Per project: the revoke when only exact earlier-name approval tables hold it, why its file
+    could not be read (and what makes it readable), or the edited tables to remove by hand. Then
+    what of the home itself could not be read, the reconnect that finishes the move (promised
+    after the revokes only when they are all that hold it), and the explicit home-wide removal
+    under both names with its cost (#1073).
     """
 
     kept = body.get("legacy_registration_kept_for")
+    items = [item for item in kept if isinstance(item, dict)] if isinstance(kept, list) else []
+    unread = body.get("legacy_registration_kept_unread")
     unchecked = body.get("legacy_registration_kept_unchecked") is True
-    if not (isinstance(kept, list) and kept) and not unchecked:
+    if not items and not unchecked:
         return ()
+    home = body.get("legacy_registration_codex_home")
+    where = str(home) if isinstance(home, str) and home else "the Codex home"
     lines = [
-        "The MCP registration under the earlier name yoetz stays beside finishup: the Codex "
-        "configuration of these projects still names that server without a transport of its own "
-        "(or could not be read), and removing it could stop Codex loading there:"
-        if isinstance(kept, list) and kept
-        else "The MCP registration under the earlier name yoetz stays beside finishup:"
+        "The MCP registration under the earlier name yoetz stays beside finishup, so Codex keeps "
+        "loading the projects that may still use it:"
     ]
-    for item in kept if isinstance(kept, list) else []:
-        if not isinstance(item, dict):
-            continue
-        lines.append(f"  {item.get('project_root')}")
-        arguments = item.get("next_arguments")
-        command = (
-            continuation([str(a) for a in arguments])
-            if isinstance(arguments, list)
-            else item.get("next_command")
-        )
-        if isinstance(command, str):
+    revokes_release_it = bool(items) and not unchecked
+    for item in items:
+        root = item.get("project_root")
+        command = _command(item, "next")
+        if command is not None:
             lines.append(
-                "    to finish moving to FinishUP, revoke its earlier-name approval entry, then "
-                "connect again: " + command
+                f"  {root}: its earlier-name approval entry needs it; revoke it: {command}"
+            )
+        elif item.get("dependence") == "unknown":
+            revokes_release_it = False
+            why = _UNREADABLE_WORDS.get(str(item.get("unreadable")), "it could not be read")
+            lines.append(
+                f"  {root}: FinishUP could not read its .codex/config.toml safely ({why}); make it "
+                "a regular file you own, under 64 KiB, with valid TOML, or remove this project's "
+                f"trust entry from {where}/config.toml if you no longer use it"
+            )
+        elif item.get("dependence") == "depends":
+            revokes_release_it = False
+            lines.append(
+                f"  {root}: its .codex/config.toml has [mcp_servers.yoetz] tables FinishUP did "
+                "not write (or that were edited); remove them yourself"
             )
         else:
-            lines.append(
-                "    remove the [mcp_servers.yoetz] tables from its .codex/config.toml yourself, "
-                "then connect again"
-            )
-    if unchecked:
-        lines.append(
-            "Not every project this Codex home knows was checked, so the registration under the "
-            "earlier name yoetz stays."
-        )
+            lines.append(f"  {root}: no longer names that server")
+    lines.extend(_unread_lines(unread, home))
+    if unchecked and not _unread_lines(unread, home):
+        lines.append("Not every project this Codex home knows could be read, so the entry stays.")
+    lines.append(
+        "After those revokes, connect again to finish moving to FinishUP."
+        if revokes_release_it
+        else "Once nothing above holds it, connect again to finish moving to FinishUP."
+    )
+    way_out = _removal_way_out_line(body, kept_legacy=True)
+    if way_out is not None:
+        lines.append(way_out)
     return tuple(lines)
 
 
@@ -868,10 +953,13 @@ def refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
                 "stay beside finishup for now (see below), and it serves every project of this "
                 f"Codex home with {modes.get(before, before)}; connecting with "
                 f"{modes.get(after, after)} would leave both review modes running side by side.",
-                *_legacy_kept_lines(status),
-                f"Or keep {modes.get(before, before)} for now: rerun the connect with "
-                f"--route-profile {before} (finishup setup run --host codex --route-profile "
-                f"{before}).",
+                *legacy_kept_lines(status),
+                f"Or keep {modes.get(before, before)} for now: "
+                + (
+                    _command(status, "keep_route")
+                    or f"rerun the same command with --route-profile {before}"
+                )
+                + ".",
             )
         )
     if reason == "connection_other_projects_need_registration":
@@ -893,6 +981,14 @@ def refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
                 "Codex home's config.toml, or disconnect without --remove-shared."
                 if partial
                 else "",
+                *_unread_lines(status.get("admission_other_projects_unread"), None),
+                (
+                    "So removing the registration for every project cannot be shown safe; "
+                    "disconnect without --remove-shared to keep it."
+                    if status.get("admission_other_projects_unread")
+                    else ""
+                ),
+                _removal_way_out_line(status, kept_legacy=False) or "",
             )
             if part
         )
@@ -1033,7 +1129,7 @@ def run_host_connection(
                 for step in (
                     _leftover_next_step(rendered),
                     _membership_status_step(rendered, selected, project),
-                    "\n".join(_legacy_kept_lines(rendered)) or None,
+                    "\n".join(legacy_kept_lines(rendered)) or None,
                 )
                 if step is not None
             ]

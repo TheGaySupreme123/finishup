@@ -297,9 +297,50 @@ async def test_wizard_stops_on_a_kept_yoetz_entry_serving_another_review_mode(
 
     assert report["outcome"] == "failed"
     assert report["reason"] == "connection_legacy_registration_route_kept"
-    assert "/work/a" in str(report["next_step"])
-    assert "--route-profile strict" in str(report["next_step"])
+    step = str(report["next_step"])
+    assert "/work/a" in step
+    selection = f"--host-path /opt/harness/bin/codex --host-config-root {home}"
+    assert f"setup run --host codex {selection} --project {project}" in step
+    assert "--route-profile strict" in step
+    assert "integrate codex mcp preview-remove" in step
+    assert "finishup setup run --host codex --route-profile" not in step
     assert not (project / ".agents").exists()
+
+
+def test_the_wizard_preview_names_a_kept_legacy_entry_and_who_keeps_it(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The interactive `finishup setup` approval and `integrate codex mcp install` said the earlier
+    entry is removed even when the change keeps it (#1073 round 3)."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+
+    dependent = tmp_path / "a"
+    (dependent / ".codex").mkdir(parents=True, mode=0o700)
+    (dependent / ".codex" / "config.toml").write_text(CODEX_LEGACY_ADMISSION_TABLES[0])
+    preview = McpRegistrationPreview(
+        HarnessId.CODEX,
+        McpRegistrationAction.REREGISTER,
+        McpRegistrationState.FINISHUP_OWNED,
+        ("legacy_registration_kept", "legacy_registration_owned"),
+        _DIGEST,
+        MCP_SERVE_COMMAND,
+        "policy",
+        None,
+        "legacy_only",
+        "policy",
+        (str(dependent),),
+        False,
+        "policy",
+    )
+
+    setup_cli._emit_registration_preview(_BINARY, preview)  # pyright: ignore[reportPrivateUsage]
+
+    out = capsys.readouterr().out
+    assert "this change removes it" not in out
+    assert "kept beside finishup" in out
+    assert str(dependent) in out
+    assert "--action revoke" in out
 
 
 async def test_a_launcher_only_reregistration_keeps_the_legacy_strict_mode(

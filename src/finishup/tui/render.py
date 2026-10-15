@@ -262,6 +262,9 @@ def render_integration_preview(plan: IntegrationPlan, width: int) -> tuple[str, 
     # trees, ADR-048): approval covers only what was shown, so they are named here too.
     for change in plan.replacements:
         lines.extend(_indent(wrap(f"~ {change}", body - 2), width=2))
+    # Why the earlier yoetz registration stays, per project, and every way on (#1073).
+    for note in plan.legacy_registration_kept_lines:
+        lines.extend(_indent(wrap(f"· {note.strip()}", body - 2), width=2))
     if plan.policy_ambiguous:
         lines.extend(
             _indent(

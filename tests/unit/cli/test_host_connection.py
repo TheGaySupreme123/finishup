@@ -1179,3 +1179,33 @@ def test_an_edited_finishup_table_beside_an_exact_yoetz_one_gives_no_wrong_comma
     assert "[mcp_servers.finishup] and [mcp_servers.yoetz] tables" in step
     assert "Remove those tables from that file yourself" in step
     assert "None" not in step
+
+
+def test_a_disconnect_kept_by_an_unread_input_says_why_and_names_the_way_out() -> None:
+    """The disconnect keeps the registration when an input cannot be read (round 3); the plan
+    says which, what makes it readable, and the explicit low-level removal."""
+
+    lines = "\n".join(
+        cli._admission_summary(  # pyright: ignore[reportPrivateUsage]
+            {
+                "action": "disconnect",
+                "executable": "/opt/codex",
+                "config_root": "/workspace/home",
+                "admission_other_projects_unread": ["connected_projects_unreadable"],
+                "mcp_removal_preview_arguments": [
+                    "integrate",
+                    "codex",
+                    "mcp",
+                    "preview-remove",
+                    "--codex-path",
+                    "/opt/codex",
+                    "--codex-home",
+                    "/workspace/home",
+                ],
+            }
+        )
+    )
+    assert "could not read which projects it connected to this Codex home" in lines
+    assert "/workspace/home/.yoetz-connected-projects.json" in lines
+    assert "integrate codex mcp preview-remove --codex-path /opt/codex" in lines
+    assert "your explicit choice" in lines
