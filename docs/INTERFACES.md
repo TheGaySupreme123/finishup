@@ -6837,7 +6837,10 @@ users) is non-empty, a non-member's disconnect finds another live recorded proje
 manifest or not), or membership is unknown; also for an already detached or never-connected
 project (`retained`, `shared_with` naming those projects, in the plan and the status, plus
 `membership_unknown`; post-apply status `configured: false`, `shared_registration_retained:
-true`). `other_members` returns `((), ())` only for a home that does not exist and raises
+true`). A disconnect that keeps the registration for other projects' own Codex configuration
+(`admission_other_projects`, or a scan stopped at its bound of 32) reports the same post-apply
+status: a project that is not connected reports `configured` only while its plan still removes the
+registration. `other_members` returns `((), ())` only for a home that does not exist and raises
 `IntegrationError` when membership cannot be read; callers treat that as unknown. A damaged
 membership witness (`host_projects.recorded_members`) names no one rather than raising. When the
 kept pieces serve the dangling binding's project whose directory is missing right now,

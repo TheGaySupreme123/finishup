@@ -566,7 +566,10 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    disconnect itself while its directory is gone (triage, 2026-10-15). `setup status --host codex`
    uses the same split: only a connected project (activation `active`) reports `enabled` and
    `configured`; for a detached or never-connected one the shared registration is
-   `shared_registration_retained`. Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
+   `shared_registration_retained`. The disconnect status follows it whatever kept the registration
+   (other projects' use of the shared pieces, another project's own Codex configuration, or a scan
+   stopped at its bound): a project that is not connected reports `configured` only while its plan
+   still removes the registration. Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
    that stopped at its bound of 32, keep them on an ordinary disconnect. A Codex disconnect that
    would leave possible users but no verified member to carry the binding refuses before any
    change (`remove_refused` with `conflict: membership_unverified`; CLI reason

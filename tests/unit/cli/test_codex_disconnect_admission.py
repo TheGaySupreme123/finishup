@@ -359,6 +359,96 @@ def test_disconnect_keeps_registration_another_project_uses(
 
     assert fake.registered
     assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+    # The registration stays for another project's Codex configuration, not as this project's
+    # (#1058 review round 2 P1: reporting it as configured invited a re-run).
+    status = plan.status()
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
+
+
+def _deactivating_removal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connected project's removal plan: `remove` until apply, `already_absent` after."""
+
+    state = {"outcome": RemovalOutcome.REMOVE}
+
+    def preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            preview_digest=DIGEST,
+            outcome=state["outcome"],
+            possible_users=(),
+            shared_with=(),
+            rebind_to=None,
+            unserved_members=(),
+            keeps_shared=False,
+            missing_members=(),
+            legacy_removed_block="",
+            legacy_cache_versions=(),
+        )
+
+    def apply(*_args: object, **_kwargs: object) -> None:
+        state["outcome"] = RemovalOutcome.ALREADY_ABSENT
+
+    monkeypatch.setattr(codex_connection, "preview_removal", preview)
+    monkeypatch.setattr(codex_connection, "apply_removal", apply)
+
+
+def test_a_deactivated_project_does_not_report_a_registration_kept_for_another(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A connected project disconnects while another project's approval table needs the
+    transport: after apply it is neither enabled nor configured, and says the registration was
+    kept for others."""
+
+    home, project, installation = _layout(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir(mode=0o700)
+    _grant(other)
+    (home / "config.toml").write_text(
+        f'[projects."{project}"]\ntrust_level = "trusted"\n\n'
+        f'[projects."{other}"]\ntrust_level = "trusted"\n'
+    )
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+    _deactivating_removal(monkeypatch)
+
+    plan = _plan(installation, project)
+    assert "deactivate_plugin" in _items(plan.body["changes"])
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    plan.apply_reviewed_steps()
+
+    status = plan.status()
+    assert fake.registered
+    assert status["enabled"] is False
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
+
+
+def test_a_registration_kept_by_the_scan_bound_is_not_reported_as_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The only connected project in a home whose trust list exceeds the 32-project scan: the
+    unread projects keep the registration, which is then not this project's configuration."""
+
+    home, project, installation = _layout(tmp_path)
+    rows = [f'[projects."{project}"]\ntrust_level = "trusted"\n']
+    for index in range(40):
+        directory = tmp_path / f"p{index:02d}"
+        directory.mkdir(mode=0o700)
+        rows.append(f'[projects."{directory}"]\ntrust_level = "trusted"\n')
+    (home / "config.toml").write_text("\n".join(rows))
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+    _deactivating_removal(monkeypatch)
+
+    plan = _plan(installation, project)
+    assert "other_projects_partially_checked" in _items(plan.body["warnings"])
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    plan.apply_reviewed_steps()
+
+    status = plan.status()
+    assert fake.registered
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
 
 
 def test_plugin_only_or_own_transport_projects_do_not_hold_the_registration(
@@ -426,6 +516,9 @@ def test_incomplete_scan_keeps_the_transport(
     plan.apply_reviewed_steps()
     assert fake.registered
     assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+    status = plan.status()
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
 
     with pytest.raises(ConnectionError, match="connection_other_projects_need_registration"):
         codex_connection.prepare_codex_connection(

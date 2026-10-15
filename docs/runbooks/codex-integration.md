@@ -159,7 +159,9 @@ binding whose project lost its manifest makes every `codex plugin …` command i
   disconnect ... --remove-shared` preview, since that project cannot disconnect itself while its
   directory is gone. A detached or
   never-connected project reports `configured: false` and `enabled: false` (with
-  `shared_registration_retained: true`) in both `setup status` and the disconnect status.
+  `shared_registration_retained: true`) in both `setup status` and the disconnect status. So does a
+  project whose disconnect kept the registration for another project's own Codex configuration
+  (`admission_other_projects`) or because not every project the home knows was checked.
 - With the `[marketplaces.finishup]` binding removed by hand, disconnecting one of two connected
   projects detaches it and keeps the plugin table, cache and record for the other.
 - Only a connected project may move or remove a binding whose anchor lost its manifest; a

@@ -549,17 +549,21 @@ def prepare_codex_connection(
             # stays visible without counting as configuration (ADR-048).
             registered = observed.state_before is McpRegistrationState.FINISHUP_OWNED
             connected = current.outcome is not RemovalOutcome.ALREADY_ABSENT
+            # Kept for other projects: their use of the shared pieces, or their own Codex
+            # configuration (an approval table that needs the transport, or a scan that stopped at
+            # its bound) (#1058).
+            kept_for_others = shared_kept or keep_transport
             return {
                 "installed": None,
                 # A detached project still sees the home's shared plugin; it is not connected.
                 "enabled": current.outcome is RemovalOutcome.REMOVE,
-                # The shared registration other projects keep is not this project's
-                # configuration (#1058 review round 2 P1: reporting it invited a re-run); one
-                # nobody else keeps is, as it was before several projects shared a home.
-                "configured": registered and (connected or not shared_kept),
+                # The registration other projects keep is not this project's configuration
+                # (#1058 review round 2 P1: reporting it invited a re-run). One this disconnect
+                # removes is, until it is gone, as it was before several projects shared a home.
+                "configured": registered and (connected or unregister_planned),
                 **(
                     {"shared_registration_retained": True}
-                    if registered and not connected and shared_kept
+                    if registered and not connected and kept_for_others
                     else {}
                 ),
                 # Kept for these projects (also when this disconnect changed nothing).
