@@ -182,6 +182,8 @@ __all__ = [
     "render_receipt_human",
     "resolved_finding_ids_for_render",
     "unresolved_findings_for_render",
+    "COORDINATOR_FAILURE_LIMITATION",
+    "limitations_name_coordinator_failure",
     "semantic_coverage_gap_code",
     "recorded_semantic_outcome_gap_code",
     "check_time_change_gap_sentence",
@@ -233,6 +235,13 @@ _NO_OBLIGATIONS_REASON_VALUES: Final = frozenset(
 # semantic_review_not_requested marks every local-only check (AI-powered review never attempted).
 SEMANTIC_REVIEW_NOT_CONFIGURED_GAP: Final = "semantic_review_not_configured"
 SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP: Final = "semantic_relevance_review_not_run"
+# Issue #1077: a coordinator failure shares that gap (the review did not complete) and the
+# limitations section names the fault. The sentence is fixed; renderers match it and never
+# echo a caller-supplied reason.
+COORDINATOR_FAILURE_LIMITATION: Final = (
+    "AI-powered review failed inside FinishUP (coordinator_failure). "
+    "This is a fault in FinishUP, not in the work under review or the provider."
+)
 # The review ran, but the inference channel withheld categories the review profile
 # selected, so it judged the work without material it was configured to receive.
 SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP: Final = "semantic_review_context_withheld"
@@ -3041,6 +3050,39 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
     return text
 
 
+def limitations_name_coordinator_failure(sections: object) -> bool:
+    """Whether a limitations section carries the fixed coordinator-failure sentence.
+
+    Accepts receipt sections or their JSON objects. Returns no text from the section.
+    """
+
+    if not isinstance(sections, (list, tuple)):
+        return False
+    for section in cast(Sequence[object], sections):
+        body: object
+        if type(section) is ReceiptSection:
+            body = section.body
+        elif _is_actual_mapping(section):
+            body = cast(Mapping[object, object], section).get("body")
+        else:
+            continue
+        if type(body) is str and COORDINATOR_FAILURE_LIMITATION in body:
+            return True
+    return False
+
+
+def _compact_not_run_clause(document: ReceiptDocument, clause: str) -> str:
+    """Name a coordinator failure in the compact sentence when the limitations section does."""
+
+    if not limitations_name_coordinator_failure(document.sections):
+        return clause
+    return clause.replace(
+        "AI-powered relevance review was not run",
+        "AI-powered review failed inside FinishUP (coordinator_failure)",
+        1,
+    )
+
+
 def render_receipt_compact(document: ReceiptDocument) -> str:
     """Render the bounded, newline-free compact receipt sentence frozen by v0.1 fixtures."""
 
@@ -3096,15 +3138,20 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
             count = len(unresolved)
             noun = "finding" if count == 1 else "findings"
             verb = "remains" if count == 1 else "remain"
-            return (
+            return _compact_not_run_clause(
+                document,
                 prefix
-                + f"{count} unresolved {noun} {verb}; AI-powered relevance review was not run."
+                + f"{count} unresolved {noun} {verb}; AI-powered relevance review was not run.",
             )
         if document.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
-            return prefix + "coverage is insufficient; AI-powered relevance review was not run."
-        return (
+            return _compact_not_run_clause(
+                document,
+                prefix + "coverage is insufficient; AI-powered relevance review was not run.",
+            )
+        return _compact_not_run_clause(
+            document,
             prefix + "no unresolved local issue was found in the published record; "
-            "AI-powered relevance review was not run."
+            "AI-powered relevance review was not run.",
         )
     if {
         "import_source_range_not_universal",

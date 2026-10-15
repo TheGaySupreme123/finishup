@@ -203,6 +203,19 @@ content-returning read needed its own decision. This is that decision, for exact
    cut is disclosed as `check_time_change_truncated` (issue #983). The shown-file record counts the
    change bytes the carried parts hold, never a part count, so it stays exact whatever part size a
    narrowed selection chose. `_check_time_change_reservation` is the single seam for this share.
+   Amendment (issue #1079): when the captured change does not fit that excerpt budget and its
+   files are not all the same kind, parts are admitted so a file section that changes a decision
+   (`if`, `return`, `raise`, and the same shape) comes before a section that only changes
+   comments, imports or license text. The rest of the decision's own section is the rule that
+   branch implements, and it is still sent from the section start, so the shown-file record stays
+   a run from that start. A one-file change, a change whose sections are the same kind, and a
+   change that fits the budget keep the historical leading prefix, byte-identical. The first part
+   of a reordered change carries one fixed line saying decision-changing sections are shown ahead
+   of boilerplate and that sections which do not fit are not shown; it names no path. Bytes of a
+   part that are not a prefix of the stored change are not counted as leading bytes. They are
+   reported with the served intervals, so a file shown out of prefix order is still recorded, and
+   a file that was not carried is absent. `check_time_change_truncated` remains the disclosure
+   that something was left out. Ceilings are unchanged.
    Inside the change, files are ordered by what the task delivers, not by path (tb4n2 R7, issue
    #1016): files at or under a requested `role: output` item come first (then requested files with
    no role, an `obligation_published` 1.0.0 deliverable), then files whose rendered section is at
@@ -528,3 +541,17 @@ produced.
 PR CI's conda-image smoke (`scripts/ci/service_image_smoke.sh`) runs the real Git 2.25 there:
 ready status, `start` and a deterministic check whose change capture must succeed, inside a Git
 repository.
+
+## Amendment (issue #1077): a dropped synthetic excerpt names its linked subjects
+
+A check-time change part and a current-file section an in-check follow-up serves both use the
+synthetic source ref `check-time-change`. That token is a valid excerpt source and is not a ledger
+subject. `ReviewOmission` still accepts only ledger subject ids. When selection or the aggregate
+case bound drops one of those excerpts, the omission is recorded against each valid linked subject
+(the edit the section answers, or the change's claims, obligations, or plan) with the same category
+and `not_selected` reason. `content_unselected` remains. No linked ledger subject means no omission
+row and no `coordinator_failure`. Subject validation is not relaxed, and nothing new is sent.
+
+A follow-up whose packet adds no part the earlier packets lacked is not dispatched. The check keeps
+the completed `insufficient_packet` review. A real `coordinator_failure` still fails the check; the
+receipt limitations section names that fault inside FinishUP in a fixed sentence on every rendering.

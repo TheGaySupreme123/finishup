@@ -1224,3 +1224,40 @@ retry. Only `outcome_unknown` keeps the provider identity. The coordinator also 
 candidate built for a review-context profile that is no longer in force (`scope_mismatch`); the
 next admission rebuilds it from the current profile. The gateway's own consume fence for a switch
 after authorization is unchanged and not re-tested here (the provider gateway is faked).
+
+### Observed command output in a verification follow-up (2026-10-15, issue #1079)
+
+Maintainer acknowledgement: auto-supply of captured verification output is approved for this
+design-gated privacy change, and only on the terms below.
+
+When an AI-powered review returns `missing_for_assessment` for `verification_output`, a follow-up
+packet may include hook-captured output of a command the named targets actually ran. The bytes are
+the newest run of that command. They travel only as a repository excerpt, only when the effective
+review selection would already send repository excerpts, only through the existing minimization,
+redaction, secret scan and category withhold, and only inside the existing per-excerpt and total
+excerpt limits. This does not widen consent, add authority, or send anything the policy would not
+already allow as a repository excerpt. Private sends nothing. Output of a command the targets do
+not name is never included. Secret-like command output still never appears. The packet labels the
+excerpt as observed capture, not an agent-published result. Hook capture still does not count as
+the agent having supplied the missing item. A command recorded without a run key
+(`omitted:structural`) is not auto-supplied.
+
+### Resolved criterion, shown as one question (2026-10-15, issue #1079)
+
+A resolved obligation's packet item gains `resolved_basis`: the result refs its resolution
+already cites, the newest hook-captured verification refs of those results, and closed
+`missing_input` tokens when either is not readable. The criterion remains the obligation text
+in that same item. The basis copies no summary, command, or path, and it does not add a
+category or raise a ceiling. A channel that withholds obligation text withholds the basis with
+it. Private sends nothing.
+
+### Published answers in the next packet (2026-10-15, issue #1079)
+
+When the agent publishes material that answers a still-pending `missing_for_assessment` item, the
+next review packet carries that material inside the existing excerpt budgets. A result summary is
+added only when the effective selection already allows an evidence or test excerpt, only for a
+result `supplied_since` already counts (agent-published, tied to the named target), and only up to
+the existing per-excerpt and total limits. It is an evidence excerpt, the category a failure
+summary already uses. It does not widen consent, add a category, or raise a ceiling. A summary
+that does not fit is omitted and the omission is reported. Private sends nothing. Output the
+request does not name is not added.

@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Final, cast
 
 from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
 
 __all__ = [
     "FINISHUP_LIMIT_MISSING_TEXT",
+    "MISSING_SUPPLY_SENTENCE",
     "has_agent_suppliable_missing",
+    "publish_exactly",
     "has_finishup_limit_missing",
     "render_missing_for_assessment_lines",
     "render_missing_for_assessment_next",
@@ -288,16 +291,52 @@ def has_agent_suppliable_missing(items: object) -> bool:
     return any(availability == "agent_suppliable" for _, availability, _ in _missing_rows(items))
 
 
+# The same sentence as the operating card, the receipt topic and the coverage page (issue #1079).
+MISSING_SUPPLY_SENTENCE: Final = (
+    "If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish "
+    "exactly that item once, linked to its target, then `check` again. If it is already "
+    "supplied, or it is a packet, type or authority limit, go to the receipt and state that "
+    "specific limit."
+)
+# One closed instruction per kind: what record answers it. No task content, no invented command.
+_PUBLISH_EXACTLY: Final = MappingProxyType(
+    {
+        "command_identity": "Publish the action's exact command, linked to the target.",
+        "current_diff_for_path": (
+            "Publish evidence whose reference is that path, or one git diff result covering it, "
+            "linked to the target. Do not stage an untracked file."
+        ),
+        "other": "Publish evidence whose reference is the named ref, linked to the target.",
+        "plan_or_claim_text": (
+            "Publish one plan_revised, or a claim_recorded correction that supersedes the named "
+            "claim, linked to the target."
+        ),
+        "prior_finding_context": "Publish one respond for that finding, linked to the target.",
+        "task_statement": (
+            "Publish one plan_revised whose source_refs cite the start event, linked to the target."
+        ),
+        "verification_output": (
+            "Publish one result_recorded of that target whose summary is the command output, "
+            "with its evidence_refs, linked to the target."
+        ),
+    }
+)
+
+
+def publish_exactly(kind: str) -> str:
+    """The record to publish for one ``agent_suppliable`` kind, or empty when the kind is closed."""
+
+    if type(kind) is not str:
+        return ""
+    return _PUBLISH_EXACTLY.get(kind, "")
+
+
 def render_missing_for_assessment_next(items: object) -> str:
     """Return the authoritative continuation for actionable review-input gaps, if any."""
 
     if not has_agent_suppliable_missing(items):
         return ""
-    return (
-        "Overall next: supply the named agent-suppliable review input as new records tied to "
-        "the named ref before requesting an ordinary receipt. Never change your work to fit "
-        "the reviewer."
-    )
+    return "Overall next: " + MISSING_SUPPLY_SENTENCE
 
 
 def has_finishup_limit_missing(items: object) -> bool:
@@ -338,7 +377,12 @@ def render_missing_for_assessment_lines(
             if include_refs and refs
             else (f"{len(refs)} target refs" if refs else "no packet ref")
         )
-        lines.append(f"- {kind} ({target}): {availability}")
+        line = f"- {kind} ({target}): {availability}"
+        if availability == "agent_suppliable":
+            instruction = publish_exactly(kind)
+            if instruction:
+                line = f"{line}. {instruction}"
+        lines.append(line)
     if has_finishup_limit_missing(items):
         lines.append(FINISHUP_LIMIT_MISSING_TEXT)
     next_step = render_missing_for_assessment_next(items)

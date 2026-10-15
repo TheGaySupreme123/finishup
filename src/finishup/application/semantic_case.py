@@ -25,6 +25,7 @@ from finishup.application.check import (
 )
 from finishup.application.missing_for_assessment import (
     CHECK_TIME_CHANGE_SOURCE_REF,
+    OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
     ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
@@ -830,17 +831,6 @@ def _check_time_change_part_limit(selection: ReviewSelectionPolicy) -> int:
     )
 
 
-def _check_time_change_parts(text: bytes, part_limit: int) -> tuple[str, ...]:
-    """Split the rendered change into self-describing parts, preferring line boundaries."""
-
-    chunks = _check_time_change_chunks(text, part_limit)
-    count = len(chunks)
-    return tuple(
-        _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=count) + chunk.decode("utf-8")
-        for index, chunk in enumerate(chunks)
-    )
-
-
 def _check_time_change_chunks(text: bytes, part_limit: int) -> tuple[bytes, ...]:
     """The raw byte slices of ``text`` each part carries, in order; they concatenate to ``text``."""
 
@@ -1008,6 +998,19 @@ def _check_time_change_cut(rest: bytes, chunk_limit: int) -> int:
     return cut
 
 
+def _check_time_change_label_body(part: str) -> tuple[str, str]:
+    """Leading FinishUP label lines of one part, and the change body after them."""
+
+    labels: list[str] = []
+    rest = part
+    while rest.startswith("[FinishUP"):
+        line, separator, rest = rest.partition("\n")
+        if not separator:
+            break
+        labels.append(line)
+    return "\n".join(labels), rest
+
+
 def _check_time_change_cut_part(
     part: str, index: int, count: int, room: int
 ) -> tuple[str, bool] | None:
@@ -1015,29 +1018,62 @@ def _check_time_change_cut_part(
 
     The marker line is replaced and the change bytes are cut on a line end where one lies in the
     second half of the room, so the part still starts exactly where the uncut part starts and the
-    shown-file record counts exactly the bytes it carries. The flag says the part was cut.
+    shown-file record counts exactly the bytes it carries. A fixed decisive-section note on the
+    first part is kept. The flag says the part was cut.
     """
 
-    _, _, chunk = part.partition("\n")
-    raw = chunk.encode("utf-8")
+    labels, body = _check_time_change_label_body(part)
+    raw = body.encode("utf-8")
+    note = ""
+    for line in labels.split("\n"):
+        if line.startswith("[FinishUP:"):
+            note = line + "\n"
+            break
     cut_marker = _CHECK_TIME_CHANGE_CUT_MARKER.format(index=index, count=count)
-    chunk_limit = room - len(cut_marker.encode("ascii"))
+    prefix = cut_marker + note
+    chunk_limit = room - len(prefix.encode("ascii"))
     if chunk_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
         return None
     if len(raw) <= chunk_limit:
         return part, False
-    return cut_marker + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
+    return prefix + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
 
 
 def _check_time_change_part_chunk_bytes(content: bytes) -> int:
-    """The change bytes one part item carries: everything after its marker line."""
+    """The change bytes one part item carries, after every leading FinishUP label line.
 
-    return len(content) - (content.index(b"\n") + 1)
+    A part is one marker line plus the change bytes. A change that does not fit may add one
+    fixed label on its first part (the decisive-section note). Agent text cannot forge that
+    prefix: captured lines that look like a label are neutralised before they are stored.
+    """
+
+    rest = content
+    while rest.startswith(b"[FinishUP"):
+        newline = rest.find(b"\n")
+        if newline < 0:
+            return 0
+        rest = rest[newline + 1 :]
+    return len(rest)
 
 
 _CHECK_TIME_CHANGE_FILE_START: Final = re.compile(rb"^diff --git ", re.MULTILINE)
 _CHECK_TIME_CHANGE_BINARY: Final = re.compile(rb"^Binary files ", re.MULTILINE)
 _CHECK_TIME_CHANGE_DELETED: Final = re.compile(rb"^deleted file mode ", re.MULTILINE)
+# Issue #1079 item 2c. Fixed text, no path: when the change does not fit, file sections that
+# change a decision are admitted before boilerplate. The note rides the first part only.
+_DECISIVE_PREFERENCE_NOTE: Final = (
+    "[FinishUP: decision-changing sections are shown ahead of boilerplate; "
+    "sections that do not fit are not shown]\n"
+)
+_DECISION_LINE: Final = re.compile(
+    rb"^(?:if|elif|else|return|raise|assert|throw|catch|except|unless|switch|match|case)\b"
+    rb"|\bif\s*\("
+    rb"|\belse\s*:"
+)
+_BOILERPLATE_LINE: Final = re.compile(
+    rb"^(?:import|from|using|require|include|use)\b"
+    rb"|^(?:#|//|/\*|\*|--|<!--)"
+)
 # The markers capture-time redaction leaves in the stored change: a concrete credential shape
 # reads ``[REDACTED]``, a value that only looks like one the self-describing placeholder (tb4n5).
 # Both are withheld spans; every count and view below treats them alike. A change stored before
@@ -1046,6 +1082,168 @@ _REDACTION_MARKERS: Final = (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER)
 _CHECK_TIME_CHANGE_HUNK: Final = re.compile(rb"^@@ [^\n]*", re.MULTILINE)
 # Frozen legacy identifier (ADR-048): domain separator inside stored digests.
 _VIEW_DOMAIN: Final = b"yoetz/check-change-view/v1\x00"
+
+
+def _file_section_bounds(text: bytes) -> tuple[tuple[int, int], ...]:
+    """``(start, end)`` of each ``diff --git`` section, in file order."""
+
+    starts = [match.start() for match in _CHECK_TIME_CHANGE_FILE_START.finditer(text)]
+    return tuple(
+        (start, starts[index + 1] if index + 1 < len(starts) else len(text))
+        for index, start in enumerate(starts)
+    )
+
+
+def _changed_code_body(line: bytes) -> bytes | None:
+    """The code of one added or removed diff line, without the ``+``/``-`` prefix."""
+
+    if line.startswith((b"+++", b"---")) or not line.startswith((b"+", b"-")):
+        return None
+    return line[1:].strip()
+
+
+def _boilerplate_body(body: bytes) -> bool:
+    """A changed line that is blank, a comment, an import, or a license notice."""
+
+    if not body:
+        return True
+    lowered = body.lower()
+    if (
+        b"copyright" in lowered
+        or b"license" in lowered
+        or b"all rights reserved" in lowered
+        or b"spdx-" in lowered
+    ):
+        return True
+    return _BOILERPLATE_LINE.match(body) is not None
+
+
+def _section_rank(section: bytes) -> int:
+    """0 when the section changes a decision, 1 for other code, 2 for boilerplate only.
+
+    A decision is a changed line that starts with a branch or result keyword (``if``,
+    ``return``, ``raise``, and the same shape in other languages), or an ``if (`` / ``else:``
+    form. The rest of that section is the rule the branch implements, so the whole section is
+    kept from its start. Comments, imports and license text do not count.
+    """
+
+    rank = 2
+    for line in section.splitlines():
+        body = _changed_code_body(line)
+        if body is None or _boilerplate_body(body):
+            continue
+        if _DECISION_LINE.search(body) is not None:
+            return 0
+        rank = 1
+    return rank
+
+
+def _decisive_section_ranges(text: bytes) -> tuple[tuple[int, int], ...]:
+    """File sections a tight packet should admit, decision first, preamble last."""
+
+    sections = _file_section_bounds(text)
+    ranked = sorted(
+        (
+            (_section_rank(text[start:end]), order, start, end)
+            for order, (start, end) in enumerate(sections)
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    ranges = [(start, end) for _rank, _order, start, end in ranked]
+    if sections and sections[0][0] > 0:
+        ranges.append((0, sections[0][0]))
+    return tuple(ranges)
+
+
+def _prefer_decisive_sections(
+    text: bytes, linear_parts: Sequence[str], selection: ReviewSelectionPolicy
+) -> bool:
+    """Whether admitting the linear prefix would drop a decision behind boilerplate.
+
+    One file stays a leading prefix: the shown-file record can describe a file only as a run
+    from that file's start, and a single section has nothing to reorder. Sections of equal
+    rank stay in capture order. A change that fits the recipe's excerpt count and byte budget
+    is left in order so a packet that carries every byte stays byte-identical.
+    """
+
+    sections = _file_section_bounds(text)
+    if len(sections) < 2 or not linear_parts:
+        return False
+    if len({_section_rank(text[start:end]) for start, end in sections}) < 2:
+        return False
+    part_bytes = sum(len(part.encode("utf-8")) for part in linear_parts)
+    return (
+        len(linear_parts) > selection.max_excerpts or part_bytes > selection.max_total_excerpt_bytes
+    )
+
+
+def _chunks_with_first_limit(blob: bytes, first_limit: int, later_limit: int) -> tuple[bytes, ...]:
+    """``blob`` in line-bounded chunks; only the first chunk uses ``first_limit``."""
+
+    if not blob or first_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
+        return _line_chunks(blob, later_limit)
+    if len(blob) <= first_limit:
+        return (blob,)
+    cut = _check_time_change_cut(blob, first_limit)
+    head = blob[:cut]
+    return (head, *_line_chunks(blob[cut:], later_limit))
+
+
+def _check_time_change_offer(
+    text: bytes, selection: ReviewSelectionPolicy
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """Change parts and the original offset of each part's first change byte.
+
+    The linear offer is the historical prefix. When the change does not fit and its files are
+    not all the same kind, parts are rebuilt so a section that changes a decision precedes
+    boilerplate. Offsets are into ``text``, never into the reordered part stream, so the
+    shown-file record names the files that were actually carried.
+    """
+
+    part_limit = _check_time_change_part_limit(selection)
+    chunks = _check_time_change_chunks(text, part_limit)
+    if not chunks:
+        return (), ()
+    count = len(chunks)
+    linear_parts = tuple(
+        _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=count) + chunk.decode("utf-8")
+        for index, chunk in enumerate(chunks)
+    )
+    if not _prefer_decisive_sections(text, linear_parts, selection):
+        offsets: list[int] = []
+        cursor = 0
+        for chunk in chunks:
+            offsets.append(cursor)
+            cursor += len(chunk)
+        return linear_parts, tuple(offsets)
+
+    marker_room = len(_CHECK_TIME_CHANGE_MARKER.format(index=999, count=999).encode("ascii"))
+    body_limit = part_limit - marker_room
+    note = _DECISIVE_PREFERENCE_NOTE
+    note_room = len(note.encode("ascii"))
+    use_note = body_limit - note_room >= _CHECK_TIME_CHANGE_MIN_CHUNK
+    first_limit = body_limit - note_room if use_note else body_limit
+    pieces: list[tuple[int, bytes]] = []
+    for index, (start, end) in enumerate(_decisive_section_ranges(text)):
+        blob = text[start:end]
+        ranged = (
+            _chunks_with_first_limit(blob, first_limit, body_limit)
+            if index == 0 and use_note
+            else _line_chunks(blob, body_limit)
+        )
+        offset = start
+        for chunk in ranged:
+            pieces.append((offset, chunk))
+            offset += len(chunk)
+    if not pieces:
+        return (), ()
+    total = len(pieces)
+    parts: list[str] = []
+    for index, (_offset, chunk) in enumerate(pieces):
+        marker = _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=total)
+        prefix = marker + (note if index == 0 and use_note else "")
+        parts.append(prefix + chunk.decode("utf-8"))
+    return tuple(parts), tuple(offset for offset, _chunk in pieces)
 
 
 def _redaction_marker_offsets(text: bytes, start: int, visible_end: int, end: int) -> list[int]:
@@ -2125,6 +2323,50 @@ def _omit(
     )
 
 
+def _omission_subject_refs(source_ref: str, linked: Sequence[str]) -> tuple[str, ...]:
+    """Ledger subjects a dropped excerpt may name (issue #1077).
+
+    A check-time change excerpt's own source is the synthetic ``check-time-change`` token.
+    ``ReviewOmission`` accepts only ledger subject ids, so a dropped synthetic excerpt is
+    disclosed against the valid linked subjects it answers. A recorded source keeps its own ref.
+    Subject validation itself is unchanged.
+    """
+
+    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+        return (source_ref,)
+    seen: list[str] = []
+    for ref in linked:
+        if type(ref) is str and ref not in seen:
+            seen.append(ref)
+    return tuple(sorted(seen, key=str.encode))
+
+
+def _append_omission(
+    omissions: list[ReviewOmission],
+    source_ref: str,
+    linked: Sequence[str],
+    category: DataCategory,
+    source_kind: _SourceKind,
+    reason: _OmissionReason,
+) -> None:
+    """Record one omission per subject, mapping a synthetic excerpt onto its linked subjects.
+
+    A linked token that is not a ledger subject is skipped. The ``content_unselected`` gap the
+    caller already recorded stays the disclosure when no valid subject remains. A recorded
+    source still raises if its own ref is not a ledger subject.
+    """
+
+    subjects = _omission_subject_refs(source_ref, linked)
+    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+        omissions.append(_omit(subjects[0], category, source_kind, reason))
+        return
+    for subject in subjects:
+        try:
+            omissions.append(_omit(subject, category, source_kind, reason))
+        except ValueError:
+            continue
+
+
 def _fit_excerpts_within_case_bound(
     items: Sequence[SemanticCaseItem],
     targeted: list[TargetedExcerptRef],
@@ -2156,7 +2398,14 @@ def _fit_excerpts_within_case_bound(
         item = by_id[excerpt.excerpt_item_id]
         case_bytes -= item.content_bytes
         dropped_refs.add(item.source_ref)
-        omissions.append(_omit(item.source_ref, item.category, excerpt.source_kind, "not_selected"))
+        _append_omission(
+            omissions,
+            item.source_ref,
+            item.linked_subject_refs,
+            item.category,
+            excerpt.source_kind,
+            "not_selected",
+        )
     capture_gaps.add("content_unselected")
     if any(by_id[excerpt.excerpt_item_id].source_ref in dropped_refs for excerpt in targeted):
         # Later parts of a split excerpt were cut while its earlier parts stay.
@@ -2807,6 +3056,14 @@ _OBSERVED_IMAGE_NOTICE_MARKER: Final = (
     "[FinishUP: an image was observed (evidence {ref}); "
     "it was not sent and its content is not assessable from this packet]\n"
 )
+# Follow-up only (issue #1079). Prefixed after agent text is neutralised, so a capture cannot
+# forge the label. The bytes stay a repository excerpt: a selection that would not already send
+# one does not receive them.
+_OBSERVED_COMMAND_OUTPUT_MARKER: Final = (
+    "[FinishUP: observed command output captured from a command the agent ran; "
+    "not an agent-published result]\n"
+)
+_LEDGER_SUBJECT_PREFIXES: Final = ("evt_", "obl_", "clm_", "act_", "res_", "evd_", "fnd_")
 _BINARY_RENDERING_MARKER: Final = (
     "[FinishUP: agent-rendered text of {path} (evidence {ref}); the binary file itself is not"
     " sent]\n"
@@ -3213,6 +3470,113 @@ def _evidence_candidates(
     return candidates
 
 
+def _observed_span_refs(keys: Iterable[str]) -> frozenset[str]:
+    """Evidence refs whose observed-command-output spans ``keys`` name."""
+
+    prefix = OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX
+    refs: set[str] = set()
+    for key in keys:
+        if not key.startswith(prefix):
+            continue
+        span = excerpt_span(key)
+        if span is None:
+            continue
+        ref = span[0][len(prefix) :]
+        if ref.startswith("evd_"):
+            refs.add(ref)
+    return frozenset(refs)
+
+
+def _linked_observed_subjects(
+    existing: Sequence[str], targets: Sequence[str], allowed: frozenset[str]
+) -> tuple[str, ...]:
+    """Ledger subjects the marked command-output excerpt may name, within the 16-ref bound."""
+
+    seen: list[str] = []
+    for ref in (*existing, *targets):
+        if (
+            type(ref) is str
+            and ref in allowed
+            and ref.startswith(_LEDGER_SUBJECT_PREFIXES)
+            and ref not in seen
+        ):
+            seen.append(ref)
+    return tuple(sorted(seen, key=str.encode)[:MAX_SEMANTIC_ITEM_SUBJECT_REFS])
+
+
+def _marked_observed_command_candidate(
+    candidate: _ExcerptCandidate,
+    content: bytes,
+    *,
+    targets: Sequence[str],
+    allowed: frozenset[str],
+    source_refs: frozenset[str],
+    excerpt_limit: int,
+) -> _ExcerptCandidate | None:
+    """The same capture, labelled observed, as one repository excerpt within the excerpt bound."""
+
+    marker = _OBSERVED_COMMAND_OUTPUT_MARKER
+    marker_bytes = len(marker.encode("ascii"))
+    if marker_bytes >= excerpt_limit or not content:
+        return None
+    body = _neutralised_agent_text(content.decode("utf-8", errors="replace"))
+    encoded = body.encode("utf-8")
+    room = excerpt_limit - marker_bytes
+    clipped = len(encoded) > room
+    if clipped:
+        clip, kept = _head_tail_kept(encoded, room)
+    else:
+        clip, kept = body, ((0, len(encoded)),) if encoded else ()
+    text = marker + clip
+    if len(text.encode("utf-8")) > excerpt_limit or not kept:
+        return None
+    span_refs = sorted(
+        {
+            ref
+            for ref in (candidate.source_ref, *candidate.identity_refs)
+            if ref.startswith("evd_") and ref in source_refs
+        },
+        key=str.encode,
+    )
+    if candidate.source_ref not in span_refs and candidate.source_ref.startswith("evd_"):
+        span_refs.append(candidate.source_ref)
+    total = len(encoded)
+    part_keys = tuple(
+        excerpt_span_key(f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{ref}", low, high, total)
+        for ref in span_refs
+        for low, high in kept
+        if low < high <= total
+    )
+    if not part_keys:
+        return None
+    linked = _linked_observed_subjects(candidate.linked, targets, allowed)
+    if not linked and candidate.source_ref in allowed:
+        linked = (candidate.source_ref,)
+    if not linked:
+        return None
+    item_base = f"observed-output-{candidate.source_ref}"
+    if len(item_base) > 128:
+        return None
+    return _ExcerptCandidate(
+        source_ref=candidate.source_ref,
+        item_base=item_base,
+        source_kind="command",
+        category=DataCategory.REPOSITORY_EXCERPT,
+        parts=(text,),
+        clipped=clipped,
+        linked=linked,
+        occurred_order=candidate.occurred_order,
+        content_visibility="available",
+        digest_provenance=candidate.digest_provenance,
+        identity_refs=candidate.identity_refs | frozenset(linked),
+        verification_identity=candidate.verification_identity,
+        verification_outcome=candidate.verification_outcome,
+        verification_action=candidate.verification_action,
+        verification_run=candidate.verification_run,
+        part_keys=(part_keys,),
+    )
+
+
 def _select_targeted_excerpts(
     *,
     projection: ProjectionState,
@@ -3231,6 +3595,7 @@ def _select_targeted_excerpts(
     workspace_root: str | None = None,
     follow_up: ReviewFollowUp | None = None,
     check_time_change: CheckChangeCapture | None = None,
+    supplied_refs: frozenset[str] = frozenset(),
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -3248,6 +3613,12 @@ def _select_targeted_excerpts(
 
     ``declared_output_refs`` (``declared_output_capture_refs``) rank with the current diff: they
     are the current state of a deliverable the check-time change cannot hold (tb4n2 R7).
+
+    ``supplied_refs`` are agent-published records that answer a still-pending missing-item
+    request (issue #1079). Their excerpts rank after the current diff and before other
+    recorded excerpts, inside the existing count and byte budgets. A result summary is added
+    only when this selection already allows an evidence or test excerpt and no excerpt of
+    that result exists yet. Nothing here widens the selection or the ceilings.
 
     ``follow_up`` (issue #1047) is the reviewer's own in-check request: the excerpts of its
     requested rows rank ahead of every other recorded excerpt, item by item in request order and
@@ -3416,6 +3787,77 @@ def _select_targeted_excerpts(
                 )
             )
 
+    # Agent-published output that answers a pending missing item (issue #1079). Failure rows
+    # are already candidates. A success or partial summary is the same evidence-excerpt
+    # category the selection already allows, never a new category and never hook capture
+    # (those refs are not in ``supplied_refs``).
+    summary_kind = (
+        "evidence"
+        if "evidence" in selection.excerpt_kinds
+        else "test"
+        if "test" in selection.excerpt_kinds
+        else None
+    )
+    if supplied_refs and summary_kind is not None:
+        present = {candidate.source_ref for candidate in candidates}
+        for result_id, record in sorted(projection.results.items(), key=lambda pair: str(pair[0])):
+            ref = str(result_id)
+            if ref not in supplied_refs or ref in present or ref not in allowed:
+                continue
+            if record.payload is None or record.redacted:
+                continue
+            summary = record.payload.summary
+            if summary is None or not summary.strip():
+                continue
+            linked = tuple(
+                sorted(
+                    {
+                        item
+                        for item in (
+                            ref,
+                            str(record.payload.action_id),
+                            str(record.source_event_id),
+                            *(str(item) for item in record.payload.evidence_refs),
+                        )
+                        if item in allowed
+                    },
+                    key=str.encode,
+                )
+            )[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]
+            if not linked:
+                continue
+            summary = _neutralised_agent_text(summary)
+            encoded = summary.encode("utf-8")
+            clipped = len(encoded) > excerpt_limit
+            clip, kept = (
+                _head_tail_kept(encoded, excerpt_limit)
+                if clipped
+                else (summary, ((0, len(encoded)),))
+            )
+            if not clip:
+                continue
+            verification = verification_by_result.get(ref)
+            candidates.append(
+                _ExcerptCandidate(
+                    source_ref=ref,
+                    item_base=f"excerpt-supplied-{ref}",
+                    source_kind=summary_kind,
+                    category=DataCategory.EVIDENCE_EXCERPT,
+                    parts=(clip,),
+                    clipped=clipped,
+                    linked=linked,
+                    occurred_order=record.source_frontier,
+                    content_visibility="available",
+                    digest_provenance=None,
+                    identity_refs=frozenset(linked),
+                    verification_identity=None if verification is None else verification[0],
+                    verification_outcome=None if verification is None else verification[1],
+                    verification_action=None if verification is None else verification[2],
+                    verification_run=None if verification is None else verification[3],
+                    part_keys=(_span_keys(ref, kept, encoded),),
+                )
+            )
+
     latest_for: dict[int, Literal["path", "command"]] = {}
     superseded_by: dict[int, tuple[str, ...]] = {}
     current_diffs: set[int] = set()
@@ -3532,6 +3974,9 @@ def _select_targeted_excerpts(
 
     # Issue #1047: what the reviewer asked for in this check, in request order, within its share.
     # tb4n5: chosen per part (see the docstring), so a partly shown source can still progress.
+    # Held-back indexes are newest hook-captured command outputs a verification-output follow-up
+    # must not send as a raw evidence excerpt (issue #1079).
+    held_back: set[int] = set()
     requested: dict[int, int] = {}
     promoted: dict[int, tuple[int, ...]] = {}
     if follow_up is not None:
@@ -3563,6 +4008,22 @@ def _select_targeted_excerpts(
             requested[index] = len(requested)
             promoted[index] = tuple(chosen)
             return True
+
+        def observed_capture(index: int, source_refs: frozenset[str]) -> bool:
+            candidate = candidates[index]
+            if not candidate.identity_refs & source_refs:
+                return False
+            group = captured_groups.get(candidate.source_ref)
+            if (
+                group is None
+                or group.source_kind != "evidence"
+                or candidate.verification_identity is None
+                or candidate.verification_action is None
+                or candidate.verification_run is None
+            ):
+                return False
+            newest = newest_runs.get(candidate.verification_identity)
+            return newest is not None and newest[1] == candidate.verification_run
 
         served: set[int] = set()
         for follow_up_item in follow_up.items:
@@ -3603,7 +4064,64 @@ def _select_targeted_excerpts(
                             if not promote(len(candidates) - 1):
                                 # Only ever carried as the answer to this request.
                                 candidates.pop()
+            observed_indexes = {
+                index
+                for index in matching
+                if follow_up_item.kind == "verification_output"
+                and observed_capture(index, follow_up_item.source_refs)
+            }
             for index in matching:
+                if index not in observed_indexes or index in held_back:
+                    continue
+                held_back.add(index)
+                # A selection that would not already send a repository excerpt must not
+                # receive the capture, including through the raw evidence-excerpt path.
+                if not selection.carries_check_time_change:
+                    continue
+                raw = candidates[index]
+                prefix = f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{raw.source_ref}#"
+                if any(part.startswith(prefix) for part in follow_up.seen_parts):
+                    held_back.discard(index)
+                    continue
+                group = captured_groups.get(raw.source_ref)
+                assert group is not None
+                marked = _marked_observed_command_candidate(
+                    raw,
+                    group.content,
+                    targets=follow_up_item.target_refs,
+                    allowed=allowed,
+                    source_refs=follow_up_item.source_refs,
+                    excerpt_limit=excerpt_limit,
+                )
+                if marked is None:
+                    gaps.add("content_unselected")
+                    _append_omission(
+                        omissions,
+                        raw.source_ref,
+                        raw.linked,
+                        DataCategory.REPOSITORY_EXCERPT,
+                        "command",
+                        "not_selected",
+                    )
+                    continue
+                candidates.append(marked)
+                new_index = len(candidates) - 1
+                if promote(new_index):
+                    latest_for[new_index] = "command"
+                else:
+                    candidates.pop()
+                    gaps.add("content_unselected")
+                    _append_omission(
+                        omissions,
+                        marked.source_ref,
+                        marked.linked,
+                        marked.category,
+                        marked.source_kind,
+                        "not_selected",
+                    )
+            for index in matching:
+                if index in observed_indexes:
+                    continue
                 promote(index)
 
     def requested_rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
@@ -3630,6 +4148,21 @@ def _select_targeted_excerpts(
                 _RANK_CURRENT_DIFF,
                 0,
                 min(declared) - _DECLARED_ORDER_OFFSET,
+                0,
+                candidate.source_ref.encode("ascii"),
+                candidate.item_base.encode("ascii"),
+            )
+        # After the current diff, before other recorded excerpts: the answer the agent
+        # published for a still-pending missing item. The current diff keeps its place.
+        if (
+            supplied_refs
+            and index not in current_diffs
+            and (candidate.source_ref in supplied_refs or candidate.identity_refs & supplied_refs)
+        ):
+            return (
+                _RANK_CURRENT_DIFF,
+                1,
+                -candidate.occurred_order,
                 0,
                 candidate.source_ref.encode("ascii"),
                 candidate.item_base.encode("ascii"),
@@ -3703,6 +4236,8 @@ def _select_targeted_excerpts(
     omitted_indexes: set[int] = set()
     part_keys: list[tuple[str, str]] = []
     for entry_rank, index, part_indexes in entries:
+        if index in held_back:
+            continue
         candidate = candidates[index]
         if not lower_ranks_offered and entry_rank[0] >= _RANK_OLDER_EDIT:
             offer_lower_rank_room()
@@ -3723,13 +4258,13 @@ def _select_targeted_excerpts(
                 gaps.add("content_unselected")
                 if index not in omitted_indexes:
                     omitted_indexes.add(index)
-                    omissions.append(
-                        _omit(
-                            candidate.source_ref,
-                            candidate.category,
-                            candidate.source_kind,
-                            "not_selected",
-                        )
+                    _append_omission(
+                        omissions,
+                        candidate.source_ref,
+                        candidate.linked,
+                        candidate.category,
+                        candidate.source_kind,
+                        "not_selected",
                     )
                 break
             item_id = (
@@ -4101,6 +4636,81 @@ def _settled_finding_candidates(
         rows.append((response.source_frontier, ref, record))
     rows.sort(key=lambda row: (-row[0], row[1].encode("ascii")))
     return [(ref, record) for _order, ref, record in rows]
+
+
+def _observed_evidence(record: EvidenceProjectionRecord) -> bool:
+    """Whether one evidence row is hook-captured and readable."""
+
+    payload = record.payload
+    binding = None if payload is None else payload.digest_binding
+    return (
+        payload is not None
+        and not record.redacted
+        and binding is not None
+        and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+    )
+
+
+def _resolved_criterion_basis(
+    payload: ObligationPublishedPayload,
+    projection: ProjectionState,
+    allowed: frozenset[str],
+) -> dict[str, JsonValue] | None:
+    """Refs that let the reviewer judge one resolved obligation as one question.
+
+    The criterion stays the obligation's own text. This adds only refs already inside the
+    fence and closed tokens: the result the resolution cites, the newest hook-captured
+    verification of that result, and ``missing_input`` when either is not readable. No command
+    text, summary, or path is copied in, so the row stays obligation text the policy already
+    sends. A redacted result is not readable, so the evidence it cites is not walked.
+    """
+
+    if payload.status is not ObligationStatus.RESOLVED:
+        return None
+    results = {str(key): row for key, row in projection.results.items()}
+    evidence = {str(key): row for key, row in projection.evidence.items()}
+    claimed: list[str] = []
+    observed: list[tuple[int, str]] = []
+
+    def consider(token: str) -> None:
+        row = evidence.get(token)
+        if row is None or token not in allowed or not _observed_evidence(row):
+            return
+        observed.append((row.source_frontier, token))
+
+    for ref in payload.resolution_evidence_refs:
+        token = str(ref)
+        if token not in allowed:
+            continue
+        result = results.get(token)
+        if result is not None and result.payload is not None and not result.redacted:
+            claimed.append(token)
+            for evidence_ref in result.payload.evidence_refs:
+                consider(str(evidence_ref))
+            continue
+        # A resolution ref that is not a readable result may itself be observed evidence.
+        # A redacted result is neither: its payload is gone, so its evidence is not named.
+        if result is None:
+            consider(token)
+    claimed_refs: list[JsonValue] = []
+    for token in sorted(set(claimed), key=str.encode)[:16]:
+        claimed_refs.append(token)
+    newest: list[JsonValue] = []
+    for _frontier, token in sorted(set(observed), key=lambda item: (-item[0], item[1].encode())):
+        if token not in newest:
+            newest.append(token)
+        if len(newest) == 4:
+            break
+    missing: list[JsonValue] = []
+    if not claimed_refs:
+        missing.append("claimed_result")
+    if not newest:
+        missing.append("verification_output")
+    return {
+        "claimed_result_refs": claimed_refs,
+        "latest_observed_verification_refs": newest,
+        "missing_input": missing,
+    }
 
 
 def _obligation_disclosures(
@@ -4688,6 +5298,11 @@ def _build_semantic_case_once(
             # the obligation they cover, so the reviewer cannot read them as undisclosed.
             # Frozen legacy identifier (ADR-048): packet key; the recorded manifest is re-verified.
             obligation_json["yoetz_already_disclosed"] = cast(JsonValue, disclosed)
+        basis = _resolved_criterion_basis(payload, projection, allowed)
+        if basis is not None:
+            # Issue #1079: the criterion (this item), the claimed result, the latest observed
+            # verification and any missing input, as one object. Refs and closed tokens only.
+            obligation_json["resolved_basis"] = cast(JsonValue, basis)
         text, fit = _bounded_json(cast(Mapping[str, JsonValue], obligation_json))
         item = _content_item(
             item_id=f"obligation-{ref}",
@@ -5077,8 +5692,9 @@ def _build_semantic_case_once(
     prior_missing_item: SemanticCaseItem | None = None
     missing_answers: tuple[tuple[str, ...], ...] = ()
     pending_missing = projection.pending_missing_for_assessment
-    if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
-        answered = supplied_since(
+    answered_since: tuple[tuple[str, ...], ...] = ()
+    if pending_missing is not None:
+        answered_since = supplied_since(
             projection,
             pending_missing,
             frozenset(allowed),
@@ -5086,6 +5702,9 @@ def _build_semantic_case_once(
             _edit_paths_by_ref(captured_groups),
             workspace_root,
         )
+    supplied_answer_refs = frozenset(ref for group in answered_since for ref in group)
+    if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
+        answered = answered_since
         missing_answers = answered
         check_ref = str(pending_missing.source_check_event_id)
         prior_missing_item = _content_item(
@@ -5216,17 +5835,9 @@ def _build_semantic_case_once(
             capture_gap_set.add(CHECK_TIME_CHANGE_REDACTED_GAP)
         check_change_links = _check_time_change_links(projection, allowed)
         if check_change_links:
-            check_change_parts = _check_time_change_parts(
-                change.text, _check_time_change_part_limit(selection)
+            check_change_parts, check_change_offsets = _check_time_change_offer(
+                change.text, selection
             )
-            offsets: list[int] = []
-            cursor = 0
-            for chunk in _check_time_change_chunks(
-                change.text, _check_time_change_part_limit(selection)
-            ):
-                offsets.append(cursor)
-                cursor += len(chunk)
-            check_change_offsets = tuple(offsets)
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_links: tuple[str, ...] = ()
@@ -5438,6 +6049,7 @@ def _build_semantic_case_once(
             ),
             workspace_root=workspace_root,
             follow_up=follow_up,
+            supplied_refs=supplied_answer_refs,
             # A follow-up may answer from the frozen change, only when this recipe carries it.
             check_time_change=(
                 check_time_change.capture
@@ -6612,11 +7224,13 @@ def review_input_manifest(
                     )
                     & follow_up_item.source_refs
                 )
-                if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
-                    # A served current section answers its edit even when the first packet
-                    # showed that edit whole; any other excerpt adds only what it did not.
-                    refs -= follow_up.shown_refs
                 keys = placed.get(item.item_id, ())
+                if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF and not (
+                    _observed_span_refs(keys) & follow_up_item.source_refs
+                ):
+                    # A served current section, and a marked observed-command excerpt, answer
+                    # even when the first packet showed the underlying ref whole.
+                    refs -= follow_up.shown_refs
                 if refs and (
                     not keys
                     or any(not excerpt_span_covered(key, follow_up.shown_parts) for key in keys)
@@ -7277,13 +7891,17 @@ def follow_up_new_parts(
                 item.section, item.category.value, item.source_ref, item.linked_subject_refs
             )
         )
+        keys = placed.get(item.item_id)
+        observed = bool(_observed_span_refs(keys or ()) & follow_up.source_refs)
         if not refs & (
-            # A served current section answers the edit it links whatever was shown of the
-            # edit itself; whether its bytes are new is the part test below.
-            follow_up.source_refs if item.source_ref == _CHECK_TIME_CHANGE_SOURCE_REF else wanted
+            # A served current section, and a marked observed-command excerpt, answer even
+            # when the first packet showed the underlying ref whole. Whether the bytes are
+            # new is the part test below.
+            follow_up.source_refs
+            if item.source_ref == _CHECK_TIME_CHANGE_SOURCE_REF or observed
+            else wanted
         ):
             continue
-        keys = placed.get(item.item_id)
         if keys is None:
             new.add(item.item_id)
         else:
@@ -7325,9 +7943,11 @@ def _follow_up_supplied_item_ids(
             )
             & follow_up.source_refs
         )
-        if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
-            refs -= follow_up.shown_refs
         keys = placed.get(item.item_id, ())
+        if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF and not (
+            _observed_span_refs(keys) & follow_up.source_refs
+        ):
+            refs -= follow_up.shown_refs
         if refs and (
             not keys or any(not excerpt_span_covered(key, follow_up.shown_parts) for key in keys)
         ):
@@ -8555,14 +9175,30 @@ def check_time_change_parts_carried(
     return carried
 
 
+def _carried_change_spans(case: SemanticCase, carried: int) -> tuple[tuple[int, int], ...]:
+    """Original ``(start, end)`` of each carried ``change-check-time`` part that recorded one."""
+
+    wanted = {f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" for index in range(1, carried + 1)}
+    spans: list[tuple[int, int]] = []
+    for item_id, key in case.excerpt_parts:
+        if item_id not in wanted:
+            continue
+        span = excerpt_span(key)
+        if span is not None and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF:
+            spans.append((span[1], span[2]))
+    return tuple(spans)
+
+
 def check_time_change_sections_carried(
     case: SemanticCase, *, withheld_categories: Sequence[str] = ()
 ) -> tuple[tuple[int, int], ...]:
-    """The change intervals the current-file sections in the provider-facing envelope carry.
+    """The change intervals the provider-facing envelope carried outside its leading prefix.
 
-    Counted like ``check_time_change_parts_carried``: only sections whose catalog row
-    ``bounded_case_envelope`` kept, and none when the channel withholds ``repository_excerpt``.
-    A pure function of the frozen case and the withheld categories (tb4n5).
+    Current-file sections a follow-up served (``change-section-``) are included as before
+    (tb4n5). A check-time change part that is not inside the leading bytes
+    (``check_time_change_bytes_carried``) is included too, so a decision section admitted ahead
+    of the diff prefix is still a shown file. None when the channel withholds
+    ``repository_excerpt``. A pure function of the frozen case and the withheld categories.
     """
 
     if type(case) is not SemanticCase:
@@ -8574,8 +9210,6 @@ def check_time_change_sections_carried(
         for item_id, key in case.excerpt_parts
         if item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX)
     ]
-    if not sections:
-        return ()
     catalogued = _catalog_item_ids(
         cast(Mapping[str, JsonValue], strict_json_parse(bounded_case_envelope(case)))
     )
@@ -8584,7 +9218,15 @@ def check_time_change_sections_carried(
         span = excerpt_span(key)
         if item_id in catalogued and span is not None and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF:
             carried.append((span[1], span[2]))
-    return tuple(sorted(carried))
+    part_count = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    if part_count:
+        leading = check_time_change_bytes_carried(case, withheld_categories=withheld_categories)
+        for low, high in _carried_change_spans(case, part_count):
+            if low >= leading:
+                carried.append((low, high))
+            elif high > leading:
+                carried.append((leading, high))
+    return tuple(sorted(set(carried)))
 
 
 def check_time_change_bytes_carried(
@@ -8592,21 +9234,35 @@ def check_time_change_bytes_carried(
 ) -> int:
     """How many leading bytes of the stored change the provider-facing envelope carries (ADR-031).
 
-    The change bytes of the unbroken run of parts ``check_time_change_parts_carried`` counts, each
-    part's marker line excluded. This is what ``check_time_change_shown_files`` takes: it stays
-    exact whatever part size a narrowed selection chose and when the first part was cut to the
-    room left (issue #983), and it is a pure function of the frozen case and the withheld
-    categories, so a recovered job derives the same count.
+    The contiguous run from byte 0 of the parts ``check_time_change_parts_carried`` counts, each
+    part's marker line excluded. A part admitted from later in the change does not extend this
+    count; ``check_time_change_sections_carried`` reports that interval instead. This is what
+    ``check_time_change_shown_files`` takes: it stays exact whatever part size a narrowed
+    selection chose and when the first part was cut to the room left (issue #983), and it is a
+    pure function of the frozen case and the withheld categories, so a recovered job derives the
+    same count. A part with no recorded span falls back to summing change bytes, which is the
+    leading prefix those parts were.
     """
 
     carried = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    if not carried:
+        return 0
     by_id = {item.item_id: item for item in case.items}
-    return sum(
-        _check_time_change_part_chunk_bytes(
-            by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+    spans = _carried_change_spans(case, carried)
+    if len(spans) != carried:
+        return sum(
+            _check_time_change_part_chunk_bytes(
+                by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+            )
+            for index in range(1, carried + 1)
+            if f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" in by_id
         )
-        for index in range(1, carried + 1)
-    )
+    end = 0
+    for low, high in sorted(spans):
+        if low > end:
+            break
+        end = max(end, high)
+    return end
 
 
 def semantic_case_to_candidate_context(

@@ -22,13 +22,16 @@ from builders.policy_cases import (
     evidence_record,
     evt,
     make_case,
+    obl,
     record,
     res,
 )
 from finishup.application.missing_for_assessment import (
+    OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
     ReviewFollowUp,
     ReviewFollowUpItem,
     excerpt_span_whole,
+    observed_command_output_refs,
     plan_review_follow_up,
     review_missing_for_assessment,
 )
@@ -60,6 +63,10 @@ from finishup.domain.events import (
     ActionRecordedPayload,
     ClaimKind,
     ClaimRecordedPayload,
+    EvidenceContentAvailability,
+    EvidenceDigestBinding,
+    EvidenceDigestProvenance,
+    EvidenceDigestSubject,
     EvidenceKind,
     EvidenceRecordedPayload,
     MissingForAssessmentItem,
@@ -72,9 +79,20 @@ from finishup.domain.review_input_render import (
     render_review_input_manifest_compact,
     render_review_input_manifest_lines,
 )
-from finishup.domain.values import EvidenceId, freeze_json, object_id, timestamp_from_string
+from finishup.domain.values import (
+    ActionId,
+    EvidenceId,
+    ResultId,
+    freeze_json,
+    object_id,
+    timestamp_from_string,
+)
 from finishup.kernel.deterministic_checks import DeterministicCase
-from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.kernel.projections import (
+    EvidenceProjectionRecord,
+    PendingMissingForAssessment,
+    ProjectionRecord,
+)
 from finishup.ports.semantic import MissingForAssessment, SemanticCase, SemanticJudgment
 from finishup.protocol.canonical import JsonValue, strict_json_parse
 from finishup.protocol.coverage import EvidenceImmutability
@@ -1183,6 +1201,222 @@ def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_chan
     assert follow_up_new_parts(repeat, replace(after, round=2)) == frozenset()
 
 
+def _current_diff_follow_up():
+    """The stale-edit follow-up the #1077 reproductions build a second case from."""
+
+    case, captured, scope, change = _stale_edit_case()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    section_parts = _section_parts(case, captured, scope, change)
+    first = _build(
+        case, captured_content=captured, captured_content_scope=scope, check_time_change=change
+    )
+    sent = _provider_manifest(_send(first))
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("current_diff_for_path", str(evd(1))),),
+        previous=None,
+        shown_refs=sent_excerpt_content_refs(first, sent),
+        shown_parts=sent_excerpt_parts(first, sent),
+        section_parts=section_parts,
+    )
+    assert follow_up is not None
+    return case, captured, scope, change, follow_up
+
+
+def _assert_synthetic_omission_is_linked(semantic: object, *, section_admitted: bool) -> None:
+    from finishup.application.missing_for_assessment import CHECK_TIME_CHANGE_SOURCE_REF
+    from finishup.ports.semantic import SemanticCase
+
+    assert type(semantic) is SemanticCase
+    subjects = {omission.subject_ref for omission in semantic.packet.omissions}
+    assert CHECK_TIME_CHANGE_SOURCE_REF not in subjects
+    linked = [
+        omission
+        for omission in semantic.packet.omissions
+        if omission.subject_ref == str(evd(1))
+        and omission.category is DataCategory.REPOSITORY_EXCERPT
+        and omission.source_kind == "diff"
+        and omission.reason == "not_selected"
+    ]
+    admitted = any(
+        item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in semantic.items
+    )
+    assert admitted is section_admitted
+    if not section_admitted:
+        assert linked
+        assert "content_unselected" in semantic.packet.coverage.known_gaps
+
+
+def test_a_one_slot_current_diff_follow_up_omits_onto_the_linked_subject() -> None:
+    """Issue #1077: one excerpt slot used to raise semantic_case_invalid. The dropped current
+    section is disclosed against the edit it answers, and the round adds no new part."""
+
+    case, captured, scope, change, follow_up = _current_diff_follow_up()
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=_selection(1),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    _assert_synthetic_omission_is_linked(built, section_admitted=False)
+    assert follow_up_new_parts(built, follow_up) == frozenset()
+    again = _build(
+        case,
+        follow_up=replace(follow_up, round=2),
+        selection=_selection(1),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    _assert_synthetic_omission_is_linked(again, section_admitted=False)
+
+
+def test_two_excerpt_slots_still_carry_the_current_section() -> None:
+    """The same follow-up with room for the section still admits it (the #1077 control)."""
+
+    case, captured, scope, change, follow_up = _current_diff_follow_up()
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=_selection(2),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    assert any(item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in built.items)
+    assert follow_up_new_parts(built, follow_up)
+    assert all(omission.subject_ref != "check-time-change" for omission in built.packet.omissions)
+
+
+@pytest.mark.parametrize("total", (16_384, 24_576))
+def test_current_diff_follow_up_byte_budget_stays_a_valid_case(total: int) -> None:
+    """16,384 total excerpt bytes used to raise; 24,576 admitted the section. Both are valid."""
+
+    case, captured, scope, change, follow_up = _current_diff_follow_up()
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=replace(_selection(), max_total_excerpt_bytes=total),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    admitted = any(item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in built.items)
+    assert admitted is (total >= 24_576)
+    assert all(omission.subject_ref != "check-time-change" for omission in built.packet.omissions)
+    if admitted:
+        assert follow_up_new_parts(built, follow_up)
+    else:
+        assert follow_up_new_parts(built, follow_up) == frozenset()
+        assert any(
+            omission.subject_ref == str(evd(1))
+            and omission.category is DataCategory.REPOSITORY_EXCERPT
+            and omission.reason == "not_selected"
+            for omission in built.packet.omissions
+        )
+        assert "content_unselected" in built.packet.coverage.known_gaps
+
+
+def test_case_bound_trims_a_synthetic_excerpt_onto_its_linked_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Aggregate trimming (not only selection refusal) maps the synthetic source to its subject."""
+
+    import finishup.application.semantic_case as semantic_case_module
+    from finishup.ports.semantic import ReviewOmission, SubjectStateRelation, TargetedExcerptRef
+
+    content = "current section"
+    item = semantic_case_module._content_item(  # pyright: ignore[reportPrivateUsage]
+        item_id="change-section-011",
+        section="excerpt",
+        category=DataCategory.REPOSITORY_EXCERPT,
+        source_kind="diff",
+        source_ref=semantic_case_module._CHECK_TIME_CHANGE_SOURCE_REF,  # pyright: ignore[reportPrivateUsage]
+        linked_subject_refs=(str(evd(1)),),
+        occurred_order=0,
+        text=content,
+    )
+    excerpt = TargetedExcerptRef(
+        excerpt_item_id=item.item_id,
+        source_kind="diff",
+        linked_subject_refs=(str(evd(1)),),
+        subject_state_relation=SubjectStateRelation.UNKNOWN,
+        content_visibility="available",
+        content_digest=item.content_digest,
+        content_bytes=item.content_bytes,
+    )
+    monkeypatch.setattr(semantic_case_module, "MAX_SEMANTIC_CASE_BYTES", item.content_bytes - 1)
+    omissions: list[ReviewOmission] = []
+    gaps: set[str] = set()
+    dropped = semantic_case_module._fit_excerpts_within_case_bound(  # pyright: ignore[reportPrivateUsage]
+        (item,),
+        [excerpt],
+        omissions,
+        gaps,
+        fixed_item_ids=set(),
+    )
+    assert dropped == 1
+    assert gaps == {"content_unselected"}
+    (omission,) = omissions
+    assert omission.subject_ref == str(evd(1))
+    assert omission.category is DataCategory.REPOSITORY_EXCERPT
+    assert omission.reason == "not_selected"
+    # A recorded source keeps its own subject ref.
+    ordinary = semantic_case_module._content_item(  # pyright: ignore[reportPrivateUsage]
+        item_id="excerpt-evd_10000000-0000-4000-8000-000000000001",
+        section="excerpt",
+        category=DataCategory.EVIDENCE_EXCERPT,
+        source_kind="evidence",
+        source_ref=str(evd(1)),
+        linked_subject_refs=(str(evd(1)),),
+        occurred_order=1,
+        text="recorded",
+    )
+    recorded = TargetedExcerptRef(
+        excerpt_item_id=ordinary.item_id,
+        source_kind="evidence",
+        linked_subject_refs=(str(evd(1)),),
+        subject_state_relation=SubjectStateRelation.UNKNOWN,
+        content_visibility="available",
+        content_digest=ordinary.content_digest,
+        content_bytes=ordinary.content_bytes,
+    )
+    kept: list[ReviewOmission] = []
+    monkeypatch.setattr(semantic_case_module, "MAX_SEMANTIC_CASE_BYTES", ordinary.content_bytes - 1)
+    semantic_case_module._fit_excerpts_within_case_bound(  # pyright: ignore[reportPrivateUsage]
+        (ordinary,),
+        [recorded],
+        kept,
+        set(),
+        fixed_item_ids=set(),
+    )
+    assert kept[0].subject_ref == str(evd(1))
+    # A recorded source that is not a ledger subject still raises. Subject validation is unchanged.
+    with pytest.raises(ValueError, match="semantic_case_invalid"):
+        semantic_case_module._append_omission(  # pyright: ignore[reportPrivateUsage]
+            [],
+            "not-a-subject",
+            (),
+            DataCategory.EVIDENCE_EXCERPT,
+            "evidence",
+            "not_selected",
+        )
+    # A synthetic excerpt whose linked tokens are not ledger subjects adds no omission.
+    skipped: list[ReviewOmission] = []
+    semantic_case_module._append_omission(  # pyright: ignore[reportPrivateUsage]
+        skipped,
+        semantic_case_module._CHECK_TIME_CHANGE_SOURCE_REF,  # pyright: ignore[reportPrivateUsage]
+        ("not-a-subject",),
+        DataCategory.REPOSITORY_EXCERPT,
+        "diff",
+        "not_selected",
+    )
+    assert skipped == []
+
+
 def test_a_current_section_the_first_packet_carried_plans_no_round() -> None:
     """Checker P3 (tb4n5 fix review): the planner asks per requested path, so a section the
     first packet already carried never costs a rebuild just to find nothing new."""
@@ -1529,3 +1763,495 @@ def test_admission_that_drops_every_new_part_leaves_the_request_pending_and_send
         entry["status"]
         for entry in cast(Any, full.disclosure.provider_input_manifest["missing_inputs"])
     ] == ["supplied"]
+
+
+# --- Hook-captured command output on a verification-output follow-up (issue #1079) ----------------
+
+_OBSERVED_MARKER = (
+    "[FinishUP: observed command output captured from a command the agent ran; "
+    "not an agent-published result]\n"
+)
+_PYTEST_NEW = b"PYTEST_NEW_OUTPUT\n"
+_PYTEST_OLD = b"PYTEST_OLD_OUTPUT\n"
+_RUFF_OUTPUT = b"RUFF_NOT_THIS_COMMAND\n"
+_EDIT_OUTPUT = b"EDIT_TOOL_OUTPUT\n"
+
+
+def _hook_evidence(number: int, frontier: int) -> EvidenceProjectionRecord:
+    return evidence_record(
+        EvidenceRecordedPayload(
+            evd(number),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.IMMUTABLE_SNAPSHOT,
+            _WHEN,
+            captured_object_id=object_id(f"obj_00000000-0000-4000-8000-{number:012x}"),
+            content_digest="sha256:" + f"{number:064x}",
+            description="Observation-captured tool output",
+            digest_binding=EvidenceDigestBinding(
+                subject=EvidenceDigestSubject.BOUNDED_EXCERPT,
+                content_availability=EvidenceContentAvailability.CAPTURED,
+                byte_count=4,
+                provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
+            ),
+        ),
+        frontier,
+    )
+
+
+def _command_projection() -> DeterministicCase:
+    """Two pytest runs, a different command, an edit, and one redacted newer pytest capture."""
+
+    actions = {
+        act(11): record(
+            ActionRecordedPayload(
+                act(11),
+                ActionKind.COMMAND,
+                "ran",
+                command="pytest -q",
+                obligation_refs=(obl(1),),
+            ),
+            11,
+        ),
+        act(21): record(
+            ActionRecordedPayload(
+                act(21),
+                ActionKind.COMMAND,
+                "ran",
+                command="pytest -q",
+                obligation_refs=(obl(1),),
+            ),
+            21,
+        ),
+        act(31): record(
+            ActionRecordedPayload(act(31), ActionKind.COMMAND, "ran", command="ruff check"),
+            31,
+        ),
+        act(41): record(ActionRecordedPayload(act(41), ActionKind.EDIT, "edited"), 41),
+        act(51): record(
+            ActionRecordedPayload(
+                act(51), ActionKind.COMMAND, "ran", command="omitted:" + "sha256:" + "a" * 64
+            ),
+            51,
+        ),
+        act(61): record(
+            ActionRecordedPayload(
+                act(61), ActionKind.COMMAND, "ran", command="omitted:" + "sha256:" + "a" * 64
+            ),
+            61,
+        ),
+        act(71): record(
+            ActionRecordedPayload(act(71), ActionKind.COMMAND, "ran", command="omitted:structural"),
+            71,
+        ),
+    }
+    results = {
+        res(12): record(
+            ResultRecordedPayload(
+                res(12), act(11), ResultOutcome.FAILURE, evidence_refs=(evd(12),)
+            ),
+            12,
+        ),
+        res(22): record(
+            ResultRecordedPayload(
+                res(22), act(21), ResultOutcome.SUCCESS, evidence_refs=(evd(22),)
+            ),
+            22,
+        ),
+        res(32): record(
+            ResultRecordedPayload(
+                res(32), act(31), ResultOutcome.SUCCESS, evidence_refs=(evd(32),)
+            ),
+            32,
+        ),
+        res(42): record(
+            ResultRecordedPayload(
+                res(42), act(41), ResultOutcome.SUCCESS, evidence_refs=(evd(42),)
+            ),
+            42,
+        ),
+        res(52): record(
+            ResultRecordedPayload(
+                res(52), act(51), ResultOutcome.FAILURE, evidence_refs=(evd(52),)
+            ),
+            52,
+        ),
+        res(62): record(
+            ResultRecordedPayload(
+                res(62), act(61), ResultOutcome.SUCCESS, evidence_refs=(evd(62),)
+            ),
+            62,
+        ),
+        res(72): record(
+            ResultRecordedPayload(
+                res(72), act(71), ResultOutcome.SUCCESS, evidence_refs=(evd(72),)
+            ),
+            72,
+        ),
+    }
+    evidence = {
+        evd(12): _hook_evidence(12, 13),
+        evd(22): _hook_evidence(22, 23),
+        evd(32): _hook_evidence(32, 33),
+        evd(42): _hook_evidence(42, 43),
+        evd(52): _hook_evidence(52, 53),
+        evd(62): _hook_evidence(62, 63),
+        evd(72): _hook_evidence(72, 73),
+    }
+    supports = tuple(sorted((evd(12), evd(22)), key=lambda ref: str(ref).encode()))
+    return make_case(
+        actions=actions,
+        results=results,
+        evidence=evidence,
+        claims={
+            clm(1): record(
+                ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "tests pass", supports),
+                3,
+            )
+        },
+        extra_refs=(clm(1), obl(1)),
+    )
+
+
+def test_observed_command_output_names_only_the_newest_run_of_a_named_command() -> None:
+    case = _command_projection()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    named = observed_command_output_refs(case.projection, (str(res(12)),), allowed)
+    assert named == {str(evd(22))}
+    assert observed_command_output_refs(case.projection, (str(obl(1)),), allowed) == {str(evd(22))}
+    assert observed_command_output_refs(case.projection, (str(clm(1)),), allowed) == {str(evd(22))}
+    assert observed_command_output_refs(case.projection, (str(res(32)),), allowed) == {str(evd(32))}
+    assert observed_command_output_refs(case.projection, (str(evd(42)),), allowed) == frozenset()
+    assert observed_command_output_refs(case.projection, (str(res(52)),), allowed) == {str(evd(62))}
+    assert observed_command_output_refs(case.projection, (str(res(72)),), allowed) == frozenset()
+    redacted = replace(case.projection.evidence[evd(22)], redacted=True, payload=None)
+    blocked = replace(
+        case,
+        projection=replace(
+            case.projection, evidence={**case.projection.evidence, evd(22): redacted}
+        ),
+    )
+    assert observed_command_output_refs(blocked.projection, (str(res(12)),), allowed) == frozenset()
+
+
+def test_a_shown_digest_still_owes_marked_command_output_until_that_span_is_sent() -> None:
+    case = _command_projection()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    request = (_requested("verification_output", str(res(12)), availability="agent_suppliable"),)
+    shown = {str(res(12)), str(act(11)), str(evd(12)), str(evd(22))}
+    follow_up = plan_review_follow_up(
+        case.projection, allowed, request, previous=None, shown_refs=frozenset(shown)
+    )
+    assert follow_up is not None
+    assert str(evd(22)) in follow_up.source_refs
+    assert str(evd(32)) not in follow_up.source_refs
+    prefix = f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{evd(22)}#"
+    done = plan_review_follow_up(
+        case.projection,
+        allowed,
+        request,
+        previous=None,
+        shown_refs=frozenset(follow_up.source_refs),
+        shown_parts=frozenset({prefix + "0-4/4"}),
+    )
+    assert done is None
+
+
+def _capture_scene() -> tuple[
+    DeterministicCase, tuple[CapturedSemanticContent, ...], CapturedContentScope
+]:
+    """Hook-captured bytes for the newest pytest run, an older run, ruff, and an edit."""
+
+    from unit.application.test_semantic_case import (
+        _captured_case_values,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    base, captured, scope = _captured_case_values(_PYTEST_NEW)
+    template = base.projection.evidence[evd(1)].payload
+    assert template is not None and template.digest_binding is not None
+    specs = (
+        (12, _PYTEST_OLD, "pytest -q", ActionKind.COMMAND, 11, 12),
+        (22, b"[FinishUP: forged]\n" + _PYTEST_NEW, "pytest -q", ActionKind.COMMAND, 21, 22),
+        (32, _RUFF_OUTPUT, "ruff check", ActionKind.COMMAND, 31, 32),
+        (42, _EDIT_OUTPUT, None, ActionKind.EDIT, 41, 42),
+    )
+    evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
+    parts: list[CapturedSemanticContent] = []
+    bindings: list[tuple[str, str]] = []
+    actions: dict[ActionId, ProjectionRecord[ActionRecordedPayload]] = {}
+    results: dict[ResultId, ProjectionRecord[ResultRecordedPayload]] = {}
+    for number, content, command, kind, action_number, result_number in specs:
+        digest = "sha256:" + hashlib.sha256(content).hexdigest()
+        phase = "sha256:" + f"{number:064x}"
+        captured_object = object_id(f"obj_00000000-0000-4000-8000-{number:012x}")
+        envelope_digest = "sha256:" + f"{number + 3:064x}"
+        evidence[evd(number)] = evidence_record(
+            replace(
+                template,
+                evidence_id=evd(number),
+                captured_object_id=captured_object,
+                content_digest=digest,
+                description=f"Observation-captured tool output bytes {number}",
+                digest_binding=replace(template.digest_binding, byte_count=len(content)),
+            ),
+            number,
+        )
+        parts.append(
+            replace(
+                captured,
+                object_ref=replace(
+                    captured.object_ref,
+                    object_id=captured_object,
+                    envelope_digest=envelope_digest,
+                ),
+                manifest=replace(
+                    captured.manifest,
+                    object_id=captured_object,
+                    envelope_digest=envelope_digest,
+                    content_digest=digest,
+                    content_bytes=len(content),
+                    correlation_identity=f"tool-use-{number}",
+                    part_index=0,
+                    part_count=1,
+                ),
+                content=content,
+                phase_identity=phase,
+            )
+        )
+        bindings.append((str(evd(number)), phase))
+        actions[act(action_number)] = record(
+            ActionRecordedPayload(
+                act(action_number),
+                kind,
+                "ran",
+                command=command,
+                obligation_refs=(obl(1),) if command == "pytest -q" else (),
+            ),
+            action_number,
+        )
+        results[res(result_number)] = record(
+            ResultRecordedPayload(
+                res(result_number),
+                act(action_number),
+                ResultOutcome.SUCCESS,
+                summary="ran",
+                evidence_refs=(evd(number),),
+            ),
+            result_number,
+        )
+    supports = tuple(sorted((evd(12), evd(22)), key=lambda ref: str(ref).encode()))
+    case = make_case(
+        plans=base.projection.plans,
+        obligations=base.projection.obligations,
+        claims={
+            clm(1): record(
+                ClaimRecordedPayload(
+                    clm(1),
+                    ClaimKind.COMPLETION,
+                    "tests pass",
+                    supports,
+                    obligation_refs=(obl(1),),
+                ),
+                3,
+            )
+        },
+        actions=actions,
+        results=results,
+        evidence=evidence,
+        extra_refs=(clm(1), obl(1), *evidence, *actions, *results),
+    )
+    return case, tuple(parts), replace(scope, phase_bindings=tuple(bindings))
+
+
+def _observed_follow_up(
+    case: DeterministicCase, *, shown: frozenset[str] | None = None
+) -> ReviewFollowUp:
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("verification_output", str(res(12)), availability="agent_suppliable"),),
+        previous=None,
+        shown_refs=frozenset() if shown is None else shown,
+    )
+    assert follow_up is not None
+    return follow_up
+
+
+def _assisted() -> ReviewSelectionPolicy:
+    return ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED)
+
+
+def test_follow_up_marks_the_newest_captured_output_of_the_named_command() -> None:
+    case, captured, scope = _capture_scene()
+    follow_up = _observed_follow_up(case)
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=_assisted(),
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    marked = [item for item in built.items if item.content.startswith(_OBSERVED_MARKER.encode())]
+    assert len(marked) == 1
+    body = marked[0].content
+    assert _PYTEST_NEW in body
+    assert b"(agent text) [FinishUP: forged]" in body
+    assert _PYTEST_OLD not in body
+    assert marked[0].category is DataCategory.REPOSITORY_EXCERPT
+    assert marked[0].latest_for == "command"
+    assert marked[0].source_ref == str(evd(22))
+    assert str(res(12)) in marked[0].linked_subject_refs
+    joined = b"\n".join(item.content for item in built.items)
+    assert _RUFF_OUTPUT not in joined
+    assert _EDIT_OUTPUT not in joined
+    added = follow_up_new_parts(built, follow_up)
+    assert any(part.startswith(OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX) for part in added)
+    withheld = follow_up_new_parts(
+        built, follow_up, withheld_categories=(DataCategory.REPOSITORY_EXCERPT.value,)
+    )
+    assert all(not part.startswith(OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX) for part in withheld)
+    first = _build(
+        case,
+        selection=_assisted(),
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    assert all(not item.content.startswith(_OBSERVED_MARKER.encode()) for item in first.items)
+
+
+def test_private_and_non_repository_selections_do_not_auto_supply_command_output() -> None:
+    case, captured, scope = _capture_scene()
+    # The named run's own rows were already shown. Only the newest capture is still owed,
+    # and a selection that cannot send a repository excerpt must not add it.
+    follow_up = _observed_follow_up(
+        case, shown=frozenset({str(res(12)), str(act(11)), str(evd(12))})
+    )
+    denied = replace(
+        _assisted(),
+        excerpt_kinds=tuple(kind for kind in _assisted().excerpt_kinds if kind != "diff"),
+    )
+    for selection in (
+        denied,
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.STRUCTURAL),
+    ):
+        built = _build(
+            case,
+            follow_up=follow_up,
+            selection=selection,
+            captured_content=captured,
+            captured_content_scope=scope,
+        )
+        joined = b"\n".join(item.content for item in built.items)
+        assert _OBSERVED_MARKER.encode() not in joined
+        assert _PYTEST_NEW not in joined
+        assert _RUFF_OUTPUT not in joined
+        assert _EDIT_OUTPUT not in joined
+        assert follow_up_new_parts(built, follow_up) == frozenset()
+
+
+def test_captured_command_output_stays_inside_the_follow_up_byte_budget() -> None:
+    case, captured, scope = _capture_scene()
+    follow_up = _observed_follow_up(case)
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=replace(_assisted(), max_total_excerpt_bytes=200),
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    joined = b"\n".join(item.content for item in built.items)
+    assert _PYTEST_NEW not in joined
+    assert _OBSERVED_MARKER.encode() not in joined
+    assert "content_unselected" in built.packet.coverage.known_gaps
+    assert any(
+        omission.subject_ref == str(evd(22))
+        and omission.category is DataCategory.REPOSITORY_EXCERPT
+        and omission.reason == "not_selected"
+        for omission in built.packet.omissions
+    )
+    assert all(
+        not part.startswith(OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX)
+        for part in follow_up_new_parts(built, follow_up)
+    )
+
+
+_PUBLISHED_SUMMARY = "pytest: 12 passed, the lookup returns the id\n"
+_OTHER_SUMMARY = "ruff: all checks passed\n"
+
+
+def _published_answer_case() -> DeterministicCase:
+    """An action the reviewer named, then a later result whose summary is the output."""
+
+    actions = {
+        act(1): record(
+            ActionRecordedPayload(act(1), ActionKind.COMMAND, "Run pytest", command="pytest -q"),
+            5,
+        ),
+        act(2): record(
+            ActionRecordedPayload(act(2), ActionKind.COMMAND, "Run ruff", command="ruff check ."),
+            6,
+        ),
+    }
+    results = {
+        res(1): record(
+            ResultRecordedPayload(
+                res(1), act(1), ResultOutcome.SUCCESS, summary=_PUBLISHED_SUMMARY
+            ),
+            20,
+        ),
+        res(2): record(
+            ResultRecordedPayload(res(2), act(2), ResultOutcome.SUCCESS, summary=_OTHER_SUMMARY),
+            21,
+        ),
+    }
+    case = make_case(actions=actions, results=results, extra_refs=(act(1), act(2), res(1), res(2)))
+    pending = PendingMissingForAssessment(
+        evt(10),
+        10,
+        (MissingForAssessmentItem("verification_output", (str(act(1)),), "agent_suppliable"),),
+    )
+    return replace(
+        case, projection=replace(case.projection, pending_missing_for_assessment=pending)
+    )
+
+
+def test_next_packet_carries_the_published_result_summary_for_the_named_command() -> None:
+    semantic = _build(_published_answer_case())
+    excerpts = [item for item in semantic.items if item.section == "excerpt"]
+    carried = [item for item in excerpts if _PUBLISHED_SUMMARY.encode() in item.content]
+    assert len(carried) == 1
+    assert carried[0].source_ref == str(res(1))
+    assert str(act(1)) in carried[0].linked_subject_refs
+    assert all(_OTHER_SUMMARY.encode() not in item.content for item in semantic.items)
+    assert not any(item.content.startswith(b"[FinishUP:") for item in carried)
+
+
+def test_private_and_command_only_selections_do_not_carry_a_published_summary() -> None:
+    case = _published_answer_case()
+    structural = _build(
+        case,
+        selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.STRUCTURAL),
+    )
+    assert all(_PUBLISHED_SUMMARY.encode() not in item.content for item in structural.items)
+    assisted = ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED)
+    command_only = replace(assisted, excerpt_kinds=("command",))
+    narrowed = _build(case, selection=command_only)
+    assert all(_PUBLISHED_SUMMARY.encode() not in item.content for item in narrowed.items)
+    assert all(_OTHER_SUMMARY.encode() not in item.content for item in narrowed.items)
+
+
+def test_a_published_summary_that_does_not_fit_is_omitted_inside_the_existing_budget() -> None:
+    tight = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED),
+        max_excerpt_bytes=64,
+        max_total_excerpt_bytes=32,
+    )
+    semantic = _build(_published_answer_case(), selection=tight)
+    assert all(_PUBLISHED_SUMMARY.encode() not in item.content for item in semantic.items)
+    assert "content_unselected" in semantic.packet.coverage.known_gaps
+    assert any(
+        omission.subject_ref == str(res(1)) and omission.reason == "not_selected"
+        for omission in semantic.packet.omissions
+    )
+    excerpt_bytes = sum(len(item.content) for item in semantic.items if item.section == "excerpt")
+    assert excerpt_bytes <= 32

@@ -1436,7 +1436,11 @@ Shared structural gap codes for optional AI-powered relevance review (distinct f
   record. Carried alongside the ceiling gap above, never instead of it, so the terminal
   status/reason/provenance binding is unchanged;
 - `semantic_review_not_configured` — evaluator/provider not configured;
-- `semantic_relevance_review_not_run` — evaluation failed/timed out/unavailable without a clean pass;
+- `semantic_relevance_review_not_run` — evaluation failed/timed out/unavailable without a clean pass.
+  When the applicable check's `semantic_reason` is `coordinator_failure`, the limitations section
+  names that fault inside FinishUP in a fixed sentence (issue #1077). The gap code is unchanged.
+  JSON carries the sentence in the section body; markdown and text carry it in `human_text`;
+  the compact sentence, the CLI JSON receipt line, and the MCP receipt summary repeat it;
 - `semantic_review_not_requested` — local-only check; AI-powered review was never requested.
   It bounds the receipt conclusion unless the applicable check recorded
   `semantic_route_required: false` (issue #986, ADR-033 amendment of 2026-10-08): then the check's
@@ -9040,7 +9044,12 @@ of it is marked `superseded_by` the newer result and ranked with superseded runs
 evidence rows naming the same plain path are one output, and the older is marked `superseded_by` the
 newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045
 amendment) rank after the reserved classes and ahead of older hunks, within a quarter of the excerpt
-bytes. The obligations section begins with one `declared-deliverables` item
+bytes. A resolved obligation's item also carries `resolved_basis`: `claimed_result_refs`,
+`latest_observed_verification_refs` (the newest hook-captured verification of those results,
+at most four) and `missing_input` (`claimed_result` and/or `verification_output` when that
+piece is not readable). The criterion is the obligation text itself. The basis adds no command
+text, summary, or path, and no category the obligation item did not already use (issue #1079).
+The obligations section begins with one `declared-deliverables` item
 (`yoetz.declared-deliverables/1`, obligation text): each declared `role: output` item with its
 obligation, index, kind, value and `in_check_time_change` (`added`, `modified`, `deleted`,
 `renamed`, `changed`, `not_changed`, `outside_repository`, `unknown`), and `facts`, the check's
@@ -9106,7 +9115,12 @@ never answers it. Only an item with no target is matched by record family alone,
 hook-captured tool output: authorship is the service-stamped envelope fact, carried on the frozen
 case as `observation_event_ids`, the observation-authored events recorded after the request, emitted
 only when non-empty so other cases keep their bytes; and a result answers `verification_output` only
-when it carries output (linked evidence or a summary). FinishUP classifies each kept item as
+when it carries output (linked evidence or a summary). The next packet carries that published
+summary as an evidence excerpt when the selection already allows an evidence or test excerpt,
+ranked after the current diff and inside the existing excerpt budgets; a summary that does not
+fit is omitted and named. A command the request does not name is not carried this way, and
+Private sends nothing. Public check, MCP, terminal and receipt text names, per kind, the one
+record to publish. FinishUP classifies each kept item as
 `agent_suppliable`, `structurally_unavailable_on_this_host` (a kind the effective review selection
 or channel can never carry, or a redacted target) or a FinishUP limit (`yoetz_limit_unsupported_data_type`,
 `yoetz_limit_packet_room`; ADR-006, issue #983), adding `semantic_missing_agent_suppliable`,
@@ -9156,8 +9170,15 @@ a `current_diff_for_path`, `verification_output` or `command_identity` item that
 asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times and only when the rebuilt packet carries
 a requested excerpt no earlier packet of the check carried. A target resolves to itself, the rows
 an `evt_` target recorded, and for a run its results, its action and the evidence they cite;
-redacted rows never count. Each round goes through the same privacy path, is its own egress, and is
-its own durable semantic job keyed by its case digest (`LedgerPort.load_semantic_job(writer,
+redacted rows never count. A `verification_output` item may also name hook-captured output of the
+newest run of each command those targets name (`observed_command_output_refs`). Selection admits
+those bytes only when the recipe would already send a repository excerpt, as category
+`repository_excerpt` and source kind `command`, labelled observed rather than agent-published, and
+only inside the existing excerpt budget. A channel that withholds `repository_excerpt` drops them.
+Private sends nothing. Output of a command the targets do not name is not included. A command
+recorded as `omitted:structural` has no run key and is not auto-supplied. The capture still does
+not count as the agent having supplied the item. Each round goes through the same privacy path,
+is its own egress, and is its own durable semantic job keyed by its case digest (`LedgerPort.load_semantic_job(writer,
 operation, case_digest=None)`); its `semantic-case/2` object names the base job
 (`follow_up.base_case_digest`, `round`) and keeps the base job's endpoint, retries and budget
 profile with its own deadline. The check records the last round: a failed round is recorded as a
@@ -10123,7 +10144,16 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   check_time_change_unavailable=bool, check_time_change_unavailable_reason=str | None)` admits
   parts with ids `change-check-time-NNN`, section `excerpt`, category `repository_excerpt`, source
   kind `diff`, source ref `check-time-change`, linked to effective claims and obligations (else the
-  latest plan), each prefixed `[FinishUP check-time change, part i of n]`. Each part is at most
+  latest plan), each prefixed `[FinishUP check-time change, part i of n]`. A current-file section
+  an in-check follow-up serves uses the same synthetic source ref. An omission row cannot name
+  that token: when count, byte or aggregate case bounds drop the excerpt, the omission names each
+  valid linked ledger subject (category and reason unchanged) and `content_unselected` stays set.
+  A linked token that is not a ledger subject is skipped; subject validation is not relaxed
+  (issue #1077). A verification-output follow-up may also carry hook-captured output of the newest
+  run of a command the request names, as a `repository_excerpt` labelled observed, only when that
+  recipe already sends repository excerpts and only inside the existing byte limits. Private sends
+  nothing. A follow-up packet that adds no new part is not sent, so the completed
+  `insufficient_packet` review stands. Each part is at most
   `min(max_excerpt_bytes, max_total_excerpt_bytes, item bound)` bytes, marker included (16 KiB
   under Expanded; issue #983). `_check_time_change_reservation(selection, first_part_bytes)`
   returns the share admitted before other excerpts (half the excerpt count, at least one, and half
@@ -10134,6 +10164,15 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   (at least 256 change bytes, on a line end where one lies in its second half) and prefixed
   `[FinishUP check-time change, part 1 of n, cut to the packet's room]`; nothing follows it and
   `check_time_change_truncated` is disclosed (issue #983).
+  When that budget cannot hold the whole change and the files are not all the same kind, sections
+  that change a decision are admitted before boilerplate (comments, imports, license text). The
+  decision's own section is still a run from its start. A one-file change, equal-rank files, and
+  a change that fits stay a leading prefix. The first reordered part carries one fixed line that
+  decision-changing sections were shown ahead of boilerplate and that sections which did not fit
+  were not shown; it names no path. Leading bytes stay the contiguous prefix from byte 0.
+  Intervals outside that prefix are returned with the served sections
+  (`check_time_change_sections_carried`), so the shown-file record names those files and not the
+  ones left out (issue #1079).
   Untracked files are read up to `MAX_CHECK_CHANGE_TEXT_BYTES` less the header budget (232 KiB). The case digest binds the object
   identity, content digest, base, flags, admitted part count and any unavailability reason; a case
   without a selected change keeps its historical digest input.

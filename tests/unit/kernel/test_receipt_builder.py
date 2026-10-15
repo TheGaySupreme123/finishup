@@ -919,6 +919,111 @@ def test_semantic_review_not_configured_limitations_state_not_run() -> None:
     rendered = render_receipt_compact(receipt)
     assert "AI-powered relevance review was not run" in rendered
     assert "optional AI-powered review was blocked" not in rendered
+    assert "coordinator_failure" not in rendered
+
+
+def test_coordinator_failure_limitations_name_the_fault_on_every_rendering() -> None:
+    """Issue #1077: a real coordinator failure stays the same gap and names the FinishUP fault."""
+
+    from finishup.application.receipt import (
+        _internal_result,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.cli.render import render_human_receipt
+    from finishup.domain.receipts import (
+        COORDINATOR_FAILURE_LIMITATION,
+        SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
+        render_receipt_compact,
+    )
+    from finishup.mcp.summaries import summary_for_receipt
+    from finishup.protocol.canonical import canonical_encode
+    from finishup.protocol.models import CoverageModel, ReceiptFormat, ReceiptSuccessModel
+
+    gap = CaseGap(
+        f"semantic_outcome:{SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP}",
+        SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
+        (),
+    )
+    coverage = _coverage(gaps=(SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,))
+
+    def _receipt(reason: SemanticReason, status: SemanticStatus):
+        check = replace(
+            _check(CheckVerdict.INSUFFICIENT_COVERAGE, coverage),
+            semantic_status=status,
+            semantic_reason=reason,
+        )
+        return _build(_context(coverage=coverage, gaps=(gap,), check=check))
+
+    receipt = _receipt(SemanticReason.COORDINATOR_FAILURE, SemanticStatus.FAILED)
+    assert SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP in {item.code for item in receipt.gaps}
+    limitations = next(
+        section
+        for section in receipt.sections
+        if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
+    )
+    assert limitations.body.startswith(COORDINATOR_FAILURE_LIMITATION)
+    assert "AI-powered relevance review was not run." not in limitations.body
+    for markdown in (True, False):
+        rendered = render_receipt_human(receipt, markdown=markdown)
+        assert rendered.count(COORDINATOR_FAILURE_LIMITATION) == 1
+    compact = render_receipt_compact(receipt)
+    assert "AI-powered review failed inside FinishUP (coordinator_failure)" in compact
+    assert "AI-powered relevance review was not run" not in compact
+
+    for output_format in (ReceiptFormat.JSON, ReceiptFormat.MARKDOWN, ReceiptFormat.TEXT):
+        request = SimpleNamespace(
+            format=output_format,
+            request_id="req_00000000-0000-4000-8000-000000000001",
+            redaction_profile=ReceiptRedactionProfile.FULL_LOCAL,
+            include=ReceiptInclude.FULL,
+            writer_id=None,
+        )
+        result = _internal_result(
+            cast(Any, request),
+            receipt,
+            cast(Any, SimpleNamespace(object_id="obj_00000000-0000-4000-8000-000000000001")),
+            "sha256:" + "3" * 64,
+            _FRONTIER,
+        )
+        envelope = result.as_json()
+        summary = summary_for_receipt(envelope)
+        fields: dict[str, Any] = {
+            **envelope,
+            "coverage": CoverageModel.model_validate(envelope["coverage"]),
+        }
+        cli = render_human_receipt(ReceiptSuccessModel.model_construct(**fields))
+        if output_format is ReceiptFormat.JSON:
+            assert COORDINATOR_FAILURE_LIMITATION in summary
+            assert COORDINATOR_FAILURE_LIMITATION in cli
+            assert cli.count(COORDINATOR_FAILURE_LIMITATION) == 1
+            encoded = canonical_encode(result.document).decode("utf-8")
+            assert COORDINATOR_FAILURE_LIMITATION in encoded
+        else:
+            assert result.human_text is not None
+            assert result.human_text.count(COORDINATOR_FAILURE_LIMITATION) == 1
+            assert COORDINATOR_FAILURE_LIMITATION in cli
+            assert cli.count(COORDINATOR_FAILURE_LIMITATION) == 1
+
+    timeout = replace(
+        _check(
+            CheckVerdict.INSUFFICIENT_COVERAGE,
+            coverage,
+            semantic_provenance=replace(
+                _provenance(),
+                status=SemanticStatus.TIMEOUT,
+                reason=SemanticReason.PROVIDER_TIMEOUT,
+            ),
+        ),
+    )
+    other = _build(_context(coverage=coverage, gaps=(gap,), check=timeout))
+    other_limitations = next(
+        section
+        for section in other.sections
+        if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
+    )
+    assert other_limitations.body.startswith("AI-powered relevance review was not run.")
+    assert COORDINATOR_FAILURE_LIMITATION not in other_limitations.body
+    assert "AI-powered relevance review was not run" in render_receipt_compact(other)
+    assert "coordinator_failure" not in render_receipt_compact(other)
 
 
 def test_scoped_deterministic_clean_keeps_the_review_gap_in_the_receipt() -> None:
@@ -2831,6 +2936,14 @@ def test_a_holed_projection_omits_claim_pairing_and_names_the_limit() -> None:
 
 
 def test_an_unchanged_coordinator_failure_is_named_on_the_receipt() -> None:
+    """An unchanged coordinator failure is one receipt sentence, the same fault sentence as #1077.
+
+    The readiness checklist, not a second limitations sentence, says not to send that check again.
+    """
+
+    from finishup.domain.receipts import COORDINATOR_FAILURE_LIMITATION
+    from finishup.protocol.readiness_text import COORDINATOR_FAILURE_SENTENCE
+
     check = replace(
         _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()),
         semantic_status=SemanticStatus.FAILED,
@@ -2843,7 +2956,8 @@ def test_an_unchanged_coordinator_failure_is_named_on_the_receipt() -> None:
         for section in receipt.sections
         if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
     )
-    from finishup.protocol.readiness_text import COORDINATOR_FAILURE_SENTENCE
-
-    assert COORDINATOR_FAILURE_SENTENCE in limitations.body
-    assert COORDINATOR_FAILURE_SENTENCE in render_receipt_human(receipt, markdown=False)
+    rendered = render_receipt_human(receipt, markdown=False)
+    assert limitations.body.count(COORDINATOR_FAILURE_LIMITATION) == 1
+    assert rendered.count(COORDINATOR_FAILURE_LIMITATION) == 1
+    assert COORDINATOR_FAILURE_SENTENCE not in limitations.body
+    assert COORDINATOR_FAILURE_SENTENCE not in rendered

@@ -20,15 +20,18 @@ from finishup.domain.bounded_text import (
 from finishup.domain.closure import PREPARATION_REMEDIATIONS
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from finishup.domain.receipts import (
+    COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    limitations_name_coordinator_failure,
 )
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
+    publish_exactly,
     render_review_input_manifest_compact,
 )
 from finishup.domain.review_mode_render import (
@@ -726,7 +729,13 @@ def _missing_items_part(source: Mapping[str, JsonValue]) -> Part | None:
             else ()
         )
         target = f"[{','.join(safe_refs)}]" if safe_refs else ""
-        tokens.append(f"{kind}={availability}{target}")
+        instruction = (
+            publish_exactly(kind)
+            if availability == "agent_suppliable" and type(kind) is str
+            else ""
+        )
+        published = f": {instruction}" if instruction else ""
+        tokens.append(f"{kind}={availability}{target}{published}")
     if not tokens:
         return None
     limit_note = (
@@ -2494,6 +2503,11 @@ def summary_for_receipt(envelope: object) -> str:
             )
         )
     parts.append(_list_part("gap codes: ", gap_codes, priority=_P_DISCLOSURE))
+    if typed_document is not None and limitations_name_coordinator_failure(
+        typed_document.get("sections")
+    ):
+        # The gap code stays semantic_relevance_review_not_run. Name the fault (issue #1077).
+        parts.append(_opt(COORDINATOR_FAILURE_LIMITATION, priority=_P_DISCLOSURE))
     parts.append(
         _opt(
             render.text("review_mode", lambda: _receipt_review_mode_clause(source)),

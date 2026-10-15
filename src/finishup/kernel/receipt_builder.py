@@ -41,6 +41,7 @@ from finishup.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
+    COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
@@ -114,7 +115,6 @@ from finishup.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
-from finishup.kernel.closing_review_delta import closing_review_delta
 from finishup.kernel.closure_class import (
     BOOKKEEPING_KINDS,
     FINDING_BASES,
@@ -185,7 +185,7 @@ from finishup.protocol.models import (
     SemanticReason,
     SemanticStatus,
 )
-from finishup.protocol.readiness_text import COORDINATOR_FAILURE_SENTENCE, reason_phrases
+from finishup.protocol.readiness_text import reason_phrases
 
 __all__ = [
     "CheckSuffixClass",
@@ -2082,34 +2082,6 @@ def _review_mode_sentence(context: ReceiptBuildContext) -> str:
     return f"{sentence} {_applicable_review_mode_sentence(check)}"
 
 
-def _unchanged_coordinator_failure(context: ReceiptBuildContext) -> bool:
-    """Whether the applicable check's coordinator failure is still the terminal review.
-
-    A superseded check, or a material task or verification change after it, is not this limit:
-    the agent still owes a new closing review. Bookkeeping that leaves the check applicable
-    does not clear it.
-    """
-
-    check = context.applicable_check
-    if (
-        check is None
-        or check.semantic_status is not SemanticStatus.FAILED
-        or check.semantic_reason is not SemanticReason.COORDINATOR_FAILURE
-    ):
-        return False
-    standing = context.check_standing
-    if standing is not None and standing.superseded:
-        return False
-    if standing is None or standing.check_record is None:
-        return True
-    sequence = standing.check_record.ledger.ingestion_sequence
-    return not any(
-        record.ledger.ingestion_sequence > sequence
-        and closing_review_delta(record, context.projection)
-        for record in context.records
-    )
-
-
 def _sections(
     *,
     include: ReceiptInclude,
@@ -2151,7 +2123,7 @@ def _sections(
     closure_summary: _ClosureSummary | None = None,
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
     review_mode_sentence: str = "",
-    coordinator_failure_sentence: str = "",
+    coordinator_failure: bool = False,
     claim_verification: tuple[str, ...] = (),
     claim_verification_limitation: str = "",
 ) -> tuple[ReceiptSection, ...]:
@@ -2457,6 +2429,18 @@ def _sections(
             "Coverage is bounded to the recorded evidence and is not proof of correctness."
         )
         items[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = ()
+    if coordinator_failure:
+        # Issue #1077: the gap code stays semantic_relevance_review_not_run. The limitations
+        # the reader sees name the fault inside FinishUP, on every rendering of this section.
+        # Issue #1079 item 3 names the same failure as a closing-review limit. One sentence
+        # covers both: the readiness checklist, not this section, says not to send it again.
+        body = bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE]
+        lead = "AI-powered relevance review was not run."
+        if lead in body:
+            body = body.replace(lead, COORDINATOR_FAILURE_LIMITATION, 1)
+        elif COORDINATOR_FAILURE_LIMITATION not in body:
+            body = f"{body} {COORDINATOR_FAILURE_LIMITATION}"
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = body
     if observed_failure_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + observed_failure_sentence
     bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += task_statement_source_sentence
@@ -2471,10 +2455,6 @@ def _sections(
     # receipt of a task without a switch keeps its exact bytes.
     if review_mode_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + review_mode_sentence
-    # Issue #1079 item 3. Worker 1 also names a coordinator failure on the receipt; this sentence
-    # is the closing-review limit (unchanged failure, no later material delta).
-    if coordinator_failure_sentence:
-        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + coordinator_failure_sentence
     # #1079: a holed projection omits the pairing for that obligation. The limitation is ids
     # only, or one fixed sentence, so the receipt still renders.
     if claim_verification_limitation:
@@ -2847,6 +2827,10 @@ def build_receipt(
             context.applicable_check, context.records
         ),
         review_mode_sentence=_review_mode_sentence(context),
+        coordinator_failure=(
+            context.applicable_check is not None
+            and context.applicable_check.semantic_reason is SemanticReason.COORDINATOR_FAILURE
+        ),
         semantic_usage_sentence=_semantic_usage_sentence(
             None
             if context.applicable_check is None
@@ -2905,9 +2889,6 @@ def build_receipt(
         omitted_rows_sentence=_omitted_rows_sentence(omitted_rows),
         closure_summary=closure_summary,
         gap_effects=gap_effects,
-        coordinator_failure_sentence=(
-            COORDINATOR_FAILURE_SENTENCE if _unchanged_coordinator_failure(context) else ""
-        ),
         claim_verification=claim_pairing,
         claim_verification_limitation=claim_pairing_limitation,
     )

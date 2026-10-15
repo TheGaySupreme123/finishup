@@ -120,6 +120,13 @@ def test_respond_template_names_the_frontier_to_use() -> None:
     assert "No historical frontier search is needed." in text
 
 
+_SUPPLY_LIMIT: Final = (
+    "If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly "
+    "that item once, linked to its target, then `check` again. If it is already supplied, or it "
+    "is a packet, type or authority limit, go to the receipt and state that specific limit."
+)
+
+
 @pytest.mark.parametrize(
     "name", ("coverage-and-receipts.md", "workflow.md", "agent-instructions.md", "receipt.md")
 )
@@ -127,13 +134,16 @@ def test_insufficient_packet_goes_to_the_receipt_not_a_deterministic_fallback(na
     text = _collapsed(_GUIDANCE / name)
     assert "insufficient_packet" in text
     assert "go to the receipt" in text
-    # The condensed core and receipt topic word the same rule without the index's phrase.
+    if name != "workflow.md":
+        assert _SUPPLY_LIMIT in text
+    # The workflow page keeps the explicit local-only ban; the other three share one sentence.
     assert any(
         phrase in text
         for phrase in (
             "deterministic_only` fallback",
             "never use `deterministic_only` merely to shorten closure",
             "go to the receipt rather than a local-only fallback",
+            "state that specific limit",
         )
     )
 

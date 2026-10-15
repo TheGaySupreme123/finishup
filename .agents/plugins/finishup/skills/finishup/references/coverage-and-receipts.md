@@ -680,18 +680,22 @@ what answers each kind (path evidence first for a new, untracked file; never sta
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
-report the named limitation instead. Hook-captured tool output never counts as supplied. A named
+report the named limitation instead. Hook-captured tool output never counts as the agent having
+supplied it. When the reviewer asks for verification output, FinishUP may include hook-captured
+output of a command the agent ran in the follow-up packet, within the privacy policy and the
+existing excerpt limits. Private sends nothing. Output of a command the agent did not run is never
+included. The packet marks that output as observed, not an agent-published result. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names
-recorded run output, an exact command or a captured edit the packet had no room for, FinishUP sends the
-packet again with that content first, up to three times. A manifest with `follow_up_round` shows the
+recorded run output, an exact command, a captured edit the packet had no room for, or verification
+output of a command the agent ran, FinishUP sends the packet again with that content first, up to
+three times. A manifest with `follow_up_round` shows the
 recorded review answered such a follow-up; its `missing_inputs` name what FinishUP added
 (`supplied_refs`). Do not publish that material again; what `missing_for_assessment` still lists is
 what remained after the follow-up.
 
-When `missing_for_assessment` contains an `agent_suppliable` item, supplying or repairing that
-item is the overall next action before requesting an ordinary receipt. The structured
+If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
 it. When open obligations or undisclosed live failures remain, or a delivered file may read a
@@ -725,8 +729,7 @@ AI-powered review finding unless `evidence_refs` cites evidence or a result reco
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or
 “limitation accepted” is not a repair, a verification result, or a finding resolution. After an
-`insufficient_packet` result with no material repair to publish, go to the receipt and disclose
-`semantic_packet_insufficient` (never a `deterministic_only` fallback).
+`insufficient_packet` result, if `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit (never a `deterministic_only` fallback).
 
 The reviewer verifies from what its packet carries. When a completed review other than
 `insufficient_packet` raised nothing about verification whose readable output the packet carried,
