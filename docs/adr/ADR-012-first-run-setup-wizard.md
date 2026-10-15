@@ -537,10 +537,17 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    removal plan says it keeps the shared ones (`keeps_shared`, also when its outcome is
    `already_absent`), and the disclosure names the projects they stay for (`shared_with`); with
    the binding removed by hand, a member detaches while another recorded member serves, keeping
-   the plugin table, cache and record. Membership that cannot be read (an unsafe witness, a
-   symlinked or unsafe home) is unknown, never "nobody else": an ordinary disconnect keeps the
-   registration and says so (`membership_unknown`); a record that cannot be read still stops
-   setup as `connection_projects_record_invalid` (review round 3). `setup status --host codex`
+   the plugin table, cache and record. The guided `setup run|status|disconnect` stop before any
+   change when the record cannot be read (`connection_projects_record_invalid`) or the selected
+   configuration root is a symlink (`target_unsafe`); a damaged membership witness is only a
+   safety net and names no one (see the residual above). Should reading membership still fail
+   during a disconnect plan, the registration stays (`membership_unknown`) (review round 3). When
+   the pieces stay for the dangling binding's project and its directory is missing right now
+   (an unmounted volume, a moved checkout), the plan names it (`shared_with` and
+   `members_missing`, rendered "directory missing right now") instead of "other connected
+   projects"; when no live project keeps them, an `unchanged` disconnect also names the exact
+   `setup disconnect --remove-shared` preview as the way out, since that project cannot
+   disconnect itself while its directory is gone (triage, 2026-10-15). `setup status --host codex`
    uses the same split: only a connected project (activation `active`) reports `enabled` and
    `configured`; for a detached or never-connected one the shared registration is
    `shared_registration_retained`. Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
@@ -594,13 +601,16 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    Review round 3 (2026-10-15): the current mode is read from the registration itself
    (`observe`), never inferred from a planned re-registration, which may change only the
    launcher or isolation root (a legacy bare `yoetz mcp serve ... --semantic off` entry stays
-   local only). Membership that cannot be read is unknown, not "no other projects": a mode change
-   then reports `membership_unknown: true`, which the preview digest binds, so the historical
-   wizard and `integrate codex mcp install` refuse a bare `--accept`
-   (`route_change_affects_other_projects`), and `setup run --host codex` and the TUI stop before
-   any change (`connection_projects_record_invalid`, adapter `source_invalid`);
-   `integrate codex mcp preview-remove|remove` report it with the shared warning and bind it. The
-   refusal names the exact preview command, with the same `--route-profile`.
+   local only). Membership that cannot be read is unknown, not "no other projects": on the
+   historical wizard and `integrate codex mcp` paths (an unreadable record, or a `--codex-home`
+   reached through a symlink) a mode change reports `membership_unknown: true`, which the
+   preview digest binds, so a bare `--accept` is refused (`route_change_affects_other_projects`),
+   and `integrate codex mcp preview-remove|remove` report it with the shared warning and bind
+   it. The guided `setup run --host codex` and the TUI stop before any change instead
+   (`connection_projects_record_invalid`, adapter `source_invalid`, or `target_unsafe` for a
+   symlinked configuration root). A damaged membership witness names no one and does not make
+   membership unknown. The refusal names the exact preview command, with the same
+   `--route-profile`.
    *Missing route input.* Without `--route-profile`, non-interactive `setup run|status|disconnect
    --host codex` (and `setup status --next` outside `--operation review`) keep the home's
    registered mode, read from its Yoetz-owned registration, as the historical wizard and

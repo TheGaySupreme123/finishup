@@ -45,9 +45,9 @@ reverse-chronological released versions.
   `--remove-shared`. A project connected only through another Yoetz installation is not detected
   once the record is lost. Running a Codex disconnect again, or for a project that never
   connected, no longer removes the MCP registration the other connected projects use, also while
-  another connected project's plugin files are missing for now (a branch switch, `git clean`, an
-  unmounted volume), and when Yoetz cannot read which projects use the home it keeps the shared
-  pieces and says so. Connecting
+  another connected project's plugin files or folder are missing for now (a branch switch, `git
+  clean`, an unmounted volume); the disconnect names the project they stay for and, when its
+  folder is missing, the home-wide preview that removes them if it is gone for good. Connecting
   a project on another review mode (local only or AI-powered review) changes it for every project
   sharing that Codex home or Claude Code configuration; `setup run`, the terminal interface's
   first-run preview, `integrate codex mcp preview` and `integrate claude plugin preview` now name

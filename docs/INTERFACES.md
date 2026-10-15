@@ -6579,7 +6579,12 @@ manifest or not), or membership is unknown; also for an already detached or neve
 project (`retained`, `shared_with` naming those projects, in the plan and the status, plus
 `membership_unknown`; post-apply status `configured: false`, `shared_registration_retained:
 true`). `other_members` returns `((), ())` only for a home that does not exist and raises
-`IntegrationError` when membership cannot be read; callers treat that as unknown. The connect-path
+`IntegrationError` when membership cannot be read; callers treat that as unknown. A damaged
+membership witness (`host_projects.recorded_members`) names no one rather than raising. When the
+kept pieces serve the dangling binding's project whose directory is missing right now,
+`RemovalPreview.missing_members` names it (bound into the digest) and the disclosure and status
+add `members_missing`; with no live project among `shared_with`, an `unchanged` disconnect's
+`next_step` also names the exact `setup disconnect ... --remove-shared` preview. The connect-path
 `setup status --host codex` reports `enabled` and `configured` only for a connected project
 (activation `active`), otherwise `shared_registration_retained: true` when a Yoetz registration
 exists, and `membership_unknown: true` when membership cannot be read. The disconnect plan

@@ -132,17 +132,25 @@ binding whose project lost its manifest makes every `codex plugin …` command i
   with the guided continuation, and `integrate codex mcp preview|install`, whose preview digest
   binds them and whose install needs it. No extra flag is required (ADR-012 amendment item 5).
   The current mode is read from the registration, not from the planned action, so a legacy bare
-  `yoetz` strict entry stays local only. When the projects using the home cannot be read (a
-  damaged record or witness, a symlinked home), a mode change reports `membership_unknown: true` instead of
-  naming nobody: the wizard and `integrate codex mcp install` refuse a bare `--accept`, the
-  digest binds it, and `setup run --host codex` stops before any change. Without
-  `--route-profile`, `setup run|status|disconnect --host codex` keep the home's current mode.
+  `yoetz` strict entry stays local only. When the historical wizard or `integrate codex mcp`
+  cannot read the projects using the home (an unreadable record, or a `--codex-home` reached
+  through a symlink), a mode change reports `membership_unknown: true` instead of naming nobody:
+  a bare `--accept` is refused and the digest binds it. The guided `setup run|status|disconnect
+  --host codex` stop before any change instead (`connection_projects_record_invalid`, or
+  `target_unsafe` for a symlinked `--host-config-root`). A damaged membership witness is only a
+  safety net: it names no one. Without `--route-profile`, `setup run|status|disconnect --host
+  codex` keep the home's current mode.
 - The user-level MCP registration stays while another project uses the shared pieces (a
   serving connected project, a recorded project whose plugin files are absent right now, or a
   possible user), whatever the disconnecting project's own state: re-running the disconnect of
   an already detached project, or disconnecting one that never connected, leaves it and says so
   (`retained`, `shared_with`, also in the status and the text-mode line of an `unchanged`
-  disconnect). Membership that cannot be read keeps it too (`membership_unknown`). A detached or
+  disconnect). When the pieces stay for the dangling binding's project and its directory is
+  missing right now (an unmounted volume, a moved checkout), the disconnect names it
+  (`members_missing`, "directory missing right now") rather than "other connected projects";
+  if no live project keeps them, an `unchanged` disconnect also names the exact `setup
+  disconnect ... --remove-shared` preview, since that project cannot disconnect itself while its
+  directory is gone. A detached or
   never-connected project reports `configured: false` and `enabled: false` (with
   `shared_registration_retained: true`) in both `setup status` and the disconnect status.
 - With the `[marketplaces.yoetz]` binding removed by hand, disconnecting one of two connected
@@ -204,6 +212,7 @@ from this branch (2026-10-14 and, for the review fixes, 2026-10-15, #1058):
 | `integrate codex mcp preview|install --route-profile policy` with A on strict | the preview names A (`route_profile_before: strict`, `route_changes_for`) with a bound digest; `install --accept` without it exits 2 (`mcp_registration_route_change_affects_other_projects`) and changes nothing |
 | Dangling binding: only A connected; A's `marketplace.json` moved away; disconnect never-connected C | only C's own manifest goes; in this scenario `config.toml` stays byte-identical (C had no shared piece to remove), cache and record kept; when A's manifest returns, A reads `active` |
 | Member files absent (round 3, 2026-10-15): connect A and B (strict); disconnect B; move A's `marketplace.json` away; disconnect B again; disconnect never-connected C | both are `unchanged` with `shared_with` A and the shared plugin and registration listed as retained; text mode for C prints "The shared Yoetz pieces stay for the other projects using this configuration: A"; `config.toml` (same SHA-256) and the record keep A; `setup status` for B reads `configured: false`, `enabled: false`, `shared_registration_retained: true`, for A (manifest back) `active`, `configured: true`. At e63baed10 C's disconnect planned `remove_mcp_registration` and removed it |
+| Missing directory (triage, 2026-10-15): only A connected; move A's directory away; disconnect never-connected C; then follow the named `--remove-shared` preview | `unchanged`, retained "shared Codex plugin and MCP registration, kept for a connected project whose directory is missing right now", `shared_with` and `members_missing` A; text mode prints "... A (directory missing right now)" and the exact `setup disconnect ... --remove-shared` command; that preview plans `deactivate_plugin`, `remove_mcp_registration` and, applied, leaves no Yoetz entry in `config.toml`. At 394e544e4 the same disconnect named no one and offered no way out |
 | Binding removed by hand (round 3): connect A and B; delete `[marketplaces.yoetz]` from `config.toml`; disconnect B | `detach_project`, `remove_project_skill` with `shared_with` A; `[plugins."yoetz@yoetz"]`, `[mcp_servers.yoetz]`, the plugin cache and the record (A) stay |
 | Legacy bare strict entry (round 3): connect A; rewrite the registration to `command = "yoetz"`, args `mcp serve --host codex --semantic off`; `integrate codex mcp preview` (no route); historical wizard `setup run --codex-path ... --codex-home ... --project B --non-interactive --accept` | the preview is `reregister` with `route_profile_before: strict` → `route_profile: strict` and an absolute launcher; the wizard re-registers on `strict` (`--semantic off` kept). At e63baed10 the same wizard run re-registered on `policy` with no disclosure. `--route-profile policy` names A in `route_changes_for`; the refusal's preview command, followed literally, then installs with its digest |
 | Unknown membership (round 3): connect A (strict); record mode 0644, or `--codex-home` through a symlink to the home; `integrate codex mcp preview|install --route-profile policy`, `preview-remove`, historical wizard with `--accept` | preview reports `membership_unknown: true` (digest bound); bare `install --accept` exits 2 `mcp_registration_route_change_affects_other_projects` and the registration stays strict; `preview-remove` reports `membership_unknown` and `mcp_registration_shared_with_other_projects`; the wizard refuses `route_change_affects_other_projects` with `membership_unknown: true`; guided `setup run --host codex --route-profile policy` stops as `connection_projects_record_invalid`. At e63baed10 the bare install switched the home to `policy` |
