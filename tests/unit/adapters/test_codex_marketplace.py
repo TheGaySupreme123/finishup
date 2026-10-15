@@ -1270,6 +1270,36 @@ def test_removal_in_a_root_owned_project_completes_the_way_out(
     assert again.outcome is RemovalOutcome.ALREADY_ABSENT
 
 
+@pytest.mark.parametrize("mode", [0o755, 0o1777], ids=["0755", "1777"])
+def test_legacy_only_removal_in_a_root_owned_project_removes_its_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    """#1071 x ADR-048: a Yoetz-era activation alone in a root-owned project is removed whole,
+    its exact legacy marketplace document through the project-anchor rule."""
+
+    from tests.builders.ownership import root_owned_project
+
+    project = root_owned_project(
+        monkeypatch, tmp_path, mode=mode, made_for_user=(".agents",) if mode == 0o755 else ()
+    )
+    home = tmp_path / "codex"
+    home.mkdir(mode=0o700)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project))
+    legacy_cache = _write_legacy_activation(project, home)
+
+    preview = preview_removal(target, codex_home=home)
+    assert preview.outcome is RemovalOutcome.REMOVE
+    assert preview.marketplace_json_planned is False
+    assert preview.legacy_marketplace_json_planned is True
+    result = apply_removal(target, codex_home=home, approved_digest=preview.preview_digest)
+
+    assert result.outcome is RemovalOutcome.REMOVE
+    assert result.inspection.legacy_activation is False
+    assert not (project / ".agents/plugins/marketplace.json").exists()
+    assert not legacy_cache.exists()
+    assert "yoetz" not in (home / "config.toml").read_text(encoding="utf-8")
+
+
 def test_codex_home_anchor_keeps_the_owner_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

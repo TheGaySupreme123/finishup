@@ -992,3 +992,31 @@ def test_an_owned_yoetz_era_registration_without_a_record_is_uncertain(tmp_path:
 
     assert load_connected_projects(home).unknown_members
 
+
+@pytest.mark.parametrize("mode", [0o755, 0o1777], ids=["0755", "1777"])
+def test_a_root_owned_member_detaches_and_removes_its_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    """#1071 x #1058: a detach in a project root owns (a container's `/app`) removes the project's
+    manifest through the project-anchor rule instead of stranding it after the config write."""
+
+    from tests.builders.ownership import root_owned_project
+
+    root_a = root_owned_project(
+        monkeypatch, tmp_path, mode=mode, made_for_user=(".agents",) if mode == 0o755 else ()
+    )
+    target_a = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(root_a))
+    home = _home(tmp_path)
+    target_b, root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    _connect(target_b, home)
+
+    preview = preview_removal(target_a, codex_home=home)
+    assert preview.outcome is RemovalOutcome.DETACH
+    assert preview.marketplace_json_planned is True
+    result = apply_removal(target_a, codex_home=home, approved_digest=preview.preview_digest)
+
+    assert result.outcome is RemovalOutcome.DETACH
+    assert not (root_a / ".agents/plugins/marketplace.json").exists()
+    assert _binding(home) == str(root_b)
+    assert inspect_activation(target_b, codex_home=home).state is ActivationState.ACTIVE
