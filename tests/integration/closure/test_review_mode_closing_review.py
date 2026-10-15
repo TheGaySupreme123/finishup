@@ -236,3 +236,23 @@ async def test_a_failed_setting_read_runs_the_check_local_and_keeps_the_gap() ->
     assert reviewer.calls == []
     assert "semantic_review_not_requested" in checked.coverage.known_gaps
     assert checked.semantic_route_required is not False
+
+
+async def test_switching_back_after_the_closing_review_costs_one_more_closing_review() -> None:
+    """Review round 3 (P3): what review.md says, held here. A switch is a material record."""
+
+    run, reviewer = await _investigation(20_570, "required", _Reviewer())
+    _setting(run, ConversationReview.LOCAL_AGENT_OPT_IN)
+    await _edit(run, 1)
+    await run.publish(_switch(run, ReviewMode.AI_POWERED))
+    await _check(run)
+    await _check(run, final_review=True)
+    assert reviewer.calls == [False, True]
+    assert not await _closing_owed(run)
+
+    await run.publish(_switch(run, ReviewMode.LOCAL))
+    assert await _closing_owed(run)
+    again = await _check(run, final_review=True)
+    assert again.review_mode == CheckReviewMode(ReviewMode.AI_POWERED, "check_request")
+    assert reviewer.calls == [False, True, True]
+    assert not await _closing_owed(run)

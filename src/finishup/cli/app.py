@@ -1877,6 +1877,8 @@ async def _run_privacy_setup_command() -> int:
         report = await run_privacy_setup(
             recipe_hint="assisted_review",
             offer_recommended=True,
+            # ADR-049 review round 3: where agent opt-in needs a reviewing recipe, list them.
+            ai_review_add_on_when_hybrid=True,
         )
     except ControlError as error:
         return _control_failure(error)
@@ -1985,12 +1987,18 @@ async def _run_conversation_review_command(setting_name: str, json_output: bool)
         return 20
     if report.outcome == "failed":
         typer.echo(f"privacy_conversations_failed: {report.reason or 'invalid'}", err=True)
+        if report.reason == "local_terminal_required":
+            typer.echo(
+                "This needs your approval in a local terminal: run this command there, or "
+                "'finishup --privacy' to set up this repository's privacy policy.",
+                err=True,
+            )
         return 20
     if report.reason == "repository_privacy_grant_missing" and not json_output:
         typer.echo(
             "This repository has no privacy policy of its own yet, so no work is sent for "
-            "AI-powered review here. Nothing changed; run this from a local terminal to record "
-            "the setting.",
+            "AI-powered review here. Nothing changed; in a local terminal, this command or "
+            "'finishup --privacy' records the setting.",
             err=True,
         )
     _human_or_json(
@@ -2073,6 +2081,8 @@ async def _run_conversation_review_status(json_output: bool) -> int:
                 effective,
                 explicit=policy.conversation_review is not None,
                 grant_missing=snapshot.grant_state == "missing",
+                migration_pending=snapshot.migration_state
+                in {"legacy_route_available", "first_repository_available"},
             )
         )
         return 0

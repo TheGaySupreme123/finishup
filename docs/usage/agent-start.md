@@ -221,7 +221,10 @@ When every answer is in, run the setup (the preview with `--route-profile policy
 answer; show its `route_profile`), then record the answer:
 
 - **(a)** The repository's first privacy grant records it, whether the user approves that grant
-  in the terminal or as the exact prepared chat grant.
+  in the terminal (`finishup --privacy` lists the AI-powered review options with Assisted review
+  as the default) or as the exact prepared chat grant, unless an earlier choice is narrower: where
+  `finishup privacy conversations status` shows local only or owner approval, hand over the
+  terminal for `finishup privacy conversations agent-opt-in`.
 - **(b)** Hand over the terminal for `finishup privacy conversations local-only`. It applies at
   once where the repository already has a grant, and otherwise walks the user through the Private
   policy that records it.

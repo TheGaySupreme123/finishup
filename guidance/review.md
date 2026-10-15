@@ -108,7 +108,9 @@ verification settings turn AI-powered review off for checks that omit `mode`). S
 **Closing review.** A task that already used AI-powered review (a check's review ran, after a
 switch or because the check named an AI-powered `mode`, or a check deferred a required review until
 the first edit) still owes its closing review after it runs local again: a `final_review: true`
-check that omits `mode` runs that review.
+check that omits `mode` runs that review. A switch is a record like any other: switch back to local
+before the closing review, not after it, or the switch makes the closing review stale and the
+next `final_review: true` check runs it again.
 
 **Worked example.** A task changes token refresh in `auth/` and the session cache in `cache/`.
 After the first local check, you publish the switch ("Turn on AI-powered review for the rest of

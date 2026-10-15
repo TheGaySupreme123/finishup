@@ -268,3 +268,61 @@ def test_status_in_a_repository_without_its_own_grant_says_review_is_not_set_up(
     assert "AI-powered review is not set up for this repository" in status.output
     assert "no privacy grant of its own yet" in status.output
     assert "every task runs with AI-powered review" not in status.output
+
+
+@pytest.mark.parametrize(
+    "setting", [ConversationReview.LOCAL_AGENT_OPT_IN, ConversationReview.LOCAL_OWNER_APPROVAL]
+)
+def test_an_inherited_setting_without_a_grant_walks_the_grant(
+    monkeypatch: pytest.MonkeyPatch, setting: ConversationReview
+) -> None:
+    """Review round 3 (P2-A): the setting is inherited, so it is no widening; the grant is.
+
+    Another repository's hybrid grant gave the installation row ``local_agent_opt_in``. In this
+    repository, with no grant of its own, choosing a setting that sends work must walk this
+    repository's grant with the setting drafted in, not report "unchanged".
+    """
+
+    inherited = _with(ConversationReview.LOCAL_AGENT_OPT_IN)
+    proposed, _, walked = _install(monkeypatch, inherited, grant="missing")
+    report = asyncio.run(setup.run_conversation_review_change(setting))
+    assert report.outcome == "configured"
+    assert proposed == []
+    assert walked == [
+        {
+            "workspace_locator": walked[0]["workspace_locator"],
+            "conversation_review": setting,
+            "ai_review_add_on": True,
+        }
+    ]
+
+
+def test_an_inherited_setting_without_a_grant_or_terminal_needs_the_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, walked = _install(
+        monkeypatch,
+        _with(ConversationReview.LOCAL_AGENT_OPT_IN),
+        grant="missing",
+        interactive=False,
+    )
+    report = asyncio.run(
+        setup.run_conversation_review_change(ConversationReview.LOCAL_AGENT_OPT_IN)
+    )
+    assert (report.outcome, report.reason) == ("failed", "local_terminal_required")
+    assert walked == []
+
+
+def test_the_cli_names_finishup_privacy_when_the_terminal_is_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(
+        monkeypatch,
+        _with(ConversationReview.LOCAL_AGENT_OPT_IN),
+        grant="missing",
+        interactive=False,
+    )
+    result = CliRunner().invoke(app, ["privacy", "conversations", "agent-opt-in"])
+    assert result.exit_code == 20
+    assert "local_terminal_required" in result.stderr
+    assert "finishup --privacy" in result.stderr

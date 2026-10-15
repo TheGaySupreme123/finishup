@@ -309,7 +309,13 @@ that marks the pending version as unreleased above reverse-chronological release
   of waiting for its own grant on every check. A repository without its own privacy grant says
   "AI-powered review is not set up for this repository" in status, the terminal interface and
   `finishup privacy conversations status`, and an agent's opt-in there stays local and says why;
-  status says "not set up" rather than "agents may not" for an installation that never chose. Abandoning AI-powered review setup in the
+  status says "not set up" rather than "agents may not" for an installation that never chose.
+  `finishup privacy conversations agent-opt-in` (or `owner-approval`) in such a repository now
+  walks its privacy grant with the setting included instead of reporting no change. With a
+  reviewer bound, `finishup --privacy` lists the AI-powered review options (Assisted review by
+  default, Private with its warning) on a repository's first grant and wherever tasks start local
+  under agent opt-in or owner approval, so a ChatGPT subscription owner is no longer granted
+  Private on Enter; a first Private grant records no conversation setting. Abandoning AI-powered review setup in the
   terminal interface now finishes as local only without re-registering. Installations set up
   earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1073,
   ADR-049).

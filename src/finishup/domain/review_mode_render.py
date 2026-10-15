@@ -19,6 +19,7 @@ __all__ = [
     "CONVERSATION_SETTING_WORDS",
     "GRANT_MISSING_WORDS",
     "LOCAL_LABEL",
+    "MIGRATION_PENDING_WORDS",
     "NOT_SET_UP_HERE",
     "RELEASED_LOCAL_ONLY_WORDS",
     "ROUTE_REREGISTER_COMMAND",
@@ -62,10 +63,18 @@ RELEASED_LOCAL_ONLY_WORDS: Final = (
 NOT_SET_UP_HERE: Final = "AI-powered review is not set up for this repository yet"
 # A repository without a privacy grant of its own reads the installation row, which is not its
 # setting: say what is true there (review round 2).
+# Where the installation's previously accepted permission is still to be carried forward to this
+# repository (the released migration), say that rather than "not set up" (review round 3).
+MIGRATION_PENDING_WORDS: Final = (
+    "this repository has no privacy grant of its own yet; the installation's previously "
+    "accepted permission can be carried forward to it once, without reapproval or broader "
+    "disclosure ('finishup --privacy' shows how)"
+)
 GRANT_MISSING_WORDS: Final = (
     "AI-powered review is not set up for this repository: it has no privacy grant of its own "
-    "yet, so no work is sent for AI-powered review. 'finishup --privacy' sets it up and asks how "
-    "this repository's tasks use it"
+    "yet, so no work is sent for AI-powered review. 'finishup --privacy' sets one up; with a "
+    "reviewer bound it lists the AI-powered review options and asks how this repository's tasks "
+    "use them"
 )
 
 _CONTINUATIONS: Final[Mapping[str, str]] = {
@@ -89,6 +98,11 @@ _CONTINUATIONS: Final[Mapping[str, str]] = {
         f"{AI_REVIEW_SETUP_COMMAND}."
     ),
 }
+
+# A local reason that already says why review cannot run here; the status line adds nothing.
+_REASONS_THAT_SAY_WHY: Final = frozenset(
+    {"ai_review_not_set_up", "review_disabled", "route_local_only"}
+)
 
 _LOCAL_REASON_TEXT: Final[Mapping[str, str]] = {
     "owner_local_only": "the owner chose local checks only for this repository",
@@ -192,7 +206,7 @@ def status_review_mode_line(value: object) -> str:
     if (
         source.get("ai_review_available") is False
         and setting != "local_only"
-        and reason != "ai_review_not_set_up"
+        and reason not in _REASONS_THAT_SAY_WHY
     ):
         # No reviewer, credential or repository grant (review round 2): say so, beside the
         # setting the repository would follow once it is set up.
@@ -209,20 +223,32 @@ def _setting_words(setting: str, explicit: object) -> str:
 
 
 def conversation_setting_line(
-    setting: object, *, explicit: bool = True, grant_missing: bool = False
+    setting: object,
+    *,
+    explicit: bool = True,
+    grant_missing: bool = False,
+    migration_pending: bool = False,
 ) -> str:
     """The owner's conversation setting as one sentence, with the command that changes it.
 
     ``explicit`` is whether the owner chose ``setting``: a policy that predates the setting and
     reads as local only says AI-powered review is not set up, with the one-time setup.
     ``grant_missing`` is a repository without a privacy grant of its own: it says AI-powered
-    review is not set up there, unless the owner explicitly chose local only.
+    review is not set up there, unless the owner explicitly chose local only; where the
+    installation's earlier permission is still to be carried forward (``migration_pending``) it
+    says so instead.
     """
 
     token = _token(setting, CONVERSATION_SETTING_WORDS)
     if token is None:
         return ""
     if grant_missing and not (explicit and token == "local_only"):
+        if migration_pending:
+            return (
+                f"Tasks: {MIGRATION_PENDING_WORDS}; once it is, "
+                f"{CONVERSATION_SETTING_WORDS[token]} (change with "
+                "'finishup privacy conversations')."
+            )
         return f"Tasks: {GRANT_MISSING_WORDS}."
     if token == "local_only" and not explicit:
         return (

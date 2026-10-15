@@ -95,6 +95,9 @@ host already has.
    first grant asks the conversation question whatever the installation row it inherits already
    sends, and the chat grant path, which asks nothing, starts there too (default
    `local_agent_opt_in`, or the installation row's own explicit setting where that is narrower).
+   A first grant that sends nothing for review (Private) records no setting, so it reads as the
+   released `local_only`, never as the inherited hybrid; the terminal and chat paths build the
+   same candidate (review round 3).
 
 4. **Upgrade rule: unset means released.** A policy written before the field existed encodes
    nothing, so its bytes, digest and every meet and receipt digest are unchanged. It reads as the
@@ -171,8 +174,10 @@ host already has.
    for this task."). A check that recorded no mode (a policy that predates the setting, no switch)
    adds nothing, so released receipt bytes stay. The MCP receipt summary points at those
    sentences with fixed wording ("review mode switched in this task ...", "review mode: local
-   (FinishUP); limitations section says how the check ran"). No decision statement or rationale
-   reaches any MCP text. The wire shape has golden vectors (`fixtures/canonical/review-mode-1.4.0`,
+   (FinishUP); limitations section says how the check ran") for a JSON receipt; a markdown or
+   text receipt's summary carries no pointer (its human text is the receipt itself, and matching
+   fixed openings there could match recorded prose). No decision statement or rationale reaches
+   any MCP text. The wire shape has golden vectors (`fixtures/canonical/review-mode-1.4.0`,
    CAN-018).
 
 9. **First-run setup asks three answers, all on the policy route.** (1) "FinishUP
@@ -192,8 +197,15 @@ host already has.
    to Yes: it is a narrowing the owner already chose. A first AI-powered review grant made
    later through `finishup --set` or `--privacy` asks the same conversation question once
    (default `local_agent_opt_in`); re-approving a policy that already sends work asks nothing and
-   keeps its setting. `finishup privacy conversations agent-opt-in|owner-approval|local-only|
-   ai-powered|status` changes and shows it for the current repository.
+   keeps its setting. With a reviewer bound, `finishup --privacy` lists the AI-powered review
+   recipes (Assisted review by default, recommended only on a reviewed route, the Private warning)
+   instead of the released recommendation on a repository's first grant and wherever tasks start
+   local under agent opt-in or owner approval, so a subscription reviewer's owner is not granted
+   Private on Enter (review round 3); with no reviewer bound, or an unset setting on an existing
+   grant, it keeps the released recommendation. `finishup privacy conversations agent-opt-in|
+   owner-approval|local-only|ai-powered|status` changes and shows it for the current repository;
+   in a repository without its own grant any setting but local only walks that repository's grant
+   with the setting drafted in, inherited or not (review round 3), and needs a local terminal.
 
 10. **Non-interactive setup keeps the strict default for a fresh registration** and preserves an
     existing route (#389 / ADR-018). It answers no review question and writes no privacy policy,

@@ -270,3 +270,31 @@ def test_check_renderings_carry_the_line_and_the_continuation_within_bounds() ->
     # A check without a recorded mode renders exactly as before.
     del wire["review_mode"]
     assert "Review mode" not in summary_for_check(wire)
+
+
+@pytest.mark.parametrize("reason", ["review_disabled", "route_local_only"])
+def test_a_reason_that_says_why_is_not_followed_by_not_set_up(reason: str) -> None:
+    """Review round 3 (P3): the reason already explains it; nothing is added."""
+
+    line = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "ai_powered",
+            "setting": "local_agent_opt_in",
+            "setting_explicit": True,
+            "ai_review_available": False,
+            "local_reason": reason,
+        }
+    )
+    assert "not set up" not in line
+
+
+def test_a_pending_carry_forward_says_the_earlier_permission_can_apply() -> None:
+    """Review round 3 (P3): not "not set up" where the released migration is still pending."""
+
+    line = conversation_setting_line(
+        "ai_powered", explicit=False, grant_missing=True, migration_pending=True
+    )
+    assert "previously accepted permission can be carried forward to it once" in line
+    assert "not set up" not in line
+    assert "every task runs with AI-powered review" in line
