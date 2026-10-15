@@ -17,7 +17,10 @@ from finishup.protocol.ids import IdKind, is_valid_id
 __all__ = [
     "AI_REVIEW_SETUP_COMMAND",
     "CONVERSATION_SETTING_WORDS",
+    "GRANT_MISSING_WORDS",
     "LOCAL_LABEL",
+    "NOT_SET_UP_HERE",
+    "RELEASED_LOCAL_ONLY_WORDS",
     "ROUTE_REREGISTER_COMMAND",
     "check_review_mode_line",
     "conversation_setting_line",
@@ -46,8 +49,24 @@ CONVERSATION_SETTING_WORDS: Final[Mapping[str, str]] = {
     "local_agent_opt_in": (
         "tasks start local; an agent may turn on AI-powered review for a task when it helps"
     ),
-    "ai_powered": "every task starts with AI-powered review",
+    "ai_powered": "every task runs with AI-powered review",
 }
+
+# A policy that predates the setting, with its inference channel off, reads as local only, but the
+# owner never chose it: say what is true (nothing is set up), not that agents are forbidden.
+RELEASED_LOCAL_ONLY_WORDS: Final = (
+    "AI-powered review is not set up for this repository, so every task runs local checks only"
+)
+# Status beside any other setting when nothing can be reviewed here yet (no reviewer, credential
+# or repository privacy grant).
+NOT_SET_UP_HERE: Final = "AI-powered review is not set up for this repository yet"
+# A repository without a privacy grant of its own reads the installation row, which is not its
+# setting: say what is true there (review round 2).
+GRANT_MISSING_WORDS: Final = (
+    "AI-powered review is not set up for this repository: it has no privacy grant of its own "
+    "yet, so no work is sent for AI-powered review. 'finishup --privacy' sets it up and asks how "
+    "this repository's tasks use it"
+)
 
 _CONTINUATIONS: Final[Mapping[str, str]] = {
     "owner_local_only": (
@@ -59,6 +78,11 @@ _CONTINUATIONS: Final[Mapping[str, str]] = {
         "AI-powered review; continue locally. The owner can re-register it once on the policy "
         f"route: `{ROUTE_REREGISTER_COMMAND}`, then start a fresh agent session."
     ),
+    "review_disabled": (
+        "AI-powered review is turned off in this installation's verification settings "
+        "([verification] semantic is disabled), so checks that name no mode run local; continue "
+        "locally."
+    ),
     "ai_review_not_set_up": (
         "AI-powered review is not set up for this repository, so this task stays local; "
         "continue locally. One-time owner setup in a local terminal: "
@@ -69,6 +93,7 @@ _CONTINUATIONS: Final[Mapping[str, str]] = {
 _LOCAL_REASON_TEXT: Final[Mapping[str, str]] = {
     "owner_local_only": "the owner chose local checks only for this repository",
     "route_local_only": "this host connection is registered local-only (strict route)",
+    "review_disabled": "AI-powered review is turned off in the verification settings",
     "ai_review_not_set_up": "AI-powered review is not set up for this repository",
 }
 
@@ -147,23 +172,63 @@ def status_review_mode_line(value: object) -> str:
     label = LOCAL_LABEL if mode == "local" else "AI-powered review"
     parts = [f"Review mode: {label}"]
     reason = _token(source.get("local_reason"), _LOCAL_REASON_TEXT)
+    requested = _token(source.get("requested"), frozenset({"local", "ai_powered"}))
     if mode == "local" and reason is not None:
-        parts.append(f"this task asked for AI-powered review, but {_LOCAL_REASON_TEXT[reason]}")
+        asked = (
+            "the owner's setting asks for AI-powered review"
+            if setting == "ai_powered"
+            else "this task asked for AI-powered review"
+        )
+        parts.append(f"{asked}, but {_LOCAL_REASON_TEXT[reason]}")
+    elif mode == "ai_powered" and requested == "local":
+        parts.append("this task asked for local checks, but the owner's setting reviews every task")
     switch = _event(source.get("switch_event_id"))
     sequence = source.get("switch_sequence")
     if switch is not None:
         at = f" at sequence {sequence}" if type(sequence) is str and sequence.isdigit() else ""
         parts.append(f"latest switch {switch}{at}")
-    parts.append(f"owner setting: {CONVERSATION_SETTING_WORDS[setting]}")
+    explicit = source.get("setting_explicit")
+    parts.append(f"owner setting: {_setting_words(setting, explicit)}")
+    if (
+        source.get("ai_review_available") is False
+        and setting != "local_only"
+        and reason != "ai_review_not_set_up"
+    ):
+        # No reviewer, credential or repository grant (review round 2): say so, beside the
+        # setting the repository would follow once it is set up.
+        parts.append(NOT_SET_UP_HERE)
     return "; ".join(parts) + "."
 
 
-def conversation_setting_line(setting: object) -> str:
-    """The owner's conversation setting as one sentence, with the command that changes it."""
+def _setting_words(setting: str, explicit: object) -> str:
+    """The setting's words; a released ``local_only`` (``explicit`` false) says nothing is set up."""
+
+    if setting == "local_only" and explicit is False:
+        return RELEASED_LOCAL_ONLY_WORDS
+    return CONVERSATION_SETTING_WORDS[setting]
+
+
+def conversation_setting_line(
+    setting: object, *, explicit: bool = True, grant_missing: bool = False
+) -> str:
+    """The owner's conversation setting as one sentence, with the command that changes it.
+
+    ``explicit`` is whether the owner chose ``setting``: a policy that predates the setting and
+    reads as local only says AI-powered review is not set up, with the one-time setup.
+    ``grant_missing`` is a repository without a privacy grant of its own: it says AI-powered
+    review is not set up there, unless the owner explicitly chose local only.
+    """
 
     token = _token(setting, CONVERSATION_SETTING_WORDS)
     if token is None:
         return ""
+    if grant_missing and not (explicit and token == "local_only"):
+        return f"Tasks: {GRANT_MISSING_WORDS}."
+    if token == "local_only" and not explicit:
+        return (
+            f"Tasks: {RELEASED_LOCAL_ONLY_WORDS}. One-time owner setup in a local terminal: "
+            f"{AI_REVIEW_SETUP_COMMAND}."
+        )
     return (
         f"Tasks: {CONVERSATION_SETTING_WORDS[token]} (change with "
         "'finishup privacy conversations')."

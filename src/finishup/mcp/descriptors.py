@@ -1425,7 +1425,8 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
         mode = properties.get("mode")
         if isinstance(mode, dict):
             mode["description"] = (
-                "Omit to use the configured default. Select semantic_required for a known "
+                "Omit to run in the task's review mode (status review_mode). Select "
+                "semantic_required for a known "
                 "requirement, including final rechecks; semantic_if_configured only when review "
                 "is known to be optional. inspect is a read: it records nothing, mints no "
                 "findings, runs no review and takes no scope, max_findings, policy_packs or "
@@ -1443,7 +1444,9 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             final_review["description"] = (
                 "Set true for the closing review, the last check before the receipt: the "
                 "reviewer judges each stated requirement and requested output against the task, "
-                "with or without a completion claim. Omit for in-progress checks."
+                "with or without a completion claim. Omit for in-progress checks. Without mode, "
+                "a task that already used AI-powered review runs it here even if it now runs "
+                "local."
             )
         await_observations = properties.get("await_observations")
         if isinstance(await_observations, dict):
@@ -1968,10 +1971,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "is left to close and why, what hooks observed since the last check, and whether each "
         "obligation's evidence links to its declared deliverables or commands; use it instead "
         "of repeated status reads. A no_issue_detected verdict does not mean the work is "
-        "correct. Omitted mode follows the task's review_mode (status shows it; tasks may start "
+        "correct. Omit mode to run in the task's review mode (status review_mode; tasks may start "
         "local). Choose mode "
         "deliberately: semantic_required when the user, effective policy or acceptance requires "
-        "it, including subsequent final checks. Omit mode to preserve the configured default; "
+        "it, including subsequent final checks; "
         "use semantic_if_configured only when review is known to be optional. Reserve "
         "deterministic_only for explicitly local or structural checks or a user-authorized no-egress "
         "choice, disclose semantic_review_not_requested, and keep any required review unmet. "
@@ -2199,7 +2202,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
-                "check": "sha256:281973543fc14d042edde9ccfe3f1231897ab2beb3d503ccfd435adec50c98e4",
+                "check": "sha256:47cf4c5da38d3fe16b62c4bbd877d673246e1d11507d4b0e5d26473d0dfedaad",
                 "respond": "sha256:fd86417eb834164fc8f62d466e4e29ce6250c9272d7e8969777f67efba1390ba",
                 "status": "sha256:51c1546da9f9ffe512201ee57631571f89b9d64c30a0a20fb3425483ddbe3628",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2211,7 +2214,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
-                "check": "sha256:35239f5c20e4347c3bdf36248a525cb7fb3d681e120e310d10415e5ed85990e9",
+                "check": "sha256:b6693e7110658e03adf10536263950ad4d90d11d5549ef190e4a40cec875fa3d",
                 "respond": "sha256:fd86417eb834164fc8f62d466e4e29ce6250c9272d7e8969777f67efba1390ba",
                 "status": "sha256:51c1546da9f9ffe512201ee57631571f89b9d64c30a0a20fb3425483ddbe3628",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2223,8 +2226,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:33d672d7ce406e5be5bfce916c432873784fdc8a4b943af20ead533c41276206",
-        "strict": "sha256:5acf76a7f053644b76f2039765631a6537414fed3abc05773aa50268da65159c",
+        "policy": "sha256:067193c044e34c414959b0ff68054e41beeeffe44dcce90bd21f26b6861dd3dc",
+        "strict": "sha256:a07a3166b57d8679c77ff6f9aa8d5d158792a846c928e1f371b8d3e5d0da723e",
     }
 )
 

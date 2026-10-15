@@ -6795,9 +6795,13 @@ async def provide_service_ready_context(
         # The exact binding, purpose and scope the dispatch below sends, judged by the egress
         # pipeline's own static policy leg (938-R1): a granted authority that does not name this
         # binding or purpose would be refused at dispatch, so it admits nothing here either.
+        # ADR-049 (review round 1): nor does a repository whose tasks start local, which the
+        # dispatch refuses too, so the hybrid writes no advice row.
         return (
             authority.grant_state == "granted"
             and candidate_binding is not None
+            and authority.effective.policy.effective_conversation_review
+            is ConversationReview.AI_POWERED
             and semantic_policy_refusal(
                 authority.effective.policy,
                 candidate_binding,
@@ -7476,7 +7480,9 @@ async def provide_service_ready_context(
 
         Read-only: the task route's repository commitment selects the effective policy the
         reviewer would run under. A task with no repository-bound route can never send work for
-        review, so it reads the installation-wide setting and reports review unavailable. ``None``
+        review, so it reads the installation-wide setting and reports review unavailable; so does
+        a repository without a privacy grant of its own (review round 2): nothing can be sent for
+        review there until the owner approves one, whatever the installation row says. ``None``
         when the task has no route or this composition has no policy application; the check then
         keeps the released behaviour.
         """
@@ -7503,6 +7509,7 @@ async def provide_service_ready_context(
             route.task_id,
         )
         effective = await policy_application.policy_store.effective_policy(scope)
+        authority = await policy_application.policy_store.repository_authority(scope)
         llm = next(
             (
                 item
@@ -7513,6 +7520,7 @@ async def provide_service_ready_context(
         )
         available = (
             reviewer_bound
+            and authority.grant_state == "granted"
             and llm is not None
             and llm.enabled
             and await reviewer_credential_present()

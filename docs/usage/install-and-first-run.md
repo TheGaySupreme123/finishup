@@ -219,15 +219,17 @@ Setup is a linear path inside the interface, each finished step collapsing into 
 
    All three connect your agent the same way, so you can change your mind later with
    `finishup privacy conversations` without reconnecting.
-8. **AI-powered review setup, for the first and third answers** — provider/model, hidden API-key
-   entry, then one exact recommended privacy policy, which records your answer. **Assisted review** is recommended only for an exact provider route
-   with current reviewed no-training evidence and retention no longer than 30 days; it is bounded
-   to the current repository and does not re-prompt for ordinary attempts after approval. Branches
-   and linked worktrees share that grant; an independent clone does not. Otherwise
-   **Private** is recommended. Accepting it asks nothing
-   further; declining it opens the named recipes, and only **Custom** opens the settings
-   themselves, in five grouped sections. The exact disclosure and separately reauthenticated
-   widening decision remain mandatory.
+8. **AI-powered review setup, for the first and third answers** — provider/model (or a ChatGPT
+   subscription), hidden API-key entry, then the privacy options, which record your answer.
+   **Assisted review** is the default choice; it is marked recommended only for an exact provider
+   route with current reviewed no-training evidence and retention no longer than 30 days, and
+   otherwise (a ChatGPT subscription among them) the choice is yours. Assisted review is bounded
+   to the current repository and does not re-prompt for ordinary attempts after approval.
+   Branches and linked worktrees share that grant; an independent clone does not. **Private**
+   stays selectable, but it sends nothing for review, so every task stays on local checks under
+   it; the screen says so. Only **Custom** opens the settings themselves, in five grouped
+   sections. The exact disclosure and separately reauthenticated widening decision remain
+   mandatory.
 9. **Finish**, stating each readiness layer separately. When the durable privacy policy permits
    package update checks (product default: on) and a newer `finishup` release is available on PyPI,
    the finish screen appends a short tip with the installed version, available version, and the

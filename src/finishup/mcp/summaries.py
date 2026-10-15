@@ -1717,8 +1717,26 @@ def _status_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
     return status_review_mode_line(source.get("review_mode"))
 
 
+# ADR-049: the receipt's review-mode sentences, recognised by their fixed openings only; the
+# summary points at them with closed wording and never carries their text.
+_RECEIPT_REVIEW_MODE_POINTERS: Final = (
+    (
+        "Review mode switches recorded for this task:",
+        "review mode switched in this task (limitations section names each switch);",
+    ),
+    (
+        "The applicable check ran local checks only (FinishUP)",
+        "review mode: local (FinishUP); limitations section says how the check ran;",
+    ),
+    (
+        "The applicable check ran with AI-powered review requested.",
+        "review mode: AI-powered review; limitations section says how the check ran;",
+    ),
+)
+
+
 def _receipt_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
-    """ADR-049: a fixed pointer when the receipt names review-mode switches; never its text."""
+    """ADR-049: a fixed pointer to the receipt's review-mode sentences; never their text."""
 
     document = source.get("document")
     if not isinstance(document, Mapping):
@@ -1731,12 +1749,11 @@ def _receipt_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
             continue
         section = cast(Mapping[str, object], raw)
         body = section.get("body")
-        if (
-            section.get("key") == "limitations_and_coverage"
-            and type(body) is str
-            and "Review mode switches recorded for this task:" in body
-        ):
-            return "review mode switched in this task (limitations section names each switch);"
+        if section.get("key") != "limitations_and_coverage" or type(body) is not str:
+            continue
+        for opening, pointer in _RECEIPT_REVIEW_MODE_POINTERS:
+            if opening in body:
+                return pointer
     return ""
 
 

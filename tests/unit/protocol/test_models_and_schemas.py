@@ -321,8 +321,8 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "status",
         None,
-    ): 128,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
-    # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +7 review_mode
+    ): 129,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
+    # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
@@ -2565,7 +2565,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1595
+        len(derived_patterns) == 1596
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2
 
@@ -2577,7 +2577,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1622
+        len(rules) == 1623
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
@@ -2589,8 +2589,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1595
-    )  # ADR-049 +11 review_mode, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+        len(registry_patterns) == 1596
+    )  # ADR-049 +12 review_mode, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2
     assert registry_patterns == derived_patterns
 

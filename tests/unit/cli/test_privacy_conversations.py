@@ -252,3 +252,19 @@ def test_cli_registers_every_setting_and_a_read_only_status(
     assert "finishup privacy conversations" in status.output
     rejected = runner.invoke(app, ["privacy", "conversations", "sometimes"])
     assert rejected.exit_code != 0
+
+
+def test_status_in_a_repository_without_its_own_grant_says_review_is_not_set_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-049 review round 2: an inherited installation row is not this repository's setting."""
+
+    async def snapshot(_locator: object = None) -> setup.PrivacySetupSnapshot:
+        return _snapshot(_with(ConversationReview.LOCAL_AGENT_OPT_IN), grant="missing")
+
+    monkeypatch.setattr(setup, "get_privacy_setup_snapshot", snapshot)
+    status = CliRunner().invoke(app, ["privacy", "conversations", "status"])
+    assert status.exit_code == 0, status.output
+    assert "AI-powered review is not set up for this repository" in status.output
+    assert "no privacy grant of its own yet" in status.output
+    assert "every task runs with AI-powered review" not in status.output

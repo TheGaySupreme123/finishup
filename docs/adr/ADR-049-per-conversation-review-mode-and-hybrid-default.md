@@ -56,15 +56,22 @@ host already has.
    1.0.0 bytes and every old ledger replays unchanged. The decision's event id and ledger sequence
    say when; its `authority` actor says by whom; its `rationale` says why. One `publish_work`
    draft is the whole opt-in, on every host (Codex, Claude Code, Cursor) through the same MCP
-   path, and the CLI `publish` path accepts the same draft.
+   path, and the CLI `publish` path accepts the same draft. The payload's `authority` is what the
+   author declared; the event envelope's actor and its service-derived assurance say who recorded
+   it, and the receipt credits the switch to that recorded actor (decision 8).
 
 2. **A task's mode is resolved from its standing switches and the owner's setting.** The latest
    switch that is neither redacted nor superseded decides what the task asked for; without one the
    task asks for its owner default. `kernel/review_mode.py` turns that into what a check runs in.
    A task that asked for AI-powered review still runs local, with a closed reason, when the owner
    explicitly chose local only (`owner_local_only`), when the host connection is registered on the
-   strict route (`route_local_only`), or when AI-powered review is not set up for the repository
-   (`ai_review_not_set_up`), in that order.
+   strict route (`route_local_only`), when the installation's verification settings turn review
+   off for checks that name no mode (`review_disabled`), or when AI-powered review is not set up
+   for the repository (`ai_review_not_set_up`), in that order. Under `ai_powered` (explicit, or the
+   released reading of decision 4) the owner reviews every task: a switch to local is recorded but
+   decides nothing, so no switch can drop the owner's required review (review round 1); such a task
+   runs local only where review cannot run at all (`route_local_only`, `review_disabled`), and an
+   unavailable reviewer keeps its honest required-review gap.
 
 3. **The owner setting is `PrivacyPolicy.conversation_review`** (privacy-policy wire 1.2.0),
    narrowest first: `local_only`, `local_owner_approval`, `local_agent_opt_in` (recommended),
@@ -75,6 +82,19 @@ host already has.
    that needs more of the owner. `local_owner_approval` makes every AI-powered review in that
    repository (a switched task's, or an explicit per-check request) wait for the owner's
    per-request decision exactly like `confirm_every_request`. No value widens what may be sent.
+   An explicit `local_only` is also enforced at the privacy gateway: `semantic-review` egress
+   (checks and background advice) is refused `blocked_by_policy`, re-checked against the refreshed
+   policy immediately before dispatch, so a failed setting read or a narrowing while a check is in
+   flight cannot send a review; the fixed-literal credential probe keeps its own consent. A
+   repository-bound proposal never widens the installation row's setting (like the
+   credential-heuristic opt-out): an explicit row value stays as it is, and an unset row whose
+   inference channel that proposal turns on (a fresh install's first grant) takes the narrower of
+   the repository's answer and `local_agent_opt_in`, so other repositories do not fall back to
+   the released "every task" reading and an "every task" answer never widens them (review round
+   2); a row whose inference channel was already on keeps its released reading. A repository's
+   first grant asks the conversation question whatever the installation row it inherits already
+   sends, and the chat grant path, which asks nothing, starts there too (default
+   `local_agent_opt_in`, or the installation row's own explicit setting where that is narrower).
 
 4. **Upgrade rule: unset means released.** A policy written before the field existed encodes
    nothing, so its bytes, digest and every meet and receipt digest are unchanged. It reads as the
@@ -95,24 +115,45 @@ host already has.
    coverage and discloses that. A check that names an AI-powered mode is its own one-check request
    under the effective policy; under an explicit `local_only` it runs local, and a
    `semantic_required` request there keeps its requirement, so the missing review stays an honest
-   gap rather than a clean local result.
+   gap rather than a clean local result; on the strict route it records `route_local_only`. A
+   check that names `deterministic_only` lowers the requirement only in a task local by a choice
+   its owner's setting allows. A `final_review: true` check that names no mode, in a task that
+   already used AI-powered review (a recorded check whose review succeeded, or that deferred a
+   required review before the first edit) and now runs local, is the closing review the task owes:
+   it runs as its own request (`source` `check_request`) under the effective policy (review round
+   1). Where the owner's setting cannot be read the check fails closed: a check that names no mode
+   runs local checks only under the configured requirement and records no mode, and a check that
+   named its mode keeps it while the gateway enforces the policy.
 
 6. **Availability** (`ai_review_available`) means a reviewer is bound with AI-powered review not
    disabled, its credential or subscription login is structurally present (the same memoized
    facts provider status reads; an unreadable fact counts as present, so a locked vault never
-   strands a switched task), and the repository policy's inference channel is on. A task without a
-   repository-bound route reads the installation-wide setting and reports review unavailable.
+   strands a switched task), the repository has a privacy grant of its own, and the composed
+   policy's inference channel is on. A task without a repository-bound route reads the
+   installation-wide setting and reports review unavailable; so does a repository without its own
+   grant (review round 2): status, the terminal interface and `finishup privacy conversations
+   status` say "AI-powered review is not set up for this repository", its checks follow the
+   inherited setting (under the hybrid they complete locally) and an agent's opt-in there records
+   `ai_review_not_set_up`. Under a released installation row (unset, inference on) such a check
+   still takes the released repository-grant handoff.
 
 7. **Status shows the mode** (`status-result` 1.4.0 `review_mode`: `mode`, `requested`, `setting`,
-   `ai_review_available`, optional `local_reason`, `switch_event_id`, `switch_sequence`), read from
+   `setting_explicit`, `ai_review_available`, optional `local_reason`, `switch_event_id`,
+   `switch_sequence`), read from
    the head projection on the serving route, never at `at_frontier`. `mode` is what the next check
    that names no mode runs in. Closure readiness (status, the inspection check, the Stop gate)
    follows the same rule as the check: a task that runs local by its owner's explicit setting or
    its own switch is not asked for an AI-powered review it will never run (neither
    `semantic_review_not_requested` nor `closing_review_required` as agent work), while a task under
-   a policy that predates the setting keeps the released requirement. A task that already ran
-   AI-powered review still owes its closing review after switching back; it names an AI-powered
-   mode on that `final_review` check.
+   a policy that predates the setting keeps the released requirement, and under `ai_powered` no
+   task is local by choice. A task that already used AI-powered review still owes its closing
+   review after it runs local again; the Stop gate's `check` with `final_review: true` supplies it
+   (decision 5). A check whose recorded mode carries a `local_reason` asked for review that its
+   task's setting kept local, so no recheck can supply it: like an undeliverable review status, it
+   makes the closing review current rather than owed forever. A released `local_only` reading
+   (`setting_explicit` false) is worded "AI-powered review is not set up for this repository", not
+   as the owner forbidding opt-in, in status, the terminal interface and
+   `finishup privacy conversations status`.
 
 8. **Every rendering says which mode and why.** CLI check, status and JSON receipt, the terminal
    interface (which uses the CLI renderers), and the MCP summaries print one "Review mode: local
@@ -121,10 +162,18 @@ host already has.
    continuation: `ai_review_not_set_up` names the one-time owner setup (`finishup --set`, or
    `finishup provider codex-subscription setup`, then `finishup --privacy`; `finishup provider
    status` shows what is missing); `owner_local_only` says plainly the owner chose local only;
-   `route_local_only` names `finishup setup run --route-profile policy`. The receipt adds one
-   `limitations_and_coverage` sentence only when the task recorded a switch, naming each switch by
-   sequence, event id and authority actor and the mode the applicable check ran in. No decision
-   statement or rationale reaches any MCP text.
+   `route_local_only` names `finishup setup run --route-profile policy`; `review_disabled` says the
+   verification settings turn review off. The receipt's `limitations_and_coverage` section names
+   each standing switch by sequence, event id, the actor the ledger recorded (actor id, actor type
+   and assurance) and the declared `authority`, then the mode the applicable check ran in; a task
+   without a switch whose applicable check recorded a mode gets the mode sentence alone (a local
+   one: "The applicable check ran local checks only (FinishUP); AI-powered review was not requested
+   for this task."). A check that recorded no mode (a policy that predates the setting, no switch)
+   adds nothing, so released receipt bytes stay. The MCP receipt summary points at those
+   sentences with fixed wording ("review mode switched in this task ...", "review mode: local
+   (FinishUP); limitations section says how the check ran"). No decision statement or rationale
+   reaches any MCP text. The wire shape has golden vectors (`fixtures/canonical/review-mode-1.4.0`,
+   CAN-018).
 
 9. **First-run setup asks three answers, all on the policy route.** (1) "FinishUP
    (recommended): local checks; your agent can turn on AI-powered review for a task when it
@@ -133,7 +182,14 @@ host already has.
    (3) "AI-powered review on every task" — `ai_powered`. The default is (1). All three register the
    `policy` MCP route so the owner can let an agent opt in later without re-registering; the
    privacy policy, not the route, decides what may be sent. The prompt wizard, the host-connection
-   path and the terminal interface ask the same question. A first AI-powered review grant made
+   path and the terminal interface's first run ask the same question and set up what it chose;
+   so does `/connect` for Claude Code and Cursor. Codex `/connect` asks no review question: it
+   inspects or repairs the connection on its configured route (the Codex runbook says so), and
+   `finishup setup run --route-profile policy` re-registers a strict one. Answers (1) and (3) list the privacy recipes with `assisted_review` as the
+   default choice, marked recommended only for a provider route with reviewed data-use evidence
+   (never the released Private recommendation a subscription reviewer would get); Private stays
+   selectable and warns that tasks stay local under it. Answer (2)'s Private confirmation defaults
+   to Yes: it is a narrowing the owner already chose. A first AI-powered review grant made
    later through `finishup --set` or `--privacy` asks the same conversation question once
    (default `local_agent_opt_in`); re-approving a policy that already sends work asks nothing and
    keeps its setting. `finishup privacy conversations agent-opt-in|owner-approval|local-only|
@@ -149,7 +205,8 @@ host already has.
     check any task asked for, and an owner-approval setting cannot hold a background request for a
     human, so it dispatches only where the owner's effective setting is `ai_powered` (including
     every released policy with inference on). A switched task gets AI-powered review on every
-    check; it does not start background advice.
+    check; it does not start background advice. Admission applies the same test, so a repository
+    whose tasks start local writes no advice row; the dispatch check stays as a backstop.
 
 ## Alternatives rejected
 
@@ -202,6 +259,12 @@ same; nothing here is platform-specific.
 `tests/unit/kernel/test_review_mode.py`, `tests/unit/application/test_check_review_mode.py`,
 `tests/unit/application/test_conversation_review_egress.py`,
 `tests/integration/application/test_conversation_review_mode.py`,
+`tests/integration/closure/test_review_mode_closing_review.py`,
+`tests/integration/service/test_review_mode_second_repository.py`,
+`tests/unit/protocol/test_review_mode_fixture.py`, `tests/unit/mcp/test_summaries_receipt_review_mode.py`,
+`tests/unit/cli/test_elevated.py`,
+`tests/unit/application/test_privacy_policy.py`, `tests/tui/test_commands.py`,
+`tests/integration/service/test_ready_composition.py`,
 `tests/unit/domain/test_decision_review_mode.py`, `tests/unit/domain/test_review_mode_render.py`,
 `tests/unit/privacy/test_conversation_review_policy.py`,
 `tests/unit/cli/test_privacy_conversations.py`,

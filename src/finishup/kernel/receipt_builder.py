@@ -91,6 +91,7 @@ from finishup.domain.task_statement import (
     task_statement_gap_detail,
 )
 from finishup.domain.values import (
+    Actor,
     ClaimId,
     EventId,
     EvidenceId,
@@ -163,7 +164,7 @@ from finishup.kernel.receipt_prediction import (
     predict_receipt_conclusion,
 )
 from finishup.kernel.reducers import is_material_event_family
-from finishup.kernel.review_mode import review_mode_switches
+from finishup.kernel.review_mode import ReviewModeSwitch, review_mode_switches
 from finishup.kernel.task_facts import (
     acknowledged_obligation_ids,
     disclosure_declarations,
@@ -1983,45 +1984,84 @@ _REVIEW_MODE_SWITCHES_LISTED: Final = 8
 _REVIEW_MODE_LOCAL_REASON_TEXT: Final[Mapping[str, str]] = {
     "owner_local_only": "the owner chose local checks only for this repository",
     "route_local_only": "the host connection is registered local-only (strict route)",
+    "review_disabled": "AI-powered review is turned off in the verification settings",
     "ai_review_not_set_up": "AI-powered review is not set up for this repository",
 }
 
 
-def _review_mode_sentence(context: ReceiptBuildContext) -> str:
-    """When and by whose authority the task switched review mode, and how its check ran.
+def _switch_credit(switch: ReviewModeSwitch, authors: Mapping[EventId, Actor]) -> str:
+    """Who the ledger recorded as the switch's author, and the payload's declared authority.
 
-    ADR-049: empty unless the task recorded a standing ``decision_recorded`` 1.1.0 switch, so a
-    receipt of a task without one keeps its exact bytes. Names each switch by ledger sequence,
-    event id and authority actor, never by its statement or rationale.
+    The envelope's actor and the service-derived assurance say who recorded it; the payload's
+    ``authority`` is only what that author declared, so it is labelled as declared.
     """
 
+    author = authors.get(switch.event_id)
+    recorded = (
+        ""
+        if author is None
+        else (
+            f"; recorded by {author.actor_id} ({author.actor_type.value}, "
+            f"{author.assurance.value.replace('_', '-')})"
+        )
+    )
+    return f"(event {switch.event_id}{recorded}; declared authority {switch.authority})"
+
+
+def _applicable_review_mode_sentence(check: CheckRecordedPayload | None) -> str:
+    """How the applicable check ran, from the mode it recorded; ``""`` when it recorded none."""
+
+    recorded = None if check is None else check.review_mode
+    if recorded is None:
+        return ""
+    if recorded.mode is ReviewMode.AI_POWERED:
+        return "The applicable check ran with AI-powered review requested."
+    if recorded.local_reason is not None:
+        reason = _REVIEW_MODE_LOCAL_REASON_TEXT[recorded.local_reason]
+        return f"The applicable check ran local checks only (FinishUP), because {reason}."
+    if recorded.source == "check_request":
+        return "The applicable check ran local checks only (FinishUP), as that check asked."
+    if recorded.source == "conversation_switch":
+        return "The applicable check ran local checks only (FinishUP)."
+    return (
+        "The applicable check ran local checks only (FinishUP); AI-powered review was not "
+        "requested for this task."
+    )
+
+
+def _review_mode_sentence(context: ReceiptBuildContext) -> str:
+    """When and by whom the task switched review mode, and how its applicable check ran.
+
+    ADR-049: names each standing ``decision_recorded`` 1.1.0 switch by ledger sequence, event id,
+    the actor the ledger recorded (with its assurance) and the declared authority, never by its
+    statement or rationale; then the mode the applicable check recorded. A task whose checks
+    recorded no mode and that never switched (a policy that predates the setting) keeps its
+    receipt bytes exactly.
+    """
+
+    check = context.applicable_check
     switches = review_mode_switches(context.projection)
     if not switches:
-        return ""
+        return _applicable_review_mode_sentence(check)
     listed = switches[-_REVIEW_MODE_SWITCHES_LISTED:]
     earlier = len(switches) - len(listed)
+    wanted = {switch.event_id for switch in listed}
+    authors = {
+        record.event_id: record.author for record in context.records if record.event_id in wanted
+    }
     rows = "; ".join(
         ("to AI-powered review" if switch.mode is ReviewMode.AI_POWERED else "back to local checks")
-        + f" at sequence {switch.sequence} (event {switch.event_id}, authority {switch.authority})"
+        + f" at sequence {switch.sequence} {_switch_credit(switch, authors)}"
         for switch in listed
     )
     sentence = f"Review mode switches recorded for this task: {rows}."
     if earlier:
         sentence += f" {earlier} earlier switch(es) are not listed; status lists the latest."
-    check = context.applicable_check
-    recorded = None if check is None else check.review_mode
     if check is None:
         return sentence + " No check applies to this receipt."
-    if recorded is None:
+    if check.review_mode is None:
         return sentence + " The applicable check recorded no review mode."
-    if recorded.mode is ReviewMode.AI_POWERED:
-        return sentence + " The applicable check ran with AI-powered review requested."
-    reason = (
-        ""
-        if recorded.local_reason is None
-        else f", because {_REVIEW_MODE_LOCAL_REASON_TEXT[recorded.local_reason]}"
-    )
-    return sentence + f" The applicable check ran local checks only (FinishUP){reason}."
+    return f"{sentence} {_applicable_review_mode_sentence(check)}"
 
 
 def _sections(

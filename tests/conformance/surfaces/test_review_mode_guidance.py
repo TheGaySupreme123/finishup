@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Final
 
@@ -64,8 +65,25 @@ def test_the_data_statement_is_coverage_bounded() -> None:
 
 def test_the_continuations_the_check_prints_are_explained() -> None:
     section = _section()
-    for reason in ("owner_local_only", "ai_review_not_set_up", "route_local_only"):
+    for reason in (
+        "owner_local_only",
+        "ai_review_not_set_up",
+        "route_local_only",
+        "review_disabled",
+        "conversation_default",
+        "switched_to_local",
+    ):
         assert f"`{reason}`" in section, reason
+
+
+def test_the_switch_draft_is_never_reused_verbatim() -> None:
+    """Review round 1 (P3): placeholders are named, and switching back is a new decision."""
+
+    section = _section()
+    assert "Use a fresh `event_id` and the real `occurred_at`" in section
+    assert 'publish a new decision (fresh `event_id`) with `review_mode: "local"`' in section
+    assert "a `final_review: true` check that omits `mode` runs that review" in section
+    assert "mode: semantic_if_configured" not in section
 
 
 def test_the_card_points_at_the_section_and_keeps_the_pinned_review_rule() -> None:
@@ -83,4 +101,7 @@ def test_the_publish_and_check_descriptors_point_at_the_review_topic() -> None:
         assert "decision_recorded 1.1.0 review_mode" in publish
         assert "finishup://guidance/review.md" in publish
         check = descriptor_for("check", profile).description
-        assert "Omitted mode follows the task's review_mode" in check
+        assert "Omit mode to run in the task's review mode (status review_mode" in check
+        assert "configured default" not in check
+        check_request = descriptor_for("check", profile).input_schema
+        assert "configured default" not in json.dumps(check_request, default=dict)

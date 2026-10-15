@@ -150,6 +150,107 @@ def test_status_line_names_the_setting_and_the_latest_switch() -> None:
     assert "an agent may turn on AI-powered review for a task when it helps" in line
 
 
+def test_a_released_local_only_says_review_is_not_set_up_not_that_agents_are_forbidden() -> None:
+    """Review round 1 (P3): an unset policy with inference off is not the owner's choice."""
+
+    released = {
+        "mode": "local",
+        "requested": "local",
+        "setting": "local_only",
+        "setting_explicit": False,
+        "ai_review_available": False,
+    }
+    line = status_review_mode_line(released)
+    assert "AI-powered review is not set up for this repository" in line
+    assert "agents may not" not in line
+    assert "agents may not" in status_review_mode_line({**released, "setting_explicit": True})
+    text = conversation_setting_line("local_only", explicit=False)
+    assert "not set up" in text and AI_REVIEW_SETUP_COMMAND in text
+    assert "agents may not" not in text
+    assert "agents may not" in conversation_setting_line("local_only")
+
+
+def test_status_says_when_ai_review_is_not_set_up_here() -> None:
+    """ADR-049 review round 2: a repository without its own grant cannot review yet."""
+
+    line = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "local",
+            "setting": "local_agent_opt_in",
+            "setting_explicit": True,
+            "ai_review_available": False,
+            "local_reason": "conversation_default",
+        }
+    )
+    assert line.endswith("AI-powered review is not set up for this repository yet.")
+    # Not repeated where the reason or the owner's local-only choice already says it.
+    opted = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "ai_powered",
+            "setting": "local_agent_opt_in",
+            "setting_explicit": True,
+            "ai_review_available": False,
+            "local_reason": "ai_review_not_set_up",
+        }
+    )
+    assert opted.count("not set up") == 1
+    chosen = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "local",
+            "setting": "local_only",
+            "setting_explicit": True,
+            "ai_review_available": False,
+        }
+    )
+    assert "not set up" not in chosen
+    missing = conversation_setting_line("ai_powered", explicit=False, grant_missing=True)
+    assert "AI-powered review is not set up for this repository" in missing
+    assert "every task runs with AI-powered review" not in missing
+    assert "agents may not" in conversation_setting_line(
+        "local_only", explicit=True, grant_missing=True
+    )
+
+
+def test_status_says_when_the_owner_setting_overrides_a_switch_to_local() -> None:
+    line = status_review_mode_line(
+        {
+            "mode": "ai_powered",
+            "requested": "local",
+            "setting": "ai_powered",
+            "setting_explicit": True,
+            "ai_review_available": True,
+            "switch_event_id": _SWITCH,
+            "switch_sequence": "4",
+        }
+    )
+    assert "this task asked for local checks, but the owner's setting reviews every task" in line
+    assert "every task runs with AI-powered review" in line
+
+
+def test_review_turned_off_has_its_own_line_and_continuation() -> None:
+    assert check_review_mode_line(
+        {"mode": "local", "source": "conversation_default", "local_reason": "review_disabled"}
+    ) == (
+        "Review mode: local (FinishUP); AI-powered review was asked for, but AI-powered review "
+        "is turned off in the verification settings."
+    )
+    assert "[verification] semantic is disabled" in review_mode_continuation("review_disabled")
+    line = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "ai_powered",
+            "setting": "ai_powered",
+            "setting_explicit": True,
+            "ai_review_available": True,
+            "local_reason": "route_local_only",
+        }
+    )
+    assert "the owner's setting asks for AI-powered review, but this host connection" in line
+
+
 def test_check_renderings_carry_the_line_and_the_continuation_within_bounds() -> None:
     wire = cast(dict[str, Any], json.loads(json.dumps(_check_result_wire())))
     wire["review_mode"] = {

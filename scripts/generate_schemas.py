@@ -3401,7 +3401,12 @@ def _add_check_review_mode(
         ],
         "properties": {
             "local_reason": {
-                "enum": ["ai_review_not_set_up", "owner_local_only", "route_local_only"],
+                "enum": [
+                    "ai_review_not_set_up",
+                    "owner_local_only",
+                    "review_disabled",
+                    "route_local_only",
+                ],
                 "type": "string",
             },
             "mode": {"enum": ["ai_powered", "local"], "type": "string"},
@@ -5035,7 +5040,9 @@ def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
 
     Optional and additive, closed tokens and ids only. ``mode`` is what the next check runs in;
     ``requested`` is the conversation's default or latest switch; ``local_reason`` says why a
-    conversation is local. ``switch_event_id`` and ``switch_sequence`` name the latest switch.
+    conversation is local. ``setting_explicit`` is whether the owner chose ``setting`` (a policy
+    that predates it has the released reading). ``switch_event_id`` and ``switch_sequence`` name
+    the latest switch.
     """
 
     definitions["status_review_mode"] = {
@@ -5047,6 +5054,7 @@ def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
                     "ai_review_not_set_up",
                     "conversation_default",
                     "owner_local_only",
+                    "review_disabled",
                     "route_local_only",
                     "switched_to_local",
                 ],
@@ -5058,6 +5066,7 @@ def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
                 "enum": ["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"],
                 "type": "string",
             },
+            "setting_explicit": {"type": "boolean"},
             "switch_event_id": {
                 "pattern": (
                     "^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -5066,7 +5075,7 @@ def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
             },
             "switch_sequence": {"pattern": "^(0|[1-9][0-9]{0,15})$", "type": "string"},
         },
-        "required": ["ai_review_available", "mode", "requested", "setting"],
+        "required": ["ai_review_available", "mode", "requested", "setting", "setting_explicit"],
         "type": "object",
     }
     success = cast(dict[str, JsonValue], definitions["success"])

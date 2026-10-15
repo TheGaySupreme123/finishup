@@ -744,11 +744,13 @@ class FinishUpRuntime:
         *,
         offer_recommended: bool = False,
         conversation_review: str | None = None,
+        ai_review_add_on: bool = False,
     ) -> object:
         """Hand the trusted questionnaire to the CLI implementation.
 
         ``conversation_review`` is the owner's first-run answer (ADR-049), drafted into the
-        policy instead of asked again.
+        policy instead of asked again. ``ai_review_add_on`` lists the AI-powered review recipes
+        with their own recommendation (an answer that adds AI-powered review).
         """
 
         from finishup.cli.privacy_setup import run_privacy_setup
@@ -789,6 +791,7 @@ class FinishUpRuntime:
                 offer_recommended=offer_recommended,
                 workspace_locator=self._cwd,
                 conversation_review=conversation,
+                ai_review_add_on=ai_review_add_on,
             )
         except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
             raise RuntimeError_(
@@ -1343,6 +1346,7 @@ class FinishUpRuntime:
         task_statement_sent, task_statement_disclosure = _task_statement_posture(policy_map)
         return PrivacyPosture(
             conversation_review=_conversation_review_token(policy_map, llm_enabled),
+            conversation_review_explicit=policy_map.get("conversation_review") is not None,
             recipe_outdated=_review_recipe_outdated(policy_map),
             credential_heuristic=_credential_heuristic_pair(response.get("credential_heuristic")),
             profile=profile if isinstance(profile, str) else None,

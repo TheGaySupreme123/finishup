@@ -2042,7 +2042,7 @@ def privacy_conversations_local_only(json_output: _JSON = False) -> None:
 
 @privacy_conversations_app.command("ai-powered")
 def privacy_conversations_ai_powered(json_output: _JSON = False) -> None:
-    """Every task starts with AI-powered review (the behaviour before this setting existed)."""
+    """Every task runs with AI-powered review (the behaviour before this setting existed)."""
 
     _finish(run_async(lambda: _run_conversation_review_command("ai-powered", json_output)))
 
@@ -2068,7 +2068,13 @@ async def _run_conversation_review_status(json_output: bool) -> int:
     policy = snapshot.composed_policy
     effective = policy.effective_conversation_review.value
     if not json_output:
-        typer.echo(conversation_setting_text(effective))
+        typer.echo(
+            conversation_setting_text(
+                effective,
+                explicit=policy.conversation_review is not None,
+                grant_missing=snapshot.grant_state == "missing",
+            )
+        )
         return 0
     _human_or_json(
         {
@@ -5459,8 +5465,13 @@ def elevated_prepare(
                 answers = cast(Callable[..., object], getattr(privacy, "recipe_answers"))(
                     cast(str, recipe), current, external
                 )
+                # ADR-049 review round 2: a repository's first grant starts its conversation
+                # setting where the conversation question would, not on the installation row.
                 candidate = cast(Callable[..., object], getattr(privacy, "build_candidate_policy"))(
-                    current, answers, now=datetime.now(UTC)
+                    current,
+                    answers,
+                    now=datetime.now(UTC),
+                    first_grant=getattr(snapshot, "grant_state", None) == "missing",
                 )
                 binding_builder = cast(
                     Callable[..., dict[str, JsonValue]],

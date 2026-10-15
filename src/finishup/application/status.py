@@ -30,7 +30,6 @@ from finishup.application.status_faults import (
     status_stage,
 )
 from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
-from finishup.domain.events import ReviewMode
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingOrigin
 from finishup.domain.observation import AdviceSnapshot
 from finishup.domain.privacy import ProjectionItemAuthorship
@@ -364,12 +363,14 @@ async def _task_review_mode(
             exc, component="status", operation="conversation_review_read_failed"
         )
         return None
+    policy = getattr(app, "verification_policy", None)
     conversation = conversation_review_mode_from_switches(
         switches,
         context.setting,
         ai_review_available=context.ai_review_available,
         setting_explicit=context.setting_explicit,
         route_allows_review=route_profile != "strict",
+        review_enabled=getattr(policy, "semantic", None) != "disabled",
     )
     return conversation, context
 
@@ -384,6 +385,7 @@ def _status_review_mode_body(
         "mode": conversation.mode.value,
         "requested": conversation.requested.value,
         "setting": conversation.setting.value,
+        "setting_explicit": context.setting_explicit,
         "ai_review_available": context.ai_review_available,
     }
     if conversation.local_reason is not None:
@@ -416,13 +418,15 @@ def _task_local_by_choice(
 
     Such a check records a route that did not require AI-powered review (ADR-049), so closure
     readiness must not ask for a review it will never run. A policy that predates the setting,
-    with no switch, keeps the released requirement, exactly as its checks do.
+    with no switch, keeps the released requirement, exactly as its checks do; under the owner's
+    "every task" setting no task is local by choice, so an agent's switch never waives the
+    owner's required review (review round 1).
     """
 
     if resolved is None:
         return False
     conversation, context = resolved
-    return conversation.mode is ReviewMode.LOCAL and (
+    return conversation.local_by_choice and (
         context.setting_explicit or bool(conversation.switches)
     )
 

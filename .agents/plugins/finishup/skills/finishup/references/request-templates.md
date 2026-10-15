@@ -771,11 +771,12 @@ and limit. Absence from the latest check's returned findings is not proof of res
 ## `check`: whole case
 
 Omit `scope` for the whole case. Two empty arrays are also whole-case semantics, but omission is
-clearer. When relying on the configured review default, omit `mode`; the runtime applies the
-effective policy. Select `semantic_required` when the user, policy, or named acceptance criterion
-requires AI-powered review. Use `semantic_if_configured` only when review is known to be optional,
-and reserve `deterministic_only` for explicitly local/structural work or a deliberate no-egress
-choice. The examples use the configured default and the accepted bounded finding cap of `10`.
+clearer. Omit `mode` to run in the task's review mode (`status` `review_mode`); the effective
+privacy policy still governs what is sent. Select `semantic_required` when the user, policy, or
+named acceptance criterion requires AI-powered review. Use `semantic_if_configured` only when
+review is known to be optional, and reserve `deterministic_only` for explicitly local/structural
+work or a deliberate no-egress choice. The examples omit `mode` and use the accepted bounded
+finding cap of `10`.
 
 ```json
 {

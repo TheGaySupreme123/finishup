@@ -557,3 +557,30 @@ def test_the_session_header_middle_truncates_a_long_project_path() -> None:
     assert ">_ FinishUP (v0.1.0)" in joined
     assert "…" in joined
     assert "/privacy to change" in joined
+
+
+def test_privacy_posture_says_review_is_not_set_up_in_a_repository_without_a_grant() -> None:
+    """ADR-049 review round 2: `/privacy` reads the repository, not the inherited row."""
+
+    from finishup.tui.models import PrivacyPosture as _Posture
+
+    missing = _Posture(
+        profile="assisted_review",
+        llm_inference_enabled=True,
+        readable=True,
+        repository_grant_state="missing",
+        conversation_review="ai_powered",
+        conversation_review_explicit=False,
+    )
+    summary = missing.conversation_review_summary or ""
+    assert "AI-powered review is not set up for this repository" in summary
+    assert "every task runs with AI-powered review" not in summary
+    released_off = _Posture(
+        profile="private",
+        llm_inference_enabled=False,
+        readable=True,
+        repository_grant_state="granted",
+        conversation_review="local_only",
+        conversation_review_explicit=False,
+    )
+    assert "agents may not" not in (released_off.conversation_review_summary or "")

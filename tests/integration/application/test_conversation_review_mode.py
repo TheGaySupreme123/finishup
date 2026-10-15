@@ -292,15 +292,28 @@ async def test_a_mid_task_switch_and_switching_back_reach_check_status_and_recei
         assert "Review mode switches recorded for this task: to AI-powered review at" in (
             limitations
         )
-        assert f"(event {on}, authority harness:review-mode)" in limitations
+        # Review round 1 (P3): each switch is credited to the actor the ledger recorded, with
+        # its assurance; the payload's authority is labelled as declared.
+        recorded_by = "recorded by harness:review-mode (harness, self-asserted)"
+        assert f"(event {on}; {recorded_by}; declared authority harness:review-mode)" in (
+            limitations
+        )
         assert "back to local checks at sequence" in limitations
-        assert f"(event {off}, authority harness:review-mode)" in limitations
+        assert f"(event {off}; {recorded_by}; declared authority harness:review-mode)" in (
+            limitations
+        )
         assert "The applicable check ran local checks only (FinishUP)." in limitations
         assert _RATIONALE not in limitations
 
-        # A task that never switched keeps its receipt free of the sentence.
+        # A task that never switched lists no switches, but its receipt says how its check ran
+        # (review round 1, P2-6).
         plain = await untouched.check()
-        assert "Review mode switches" not in await untouched.limitations(plain)
+        untouched_limitations = await untouched.limitations(plain)
+        assert "Review mode switches" not in untouched_limitations
+        assert (
+            "The applicable check ran local checks only (FinishUP); AI-powered review was not "
+            "requested for this task."
+        ) in untouched_limitations
 
 
 async def test_the_composed_reader_keeps_a_legacy_install_released(tmp_path: Path) -> None:
@@ -316,6 +329,9 @@ async def test_the_composed_reader_keeps_a_legacy_install_released(tmp_path: Pat
         task = await _start(service, workspace, "Legacy task")
         checked = await task.check()
         assert checked.review_mode is None
+        # Released receipt bytes: a check that recorded no mode adds no review-mode sentence.
+        assert "Review mode" not in await task.limitations(checked)
+        assert "review was not requested for this task" not in await task.limitations(checked)
         review_mode = cast(Mapping[str, object], (await task.status_projected())["review_mode"])
         assert review_mode["mode"] == "local"
         assert review_mode["setting"] == "local_only"

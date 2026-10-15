@@ -30,8 +30,9 @@ _REQUEST: dict[str, Any] = {
 }
 
 
-def _request(mode: str) -> CheckRequest:
-    return CheckRequest.model_validate({**_REQUEST, "mode": mode})
+def _request(mode: str, *, final_review: bool = False) -> CheckRequest:
+    body = {**_REQUEST, "mode": mode, **({"final_review": True} if final_review else {})}
+    return CheckRequest.model_validate(body)
 
 
 def _frozen(*modes: ReviewMode) -> tuple[Any, tuple[EventId, ...]]:
@@ -58,14 +59,19 @@ def _resolve(
     *switches: ReviewMode,
     explicit: bool = False,
     route: Literal["policy", "strict"] = "policy",
+    final_review: bool = False,
+    review_used: bool = False,
+    review_enabled: bool = True,
 ) -> tuple[str | None, CheckReviewMode | None, str | None, tuple[EventId, ...]]:
     frozen, ids = _frozen(*switches)
     request, recorded, override = _resolve_check_review_mode(
-        _request(mode),
+        _request(mode, final_review=final_review),
         mode_explicit=explicit,
         frozen=frozen,
         context=context,
         route_profile=route,
+        review_used=review_used,
+        review_enabled=review_enabled,
     )
     return request.mode, recorded, override, ids
 
@@ -171,3 +177,120 @@ def test_an_explicit_local_check_in_a_local_task_is_no_missing_review() -> None:
         "deterministic_only", _HYBRID, ReviewMode.AI_POWERED, explicit=True
     )
     assert override is None
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_under_every_task_a_switch_to_local_keeps_the_required_review(explicit: bool) -> None:
+    """Review round 1 (P2-1): explicit ``ai_powered`` and the released reading.
+
+    The no-mode check keeps its configured mode and verification policy (no override), so a
+    missing review stays the bounding gap it was; the recorded mode names the owner's setting,
+    not the agent's switch.
+    """
+
+    context = ConversationReviewContext(ConversationReview.AI_POWERED, True, explicit)
+    mode, recorded, override, _ = _resolve(
+        "semantic_required", context, ReviewMode.AI_POWERED, ReviewMode.LOCAL
+    )
+    assert (mode, override) == ("semantic_required", None)
+    assert recorded == CheckReviewMode(ReviewMode.AI_POWERED, "conversation_default")
+    # A check that names local checks runs local but cannot lower the requirement either.
+    mode, recorded, override, _ = _resolve(
+        "deterministic_only", context, ReviewMode.LOCAL, explicit=True
+    )
+    assert (mode, override) == ("deterministic_only", None)
+    assert recorded == CheckReviewMode(ReviewMode.LOCAL, "check_request")
+
+
+def test_the_closing_review_of_a_task_that_switched_back_runs_ai_powered() -> None:
+    """Review round 1 (P2-2a): the Stop gate's ``final_review: true`` with no mode is honoured."""
+
+    mode, recorded, override, _ = _resolve(
+        "semantic_required",
+        _HYBRID,
+        ReviewMode.AI_POWERED,
+        ReviewMode.LOCAL,
+        final_review=True,
+        review_used=True,
+    )
+    assert (mode, override) == ("semantic_required", None)
+    assert recorded == CheckReviewMode(ReviewMode.AI_POWERED, "check_request")
+
+
+def test_the_closing_review_after_one_requested_review_runs_ai_powered() -> None:
+    """Review round 1 (P2-2b): no switch, one check that named an AI-powered mode."""
+
+    mode, recorded, override, _ = _resolve(
+        "semantic_if_configured", _HYBRID, final_review=True, review_used=True
+    )
+    assert (mode, override) == ("semantic_if_configured", None)
+    assert recorded == CheckReviewMode(ReviewMode.AI_POWERED, "check_request")
+
+
+def test_a_final_check_in_a_task_that_never_used_review_stays_local() -> None:
+    mode, recorded, override, _ = _resolve("semantic_required", _HYBRID, final_review=True)
+    assert (mode, override) == ("deterministic_only", "optional")
+    assert recorded == CheckReviewMode(ReviewMode.LOCAL, "conversation_default")
+    # A routine check after review was used stays in the task's mode.
+    mode, _recorded, _override, _ = _resolve("semantic_required", _HYBRID, review_used=True)
+    assert mode == "deterministic_only"
+
+
+def test_the_closing_review_under_owner_local_only_stays_local_and_says_why() -> None:
+    context = ConversationReviewContext(ConversationReview.LOCAL_ONLY, True, True)
+    mode, recorded, override, _ = _resolve(
+        "semantic_required", context, final_review=True, review_used=True
+    )
+    # The recorded reason makes the closing review undeliverable rather than owed forever.
+    assert (mode, override) == ("deterministic_only", "optional")
+    assert recorded == CheckReviewMode(ReviewMode.LOCAL, "check_request", "owner_local_only")
+
+
+def test_an_explicit_review_request_on_a_strict_route_records_the_route() -> None:
+    mode, recorded, override, _ = _resolve(
+        "semantic_if_configured", _HYBRID, explicit=True, route="strict"
+    )
+    assert (mode, override) == ("semantic_if_configured", None)
+    assert recorded == CheckReviewMode(ReviewMode.LOCAL, "check_request", "route_local_only")
+
+
+def test_review_turned_off_in_the_verification_settings_is_not_called_a_switch_back() -> None:
+    mode, recorded, override, (switch,) = _resolve(
+        "deterministic_only", _HYBRID, ReviewMode.AI_POWERED, review_enabled=False
+    )
+    assert (mode, override) == ("deterministic_only", "optional")
+    assert recorded == CheckReviewMode(
+        ReviewMode.LOCAL, "conversation_switch", "review_disabled", switch
+    )
+
+
+def test_an_unreadable_setting_fails_closed() -> None:
+    """Review round 1 (P3): a failed read runs no review a no-mode check did not ask for.
+
+    The configured requirement still decides (no override), so a required review stays a
+    bounding gap; a check that named its mode keeps it and the gateway enforces the policy.
+    """
+
+    frozen, _ = _frozen()
+    request, recorded, override = _resolve_check_review_mode(
+        _request("semantic_required"), mode_explicit=False, frozen=frozen, context="unreadable"
+    )
+    assert (request.mode, recorded, override) == ("deterministic_only", None, None)
+    request, recorded, override = _resolve_check_review_mode(
+        _request("semantic_required"), mode_explicit=True, frozen=frozen, context="unreadable"
+    )
+    assert (request.mode, recorded, override) == ("semantic_required", None, None)
+
+
+def test_the_closing_review_with_review_turned_off_says_it_cannot_run() -> None:
+    mode, recorded, override, _ = _resolve(
+        "deterministic_only",
+        _HYBRID,
+        ReviewMode.AI_POWERED,
+        ReviewMode.LOCAL,
+        final_review=True,
+        review_used=True,
+        review_enabled=False,
+    )
+    assert (mode, override) == ("deterministic_only", "optional")
+    assert recorded == CheckReviewMode(ReviewMode.LOCAL, "check_request", "review_disabled")

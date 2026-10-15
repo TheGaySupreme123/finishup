@@ -268,8 +268,14 @@ def build_candidate_policy(
     answers: PrivacySetupAnswers,
     *,
     now: datetime,
+    first_grant: bool = False,
 ) -> PrivacyPolicy:
-    """Materialize one reviewed questionnaire into the closed policy type."""
+    """Materialize one reviewed questionnaire into the closed policy type.
+
+    ``first_grant`` is a repository's first grant of its own (ADR-049): its conversation setting,
+    when no answer carries one, starts where the conversation question would
+    (``_first_grant_conversation_default``), never on what the installation row inherited.
+    """
 
     if type(current) is not PrivacyPolicy or type(answers) is not PrivacySetupAnswers:
         raise TypeError("privacy_setup_candidate_invalid")
@@ -362,7 +368,7 @@ def build_candidate_policy(
         # A recipe change keeps the owner's credential-heuristic choice (issue #982); only
         # ``finishup privacy credential-heuristic`` moves it.
         current.credential_heuristic,
-        _candidate_conversation_review(current, answers),
+        _candidate_conversation_review(current, answers, first_grant=first_grant),
     )
     identity = encode_privacy_policy_json(placeholder)
     identity.pop("policy_digest")
@@ -370,7 +376,7 @@ def build_candidate_policy(
 
 
 def _candidate_conversation_review(
-    current: PrivacyPolicy, answers: PrivacySetupAnswers
+    current: PrivacyPolicy, answers: PrivacySetupAnswers, *, first_grant: bool = False
 ) -> ConversationReview | None:
     """The conversation setting a candidate carries (ADR-049).
 
@@ -384,6 +390,9 @@ def _candidate_conversation_review(
 
     if answers.conversation_review is not None:
         return answers.conversation_review
+    if first_grant and answers.network_egress:
+        # A repository's first grant that sends work (the chat grant path asks no question).
+        return _first_grant_conversation_default(current)
     if current.conversation_review is not None:
         return current.conversation_review
     current_llm = next(
@@ -584,24 +593,73 @@ def _conversation_review_prompt(default: ConversationReview) -> ConversationRevi
         typer.echo("Please enter 1, 2, 3, or 4.")
 
 
+def _first_grant_conversation_default(current: PrivacyPolicy) -> ConversationReview:
+    """Where a repository's first grant starts the question (ADR-049, review round 1).
+
+    The recommended hybrid, or the installation row's own explicit setting where that is
+    narrower (the owner chose local only, or to approve each review). Whatever the installation
+    row sends, a new repository is asked, never handed another repository's widening.
+    """
+
+    if current.conversation_review in {
+        ConversationReview.LOCAL_ONLY,
+        ConversationReview.LOCAL_OWNER_APPROVAL,
+    }:
+        return cast(ConversationReview, current.conversation_review)
+    return ConversationReview.LOCAL_AGENT_OPT_IN
+
+
+# ADR-049 review round 1: Private stays selectable when the owner adds AI-powered review, but it
+# sends nothing for review, so an agent's opt-in (or "every task") cannot run under it.
+PRIVATE_ADD_ON_WARNING: Final = (
+    "Private sends nothing for AI-powered review: every task stays on local checks, and an "
+    "agent that turns on AI-powered review for a task stays local, until you choose another "
+    "option with 'finishup --privacy'."
+)
+
+_ADD_ON_SETTINGS: Final = frozenset(
+    {
+        ConversationReview.LOCAL_AGENT_OPT_IN,
+        ConversationReview.LOCAL_OWNER_APPROVAL,
+        ConversationReview.AI_POWERED,
+    }
+)
+
+
+def adds_ai_review(conversation_review: ConversationReview | None) -> bool:
+    """Whether a setup answer adds AI-powered review (its privacy step lists the AI recipes)."""
+
+    return conversation_review in _ADD_ON_SETTINGS
+
+
 def _with_conversation_question(
     current: PrivacyPolicy,
     answers: PrivacySetupAnswers,
     explicit: ConversationReview | None = None,
+    *,
+    first_grant: bool = False,
 ) -> PrivacySetupAnswers:
     """Carry the conversation setting into a draft (ADR-049).
 
     ``explicit`` is an answer the caller already took (first-run setup asks it as its first
-    question): it is used as is and nothing more is asked. Otherwise the question is asked only
-    when this draft turns AI-powered review on where it was off; re-approving a policy that
-    already sends work keeps the owner's setting, which ``finishup privacy conversations``
-    changes on its own.
+    question): it is used as is and nothing more is asked. Otherwise the question is asked when
+    this draft turns AI-powered review on where it was off, and on a repository's first grant
+    (``first_grant``) whatever the installation row it inherits already sends; re-approving a
+    repository's policy that already sends work keeps the owner's setting, which
+    ``finishup privacy conversations`` changes on its own.
     """
 
     if explicit is not None:
         return replace(answers, conversation_review=explicit)
     if not answers.network_egress or answers.conversation_review is not None:
         return answers
+    if first_grant:
+        return replace(
+            answers,
+            conversation_review=_conversation_review_prompt(
+                _first_grant_conversation_default(current)
+            ),
+        )
     current_llm = next(
         item for item in current.channel_policies if item.channel is EgressChannel.LLM_INFERENCE
     )
@@ -1457,6 +1515,7 @@ def _choose_candidate(
     fallback: ProviderBinding | None = None,
     ai_review_add_on: bool = False,
     conversation_review: ConversationReview | None = None,
+    first_grant: bool = False,
 ) -> PrivacyPolicy | None:
     """Select the exact candidate policy, or ``None`` when the user declined outright.
 
@@ -1475,6 +1534,8 @@ def _choose_candidate(
             "run either way."
         )
         recipe = _recipe_prompt(recommended_ai or "assisted_review", recommended_ai)
+        if recipe == "private":
+            typer.echo(PRIVATE_ADD_ON_WARNING)
         if recipe == "custom":
             return _confirmed_candidate(
                 current,
@@ -1485,6 +1546,7 @@ def _choose_candidate(
                         credential_probe=credential_probe_authorized,
                     ),
                     conversation_review,
+                    first_grant=first_grant,
                 ),
                 "Use this exact custom privacy policy?",
                 default=False,
@@ -1497,7 +1559,9 @@ def _choose_candidate(
             answers = replace(answers, updates=update_checks_override)
         return _confirmed_candidate(
             current,
-            _with_conversation_question(current, answers, conversation_review),
+            _with_conversation_question(
+                current, answers, conversation_review, first_grant=first_grant
+            ),
             f"Use this exact privacy policy ({_RECIPE_LABELS[recipe]})?",
             default=True,
         )
@@ -1515,7 +1579,9 @@ def _choose_candidate(
         )
         if update_checks_override is not None:
             answers = replace(answers, updates=update_checks_override)
-        answers = _with_conversation_question(current, answers, conversation_review)
+        answers = _with_conversation_question(
+            current, answers, conversation_review, first_grant=first_grant
+        )
         candidate = _confirmed_candidate(
             current,
             answers,
@@ -1543,6 +1609,7 @@ def _choose_candidate(
                     credential_probe=credential_probe_authorized,
                 ),
                 conversation_review,
+                first_grant=first_grant,
             ),
             "Use this exact custom privacy policy?",
             default=False,
@@ -1555,9 +1622,12 @@ def _choose_candidate(
         answers = replace(answers, updates=update_checks_override)
     return _confirmed_candidate(
         current,
-        _with_conversation_question(current, answers, conversation_review),
+        _with_conversation_question(current, answers, conversation_review, first_grant=first_grant),
         f"Create this exact privacy proposal ({_RECIPE_LABELS[recipe]})?",
-        default=False,
+        # ADR-049 review round 1: the owner's explicit "local only" setup answer is a narrowing
+        # they already chose; pressing Enter applies it rather than leaving an existing grant
+        # reviewing tasks the owner just said must stay local.
+        default=recipe == "private" and conversation_review is ConversationReview.LOCAL_ONLY,
     )
 
 
@@ -1616,6 +1686,7 @@ async def run_privacy_setup(
             fallback=_configured_fallback_binding(),
             ai_review_add_on=ai_review_add_on,
             conversation_review=conversation_review,
+            first_grant=snapshot.grant_state == "missing",
         )
     except ValueError as error:
         return PrivacySetupReport(
