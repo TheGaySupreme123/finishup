@@ -142,7 +142,12 @@ spellings as `codex mcp add`. The project source and the committed repository tr
 portable bare command with no environment, so neither carries a machine path. Inspection and
 removal still recognize a marker-consistent cache when the launcher cannot be proved; activation
 preview and apply refuse an unproven launcher rather than writing a command resolved through
-`PATH`. Plugin hook commands in that cache are unchanged by this amendment.
+`PATH`. Plugin hook commands are outside this amendment. In the activation cache, the project
+source, and the committed tree they stay the portable basename `finishup`, with no isolation
+environment. Codex records hook trust as a hash of the command; rewriting a cache hook command
+would mark an already-trusted hook modified and leave it inactive until the owner reviews it
+again in `/hooks`. The hook configuration has no environment field, so the isolation pair cannot
+be attached beside the command without changing that hash.
 
 ## Reverse states and rollback
 

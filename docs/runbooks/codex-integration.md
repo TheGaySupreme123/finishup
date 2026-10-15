@@ -702,7 +702,10 @@ absence only; a modified or untrusted byte-present tree is `installed_not_activa
 
 Complete Codex's own trust step in a fresh native process before testing hook delivery. Open
 `/hooks`, review the commands from the intended FinishUP plugin, and approve those hooks through
-Codex's normal review UI. Confirm the hooks are active, then start a fresh session so its
+Codex's normal review UI. Those commands name `finishup` by basename. They are not the absolute
+launcher written into the cache `.mcp.json`. Approving them trusts that basename; editing the
+command later marks the hook modified and inactive until this review is repeated. Confirm the
+hooks are active, then start a fresh session so its
 `SessionStart` runs with that trust. New or changed hooks can remain installed but inactive;
 the plugin's skill and MCP tools may still work in that state. A non-interactive run with no
 observation rows is therefore not, by itself, evidence of a FinishUP ingestion failure. Installation
@@ -2186,8 +2189,15 @@ command and drops the environment is not accepted and does not register a user-l
 the continuation is to rerun the connection. Reconnecting rewrites a marker-consistent cache
 that still names a bare `finishup` or a legacy `yoetz` command; repeating that activation changes
 nothing. Disconnect removes the cache, including the bound entry, and leaves the portable project
-source in place. Plugin hook commands in the cache still name `finishup` by basename; this repair
-covers the MCP entry the plugin starts. If the installed CLI cannot prove its console script,
+source in place. Plugin hook commands are not pinned. In the activation cache, the project
+source, and the committed repository tree they stay the portable basename (`finishup hooks …`),
+with no isolation environment. Codex records hook trust as a hash of that command. Rewriting a
+cache hook command changes the hash, so an already-approved hook becomes modified and stays
+inactive until `/hooks` reviews it again. The hook schema has no environment field, so isolation
+cannot be attached beside the command without changing that hash. A legacy `yoetz` hook string
+is replaced only when activation recopies the current portable source, which still names
+`finishup` by basename. This repair covers the MCP entry the plugin starts. If the installed
+CLI cannot prove its console script,
 activation preview refuses rather than writing a command resolved through `PATH`.
 
 Absolute external launchers are managed by the same preview/install/status/remove flow (#654).

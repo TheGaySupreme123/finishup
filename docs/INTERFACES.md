@@ -6516,8 +6516,12 @@ repository tree stay the portable bare `finishup` command with no environment. A
 cache whose `.mcp.json` still names a bare `finishup` or a legacy `yoetz` command is a prior
 managed render: the next activation preview plans a whole-directory replacement, and apply writes
 the bound entry. Repeating that activation is a no-op. Removal deletes the cache, including the
-bound entry, and leaves the portable project source in place. Plugin hook commands in the cache
-still name `finishup` by basename. Apply seeds the versioned cache with the exact previewed host-rendered bytes
+bound entry, and leaves the portable project source in place. Plugin hook commands in the
+cache, the project source, and the committed tree are not bound: they stay the portable
+basename `finishup` with no environment. Codex hook trust hashes that command, and the hook
+schema has no environment field, so activation does not rewrite cache hook commands onto the
+proven launcher. A legacy `yoetz` hook string is replaced only when activation recopies the
+current portable source, which still names `finishup` by basename. Apply seeds the versioned cache with the exact previewed host-rendered bytes
 (`plugin add` copies the canonical source, and apply then replaces that marker-identified copy in
 one atomic whole-directory swap) and verifies the result against the bound install digest. A cache
 tree that carries a valid `yoetz.codex-plugin-install/1` marker and byte-matches that marker's own
