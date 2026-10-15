@@ -108,6 +108,7 @@ from yoetz.service.control_protocol import (
 )
 
 if TYPE_CHECKING:
+    from yoetz.service.confidential_protocol import OwnerReceiptViewTarget
     from yoetz.service.lifecycle import SingletonHolder
 
 __all__ = [
@@ -1290,6 +1291,17 @@ class ServiceClient(ControlClientPort):
                 route_profile=route_profile,
             ),
         )
+
+    def owner_receipt_view_target(self, request: ReceiptRequest) -> OwnerReceiptViewTarget:
+        """The human-control target that binds an owner view to this request on this connection.
+
+        The connection nonce never leaves the client; the target carries only its digest.
+        """
+
+        from yoetz.service.owner_view import owner_receipt_view_target
+
+        self._ensure_live()
+        return owner_receipt_view_target(request, self._session.connection_nonce)
 
     async def receipt(
         self, request: ReceiptRequest, *, deadline_ms: int | None = None

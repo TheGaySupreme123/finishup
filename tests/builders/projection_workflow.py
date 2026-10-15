@@ -395,9 +395,13 @@ class ProjectionWorkflow:
 
 
 async def project_case(
-    app: Application, case: ProjectionCase, seed: int
+    app: Application,
+    case: ProjectionCase,
+    seed: int,
+    *,
+    context: ClientProjectionContext | None = None,
 ) -> Mapping[str, JsonValue]:
-    """Run the daemon's exact post-commit projection for an MCP bridge client."""
+    """Run the daemon's exact post-commit projection, for an MCP bridge client by default."""
 
     facts = await app.projection_binding_facts(case.method, case.request_body, case.internal)
     rpc_id = protocol_id("rpc_", seed)
@@ -419,7 +423,8 @@ async def project_case(
         ),
     )
     projected = await app.project_result_for_client(
-        ClientProjectionContext(
+        context
+        or ClientProjectionContext(
             ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
         ),
         binding,

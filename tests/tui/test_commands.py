@@ -866,7 +866,8 @@ async def test_findings_command_lists_each_item_with_its_state(make_app: MakeApp
 
 
 async def test_receipt_offers_the_supported_formats(make_app: MakeApp) -> None:
-    app = make_app()
+    runtime = FakeRuntime()
+    app = make_app(runtime=runtime)
     app._active_task_title = "upload"  # pyright: ignore[reportPrivateUsage]
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
@@ -877,7 +878,40 @@ async def test_receipt_offers_the_supported_formats(make_app: MakeApp) -> None:
         assert labels == ["Markdown", "Plain text", "JSON"]
         await pilot.press("enter")
         await pilot.pause()
+        # Every receipt is the agents' view unless the owner asks for theirs (ADR-009).
+        audience = app.open_view
+        assert audience is not None
+        labels = [option.label for option in audience.options]  # type: ignore[attr-defined]
+        assert labels == ["The receipt your agents see", "Your full receipt"]
+        await pilot.press("enter")
+        await pilot.pause()
         assert "Receipt for upload" in transcript(app)
+    assert runtime.receipts == [("upload", "markdown", False)]
+
+
+async def test_your_full_receipt_asks_before_handing_over_the_terminal(
+    make_app: MakeApp,
+) -> None:
+    runtime = FakeRuntime()
+    app = make_app(runtime=runtime)
+    app._active_task_title = "upload"  # pyright: ignore[reportPrivateUsage]
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await run_command(pilot, app, "/receipt")
+        await pilot.press("enter")  # Markdown
+        await pilot.pause()
+        await pilot.press("down", "enter")  # Your full receipt
+        await pilot.pause()
+        confirm = app.open_view
+        assert confirm is not None
+        assert confirm.view_name == "confidential"
+        body = "\n".join(confirm._body)  # type: ignore[attr-defined]
+        assert "Touch ID or your login password" in body
+        assert runtime.receipts == []  # nothing runs before the owner continues
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "Receipt for upload" in transcript(app)
+    assert runtime.receipts == [("upload", "markdown", True)]
 
 
 # ---------------------------------------------------------------------------

@@ -353,6 +353,9 @@ class ClientProjectionContext:
     client_kind: ControlClientKind
     render_mode: ProjectionRenderMode
     output_is_controlling_tty: bool
+    # Set only by the service after it consumed a human-control owner-view grant for this exact
+    # receipt call (``service/owner_view.py``); never derived from a client assertion.
+    owner_view: bool = False
 
     def __post_init__(self) -> None:
         if type(self.client_kind) is not ControlClientKind:
@@ -361,6 +364,8 @@ class ClientProjectionContext:
             raise TypeError("projection_render_mode_invalid")
         if type(self.output_is_controlling_tty) is not bool:
             raise TypeError("projection_tty_fact_invalid")
+        if type(self.owner_view) is not bool:
+            raise TypeError("projection_owner_view_invalid")
 
     @classmethod
     def fail_safe(cls, client_kind: ControlClientKind) -> ClientProjectionContext:
@@ -441,11 +446,12 @@ def resolve_client_disclosure_sink(context: ClientProjectionContext) -> LocalDis
 
     if type(context) is not ClientProjectionContext:
         raise TypeError("projection_context_invalid")
-    if (
-        context.client_kind is ControlClientKind.CLI
-        and context.render_mode is ProjectionRenderMode.HUMAN_READABLE
-        and context.output_is_controlling_tty
-    ):
+    # Every surface is agent-facing by default (ADR-009 round 3). A terminal, a human-readable
+    # rendering or a client kind is a presentation fact an agent can produce (a pseudo-terminal
+    # satisfies every terminal test), so none of them selects the owner's view. Only a grant the
+    # human-control ceremony minted after reauthentication does, and only for a CLI or terminal
+    # interface receipt call that the service matched to it.
+    if context.owner_view and context.client_kind in {ControlClientKind.CLI, ControlClientKind.UI}:
         return LocalDisclosureSink.LOCAL_HUMAN_VIEW
     return LocalDisclosureSink.AGENT_CONTEXT
 
@@ -2981,6 +2987,51 @@ class Application:
             for item in items
             if item.item_id.startswith(("coordination-resource-", "coordination-advice-resource-"))
         )
+        # Receipt prose is Yoetz-authored, but it can spell repository names (ADR-009, ADR-035).
+        # For an agent each name span is its own repository-excerpt item, so the excerpt ceiling
+        # and per-name provenance decide that span alone; the leaf's ordinary-category item
+        # carries the prose with every name span already withheld. Owner views skip this.
+        from yoetz.application.receipt_projection import (
+            HUMAN_TEXT_MAX_CHARS,
+            ReceiptExcerpt,
+            bounded_omitted_pointers,
+            withheld_text,
+        )
+
+        def field_chars(pointer: str) -> int | None:
+            # ``human_text`` has its own 32,768-character wire bound; a document field keeps
+            # at least its original length (see ``withheld_text``).
+            return HUMAN_TEXT_MAX_CHARS if pointer == "/human_text" else None
+
+        receipt_excerpt_items: dict[str, ReceiptExcerpt] = {}
+        leaf_excerpts: dict[str, list[ReceiptExcerpt]] = {}
+        receipt_provenance: ProjectionProvenanceContext | None = None
+        if type(result) is ReceiptInternalResult and sink is LocalDisclosureSink.AGENT_CONTEXT:
+            from yoetz.application.receipt_projection import receipt_excerpts
+
+            excerpts, authorship, attribution_frontier = await receipt_excerpts(
+                self.runtime, result
+            )
+            if result.writer_id is not None:
+                receipt_provenance = ProjectionProvenanceContext(
+                    result.session_id,
+                    result.writer_id,
+                    attribution_frontier,
+                    (),
+                    authorship,
+                )
+            for index, excerpt in enumerate(excerpts):
+                receipt_excerpt_items[excerpt.origin] = excerpt
+                leaf_excerpts.setdefault(excerpt.pointer, []).append(excerpt)
+                items.append(
+                    CandidateContextItem(
+                        f"receipt-excerpt-{index}",
+                        DataCategory.REPOSITORY_EXCERPT,
+                        scope,
+                        excerpt.origin,
+                        canonical_encode(excerpt.path),
+                    )
+                )
         for ordinal, (pointer, value) in enumerate(_leaves(source), start=1):
             if any(pointer.startswith(prefix) for prefix in coordination_resource_prefixes):
                 continue
@@ -2997,20 +3048,25 @@ class Application:
             )
             if classification == "public_structural":
                 continue
+            spans = leaf_excerpts.get(pointer)
             items.append(
                 CandidateContextItem(
                     f"leaf-{ordinal}",
                     classification,
                     scope,
                     pointer,
-                    canonical_encode(value),
+                    canonical_encode(
+                        withheld_text(value, spans, max_chars=field_chars(pointer))
+                        if type(value) is str and spans
+                        else value
+                    ),
                 )
             )
         source_request_id = source.get("request_id")
         projection_request_id = (
             source_request_id if type(source_request_id) is str else self.ids.new(IdKind.REQUEST)
         )
-        provenance: ProjectionProvenanceContext | None = None
+        provenance: ProjectionProvenanceContext | None = receipt_provenance
         if all(source.get(key) is not None for key in ("session_id", "writer_id")) and (
             source.get("subject_frontier") is not None or source.get("frontier") is not None
         ):
@@ -3067,21 +3123,44 @@ class Application:
 
             assert self.project_application is not None
             await revalidate_status_advice_sources(self.project_application, source, sink)
-        # Digest-bound JSON receipt documents cannot be partly rewritten with omission
-        # markers; fail closed when any present document content leaf is blocked.
-        # Distinct from transient privacy_projection_unavailable (LocalDisclosureUnavailable).
+        withheld_spans: dict[str, list[ReceiptExcerpt]] = {}
+        for omission in completed.omissions:
+            excerpt = receipt_excerpt_items.get(omission.json_pointer)
+            if excerpt is not None:
+                withheld_spans.setdefault(excerpt.pointer, []).append(excerpt)
+        marking_omissions = tuple(
+            omission
+            for omission in completed.omissions
+            if omission.json_pointer not in receipt_excerpt_items
+        )
+        # JSON receipt content denied in its ordinary category still fails closed. A withheld
+        # name span is replaced by a fixed token inside its string, preserving the receipt
+        # document schema, the surrounding prose and structural coverage. The digest always
+        # identifies the stored owner document, not the privacy-projected presentation.
         if (
             method is ControlMethod.RECEIPT
             and source.get("format") == "json"
             and any(
                 omission.json_pointer == "/document"
                 or omission.json_pointer.startswith("/document/")
-                for omission in completed.omissions
+                for omission in marking_omissions
             )
         ):
             raise ControlError("privacy_projection_blocked", retryable=False)
         projected: JsonValue = source
-        for omission in completed.omissions:
+        marked = {omission.json_pointer for omission in marking_omissions}
+        if withheld_spans:
+            source_leaves = dict(_leaves(source))
+            for pointer in sorted(withheld_spans.keys() - marked, key=str.encode):
+                value = source_leaves[pointer]
+                if type(value) is not str:
+                    raise TypeError("receipt_projection_span_invalid")
+                projected = _replace_pointer(
+                    projected,
+                    pointer,
+                    withheld_text(value, withheld_spans[pointer], max_chars=field_chars(pointer)),
+                )
+        for omission in marking_omissions:
             # An omission whose pointer does not resolve means the privacy decision and the body
             # disagree. `_replace_pointer` raises a bounded, named ValueError rather than a bare
             # KeyError or IndexError; either way the projection stops before a response exists, so
@@ -3106,7 +3185,16 @@ class Application:
             "policy_digest": receipt.policy.policy_digest,
             "included_categories": tuple(item.value for item in receipt.approved_categories),
             "blocked_categories": tuple(item.value for item in receipt.blocked_categories),
-            "omitted_pointers": tuple(item.json_pointer for item in completed.omissions),
+            # A withheld name span is reported at its real result leaf. Past the wire bound the
+            # list coalesces to containing pointers; the audit keeps every individual decision.
+            "omitted_pointers": bounded_omitted_pointers(
+                tuple(
+                    receipt_excerpt_items[item.json_pointer].pointer
+                    if item.json_pointer in receipt_excerpt_items
+                    else item.json_pointer
+                    for item in completed.omissions
+                )
+            ),
             "projection_commitment": completed.case_or_projection_commitment,
         }
         complete = {**dict(projected.items()), "privacy_projection": projection}

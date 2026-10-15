@@ -2700,6 +2700,7 @@ def test_result_coverage_and_every_surface_count_live_gaps_only() -> None:
             request_id="req_00000000-0000-4000-8000-000000000001",
             redaction_profile=ReceiptRedactionProfile.FULL_LOCAL,
             include=ReceiptInclude.FULL,
+            writer_id=None,
         )
         result = _internal_result(
             cast(Any, request),

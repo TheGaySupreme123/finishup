@@ -219,7 +219,10 @@ and the pinned `sdk.v1` TypeScript/Python profiles. The lifecycle consumes one e
 `artifact_presence.py` obtains a fresh OS-authenticated result: `macos_artifact_presence.py`
 (Apple LocalAuthentication) on macOS, `linux_artifact_presence.py` (PAM re-authentication through
 the trusted foreground console) on Linux and WSL 2, and fail closed elsewhere; this does not
-populate the service-wide presence cell. Cursor-native hooks enter through
+populate the service-wide presence cell. The one service-wide `UserPresencePort` is
+`adapters/keys/macos_user_presence.py` (Apple LocalAuthentication, composed only on macOS), and the
+service uses it only for the owner receipt view ([ADR-009](adr/ADR-009-data-egress-privacy.md)
+round 5). Cursor-native hooks enter through
 `hooks cursor-observe`; that boundary retains only allowlisted structural scalars and a one-way
 changed-path digest. It drops prompts, reasoning, response text, file paths and contents, edits,
 MCP arguments/results, transcripts, command output, and email before observation storage. The

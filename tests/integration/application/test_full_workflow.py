@@ -469,9 +469,7 @@ async def test_full_workflow_uses_one_final_client_projection(
     )
     projected = await app.project_result_for_client(
         ClientProjectionContext(
-            ControlClientKind.CLI,
-            ProjectionRenderMode.HUMAN_READABLE,
-            True,
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
         ),
         binding,
         receipt,

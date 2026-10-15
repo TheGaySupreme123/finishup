@@ -98,13 +98,14 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    `check → respond → recheck` loop the product exists for. Two changes correct it without weakening
    the fence:
 
-   `local_human_view` is now a separate sink for ordinary human-readable rendering to an attached
-   controlling terminal. A local human reading a vault they unlocked is not a third-party
-   disclosure. It admits every non-never-send category at
-   `public_structural|ordinary_user_content`. `--json`, non-TTY or redirected streams, and every
-   `mcp_bridge` client remain `agent_context`; the client never selects its own sink. Terminal
-   emulation by a same-UID process is the stated threat-model limit that already bounds the unlock
-   TTY contract, not a claimed cryptographic exclusion.
+   `local_human_view` is now a separate sink for the owner reading their own unlocked vault, which
+   is not a third-party disclosure. It admits every non-never-send category at
+   `public_structural|ordinary_user_content`. *Superseded 2026-10-14 (round 3):* this sink was first
+   selected by human-readable rendering to an attached controlling terminal. A pseudo-terminal an
+   agent controls passes that test, so no presentation fact selects it any more; every ordinary
+   client result is `agent_context`, and `local_human_view` is reached only through the
+   reauthenticated one-use `owner_receipt_view` grant described under decision 3's receipt
+   amendment. The client never selects its own sink.
 
    `agent_context` is now conditioned on a computed closed `DisclosureProvenance`
    (`self_authored`, `engine_derived_from_self_authored`, `other_writer`, `imported`). Material the
@@ -183,6 +184,198 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    structural fields and omission markers, while the current route is revalidated and the outer
    control correlation is freshly stamped. Any plaintext event summary prevents caching and uses
    the ordinary reserve/complete path again.
+   **Amended 2026-10-14 — receipt prose ceiling (N5 privacy).** The maintainer explicitly
+   requested this scoped repair, acknowledging the privacy/egress design gate. A `full_local`
+   profile is a local storage/rendering choice, never agent disclosure authority.
+
+   Amended again 2026-10-14 (round 2, maintainer request): withholding narrows to the repository
+   names the ceiling covers and large omission lists coalesce. Amended 2026-10-14 (round 3,
+   maintainer request): no presentation fact selects `local_human_view` any more; the owner's full
+   receipt is a reauthenticated, one-use `owner_receipt_view` grant (ADR-016 decision 4), `./` and
+   absolute spellings are the same name, and an expanded field is bounded visibly.
+
+   Receipt prose is Yoetz-authored and keeps its ordinary category policy in an `agent_context`
+   projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
+   thing it can carry that the excerpt ceiling covers is a repository file name the check found and
+   no participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt
+   spells. Each such name span is offered as its own `repository_excerpt` candidate. Unless the
+   policy grants repository excerpts, or the requesting writer published that exact name in this
+   session through an accepted, unredacted cooperative publication, the whole path token becomes
+   `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the
+   quoted path the receipt prints, the bare path when it has a directory, or a basename with an
+   extension. Any name, a top-level one without an extension included, is also a span behind a
+   leading `./` (also `.//` or `././`), quoted or not, and empty or `.` segments inside the name
+   still spell the same file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`,
+   optionally behind `file://`) any directories may come before the name's last component: an
+   absolute path that ends in a withheld file's base name counts as that file, which can only
+   withhold more. Unquoted, the prefix's directories stop at whitespace, at quotes and backticks, at
+   `<` `>` `|` `,` `;` and brackets, and at a `:` that starts another path (`:/`, `:~`, `:$`, `:./`
+   or `:../`), so the next path in a list starts afresh; a `:` inside a directory or a port
+   (`host:8080/`) is kept. The whole prefixed token is withheld. A path in single quotes, double
+   quotes or backticks may run through directories with spaces or the other quote characters
+   (`"/r/Bob's/a.npz"`), and the whole quoted token is withheld when the name ends the quoted text;
+   a name earlier in the quotes (`"/r/x/b.npz /r/y/a.npz"`) is found too, and its own path is
+   withheld. An absolute path through a directory with spaces is not recognised as one path when it
+   is unquoted, since prose gives it no token boundary, or when anything follows the name inside the
+   quotes (`"/My Docs/a.npz:12"`); nor is an unquoted one through a directory holding a stop
+   character (`/r/Bob's/a.npz`), or a quoted one through a directory holding its own closing quote.
+   A name glued to other characters and then a `/` (`/r/a.npz~/x`), or followed by a `:` and a bare
+   relative path (`/r/a.npz:rel/x`, or grep's `/r/a.npz:12:rel/x`), reads as a directory of a longer
+   path and stays readable: the prefix never gives a directory back, which keeps each search linear.
+   A different relative directory (`../`, `x/`), a longer name, a suffix, a plain word such as
+   `Summary` (or a top-level name written without a prefix or quotes), and a different letter case
+   stay readable: spellings are compared exactly, because folding case or Unicode would conflate
+   distinct files on a case-sensitive filesystem. Every bound in the span pattern is fixed, so a
+   search stays linear in the prose it reads. The rule applies to JSON, markdown and text and to
+   every profile, `full_local` included: a format or profile is not a disclosure grant.
+
+   The token can be longer than the name it replaces. A field that would then pass its wire bound
+   (32,768 characters for `human_text`, at least its original length for a document field) or the
+   16 KiB per-item privacy bound is cut deterministically at a whole token and ends with a visible
+   `[receipt text truncated after withholding: N characters not shown]` marker; only text already
+   past the withholding is dropped, and the audit still records every per-name decision.
+   `privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
+   bound the list coalesces deterministically to containing fields, so a large receipt still renders;
+   the local disclosure audit keeps one decision per name and field
+   (`<field pointer>/@repository_name/<name index>`). The digest and object ID identify the unchanged
+   stored owner receipt. An earlier stored receipt meets the same rule when reread, with name
+   provenance read at the current ledger head, so redacting the publication that spelled a name
+   withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
+   fails closed when that denial would need an object marker inside the receipt document.
+
+   Every client result is agent-facing (`agent_context`): the CLI, the terminal interface, MCP tools
+   and hooks alike. A terminal, a human-readable rendering, a client kind or the user ID is a
+   presentation fact an agent can reproduce (a pseudo-terminal passes every terminal test), so none of
+   them selects the owner's view, and the service ignores them as authority. The owner's full receipt
+   (`local_human_view`) needs an explicit request, `yoetz receipt --owner-view` or *Your full receipt*
+   in the terminal interface, and a human-control `owner_receipt_view` ceremony: the owner
+   reauthenticates with operating-system presence or the vault passphrase for that exact receipt
+   request. The grant belongs to the command's own control connection as the service admitted it:
+   the service mints an opaque identity for every admitted connection and never takes one from the
+   client, refuses any connection whose hello nonce is already live or was used before, mints the
+   grant only for the one live connection the ceremony target names, consumes it only on a receipt
+   call on that connection, and revokes it when the connection closes. The grant is one-use and
+   expires after 60 seconds. There is no standing grant, and the agent-attested consent lane cannot
+   stand in for it. Anyone holding the terminal can type into the prompt, a pseudo-terminal
+   included; the boundary is a passphrase or presence check the agent cannot pass. On macOS the
+   packaged service composes one operating-system presence provider, Apple LocalAuthentication
+   (Touch ID or the device password), scoped to this ceremony (round 5 below). Linux and WSL 2
+   compose none: there only a vault passphrase the owner types completes the ceremony. A vault
+   without one, or whose passphrase is kept in the platform credential store (setup's
+   system-keychain choice, never shown to its owner), fails closed with `owner_view_unavailable`;
+   an owner who chose a stored passphrase can still type it with `--use-passphrase`. A command with no foreground terminal to prompt on
+   (for example a headless session) fails with `owner_view_requires_terminal`. Either way it shows
+   nothing and points to the next step. Linux and WSL 2 use the same code but were not exercised
+   for this change. A process running as the owner's account that can already read the vault
+   passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
+   every passphrase reauthentication (ADR-008).
+
+   **Amended 2026-10-14 (round 5, owner decision on issue #1073: Touch ID before release).** The
+   owner asked for an operating-system presence path on the existing reauthentication so a
+   system-keychain installation can open its full receipt. Setup's system-keychain choice creates
+   a passphrase vault whose passphrase is generated and kept in the Keychain for auto-unlock, so
+   its owner never learned it and could not answer the passphrase prompt.
+
+   - *Where the check runs.* The service process runs it, never a client. A client's
+     `SelectAuthorizationSourceAction` names `os_user_presence` and carries nothing else; the
+     human-control service then binds a fresh reauthentication challenge and asks its composed
+     `UserPresencePort`. Only the provider's own one-use attestation for that exact challenge
+     reaches the vault, which mints the proof the owner-view effect consumes. A TTY, a
+     pseudo-terminal, a client kind or a hello field still grants nothing.
+   - *The macOS provider* (`MacOSLocalAuthenticationPresence`) starts the SIP-protected
+     `/usr/bin/osascript -l JavaScript` with a fixed program on stdin, no shell, a three-variable
+     environment and working directory `/`. The program creates a fresh
+     `LAContext` with authentication reuse disabled and evaluates
+     `LAPolicyDeviceOwnerAuthentication`. The dialog text is fixed per purpose; its only variable
+     part is a confirmation code (the first eight hex digits of the service-computed target
+     digest), which the owner's own command prints too, so nothing user-controlled reaches the
+     dialog. The program's own deadline is 60 seconds; the service kills and reaps it at 75
+     seconds, or at once when the ceremony is cancelled, its client disappears, or the service
+     stops. Only the exact token `approved` yields an attestation, held in service memory, bound
+     to the exact challenge and consumed once within 30 seconds. Every other result is typed:
+     `unavailable` (no dialog can be shown: not macOS, no LocalAuthentication, no desktop session,
+     or a nonzero, garbled or unknown helper result) becomes `presence_unavailable`;
+     `cancelled` or `failed` becomes `presence_refused`; `timeout` becomes `presence_timeout`.
+     None of them carries operating-system text, and none grants anything.
+   - *Scope.* The provider prompts only for `owner_receipt_view`, and the service offers it
+     (`PresenceScope`) only for that purpose on a ready vault of either mode. It does not stand
+     in for provider credentials, privacy widening, idle relock, installation recovery,
+     passphrase rotation or keyring retry. Keyring first-install still needs a qualified
+     `user_presence_cells` row; this provider's capability names the release cell
+     `unqualified` and never matches one.
+   - *Passphrase vaults.* A passphrase stays offered beside the dialog. The command asks for the
+     dialog first. When the service reports that it cannot show one (`presence_unavailable`;
+     where the service runs decides this, not where the command runs) and the vault offered its
+     passphrase, the command asks once for the passphrase in a fresh ceremony. A cancelled,
+     failed or unanswered dialog is not retried. The command never asks for a passphrase that is
+     kept in the platform credential store (setup's system-keychain choice generates one its
+     owner never saw): there it ends with `owner_view_unavailable`, naming `--use-passphrase`,
+     which an owner who chose that passphrase uses to type it. `--use-passphrase` also skips the
+     dialog, for an owner connected over SSH whose service would raise the dialog on the Mac's
+     own screen. Offering presence beside an owner-chosen passphrase adds no secret an agent can
+     learn; its cost is the residual risks below.
+   - *No held lock.* The ceremony releases the human-control mutex while the dialog waits, as it
+     already does while a secret is entered, so `cancel`, `service stop` and a disappearing
+     ceremony client end the dialog at once instead of waiting out its deadline. One prompt runs
+     at a time, and a second action on the same ceremony is refused while it is up. A ceremony
+     opened while another is active fails with the closed `ceremony_busy` code, never with the
+     locked-vault `state_forbidden`, unless the active one is past its five-minute binding
+     expiry: such a ceremony can never complete, so the next open ends it and proceeds. A
+     throttled passphrase is `reauthentication_rate_limited` on every ceremony.
+   - *Backoff.* After a prompt that did not approve (refused or unanswered, or cancelled after it
+     was up for at least 2 seconds), the next prompt waits 5 seconds, then 15, 30, 60, 120 and at
+     most 300 seconds per consecutive miss. An approval resets it, and so do 10 minutes without a
+     miss. A prompt cancelled sooner does not lengthen the wait, since the owner may never have seen
+     it (2 seconds is the service's estimate, not a signal from the helper), but the next prompt
+     still waits the first step: after a dialog that did not approve, the service raises no other
+     for 5 seconds however quickly it was cancelled. Within the wait no dialog is raised and the
+     ceremony fails with `reauthentication_rate_limited`. The backoff lives in the service process,
+     so a restart clears it: it slows repeated dialogs, it does not cap them. The durable passphrase
+     throttle is separate: 30 seconds after the third wrong passphrase, doubling to 5 minutes, and a
+     restart does not clear it. The owner view tells the two apart by the source it chose and never
+     offers a restart or `--use-passphrase` for a throttled passphrase (`passphrase_rate_limited` on
+     the CLI; the terminal interface says the same).
+   - *Why a helper process, not ctypes.* The same Apple executable and program shape already
+     serve the `plugin_artifact_apply` cell (ADR-016, issue #409), so this adds no dependency and
+     no new native surface. ctypes against `libobjc` and LocalAuthentication would need a
+     hand-built Objective-C reply block running native code inside the long-lived service, and a
+     wedged prompt could not be killed without killing the service; a child process can.
+   - *Residual risks, stated.* An agent that can run the command from a pseudo-terminal can make
+     the dialog appear but cannot answer it: that takes the owner's fingerprint or device
+     password. An agent shell without a terminal, such as Claude Code's Bash tool run directly,
+     is refused with `owner_view_requires_terminal` before any dialog, but the agent can wrap
+     the command in a pseudo-terminal (for example with `script`), and then the dialog appears
+     as it does under Codex. An owner who approves a dialog they
+     did not ask for gives that command the view, so the dialog says what it shows, shows the
+     code the owner's own terminal prints, and says to cancel unless they just asked. An agent
+     can also open its own ceremony just before the owner runs the command. The service runs one
+     ceremony at a time, so the owner's command then fails with `owner_view_busy` and names its
+     own confirmation code (on macOS it prints that code before anything opens), and the dialog
+     on screen shows a different one: the owner cancels it. The code is the first eight hex
+     digits of a digest of the exact request and its connection, so it is request-specific but
+     short; it is a cross-check, not a secret. The dialog appears in the desktop session the
+     service runs in; a service started outside one (for example over SSH) is expected to report
+     that no dialog can be shown. Two lockouts remain, each bounded. A client that opens a
+     ceremony and goes silent holds the one slot until its binding expires (five minutes) or
+     the service restarts; meanwhile the owner sees `owner_view_busy`, which names
+     `yoetz service restart`. An agent that raises dialogs and lets each be refused, time out or
+     stay up for 2 seconds before cancelling can push the owner's next dialog behind the
+     backoff (at most 5 minutes); `yoetz service restart` clears it, and `--use-passphrase`
+     confirms with an owner-chosen passphrase instead. One that cancels each dialog sooner does
+     not lengthen the wait but can still raise a dialog every 5 seconds; the owner cancels any
+     dialog they did not ask for. A program running as the owner's account
+     that can read the credential-store entry can confirm with that passphrase instead of the
+     dialog (`--use-passphrase`), so the dialog protects against agents that cannot read the
+     owner's keychain, not against everything that runs as the owner. Same-account code
+     tampering with the installed runtime is outside this boundary, as for every presence and
+     passphrase check (ADR-008).
+   - *Evidence.* Unit and integration tests drive the real adapter, scope, ceremony, vault proof,
+     daemon handler and ceremony client with a stub helper; no real Touch ID prompt has been
+     exercised. The manual check on a real Mac in the test-instance runbook (*Owner view with
+     Touch ID: manual check on a real Mac*) has not been run. The owner asked for a Codex check
+     of this round; it has not been run. Three independent Claude review rounds ran instead
+     (2026-10-14 and 2026-10-15), and this round addresses their findings.
+
 4. **Data classes:** structural public data, ordinary task/user content, sensitive/confidential
    content, and secrets/cryptographic material are distinct. Classification combines source-owned
    structural labels, scope validation, and deterministic secret scanning. Unknown or conflicting
@@ -477,8 +670,8 @@ invalid effective policy, unavailable reconciliation, and reconciliation failure
 no-dispatch policy outcomes and advertise no approval surface. Repository privacy setup/effective/
 propose result projection derives its workspace disclosure policy and receipt scope only from the
 authenticated control session's repository context. The same session carries closed render-mode
-and controlling-TTY facts: only interactive human-readable CLI output selects
-`local_human_view`; JSON, pipe/redirection, MCP, or absent facts remain fail-safe agent context.
+and controlling-TTY facts for presentation only; since round 3 (2026-10-14) none of them selects
+`local_human_view`, and every ordinary result is agent context.
 
 | Event | Human required? | Rule |
 |---|---:|---|

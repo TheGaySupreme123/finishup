@@ -554,6 +554,35 @@ reverse-chronological released versions.
   no service, and in `yoetz setup`; hooks name the token without local paths and still make no
   decision. `yoetz upgrade --accept` and `npx yoetz` install under umask `022` (ADR-007).
 
+- A receipt your agent reads no longer shows the names of repository files your privacy policy
+  keeps from agents, even when the agent asks for a full local profile, in JSON, markdown and text.
+  Only the name is replaced with `(receipt prose withheld: repository_excerpt)`, including when it
+  is written as `./path` or as a full path (starting at `/`, `~`, `$HOME` or `file://`, quoted when a
+  folder name has spaces), a top-level file without an extension included; the rest of the receipt stays readable, and a name
+  the agent published itself returns to it. A receipt with many withheld names still renders: past
+  its bound the omitted-field list names the containing sections, and an over-long field ends with
+  a visible truncation note. Older receipts follow the same rule when read again.
+
+- Every result the CLI and the terminal interface show (receipts, status and the rest) now follows
+  the agent's privacy view, as it already did over MCP: a terminal is not proof that you are the one
+  reading, since an agent can run Yoetz in a pseudo-terminal of its own. To see your full receipt,
+  run `yoetz receipt --owner-view` or choose *Your full receipt* in the terminal interface, and
+  confirm it is you; the view is for that one receipt, once, on that command's own connection. On a
+  Mac, Yoetz confirms it is you with a system dialog (Touch ID or your login password) that shows
+  the same confirmation code as your terminal, so a system-keychain installation, whose vault
+  passphrase you were never shown, can open its full receipt too. A passphrase you chose still
+  works: Yoetz asks for it when its service cannot show a dialog, or directly with
+  `--use-passphrase` (for example over SSH), but never asks on its own for a passphrase it keeps in
+  the system keychain. Cancelling the dialog or leaving it unanswered for a minute shows nothing,
+  and the next dialog waits a few seconds, longer after repeated misses; too many wrong passphrases
+  say so instead, without suggesting a service restart, which does not clear that wait. If another
+  confirmation is already open, perhaps one an agent started, the command says so and names its own
+  confirmation code instead of reporting a locked vault; every confidential ceremony now reports
+  another open one as `ceremony_busy` and a throttled passphrase as `reauthentication_rate_limited`
+  (wait up to five minutes), where both used to read `state_forbidden`. On Linux and WSL 2 only a
+  vault passphrase you type works for now: a system-keychain installation there, whose generated
+  passphrase you were never shown, reports that the full receipt is unavailable and shows nothing.
+
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
   that line could never answer it there. Cursor agents are told instead to confirm a met criterion

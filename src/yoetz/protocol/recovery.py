@@ -393,6 +393,26 @@ _DIRECTIVES: Final = (
         nudge="A refusal is an answer; re-running the ceremony does not obtain a different one.",
     ),
     RecoveryDirective(
+        token="ceremony_in_progress",
+        directive=(
+            "Another confirmation is open on this computer, so nothing changed. Do not approve, "
+            "cancel or restart anything yourself: report that a confirmation is already open and "
+            "let the owner decide. Retry once only when the owner asks."
+        ),
+        guidance_uri=_TEMPLATES_SETUP,
+        nudge="A confirmation someone else opened is never yours to approve or end.",
+    ),
+    RecoveryDirective(
+        token="ceremony_retry_after_wait",
+        directive=(
+            "Recent confirmations did not succeed, so the service waits before asking again; it "
+            "is healthy and nothing changed. Wait up to five minutes, then retry once. Retrying "
+            "sooner gets the same answer."
+        ),
+        guidance_uri=_TEMPLATES_SETUP,
+        nudge="Agents must not loop on this; report it and let the owner retry.",
+    ),
+    RecoveryDirective(
         token="vault_unlock_required",
         directive=(
             "The vault must be unlocked before this ceremony can run, and nothing was changed. "
@@ -713,6 +733,10 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "unknown_config_env_var": "config_correction_required",
         "unknown_config_key": "config_correction_required",
         # Human ceremony and consent (issues #147, #489, #519).
+        # Another ceremony is open (#1073): never approve it; finish or cancel it, then retry.
+        "ceremony_busy": "ceremony_in_progress",
+        # Recent confirmations did not succeed (#1073): wait up to five minutes, retry once.
+        "reauthentication_rate_limited": "ceremony_retry_after_wait",
         "ceremony_service_unavailable": "local_service_unavailable",
         "ceremony_unsupported": "ceremony_refusal_terminal",
         "chat_user_attestation_invalid": "consent_relay_correction",

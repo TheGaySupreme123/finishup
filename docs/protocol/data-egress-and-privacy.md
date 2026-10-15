@@ -139,10 +139,11 @@ zero-network claim by itself — both, plus all five channels disabled, are requ
 
 The four `LocalDisclosureSink` values — `local_model`, `agent_context`, `local_human_view`, and
 `trusted_human_control` — are not network channels; they are covered by the same never-send fence.
-`local_human_view` is ordinary human-readable rendering to an attached controlling terminal for the
-local user who already unlocked this vault — it is not a third-party disclosure. `--json`, a piped
-or redirected stream, a non-TTY invocation, and every MCP-bridge client resolve to `agent_context`
-instead; a client never selects its own sink. `agent_context` is further conditioned on a computed
+`local_human_view` is the owner's own view of a vault they already unlocked — it is not a
+third-party disclosure. Every ordinary client result resolves to `agent_context`, whatever its
+rendering, terminal or client kind; only a receipt call matched to a reauthenticated one-use
+`owner_receipt_view` grant resolves to `local_human_view` (see "Receipt prose delivered to agents"
+below). A client never selects its own sink. `agent_context` is further conditioned on a computed
 `DisclosureProvenance` (`self_authored`, `engine_derived_from_self_authored`, `other_writer`,
 `imported`): material the requesting writer authored at the frozen frontier, and prose derived
 solely from it, project without an extra grant, because withholding a writer's own words discloses
@@ -311,3 +312,96 @@ is consumed, cancellation cannot prove that nothing was sent. The gateway record
 receipt before dispatch so a later service startup can reconcile an interrupted attempt, before
 admitting new attempts. Reconciliation never sends again or restores spent authority. The
 background result remains cancelled and retains available attempt and provider provenance.
+
+## Receipt prose delivered to agents
+
+Receipt prose is Yoetz-authored and keeps its ordinary category policy in an `agent_context`
+projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
+thing it can carry that the excerpt ceiling covers is a repository file name the check found and no
+participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt spells.
+Each such name span is offered as its own `repository_excerpt` candidate. Unless the policy grants
+repository excerpts, or the requesting writer published that exact name in this session through an
+accepted, unredacted cooperative publication, the whole path token becomes
+`(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
+path the receipt prints, the bare path when it has a directory, or a basename with an extension. Any
+name, a top-level one without an extension included, is also a span behind a leading `./` (also
+`.//` or `././`), quoted or not, and empty or `.` segments inside the name still spell the same
+file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`, optionally behind `file://`)
+any directories may come before the name's last component: an absolute path that ends in a withheld
+file's base name counts as that file, which can only withhold more. Unquoted, the prefix's
+directories stop at whitespace, at quotes and backticks, at `<` `>` `|` `,` `;` and brackets, and at
+a `:` that starts another path (`:/`, `:~`, `:$`, `:./` or `:../`), so the next path in a list
+starts afresh; a `:` inside a directory or a port (`host:8080/`) is kept. The whole prefixed token
+is withheld. A path in single quotes, double quotes or backticks may run through directories with
+spaces or the other quote characters (`"/r/Bob's/a.npz"`), and the whole quoted token is withheld
+when the name ends the quoted text; a name earlier in the quotes (`"/r/x/b.npz /r/y/a.npz"`) is
+found too, and its own path is withheld. An absolute path through a directory with spaces is not
+recognised as one path when it is unquoted, since prose gives it no token boundary, or when anything
+follows the name inside the quotes (`"/My Docs/a.npz:12"`); nor is an unquoted one through a
+directory holding a stop character (`/r/Bob's/a.npz`), or a quoted one through a directory holding
+its own closing quote. A name glued to other characters and then a `/` (`/r/a.npz~/x`), or followed
+by a `:` and a bare relative path (`/r/a.npz:rel/x`, or grep's `/r/a.npz:12:rel/x`), reads as a
+directory of a longer path and stays readable: the prefix never gives a directory back, which keeps
+each search linear. A different relative directory (`../`, `x/`), a longer name, a suffix, a plain
+word such as `Summary` (or a top-level name written without a prefix or quotes), and a different
+letter case stay readable: spellings are compared exactly, because folding case or Unicode would
+conflate distinct files on a case-sensitive filesystem. Every bound in the span pattern is fixed, so
+a search stays linear in the prose it reads. The rule applies to JSON, markdown and text and to
+every profile, `full_local` included: a format or profile is not a disclosure grant.
+
+The token can be longer than the name it replaces. A field that would then pass its wire bound
+(32,768 characters for `human_text`, at least its original length for a document field) or the
+16 KiB per-item privacy bound is cut deterministically at a whole token and ends with a visible
+`[receipt text truncated after withholding: N characters not shown]` marker; only text already
+past the withholding is dropped, and the audit still records every per-name decision.
+`privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
+bound the list coalesces deterministically to containing fields, so a large receipt still renders;
+the local disclosure audit keeps one decision per name and field
+(`<field pointer>/@repository_name/<name index>`). The digest and object ID identify the unchanged
+stored owner receipt. An earlier stored receipt meets the same rule when reread, with name
+provenance read at the current ledger head, so redacting the publication that spelled a name
+withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
+fails closed when that denial would need an object marker inside the receipt document.
+
+Every client result is agent-facing (`agent_context`): the CLI, the terminal interface, MCP tools
+and hooks alike. A terminal, a human-readable rendering, a client kind or the user ID is a
+presentation fact an agent can reproduce (a pseudo-terminal passes every terminal test), so none of
+them selects the owner's view, and the service ignores them as authority. The owner's full receipt
+(`local_human_view`) needs an explicit request, `yoetz receipt --owner-view` or *Your full receipt*
+in the terminal interface, and a human-control `owner_receipt_view` ceremony: the owner
+reauthenticates with operating-system presence or the vault passphrase for that exact receipt
+request. The grant belongs to the command's own control connection as the service admitted it: the
+service mints an opaque identity for every admitted connection and never takes one from the client,
+refuses any connection whose hello nonce is already live or was used before, mints the grant only
+for the one live connection the ceremony target names, consumes it only on a receipt call on that
+connection, and revokes it when the connection closes. The grant is one-use and expires after 60
+seconds. There is no standing grant, and the agent-attested consent lane cannot stand in for it.
+Anyone holding the terminal can type into the prompt, a pseudo-terminal included; the boundary is a
+passphrase or presence check the agent cannot pass. On macOS the packaged service composes one
+operating-system presence provider, Apple LocalAuthentication: the service itself raises a system
+dialog (Touch ID or the device password) whose text is fixed apart from a confirmation code the
+owner's own command also prints, and only its exact approval for that exact challenge becomes a
+one-use attestation the vault consumes. A client can name that source but can assert nothing. The
+provider serves only this ceremony, on either vault mode. A passphrase stays offered beside it: when
+the service cannot show a dialog, the command asks for the passphrase once instead, but it never
+asks for a passphrase kept in the platform credential store (setup's system-keychain choice
+generates one its owner never saw) unless the owner passes `--use-passphrase`, which also skips the
+dialog, for example over SSH. A cancelled or failed dialog is `presence_refused` and an unanswered
+one is `presence_timeout` after 60 seconds; neither grants anything, and the next dialog then waits
+(`reauthentication_rate_limited`, 5 seconds rising to 5 minutes). That wait lives in the service
+process and a restart clears it, so it slows repeated dialogs rather than capping them, and an agent
+that causes misses can delay the owner's own dialog by up to 5 minutes. Dialogs start at least 5
+seconds apart even when each is cancelled at once. A throttled passphrase (30 seconds after the
+third wrong one, doubling to 5 minutes, kept across a restart) is reported as such, without the
+restart hint. Another open confirmation is `ceremony_busy` (`owner_view_busy`, naming this command's
+code), never a locked vault; a silent one holds the slot until its five-minute binding expires or
+the service restarts. Linux and WSL 2 compose no provider: there only a vault passphrase the owner
+types completes the ceremony, and a vault without one, or with one kept in the credential store,
+fails closed with `owner_view_unavailable`. A command with no foreground terminal to prompt on (for
+example a headless session) fails with `owner_view_requires_terminal`. Either way it shows nothing
+and points to the next step. Linux and WSL 2 use the same code but were not exercised for this
+change, and no real Touch ID prompt was exercised by automation (ADR-009 round 5). An agent that
+runs the command can make the dialog appear but cannot answer it, so approve it only when you asked
+for the full receipt yourself. A process running as the owner's account that can already read the
+vault passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
+every passphrase reauthentication (ADR-008).

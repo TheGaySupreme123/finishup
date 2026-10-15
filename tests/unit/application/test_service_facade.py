@@ -405,7 +405,8 @@ async def test_publish_response_load_rejects_content_summary_and_identity_mismat
                 ProjectionRenderMode.HUMAN_READABLE,
                 True,
             ),
-            LocalDisclosureSink.LOCAL_HUMAN_VIEW,
+            # ADR-009 round 3: a terminal is presentation, never owner authority.
+            LocalDisclosureSink.AGENT_CONTEXT,
         ),
         (
             ClientProjectionContext(
@@ -437,6 +438,7 @@ async def test_publish_response_load_rejects_content_summary_and_identity_mismat
                 ProjectionRenderMode.HUMAN_READABLE,
                 True,
             ),
+            # ADR-009 round 3: a terminal is presentation, never owner authority.
             LocalDisclosureSink.AGENT_CONTEXT,
         ),
     ),
@@ -444,6 +446,23 @@ async def test_publish_response_load_rejects_content_summary_and_identity_mismat
 def test_projection_context_resolves_sink_fail_closed(
     context: ClientProjectionContext, expected: LocalDisclosureSink
 ) -> None:
+    assert resolve_client_disclosure_sink(context) is expected
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    (
+        (ControlClientKind.CLI, LocalDisclosureSink.LOCAL_HUMAN_VIEW),
+        (ControlClientKind.UI, LocalDisclosureSink.LOCAL_HUMAN_VIEW),
+        (ControlClientKind.MCP_BRIDGE, LocalDisclosureSink.AGENT_CONTEXT),
+    ),
+)
+def test_only_a_service_owner_view_grant_resolves_local_human_view(
+    kind: ControlClientKind, expected: LocalDisclosureSink
+) -> None:
+    context = ClientProjectionContext(
+        kind, ProjectionRenderMode.MACHINE_READABLE, False, owner_view=True
+    )
     assert resolve_client_disclosure_sink(context) is expected
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Final, Literal, Protocol, cast
 
 from yoetz.application import closure_basis as _closure_basis
@@ -143,6 +143,9 @@ class ReceiptInternalResult:
     coverage: Coverage
     suppressed_finding_count: int
     versions: ReceiptVersionSlice
+    # The requesting writer, for the agent-context name provenance (receipt_projection). Internal
+    # only: never admitted from a client and never serialized on the wire.
+    writer_id: str | None = field(default=None, repr=False)
 
     def as_json(self) -> dict[str, JsonValue]:
         versions = {
@@ -496,6 +499,7 @@ def _internal_result(
         replace(document.coverage, known_gaps=live_receipt_gap_codes(document)),
         document.suppressed_finding_count,
         document.versions,
+        request.writer_id,
     )
 
 

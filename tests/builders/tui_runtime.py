@@ -156,6 +156,7 @@ class FakeRuntime:
     opened: list[str] = field(default_factory=lambda: [])
     progress_reads: list[str] = field(default_factory=lambda: [])
     task_views: list[tuple[str, str]] = field(default_factory=lambda: [])
+    receipts: list[tuple[str, str, bool]] = field(default_factory=lambda: [])
 
     def project_root(self) -> Path:
         return Path("/tmp/project")
@@ -514,5 +515,8 @@ class FakeRuntime:
             None,
         )
 
-    async def build_receipt(self, title: str, output_format: str) -> ReceiptSummary:
+    async def build_receipt(
+        self, title: str, output_format: str, *, owner_view: bool = False
+    ) -> ReceiptSummary:
+        self.receipts.append((title, output_format, owner_view))
         return ReceiptSummary(subject_id="task_01", verdict="no_unresolved_deterministic_findings")

@@ -37,6 +37,11 @@ from yoetz.adapters.keys.installation_recovery import (
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
 )
+from yoetz.adapters.keys.macos_user_presence import (
+    OWNER_VIEW_PRESENCE_PURPOSES,
+    OWNER_VIEW_PRESENCE_VAULT_MODES,
+    select_service_user_presence,
+)
 from yoetz.adapters.keys.os_keyring import AutoUnlockPassphraseStore
 from yoetz.adapters.keys.secret_memory import LocalSecretMemory
 from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
@@ -159,6 +164,7 @@ from yoetz.service.confidential_protocol import (
     HUMAN_PROTOCOL_MAGIC,
     HUMAN_PROTOCOL_VERSION,
     MAX_HUMAN_CONTROL_FRAME_BYTES,
+    OWNER_RECEIPT_VIEW_GRANT_SECONDS,
     ClientActionEnvelope,
     ClientCancelEnvelope,
     ClientOpenEnvelope,
@@ -171,6 +177,9 @@ from yoetz.service.confidential_protocol import (
     InstallationRecoveryResult,
     InstallationRecoveryTarget,
     KeyringRetryPreview,
+    OwnerReceiptViewPreview,
+    OwnerReceiptViewResult,
+    OwnerReceiptViewTarget,
     PortableRecoveryResult,
     PortableRecoveryTarget,
     PrivacyDecisionResult,
@@ -183,6 +192,7 @@ from yoetz.service.confidential_protocol import (
     ProviderCredentialSetPreview,
     ProviderCredentialTarget,
     SecretRequiredPhase,
+    SelectAuthorizationSourceAction,
     ServerCloseEnvelope,
     ServerErrorEnvelope,
     ServerResultEnvelope,
@@ -209,7 +219,7 @@ from yoetz.service.control_protocol import (
     validate_result,
     write_control_frame,
 )
-from yoetz.service.human_control import HumanControlError, HumanControlService
+from yoetz.service.human_control import HumanControlError, HumanControlService, PresenceScope
 from yoetz.service.installation_recovery import (
     InstallationRecoverySetStore,
     PreparedInstallationSnapshot,
@@ -222,6 +232,12 @@ from yoetz.service.lifecycle import (
     SessionSecurityEvent,
 )
 from yoetz.service.loop_health import ControlPlaneWatchdog
+from yoetz.service.owner_view import (
+    OwnerViewConnectionRefused,
+    OwnerViewGrants,
+    owner_receipt_view_target,
+    owner_receipt_view_target_digest,
+)
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.secret_ingress import SecretIngressService
 from yoetz.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRouteMemory
@@ -757,6 +773,8 @@ class ServiceComposition:
     # sweeper is blocked on a different row; structural calls take both in observation-then-
     # maintenance order.
     observation_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # One-use owner receipt views minted only by the human-control ceremony (ADR-009 round 3).
+    owner_view_grants: OwnerViewGrants = field(default_factory=OwnerViewGrants, repr=False)
 
     def __repr__(self) -> str:
         return "ServiceComposition(<redacted>)"
@@ -1766,6 +1784,7 @@ class ServiceDaemon:
 
     async def _serve_control_connection(self, stream: ControlStream) -> None:
         session: ControlSession | None = None
+        admission: str | None = None
         calls: dict[str, asyncio.Task[None]] = {}
         write_lock = asyncio.Lock()
         try:
@@ -1790,6 +1809,17 @@ class ServiceDaemon:
                         reason=exc.reason,
                     )
                 return
+            # The service, never the client, names this connection for owner-view grants. A
+            # hello nonce that is live or was already admitted cannot be admitted again.
+            try:
+                admission = self._composition.owner_view_grants.admit(session.connection_nonce)
+            except OwnerViewConnectionRefused:
+                record_public_error_without_raising(
+                    component="service.daemon",
+                    operation="control_handshake",
+                    reason="connection_nonce_reused",
+                )
+                return
             while not self._stop_event.is_set():
                 try:
                     frame = await self._read_control_frame_idle_aware(stream, calls)
@@ -1812,7 +1842,9 @@ class ServiceDaemon:
                     if target is not None:
                         target.cancel(EXPLICIT_CONTROL_CANCEL)
                     continue
-                task = asyncio.create_task(self._serve_call(stream, session, request, write_lock))
+                task = asyncio.create_task(
+                    self._serve_call(stream, session, request, write_lock, admission)
+                )
                 calls[request.rpc_id] = task
                 task.add_done_callback(lambda _task, rpc_id=request.rpc_id: calls.pop(rpc_id, None))
         except asyncio.CancelledError:
@@ -1820,6 +1852,9 @@ class ServiceDaemon:
         except Exception:
             return
         finally:
+            if admission is not None:
+                # Revoke on disconnect: a later socket gets a fresh admission, never this one.
+                self._composition.owner_view_grants.release(admission)
             if session is not None:
                 session.close()
             for task in tuple(calls.values()):
@@ -1873,34 +1908,55 @@ class ServiceDaemon:
                 await asyncio.gather(read_task, return_exceptions=True)
             raise
 
+    def _consume_owner_view(
+        self, session: ControlSession, request: ControlCallRequest, admission: str | None
+    ) -> bool:
+        """True only when a live ceremony grant matches this receipt call on this admission."""
+
+        if (
+            admission is None
+            or request.method is not ControlMethod.RECEIPT
+            or session.client_kind not in {ControlClientKind.CLI, ControlClientKind.UI}
+        ):
+            return False
+        try:
+            target = owner_receipt_view_target(request.body, session.connection_nonce)
+        except AttributeError, TypeError, ValueError:
+            return False
+        return self._composition.owner_view_grants.consume(
+            admission, owner_receipt_view_target_digest(target)
+        )
+
     async def _serve_call(
         self,
         stream: ControlStream,
         session: ControlSession,
         request: ControlCallRequest,
         write_lock: asyncio.Lock,
+        admission: str | None = None,
     ) -> None:
         call_started = time.monotonic()
+        # Presentation facts from the hello describe rendering only. The owner view is the one
+        # service-verified exception: a grant the human-control ceremony minted for this exact
+        # receipt request on this exact connection (ADR-009 round 3).
+        projection_context = ClientProjectionContext(
+            session.client_kind,
+            session.projection_render_mode,
+            session.output_is_controlling_tty,
+            owner_view=self._consume_owner_view(session, request, admission),
+        )
         if session.repository_privacy_context is None:
             result = await self.dispatch(
                 session.client_kind,
                 request,
-                projection_context=ClientProjectionContext(
-                    session.client_kind,
-                    session.projection_render_mode,
-                    session.output_is_controlling_tty,
-                ),
+                projection_context=projection_context,
                 _defer_stop=True,
             )
         else:
             result = await self.dispatch(
                 session.client_kind,
                 request,
-                projection_context=ClientProjectionContext(
-                    session.client_kind,
-                    session.projection_render_mode,
-                    session.output_is_controlling_tty,
-                ),
+                projection_context=projection_context,
                 repository_privacy_context=session.repository_privacy_context,
                 _defer_stop=True,
             )
@@ -3396,10 +3452,12 @@ class _LockedHumanEffects:
         unlock: UnlockCoordinator | None = None,
         maintenance_gate: asyncio.Lock | None = None,
         observation_gate: asyncio.Lock | None = None,
+        owner_view_grants: OwnerViewGrants | None = None,
     ) -> None:
         self._lifecycle = lifecycle
         self._vault = vault
         self._privacy_relay = privacy_relay
+        self._owner_view_grants = owner_view_grants
         self._recovery_sets = recovery_sets
         self._unlock = unlock
         self._maintenance_gate = maintenance_gate or asyncio.Lock()
@@ -3584,6 +3642,25 @@ class _LockedHumanEffects:
                     False,
                 ),
                 confirmed_plan_digest,
+                None,
+            )
+        if type(target) is OwnerReceiptViewTarget:
+            if request.ceremony_kind is not HumanCeremonyKind.OWNER_RECEIPT_VIEW:
+                raise HumanControlError("kind_forbidden")
+            if self._owner_view_grants is None:
+                raise HumanControlError("ceremony_unsupported")
+            if not self._vault.ready:
+                raise HumanControlError("state_forbidden")
+            digest = owner_receipt_view_target_digest(target)
+            return (
+                OwnerReceiptViewPreview(
+                    target.task_id,
+                    target.format,
+                    target.redaction_profile,
+                    OWNER_RECEIPT_VIEW_GRANT_SECONDS,
+                    digest,
+                ),
+                digest,
                 None,
             )
         if type(target) is PrivacyPendingTarget:
@@ -4285,6 +4362,44 @@ class _LockedHumanEffects:
         del target, now_monotonic
         raise HumanControlError("kind_forbidden")
 
+    async def authorize_owner_receipt_view(
+        self,
+        target: OwnerReceiptViewTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> OwnerReceiptViewResult:
+        """Consume the reauthentication proof for this exact view and mint its one-use grant."""
+
+        grants = self._owner_view_grants
+        if grants is None:
+            raise HumanControlError("ceremony_unsupported")
+        digest = owner_receipt_view_target_digest(target)
+        try:
+            proof.consume(
+                "owner_receipt_view",
+                digest,
+                self._lifecycle.instance.generation,
+                self._vault.generation,
+                None,
+                now_monotonic,
+            )
+        except SecretMemoryError as exc:
+            raise HumanControlError("stale_generation") from exc
+        try:
+            seconds = grants.issue(digest, target.control_connection_digest)
+        except LookupError as exc:
+            # The command's own connection closed (or never existed): nobody may use a grant.
+            raise HumanControlError("target_invalid") from exc
+        return OwnerReceiptViewResult("authorized", digest, seconds)
+
+
+class _PresenceCancelledByPeer(Exception):
+    """The ceremony client cancelled while an OS presence prompt was up (its cancel frame step)."""
+
+    def __init__(self, step: int) -> None:
+        super().__init__("cancelled")
+        self.step = step
+
 
 class _HumanConnectionServer:
     def __init__(self, service: HumanControlService) -> None:
@@ -4315,7 +4430,17 @@ class _HumanConnectionServer:
                     if type(incoming) is ClientActionEnvelope:
                         ceremony_id = incoming.ceremony_id
                         error_step = incoming.step + 1
-                        response = await self._service.submit_action(incoming)
+                        if (
+                            type(incoming.action) is SelectAuthorizationSourceAction
+                            and incoming.action.source == "os_user_presence"
+                        ):
+                            try:
+                                response = await self._advance_presence_action(stream, incoming)
+                            except _PresenceCancelledByPeer as cancelled:
+                                error_step = cancelled.step + 1
+                                raise HumanControlError("cancelled") from None
+                        else:
+                            response = await self._service.submit_action(incoming)
                     elif type(incoming) is ClientCancelEnvelope:
                         ceremony_id = incoming.ceremony_id
                         error_step = incoming.step + 1
@@ -4369,6 +4494,56 @@ class _HumanConnectionServer:
                 except Exception:
                     pass
             await stream.aclose()
+
+    async def _advance_presence_action(
+        self, stream: ControlStream, incoming: ClientActionEnvelope
+    ) -> object:
+        """Wait for the OS presence prompt or a human-control peer close/cancel.
+
+        The presence check runs in the service and can wait for a person for up to a minute.
+        A foreground ceremony client that closes or cancels meanwhile cancels the ceremony,
+        which stops the prompt, instead of leaving it up until it times out.
+        """
+
+        action = asyncio.create_task(self._service.submit_action(incoming))
+        peer_wait = asyncio.create_task(_read_human_envelope(stream))
+        try:
+            done, _pending = await asyncio.wait(
+                {action, peer_wait}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # The connection itself is being torn down: end the ceremony's wait (which stops
+            # the prompt) and the peer read rather than leaving either task behind.
+            for task in (action, peer_wait):
+                task.cancel()
+            raise
+        if action in done:
+            peer_wait.cancel()
+            try:
+                await peer_wait
+            except asyncio.CancelledError, Exception:
+                pass
+            return action.result()
+        peer: object | None = None
+        if not peer_wait.cancelled() and peer_wait.exception() is None:
+            peer = peer_wait.result()
+        try:
+            closed: object | None = await self._service.cancel(incoming.ceremony_id)
+        except HumanControlError:
+            closed = None  # the action finished (or failed) first; its outcome stands
+        try:
+            outcome = await action
+        except HumanControlError:
+            outcome = None
+        if type(peer) is ClientCancelEnvelope:
+            if outcome is not None and closed is None:
+                return outcome
+            # Answer the client's cancel frame (its in-flight action already counted a step):
+            # a ``cancelled`` error correlated to that frame, then the close.
+            raise _PresenceCancelledByPeer(peer.step)
+        if peer is None:
+            raise HumanControlError("cancelled")
+        raise HumanControlError("kind_forbidden")
 
     async def _advance_secret_phase(self, stream: ControlStream, ceremony_id: str) -> object:
         """Wait for YZS1 or a human-control peer close/cancel, never only the secret socket."""
@@ -4474,6 +4649,9 @@ async def _production_composition(
         _discard_orphan_vault_rotation_stages(paths.bundle)
         secret_memory = LocalSecretMemory()
         mode = VaultMode.UNINITIALIZED if marker is None else marker.vault_mode
+        # One service-side OS presence provider (macOS LocalAuthentication) or none. The vault
+        # consumes exactly the attestations the human-control ceremony obtained from it.
+        user_presence = select_service_user_presence()
         vault = VaultService(
             installation_id=installation_id,
             service_generation=instance.generation,
@@ -4482,7 +4660,7 @@ async def _production_composition(
             clock=clock,
             vault_store_factory=lambda: EncryptedVaultStore(paths.bundle / "vault"),
             root_envelope=None if marker is None else marker.root_envelope,
-            user_presence_port=None,
+            user_presence_port=user_presence,
             runtime_support={},
             pristine_state_digest=(
                 canonical_digest({"installation_id": installation_id, "state": "pristine"})
@@ -4596,6 +4774,7 @@ async def _production_composition(
             activate_ready=relay,
         )
         privacy_relay = _PrivacyPolicyAppRelay()
+        owner_view_grants = OwnerViewGrants()
         human = HumanControlService(
             clock=clock,
             lifecycle=lifecycle,
@@ -4610,8 +4789,15 @@ async def _production_composition(
                 unlock,
                 maintenance_gate,
                 observation_gate,
+                owner_view_grants,
             ),
-            user_presence=None,
+            user_presence=user_presence,
+            # Scoped to the owner's receipt view (ADR-009, ADR-016 decision 4): presence never
+            # stands in for another reauthentication, for keyring retry, or for keyring
+            # first-install, which still needs a qualified runtime-support presence cell.
+            user_presence_scope=PresenceScope(
+                OWNER_VIEW_PRESENCE_PURPOSES, OWNER_VIEW_PRESENCE_VAULT_MODES
+            ),
         )
         return ServiceComposition(
             lifecycle=lifecycle,
@@ -4635,6 +4821,7 @@ async def _production_composition(
             auto_unlock_bundle=paths.bundle,
             session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
+            owner_view_grants=owner_view_grants,
         )
     except BaseException:
         await listeners.close()
@@ -4810,6 +4997,8 @@ def _human_error_code(exc: Exception) -> str:
         if reason in {
             "binding_expired",
             "cancelled",
+            "ceremony_busy",
+            "reauthentication_rate_limited",
             # Without these three the mapper collapses them to internal_error, and the bounded
             # ceremony reasons never reach the client that has to act on them.
             "ceremony_unsupported",
@@ -4817,6 +5006,8 @@ def _human_error_code(exc: Exception) -> str:
             "pending_unavailable",
             "kind_forbidden",
             "phase_invalid",
+            "presence_refused",
+            "presence_timeout",
             "presence_unavailable",
             "reauthentication_unavailable",
             "replay",

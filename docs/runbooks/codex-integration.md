@@ -2737,3 +2737,34 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Codex transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+### Receipt privacy ceiling (N5)
+
+Shared service projection, no host-specific path. Every receipt an agent can request (the MCP
+`receipt` tool, or `yoetz receipt` run by the agent, under a pseudo-terminal or not) is the agent
+projection: normal prose, titles, codes and counts stay; undeclared repository names the policy
+withholds become `(receipt prose withheld: repository_excerpt)`, including `./` and full-path
+spellings (from `/`, `~`, `$VAR` or `file://`; quoted when a directory has spaces) of any name, a
+top-level name without an extension included, and an exact name the requesting writer published itself returns. Large receipts stay
+valid: omission lists coalesce and an over-long field is cut visibly. The owner's full receipt is
+`yoetz receipt --owner-view` (or *Your full receipt* in the terminal interface), which needs the
+`owner_receipt_view` reauthentication. Verified by in-process tests on macOS, including a real
+pseudo-terminal; Linux and Windows through WSL 2 run the same service code but were not exercised
+for this change.
+
+Owner-view presence decision for Codex (#1073): same path as every host, because the owner view is
+a CLI and terminal-interface flow, never an MCP tool or hook. On macOS the service itself raises a
+LocalAuthentication dialog (Touch ID or the login password) showing the confirmation code the
+command prints, on either vault mode, including setup's system-keychain choice. A vault passphrase
+the owner chose is asked for once when the service cannot show a dialog, or directly with
+`--use-passphrase`; a passphrase kept in the system credential store is never prompted for on its
+own. On Linux and WSL 2 there is no presence provider: only a vault passphrase the owner types
+completes it, and a vault without one, or with one kept in the credential store, fails closed with
+`owner_view_unavailable`. When Codex runs the command through `exec_command` with a pseudo-terminal,
+the dialog appears on the owner's screen and the agent cannot answer it; a cancelled dialog is
+`owner_view_refused` and shows nothing, and repeated dialogs back off. Without a terminal the command
+ends with `owner_view_requires_terminal` before any dialog. If an agent's own ceremony is open, the
+owner's command reports `owner_view_busy` with its own code, and any dialog on screen is not the
+owner's. The dialog itself is covered only by stub-helper tests until
+the manual check in [test-instances.md](test-instances.md#owner-view-with-touch-id-manual-check-on-a-real-mac-1073)
+runs on a real Mac.

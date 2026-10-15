@@ -518,6 +518,9 @@ async def test_redacting_the_publication_revokes_the_name(
     started, _checked = await _run(app, 9500, named=(_MODELS[0],))
     internal, projected = await _projected_status(app, started, 9550)
     assert _rows(projected)[0]["paths"] == [_MODELS[0], _OMITTED]
+    receipt_case, receipt = await _receipt_case(app, started, internal, 9555, "markdown")
+    before = await project_case(app, receipt_case, 9556)
+    assert _MODELS[0] in cast(str, before["human_text"])
 
     ledger, _objects = readback._ledger(app, started.task_id)
     records = [row async for row in ledger.load_events(started.session_id)]
@@ -543,7 +546,7 @@ async def test_redacting_the_publication_revokes_the_name(
         app,
         started,
         seed=9600,
-        expected_frontier=internal.result_frontier.sequence,
+        expected_frontier=receipt.result_frontier.sequence,
         writer=started.writer_id,
         author=readback._agent_actor("redaction-test"),
         channel=PublicationChannel.COOPERATIVE_MCP,
@@ -564,6 +567,14 @@ async def test_redacting_the_publication_revokes_the_name(
     internal, projected = await _projected_status(app, started, 9650)
     assert internal.leaf_authorship == ()
     _assert_withheld_with_continuation(projected)
+    replayed = await app.receipt(ReceiptRequest.model_validate(receipt_case.request_body))
+    assert replayed.receipt_digest == receipt.receipt_digest
+    after = await project_case(
+        app,
+        ProjectionCase("receipt", ControlMethod.RECEIPT, receipt_case.request_body, replayed),
+        9652,
+    )
+    _assert_receipt_names_withheld(after, "markdown")
 
 
 async def test_an_owner_who_granted_repository_excerpts_sees_every_name(
@@ -672,3 +683,825 @@ async def test_biped_writer_and_validation_copies_raise_nothing_on_any_surface(
     assert _CODE not in rendered
     assert "Files named ambiguously: 18." in rendered
     assert "case_0" not in rendered
+
+
+# tb4n5 privacy (CHECK_FIX_DELIVERY_R2 #2): a ``full_local`` receipt names the undeclared files in
+# its prose, and that prose is classified ``finding_summary``, which the private default releases
+# to agents. The receipt is not a trusted-human sink and the profile is not a repository-excerpt
+# grant, so an agent must not read through it the names status withholds.
+
+
+async def _receipt_case(
+    app: Application,
+    started: StartInternalResult,
+    status: StatusInternalResult,
+    seed: int,
+    fmt: str,
+    profile: str = "full_local",
+) -> tuple[ProjectionCase, Any]:
+    body: dict[str, JsonValue] = {
+        **request_base(protocol_id("req_", seed)),
+        "task_id": started.task_id,
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "expected_frontier": frontier_json(status.result_frontier),
+        "format": fmt,
+        "include": "full",
+        "redaction_profile": profile,
+    }
+    receipt = await app.receipt(ReceiptRequest.model_validate(body))
+    return ProjectionCase("receipt", ControlMethod.RECEIPT, body, receipt), receipt
+
+
+def _assert_receipt_names_withheld(projected: Mapping[str, JsonValue], fmt: str) -> None:
+    text = canonical_encode(cast(JsonValue, projected)).decode()
+    for model in _MODELS:
+        assert model not in text
+        assert model.rsplit("/", 1)[1] not in text
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert privacy["sink"] == "agent_context"
+    assert "repository_excerpt" in privacy["blocked_categories"]
+    # Coverage-bounded: the leaf that named the files is listed, and its text says so.
+    assert privacy["omitted_pointers"]
+    prose = (
+        projected["human_text"]
+        if fmt != "json"
+        else canonical_encode(projected["document"]).decode()
+    )
+    assert type(prose) is str
+    assert "(receipt prose withheld: repository_excerpt)" in prose
+    if fmt == "json":
+        assert all(pointer.startswith("/document/") for pointer in privacy["omitted_pointers"])
+    else:
+        assert privacy["omitted_pointers"] == ["/human_text"]
+
+
+@pytest.mark.parametrize(
+    "client_kind,render_mode,tty",
+    [
+        ("mcp_bridge", "machine_readable", False),
+        ("mcp_bridge", "human_readable", True),
+        ("cli", "machine_readable", True),
+        ("cli", "human_readable", False),
+        ("ui", "machine_readable", False),
+        # r3 F1: a forged or merely true terminal presentation is never owner authority.
+        ("cli", "human_readable", True),
+        ("ui", "human_readable", True),
+    ],
+)
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_a_full_local_receipt_projected_to_an_agent_withholds_the_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fmt: str,
+    client_kind: str,
+    render_mode: str,
+    tty: bool,
+) -> None:
+    from yoetz.application.service import ClientProjectionContext
+    from yoetz.cli.render import render_human_receipt
+    from yoetz.mcp.server import result_from_public_model
+    from yoetz.mcp.summaries import summary_for_receipt
+    from yoetz.ports.control import ControlClientKind, McpHostProfile, ProjectionRenderMode
+    from yoetz.protocol.models import ReceiptResult
+
+    context = ClientProjectionContext(
+        ControlClientKind(client_kind), ProjectionRenderMode(render_mode), tty
+    )
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=19800)
+    started, _checked = await _run(app, 19800)
+    status, projected_status = await _projected_status(app, started, 19850)
+    _assert_withheld_with_continuation(projected_status)
+    case, receipt = await _receipt_case(app, started, status, 19860, fmt)
+    # The owner's stored receipt keeps the names (full detail, local only).
+    local = canonical_encode(cast(JsonValue, receipt.as_json())).decode()
+    assert all(model in local for model in _MODELS)
+    projected = await project_case(app, case, 19861, context=context)
+    _assert_receipt_names_withheld(projected, fmt)
+    model = ReceiptResult.model_validate(projected)
+    assert model.root.ok is True
+    for path in _MODELS:
+        assert path not in summary_for_receipt(projected)
+        assert path not in render_human_receipt(model.root)
+    for host in ("codex", "claude", "cursor"):
+        tool_result = result_from_public_model(model, host_profile=cast(McpHostProfile, host))
+        rendered = tool_result.model_dump_json()
+        assert all(path not in rendered for path in _MODELS)
+        assert all(path.rsplit("/", 1)[1] not in rendered for path in _MODELS)
+    # The structured coverage and gap identity survive the prose withholding.
+    assert projected["coverage"] == receipt.as_json()["coverage"]
+    if fmt == "json":
+        from yoetz.domain.receipts import receipt_document_from_json
+
+        receipt_document_from_json(projected["document"])
+    # The digest still names the stored owner receipt; nothing about it was rewritten.
+    assert projected["receipt_digest"] == receipt.receipt_digest
+
+    # The same request replays the stored receipt through the ledger read path (the one an
+    # earlier build's stored receipt takes), and the replay is held to the same ceiling.
+    replayed = await app.receipt(ReceiptRequest.model_validate(case.request_body))
+    assert replayed.receipt_digest == receipt.receipt_digest
+    _assert_receipt_names_withheld(
+        await project_case(
+            app,
+            ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, replayed),
+            19871,
+            context=context,
+        ),
+        fmt,
+    )
+
+
+@pytest.mark.parametrize("surface", ["cli", "cli_pty_facts", "cli_json_output", "tui"])
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_ordinary_cli_and_tui_receipts_are_agent_facing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    surface: str,
+    fmt: str,
+) -> None:
+    """r3 F1: without a ceremony grant every CLI and TUI receipt is the agent projection.
+
+    The client context is the one the real command builds; even a context that claims a
+    human-readable controlling terminal (what a pseudo-terminal produces) stays agent-facing.
+    """
+
+    import yoetz.cli.app as cli_app
+    from yoetz.application.service import ClientProjectionContext
+    from yoetz.ports.control import ControlClientKind, ProjectionRenderMode
+    from yoetz.protocol.models import ReceiptResultModel
+    from yoetz.tui.runtime import YoetzRuntime, _WorkSession
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20700)
+    started, _checked = await _run(app, 20700)
+    status, _projected = await _projected_status(app, started, 20750)
+    case, _receipt = await _receipt_case(app, started, status, 20760, fmt)
+    sinks: list[str] = []
+    delivered: list[str] = []
+
+    class Client:
+        def __init__(self, context: ClientProjectionContext) -> None:
+            self.context = context
+
+        async def receipt(self, request: Any, **_kwargs: object) -> ReceiptResultModel:
+            body = {**case.request_body, **request.model_dump(mode="json", exclude_none=True)}
+            projected = await project_case(
+                app,
+                ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, case.internal)
+                if surface != "tui"
+                else ProjectionCase(
+                    "receipt",
+                    ControlMethod.RECEIPT,
+                    body,
+                    await app.receipt(ReceiptRequest.model_validate(body)),
+                ),
+                20761,
+                context=self.context,
+            )
+            sinks.append(cast(Mapping[str, Any], projected["privacy_projection"])["sink"])
+            delivered.append(canonical_encode(cast(JsonValue, projected)).decode())
+            return ReceiptResultModel.model_validate(projected)
+
+        async def close(self) -> None:
+            pass
+
+    async def build(
+        client_kind: ControlClientKind = ControlClientKind.CLI,
+        *,
+        projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
+        output_is_controlling_tty: bool = False,
+        **_kwargs: object,
+    ) -> Client:
+        if surface == "cli_pty_facts":
+            # What a hello from inside an agent's pseudo-terminal can claim.
+            projection_render_mode = ProjectionRenderMode.HUMAN_READABLE
+            output_is_controlling_tty = True
+        return Client(
+            ClientProjectionContext(client_kind, projection_render_mode, output_is_controlling_tty)
+        )
+
+    monkeypatch.setattr(cli_app, "build_service_client", build)
+    if surface == "tui":
+        runtime = YoetzRuntime(cwd=repository)
+        runtime._sessions["owner"] = _WorkSession(
+            started.task_id, started.session_id, started.writer_id, status.result_frontier
+        )
+        shown = "\n".join((await runtime.build_receipt("owner", fmt)).rendered_lines)
+    else:
+        assert (
+            await cli_app._call_workflow(
+                "receipt",
+                ReceiptRequest,
+                None,
+                canonical_encode(case.request_body).decode(),
+                surface == "cli_json_output",
+                None,
+            )
+            == 0
+        )
+        shown = capsys.readouterr().out
+    assert sinks == ["agent_context"]
+    assert not any(path in delivered[0] for path in _MODELS)
+    assert not any(path in shown for path in _MODELS)
+
+
+async def test_owner_view_request_runs_the_ceremony_on_its_own_connection_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--owner-view`` binds the ceremony to this request and this client's connection, and
+    sends the receipt call only after the ceremony succeeded; a refusal sends nothing."""
+
+    import yoetz.cli.app as cli_app
+    import yoetz.cli.unlock as unlock
+    from yoetz.protocol.models import ReceiptResultModel
+    from yoetz.service.confidential_client import ConfidentialClientError
+    from yoetz.service.owner_view import owner_receipt_view_target
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20770)
+    started, _checked = await _run(app, 20770)
+    status, _projected = await _projected_status(app, started, 20775)
+    case, _receipt = await _receipt_case(app, started, status, 20780, "markdown")
+    nonce = "a" * 64
+    calls: list[str] = []
+
+    class Client:
+        def owner_receipt_view_target(self, request: Any) -> Any:
+            return owner_receipt_view_target(request, nonce)
+
+        async def receipt(self, _request: object, **_kwargs: object) -> ReceiptResultModel:
+            calls.append("receipt")
+            projected = await project_case(app, case, 20781)
+            return ReceiptResultModel.model_validate(projected)
+
+        async def close(self) -> None:
+            pass
+
+    async def build(*_args: object, **_kwargs: object) -> Client:
+        return Client()
+
+    ceremonies: list[Any] = []
+
+    async def refuse(target: Any, **_kwargs: Any) -> Any:
+        ceremonies.append(target)
+        raise ConfidentialClientError("reauthentication_unavailable")
+
+    monkeypatch.setattr(cli_app, "build_service_client", build)
+    monkeypatch.setattr(unlock, "authorize_owner_receipt_view", refuse)
+    code = await cli_app._call_workflow(
+        "receipt",
+        ReceiptRequest,
+        None,
+        canonical_encode(case.request_body).decode(),
+        False,
+        None,
+        owner_view=True,
+    )
+    assert code != 0
+    assert calls == []
+    captured = capsys.readouterr()
+    assert "owner_view_unavailable" in captured.err
+    assert "git status --short" in captured.err
+    assert all(path not in captured.out + captured.err for path in _MODELS)
+    request = ReceiptRequest.model_validate(case.request_body)
+    assert ceremonies == [owner_receipt_view_target(request, nonce)]
+
+    async def grant(target: Any, **_kwargs: Any) -> Any:
+        ceremonies.append(target)
+        calls.append("ceremony")
+
+    monkeypatch.setattr(unlock, "authorize_owner_receipt_view", grant)
+    code = await cli_app._call_workflow(
+        "receipt",
+        ReceiptRequest,
+        None,
+        canonical_encode(case.request_body).decode(),
+        False,
+        None,
+        owner_view=True,
+    )
+    assert code == 0
+    assert calls == ["ceremony", "receipt"]
+
+
+async def test_receipt_name_provenance_is_per_name_and_auditable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20800)
+    started, _checked = await _run(app, 20800, named=(_MODELS[0],))
+    status, _projected = await _projected_status(app, started, 20850)
+    case, receipt = await _receipt_case(app, started, status, 20860, "markdown")
+    projected = await project_case(app, case, 20861)
+    text = cast(str, projected["human_text"])
+    assert _MODELS[0] in text
+    assert _MODELS[1] not in text
+    assert "Summary" in text and "(receipt prose withheld: repository_excerpt)" in text
+    assert receipt.human_text != text
+    subject = _projection_subject(app, projected)
+    denied = [
+        pointer for pointer, _category, allowed, _reason in subject.field_decisions if not allowed
+    ]
+    assert denied == ["/human_text/@repository_name/1"]
+    assert cast(Mapping[str, Any], projected["privacy_projection"])["omitted_pointers"] == [
+        "/human_text"
+    ]
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_the_owner_local_view_and_a_granted_policy_keep_the_receipt_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    from yoetz.application.service import ClientProjectionContext
+    from yoetz.ports.control import ControlClientKind, ProjectionRenderMode
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=19900)
+    started, _checked = await _run(app, 19900)
+    status, _projected = await _projected_status(app, started, 19950)
+    case, _receipt = await _receipt_case(app, started, status, 19960, fmt)
+    human = await project_case(
+        app,
+        case,
+        19961,
+        # The service sets ``owner_view`` only after consuming a ceremony grant.
+        context=ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, False, owner_view=True
+        ),
+    )
+    assert cast(Mapping[str, Any], human["privacy_projection"])["sink"] == "local_human_view"
+    text = canonical_encode(cast(JsonValue, human)).decode()
+    assert all(model in text for model in _MODELS)
+
+    def granted(policy: PrivacyPolicy) -> PrivacyPolicy:
+        return replace(
+            policy,
+            agent_context_categories=(
+                *policy.agent_context_categories,
+                DataCategory.REPOSITORY_EXCERPT,
+            ),
+        )
+
+    (tmp_path / "granted").mkdir()
+    repository, base = _workspace(tmp_path / "granted")
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20000, policy_transform=granted)
+    started, _checked = await _run(app, 20000)
+    status, _projected = await _projected_status(app, started, 20050)
+    case, _receipt = await _receipt_case(app, started, status, 20060, fmt)
+    projected = await project_case(app, case, 20061)
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert privacy["omitted_pointers"] == []
+    text = canonical_encode(cast(JsonValue, projected)).decode()
+    assert all(model in text for model in _MODELS)
+
+
+async def test_receipt_prose_of_any_category_cannot_carry_a_name_to_an_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Obligation and section prose obey the excerpt ceiling, including a bare basename; only
+    the name spans are withheld, never the sentence around them."""
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20100)
+    started, _checked = await _run(app, 20100)
+    status, _projected = await _projected_status(app, started, 20150)
+    case, receipt = await _receipt_case(app, started, status, 20160, "json", "default_local_export")
+    document = cast(dict[str, Any], receipt.document)
+    assert not any(model in canonical_encode(document).decode() for model in _MODELS)
+    document["obligations"][0]["summary"] = f"Loads {_MODELS[1]} at start."
+    body = document["sections"][0]["body"]
+    document["sections"][0]["body"] = body + " It also reads english_ngrams.npz."
+    projected = await project_case(
+        app, ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, receipt), 20161
+    )
+    text = canonical_encode(cast(JsonValue, projected)).decode()
+    assert "english_ngrams" not in text and "english_words" not in text
+    projected_document = cast(Mapping[str, Any], projected["document"])
+    token = "(receipt prose withheld: repository_excerpt)"
+    assert projected_document["obligations"][0]["summary"] == f"Loads {token} at start."
+    assert projected_document["sections"][0]["body"] == body + f" It also reads {token}."
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+    assert "/document/sections/0/body" in privacy["omitted_pointers"]
+
+
+async def test_excerpt_grant_does_not_grant_a_denied_receipt_prose_category(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The additional excerpt gate never grants a denied ordinary prose category."""
+
+    def no_prose(policy: PrivacyPolicy) -> PrivacyPolicy:
+        return replace(
+            policy,
+            agent_context_categories=(
+                *(
+                    category
+                    for category in policy.agent_context_categories
+                    if category is not DataCategory.FINDING_SUMMARY
+                ),
+                DataCategory.REPOSITORY_EXCERPT,
+            ),
+        )
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20200, policy_transform=no_prose)
+    started, _checked = await _run(app, 20200)
+    status, _projected = await _projected_status(app, started, 20250)
+    case, _receipt = await _receipt_case(app, started, status, 20260, "markdown")
+    projected = await project_case(app, case, 20261)
+    assert projected["human_text"] == {
+        "category": "finding_summary",
+        "omitted": True,
+        "reason": "local_disclosure_not_authorized",
+    }
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert privacy["omitted_pointers"] == ["/human_text"]
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_receipt_prose_around_a_withheld_name_stays_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    """r2 (item 1): the r1 gate blanked every prose string; only the name span is withheld."""
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20300)
+    started, _checked = await _run(app, 20300)
+    status, _projected = await _projected_status(app, started, 20350)
+    case, receipt = await _receipt_case(app, started, status, 20360, fmt)
+    stored = canonical_encode(
+        cast(JsonValue, receipt.document if fmt == "json" else receipt.human_text)
+    ).decode()
+    assert all(model in stored for model in _MODELS)
+    projected = await project_case(app, case, 20361)
+    _assert_receipt_names_withheld(projected, fmt)
+    if fmt == "json":
+        document = cast(Mapping[str, Any], projected["document"])
+        stored_document = cast(Mapping[str, Any], receipt.document)
+        # Every section title and every prose string that names no file is unchanged.
+        for shown, kept in zip(document["sections"], stored_document["sections"], strict=True):
+            assert shown["title"] == kept["title"]
+        unchanged = [
+            leaf
+            for leaf in _string_leaves(stored_document)
+            if not any(model in leaf for model in _MODELS)
+        ]
+        assert unchanged and set(unchanged) <= set(_string_leaves(document))
+    else:
+        text = cast(str, projected["human_text"])
+        kept_lines = [
+            line
+            for line in cast(str, receipt.human_text).splitlines()
+            if not any(model in line for model in _MODELS)
+        ]
+        assert kept_lines and all(line in text.splitlines() for line in kept_lines)
+        withheld = [line for line in text.splitlines() if "(receipt prose withheld" in line]
+        # The sentence naming the files keeps its words; only the names became the token.
+        assert withheld and all(len(line) > len("(receipt prose withheld: x)") for line in withheld)
+
+
+def _string_leaves(value: object) -> list[str]:
+    if isinstance(value, Mapping):
+        children: list[object] = list(cast(Mapping[str, object], value).values())
+    elif isinstance(value, (list, tuple)):
+        children = list(cast(Sequence[object], value))
+    else:
+        return [value] if type(value) is str else []
+    return [leaf for child in children for leaf in _string_leaves(child)]
+
+
+async def test_withheld_receipt_content_is_absent_from_the_authorized_sink_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import base64
+
+    from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+    from yoetz.domain.privacy import ClassifiedContext, PrivacyDecision
+    from yoetz.ports.privacy import MinimizedDisclosure
+    from yoetz.protocol.canonical import strict_json_parse
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20400)
+    started, _checked = await _run(app, 20400)
+    status, _projected = await _projected_status(app, started, 20450)
+    case, _receipt = await _receipt_case(app, started, status, 20460, "json")
+    payloads: list[bytes] = []
+    original = LocalPrivacyEnforcer.minimize_and_scan
+
+    def capture(
+        self: LocalPrivacyEnforcer, classified: ClassifiedContext, decision: PrivacyDecision
+    ) -> MinimizedDisclosure:
+        minimized = original(self, classified, decision)
+        payloads.append(minimized.prepared_bytes)
+        return minimized
+
+    monkeypatch.setattr(LocalPrivacyEnforcer, "minimize_and_scan", capture)
+    projected = await project_case(app, case, 20461)
+    _assert_receipt_names_withheld(projected, "json")
+    assert payloads
+    for payload in payloads:
+        body = cast(Mapping[str, Any], strict_json_parse(payload))
+        content = b"\n".join(base64.b64decode(item["content_base64"]) for item in body["items"])
+        assert all(path.encode() not in content for path in _MODELS)
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_clean_receipt_keeps_normal_agent_prose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20500)
+    started, _checked = await _run(app, 20500, delivered=(_CRACKER, *_MODELS), expect_gap=False)
+    status, _projected = await _projected_status(app, started, 20550)
+    case, receipt = await _receipt_case(app, started, status, 20560, fmt, "default_local_export")
+    projected = await project_case(app, case, 20561)
+    assert projected["human_text"] == receipt.human_text
+    assert projected["document"] == receipt.document
+    assert cast(Mapping[str, Any], projected["privacy_projection"])["omitted_pointers"] == []
+
+
+async def test_large_receipt_coalesces_omissions_without_losing_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hundreds of prose leaves that spell a withheld name still project (r1 review item 3).
+
+    Each leaf is its own omission; past the 512-pointer wire bound the list coalesces to the
+    containing fields instead of failing with ``projection_pointer_limit``. Only the name spans
+    are withheld: every leaf keeps its own surrounding words.
+    """
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20600)
+    started, _checked = await _run(app, 20600)
+    status, _projected = await _projected_status(app, started, 20650)
+    case, receipt = await _receipt_case(app, started, status, 20660, "json")
+    document = cast(dict[str, Any], receipt.document)
+    import copy
+
+    # Fill the document to its schema bounds with prose that spells a withheld name: 64 items
+    # in each section, 100 obligation summaries and 64 gap details, each leaf its own omission.
+    for section_index, section in enumerate(document["sections"]):
+        section["items"] = [
+            f'Row {section_index}.{n} loads "{_MODELS[n % 2]}" before the solver.'
+            for n in range(64)
+        ]
+    template = document["obligations"][0]
+    document["obligations"] = [
+        {
+            **copy.deepcopy(template),
+            "obligation_id": protocol_id("obl_", 60000 + n),
+            "summary": f"Obligation {n} reads {_MODELS[n % 2]} once.",
+        }
+        for n in range(100)
+    ]
+    gap = next(gap for gap in document["gaps"] if gap.get("detail"))
+    document["gaps"] = [
+        {**copy.deepcopy(gap), "detail": f"Gap {n} names {_MODELS[n % 2]}."} for n in range(64)
+    ]
+    leaf_count = 64 * len(document["sections"]) + 100 + 64
+    assert leaf_count > 512
+    projected = await project_case(app, case, 20661)
+    pointers = cast(Mapping[str, Any], projected["privacy_projection"])["omitted_pointers"]
+    assert 0 < len(pointers) <= 512
+    subject = _projection_subject(app, projected)
+    assert subject.omitted_count >= leaf_count
+    denied = [
+        pointer for pointer, _category, allowed, _reason in subject.field_decisions if not allowed
+    ]
+    for origin in denied:
+        leaf = origin.split("/@repository_name/", 1)[0]
+        assert any(leaf == pointer or leaf.startswith(pointer + "/") for pointer in pointers)
+    encoded = canonical_encode(projected).decode()
+    assert all(model not in encoded for model in _MODELS)
+    projected_sections = cast(Mapping[str, Any], projected["document"])["sections"]
+    assert projected_sections[0]["items"][3] == (
+        "Row 0.3 loads (receipt prose withheld: repository_excerpt) before the solver."
+    )
+    assert projected["coverage"] == receipt.as_json()["coverage"]
+    assert projected["receipt_digest"] == receipt.receipt_digest
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_a_repository_name_cannot_withhold_fixed_receipt_headings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    repository, base = _workspace(tmp_path)
+    (repository / _MODELS[0]).rename(repository / "artifacts/Summary")
+    (repository / _CRACKER).write_text(_LOADER.replace("english_ngrams.npz", "Summary"))
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20900)
+    started, _checked = await _run(app, 20900)
+    status, _projected = await _projected_status(app, started, 20950)
+    case, _receipt = await _receipt_case(app, started, status, 20960, fmt)
+    projected = await project_case(app, case, 20961)
+    if fmt == "json":
+        assert cast(Mapping[str, Any], projected["document"])["sections"][0]["title"] == "Summary"
+    else:
+        heading = "## Summary" if fmt == "markdown" else "Summary"
+        assert cast(str, projected["human_text"]).startswith(heading + "\n")
+    assert "artifacts/Summary" not in canonical_encode(projected).decode()
+
+
+async def test_dot_slash_spellings_in_receipt_prose_are_withheld(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r3 F2: the reviewer's ``./`` repro through the production projection."""
+
+    # A real repository under a directory whose name has a space (R3-F2).
+    spaced = tmp_path / "My Project"
+    spaced.mkdir(mode=0o700)
+    repository, base = _workspace(spaced)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=21000)
+    started, _checked = await _run(app, 21000)
+    status, _projected = await _projected_status(app, started, 21050)
+    case, receipt = await _receipt_case(app, started, status, 21060, "json", "default_local_export")
+    document = cast(dict[str, Any], receipt.document)
+    document["obligations"][0]["summary"] = "Loads ./artifacts/english_words.npz at start."
+    body = document["sections"][0]["body"]
+    document["sections"][0]["body"] = body + ' It also reads "./artifacts/english_ngrams.npz".'
+    # R3-F2: an absolute spelling through a directory with spaces, single-quoted.
+    absolute = f"'{repository}/artifacts/english_words.npz'"
+    document["sections"][0]["coverage_note"] = f"Checked {absolute} too."
+    projected = await project_case(app, case, 21061)
+    text = canonical_encode(cast(JsonValue, projected)).decode()
+    assert "english_ngrams" not in text and "english_words" not in text
+    token = "(receipt prose withheld: repository_excerpt)"
+    projected_document = cast(Mapping[str, Any], projected["document"])
+    assert projected_document["obligations"][0]["summary"] == f"Loads {token} at start."
+    assert projected_document["sections"][0]["body"] == body + f" It also reads {token}."
+    assert projected_document["sections"][0]["coverage_note"] == f"Checked {token} too."
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+    assert "/document/sections/0/coverage_note" in privacy["omitted_pointers"]
+
+
+@pytest.mark.parametrize("quote", ["`", '"', "'"])
+async def test_a_published_name_cannot_carry_an_unpublished_one_out_of_a_quoted_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quote: str
+) -> None:
+    """#1073 review round 3, T1: the requester published english_ngrams.npz; a quoted command
+    naming english_words.npz before it must still withhold english_words.npz."""
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=32000)
+    started, _checked = await _run(app, 32000, named=("/app/" + _MODELS[0],))
+    status, _projected = await _projected_status(app, started, 32050)
+    case, receipt = await _receipt_case(app, started, status, 32060, "json", "default_local_export")
+    document = cast(dict[str, Any], receipt.document)
+    command = (
+        f"/usr/bin/cmp {repository}/artifacts/english_words.npz "
+        f"{repository}/artifacts/english_ngrams.npz"
+    )
+    if quote == "'":
+        command = "~/app/artifacts/english_words.npz ~/app/artifacts/english_ngrams.npz"
+    document["obligations"][0]["summary"] = f"Ran {quote}{command}{quote} first."
+    projected = await project_case(app, case, 32061)
+    summary = cast(Mapping[str, Any], projected["document"])["obligations"][0]["summary"]
+    assert "english_words" not in summary, summary
+    assert "english_ngrams.npz" in summary, summary
+    assert "(receipt prose withheld: repository_excerpt)" in summary
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+
+
+_TOP_LEVEL_LOADER = """import os
+
+import numpy as np
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TABLE = np.load(os.path.join(ROOT, "vocab_table"))
+"""
+
+
+async def test_a_top_level_extensionless_name_is_withheld_behind_any_path_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1073 review P2-1: ``./vocab_table`` and ``/abs/repo/vocab_table`` in prose."""
+
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    _git(repository, "init", "--quiet")
+    (repository / "README.md").write_text("Cracker\n", encoding="utf-8")
+    _git(repository, "add", "--", "README.md")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+    )
+    (repository / "artifacts").mkdir()
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    (repository / "artifacts" / "cracker.py").write_text(_TOP_LEVEL_LOADER, encoding="utf-8")
+    (repository / "vocab_table").write_bytes(b"\x93NUMPY\x00\x01table")
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=31000)
+    started, _checked = await _run(app, 31000)
+    status, _projected = await _projected_status(app, started, 31050)
+    case, receipt = await _receipt_case(app, started, status, 31060, "json", "default_local_export")
+    document = cast(dict[str, Any], receipt.document)
+    document["obligations"][0]["summary"] = "Loads ./vocab_table and .//vocab_table at start."
+    document["sections"][0]["coverage_note"] = f"Checked {repository}//vocab_table too."
+    body = document["sections"][0]["body"]
+    # The quoted control proves the check recorded the undeclared top-level file.
+    document["sections"][0]["body"] = (
+        body + ' Control: "vocab_table". The vocab_table word alone stays.'
+    )
+    projected = await project_case(app, case, 31061)
+    token = "(receipt prose withheld: repository_excerpt)"
+    projected_document = cast(Mapping[str, Any], projected["document"])
+    assert projected_document["obligations"][0]["summary"] == (
+        f"Loads {token} and {token} at start."
+    )
+    assert projected_document["sections"][0]["coverage_note"] == f"Checked {token} too."
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+    assert "/document/sections/0/coverage_note" in privacy["omitted_pointers"]
+    text = canonical_encode(cast(JsonValue, projected)).decode()
+    # Only the plain word the test appended survives; every path spelling of the name is gone.
+    assert text.count("vocab_table") == 1
+    assert projected_document["sections"][0]["body"] == (
+        body + f" Control: {token}. The vocab_table word alone stays."
+    )
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_token_expansion_returns_a_bounded_valid_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    """r3 F3: short repeated names expanded by the token stay inside every bound.
+
+    Before the fix the reviewer's 7,600-character ``human_text`` became 18,000 characters and
+    the projection failed with ``invalid_privacy_value``. Now the presentation is cut visibly,
+    every withheld token is whole, and the audit still holds one denial per name and field.
+    """
+
+    from dataclasses import replace as dc_replace
+
+    from yoetz.domain.privacy import MAX_EGRESS_ITEM_BYTES
+    from yoetz.protocol.models import ReceiptResultModel
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=21100)
+    started, _checked = await _run(app, 21100)
+    status, _projected = await _projected_status(app, started, 21150)
+    case, receipt = await _receipt_case(app, started, status, 21160, fmt)
+    names = "english_ngrams.npz " * 400
+    if fmt == "json":
+        document = cast(dict[str, Any], receipt.document)
+        document["sections"][0]["body"] = names
+        document["sections"][1]["items"] = [names[:8000]]
+        source = receipt
+    else:
+        source = dc_replace(receipt, human_text=names)
+    projected = await project_case(
+        app, ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, source), 21161
+    )
+    ReceiptResultModel.model_validate(projected)
+    token = "(receipt prose withheld: repository_excerpt)"
+    fields = (
+        [
+            cast(Mapping[str, Any], projected["document"])["sections"][0]["body"],
+            cast(Mapping[str, Any], projected["document"])["sections"][1]["items"][0],
+        ]
+        if fmt == "json"
+        else [cast(str, projected["human_text"])]
+    )
+    for shown in fields:
+        assert "english_ngrams" not in shown
+        assert len(canonical_encode(shown)) <= MAX_EGRESS_ITEM_BYTES
+        kept, marker = shown.rsplit(" [receipt text truncated after withholding: ", 1)
+        assert marker.endswith(" characters not shown]")
+        assert kept.replace(token, "").strip() == ""
+    subject = _projection_subject(app, projected)
+    denied = [
+        pointer for pointer, _category, allowed, _reason in subject.field_decisions if not allowed
+    ]
+    expected = (
+        {"/document/sections/0/body", "/document/sections/1/items/0"}
+        if fmt == "json"
+        else {"/human_text"}
+    )
+    assert {origin.split("/@repository_name/", 1)[0] for origin in denied} >= expected

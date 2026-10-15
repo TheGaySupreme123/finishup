@@ -1061,6 +1061,8 @@ class YoetzRuntime:
         from yoetz.cli.app import build_service_client
         from yoetz.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 
+        # Agent-facing like every client (ADR-009 round 3); the owner's full receipt is the
+        # explicit, reauthenticated ``build_receipt(..., owner_view=True)`` path.
         try:
             client = await build_service_client(
                 ControlClientKind.UI,
@@ -2073,7 +2075,16 @@ class YoetzRuntime:
         self._pending_checks.pop(title, None)
         return str(success.verdict), tuple(render_human_check(success).splitlines())
 
-    async def build_receipt(self, title: str, output_format: str) -> ReceiptSummary:
+    async def build_receipt(
+        self, title: str, output_format: str, *, owner_view: bool = False
+    ) -> ReceiptSummary:
+        """Build the agent-facing receipt, or with ``owner_view`` the owner's full one.
+
+        The owner view runs the human-control reauthentication ceremony for this exact request
+        on this client's own connection, so the caller must already have handed the terminal
+        over (``hand_over_terminal``); the service, not this process, decides.
+        """
+
         from yoetz.cli.render import render_human_receipt
         from yoetz.protocol.canonical import canonical_encode
         from yoetz.protocol.coverage import CheckType
@@ -2090,11 +2101,13 @@ class YoetzRuntime:
                 "writer_id": session.writer_id,
                 "expected_frontier": self._frontier(session),
                 "format": output_format,
-                "include": "standard",
-                "redaction_profile": "default_local_export",
+                "include": "full" if owner_view else "standard",
+                "redaction_profile": "full_local" if owner_view else "default_local_export",
             }
         )
         async with self._client() as client:
+            if owner_view:
+                await self._authorize_owner_receipt_view(client, request)
             result = await client.receipt(request)
         success = self._unwrap(result, "the receipt could not be built")
         session.frontier = success.result_frontier
@@ -2117,6 +2130,57 @@ class YoetzRuntime:
             verified=("local checks recorded in this receipt",),
             not_verified=("external AI-powered review did not contribute to this receipt",),
         )
+
+    async def _authorize_owner_receipt_view(self, client: Any, request: object) -> None:
+        from yoetz.cli.unlock import HumanCeremonyCliError, authorize_owner_receipt_view
+        from yoetz.service.confidential_client import ConfidentialClientError
+
+        try:
+            await authorize_owner_receipt_view(client.owner_receipt_view_target(request))
+        except (ConfidentialClientError, HumanCeremonyCliError) as error:
+            reason = error.reason
+            if reason in {"presence_unavailable", "reauthentication_unavailable"}:
+                raise RuntimeError_(
+                    "owner_view_unavailable",
+                    "Yoetz cannot confirm it is you on this installation (no vault passphrase, "
+                    "and no Touch ID or login-password dialog could be shown), so the full "
+                    "receipt stays closed; the ordinary receipt is unchanged",
+                ) from error
+            if reason in {"presence_refused", "presence_timeout"}:
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "the system confirmation was cancelled, did not confirm it is you, or was "
+                    "not answered in time; nothing was shown",
+                ) from error
+            if reason == "passphrase_in_credential_store":
+                raise RuntimeError_(
+                    "owner_view_unavailable",
+                    "no system dialog can be shown here and this vault's passphrase may be kept "
+                    "in the system credential store (or the store could not be read), so the "
+                    "full receipt stays closed; if you chose "
+                    "that passphrase yourself, run 'yoetz receipt --owner-view --use-passphrase'",
+                ) from error
+            if reason == "ceremony_busy":
+                raise RuntimeError_(
+                    "owner_view_busy",
+                    "another confirmation is already open, perhaps one an agent started; if a "
+                    "system dialog is on screen it is not for this request, so cancel it; if "
+                    "nothing is on screen, 'yoetz service restart' ends it; then try again",
+                ) from error
+            if reason == "passphrase_rate_limited":
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "too many wrong passphrases, so Yoetz waits up to five minutes before "
+                    "accepting another; restarting the service does not clear this wait",
+                ) from error
+            if reason == "reauthentication_rate_limited":
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "recent confirmations did not succeed, so Yoetz waits up to five minutes "
+                    "before asking again; another program may have caused this, and 'yoetz "
+                    "service restart' clears the wait",
+                ) from error
+            raise RuntimeError_(reason, "the full receipt was not authorized") from error
 
     def _frontier(self, session: _WorkSession) -> object:
         frontier = session.frontier
