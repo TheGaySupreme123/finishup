@@ -868,3 +868,94 @@ def test_no_privacy_next_step_when_the_privacy_step_never_ran(
     assert "Reason: service_not_ready" in out
     assert "Privacy policy" not in out
     assert "finishup --privacy" not in out
+
+
+# --- review round 3: next steps print once, and only for what this run left undone ----------------
+
+
+def test_a_skipped_provider_names_the_provider_step_not_the_privacy_step(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from finishup.cli import privacy_setup, provider_binding
+
+    async def ready(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": True, "state": "ready"}
+
+    async def never(**_kwargs: object) -> object:
+        raise AssertionError("the privacy step must not run without a provider")
+
+    def skipped(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(wizard, "_service_reachability", ready)
+    monkeypatch.setattr(provider_binding, "prompt_provider_endpoint_binding", skipped)
+    monkeypatch.setattr(privacy_setup, "run_privacy_setup", never)
+
+    assert anyio.run(wizard.run_provider_setup) == 20
+
+    out = capsys.readouterr().out
+    assert "Provider binding: skipped" in out
+    assert "privacy_setup_incomplete" not in out
+    assert "finishup --privacy" not in out
+    assert "finishup provider endpoint" in out
+
+
+def test_the_codex_wizard_prints_each_privacy_and_credential_step_once(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import finishup.config.load as config_load
+    from finishup.cli import privacy_setup, provider_binding, provider_status
+    from finishup.config.write import fireworks_provider
+
+    _codex_only(monkeypatch, home, tmp_path, "ai_powered")
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    provider = fireworks_provider(model="accounts/fireworks/models/example")
+
+    def prompt(_text: str, *_args: object, **kwargs: object) -> str:
+        default = kwargs.get("default")
+        return "1" if default is None else str(default)
+
+    async def ready(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": True, "state": "ready"}
+
+    async def restarted() -> dict[str, object]:
+        return {"reachable": True, "state": "ready"}
+
+    def bind(*_args: object, **_kwargs: object) -> Path:
+        return tmp_path / "config.toml"
+
+    async def status_report(**_kwargs: object) -> dict[str, object]:
+        return {
+            "semantic_ready": False,
+            "blockers": [
+                {"condition": "provider_credential", "state": "not_connected"},
+                {"condition": "llm_inference_channel", "state": "disabled"},
+            ],
+        }
+
+    monkeypatch.setattr("typer.prompt", prompt)
+    monkeypatch.setattr(wizard, "_service_reachability", ready)
+    monkeypatch.setattr(wizard, "_restart_service_for_semantic_composition", restarted)
+    monkeypatch.setattr(wizard, "_interactive_provider_setup", _REAL_PROVIDER_SETUP)
+    monkeypatch.setattr(wizard, "load_config", _config(external_runtime=None))
+    monkeypatch.setattr(config_load, "load_config", _config(provider=provider))
+    monkeypatch.setattr(provider_binding, "prompt_provider_endpoint_binding", bind)
+    monkeypatch.setattr(privacy_setup, "run_privacy_setup", _declined_with_profile)
+    monkeypatch.setattr(provider_status, "provider_status_report", status_report)
+    monkeypatch.setattr(wizard, "_emit_human_report", _REAL_HUMAN_REPORT)
+
+    assert _codex_wizard() == 20
+
+    out = capsys.readouterr().out
+    assert out.count("finishup --privacy") == 1
+    assert out.count("finishup provider credential set") == 1
+    assert out.index("finishup --privacy") < out.index("finishup provider credential set")
+
+
+_REAL_HUMAN_REPORT = wizard._emit_human_report  # pyright: ignore[reportPrivateUsage]

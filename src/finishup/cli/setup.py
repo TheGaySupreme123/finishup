@@ -182,6 +182,11 @@ _NEXT_CREDENTIAL_AFTER_PRIVACY: Final = (
     "No API key was stored: after that, rerun 'finishup --set' from the project folder, or run "
     "'finishup provider credential set' there."
 )
+_NEXT_PROVIDER_AFTER_SKIP: Final = (
+    "Next: no provider was chosen. Rerun 'finishup --set' and choose one, or run 'finishup "
+    "provider endpoint' (API key) or 'finishup provider codex-subscription setup' (Codex with a "
+    "ChatGPT subscription)."
+)
 _PRIVACY_READY: Final = frozenset({"configured", "unchanged"})
 
 
@@ -2865,7 +2870,7 @@ async def run_provider_setup(
             )
             return 20
         reason = provider_report.get("credential_reason")
-        if type(reason) is not str and not privacy_ready:
+        if type(reason) is not str and binding == "configured" and not privacy_ready:
             reason = "privacy_setup_incomplete"
         if type(reason) is str:
             typer.echo(f"Reason: {reason}")
@@ -2874,6 +2879,9 @@ async def run_provider_setup(
             remediation = subscription_remediation(reason)
             if remediation is not None:
                 typer.echo(f"Next: {remediation}")
+        elif binding == "skipped":
+            # No provider was chosen, so neither the privacy step nor a credential ran.
+            typer.echo(_NEXT_PROVIDER_AFTER_SKIP)
         return 20
     if credential == "external_runtime_oauth":
         _emit_codex_subscription_layer_report(privacy_outcome=privacy_outcome)
@@ -3387,6 +3395,10 @@ async def run_setup_wizard(
         "not_changed",
         "deferred",
     }
+    if privacy_incomplete and interactive:
+        # The closing block names the privacy step and, when no API key was stored, the
+        # credential step, in that order; the summary list leaves them out so each prints once.
+        next_steps = [step for step in next_steps if step not in {_NEXT_PRIVACY, _NEXT_CREDENTIAL}]
     setup_complete = (
         not interactive
         or (review_mode == "local_only" and privacy.get("outcome") in {"configured", "unchanged"})
