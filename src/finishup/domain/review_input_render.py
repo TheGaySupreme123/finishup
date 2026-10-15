@@ -313,7 +313,8 @@ _PUBLISH_EXACTLY: Final = MappingProxyType(
         ),
         "prior_finding_context": "Publish one respond for that finding, linked to the target.",
         "task_statement": (
-            "Publish one plan_revised whose source_refs cite the start event, linked to the target."
+            "Publish one plan_revised 1.1.0 whose task_statement is the user's whole request, "
+            "linked to the target."
         ),
         "verification_output": (
             "Publish one result_recorded of that target whose summary is the command output, "
