@@ -450,6 +450,8 @@ reason beside nonempty `obligation_refs`.
 }
 ```
 
+<a id="publish-work-decision"></a>
+
 ## `publish_work`: decision
 
 `authority` is a structural actor identifier matching `^[A-Za-z0-9._:-]{1,128}$` — it names the

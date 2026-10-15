@@ -43,6 +43,7 @@ _PRIVACY_SCHEMA_NAMES: Final = (
     "privacy-policy-1.0.0.schema.json",
     "privacy-policy-1.1.0.schema.json",
     "privacy-policy-1.2.0.schema.json",
+    "review-packet-row-2.0.0.schema.json",
     "setup-wizard-contract-1.0.0.schema.json",
 )
 _PRIVACY_FIXTURE_NAMES: Final = (
