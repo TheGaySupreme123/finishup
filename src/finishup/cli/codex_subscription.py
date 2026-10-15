@@ -123,6 +123,8 @@ __all__ = [
     "subscription_remediation",
 ]
 
+# Frozen legacy identifier (ADR-048): the `yoetz.codex-*/<n>` report schema tags in this module
+# stay in the one protocol 0.1 `yoetz.<name>/<n>` tag namespace.
 _CODEX_PACKAGE_NAME: Final = "@openai/codex"
 _CODEX_PACKAGE_JSON_MAX_BYTES: Final = 64 * 1024
 _SUPPORTED_REASONING: Final = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})

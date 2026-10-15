@@ -72,6 +72,8 @@ CODEX_EVALUATOR_RUNTIME_FLOOR: Final = "0.157.1"
 # ``codex_runtime_profile_outdated`` until ``repair`` re-runs the check.
 CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v2"
 CODEX_CAPABILITY_RECORD_NAME: Final = "capability.json"
+# Frozen legacy identifier (ADR-048): stored in capability.json records; protocol 0.1 keeps one
+# `yoetz.<name>/<n>` tag namespace.
 CODEX_CAPABILITY_RECORD_SCHEMA: Final = "yoetz.codex-evaluator-capability/1"
 CODEX_CODE_MODE_HOST_NAME: Final = "codex-code-mode-host"
 CODEX_CAPABILITY_CHECKS: Final[tuple[str, ...]] = (

@@ -37,7 +37,7 @@ _EMPTY_RESOLUTION = (
 _REAL_RECEIPT = (
     '[tool]\nrequirements = [{{ name = "{name}", extras = ["semantic-openai"] }}]\n'
     'python = "3.14"\nentrypoints = [\n'
-    '    {{ name = "{name}", install-path = "/home/u/.local/bin/{name}", from = "{name}" }},\n]\n'
+    '    {{ name = "{name}", install-path = "/var/home/u/.local/bin/{name}", from = "{name}" }},\n]\n'
 )
 
 
@@ -520,7 +520,7 @@ def test_upgrade_run_through_the_alias_plans_with_the_alias(
 ) -> None:
     """An upgraded ``yoetz`` tool has no ``finishup`` on PATH, so its plan names ``yoetz``."""
 
-    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/yoetz", "upgrade"])
+    monkeypatch.setattr("sys.argv", ["/var/home/user/.local/bin/yoetz", "upgrade"])
     result = _RUNNER.invoke(app, ["upgrade"])
 
     assert result.exit_code == 0, result.output
@@ -565,14 +565,14 @@ def test_finishup_upgrade_never_reads_a_tool_receipt(monkeypatch: pytest.MonkeyP
         raise AssertionError("receipt read for a finishup run")
 
     monkeypatch.setattr("finishup.cli.upgrade.installation_prefix", unexpected)
-    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/finishup", "upgrade"])
+    monkeypatch.setattr("sys.argv", ["/var/home/user/.local/bin/finishup", "upgrade"])
     result = _RUNNER.invoke(app, ["upgrade"])
 
     assert result.exit_code == 0, result.output
 
 
 def test_accepted_alias_upgrade_continues_with_the_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/yoetz", "upgrade", "--accept"])
+    monkeypatch.setattr("sys.argv", ["/var/home/user/.local/bin/yoetz", "upgrade", "--accept"])
     monkeypatch.setattr(
         "finishup.cli.upgrade.execute_package_upgrade", lambda: "package_command_succeeded"
     )
@@ -583,7 +583,7 @@ def test_accepted_alias_upgrade_continues_with_the_alias(monkeypatch: pytest.Mon
 
 
 def test_upgrade_run_through_finishup_plans_with_finishup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/finishup", "upgrade"])
+    monkeypatch.setattr("sys.argv", ["/var/home/user/.local/bin/finishup", "upgrade"])
     result = _RUNNER.invoke(app, ["upgrade"])
 
     assert result.exit_code == 0, result.output

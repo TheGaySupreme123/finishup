@@ -159,8 +159,8 @@ roots, workspace and Git capture).
 A refused runtime stops `finishup service run`, `finishup mcp serve`, `finishup upgrade` and every hook
 with `release_runtime_group_writable` or `release_runtime_world_writable` (exit 20). Terminal
 commands print the exact repair for that installation, for example
-`chmod -R go-w /home/alice/.local/share/uv/tools/finishup
-/home/alice/.local/share/uv/python/cpython-3.14.6-linux-x86_64-gnu`; hooks print the token
+`chmod -R go-w /var/home/alice/.local/share/uv/tools/finishup
+/var/home/alice/.local/share/uv/python/cpython-3.14.6-linux-x86_64-gnu`; hooks print the token
 without paths and point at `finishup service run`. A service started on demand records the token as
 its startup failure (`stage: import; …; release_runtime_group_writable`), and CLI
 `service_unavailable` results, `finishup service status` and `finishup setup status` print the same

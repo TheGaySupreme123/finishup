@@ -60,7 +60,7 @@ def test_dot_slash_quoted_and_absolute_spellings_withhold_the_whole_token() -> N
         "Loads ./artifacts/english_words.npz at start.",
         'Loads "./artifacts/english_words.npz" at start.',
         "Loads ././artifacts/english_words.npz at start.",
-        "Loads '/home/u/repo/artifacts/english_words.npz' at start.",
+        "Loads '/srv/u/repo/artifacts/english_words.npz' at start.",
         "Loads `artifacts/english_words.npz` at start.",
     ):
         shown = withheld_text(text, (excerpt,))
@@ -109,13 +109,13 @@ def test_quoted_absolute_paths_with_spaces_are_withheld_whole() -> None:
 
     excerpt = _named("artifacts/english_words.npz")
     for quote in ('"', "'", "`"):
-        text = f"Loads {quote}/Users/u/My Project/artifacts/english_words.npz{quote} at start."
+        text = f"Loads {quote}/Volumes/u/My Project/artifacts/english_words.npz{quote} at start."
         assert withheld_text(text, (excerpt,)) == f"Loads {WITHHELD} at start.", quote
     # Quote-bounded, so distinct names and suffixes inside quotes stay readable.
     for text in (
-        '"/Users/u/My Project/x/artifacts/english_words.npz.bak"',
+        '"/Volumes/u/My Project/x/artifacts/english_words.npz.bak"',
         '"x/artifacts/english_words.npz"',
-        '"/Users/u/My Project/artifacts/English_words.npz"',
+        '"/Volumes/u/My Project/artifacts/English_words.npz"',
         'Say "hello world" twice.',
     ):
         assert withheld_text(text, (excerpt,)) == text, text
@@ -128,21 +128,21 @@ def test_every_name_behind_a_path_prefix_is_withheld_top_level_and_extensionless
         "vocab_table": (
             "Loads ./vocab_table now.",
             "Loads ././vocab_table now.",
-            "Loads /Users/u/repo/vocab_table now.",
-            "Loads /Users/u//repo/./vocab_table now.",
+            "Loads /Volumes/u/repo/vocab_table now.",
+            "Loads /Volumes/u//repo/./vocab_table now.",
             "Loads ~/repo/vocab_table now.",
             "Loads ~u/repo/vocab_table now.",
             "Loads $PWD/vocab_table now.",
             "Loads ${HOME}/repo/vocab_table now.",
-            "Loads file:///Users/u/repo/vocab_table now.",
+            "Loads file:///Volumes/u/repo/vocab_table now.",
             "Loads 'vocab_table' now.",
             "Loads `./vocab_table` now.",
-            'Loads "/Users/u/My Project/vocab_table" now.',
+            'Loads "/Volumes/u/My Project/vocab_table" now.',
             'Loads "~/My Project/vocab_table" now.',
         ),
         "artifacts/english_words.npz": (
-            "Loads file:///Users/u/repo/artifacts/english_words.npz now.",
-            "Loads /Users/u/repo//artifacts/english_words.npz now.",
+            "Loads file:///Volumes/u/repo/artifacts/english_words.npz now.",
+            "Loads /Volumes/u/repo//artifacts/english_words.npz now.",
             "Loads ./artifacts/./english_words.npz now.",
             "Loads artifacts//english_words.npz now.",
             "Loads $PWD/artifacts/english_words.npz now.",
@@ -292,8 +292,8 @@ def test_every_path_in_a_quoted_token_is_found_not_only_the_last() -> None:
 
     matcher = _NameMatcher(["artifacts/a.npz", "data/b.npz"])
     for text in (
-        "Ran `/usr/bin/cmp /home/u/repo/data/b.npz /home/u/repo/artifacts/a.npz` first.",
-        'Ran "/home/u/repo/data/b.npz and /home/u/repo/artifacts/a.npz" first.',
+        "Ran `/usr/bin/cmp /srv/u/repo/data/b.npz /srv/u/repo/artifacts/a.npz` first.",
+        'Ran "/srv/u/repo/data/b.npz and /srv/u/repo/artifacts/a.npz" first.',
         "Ran '~/repo/data/b.npz ~/repo/artifacts/a.npz' first.",
     ):
         assert matcher.paths_in(text) == {"artifacts/a.npz", "data/b.npz"}, text
@@ -323,20 +323,20 @@ def test_a_colon_before_a_home_variable_or_relative_path_starts_a_new_path() -> 
     vocab = _named("tools/vocab_table")
     app = _named("dist/app.zip")
     for text, excerpt, expected in (
-        ("PATH=/Users/me/repo/tools/vocab_table:~/bin", vocab, f"PATH={WITHHELD}:~/bin"),
-        ("PATH=/Users/me/repo/tools/vocab_table:~me/bin", vocab, f"PATH={WITHHELD}:~me/bin"),
+        ("PATH=/Volumes/me/repo/tools/vocab_table:~/bin", vocab, f"PATH={WITHHELD}:~/bin"),
+        ("PATH=/Volumes/me/repo/tools/vocab_table:~me/bin", vocab, f"PATH={WITHHELD}:~me/bin"),
         (
-            "PYTHONPATH=/Users/me/repo/dist/app.zip:$HOME/lib",
+            "PYTHONPATH=/Volumes/me/repo/dist/app.zip:$HOME/lib",
             app,
             f"PYTHONPATH={WITHHELD}:$HOME/lib",
         ),
         (
-            "PYTHONPATH=/Users/me/repo/dist/app.zip:${HOME}/lib",
+            "PYTHONPATH=/Volumes/me/repo/dist/app.zip:${HOME}/lib",
             app,
             f"PYTHONPATH={WITHHELD}:${{HOME}}/lib",
         ),
-        ("PYTHONPATH=/Users/me/repo/dist/app.zip:./src", app, f"PYTHONPATH={WITHHELD}:./src"),
-        ("PYTHONPATH=/Users/me/repo/dist/app.zip:../src", app, f"PYTHONPATH={WITHHELD}:../src"),
+        ("PYTHONPATH=/Volumes/me/repo/dist/app.zip:./src", app, f"PYTHONPATH={WITHHELD}:./src"),
+        ("PYTHONPATH=/Volumes/me/repo/dist/app.zip:../src", app, f"PYTHONPATH={WITHHELD}:../src"),
         # Unchanged by the rule: a port, a directory holding ``:``, a line number.
         ("Fetched http://localhost:8000/r/dist/app.zip.", app, f"Fetched http:{WITHHELD}."),
         ("Read /r/dir:x/dist/app.zip.", app, f"Read {WITHHELD}."),
@@ -361,9 +361,9 @@ def test_a_quoted_path_may_hold_the_other_quote_characters() -> None:
 
     excerpt = _named("artifacts/a.npz")
     for text in (
-        'Loads "/Users/Bob\'s Mac/artifacts/a.npz" now.',
-        "Loads `/Users/Bob's Mac/artifacts/a.npz` now.",
-        "Loads '/Users/say \"hi\"/artifacts/a.npz' now.",
+        'Loads "/Volumes/Bob\'s Mac/artifacts/a.npz" now.',
+        "Loads `/Volumes/Bob's Mac/artifacts/a.npz` now.",
+        "Loads '/Volumes/say \"hi\"/artifacts/a.npz' now.",
         "Loads `/r/it's/a.npz` now.",
     ):
         assert withheld_text(text, (excerpt,)) == f"Loads {WITHHELD} now.", text

@@ -127,7 +127,7 @@ def _absolute_prefix(segment: str) -> str:
 # ``/r/a.npz:rel/x``) is read as a directory of a longer path and not recognised.
 _ABSOLUTE_PREFIX: Final = _absolute_prefix(r"(?:[^\s/\"'`<>|,;:()\[\]{}]|:(?![/~$]|\.{1,2}/))")
 # Inside one pair of quotes or backticks a path may contain spaces and the other quote characters
-# (``"/Users/Bob's Mac/a.npz"``); the closing quote bounds the token, so a segment there may hold
+# (``"/Volumes/Bob's Mac/a.npz"``); the closing quote bounds the token, so a segment there may hold
 # any character but that quote, a line break or a slash.
 _QUOTED_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"(?:(?!(?P=quote))[^\n/])")
 _EXTRA_SEPARATORS: Final = re.compile(r"/(?:\.?/)+")

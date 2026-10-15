@@ -333,6 +333,7 @@ def observation_advice_to_candidate_context(
         cast(
             JsonValue,
             {
+                # Frozen legacy identifier (ADR-048): a digested review-packet case tag.
                 "schema": "yoetz.review-packet-case/2",
                 "case_digest": attempt.subject_digest,
                 "dependency_digest": attempt.subject_digest,

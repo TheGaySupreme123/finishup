@@ -13,8 +13,8 @@ from finishup.config import foreign_write
 LOCAL_NSS = "passwd: files systemd\ngroup: files systemd\nshadow: files systemd\n"
 PASSWD = (
     "root:x:0:0:root:/root:/bin/bash\n"
-    "alice:x:1001:1001::/home/alice:/bin/bash\n"
-    "bob:x:1002:1002::/home/bob:/bin/bash\n"
+    "alice:x:1001:1001::/var/home/alice:/bin/bash\n"
+    "bob:x:1002:1002::/var/home/bob:/bin/bash\n"
 )
 GROUP = "root:x:0:\nalice:x:1001:\nbob:x:1002:\n"
 
@@ -214,7 +214,7 @@ def test_userdb_beyond_dynamic_users_is_shared(
     "passwd, group",
     [
         (PASSWD, "alice:x:1001:bob\n"),  # supplementary member
-        (PASSWD + "carol:x:1003:1001::/home/carol:/bin/sh\n", GROUP),  # foreign primary
+        (PASSWD + "carol:x:1003:1001::/var/home/carol:/bin/sh\n", GROUP),  # foreign primary
         ("alice:x:1001:1001::/h:/bin/sh\n", "users:x:1001:\n"),  # shared name (users, staff)
         (PASSWD, GROUP + "other:x:1001:\n"),  # duplicate gid
         (PASSWD + "+@netgroup::::::\n", GROUP),  # NIS compat import

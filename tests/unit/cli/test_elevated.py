@@ -1070,7 +1070,7 @@ def test_every_prepared_consent_names_the_current_launcher(
         ("plugin_artifact_apply", "sha256:" + "a" * 64),
     ],
 )
-@pytest.mark.parametrize("argv0", ["/home/u/.local/bin/yoetz", "/opt/site/yoetz/__main__.py"])
+@pytest.mark.parametrize("argv0", ["/var/home/u/.local/bin/yoetz", "/opt/site/yoetz/__main__.py"])
 def test_a_run_through_the_deprecated_alias_names_the_alias_it_was_run_through(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

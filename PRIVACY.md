@@ -65,7 +65,7 @@ service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX des
 An independent review-context profile controls which potentially useful material is selected before
 those disclosure rules run: `structural`, `goal_aware`, `assisted`, `expanded`, or `custom`. The
 recommended `assisted` packet includes goal, obligations, claims, decisions, material timeline,
-deterministic finding bases, coverage and change-observation facts, plus bounded problem-local
+local-check finding bases, coverage and change-observation facts, plus bounded problem-local
 recorded evidence/test/failure/diff/source excerpts. It excludes sensitive/confidential content by
 default and carries an explicit omission reason when content was not recorded, selected, or allowed.
 Missing source never means “no code changed.” FinishUP does not browse the filesystem to fill a
@@ -159,7 +159,7 @@ answer gates it. An unconfigured install still shows you your own findings in fu
 Releasing content into an *agent-capable host* is a different sink, and that one is gated — because
 that host may forward its context to its own provider, and FinishUP can neither see nor promise
 anything about what happens there. That gate is conditioned on authorship. An agent always receives
-back the material it published and the deterministic findings computed solely from it: that content
+back the material it published and the local-check findings computed solely from it: that content
 is already sitting in its context, so withholding it would protect nothing while breaking the very
 check-and-respond loop the tool exists for. Material the agent did not author — another agent's
 work, imported records, and a semantic reviewer's prose — stays gated until you widen it.
