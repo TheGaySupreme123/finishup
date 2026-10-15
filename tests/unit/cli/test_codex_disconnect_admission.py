@@ -503,6 +503,80 @@ def test_transport_dependence_counts_the_earlier_key_only_when_it_is_removed(
     assert project_transport_dependence(exact, after_sweep=True, names=both) == "none"
 
 
+def _leftover_layout(
+    tmp_path: Path, project_config: str, user_config: str = ""
+) -> tuple[Path, Path]:
+    home, project = tmp_path / "home", tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text(user_config)
+    (project / ".codex" / "config.toml").write_text(project_config)
+    return home, project
+
+
+def test_leftover_detector_explains_the_yoetz_era_table(tmp_path: Path) -> None:
+    """ADR-048 x #1070: Yoetz 0.2.x disconnects never swept admission, so they left
+    `[mcp_servers.yoetz.tools.check]` behind and Codex refused to start in that project
+    ("invalid transport in `mcp_servers.yoetz`"). Status names it with the revoke that removes
+    it, as it does for the `finishup` table."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+    from finishup.application.host_connection import admission_revoke_arguments
+
+    home, project = _leftover_layout(tmp_path, CODEX_LEGACY_ADMISSION_TABLES[0])
+
+    assert codex_project_mcp_leftover(home, project) == "tools_only"
+    assert codex_connection.project_mcp_leftover_status(home, project) == {
+        "project_mcp_leftover": "tools_only",
+        "project_mcp_leftover_servers": ["yoetz"],
+        "next_arguments": admission_revoke_arguments("codex", project),
+    }
+    # A transport under the other key does not supply this one.
+    (home / "config.toml").write_text('[mcp_servers.finishup]\ncommand = "finishup"\n')
+    assert codex_project_mcp_leftover(home, project) == "tools_only"
+    # A user-level transport under the same key: Codex loads it, nothing is left over.
+    (home / "config.toml").write_text('[mcp_servers.yoetz]\ncommand = "yoetz"\n')
+    assert codex_project_mcp_leftover(home, project) is None
+    # The revoke the status names removes it.
+    preview = preview_host_admission(
+        "codex", project, HostAdmissionAction.REVOKE, route_profile=None, grant_permits=None
+    )
+    assert b"yoetz" not in preview.files_after[".codex/config.toml"]
+
+
+def test_an_edited_yoetz_era_table_is_named_with_its_own_repair(tmp_path: Path) -> None:
+    """A Yoetz-era table the owner edited cannot be revoked, and connecting again registers only
+    the `finishup` server, so the repair is editing the file; while an owned `yoetz` registration
+    still supplies the transport, status says a disconnect would need it."""
+
+    from finishup.cli import host_connection
+
+    edited = '[mcp_servers.yoetz.tools.check]\napproval_mode = "prompt"\n'
+    home, project = _leftover_layout(tmp_path, edited)
+
+    assert codex_project_mcp_leftover(home, project) == "retained_tables"
+    status = codex_connection.project_mcp_leftover_status(home, project)
+    assert status == {
+        "project_mcp_leftover": "retained_tables",
+        "project_mcp_leftover_servers": ["yoetz"],
+    }
+    step = host_connection._leftover_next_step(  # pyright: ignore[reportPrivateUsage]
+        host_connection._rendered_status(status)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert step is not None and "[mcp_servers.yoetz]" in step
+    assert "[mcp_servers.finishup]" not in step and "connect the project again" not in step
+
+    # An owned (FinishUP-shaped) `yoetz` registration supplies it: loads today, but a disconnect
+    # that removes that entry would stop at these tables.
+    (home / "config.toml").write_text(
+        '[mcp_servers.yoetz]\ncommand = "yoetz"\nargs = ["mcp", "serve", "--host", "codex"]\n'
+    )
+    assert codex_project_mcp_leftover(home, project) is None
+    assert codex_connection.project_mcp_leftover_status(home, project) == {
+        "project_mcp_needs_registration": True
+    }
+
+
 def test_leftover_detector_respects_user_transport(tmp_path: Path) -> None:
     home, project = tmp_path / "home", tmp_path / "project"
     (project / ".codex").mkdir(parents=True)

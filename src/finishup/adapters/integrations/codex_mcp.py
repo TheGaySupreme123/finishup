@@ -59,6 +59,8 @@ __all__ = [
     "CodexMcpAdapter",
     "CommandOutput",
     "codex_project_mcp_leftover",
+    "codex_project_mcp_leftovers",
+    "legacy_registration_shaped",
     "read_bounded_toml",
     "probe_project_config_load",
     "project_transport_dependence",
@@ -997,38 +999,84 @@ def project_transport_dependence(
     return "none"
 
 
-def codex_project_mcp_leftover(codex_home: Path | None, project: Path) -> str | None:
-    """Name a project ``mcp_servers.finishup`` table that has no transport anywhere, statically.
+def legacy_registration_shaped(config: Mapping[str, object]) -> bool:
+    """Whether a user-level Codex config holds a FinishUP-shaped ``mcp_servers.yoetz`` entry.
 
-    Returns ``"tools_only"`` when ``<project>/.codex/config.toml`` declares ``mcp_servers.finishup``
-    (for example only its ``tools.check`` admission) while neither that layer nor the user layer
-    supplies ``command`` or ``url``. Codex then rejects the merged server as ``invalid
-    transport`` and refuses to start in that project. ``None`` means no such leftover was read.
+    Static and conservative: the command matches one of the FinishUP serve templates under either
+    launcher spelling. The adapter's ownership proof (the launcher itself) needs ``codex mcp``;
+    callers use this where an unproven owned entry may only make them more careful (ADR-048).
+    """
+
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, Mapping):
+        return False
+    entry = cast(Mapping[str, object], servers).get(MCP_LEGACY_SERVER_NAME)
+    if not isinstance(entry, Mapping):
+        return False
+    tokens = _entry_command_tokens(cast(Mapping[str, object], entry))
+    return tokens is not None and mcp_command_profile(tokens) is not None
+
+
+def codex_project_mcp_leftovers(
+    codex_home: Path | None, project: Path
+) -> tuple[tuple[str, Literal["tools_only", "retained_tables"]], ...]:
+    """Each project ``mcp_servers.<name>`` table with no transport anywhere, by server key.
+
+    Both keys are read: ``finishup``, and the earlier ``yoetz`` key whose approval tables Yoetz
+    0.1-0.2 wrote and whose disconnects never removed (ADR-048). A key's table is left over when
+    ``<project>/.codex/config.toml`` declares it (for example only its ``tools.check`` admission)
+    while neither that layer nor the user layer supplies its ``command`` or ``url``; Codex then
+    rejects the merged server as ``invalid transport`` and refuses to start in that project.
+    ``tools_only``: only exact approval tables remain, which an admission revoke removes;
+    ``retained_tables``: tables FinishUP did not write (or that were edited) remain.
     """
 
     project_config = read_bounded_toml(project / ".codex" / "config.toml")
     if project_config is None:
-        return None
+        return ()
     servers = project_config.get("mcp_servers")
     if not isinstance(servers, Mapping):
-        return None
-    project_entry = cast(Mapping[str, object], servers).get(MCP_SERVER_NAME)
-    if project_entry is None or _has_transport(project_entry):
-        return None
+        return ()
     user_config = read_bounded_toml(_selected_codex_home(codex_home) / "config.toml") or {}
     user_servers = user_config.get("mcp_servers")
-    user_entry = (
-        cast(Mapping[str, object], user_servers).get(MCP_SERVER_NAME)
-        if isinstance(user_servers, Mapping)
-        else None
-    )
-    if _has_transport(user_entry):
+    found: list[tuple[str, Literal["tools_only", "retained_tables"]]] = []
+    for name in (MCP_SERVER_NAME, MCP_LEGACY_SERVER_NAME):
+        project_entry = cast(Mapping[str, object], servers).get(name)
+        if project_entry is None or _has_transport(project_entry):
+            continue
+        user_entry = (
+            cast(Mapping[str, object], user_servers).get(name)
+            if isinstance(user_servers, Mapping)
+            else None
+        )
+        if _has_transport(user_entry):
+            continue
+        # A revoke removes the exact tables of this key only from a surface it edits; anything
+        # else naming the key is the owner's to edit (or, for ``finishup``, to register again).
+        found.append(
+            (
+                name,
+                "tools_only"
+                if project_transport_dependence(project, after_sweep=True, names=(name,)) == "none"
+                else "retained_tables",
+            )
+        )
+    return tuple(found)
+
+
+def codex_project_mcp_leftover(codex_home: Path | None, project: Path) -> str | None:
+    """Name a project table that has no transport anywhere, statically, under either key.
+
+    Returns ``"tools_only"`` when every such table is an exact approval table an admission
+    revoke removes, ``"retained_tables"`` when any other table remains (see
+    ``codex_project_mcp_leftovers``). ``None`` means no such leftover was read.
+    """
+
+    leftovers = codex_project_mcp_leftovers(codex_home, project)
+    if not leftovers:
         return None
-    # ``tools_only``: only exact FinishUP approval tables remain, which an admission revoke removes.
-    # ``retained_tables``: tables FinishUP did not write (or that were edited) remain; a revoke cannot
-    # remove them, so the repair is editing the file or restoring the registration.
     return (
-        "tools_only"
-        if project_transport_dependence(project, after_sweep=True) == "none"
-        else "retained_tables"
+        "retained_tables"
+        if any(kind == "retained_tables" for _name, kind in leftovers)
+        else "tools_only"
     )

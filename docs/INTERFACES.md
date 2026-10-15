@@ -6733,9 +6733,19 @@ an incomplete read keeps the transport (`--remove-shared` refuses). `setup disco
 `remove_shared: true`, carried by the continuation) removes the shared pieces for every project and
 refuses `connection_other_projects_need_registration` while one still depends. Codex reports
 `status.project_config_load: loads|fails|unknown`; `fails` is
-`connection_project_config_unloadable`; `project_mcp_leftover` is `tools_only` (revoke) or
-`retained_tables` (reconnect), and status adds `project_mcp_needs_registration` while it loads. `setup status --host codex` reports a transport-less project
-`mcp_servers.finishup` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
+`connection_project_config_unloadable`. `codex_mcp.codex_project_mcp_leftovers(home, project)` reads
+both server keys, `finishup` and the earlier `yoetz` (whose exact `[mcp_servers.yoetz.tools.check]`
+a Yoetz 0.2.x `integrate codex admission grant` wrote and a Yoetz 0.2.x disconnect left behind,
+ADR-048), and names each key whose project table has no `command` or `url` in the project or the
+user layer; `project_mcp_leftover` is `tools_only` when only exact approval tables remain and
+`retained_tables` otherwise, and `project_mcp_leftover_servers` lists the keys. The continuation
+(`next_command`) is the admission revoke for `tools_only`, the reconnect for `retained_tables` under
+`finishup` alone, and none for a retained `yoetz` table (FinishUP no longer registers that key; the
+step names the file to edit). While it loads, status adds `project_mcp_needs_registration` when the
+tables need the transport, counting `yoetz` tables while an owned `yoetz` registration supplies
+them (the observed `legacy_registration`, or statically a FinishUP-shaped entry,
+`codex_mcp.legacy_registration_shaped`). `setup status --host codex` and every failed Codex setup
+command report such a leftover.
 Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
 `<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, a frozen
 literal that does not follow `MCP_SERVER_NAME`; canonical JSON `{"projects": [<absolute roots>]}`

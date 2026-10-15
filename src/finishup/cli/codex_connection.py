@@ -22,7 +22,8 @@ from finishup.adapters.integrations.codex_marketplace import (
 )
 from finishup.adapters.integrations.codex_mcp import (
     CodexMcpAdapter,
-    codex_project_mcp_leftover,
+    codex_project_mcp_leftovers,
+    legacy_registration_shaped,
     probe_project_config_load,
     project_transport_dependence,
     read_bounded_toml,
@@ -246,7 +247,11 @@ def prepare_codex_connection(
                 "connection_observed": False,
                 "reload_required": True,
                 **home_projects_status(installation.config_root),
-                **project_mcp_leftover_status(installation.config_root, project),
+                **project_mcp_leftover_status(
+                    installation.config_root,
+                    project,
+                    legacy_registration=registration.legacy_registration,
+                ),
             }
     else:
         removal_report: dict[str, JsonValue] | None = None
@@ -729,24 +734,44 @@ def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:
     return status
 
 
-def project_mcp_leftover_status(codex_home: Path, project: Path) -> dict[str, JsonValue]:
-    """Explain a transport-less project ``mcp_servers.finishup`` table and name its exact repair.
+def project_mcp_leftover_status(
+    codex_home: Path, project: Path, *, legacy_registration: str | None = None
+) -> dict[str, JsonValue]:
+    """Explain a transport-less project ``mcp_servers`` table and name its exact repair.
 
-    Exact FinishUP approval tables (``tools_only``) are revoked; other retained tables
-    (``retained_tables``) are the owner's to edit, or the server is registered again by
-    reconnecting, so the continuation is the reconnect and the step text names the file.
+    Both server keys are read: ``finishup`` and the earlier ``yoetz`` one, whose approval table
+    a Yoetz 0.2.x disconnect left behind (ADR-048). Exact approval tables (``tools_only``) are
+    revoked. Other retained tables (``retained_tables``) are the owner's to edit; under
+    ``finishup`` alone, connecting again also restores the server, so the continuation is the
+    reconnect, while a ``yoetz`` table has no FinishUP repair (only ``finishup`` is registered
+    now), so the step names the file without a command. ``legacy_registration`` is the observed
+    ``yoetz`` registration state when the caller has one; otherwise a FinishUP-shaped user-level
+    ``yoetz`` entry counts as owned.
     """
 
-    leftover = codex_project_mcp_leftover(codex_home, project)
-    if leftover is None:
-        if project_transport_dependence(project, after_sweep=True) == "depends":
+    leftovers = codex_project_mcp_leftovers(codex_home, project)
+    if not leftovers:
+        legacy_owned = (
+            legacy_registration in _OWNED_LEGACY_REGISTRATIONS
+            if legacy_registration is not None
+            else legacy_registration_shaped(read_bounded_toml(codex_home / "config.toml") or {})
+        )
+        names = (MCP_SERVER_NAME, LEGACY_MCP_SERVER_NAME) if legacy_owned else (MCP_SERVER_NAME,)
+        if project_transport_dependence(project, after_sweep=True, names=names) == "depends":
             # Loads today, but a disconnect would refuse: the retained tables need the transport.
             return {"project_mcp_needs_registration": True}
         return {}
-    arguments = (
-        admission_revoke_arguments("codex", project)
-        if leftover == "tools_only"
-        else [
+    retained = [name for name, kind in leftovers if kind == "retained_tables"]
+    status: dict[str, JsonValue] = {
+        "project_mcp_leftover": "retained_tables" if retained else "tools_only",
+        "project_mcp_leftover_servers": cast(list[JsonValue], [name for name, _ in leftovers]),
+    }
+    if not retained:
+        status["next_arguments"] = cast(
+            list[JsonValue], admission_revoke_arguments("codex", project)
+        )
+    elif all(name == MCP_SERVER_NAME for name, _kind in leftovers):
+        status["next_arguments"] = [
             "setup",
             "run",
             "--host",
@@ -756,8 +781,4 @@ def project_mcp_leftover_status(codex_home: Path, project: Path) -> dict[str, Js
             "--project",
             str(project),
         ]
-    )
-    return {
-        "project_mcp_leftover": leftover,
-        "next_arguments": cast(list[JsonValue], arguments),
-    }
+    return status

@@ -30,7 +30,12 @@ runs `codex mcp list --json` from the project with the selected home and reports
 its own user-scope `codex mcp …` and `codex plugin …` commands from the selected Codex home, so a
 broken project layer in the invoking directory cannot fail status or a repeated disconnect. A
 transport-less leftover is reported by `setup status --host codex` (and on any failed Codex
-setup command) as `status.project_mcp_leftover: "tools_only"` with the revoke continuation.
+setup command) as `status.project_mcp_leftover: "tools_only"` with the revoke continuation, under
+either server key: `[mcp_servers.finishup.tools.check]`, or the Yoetz-era
+`[mcp_servers.yoetz.tools.check]` that a Yoetz 0.2.x `integrate codex admission grant` wrote and a
+Yoetz 0.2.x disconnect never removed (Codex then fails with `invalid transport in
+mcp_servers.yoetz`); `status.project_mcp_leftover_servers` names the key, and the revoke removes
+the exact table under both.
 Before any change, disconnect refuses an approval file it cannot read safely (a symlinked,
 oversized or unparsable `.codex/config.toml`: `connection_admission_cleanup_failed`, rechecked
 again before removal), and projects the project's `.codex/config.toml` after the sweep: if tables
@@ -39,7 +44,9 @@ FinishUP did not write or that were edited (a comment inside the generated table
 stop Codex loading there, so it refuses with `connection_project_mcp_tables_retained` and names
 the file; `setup status` reports `project_mcp_needs_registration` meanwhile, and an already broken
 project with such tables reports `project_mcp_leftover: "retained_tables"` with the reconnect
-continuation (a revoke cannot remove them). Disconnect also reads the projects this home knows
+continuation (a revoke cannot remove them). An edited Yoetz-era `mcp_servers.yoetz` table has no
+FinishUP repair, since connecting again registers only `finishup`: the step names the file to edit
+and gives no command. Disconnect also reads the projects this home knows
 (its `[projects."<path>"]` entries, the FinishUP binding and the connected-projects record; missing
 directories and other paths to this project are skipped first, then at most 32 are read; more are
 reported as `admission_other_projects_known`/`_inspected` with the warning
