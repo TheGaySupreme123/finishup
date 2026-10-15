@@ -13,6 +13,7 @@ from typing import Any, Final, Literal, cast
 
 from finishup.domain.events import (
     CHECK_EVENT_SCHEMA_VERSION,
+    DEFERRED_CHECK_EVENT_SCHEMA_VERSION,
     FINDING_EVENT_SCHEMA_VERSION,
     FINDING_SNIPPET_EVENT_SCHEMA_VERSION,
     REVIEW_CHECK_EVENT_SCHEMA_VERSION,
@@ -4175,15 +4176,22 @@ class MemoryLedgerAdapter:
                 )
                 else FINDING_EVENT_SCHEMA_VERSION
             )
-            schema = EventSchema(
-                "finding_recorded" if type(payload) is FindingRecordedPayload else "check_recorded",
-                finding_schema_version
-                if type(payload) is FindingRecordedPayload
+            # 1.5.0 is reserved for the pre-edit deferral reason. That check still carries
+            # review_mode and totals, so the reason is chosen before the 1.4.0 review-output rule.
+            check_schema_version = (
+                DEFERRED_CHECK_EVENT_SCHEMA_VERSION
+                if check_payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
                 else REVIEW_CHECK_EVENT_SCHEMA_VERSION
                 if review_summary is not None or verified or check_payload.totals is not None
                 else CHECK_EVENT_SCHEMA_VERSION
                 if semantic_conclusion is not None
-                else SEMANTIC_EVENT_SCHEMA_VERSION,
+                else SEMANTIC_EVENT_SCHEMA_VERSION
+            )
+            schema = EventSchema(
+                "finding_recorded" if type(payload) is FindingRecordedPayload else "check_recorded",
+                finding_schema_version
+                if type(payload) is FindingRecordedPayload
+                else check_schema_version,
             )
             entries.append(
                 AppendEntry(

@@ -532,7 +532,8 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    `HOST_OBSERVATION_GUARDED_GAPS` as advisory only when the applicable check's own coverage
    carried them. Full-check completeness (`application.check.full_check_gaps_clean`) reads the
    same list. `semantic_review_not_requested` still bounds the
-   receipt: a check records only `deterministic_mode` or `no_material_semantic_case` with it, never
+   receipt: a check records `deterministic_mode`, `deferred_before_first_edit`, or
+   `no_material_semantic_case` with it, never
    whether the serving route required AI-powered review (a strict route records
    `blocked_by_policy`/`route_semantic_ceiling` and its own gap instead), so the receipt cannot
    apply the route rule without reading live configuration, which would break replay.

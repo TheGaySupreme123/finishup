@@ -16,6 +16,7 @@ change; the product words are their human names.
 | local check / local finding / local-check case | `FindingOrigin.deterministic`, `CheckType` `deterministic`, `CheckMode` `deterministic_only`, `SemanticReason` `deterministic_mode`, gap `no_unresolved_deterministic_findings`, `DeterministicCase`, `DETERMINISTIC_RESULT`, `kernel/deterministic_checks.py` |
 | AI-powered review / AI-powered finding / AI-powered review case | `FindingOrigin.semantic_model_derived`, `CheckMode` `semantic_if_configured` / `semantic_required`, `semantic_status` / `semantic_reason`, `semantic_provenance`, `semantic_attempts`, `semantic_job`, `yoetz.semantic-case/2`, `ports/semantic.py`, `--semantic off` |
 | local-only check (no AI-powered review) | `deterministic_only`, gap `semantic_review_not_requested` (recorded only where the route required review, #1041) |
+| AI-powered review on, waiting for the first edit | `SemanticReason` `deferred_before_first_edit` (check-result / check-recorded 1.5.0), gap `semantic_review_deferred_before_first_edit`. Prose: "AI-powered review is on; it starts after your first edit." |
 
 "Deterministic" elsewhere in this registry keeps its ordinary meaning — reproducible ordering,
 replay, digests, and equality — and is not a check kind.
@@ -1164,7 +1165,8 @@ request and must never create a replacement check. Chat confirmation is never au
 expiry, cancellation, stale authority, or incomplete local review remains pre-dispatch.
 
 Every status is paired with one required closed `SemanticReason`, never prose or a renderer guess:
-`deterministic_mode`, `no_material_semantic_case`, `provider_not_configured`,
+`deterministic_mode`, `deferred_before_first_edit`, `no_material_semantic_case`,
+`provider_not_configured`,
 `local_model_not_configured`, `network_egress_denied`, `channel_disabled`,
 `provider_binding_not_authorized`, `scope_not_authorized`,
 `content_category_not_authorized`, `policy_generation_revoked`, `never_send_detected`,
@@ -4685,8 +4687,10 @@ material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or s
 counts under ADR-042/045, whether or not its result arrived, so a Codex shell `apply_patch <<EOF`
 counts by the files its patch names, or an agent-published `edit` action) while the check-time
 capture observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
-`semantic_reason` `deterministic_mode`, and the standing gap
+`semantic_reason` `deferred_before_first_edit` (1.5.0; a 1.4.0 record may still say
+`deterministic_mode` with the same gap), and the standing gap
 `semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
+User-facing text says "AI-powered review is on; it starts after your first edit."
 Nothing is composed or sent. `semantic_required` included: the deferral is not a failed review, so
 the verdict reads from the local checks, never `incomplete_check`. The gap follows the route the
 check recorded, like the `semantic_review_not_requested` it rides with (rule G1): disclosed when the

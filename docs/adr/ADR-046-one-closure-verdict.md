@@ -403,7 +403,7 @@ receipt in three formats, for each tb4n3 shape and its controls);
 Two recorded gap codes join the table in place on the unreleased classification `"8"`, with
 #1044's `G0c` row above (215 recorded codes plus 3 readiness-only rows): `semantic_process_state_filtered` (G5d, disclosed on both routes,
 tolerated by both absence proofs; listed as a changed row because it never bounded) and
-`semantic_review_deferred_before_first_edit` (G7, standing; disclosed where the deferred check
+`semantic_review_deferred_before_first_edit` (G7, standing; reason `deferred_before_first_edit` on check 1.5.0; disclosed where the deferred check
 recorded that its route did not require review and bounding where it did, exactly like the
 `semantic_review_not_requested` it rides with under G1, so a deferral FinishUP chose never reads worse
 than a `deterministic_only` check on the same route; a changed row because it does not bound on

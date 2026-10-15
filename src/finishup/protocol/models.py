@@ -391,6 +391,9 @@ class SemanticStatus(str, Enum):  # noqa: UP042 - exact public wire enum base
 
 class SemanticReason(str, Enum):  # noqa: UP042 - exact public wire enum base
     DETERMINISTIC_MODE = "deterministic_mode"
+    # Pre-edit deferral (#1046). Distinct from DETERMINISTIC_MODE so a reader does not
+    # treat an AI-powered setting as ignored. Admitted on check-result / check-recorded 1.5.0.
+    DEFERRED_BEFORE_FIRST_EDIT = "deferred_before_first_edit"
     NO_MATERIAL_SEMANTIC_CASE = "no_material_semantic_case"
     PROVIDER_NOT_CONFIGURED = "provider_not_configured"
     LOCAL_MODEL_NOT_CONFIGURED = "local_model_not_configured"
@@ -457,7 +460,11 @@ VALID_SEMANTIC_REASONS: Final[Mapping[SemanticStatus, frozenset[SemanticReason]]
     MappingProxyType(
         {
             SemanticStatus.NOT_REQUESTED: frozenset(
-                {SemanticReason.DETERMINISTIC_MODE, SemanticReason.NO_MATERIAL_SEMANTIC_CASE}
+                {
+                    SemanticReason.DETERMINISTIC_MODE,
+                    SemanticReason.DEFERRED_BEFORE_FIRST_EDIT,
+                    SemanticReason.NO_MATERIAL_SEMANTIC_CASE,
+                }
             ),
             SemanticStatus.NOT_CONFIGURED: frozenset(
                 {SemanticReason.PROVIDER_NOT_CONFIGURED, SemanticReason.LOCAL_MODEL_NOT_CONFIGURED}
@@ -2801,6 +2808,7 @@ _PUBLISH_FIXED_SUMMARY: Final[Mapping[tuple[str, str], str]] = MappingProxyType(
         ("check_recorded", "1.2.0"): "check_recorded",
         ("check_recorded", "1.3.0"): "check_recorded",
         ("check_recorded", "1.4.0"): "check_recorded",
+        ("check_recorded", "1.5.0"): "check_recorded",
         ("receipt_recorded", "1.0.0"): "receipt_recorded",
         ("coordination_context_recorded", "1.0.0"): "coordination_context_recorded",
         ("coordination_obligation_declared", "1.0.0"): "coordination_obligation_declared",
@@ -8097,11 +8105,11 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1626
+        len(result) != 1627
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
-        # ADR-049 +4 check / +8 status (review_mode)
+        # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

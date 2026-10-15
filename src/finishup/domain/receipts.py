@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -153,7 +153,9 @@ __all__ = [
     "SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP",
     "SEMANTIC_MISSING_ITEMS_REJECTED_GAP",
     "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
+    "DEFERRED_BEFORE_FIRST_EDIT_TEXT",
     "SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP",
+    "review_deferred_before_first_edit",
     "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
     "SEMANTIC_MISSING_FINISHUP_LIMIT_GAP",
@@ -297,6 +299,21 @@ SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
 # Nothing was composed or sent. Like the skipped round, never agent work in itself; the next check
 # after an edit reviews as configured.
 SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP: Final = "semantic_review_deferred_before_first_edit"
+# The sentence every user-facing surface uses for that deferral. The wire reason on a new
+# check is ``deferred_before_first_edit`` (check-result 1.5.0). An older record may still
+# say ``deterministic_mode`` beside the gap; prose uses this sentence either way.
+DEFERRED_BEFORE_FIRST_EDIT_TEXT: Final = "AI-powered review is on; it starts after your first edit."
+DEFERRED_BEFORE_FIRST_EDIT_REASON: Final = "deferred_before_first_edit"
+
+
+def review_deferred_before_first_edit(reason: object, gaps: Iterable[object]) -> bool:
+    """Whether this check or receipt is the pre-edit deferral, including older records."""
+
+    if reason == DEFERRED_BEFORE_FIRST_EDIT_REASON:
+        return True
+    return any(gap == SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP for gap in gaps)
+
+
 # A successful provider call can still lose the exact post-admission input manifest.  Keep the
 # failure reason closed and coverage-bounded so a composed manifest is never presented as what the
 # provider received.  These are internal provenance facts surfaced as ordinary receipt gaps.

@@ -2267,6 +2267,69 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+_DEFERRED_BEFORE_FIRST_EDIT_REASON: Final = "deferred_before_first_edit"
+
+
+def _admit_deferred_before_first_edit(document: dict[str, JsonValue]) -> None:
+    """Admit ``not_requested`` / ``deferred_before_first_edit`` on check 1.5.0 only.
+
+    1.4.0 and earlier stay byte-identical. The new branch is a copy of the local-only
+    ``not_requested`` branch, and the reason enum gains the token in ASCII order.
+    """
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    binding = cast(dict[str, JsonValue], definitions["semantic_binding"])
+    branches = cast(list[JsonValue], binding["oneOf"])
+    template = next(
+        cast(dict[str, JsonValue], item)
+        for item in branches
+        if isinstance(item, dict)
+        and cast(
+            dict[str, JsonValue],
+            cast(dict[str, JsonValue], item["properties"])["semantic_reason"],
+        ).get("const")
+        == "deterministic_mode"
+        and cast(
+            dict[str, JsonValue],
+            cast(dict[str, JsonValue], item["properties"])["semantic_status"],
+        ).get("const")
+        == "not_requested"
+    )
+    clone = cast(dict[str, JsonValue], json.loads(json.dumps(template)))
+    clone_props = cast(dict[str, JsonValue], clone["properties"])
+    cast(dict[str, JsonValue], clone_props["semantic_reason"])["const"] = (
+        _DEFERRED_BEFORE_FIRST_EDIT_REASON
+    )
+    branches.insert(branches.index(template) + 1, clone)
+    if "success" in definitions:
+        holder = cast(
+            dict[str, JsonValue],
+            cast(dict[str, JsonValue], definitions["success"])["properties"],
+        )
+    else:
+        holder = cast(dict[str, JsonValue], document["properties"])
+    reason_enum = cast(
+        list[JsonValue], cast(dict[str, JsonValue], holder["semantic_reason"])["enum"]
+    )
+    if _DEFERRED_BEFORE_FIRST_EDIT_REASON not in reason_enum:
+        encoded = _DEFERRED_BEFORE_FIRST_EDIT_REASON.encode()
+        at = next(
+            (index for index, item in enumerate(reason_enum) if str(item).encode() > encoded),
+            len(reason_enum),
+        )
+        reason_enum.insert(at, _DEFERRED_BEFORE_FIRST_EDIT_REASON)
+
+
+def _check_recorded_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Admit the pre-edit deferral reason on check-recorded 1.5.0 (n6 item 4)."""
+
+    document = _check_recorded_v1_4_schema(entry)
+    _admit_deferred_before_first_edit(document)
+    document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
+    document["title"] = f"Yoetz check recorded {entry.schema_version}"
+    return document
+
+
 def _check_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Select the current built-in packs, including the dedicated coordination policy."""
 
@@ -3844,6 +3907,16 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_check_inspection(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
+    document["title"] = f"Yoetz check result {entry.schema_version}"
+    return document
+
+
+def _check_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Admit the pre-edit deferral reason on check-result 1.5.0 (n6 item 4)."""
+
+    document = _check_result_v1_4_schema(entry)
+    _admit_deferred_before_first_edit(document)
+    document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check result {entry.schema_version}"
     return document
 
@@ -5648,8 +5721,15 @@ def _add_status_semantic_progress(definitions: dict[str, JsonValue]) -> None:
         "finishup.protocol.models", fromlist=["SemanticProgressPhase", "SemanticReason"]
     )
     phases = [phase.value for phase in models.SemanticProgressPhase]
+    # Job terminal codes. ``deferred_before_first_edit`` is a check-outcome reason
+    # (check-result / check-recorded 1.5.0), never a durable-job terminal code, so it
+    # stays out of this unreleased 1.4.0 enum (n6 item 4).
     reasons = sorted(
-        (reason.value for reason in models.SemanticReason),
+        (
+            reason.value
+            for reason in models.SemanticReason
+            if reason is not models.SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
+        ),
         key=lambda item: str(item).encode("ascii"),
     )
     terminal_fields: list[JsonValue] = [
@@ -7855,7 +7935,7 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # follow the current public finding/check contracts; earlier control artifacts remain frozen.
     active_replacements = {
         SCHEMA_NAMESPACE + "operations/check-result-1.3.0.schema.json": SCHEMA_NAMESPACE
-        + "operations/check-result-1.4.0.schema.json",
+        + "operations/check-result-1.5.0.schema.json",
         SCHEMA_NAMESPACE + "findings/finding-1.3.0.schema.json": SCHEMA_NAMESPACE
         + "findings/finding-1.4.0.schema.json",
     }
@@ -9961,6 +10041,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/check-recorded-1.5.0.schema.json",
+        "check-recorded",
+        "1.5.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
+            ).CheckRecordedPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/claim-recorded-1.0.0.schema.json",
         "claim-recorded",
         "1.0.0",
@@ -10600,6 +10692,16 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "operations/check-result-1.4.0.schema.json",
         "check-result",
         "1.4.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel
+        ),
+    ),
+    _RegistryEntry(
+        "operations/check-result-1.5.0.schema.json",
+        "check-result",
+        "1.5.0",
         "request_result",
         "MCP output",
         lambda: (
@@ -11613,6 +11715,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "privacy/privacy-policy-1.2.0.schema.json",
         "events/check-recorded-1.3.0.schema.json",
         "events/check-recorded-1.4.0.schema.json",
+        "events/check-recorded-1.5.0.schema.json",
         "events/finding-recorded-1.4.0.schema.json",
         "findings/provider-judgment-1.1.0.schema.json",
         "findings/provider-judgment-1.2.0.schema.json",
@@ -11646,6 +11749,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "events/work-written-off-1.0.0.schema.json",
         "operations/check-result-1.3.0.schema.json",
         "operations/check-result-1.4.0.schema.json",
+        "operations/check-result-1.5.0.schema.json",
         "config/yoetz-config-1.3.0.schema.json",
         "operations/check-request-1.1.0.schema.json",
         "operations/publish-work-request-1.2.0.schema.json",
@@ -11919,6 +12023,8 @@ def build_schema_documents(
             normalized = _check_recorded_v1_3_schema(entry)
         elif entry.relative_path == "events/check-recorded-1.4.0.schema.json":
             normalized = _check_recorded_v1_4_schema(entry)
+        elif entry.relative_path == "events/check-recorded-1.5.0.schema.json":
+            normalized = _check_recorded_v1_5_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.1.0.schema.json":
             normalized = _provider_judgment_v1_1_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.2.0.schema.json":
@@ -12028,6 +12134,8 @@ def build_schema_documents(
             normalized = _check_result_v1_3_schema(entry)
         elif entry.relative_path == "operations/check-result-1.4.0.schema.json":
             normalized = _check_result_v1_4_schema(entry)
+        elif entry.relative_path == "operations/check-result-1.5.0.schema.json":
+            normalized = _check_result_v1_5_schema(entry)
         elif entry.relative_path == "operations/receipt-result-1.1.0.schema.json":
             normalized = _simple_versioned_schema(
                 entry,

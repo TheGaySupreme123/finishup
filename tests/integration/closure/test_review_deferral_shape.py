@@ -196,7 +196,7 @@ async def test_a_deferral_where_review_is_optional_reads_like_a_local_only_check
     assert effects[_DEFERRED] == effects[SEMANTIC_REVIEW_NOT_REQUESTED_GAP] != "bounds"
     for fmt in ("markdown", "text"):
         text = str(gathered.receipts[fmt].human_text)
-        assert "AI-powered review was deferred" in text, fmt
+        assert "AI-powered review is on; it starts after your first edit." in text, fmt
         assert "none of these bounds the conclusion" in text, fmt
 
     # The control: the same ledger checked local-only on the same route.

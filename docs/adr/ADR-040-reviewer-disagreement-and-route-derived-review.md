@@ -500,7 +500,8 @@ its schema and a parent JSON receipt that failed validation (review of #1043).
 
 ### 4. No review before the first material edit (#1046)
 
-A check runs the local checks only and records `not_requested`/`deterministic_mode` with the new
+A check runs the local checks only and records `not_requested`/`deferred_before_first_edit`
+(check-result and check-recorded 1.5.0; 1.4.0 still replays `deterministic_mode`) with the
 standing gap `semantic_review_deferred_before_first_edit` (G7, semantic-only for absence proofs; its
 effect follows the route the check recorded, below) when all hold: the phase is routine; the mode,
 the `policy` route and the configured reviewer would dispatch a review (`semantic_required`
@@ -535,8 +536,9 @@ Where the check recorded `semantic_route_required: false`, a deferral asks for n
 a `deterministic_only` check on that route: counting it as a use there would leave an optional
 reviewer that cannot answer (a missing credential, a provider timeout: neither current nor
 undeliverable) demanding the closing review at every Stop, and the check's own next step would
-disagree with status. The CLI, the MCP check lead and the
-receipt's limitations sentence say "AI-powered review deferred".
+disagree with status. The CLI, MCP check text, status text, and the receipt limitations section say
+"AI-powered review is on; it starts after your first edit." Older records that still carry
+`deterministic_mode` beside the deferral gap render that same sentence.
 
 ### 5. A cited `fixed` ruling closes its finding despite environment facts (#1046)
 

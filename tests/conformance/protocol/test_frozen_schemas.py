@@ -26,7 +26,7 @@ _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
 # +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
 # ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
-_EXPECTED_MEMBER_COUNT = 230
+_EXPECTED_MEMBER_COUNT = 232  # n6 item 4 +2: check-result 1.5.0, check-recorded 1.5.0
 _EXPECTED_REQUEST_RESULT_VERSION_COUNT = 54
 _EXPECTED_EVENT_VERSION_COUNT = 29
 
@@ -247,6 +247,8 @@ def test_schema_registry_is_complete() -> None:
                 and path != "consent/chat-user-attestation-1.0.0.schema.json"
             )
             or path.endswith("-2.0.0.schema.json")
+            else "1.5.0"
+            if path.endswith("-1.5.0.schema.json")
             else "1.4.0"
             if path.endswith("-1.4.0.schema.json")
             else "1.3.0"
