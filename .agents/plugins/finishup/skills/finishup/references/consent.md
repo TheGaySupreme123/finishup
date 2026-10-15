@@ -27,8 +27,9 @@ Turning on AI-powered review for one task (a `decision_recorded` 1.1.0 `review_m
 [`review.md`](review.md)) is not a privacy decision and needs no new consent where the owner's
 setting is `local_agent_opt_in`: the owner gave that standing permission at setup. Under
 `local_owner_approval` each review still waits for the owner; under `local_only` the task stays
-local. Only the owner changes the setting (`finishup privacy conversations`), through the trusted
-ceremony when it needs less of them.
+local; under `ai_powered` every task is reviewed and a switch to local changes nothing. Only the
+owner changes the setting (`finishup privacy conversations`): through the trusted ceremony when it
+needs less of them, at once when it narrows.
 
 Activation, installation, registration, and a host approval do not prove that the route is live or
 that semantic review ran. Provider credentials require the repository grant and the exact

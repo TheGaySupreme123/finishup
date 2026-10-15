@@ -70,9 +70,10 @@ finish a substantial change and want a final independent review.
 local checks already cover what changed; or you are reading or exploring.
 
 **How.** Publish one `decision_recorded` 1.1.0 draft with `review_mode: "ai_powered"`.
-`statement` and `rationale` say why in one line each; `authority` is your own actor id. Then omit
-`mode` on later checks. To go back to local checks, publish the same draft with
-`review_mode: "local"`. The complete request is the
+`statement` and `rationale` say why in one line each; `authority` is your own actor id. Use a fresh
+`event_id` and the real `occurred_at`; the ids, timestamp and authority below are placeholders.
+Then omit `mode` on later checks. To go back to local checks, publish a new decision (fresh
+`event_id`) with `review_mode: "local"`. The complete request is the
 [`#publish-work-decision`](request-templates.md#publish-work-decision) template's second body; its
 draft is:
 
@@ -93,15 +94,21 @@ draft is:
 
 **What happens next.** Later checks that omit `mode` run with AI-powered review; `check` and
 `status` `review_mode` say so and name your switch. Other tasks are unaffected, and a new task
-starts local again. The receipt names each switch (sequence, event id, authority) and the mode its
-check ran in. If `review_mode.local_reason` comes back instead, the task stays local and the
-result says what to do: `owner_local_only` (the owner chose local checks only; continue locally
-and do not ask again), `ai_review_not_set_up` (the owner sets it up once; continue locally
-meanwhile), or `route_local_only` (this host connection is registered local-only until the owner
-re-registers it). Under `local_owner_approval` each review waits for the owner: treat
-`awaiting_human` as above. A task that already ran AI-powered review still owes its closing review
-even after switching back to local: run that `final_review: true` check with
-`mode: semantic_if_configured`.
+starts local again. The receipt names each switch (sequence, event id, the actor that recorded it,
+and its declared authority) and the mode its check ran in. If `review_mode.local_reason` comes
+back instead, the task stays local and the result says what to do: `owner_local_only` (the owner
+chose local checks only; continue locally and do not ask again), `ai_review_not_set_up` (the owner
+sets it up once; continue locally meanwhile), `route_local_only` (this host connection is
+registered local-only until the owner re-registers it), or `review_disabled` (the installation's
+verification settings turn AI-powered review off for checks that omit `mode`). Status also reports
+`conversation_default` and `switched_to_local`, which need nothing from you. Under
+`local_owner_approval` each review waits for the owner: treat `awaiting_human` as above. Under
+`ai_powered` the owner reviews every task: a switch to local is recorded but changes nothing.
+
+**Closing review.** A task that already used AI-powered review (a check's review ran, after a
+switch or because the check named an AI-powered `mode`, or a check deferred a required review until
+the first edit) still owes its closing review after it runs local again: a `final_review: true`
+check that omits `mode` runs that review.
 
 **Worked example.** A task changes token refresh in `auth/` and the session cache in `cache/`.
 After the first local check, you publish the switch ("Turn on AI-powered review for the rest of
