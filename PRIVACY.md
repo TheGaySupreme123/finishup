@@ -19,8 +19,9 @@ central path:
 `optional exact local-human preview → one-use authorization → bound gateway/provider → local receipt`
 
 This is the fail-safe installation seed, not a hidden choice on behalf of the user. If a technical
-user deliberately configures external semantic review, the CLI recommends an inspectable
-`assisted-review` recipe. It is committed once as a standing exact-repository policy beneath the
+user deliberately configures AI-powered review, the CLI offers an inspectable Assisted review
+recipe (`assisted_review`) as the default, marked recommended only for an exact provider route with
+reviewed data-use evidence. It is committed once as a standing exact-repository policy beneath the
 machine installation ceiling and then runs ordinary
 checks/retries without per-request human prompts. The user may choose a stricter, broader, custom,
 or forked configuration instead.
@@ -64,7 +65,7 @@ service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX des
 
 An independent review-context profile controls which potentially useful material is selected before
 those disclosure rules run: `structural`, `goal_aware`, `assisted`, `expanded`, or `custom`. The
-recommended `assisted` packet includes goal, obligations, claims, decisions, material timeline,
+default `assisted` packet includes goal, obligations, claims, decisions, material timeline,
 local-check finding bases, coverage and change-observation facts, plus bounded problem-local
 recorded evidence/test/failure/diff/source excerpts. It excludes sensitive/confidential content by
 default and carries an explicit omission reason when content was not recorded, selected, or allowed.

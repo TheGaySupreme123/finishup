@@ -75,9 +75,10 @@ $ codex
 Done. The limiter is refactored, and the receipt still carries the two findings I hit on the way.
 ```
 
-Both findings map to real rules in the shipped local policy pack, checked against nothing
-but the published record — no repository access, no model, no interpretation. And the receipt keeps
-carrying them after the fix: a later clean check never erases what was caught.
+Both findings map to real rules in the shipped local policy pack, checked against the published
+record and FinishUP's own names-only read of what changed in the workspace — no model, no
+interpretation. And the receipt keeps carrying them after the fix: a later clean check never erases
+what was caught.
 
 ## Install
 
@@ -120,10 +121,13 @@ see [Linux](docs/usage/install-and-first-run.md#linux)); on Windows, install it 
 `finishup` at a terminal opens a full-screen interface, and the first run walks setup inside it:
 what was detected, whether you trust this project, the exact proposed change, and an explicit
 approval before anything is applied. You do not need to know what MCP, hooks, policy digests, or
-vaults are to finish it, and you are never asked to configure a provider — local verification is
-complete without one. Everything non-interactive is unchanged: pipes, redirects, CI, `--help`,
-`--json`, named subcommands, and `finishup mcp serve` behave exactly as before, and `FINISHUP_TUI=0`
-selects the prompt-loop menu instead.
+vaults are to finish it. A provider is never required: local verification is complete without one.
+The recommended answer, **FinishUP (recommended)**, goes on to reviewer and privacy setup so your
+agent can turn on AI-powered review for a task when it helps; **FinishUP, local only** sets up no
+reviewer, and if you stop reviewer setup partway the terminal interface offers to finish as local
+only. Everything non-interactive is unchanged: pipes, redirects, CI, `--help`, `--json`, named
+subcommands, and `finishup mcp serve` behave exactly as before, and `FINISHUP_TUI=0` selects the
+prompt-loop menu instead.
 
 Full walkthrough: [Install and first run](docs/usage/install-and-first-run.md) and
 [The terminal interface](docs/usage/terminal-interface.md). A coding agent installing FinishUP for
@@ -152,8 +156,8 @@ state for future sessions—not that a later session loaded a hook or delivered 
 | **Six operations, two surfaces** | `start`, `publish_work`, `check`, `respond`, `status`, `receipt` — identical contracts on the CLI and over MCP. Everything else is a bounded support surface, not a seventh operation. |
 | **Works with any MCP agent** | No integration, no installed skill, no configuration. Codex, Claude Code, and Cursor have first-party integrations because each host's skill or plugin surface delivers the guidance natively — but integration buys ergonomics, never a stronger claim. |
 | **Honest receipts** | Coverage, provenance, freshness, findings, and limitations stay separate. A clean local check is never presented as proof that work is correct. |
-| **Zero-egress by default** | A fresh installation runs local checks only and is fully useful offline; nothing leaves your machine before first-run setup commits a policy. |
-| **Privacy-gated AI-powered review** | An optional reviewer model reads a bounded, minimized packet built from the ledger — never your repository — behind explicit provider binding and reauthenticated policy authority. |
+| **Zero-egress by default** | A fresh installation runs local checks only and is fully useful offline; no work is sent anywhere until first-run setup commits a privacy policy you approve. |
+| **Privacy-gated AI-powered review** | An optional reviewer model reads a bounded, minimized packet built from the ledger and, when your privacy recipe allows repository excerpts, the task's own change, read once per check. It never browses your repository, and it sits behind explicit provider binding and reauthenticated policy authority. |
 | **A full-screen terminal interface** | First run, status, privacy, provider, integration, service, and receipt flows in one interface; no secret ever enters it. |
 | **Recoverable local durability** | Encrypted task bundles, generation-fenced single-writer storage, exact replay, backup/restore, and forward-only migrations. |
 
@@ -163,8 +167,8 @@ say.
 
 ## Private by default
 
-A fresh installation's unconfigured seed is **zero-egress and local-only**: nothing leaves your
-machine before first-run setup commits a policy, and FinishUP is fully useful in that state. Setup's
+A fresh installation's unconfigured seed is **zero-egress and local-only**: no work is sent anywhere
+until first-run setup commits a policy, and FinishUP is fully useful in that state. Setup's
 proposed privacy policy states whether FinishUP may check PyPI for package updates (default yes, with an
 opt-out). That bounded check carries only the installation's package identity (`finishup`, or
 `yoetz` for an installation still updated under its former name) and version, never task or
@@ -181,14 +185,18 @@ other repository needs its own grant (run `finishup --privacy` from it) before i
 AI-powered review, and until then its tasks run local checks only (an installation that already
 sent work before 0.3 may carry its earlier permission forward when a task first starts there).
 
-External AI-powered review is a separate explicit decision. When you choose it, the CLI's
-recommended `assisted-review` recipe shows and confirms a standing policy that sends the reviewer a
-structured packet built from the ledger — goal, obligations, claims, timeline, local findings and
-their bases, coverage gaps, and bounded problem-local excerpts already recorded in the case.
-Sensitive and confidential content is off, and the never-send set is absolute. Policy loosens only
-through a reauthenticated decision you make: the trusted local ceremony, or your explicit
-current-chat approval of one exact prepared, previewed, expiring consent target that a capable agent
-relays for you. That relay is the agent's assertion, which FinishUP cannot independently authenticate,
+AI-powered review is a separate explicit decision. When you choose it, the CLI lists the privacy
+options with **Assisted review** as the default. It is marked recommended only for a provider route
+with reviewed data-use terms; otherwise, a ChatGPT subscription among them, the choice is yours.
+Assisted review shows and confirms a standing policy that sends the reviewer a structured packet
+built from the ledger — goal, obligations, claims, timeline, local findings and their bases,
+coverage gaps, and bounded problem-local excerpts already recorded in the case — plus the
+**check-time change**: the task's own change since the commit it started on, read from the
+repository once per check, and up to four unchanged files the task statement names. Expanded review
+allows broader in-scope excerpts. Sensitive and confidential content is off, and the never-send set
+is absolute. Policy loosens only through a reauthenticated decision you make: the trusted local
+ceremony, or your explicit current-chat approval of one exact prepared, previewed, expiring consent
+target that a capable agent relays for you. That relay is the agent's assertion, which FinishUP cannot independently authenticate,
 so the local ceremony remains the stronger path.
 
 Provider setup distinguishes **OpenAI API / compatible API** from **Codex with ChatGPT
@@ -246,10 +254,11 @@ does not claim" section, and the full changelog — and live versioned in
 
 ## Status
 
-FinishUP **0.3.0** is the next public-alpha release candidate. It lets several agents work in
-independent tasks within one repository, adds a backup-first upgrade path for 0.2 task data,
-and carries every 0.2.x repair through 0.2.5. **0.2.5** remains the published release until the
-release gates pass; see the [0.3.0 notes](docs/releases/v0.3.0.md) for changes and validation limits.
+FinishUP **0.3.0** is a public-alpha release and the first under the FinishUP name; **Yoetz 0.2.5**
+was the last release before the rename. 0.3.0 lets several agents work in independent tasks within
+one repository, adds a backup-first upgrade path for 0.2 task data, and carries every 0.2.x repair
+through Yoetz 0.2.5; see the [0.3.0 notes](docs/releases/v0.3.0.md) for changes and validation
+limits.
 Every public claim in
 [`docs/public-claims.json`](docs/public-claims.json) is bound to real checked-in evidence: a claim flagged `evidenced` has concrete test or fixture coverage, with its non-live
 suites exercised in per-PR CI; a claim whose own wording names still-missing capability or drill
