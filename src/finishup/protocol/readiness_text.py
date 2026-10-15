@@ -355,22 +355,29 @@ _RECHECK_PHRASES: Final[Mapping[str, str]] = {
 _ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
 _ACCEPTANCE_RISK_PHRASE: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; a line"
-    " `finishup-acceptance:<obligation id>:met` per obligation in your final answer answers it)"
+    " `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or"
+    " `finishup-verification-limit:<obligation id>` in your final answer answers it; saying every"
+    " criterion is met does not)"
 )
-# Cursor's Stop hook receives no final message, so the line above can never answer the re-read
-# there; the Cursor note names the path that works (the re-read is asked once per flagged set).
+# Cursor's Stop hook receives no final message, so it never names the acceptance line. The note
+# tells the agent to record the limit or the observed id. Saying the criteria are met does not
+# answer the re-read; the re-read is still asked once per flagged set.
 _ACCEPTANCE_RISK_PHRASE_CURSOR: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; Cursor"
-    " passes FinishUP no final answer, so it is asked once and saying they are met in your final"
-    " answer ends it)"
+    " passes FinishUP no final answer, so publish a decision"
+    " `finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a"
+    " record; this re-read is asked once for the set, and saying every criterion is met does not"
+    " answer it)"
 )
 # A surface that does not know its host (the CLI, the TUI, a generic MCP profile) names which
-# hosts read the line, so an agent on Cursor is never told it answers the re-read.
+# hosts read the line, so an agent on Cursor is never told a final-answer line answers the re-read.
 _ACCEPTANCE_RISK_PHRASE_ANY_HOST: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; on"
-    " Codex and Claude Code a line `finishup-acceptance:<obligation id>:met` per obligation in your"
-    " final answer answers it; Cursor passes no final answer, so there it is asked once and saying"
-    " they are met ends it)"
+    " Codex and Claude Code a line `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or"
+    " `finishup-verification-limit:<obligation id>` in your final answer answers it; Cursor passes"
+    " no final answer, so there publish a decision `finishup-verification-limit:<obligation id>`"
+    " or link the observed evd_ or res_ id in a record; saying every criterion is met does not"
+    " answer it)"
 )
 _MAX_NAMED_RULING_FINDINGS: Final = 3
 
@@ -384,10 +391,11 @@ def recheck_note(readiness: object, *, host: str | None = None) -> str | None:
     announces none (or an older service sent no list).
 
     ``host`` decides how a flagged acceptance re-read is answered: ``None``, ``codex`` or
-    ``claude`` (the hosts whose Stop passes the final message) name the
-    ``finishup-acceptance:<obligation id>:met`` line; ``cursor`` (no final message at Stop) names
-    the confirmation that ends it there; ``generic`` (a surface that does not know its host)
-    names both.
+    ``claude`` (the hosts whose Stop passes the final message) name the linked
+    ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line or a verification-limit
+    line; ``cursor`` (no final message at Stop) never names ``finishup-acceptance`` and instead
+    names a recorded limit or an evidence link; ``generic`` (a surface that does not know its
+    host) names both. Saying every criterion is met does not answer the flagged re-read.
     """
 
     raw = _field(readiness, "rechecks")

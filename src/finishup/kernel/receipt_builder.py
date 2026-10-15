@@ -107,6 +107,7 @@ from finishup.domain.values import (
     finding_id,
 )
 from finishup.kernel.check_standing import CheckStanding, LaterRecord
+from finishup.kernel.claim_verification import claim_verification_lines
 from finishup.kernel.claims import (
     claim_discloses_result,
     effective_claim_items,
@@ -2150,6 +2151,7 @@ def _sections(
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
     review_mode_sentence: str = "",
     coordinator_failure_sentence: str = "",
+    claim_verification: tuple[str, ...] = (),
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2325,6 +2327,9 @@ def _sections(
 
     if attempt_explanations:
         bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] += " " + " ".join(attempt_explanations)
+    if claim_verification:
+        # Issue #1079: the ledger pairing. A final-message attestation is not this text.
+        bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] += " " + " ".join(claim_verification)
 
     if gap_codes:
         limited_by = _limited_by(gap_codes, gap_effects)
@@ -2897,6 +2902,7 @@ def build_receipt(
         coordinator_failure_sentence=(
             COORDINATOR_FAILURE_SENTENCE if _unchanged_coordinator_failure(context) else ""
         ),
+        claim_verification=claim_verification_lines(context.projection, context.records),
     )
     suppressed_count = (
         0 if context.applicable_check is None else context.applicable_check.suppressed_count

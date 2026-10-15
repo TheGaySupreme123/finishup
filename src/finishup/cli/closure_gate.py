@@ -21,11 +21,14 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
 * the acceptance re-read (A-12) invites the agent to republish an obligation whose output does
   not meet its acceptance_criteria as ``acknowledged_not_done``. An acknowledgement published
   after that invite answers it and is never challenged by the acknowledgement re-check. Since
-  tb4n5 (#1050) readiness announces it only for the resolved obligations the ledger flags, and a
-  ``finishup-acceptance:<obligation id>:met`` line in the host's final message answers it for that
-  obligation (``unattested_acceptance``). Cursor's ``stop`` carries no final message, so on
-  Cursor the text never names that line: a confirmation in the final answer ends the re-read,
-  which is asked once per flagged set;
+  tb4n5 (#1050) readiness announces it only for the resolved obligations the ledger flags.
+  For that flagged rule (#1079) the final message answers an obligation only with
+  ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` or
+  ``finishup-verification-limit:<obligation id>`` (``unattested_acceptance``). A bare ``:met``
+  line and a generic all-met claim do not. Cursor's ``stop`` carries no final message, so on
+  Cursor the text never names the ``finishup-acceptance`` line: the agent publishes the
+  verification-limit decision or links the observed id in a record. The re-read is still asked
+  once per flagged set;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. FinishUP cannot verify the claim,
   so a Stop that finds a blocker the agent has not been asked about continues the agent once
@@ -351,9 +354,18 @@ _ACCEPTANCE_NAMED_HEAD: Final = (
     " final output."
 )
 # The attestation: one line per obligation, bound to the obligation ids the current status names.
+# The legacy unflagged re-read still accepts a bare ``:met``. The flagged rule does not.
 _ACCEPTANCE_ATTEST_TEXT: Final = (
     " If it is met, end your final answer with the line `finishup-acceptance:<obligation id>:met`"
     " for it."
+)
+# Issue #1079 item 7: a resolved risky criterion needs the observed evidence or result, or an
+# explicit verification limit. A generic "all met" does not stand in for either.
+_ACCEPTANCE_RISK_ATTEST_TEXT: Final = (
+    " End your final answer with `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`"
+    " naming the observed evidence or result, or record"
+    " `finishup-verification-limit:<obligation id>`. Saying every criterion is met does not"
+    " answer this."
 )
 # Cursor's ``stop`` payload carries no final message (status and ``loop_count`` only), and its
 # ``afterAgentResponse`` is not dispatched by the Cursor CLI or Cloud Agents and has no documented
@@ -363,6 +375,12 @@ _ACCEPTANCE_ATTEST_TEXT: Final = (
 _ACCEPTANCE_ATTEST_TEXT_CURSOR: Final = (
     " If it is met, keep it resolved and say so in your final answer: Cursor passes FinishUP no final"
     " answer, so no answer line is read, and this re-read is not asked again for this set."
+)
+_ACCEPTANCE_RISK_ATTEST_TEXT_CURSOR: Final = (
+    " Publish a decision `finishup-verification-limit:<obligation id>` or link the observed"
+    " evd_ or res_ id in a record. Cursor passes FinishUP no final answer, so no answer line"
+    " is read, and this re-read is not asked again for this set. Saying every criterion is met"
+    " does not answer this."
 )
 # #1050 item 2: a pure "criteria confirmed" answer is the end of the re-read. Said only where the
 # re-read rides alone (no item asks for a check in the same text).
@@ -375,22 +393,43 @@ _MAX_FINAL_MESSAGE_CHARS: Final = 65_536
 # ``finishup-acceptance:<obligation id>:met`` anywhere in the message (a line, a bullet or inline
 # code); ``:not_met`` or any other outcome is not an attestation. The legacy
 # ``yoetz-acceptance:`` spelling a 0.3 development build taught is one marker with it (ADR-048).
+_OBLIGATION_ID: Final = r"obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+_LINKED_ID: Final = (
+    r"(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 _ATTESTATION: Final = re.compile(
-    r"(?:finishup|yoetz)-acceptance:(obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
-    r":met(?![A-Za-z0-9_-])",
+    rf"(?:finishup|yoetz)-acceptance:({_OBLIGATION_ID}):met(?![A-Za-z0-9_-])",
+    re.ASCII,
+)
+# A colon is not in the bare lookahead, so ``:met:evd_...`` also matches ``_ATTESTATION``.
+# The flagged rule uses this pattern and does not treat a bare ``:met`` as an answer.
+_LINKED_ATTESTATION: Final = re.compile(
+    rf"(?:finishup|yoetz)-acceptance:({_OBLIGATION_ID}):met:({_LINKED_ID})(?![A-Za-z0-9_-])",
+    re.ASCII,
+)
+_VERIFICATION_LIMIT_LINE: Final = re.compile(
+    rf"(?:finishup|yoetz)-verification-limit:({_OBLIGATION_ID})(?![A-Za-z0-9_-])",
     re.ASCII,
 )
 
 
-def attested_acceptance(final_message: str) -> frozenset[str]:
+def attested_acceptance(final_message: str, *, linked: bool = False) -> frozenset[str]:
     """The obligation ids the final message attests as meeting their acceptance criteria.
 
-    Only the exact ``finishup-acceptance:<obligation id>:met`` form (or its legacy
-    ``yoetz-acceptance:`` spelling) counts, in the first 65,536
-    characters. The message is read in this process only: never sent, stored or logged.
+    The default is the legacy exact ``finishup-acceptance:<obligation id>:met`` form (or its
+    ``yoetz-acceptance:`` spelling), in the first 65,536 characters. ``linked`` is the flagged
+    rule (#1079): only ``:met:<evd_ or res_ id>`` or a ``finishup-verification-limit:`` line for
+    that obligation counts. A bare ``:met`` and prose that every criterion is met do not. The
+    message is read in this process only: never sent, stored or logged. A line in the message
+    does not create a ledger link.
     """
 
-    return frozenset(_ATTESTATION.findall(final_message[:_MAX_FINAL_MESSAGE_CHARS]))
+    window = final_message[:_MAX_FINAL_MESSAGE_CHARS]
+    if not linked:
+        return frozenset(_ATTESTATION.findall(window))
+    linked_ids = {pair[0] for pair in _LINKED_ATTESTATION.findall(window)}
+    limited = set(_VERIFICATION_LIMIT_LINE.findall(window))
+    return frozenset(linked_ids | limited)
 
 
 def _subjects_key(subjects: tuple[str, ...]) -> str:
@@ -413,7 +452,7 @@ def unattested_acceptance(recheck: _Recheck, final_message: str | None) -> tuple
         return None
     if _subjects_key(recheck.subjects) != recheck.key:
         return None
-    attested = attested_acceptance(final_message)
+    attested = attested_acceptance(final_message, linked=recheck.rule == _ACCEPTANCE_RISK_RULE)
     return tuple(
         subject for subject in sorted(recheck.subjects, key=str.encode) if subject not in attested
     )
@@ -424,9 +463,10 @@ def _acceptance_sentence(
 ) -> str:
     """The re-read for the obligations still to read: named, flagged when the service flagged.
 
-    The answer it names is host-aware: Codex and Claude Code pass the final message, so the
-    ``finishup-acceptance:<obligation id>:met`` line answers it; Cursor passes none, so its text
-    never asks for a line the gate cannot read.
+    The answer it names is host-aware. For the flagged rule, Codex and Claude Code pass the
+    final message, so the linked ``:met:<evd_ or res_ id>`` line or a verification-limit line
+    answers it; Cursor passes none, so its text never names ``finishup-acceptance``. The legacy
+    unflagged re-read still names a bare ``:met``.
     """
 
     ids_source = named if named is not None else recheck.subjects
@@ -441,7 +481,14 @@ def _acceptance_sentence(
         if recheck.rule == _ACCEPTANCE_RISK_RULE
         else _ACCEPTANCE_NAMED_HEAD
     )
-    attest = _ACCEPTANCE_ATTEST_TEXT_CURSOR if host == "cursor" else _ACCEPTANCE_ATTEST_TEXT
+    if recheck.rule == _ACCEPTANCE_RISK_RULE:
+        attest = (
+            _ACCEPTANCE_RISK_ATTEST_TEXT_CURSOR
+            if host == "cursor"
+            else _ACCEPTANCE_RISK_ATTEST_TEXT
+        )
+    else:
+        attest = _ACCEPTANCE_ATTEST_TEXT_CURSOR if host == "cursor" else _ACCEPTANCE_ATTEST_TEXT
     return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + attest
 
 
@@ -1161,10 +1208,15 @@ def closure_gate_from_readiness(
             else "FinishUP closure gate (shown once):"
         )
         blocker = _blocker_text(rows) if rows else ""
+        # The flagged rule does not offer a generic "all met" shortcut (#1079). The legacy
+        # unflagged re-read still does, and only where the re-read rides alone.
+        confirm = (
+            ""
+            if acceptance is not None and acceptance.rule == _ACCEPTANCE_RISK_RULE
+            else " " + _ACCEPTANCE_CONFIRMED_TEXT
+        )
         accept_sentence = (
-            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
-            + " "
-            + _ACCEPTANCE_CONFIRMED_TEXT
+            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host) + confirm
             if accept_allowed
             else ""
         )
@@ -1491,8 +1543,9 @@ async def read_closure_gate(
 
     ``code_mode`` is true when the hook observed a recorded code-mode cell for this session.
     ``final_message`` (#1050) is the agent's last message when the host passed one. An acceptance
-    re-read the message answers with a ``finishup-acceptance:<obligation id>:met`` line for every
-    announced obligation is not asked, and ``on_acceptance_covered`` is called. The message is
+    re-read the message answers for every announced obligation is not asked (a bare ``:met`` for
+    the legacy rule; a linked ``:met:<id>`` or a verification-limit line for the flagged rule),
+    and ``on_acceptance_covered`` is called. The message is
     read in this process only: never sent, stored or logged. No second status read is made.
     """
 

@@ -915,7 +915,14 @@ _FALSE_COMPLETION = (
 )
 
 
-def _attest(*obligations: str, outcome: str = "met") -> str:
+_LINKED = "res_97700000-0000-4000-8000-0000000000aa"
+
+
+def _attest(*obligations: str, outcome: str = "met", link: str = _LINKED) -> str:
+    if outcome == "met":
+        return "\n".join(
+            f"finishup-acceptance:{obligation}:met:{link}" for obligation in obligations
+        )
     return "\n".join(f"finishup-acceptance:{obligation}:{outcome}" for obligation in obligations)
 
 
@@ -952,6 +959,16 @@ def test_only_the_exact_met_line_attests() -> None:
     assert gate_module.attested_acceptance(message) == frozenset({_RESOLVED_A, _RESOLVED_B})
     # Prose that restates every criterion attests nothing.
     assert gate_module.attested_acceptance(_INTERLEAVED_D) == frozenset()
+    # The flagged rule needs a linked id or a verification-limit line. Bare `:met` and "all met"
+    # do not answer it. The public default stays the legacy bare form.
+    bare = f"all criteria met\nfinishup-acceptance:{_RESOLVED_A}:met"
+    assert gate_module.attested_acceptance(bare, linked=True) == frozenset()
+    linked = (
+        f"finishup-acceptance:{_RESOLVED_A}:met:{_LINKED}\nyoetz-verification-limit:{_RESOLVED_B}"
+    )
+    assert gate_module.attested_acceptance(linked, linked=True) == frozenset(
+        {_RESOLVED_A, _RESOLVED_B}
+    )
 
 
 def test_a_realistic_summary_without_attestation_is_asked_for_the_flagged_obligations_only() -> (
@@ -972,8 +989,9 @@ def test_a_realistic_summary_without_attestation_is_asked_for_the_flagged_obliga
         assert "republish that obligation as `acknowledged_not_done`" in gate.text
         assert "`finishup-verification-limit:<obligation id>`" in gate.text
         # ... the attestation that answers it is named, and so is the once-only shortcut.
-        assert "`finishup-acceptance:<obligation id>:met`" in gate.text
-        assert "that confirmation alone needs no new record, check or receipt" in gate.text
+        assert "`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`" in gate.text
+        assert "Saying every criterion is met does not answer this." in gate.text
+        assert "that confirmation alone needs no new record, check or receipt" not in gate.text
         assert len(gate.text) <= 2000
     # A ledger that flags nothing announces no acceptance re-read: a realistic summary stops.
     clean = _readiness(state="ready_with_limitations", actionable=())
@@ -1000,6 +1018,18 @@ def test_attesting_every_flagged_obligation_skips_the_reread_and_partial_names_t
     )
     assert not_met is not None
     assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in not_met.text
+
+
+def test_a_bare_met_line_does_not_answer_the_flagged_reread() -> None:
+    announced = _flagged_readiness(_RESOLVED_A, _RESOLVED_B)
+    bare = "All criteria met.\n" + "\n".join(
+        f"finishup-acceptance:{item}:met" for item in (_RESOLVED_A, _RESOLVED_B)
+    )
+    gate = _decide(announced, bare)
+    assert gate is not None
+    assert gate_module.ACCEPTANCE_RECHECK_ITEM in gate.items
+    limit = "\n".join(f"finishup-verification-limit:{item}" for item in (_RESOLVED_A, _RESOLVED_B))
+    assert _decide(announced, limit) is None
 
 
 def test_the_original_false_completion_is_still_asked() -> None:
@@ -1037,7 +1067,10 @@ def test_an_older_service_reread_is_named_without_the_flag_sentence() -> None:
         in (gate.text)
     )
     assert "FinishUP flags" not in gate.text
+    assert "that confirmation alone needs no new record, check or receipt" in gate.text
     assert _decide(announced, _attest(_RESOLVED_A, _RESOLVED_B)) is None
+    bare = "\n".join(f"finishup-acceptance:{item}:met" for item in (_RESOLVED_A, _RESOLVED_B))
+    assert _decide(announced, bare) is None
 
 
 def test_beside_an_item_that_needs_a_check_the_named_reread_promises_no_shortcut() -> None:
@@ -1129,10 +1162,10 @@ def test_the_reread_names_only_what_the_message_missed_and_the_downgrade_still_c
 def test_cursor_acceptance_reread_names_a_path_that_works_and_following_it_ends_the_reread(
     tmp_path: Path,
 ) -> None:
-    """#1050 follow-up: Cursor's ``stop`` carries no final message, so the re-read never asks for
-    the ``finishup-acceptance`` line there. The instruction it gives (confirm in the final answer and
-    stop) ends the re-read: the continued Stop passes, and a later Stop at a new frontier with the
-    same flagged set is not asked again."""
+    """#1050 follow-up, #1079: Cursor's ``stop`` carries no final message, so the re-read never
+    names the ``finishup-acceptance`` line. The instruction is a recorded verification limit or
+    an evidence link. The re-read is still asked once per flagged set: the continued Stop passes,
+    and a later Stop at a new frontier with the same set is not asked again."""
 
     host = _Host("cursor")
     session = "gate-acceptance-cursor"
@@ -1140,9 +1173,11 @@ def test_cursor_acceptance_reread_names_a_path_that_works_and_following_it_ends_
     text = _text(host, _stop(h, host, session))
     assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in text
     assert "finishup-acceptance" not in text
-    assert "say so in your final answer" in text
+    assert "say so in your final answer" not in text
+    assert "saying they are met" not in text
     assert "Cursor passes FinishUP no final answer" in text
-    assert "that confirmation alone needs no new record, check or receipt" in text
+    assert "that confirmation alone needs no new record, check or receipt" not in text
+    assert "Saying every criterion is met does not answer this." in text
     # The downgrade and verification-limit paths are the same on every host.
     assert "republish that obligation as `acknowledged_not_done`" in text
     assert "`finishup-verification-limit:<obligation id>`" in text
@@ -1179,8 +1214,9 @@ def test_the_acceptance_answer_is_host_aware_and_codex_claude_text_is_unchanged(
     for host in ("codex", "claude", None):
         gate = texts[host]
         assert gate is not None
-        assert gate.text.count(" If it is met, end your final answer with the line") == 1
-        assert "`finishup-acceptance:<obligation id>:met` for it." in gate.text
+        assert "`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`" in gate.text
+        assert "Saying every criterion is met does not answer this." in gate.text
+        assert " If it is met, end your final answer with the line" not in gate.text
         assert "Cursor" not in gate.text
     assert texts["codex"] is not None and texts["claude"] is not None
     assert texts["claude"].text == texts[None].text  # type: ignore[union-attr]

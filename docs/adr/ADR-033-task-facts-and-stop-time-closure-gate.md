@@ -1053,3 +1053,27 @@ mode was positively observed: a recorded `exec` cell for this session
 (`LocalObservationStore.session_observed_code_mode`), or `check_cause.tool == "exec"`. Claude Code
 and Cursor do not record those cells, so they keep the neutral sentence. `guidance/startup.md`
 says the pragma and `yield_time_ms` apply only to a JavaScript `exec` cell.
+
+## Amendment (2026-10-15, issue #1079 item 7): a risky completion claim names its verification
+
+In 6 of 28 smoke trials the agent resolved a criterion or said every criterion was met when the
+external verifier showed that was false. `acceptance_risk` still checks attempt and evidence
+lineage, not whether the claim is true. This step does not reject a claim at publish time and
+does not grade the sentence.
+
+For rule `resolved_obligations_acceptance_risk`, the Stop re-read is answered only by
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or
+`finishup-verification-limit:<obligation id>` (the `yoetz-` spellings too). A bare `:met` and a
+generic all-met claim do not answer it. The legacy rule `resolved_obligations_acceptance_reread`
+still accepts a bare `:met`, and still ends an alone re-read with the confirmation sentence.
+Codex and Claude Code read those lines in the final message. Cursor's `stop` carries no final
+message, so its text never contains `finishup-acceptance`: the agent publishes the
+verification-limit decision or links the observed id in a record. The re-read is still asked once
+per flagged set. An obligation that already has a `verification_limit` disclosure leaves the
+recheck; the receipt still lists it.
+
+`kernel.claim_verification.claim_verification_lines` appends that pairing to the receipt evidence
+section in JSON, markdown and text: a header that a generic all-met claim does not stand in, then
+one line per flagged obligation with its reason tokens and `verification_limit` or
+`no_verification_limit`. A final-message line does not create the ledger link the receipt
+reports. Compact receipt wording is unchanged.

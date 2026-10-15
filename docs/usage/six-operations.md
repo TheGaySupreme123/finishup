@@ -316,9 +316,12 @@ requirement keeps the conclusion at `unresolved_findings_remain`. `rechecks` lis
 a Stop will ask you once to re-read (the acceptance criteria of the resolved obligations FinishUP
 flags because a requested item was never attempted or their evidence is unlinked or only your own
 assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
-them. When a flagged obligation's criteria are met, the line `finishup-acceptance:<obligation id>:met`
-in your final answer answers its re-read in Codex and Claude Code. Cursor does not pass your final
-answer to FinishUP, so there the re-read is asked once and saying the criteria are met ends it.
+them. When a flagged obligation's criteria are met, answer with
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming the observed evidence or result,
+or with `finishup-verification-limit:<obligation id>`, in your final answer in Codex and Claude
+Code. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
+FinishUP, so there publish a decision `finishup-verification-limit:<obligation id>` or link the
+observed evidence or result id in a record. The re-read is asked once for that set.
 `ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 

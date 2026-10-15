@@ -18,6 +18,7 @@ from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    DecisionRecordedPayload,
     EventSchema,
     EvidenceContentAvailability,
     EvidenceDigestBinding,
@@ -40,6 +41,7 @@ from finishup.domain.values import (
     ObligationId,
     ResultId,
     action_id,
+    actor_id,
     evidence_id,
     obligation_id,
     result_id,
@@ -49,6 +51,10 @@ from finishup.kernel.acceptance_risk import (
     EVIDENCE_SELF_ASSERTED_ONLY,
     ITEM_NEVER_ATTEMPTED,
     acceptance_risk,
+)
+from finishup.kernel.claim_verification import (
+    CLAIM_VERIFICATION_HEADER,
+    claim_verification_lines,
 )
 from finishup.kernel.closure_readiness import closure_readiness_facts
 from finishup.kernel.closure_verdict import (
@@ -276,7 +282,8 @@ def test_the_status_note_names_the_flagged_reread_and_the_line_that_answers_it()
     note = recheck_note({"rechecks": rechecks})
     assert note is not None
     assert "the resolved obligations FinishUP flags" in note
-    assert "`finishup-acceptance:<obligation id>:met`" in note
+    assert "`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`" in note
+    assert "saying every criterion is met does not" in note
     # An older service's re-read keeps its sentence.
     legacy = recheck_note(
         {"rechecks": [{"kind": "acceptance", "rule": "resolved_obligations_acceptance_reread"}]}
@@ -310,10 +317,52 @@ def test_the_status_note_names_the_line_only_where_the_host_can_deliver_it() -> 
     assert "the resolved obligations FinishUP flags" in cursor
     generic = recheck_note(rechecks, host="generic")
     assert generic is not None
-    assert "on Codex and Claude Code a line `finishup-acceptance:<obligation id>:met`" in generic
+    assert (
+        "on Codex and Claude Code a line `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`"
+        in generic
+    )
+    assert "saying every criterion is met does not" in generic
+    assert "finishup-acceptance" not in cursor
     assert "Cursor passes no final answer" in generic
     # An older service's unflagged re-read names no line on any host.
     legacy = {
         "rechecks": [{"kind": "acceptance", "rule": "resolved_obligations_acceptance_reread"}]
     }
     assert recheck_note(legacy, host="cursor") == recheck_note(legacy)
+
+
+def test_claim_verification_lines_name_each_flag_and_a_recorded_limit() -> None:
+    """The receipt pairing is the ledger's, not a generic all-met claim (#1079)."""
+
+    ledger = _ledger()
+    state = replay(ledger.prefix)
+    assert claim_verification_lines(state, ()) == ()
+    lines = claim_verification_lines(state, ledger.prefix)
+    assert lines[0] == CLAIM_VERIFICATION_HEADER
+    body = "\n".join(lines)
+    assert str(_CLEAN) not in body
+    assert f"{_SELF} {EVIDENCE_SELF_ASSERTED_ONLY} no_verification_limit" in lines
+    assert f"{_NEVER} {ITEM_NEVER_ATTEMPTED},{EVIDENCE_NOT_LINKED} no_verification_limit" in lines
+    assert f"{_OFF} {EVIDENCE_NOT_LINKED} no_verification_limit" in lines
+    ledger.append(
+        EventSchema("decision_recorded", "1.0.0"),
+        DecisionRecordedPayload(
+            statement=f"finishup-verification-limit:{_SELF}",
+            rationale="The private verifier is not in this workspace.",
+            authority=actor_id("agt_codex"),
+        ),
+        observed=False,
+    )
+    state = replay(ledger.prefix)
+    facts = closure_readiness_facts(state, ledger.prefix)
+    assert facts.obligation_closures is not None
+    subjects = {
+        item
+        for row in rechecks_from_closures(facts.obligation_closures, facts, acknowledged_count=0)
+        if row.kind == "acceptance"
+        for item in row.subjects
+    }
+    assert str(_SELF) not in subjects
+    assert str(_NEVER) in subjects
+    limited = claim_verification_lines(state, ledger.prefix)
+    assert f"{_SELF} {EVIDENCE_SELF_ASSERTED_ONLY} verification_limit" in limited

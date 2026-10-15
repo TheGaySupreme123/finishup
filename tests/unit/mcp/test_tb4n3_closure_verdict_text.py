@@ -156,7 +156,7 @@ _FLAGGED = [
         "since_frontier": "5",
     }
 ]
-_LINE = "`finishup-acceptance:<obligation id>:met`"
+_LINE = "`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`"
 
 
 def _prepared(**readiness: object) -> dict[str, object]:

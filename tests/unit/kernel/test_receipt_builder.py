@@ -2740,3 +2740,67 @@ def test_result_coverage_and_every_surface_count_live_gaps_only() -> None:
             assert "Cleared earlier (historical)" in cli
     # A malformed wire row is skipped, never echoed.
     assert historical_gaps_from_wire({"gaps": [{"code": "x y", "status": "historical"}]}) == ()
+
+
+def test_claim_verification_pairing_renders_in_json_markdown_and_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pairing is prose in the evidence section. Compact wording stays frozen (#1079)."""
+
+    from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
+
+    header = CLAIM_VERIFICATION_HEADER
+    line = (
+        "obl_00000000-0000-4000-8000-0000000000c2 "
+        "requested_item_never_attempted no_verification_limit"
+    )
+    context = _context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    plain = _build(context)
+    evidence = next(
+        section
+        for section in plain.sections
+        if section.key is ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS
+    )
+    assert header not in evidence.body
+    assert header not in render_receipt_compact(plain)
+
+    def _paired(_projection: object, _records: object) -> tuple[str, ...]:
+        return (header, line)
+
+    monkeypatch.setattr(
+        "finishup.kernel.receipt_builder.claim_verification_lines",
+        _paired,
+    )
+    receipt = _build(context)
+    evidence = next(
+        section
+        for section in receipt.sections
+        if section.key is ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS
+    )
+    assert header in evidence.body
+    assert line in evidence.body
+    encoded = str(receipt_document_to_json(receipt))
+    assert header in encoded
+    assert line in encoded
+    assert header in render_receipt_human(receipt, markdown=True)
+    assert line in render_receipt_human(receipt, markdown=False)
+    assert header not in render_receipt_compact(receipt)
+
+
+def test_an_unchanged_coordinator_failure_is_named_on_the_receipt() -> None:
+    check = replace(
+        _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()),
+        semantic_status=SemanticStatus.FAILED,
+        semantic_reason=SemanticReason.COORDINATOR_FAILURE,
+        semantic_provenance=None,
+    )
+    receipt = _build(_context(check=check))
+    limitations = next(
+        section
+        for section in receipt.sections
+        if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
+    )
+    from finishup.protocol.readiness_text import COORDINATOR_FAILURE_SENTENCE
+
+    assert COORDINATOR_FAILURE_SENTENCE in limitations.body
+    assert COORDINATOR_FAILURE_SENTENCE in render_receipt_human(receipt, markdown=False)
