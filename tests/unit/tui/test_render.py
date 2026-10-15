@@ -583,3 +583,19 @@ def test_privacy_posture_says_review_is_not_set_up_in_a_repository_without_a_gra
         conversation_review_explicit=False,
     )
     assert "agents may not" not in (released_off.conversation_review_summary or "")
+
+
+def test_privacy_posture_names_a_pending_carry_forward() -> None:
+    from finishup.tui.models import PrivacyPosture as _Posture
+
+    pending = _Posture(
+        profile="assisted_review",
+        llm_inference_enabled=True,
+        readable=True,
+        repository_grant_state="missing",
+        repository_migration_state="first_repository_available",
+        conversation_review="ai_powered",
+        conversation_review_explicit=False,
+    )
+    summary = pending.conversation_review_summary or ""
+    assert "carried forward to it once" in summary

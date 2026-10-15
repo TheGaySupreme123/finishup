@@ -707,7 +707,11 @@ _FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown
 
 
 def conversation_setting_text(
-    setting: object, *, explicit: bool = True, grant_missing: bool = False
+    setting: object,
+    *,
+    explicit: bool = True,
+    grant_missing: bool = False,
+    migration_pending: bool = False,
 ) -> str:
     """The owner's conversation setting as one sentence (ADR-049); ``""`` when unknown.
 
@@ -717,7 +721,12 @@ def conversation_setting_text(
     ``grant_missing`` is a repository without a privacy grant of its own.
     """
 
-    return conversation_setting_line(setting, explicit=explicit, grant_missing=grant_missing)
+    return conversation_setting_line(
+        setting,
+        explicit=explicit,
+        grant_missing=grant_missing,
+        migration_pending=migration_pending,
+    )
 
 
 def credential_heuristic_line(repository: object, machine_default: object) -> str:

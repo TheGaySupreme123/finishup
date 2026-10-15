@@ -370,6 +370,8 @@ class PrivacyPosture:
                 self.conversation_review,
                 explicit=self.conversation_review_explicit,
                 grant_missing=self.repository_grant_state == "missing",
+                migration_pending=self.repository_migration_state
+                in {"legacy_route_available", "first_repository_available"},
             )
             or None
         )
