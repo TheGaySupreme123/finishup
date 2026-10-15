@@ -162,6 +162,61 @@ async def test_connecting_a_host_names_a_runtime_that_cannot_serve_this_account(
         assert "must belong to the account running FinishUP" in shown
 
 
+async def test_a_disconnect_that_keeps_unconfirmed_shared_pieces_shows_the_way_out(
+    make_app: MakeApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Yoetz-era Cursor plugin folder found without a record stays on an ordinary disconnect.
+    ``/disconnect`` offers no home-wide removal of its own; it says the pieces were kept and shows
+    the exact ``--remove-shared`` command (#1073, cursor-integration.md)."""
+
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.cli import host_connection
+    from finishup.tui.models import HarnessOption
+
+    installation = HostInstallation(
+        "cursor-ide", Path("/opt/cursor"), "3.17.8", Path("/workspace/.cursor"), "Cursor"
+    )
+    plan = SimpleNamespace(unchanged=False, body={"action": "disconnect"})
+
+    def select(*_args: object) -> HostInstallation:
+        return installation
+
+    def prepare(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return plan
+
+    def summary(_plan: object) -> tuple[str, ...]:
+        return ("Preview",)
+
+    def apply(*_args: object) -> dict[str, object]:
+        return {"configured": False, "membership_unknown": True, "connected_projects": []}
+
+    async def handover(operation: Callable[[], Awaitable[object]]) -> object:
+        return await operation()
+
+    monkeypatch.setattr(host_connection, "select_installation", select)
+    monkeypatch.setattr(host_connection, "prepare_selected", prepare)
+    monkeypatch.setattr(host_connection, "connection_summary", summary)
+    monkeypatch.setattr(host_connection, "apply_selected", apply)
+    app = make_app()
+
+    async def approve(_view: object) -> str:
+        return "apply"
+
+    monkeypatch.setattr(app, "ask", approve)
+    monkeypatch.setattr(app, "hand_over_terminal", handover)
+    option = HarnessOption("/opt/cursor", "3.17.8", "Cursor", "", host="cursor-ide")
+    async with app.run_test(size=WIDE):
+        result = await app._connect_selected_host(option, disconnect=True)  # pyright: ignore[reportPrivateUsage]
+    assert result is True
+    shown = transcript(app)
+    assert "Integration removed from this project; shared pieces kept" in shown
+    assert "--remove-shared" in shown
+    assert "setup disconnect --host cursor-ide --host-path /opt/cursor" in shown
+
+
 # ---------------------------------------------------------------------------
 # Landing surface
 # ---------------------------------------------------------------------------

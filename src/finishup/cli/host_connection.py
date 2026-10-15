@@ -435,6 +435,28 @@ def _duplicate_step(host: str, config_root: Path | None, project: Path) -> str:
     )
 
 
+def kept_pieces_steps(
+    action: ConnectionAction,
+    status: Mapping[str, JsonValue],
+    selected: HostInstallation,
+    project: Path,
+) -> tuple[str, ...]:
+    """What a finished disconnect left in place for others, and the way on.
+
+    A disconnect that kept the shared pieces only for a project whose directory is missing, or
+    because FinishUP cannot confirm who uses them (a Yoetz-era Cursor plugin folder found without
+    a record), names the home-wide removal (#1073). Shared with the terminal interface, which
+    shows the same steps.
+    """
+
+    if action != "disconnect":
+        return ()
+    step = _missing_members_step(status, selected, project) or _membership_status_step(
+        dict(status), selected, project
+    )
+    return () if step is None else (step,)
+
+
 def _membership_status_step(
     status: dict[str, JsonValue], selected: HostInstallation, project: Path
 ) -> str | None:
@@ -966,14 +988,9 @@ def run_host_connection(
                 else "Restart the selected host. FinishUP data was retained."
             )
             final_status = report.get("status")
-            missing_step = (
-                _missing_members_step(final_status, selected, project)
-                if action == "disconnect" and isinstance(final_status, dict)
-                else None
-            )
-            if missing_step is not None:
-                # Nothing names a live project the pieces stay for: give the way out (triage).
-                report["next_step"] = f"{report['next_step']}\n{missing_step}"
+            if isinstance(final_status, dict):
+                for step in kept_pieces_steps(action, final_status, selected, project):
+                    report["next_step"] = f"{report['next_step']}\n{step}"
     except CONNECTION_ERRORS as error:
         from finishup.adapters.integrations.cursor_project_mcp import CursorProjectMcpError
 

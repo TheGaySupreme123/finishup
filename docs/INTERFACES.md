@@ -6879,6 +6879,10 @@ serve the manifest). Only a recorded project may move or remove a dangling bindi
 user-level registration stays for other projects (a Yoetz-era bound project): the disclosure adds
 `shared_plugin_removed: true`, `shared_with` names only the projects the registration stays for,
 and the summary says the plugin is removed and only the registration stays (#1073).
+After a completed or unchanged disconnect whose status keeps shared pieces for a missing
+directory or with `membership_unknown`, `next_step` names the exact `setup disconnect ...
+--remove-shared` preview (`cli.host_connection.kept_pieces_steps`, which the terminal interface
+shows too).
 `integrate codex plugin preview` reports `possible_users` (and `membership_unknown`),
 `members_not_serving` and `keeps_shared`. CLI:
 `finishup integrate <host> admission status|preview|grant|revoke --project-root`

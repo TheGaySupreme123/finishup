@@ -643,8 +643,13 @@ membership uncertain and the project the legacy binding names counts as a member
 needs neither, since it lists every project's install itself. The transport-less
 `mcp_servers.yoetz` leftover diagnosis and the post-disconnect `shared_registration_retained`
 status are Codex-only: Cursor has no user-level transport a project table depends on, and its
-`configured` reads the project's own MCP entry. A disconnect never plans the admission sweep for a
-surface it does not edit (exact legacy entries count only on an otherwise absent
+`configured` reads the project's own MCP entry. After a completed or repeated (`unchanged`)
+disconnect that keeps the tree, `next_step` adds the exact `setup disconnect --host
+cursor-ide|cursor-cli ... --remove-shared` preview, as `setup status` does. The terminal
+interface's `/disconnect` offers no home-wide removal of its own: when pieces were kept it reads
+"Integration removed from this project; shared pieces kept" and shows that same command to run in
+a terminal, so the separately disclosed home-wide consent stays in one place. A disconnect never
+plans the admission sweep for a surface it does not edit (exact legacy entries count only on an otherwise absent
 `.cursor/permissions.json` or `.cursor/cli.json`, never on a foreign one), as for every host.
 
 **Project MCP migration.** A project entry under `yoetz` that launches this installation (its

@@ -1641,6 +1641,7 @@ class FinishUpTui(App[int]):
             apply_selected,
             connection_continuation,
             connection_summary,
+            kept_pieces_steps,
             launch_details,
             prepare_selected,
             select_installation,
@@ -1715,14 +1716,34 @@ class FinishUpTui(App[int]):
                     return False
             else:
                 status = await run_sync(plan.status)
+            # What stays for others, with the exact command that goes further: the terminal
+            # interface offers no home-wide removal of its own (#1073, cursor-integration.md).
+            kept_steps = kept_pieces_steps(
+                "disconnect" if disconnect else "connect",
+                status,
+                selected,
+                self.runtime.project_root(),
+            )
             self.say(
                 Level.ACTIVE,
-                "Integration removed" if disconnect else "Integration configured",
+                (
+                    "Integration removed from this project; shared pieces kept"
+                    if kept_steps
+                    else "Integration removed"
+                )
+                if disconnect
+                else "Integration configured",
                 (
                     "Start a fresh session: "
                     + str(launch_details(selected, self.runtime.project_root())["shell_command"])
                     if not disconnect
                     else "Restart the host. Your FinishUP data is retained.",
+                    *(
+                        line.strip()
+                        for step in kept_steps
+                        for line in step.splitlines()
+                        if line.strip()
+                    ),
                 ),
                 details=tuple(f"{key}: {value}" for key, value in status.items()),
             )
