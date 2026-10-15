@@ -2178,7 +2178,12 @@ copies the portable project source, whose `.mcp.json` stays a bare `finishup` wi
 so the project tree and the committed repository render carry no machine path. Apply then replaces
 that cache copy. The replacement `.mcp.json` uses the same proven absolute launcher and, when this
 process is isolated, the same `FINISHUP_ISOLATED_ROOT` and `YOETZ_ISOLATED_ROOT` pair as the
-external registration. `PATH` is not consulted. Reconnecting rewrites a marker-consistent cache
+external registration. `PATH` is not consulted. A noninteractive connect (the terminal UI and
+`finishup connect`, which applies the same approved plan) accepts the plugin MCP entry only when
+`codex mcp get` reports that same absolute command and the isolation binding the cache wrote:
+`isolated_exact` when this process is isolated, `ambient` when it is not. A report that keeps the
+command and drops the environment is not accepted and does not register a user-level replacement;
+the continuation is to rerun the connection. Reconnecting rewrites a marker-consistent cache
 that still names a bare `finishup` or a legacy `yoetz` command; repeating that activation changes
 nothing. Disconnect removes the cache, including the bound entry, and leaves the portable project
 source in place. Plugin hook commands in the cache still name `finishup` by basename; this repair

@@ -284,6 +284,7 @@ class IntegrationOutcome:
     layers: tuple[ReadinessLayer, ...]
     foreign_entry: bool = False
     existing_entry_detail: str = ""
+    next_step: str | None = None
 
 
 class StorageChoice(Enum):
