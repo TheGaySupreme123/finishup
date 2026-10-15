@@ -563,6 +563,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         "1.2.0",
         "1.3.0",
         "1.4.0",
+        "1.5.0",  # n6 item 4: deferred_before_first_edit
     }
     assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "finding_recorded"} == {
         SCHEMA_VERSION,
@@ -1565,7 +1566,7 @@ def test_plain_check_written_by_older_builds_replays_at_every_legacy_version() -
 
     Builds before the review-output check shape wrote plain deterministic checks as 1.0.0 (and
     the semantic line as 1.1.0); the current writer mints 1.2.0. Every one of those stays
-    readable, while 1.3.0 and 1.4.0 stay reserved for the payloads that introduced them.
+    readable, while 1.3.0, 1.4.0 and 1.5.0 stay reserved for the payloads that introduced them.
     """
     row = _ROW_BY_FAMILY["check_recorded"]
     assert _schema_for(row) == EventSchema("check_recorded", SCHEMA_VERSION)
@@ -1578,7 +1579,7 @@ def test_plain_check_written_by_older_builds_replays_at_every_legacy_version() -
         decoded = decode_payload(EventSchema("check_recorded", version), wire)
         assert decoded == plain
         assert encode_payload(decoded) == wire
-    for version in ("1.3.0", "1.4.0"):
+    for version in ("1.3.0", "1.4.0", "1.5.0"):
         _assert_reason(
             "invalid_event_schema",
             lambda version=version: decode_payload(EventSchema("check_recorded", version), wire),
