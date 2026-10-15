@@ -831,17 +831,6 @@ def _check_time_change_part_limit(selection: ReviewSelectionPolicy) -> int:
     )
 
 
-def _check_time_change_parts(text: bytes, part_limit: int) -> tuple[str, ...]:
-    """Split the rendered change into self-describing parts, preferring line boundaries."""
-
-    chunks = _check_time_change_chunks(text, part_limit)
-    count = len(chunks)
-    return tuple(
-        _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=count) + chunk.decode("utf-8")
-        for index, chunk in enumerate(chunks)
-    )
-
-
 def _check_time_change_chunks(text: bytes, part_limit: int) -> tuple[bytes, ...]:
     """The raw byte slices of ``text`` each part carries, in order; they concatenate to ``text``."""
 
@@ -1009,6 +998,19 @@ def _check_time_change_cut(rest: bytes, chunk_limit: int) -> int:
     return cut
 
 
+def _check_time_change_label_body(part: str) -> tuple[str, str]:
+    """Leading FinishUP label lines of one part, and the change body after them."""
+
+    labels: list[str] = []
+    rest = part
+    while rest.startswith("[FinishUP"):
+        line, separator, rest = rest.partition("\n")
+        if not separator:
+            break
+        labels.append(line)
+    return "\n".join(labels), rest
+
+
 def _check_time_change_cut_part(
     part: str, index: int, count: int, room: int
 ) -> tuple[str, bool] | None:
@@ -1016,29 +1018,62 @@ def _check_time_change_cut_part(
 
     The marker line is replaced and the change bytes are cut on a line end where one lies in the
     second half of the room, so the part still starts exactly where the uncut part starts and the
-    shown-file record counts exactly the bytes it carries. The flag says the part was cut.
+    shown-file record counts exactly the bytes it carries. A fixed decisive-section note on the
+    first part is kept. The flag says the part was cut.
     """
 
-    _, _, chunk = part.partition("\n")
-    raw = chunk.encode("utf-8")
+    labels, body = _check_time_change_label_body(part)
+    raw = body.encode("utf-8")
+    note = ""
+    for line in labels.split("\n"):
+        if line.startswith("[FinishUP:"):
+            note = line + "\n"
+            break
     cut_marker = _CHECK_TIME_CHANGE_CUT_MARKER.format(index=index, count=count)
-    chunk_limit = room - len(cut_marker.encode("ascii"))
+    prefix = cut_marker + note
+    chunk_limit = room - len(prefix.encode("ascii"))
     if chunk_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
         return None
     if len(raw) <= chunk_limit:
         return part, False
-    return cut_marker + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
+    return prefix + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
 
 
 def _check_time_change_part_chunk_bytes(content: bytes) -> int:
-    """The change bytes one part item carries: everything after its marker line."""
+    """The change bytes one part item carries, after every leading FinishUP label line.
 
-    return len(content) - (content.index(b"\n") + 1)
+    A part is one marker line plus the change bytes. A change that does not fit may add one
+    fixed label on its first part (the decisive-section note). Agent text cannot forge that
+    prefix: captured lines that look like a label are neutralised before they are stored.
+    """
+
+    rest = content
+    while rest.startswith(b"[FinishUP"):
+        newline = rest.find(b"\n")
+        if newline < 0:
+            return 0
+        rest = rest[newline + 1 :]
+    return len(rest)
 
 
 _CHECK_TIME_CHANGE_FILE_START: Final = re.compile(rb"^diff --git ", re.MULTILINE)
 _CHECK_TIME_CHANGE_BINARY: Final = re.compile(rb"^Binary files ", re.MULTILINE)
 _CHECK_TIME_CHANGE_DELETED: Final = re.compile(rb"^deleted file mode ", re.MULTILINE)
+# Issue #1079 item 2c. Fixed text, no path: when the change does not fit, file sections that
+# change a decision are admitted before boilerplate. The note rides the first part only.
+_DECISIVE_PREFERENCE_NOTE: Final = (
+    "[FinishUP: decision-changing sections are shown ahead of boilerplate; "
+    "sections that do not fit are not shown]\n"
+)
+_DECISION_LINE: Final = re.compile(
+    rb"^(?:if|elif|else|return|raise|assert|throw|catch|except|unless|switch|match|case)\b"
+    rb"|\bif\s*\("
+    rb"|\belse\s*:"
+)
+_BOILERPLATE_LINE: Final = re.compile(
+    rb"^(?:import|from|using|require|include|use)\b"
+    rb"|^(?:#|//|/\*|\*|--|<!--)"
+)
 # The markers capture-time redaction leaves in the stored change: a concrete credential shape
 # reads ``[REDACTED]``, a value that only looks like one the self-describing placeholder (tb4n5).
 # Both are withheld spans; every count and view below treats them alike. A change stored before
@@ -1047,6 +1082,168 @@ _REDACTION_MARKERS: Final = (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER)
 _CHECK_TIME_CHANGE_HUNK: Final = re.compile(rb"^@@ [^\n]*", re.MULTILINE)
 # Frozen legacy identifier (ADR-048): domain separator inside stored digests.
 _VIEW_DOMAIN: Final = b"yoetz/check-change-view/v1\x00"
+
+
+def _file_section_bounds(text: bytes) -> tuple[tuple[int, int], ...]:
+    """``(start, end)`` of each ``diff --git`` section, in file order."""
+
+    starts = [match.start() for match in _CHECK_TIME_CHANGE_FILE_START.finditer(text)]
+    return tuple(
+        (start, starts[index + 1] if index + 1 < len(starts) else len(text))
+        for index, start in enumerate(starts)
+    )
+
+
+def _changed_code_body(line: bytes) -> bytes | None:
+    """The code of one added or removed diff line, without the ``+``/``-`` prefix."""
+
+    if line.startswith((b"+++", b"---")) or not line.startswith((b"+", b"-")):
+        return None
+    return line[1:].strip()
+
+
+def _boilerplate_body(body: bytes) -> bool:
+    """A changed line that is blank, a comment, an import, or a license notice."""
+
+    if not body:
+        return True
+    lowered = body.lower()
+    if (
+        b"copyright" in lowered
+        or b"license" in lowered
+        or b"all rights reserved" in lowered
+        or b"spdx-" in lowered
+    ):
+        return True
+    return _BOILERPLATE_LINE.match(body) is not None
+
+
+def _section_rank(section: bytes) -> int:
+    """0 when the section changes a decision, 1 for other code, 2 for boilerplate only.
+
+    A decision is a changed line that starts with a branch or result keyword (``if``,
+    ``return``, ``raise``, and the same shape in other languages), or an ``if (`` / ``else:``
+    form. The rest of that section is the rule the branch implements, so the whole section is
+    kept from its start. Comments, imports and license text do not count.
+    """
+
+    rank = 2
+    for line in section.splitlines():
+        body = _changed_code_body(line)
+        if body is None or _boilerplate_body(body):
+            continue
+        if _DECISION_LINE.search(body) is not None:
+            return 0
+        rank = 1
+    return rank
+
+
+def _decisive_section_ranges(text: bytes) -> tuple[tuple[int, int], ...]:
+    """File sections a tight packet should admit, decision first, preamble last."""
+
+    sections = _file_section_bounds(text)
+    ranked = sorted(
+        (
+            (_section_rank(text[start:end]), order, start, end)
+            for order, (start, end) in enumerate(sections)
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    ranges = [(start, end) for _rank, _order, start, end in ranked]
+    if sections and sections[0][0] > 0:
+        ranges.append((0, sections[0][0]))
+    return tuple(ranges)
+
+
+def _prefer_decisive_sections(
+    text: bytes, linear_parts: Sequence[str], selection: ReviewSelectionPolicy
+) -> bool:
+    """Whether admitting the linear prefix would drop a decision behind boilerplate.
+
+    One file stays a leading prefix: the shown-file record can describe a file only as a run
+    from that file's start, and a single section has nothing to reorder. Sections of equal
+    rank stay in capture order. A change that fits the recipe's excerpt count and byte budget
+    is left in order so a packet that carries every byte stays byte-identical.
+    """
+
+    sections = _file_section_bounds(text)
+    if len(sections) < 2 or not linear_parts:
+        return False
+    if len({_section_rank(text[start:end]) for start, end in sections}) < 2:
+        return False
+    part_bytes = sum(len(part.encode("utf-8")) for part in linear_parts)
+    return (
+        len(linear_parts) > selection.max_excerpts or part_bytes > selection.max_total_excerpt_bytes
+    )
+
+
+def _chunks_with_first_limit(blob: bytes, first_limit: int, later_limit: int) -> tuple[bytes, ...]:
+    """``blob`` in line-bounded chunks; only the first chunk uses ``first_limit``."""
+
+    if not blob or first_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
+        return _line_chunks(blob, later_limit)
+    if len(blob) <= first_limit:
+        return (blob,)
+    cut = _check_time_change_cut(blob, first_limit)
+    head = blob[:cut]
+    return (head, *_line_chunks(blob[cut:], later_limit))
+
+
+def _check_time_change_offer(
+    text: bytes, selection: ReviewSelectionPolicy
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """Change parts and the original offset of each part's first change byte.
+
+    The linear offer is the historical prefix. When the change does not fit and its files are
+    not all the same kind, parts are rebuilt so a section that changes a decision precedes
+    boilerplate. Offsets are into ``text``, never into the reordered part stream, so the
+    shown-file record names the files that were actually carried.
+    """
+
+    part_limit = _check_time_change_part_limit(selection)
+    chunks = _check_time_change_chunks(text, part_limit)
+    if not chunks:
+        return (), ()
+    count = len(chunks)
+    linear_parts = tuple(
+        _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=count) + chunk.decode("utf-8")
+        for index, chunk in enumerate(chunks)
+    )
+    if not _prefer_decisive_sections(text, linear_parts, selection):
+        offsets: list[int] = []
+        cursor = 0
+        for chunk in chunks:
+            offsets.append(cursor)
+            cursor += len(chunk)
+        return linear_parts, tuple(offsets)
+
+    marker_room = len(_CHECK_TIME_CHANGE_MARKER.format(index=999, count=999).encode("ascii"))
+    body_limit = part_limit - marker_room
+    note = _DECISIVE_PREFERENCE_NOTE
+    note_room = len(note.encode("ascii"))
+    use_note = body_limit - note_room >= _CHECK_TIME_CHANGE_MIN_CHUNK
+    first_limit = body_limit - note_room if use_note else body_limit
+    pieces: list[tuple[int, bytes]] = []
+    for index, (start, end) in enumerate(_decisive_section_ranges(text)):
+        blob = text[start:end]
+        ranged = (
+            _chunks_with_first_limit(blob, first_limit, body_limit)
+            if index == 0 and use_note
+            else _line_chunks(blob, body_limit)
+        )
+        offset = start
+        for chunk in ranged:
+            pieces.append((offset, chunk))
+            offset += len(chunk)
+    if not pieces:
+        return (), ()
+    total = len(pieces)
+    parts: list[str] = []
+    for index, (_offset, chunk) in enumerate(pieces):
+        marker = _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=total)
+        prefix = marker + (note if index == 0 and use_note else "")
+        parts.append(prefix + chunk.decode("utf-8"))
+    return tuple(parts), tuple(offset for offset, _chunk in pieces)
 
 
 def _redaction_marker_offsets(text: bytes, start: int, visible_end: int, end: int) -> list[int]:
@@ -5558,17 +5755,9 @@ def _build_semantic_case_once(
             capture_gap_set.add(CHECK_TIME_CHANGE_REDACTED_GAP)
         check_change_links = _check_time_change_links(projection, allowed)
         if check_change_links:
-            check_change_parts = _check_time_change_parts(
-                change.text, _check_time_change_part_limit(selection)
+            check_change_parts, check_change_offsets = _check_time_change_offer(
+                change.text, selection
             )
-            offsets: list[int] = []
-            cursor = 0
-            for chunk in _check_time_change_chunks(
-                change.text, _check_time_change_part_limit(selection)
-            ):
-                offsets.append(cursor)
-                cursor += len(chunk)
-            check_change_offsets = tuple(offsets)
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_links: tuple[str, ...] = ()
@@ -8906,14 +9095,30 @@ def check_time_change_parts_carried(
     return carried
 
 
+def _carried_change_spans(case: SemanticCase, carried: int) -> tuple[tuple[int, int], ...]:
+    """Original ``(start, end)`` of each carried ``change-check-time`` part that recorded one."""
+
+    wanted = {f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" for index in range(1, carried + 1)}
+    spans: list[tuple[int, int]] = []
+    for item_id, key in case.excerpt_parts:
+        if item_id not in wanted:
+            continue
+        span = excerpt_span(key)
+        if span is not None and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF:
+            spans.append((span[1], span[2]))
+    return tuple(spans)
+
+
 def check_time_change_sections_carried(
     case: SemanticCase, *, withheld_categories: Sequence[str] = ()
 ) -> tuple[tuple[int, int], ...]:
-    """The change intervals the current-file sections in the provider-facing envelope carry.
+    """The change intervals the provider-facing envelope carried outside its leading prefix.
 
-    Counted like ``check_time_change_parts_carried``: only sections whose catalog row
-    ``bounded_case_envelope`` kept, and none when the channel withholds ``repository_excerpt``.
-    A pure function of the frozen case and the withheld categories (tb4n5).
+    Current-file sections a follow-up served (``change-section-``) are included as before
+    (tb4n5). A check-time change part that is not inside the leading bytes
+    (``check_time_change_bytes_carried``) is included too, so a decision section admitted ahead
+    of the diff prefix is still a shown file. None when the channel withholds
+    ``repository_excerpt``. A pure function of the frozen case and the withheld categories.
     """
 
     if type(case) is not SemanticCase:
@@ -8925,8 +9130,6 @@ def check_time_change_sections_carried(
         for item_id, key in case.excerpt_parts
         if item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX)
     ]
-    if not sections:
-        return ()
     catalogued = _catalog_item_ids(
         cast(Mapping[str, JsonValue], strict_json_parse(bounded_case_envelope(case)))
     )
@@ -8935,7 +9138,15 @@ def check_time_change_sections_carried(
         span = excerpt_span(key)
         if item_id in catalogued and span is not None and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF:
             carried.append((span[1], span[2]))
-    return tuple(sorted(carried))
+    part_count = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    if part_count:
+        leading = check_time_change_bytes_carried(case, withheld_categories=withheld_categories)
+        for low, high in _carried_change_spans(case, part_count):
+            if low >= leading:
+                carried.append((low, high))
+            elif high > leading:
+                carried.append((leading, high))
+    return tuple(sorted(set(carried)))
 
 
 def check_time_change_bytes_carried(
@@ -8943,21 +9154,35 @@ def check_time_change_bytes_carried(
 ) -> int:
     """How many leading bytes of the stored change the provider-facing envelope carries (ADR-031).
 
-    The change bytes of the unbroken run of parts ``check_time_change_parts_carried`` counts, each
-    part's marker line excluded. This is what ``check_time_change_shown_files`` takes: it stays
-    exact whatever part size a narrowed selection chose and when the first part was cut to the
-    room left (issue #983), and it is a pure function of the frozen case and the withheld
-    categories, so a recovered job derives the same count.
+    The contiguous run from byte 0 of the parts ``check_time_change_parts_carried`` counts, each
+    part's marker line excluded. A part admitted from later in the change does not extend this
+    count; ``check_time_change_sections_carried`` reports that interval instead. This is what
+    ``check_time_change_shown_files`` takes: it stays exact whatever part size a narrowed
+    selection chose and when the first part was cut to the room left (issue #983), and it is a
+    pure function of the frozen case and the withheld categories, so a recovered job derives the
+    same count. A part with no recorded span falls back to summing change bytes, which is the
+    leading prefix those parts were.
     """
 
     carried = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    if not carried:
+        return 0
     by_id = {item.item_id: item for item in case.items}
-    return sum(
-        _check_time_change_part_chunk_bytes(
-            by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+    spans = _carried_change_spans(case, carried)
+    if len(spans) != carried:
+        return sum(
+            _check_time_change_part_chunk_bytes(
+                by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+            )
+            for index in range(1, carried + 1)
+            if f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" in by_id
         )
-        for index in range(1, carried + 1)
-    )
+    end = 0
+    for low, high in sorted(spans):
+        if low > end:
+            break
+        end = max(end, high)
+    return end
 
 
 def semantic_case_to_candidate_context(

@@ -10133,6 +10133,15 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   (at least 256 change bytes, on a line end where one lies in its second half) and prefixed
   `[FinishUP check-time change, part 1 of n, cut to the packet's room]`; nothing follows it and
   `check_time_change_truncated` is disclosed (issue #983).
+  When that budget cannot hold the whole change and the files are not all the same kind, sections
+  that change a decision are admitted before boilerplate (comments, imports, license text). The
+  decision's own section is still a run from its start. A one-file change, equal-rank files, and
+  a change that fits stay a leading prefix. The first reordered part carries one fixed line that
+  decision-changing sections were shown ahead of boilerplate and that sections which did not fit
+  were not shown; it names no path. Leading bytes stay the contiguous prefix from byte 0.
+  Intervals outside that prefix are returned with the served sections
+  (`check_time_change_sections_carried`), so the shown-file record names those files and not the
+  ones left out (issue #1079).
   Untracked files are read up to `MAX_CHECK_CHANGE_TEXT_BYTES` less the header budget (232 KiB). The case digest binds the object
   identity, content digest, base, flags, admitted part count and any unavailability reason; a case
   without a selected change keeps its historical digest input.
