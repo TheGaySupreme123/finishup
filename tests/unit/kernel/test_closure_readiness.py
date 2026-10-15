@@ -20,7 +20,7 @@ from finishup.domain.events import (
 )
 from finishup.domain.findings import SemanticDispatchKind, SemanticProvenance
 from finishup.domain.values import JsonValue as DomainJsonValue
-from finishup.domain.values import finding_id, obligation_id
+from finishup.domain.values import event_id, finding_id, obligation_id
 from finishup.kernel.closure_readiness import (
     ClosureReadinessFacts,
     _review_deferred,  # pyright: ignore[reportPrivateUsage]
@@ -268,6 +268,39 @@ def _retarget_action(
         payload=payload,
         projection_locator=replace(
             base.projection_locator,
+            canonical_payload_digest=canonical_digest(encode_payload(payload)),
+        ),
+    )
+    unvalidated = object.__new__(AcceptedEvent)
+    for field in fields(AcceptedEvent):
+        object.__setattr__(
+            unvalidated, field.name, values.get(field.name, getattr(base, field.name))
+        )
+    values["entry_digest"] = compute_entry_digest(accepted_record_digest_preimage(unvalidated))
+    return AcceptedEvent(**values)  # type: ignore[arg-type]
+
+
+def _append_check(
+    source: LedgerRecord, payload: CheckRecordedPayload, sequence: int
+) -> AcceptedEvent:
+    """A second check after *source*, with its own event id and entry digest."""
+
+    from dataclasses import fields
+
+    from finishup.domain.events import accepted_record_digest_preimage, compute_entry_digest
+
+    base = cast(AcceptedEvent, source)
+    values: dict[str, object] = {
+        field.name: getattr(base, field.name) for field in fields(AcceptedEvent) if field.init
+    }
+    appended = event_id("evt_00000000-0000-4000-8000-00000000f0c1")
+    values.update(
+        event_id=appended,
+        ledger=replace(base.ledger, ingestion_sequence=sequence),
+        payload=payload,
+        projection_locator=replace(
+            base.projection_locator,
+            logical_key=appended,
             canonical_payload_digest=canonical_digest(encode_payload(payload)),
         ),
     )
@@ -561,6 +594,85 @@ def test_an_unchanged_coordinator_failure_is_a_named_limitation() -> None:
     asked = derive_closure_readiness((), (), after, semantic_review_required=True)
     assert "closing_review_required" in asked.agent_actionable
     assert "semantic_coordinator_failure" not in asked.standing_limitations
+
+
+def test_an_appended_check_keeps_the_failed_coordinator_attempt() -> None:
+    """History is the failed check plus what follows it, not a replacement of the failure.
+
+    Bookkeeping after the failure stays a named limitation and does not ask for the same
+    closing review. A material edit asks again. A later successful final review clears the flag.
+    """
+
+    prefix = _prefix_through_check()
+    failed = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.FAILED,
+        semantic_reason=SemanticReason.COORDINATOR_FAILURE,
+        semantic_provenance=None,
+    )
+    state = replay(failed)
+    check = cast(AcceptedEvent, failed[-1])
+    sequence = check.ledger.ingestion_sequence + 1
+    source = next(
+        record
+        for record in prefix
+        if record.schema.name == "action_recorded" and type(record.payload) is ActionRecordedPayload
+    )
+    bookkeeping = _retarget_action(
+        source,
+        replace(
+            cast(ActionRecordedPayload, source.payload),
+            action_kind=ActionKind.OTHER,
+            command=None,
+        ),
+        sequence,
+    )
+    unchanged = closure_readiness_facts(state, (*failed, bookkeeping))
+    assert unchanged.coordinator_failure_unchanged is True
+    assert unchanged.closing_review_current is True
+    held = derive_closure_readiness((), (), unchanged, semantic_review_required=True)
+    assert "semantic_coordinator_failure" in held.standing_limitations
+    assert "closing_review_required" not in held.agent_actionable
+
+    edited = _retarget_action(
+        source,
+        replace(cast(ActionRecordedPayload, source.payload), action_kind=ActionKind.EDIT),
+        sequence,
+    )
+    moved = closure_readiness_facts(state, (*failed, edited))
+    assert moved.coordinator_failure_unchanged is False
+    assert moved.closing_review_current is False
+    asked = derive_closure_readiness((), (), moved, semantic_review_required=True)
+    assert "closing_review_required" in asked.agent_actionable
+    assert "semantic_coordinator_failure" not in asked.standing_limitations
+
+    failed_payload = cast(CheckRecordedPayload, check.payload)
+    succeeded = _append_check(
+        check,
+        replace(
+            failed_payload,
+            mode=CheckMode.SEMANTIC_REQUIRED,
+            semantic_status=SemanticStatus.SUCCEEDED,
+            semantic_reason=SemanticReason.SEMANTIC_COMPLETED,
+            semantic_provenance=_provenance(),
+            review_input_manifest=_review_input_manifest_from_json(
+                cast(DomainJsonValue, _manifest("final"))
+            ),
+            coverage=replace(
+                failed_payload.coverage,
+                check_types=(CheckType.DETERMINISTIC, CheckType.SEMANTIC_MODEL_DERIVED),
+            ),
+        ),
+        sequence,
+    )
+    cleared = closure_readiness_facts(state, (*failed, succeeded))
+    assert cleared.coordinator_failure_unchanged is False
+    assert cleared.closing_review_current is True
+    done = derive_closure_readiness((), (), cleared, semantic_review_required=True)
+    assert "closing_review_required" not in done.agent_actionable
+    assert "semantic_coordinator_failure" not in done.standing_limitations
+    assert failed[-1].event_id != succeeded.event_id
 
 
 def test_a_later_final_review_clears_an_older_coordinator_failure() -> None:
