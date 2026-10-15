@@ -256,6 +256,29 @@ async def test_codex_registration_reports_its_legacy_key(
     assert await FinishUpRuntime(cwd=tmp_path).mcp_registration(other) == ("absent", "none")
 
 
+@pytest.mark.parametrize("kept", [False, True], ids=["migrates", "kept"])
+async def test_the_readiness_words_do_not_promise_a_migration_connecting_keeps_back(
+    monkeypatch: pytest.MonkeyPatch, kept: bool
+) -> None:
+    """The ``MCP registered`` layer names the earlier ``yoetz`` key; while a project's Codex
+    settings still need it, connecting keeps it, so the words must say so (#1073)."""
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.tui import runtime as runtime_module
+
+    def dependents(_home: object) -> tuple[tuple[str, ...], bool]:
+        return (("/work/a",), False) if kept else ((), False)
+
+    monkeypatch.setattr(codex_mcp, "legacy_registration_dependents", dependents)
+    words = runtime_module._codex_legacy_registration_text  # pyright: ignore[reportPrivateUsage]
+
+    assert words("none") is None
+    text = words("legacy_only")
+    assert text is not None
+    assert ("kept" in text) is kept
+    assert ("connecting migrates it" in text) is not kept
+
+
 async def test_the_plan_carries_every_yoetz_era_removal_it_binds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

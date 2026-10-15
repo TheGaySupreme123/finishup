@@ -402,6 +402,34 @@ def test_menu_summary_names_the_legacy_registration(
     assert line == (expected if suffix is None else f"{expected}, {suffix}")
 
 
+@pytest.mark.parametrize("legacy", ["legacy_only", "duplicate"])
+def test_menu_summary_does_not_promise_a_migration_setup_keeps_back(
+    monkeypatch: pytest.MonkeyPatch, legacy: str
+) -> None:
+    """A project's Codex settings still use the owned ``yoetz`` entry, so setup keeps it beside
+    ``finishup``; the menu must not say setup migrates or removes it (#1073)."""
+
+    binary = HarnessBinary(HarnessId.CODEX, "/opt/codex-testing", "0.153.4", "untested")
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
+        lambda: (binary,),
+    )
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.CodexMcpAdapter",
+        type("Adapter", (_Adapter,), {"legacy": legacy}),
+    )
+
+    def dependents(_home: object) -> tuple[tuple[str, ...], bool]:
+        return ("/work/a",), False
+
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.legacy_registration_dependents", dependents
+    )
+    (line,) = anyio.run(menu._harness_summary)  # pyright: ignore[reportPrivateUsage]
+    assert "kept: a project's Codex settings still use it" in line
+    assert "setup migrates" not in line and "setup removes" not in line
+
+
 def test_disconnecting_beside_a_yoetz_era_project_keeps_the_registration_it_uses(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

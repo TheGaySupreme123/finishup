@@ -1422,7 +1422,8 @@ finishup integrate codex admission preview --project-root <project> --action rev
 ```
 
 `setup status --host codex` reports the same list (read now) while the owned `yoetz` entry exists,
-with the same continuation. After the revokes, the next connect migrates as before. Tables you
+with the same continuation; the menu summary and the terminal interface's `MCP registered` line
+say the entry is kept instead of promising that setup migrates it. After the revokes, the next connect migrates as before. Tables you
 edited under `mcp_servers.yoetz` are yours to remove. A disconnect keeps both keys while any project
 needs either (`admission_other_projects`), and the last one, after its own sweep removes the exact
 earlier-name table, removes both. The kept `yoetz` entry serves every project of the home on its

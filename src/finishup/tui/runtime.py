@@ -106,6 +106,22 @@ _LEGACY_INSTALLATION_TEXT: Final = {
 }
 
 
+def _codex_legacy_registration_text(legacy: str) -> str | None:
+    """Words for the ambient Codex ``yoetz`` key, matched to what connecting will do.
+
+    Connecting keeps an owned entry while a project's Codex settings still need it (#1073), so
+    the words promise the migration only when nothing holds it back.
+    """
+
+    if legacy in _KEPT_LEGACY_REGISTRATION_TEXT:
+        from finishup.adapters.integrations.codex_mcp import legacy_registration_dependents
+
+        kept, unchecked = legacy_registration_dependents(None)
+        if kept or unchecked:
+            return _KEPT_LEGACY_REGISTRATION_TEXT[legacy]
+    return _LEGACY_REGISTRATION_TEXT.get(legacy)
+
+
 def _project_legacy_registration_text(project_mcp: Mapping[str, object]) -> str | None:
     """Words for a project MCP status's earlier-name entry, matched to what connect will do.
 
@@ -1913,7 +1929,7 @@ class FinishUpRuntime:
                 )
         if mcp_state is not None:
             registered = mcp_state in {_OWNED, "foreign_present"}
-            legacy_text = _LEGACY_REGISTRATION_TEXT.get(mcp_legacy)
+            legacy_text = _codex_legacy_registration_text(mcp_legacy)
             layers.append(
                 ReadinessLayer(
                     "mcp_registered",

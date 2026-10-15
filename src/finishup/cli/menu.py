@@ -166,6 +166,13 @@ _LEGACY_REGISTRATION_TEXT: Final = {
     "duplicate": "also registered under the earlier name yoetz (setup removes it)",
     "foreign": "the earlier name yoetz holds an entry FinishUP cannot prove is its own (kept)",
 }
+# An owned entry a project's Codex settings still use stays beside ``finishup`` (#1073).
+_KEPT_LEGACY_REGISTRATION_TEXT: Final = {
+    "legacy_only": "registered under the earlier name yoetz (kept: a project's Codex settings "
+    "still use it)",
+    "duplicate": "also registered under the earlier name yoetz (kept: a project's Codex "
+    "settings still use it)",
+}
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -191,7 +198,10 @@ async def _service_summary() -> str:
 
 async def _harness_summary() -> tuple[str, ...]:
     from finishup.adapters.integrations.codex_discovery import discover_codex_binaries
-    from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
+    from finishup.adapters.integrations.codex_mcp import (
+        CodexMcpAdapter,
+        legacy_registration_dependents,
+    )
     from finishup.application.harness_mcp import HarnessMcpService
     from finishup.ports.harness_mcp import McpRegistrationError
 
@@ -207,7 +217,13 @@ async def _harness_summary() -> tuple[str, ...]:
             state = observation.state.value
             if observation.isolation_binding is not None:
                 state += f", isolation: {observation.isolation_binding}"
-            legacy = _LEGACY_REGISTRATION_TEXT.get(observation.legacy_registration)
+            words = _LEGACY_REGISTRATION_TEXT
+            if observation.legacy_registration in _KEPT_LEGACY_REGISTRATION_TEXT:
+                # Setup keeps it while a project's Codex settings still need it (#1073).
+                kept, unchecked = legacy_registration_dependents(None)
+                if kept or unchecked:
+                    words = _KEPT_LEGACY_REGISTRATION_TEXT
+            legacy = words.get(observation.legacy_registration)
             if legacy is not None:
                 state += f", {legacy}"
         except McpRegistrationError as error:
