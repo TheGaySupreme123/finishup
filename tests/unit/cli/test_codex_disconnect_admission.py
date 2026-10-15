@@ -622,6 +622,8 @@ def test_leftover_detector_explains_the_yoetz_era_table(tmp_path: Path) -> None:
     assert codex_connection.project_mcp_leftover_status(home, project) == {
         "project_mcp_leftover": "tools_only",
         "project_mcp_leftover_servers": ["yoetz"],
+        "project_mcp_leftover_retained_servers": [],
+        "project_mcp_leftover_tools_only_servers": ["yoetz"],
         "next_arguments": admission_revoke_arguments("codex", project),
     }
     # A transport under the other key does not supply this one.
@@ -652,6 +654,8 @@ def test_an_edited_yoetz_era_table_is_named_with_its_own_repair(tmp_path: Path) 
     assert status == {
         "project_mcp_leftover": "retained_tables",
         "project_mcp_leftover_servers": ["yoetz"],
+        "project_mcp_leftover_retained_servers": ["yoetz"],
+        "project_mcp_leftover_tools_only_servers": [],
     }
     step = host_connection._leftover_next_step(  # pyright: ignore[reportPrivateUsage]
         host_connection._rendered_status(status)  # pyright: ignore[reportPrivateUsage]
@@ -1186,6 +1190,10 @@ def test_connect_status_reports_the_shared_registration_as_retained_when_not_con
                 already_registered=False,
                 project_root=str(project),
                 managed_paths=(),
+                # No owned ``yoetz`` entry is kept here (#1073).
+                legacy_registration_kept_for=(),
+                legacy_registration_kept_unchecked=False,
+                legacy_registration_route_profile=None,
             )
 
     async def observe(self: object, _binary: object) -> McpRegistrationObservation:

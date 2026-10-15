@@ -187,6 +187,26 @@ class IntegrationPlan:
     # Projects that may use the home's shared pieces (not verified connections) whose sessions
     # would change too.
     route_changes_possible_for: tuple[str, ...] = ()
+    # An owned ``yoetz`` entry this approval keeps beside ``finishup`` instead of migrating it:
+    # these projects' Codex configuration still names that server without a transport of its
+    # own (unchecked: not every project of the home was read), and the route it serves (#1073).
+    legacy_registration_kept_for: tuple[str, ...] = ()
+    legacy_registration_kept_unchecked: bool = False
+    legacy_registration_route_profile: Literal["policy", "strict"] | None = None
+
+    @property
+    def legacy_registration_kept(self) -> bool:
+        return bool(self.legacy_registration_kept_for) or self.legacy_registration_kept_unchecked
+
+    @property
+    def legacy_registration_route_conflict(self) -> bool:
+        """The kept entry would go on serving another review mode beside this one."""
+
+        return (
+            self.legacy_registration_kept
+            and self.legacy_registration_route_profile is not None
+            and self.legacy_registration_route_profile != self.route_profile
+        )
 
     @property
     def changes(self) -> tuple[str, ...]:
@@ -214,7 +234,22 @@ class IntegrationPlan:
                 "Change the existing MCP registration's review route: "
                 f"{self.route_profile_before} -> {self.route_profile}"
             )
-        if self.legacy_registration == "legacy_only":
+        if self.legacy_registration_kept and self.legacy_registration in {
+            "legacy_only",
+            "duplicate",
+        }:
+            lines.append(
+                "Keep the MCP registration under the earlier name yoetz beside finishup: "
+                + (
+                    "the Codex configuration of "
+                    + ", ".join(self.legacy_registration_kept_for)
+                    + " still uses it (revoke its earlier-name approval there, then connect "
+                    "again to finish moving)"
+                    if self.legacy_registration_kept_for
+                    else "not every project of this Codex home could be checked"
+                )
+            )
+        elif self.legacy_registration == "legacy_only":
             lines.append("Move the MCP registration from the earlier name yoetz to finishup")
         elif self.legacy_registration == "duplicate":
             lines.append("Remove the duplicate MCP registration under the earlier name yoetz")

@@ -425,3 +425,64 @@ def test_observe_session_start_runs_no_host_probe(
     # Output shape is unchanged: exactly one JSON object on stdout.
     json.loads(stdout.getvalue().decode("utf-8"))
     assert _reasons_in(tmp_path) == []
+
+
+async def test_low_level_install_stops_on_a_kept_entry_serving_another_review_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The owned ``yoetz`` entry a project still needs stays beside ``finishup`` and serves the
+    whole home with AI-powered review; a strict install next to it would run both review modes.
+    The home-wide low-level install stops before any change and names the way on (#1073)."""
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    preview = McpRegistrationPreview(
+        HarnessId.CODEX,
+        McpRegistrationAction.REREGISTER,
+        McpRegistrationState.FINISHUP_OWNED,
+        (
+            "legacy_registration_kept",
+            "legacy_registration_owned",
+            "legacy_registration_route_kept",
+        ),
+        _DIGEST,
+        MCP_STRICT_SERVE_COMMAND,
+        "strict",
+        None,
+        "legacy_only",
+        "policy",
+        ("/work/a",),
+        False,
+        "policy",
+    )
+
+    async def _fake_preview(self: object, _binary: object) -> McpRegistrationPreview:
+        return preview
+
+    async def _fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
+        return _observation_with_state(McpRegistrationState.FINISHUP_OWNED, "policy")
+
+    async def _forbidden(self: object, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("nothing may be registered")
+
+    monkeypatch.setattr(setup_cli, "discover_codex_binaries", lambda: (_BINARY,))
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.preview", _fake_preview)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.register", _forbidden)
+
+    code = await setup_cli.integrate_mcp(
+        "install",
+        "codex",
+        codex_path=None,
+        codex_home=home,
+        route_profile="strict",
+        accept=True,
+        preview_digest=None,
+        json_output=True,
+        _state=tmp_path,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "mcp_registration_legacy_registration_route_kept" in err
+    assert "/work/a" in err

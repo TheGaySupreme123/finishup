@@ -6,6 +6,7 @@ import pytest
 from finishup.adapters.integrations.host_discovery import HostInstallation
 from finishup.application.host_connection import ConnectionPlan
 from finishup.cli import host_connection as cli
+from finishup.protocol.canonical import JsonValue
 from finishup.protocol.host_connection import HostConnectionReport
 from finishup.service.elevated_bootstrap import ElevatedBootstrapError
 
@@ -1056,3 +1057,158 @@ def test_shared_pieces_kept_only_for_a_missing_directory_name_the_way_out(
     )
     report = json.loads(capsys.readouterr().out)
     assert "--remove-shared" in report["next_step"]
+
+
+@pytest.mark.parametrize("completed", [False, True], ids=["unchanged", "completed"])
+def test_a_disconnect_that_keeps_unconfirmed_shared_pieces_names_the_home_wide_way_out(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], completed: bool
+) -> None:
+    """A Yoetz-era Cursor plugin folder found without a record stays on an ordinary disconnect
+    (membership unknown). The completed and the repeated disconnect both say how to remove it,
+    as `setup status` does (#1073)."""
+
+    installation = HostInstallation(
+        "cursor-ide", Path("/opt/cursor"), "3.17.8", Path("/workspace/.cursor"), "Cursor"
+    )
+    final: dict[str, JsonValue] = {
+        "configured": False,
+        "membership_unknown": True,
+        "connected_projects": [],
+    }
+    plan = ConnectionPlan(
+        {
+            "schema": "yoetz.host-connection-plan/1",
+            "request_id": REQUEST,
+            "host": "cursor-ide",
+            "host_version": "3.17.8",
+            "executable": "/opt/cursor",
+            "config_root": "/workspace/.cursor",
+            "project_root": "/workspace/a",
+            "action": "disconnect",
+            "route_profile": "strict",
+            "preview_digest": DIGEST,
+            "connection_observed": False,
+            "changes": ["remove_project_mcp"] if completed else [],
+        },
+        lambda: final,
+        lambda: None,
+    )
+
+    def selected(*_args: object) -> HostInstallation:
+        return installation
+
+    def prepared_plan(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        return plan
+
+    def applied(*_args: object, **_kwargs: object) -> dict[str, JsonValue]:
+        return final
+
+    monkeypatch.setattr(cli, "select_installation", selected)
+    monkeypatch.setattr(cli, "prepare_selected", prepared_plan)
+    monkeypatch.setattr(cli, "apply_selected", applied)
+    code = cli.run_host_connection(
+        host="cursor-ide",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/a"),
+        action="disconnect",
+        accept=completed,
+        request_value=REQUEST if completed else None,
+        preview_digest=plan.digest if completed else None,
+        json_output=True,
+    )
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["outcome"] == ("completed" if completed else "unchanged")
+    assert report["next_step"].startswith("Restart the selected host.")
+    assert (
+        "setup disconnect --host cursor-ide --host-path /opt/cursor --host-config-root "
+        "/workspace/.cursor --project /workspace/a --remove-shared"
+    ) in report["next_step"]
+
+
+def test_a_removed_plugin_with_only_the_registration_kept_says_so() -> None:
+    """A+B+C: A is Yoetz-era (keeps the MCP registration), B anchors the binding, C is a FinishUP
+    member whose plugin files are missing. B's disconnect removes the shared plugin, so C loses
+    it and only the registration stays for A (#1073)."""
+
+    lines = cli._shared_summary(  # pyright: ignore[reportPrivateUsage]
+        {
+            "action": "disconnect",
+            "shared_with": ["/w/a"],
+            "shared_plugin_removed": True,
+            "members_not_serving": ["/w/c"],
+        }
+    )
+    text = "\n".join(lines)
+    assert (
+        "The shared FinishUP plugin is removed from this home; only the MCP registration stays "
+        "for: /w/a"
+    ) in text
+    assert "Connected projects whose FinishUP plugin files are missing right now" in text
+    assert "/w/c" in text
+    assert "Other connected projects keep using the shared FinishUP pieces" not in text
+
+
+def test_a_mixed_leftover_names_each_key_and_keeps_the_revoke(tmp_path: Path) -> None:
+    """An exact FinishUP approval table beside an edited Yoetz-era one: the step names which is
+    which, and the revoke that removes the exact one (#1073)."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_EXTERNAL_ADMISSION_TABLE
+    from finishup.cli.codex_connection import project_mcp_leftover_status
+
+    home, project = tmp_path / "home", tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text("")
+    edited_yoetz = '[mcp_servers.yoetz.tools.check]\napproval_mode = "prompt"\n'
+    (project / ".codex" / "config.toml").write_text(
+        CODEX_EXTERNAL_ADMISSION_TABLE + "\n" + edited_yoetz
+    )
+
+    status = project_mcp_leftover_status(home, project)
+
+    assert status["project_mcp_leftover"] == "retained_tables"
+    assert status["project_mcp_leftover_retained_servers"] == ["yoetz"]
+    assert status["project_mcp_leftover_tools_only_servers"] == ["finishup"]
+    step = cli._leftover_next_step(  # pyright: ignore[reportPrivateUsage]
+        cli._rendered_status(status)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert step is not None
+    assert "[mcp_servers.yoetz] tables that FinishUP did not write" in step
+    assert "[mcp_servers.finishup]" in step
+    assert "--action revoke" in step
+    assert "[mcp_servers.finishup] and [mcp_servers.yoetz]" not in step
+
+
+def test_an_edited_finishup_table_beside_an_exact_yoetz_one_gives_no_wrong_command(
+    tmp_path: Path,
+) -> None:
+    """The reverse mix: the revoke cannot edit a file holding edited FinishUP tables (so neither
+    key's tables are its to remove), and connecting again restores only ``finishup``; the step
+    names both keys and offers no command."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+    from finishup.cli.codex_connection import project_mcp_leftover_status
+
+    home, project = tmp_path / "home", tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text("")
+    edited_finishup = '[mcp_servers.finishup.tools.check]\napproval_mode = "prompt"\n'
+    (project / ".codex" / "config.toml").write_text(
+        edited_finishup + "\n" + CODEX_LEGACY_ADMISSION_TABLES[0]
+    )
+
+    status = project_mcp_leftover_status(home, project)
+
+    assert status["project_mcp_leftover_retained_servers"] == ["finishup", "yoetz"]
+    assert status["project_mcp_leftover_tools_only_servers"] == []
+    assert "next_arguments" not in status
+    step = cli._leftover_next_step(  # pyright: ignore[reportPrivateUsage]
+        cli._rendered_status(status)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert step is not None
+    assert "[mcp_servers.finishup] and [mcp_servers.yoetz] tables" in step
+    assert "Remove those tables from that file yourself" in step
+    assert "None" not in step

@@ -34,8 +34,10 @@ setup command) as `status.project_mcp_leftover: "tools_only"` with the revoke co
 either server key: `[mcp_servers.finishup.tools.check]`, or the Yoetz-era
 `[mcp_servers.yoetz.tools.check]` that a Yoetz 0.2.x `integrate codex admission grant` wrote and a
 Yoetz 0.2.x disconnect never removed (Codex then fails with `invalid transport in
-mcp_servers.yoetz`); `status.project_mcp_leftover_servers` names the key, and the revoke removes
-the exact table under both.
+mcp_servers.yoetz`); `status.project_mcp_leftover_servers` names the keys and
+`project_mcp_leftover_retained_servers` / `project_mcp_leftover_tools_only_servers` name them by
+kind, and the revoke removes the exact table under both. With an exact `finishup` table beside an
+edited `yoetz` one, the step names each and still gives the revoke for the exact one.
 Before any change, disconnect refuses an approval file it cannot read safely (a symlinked,
 oversized or unparsable `.codex/config.toml`: `connection_admission_cleanup_failed`, rechecked
 again before removal), and projects the project's `.codex/config.toml` after the sweep: if tables
@@ -1378,8 +1380,8 @@ adds `legacy_registration`:
 | `legacy_registration` | Meaning | What FinishUP does |
 |---|---|---|
 | `none` | No `yoetz` entry. | Nothing. |
-| `legacy_only` | The only FinishUP-owned entry uses the `yoetz` key: owned but outdated. | Integrate (or the guided connection) migrates it under one preview: it writes `finishup`, re-checks the legacy entry, then removes `yoetz`. Preview warning `legacy_registration_owned`. |
-| `duplicate` | Owned entries under both keys. | Integrate removes the owned `yoetz` entry; remove and disconnect take both. |
+| `legacy_only` | The only FinishUP-owned entry uses the `yoetz` key: owned but outdated. | Integrate (or the guided connection) migrates it under one preview: it writes `finishup`, re-checks the legacy entry, then removes `yoetz`. Preview warning `legacy_registration_owned`. While a project still needs the `yoetz` key (below), it writes `finishup` and keeps `yoetz`. |
+| `duplicate` | Owned entries under both keys. | Integrate removes the owned `yoetz` entry unless a project still needs it (below); remove and disconnect take both once nothing needs either. |
 | `foreign` | A `yoetz` entry FinishUP cannot prove is its own. | Reported (warning `legacy_registration_foreign`) and never touched. |
 
 Remove and disconnect select the owned entries independently: an owned `yoetz` entry can be
@@ -1400,6 +1402,37 @@ FinishUP's. A migration-only re-registration keeps the existing `policy` or `str
 `yoetz.mcp-registration-preview/5` and `yoetz.mcp-unregistration-preview/5`. If the legacy-key
 removal cannot be verified, or the entry changed after preview, the error's safe details carry
 `legacy_state` (`yoetz_owned|foreign_present|absent|unknown`).
+
+**A project that still needs the `yoetz` key (#1073).** Yoetz 0.2's `integrate codex admission
+grant` wrote `[mcp_servers.yoetz.tools.check]` into a project's `.codex/config.toml`. That table has
+no transport of its own; Codex takes it from the user-level `yoetz` entry, and once that entry is
+gone Codex refuses to load the project ("invalid transport in `mcp_servers.yoetz`"). So before it
+migrates an owned `yoetz` entry, the adapter reads the projects this home knows (its trust rows and
+verified members, including the Yoetz-era bound project; at most 32) for a `.codex/config.toml`
+that names `mcp_servers.yoetz` without a transport, or that cannot be read. If one does, or not
+every project could be read, the entry stays beside `finishup`: the preview writes only `finishup`
+(warning `legacy_registration_kept`, `legacy_kept_for`, `legacy_kept_unchecked`, digest tag `/6`
+binding both), apply leaves `yoetz` alone, and a connect that finds `finishup` already current
+changes nothing more. The guided connect plan drops `migrate_legacy_mcp_registration`, warns
+`legacy_registration_kept`, and lists `legacy_registration_kept_for` with each project and, when
+only exact earlier-name approval tables hold it, the revoke that releases it:
+
+```text
+finishup integrate codex admission preview --project-root <project> --action revoke
+```
+
+`setup status --host codex` reports the same list (read now) while the owned `yoetz` entry exists,
+with the same continuation; the menu summary and the terminal interface's `MCP registered` line
+say the entry is kept instead of promising that setup migrates it. After the revokes, the next connect migrates as before. Tables you
+edited under `mcp_servers.yoetz` are yours to remove. A disconnect keeps both keys while any project
+needs either (`admission_other_projects`), and the last one, after its own sweep removes the exact
+earlier-name table, removes both. The kept `yoetz` entry serves every project of the home on its
+own review mode, so a connect that would register `finishup` on another one stops before any
+change with `connection_legacy_registration_route_kept` (`route_profile_before` is the kept entry's
+mode), naming the revokes and the same connect with that `--route-profile`; the terminal interface
+blocks before its approval screen, the shared integration step behind the wizard and both applies
+fails with that reason, and `integrate codex mcp install` exits 2 with
+`mcp_registration_legacy_registration_route_kept`.
 
 **Plugin activation.** The project's Yoetz-era activation (the exact legacy
 `.agents/plugins/marketplace.json`, byte-identical `[marketplaces.yoetz]` and
@@ -1441,36 +1474,45 @@ another project's connect records it beside itself, `setup status` lists it in
 `codex_home_projects`, and another project's disconnect keeps the registration for it (`retained`
 "FinishUP MCP registration used by other connected projects", `shared_with` naming it). It never
 becomes the FinishUP binding's anchor, since it does not serve FinishUP's manifest: when the
-disconnecting project anchors the binding and no other project serves that manifest, the
-disconnect removes the FinishUP plugin pieces (`deactivate_plugin`) and keeps only the
-registration. Yoetz-era shared pieces found without a record (an exact legacy marketplace or
-plugin table, or a FinishUP-shaped `[mcp_servers.yoetz]` entry) also make membership uncertain, as
-an earlier release's pieces do: trusted checkouts that serve FinishUP's manifest are possible
-users, a connect records `unknown_members`, and a disconnect that would leave only them stops as
-`membership_unverified`. A disconnect that only detaches the project (other connected projects
-keep the shared FinishUP
-plugin, cache, binding and registration) still deactivates its own legacy activation in the same
-digest-bound plan: the exact tables leave with the approved `config.toml` write (also when the
-binding moves to another project), then the exact legacy document and the marker-validated legacy
-cache go, and the result must read `legacy_activation: false`. The detach preview reports them in
-`legacy_removed_block`, `legacy_cache_versions` and `legacy_marketplace_json_planned` beside
-`shared_with`. The user-level `yoetz` MCP entry is shared like the `finishup` one: a disconnect that
-keeps the registration for other projects keeps an owned `yoetz` entry too
-(`remove_legacy_mcp_registration` appears only when the unregistration runs), and the last
-disconnect or `--remove-shared` removes both. When it does, the check that no project's
-`.codex/config.toml` still needs the user-level transport covers `mcp_servers.yoetz` tables as
-well, after the admission sweep has removed the exact legacy entries; the sweep runs for a project
-whose only entry is an exact legacy one, and the plan's `admission_cleanup` names it under
-`legacy_entries`. On a foreign approval file (an approval table you edited, or a server-wide
-default) the sweep edits nothing, so exact legacy entries there neither plan
-`remove_project_admission` nor count as removed when the disconnect checks what still needs the
+disconnecting project anchors the binding and no other project serves that manifest, the disconnect
+removes the FinishUP plugin pieces (`deactivate_plugin`) and keeps only the registration: the
+preview adds `shared_plugin_removed: true`, `shared_with` names only the projects the registration
+stays for, a recorded FinishUP project whose plugin files are missing right now is listed in
+`members_not_serving` (it loses the plugin and connects again later), and the summary reads "The
+shared FinishUP plugin is removed from this home; only the MCP registration stays for: <projects>".
+Yoetz-era shared pieces found without a record (an exact legacy marketplace or plugin table, or a
+FinishUP-shaped `[mcp_servers.yoetz]` entry) also make membership uncertain, as an earlier release's
+pieces do: trusted checkouts that serve FinishUP's manifest are possible users, a connect records
+`unknown_members`, and a disconnect that would leave only them stops as `membership_unverified`.
+Without such a checkout or another member, an ordinary disconnect removes the registration, also for
+a single Yoetz-era project (unlike Cursor's `plugins/local/yoetz`). A disconnect that only detaches
+the project (other connected projects keep the shared FinishUP plugin, cache, binding and
+registration) still deactivates its own legacy activation in the same digest-bound plan: the exact
+tables leave with the approved `config.toml` write (also when the binding moves to another project),
+then the exact legacy document and the marker-validated legacy cache go, and the result must read
+`legacy_activation: false`. The detach preview reports them in `legacy_removed_block`,
+`legacy_cache_versions` and `legacy_marketplace_json_planned` beside `shared_with`. The user-level
+`yoetz` MCP entry is shared like the `finishup` one: a disconnect that keeps the registration for
+other projects keeps an owned `yoetz` entry too (`remove_legacy_mcp_registration` appears only when
+the unregistration runs), and the last disconnect or `--remove-shared` removes both. When it does,
+the check that no project's `.codex/config.toml` still needs the user-level transport covers
+`mcp_servers.yoetz` tables as well, after the admission sweep has removed the exact legacy entries;
+the sweep runs for a project whose only entry is an exact legacy one, and the plan's
+`admission_cleanup` names it under `legacy_entries`. On a foreign approval file (an approval table
+you edited, or a server-wide default) the sweep edits nothing, so exact legacy entries there neither
+plan `remove_project_admission` nor count as removed when the disconnect checks what still needs the
 transport.
 
-Decisions from the 0.3 port review (2026-10-15), per host: the Yoetz-era membership rule above is
-Codex's form of the rule Cursor applies to `plugins/local/yoetz` (found without a record:
-membership unknown); Claude Code lists every project's install itself and needs neither. The
-`mcp_servers.yoetz` leftover diagnosis and the post-disconnect `shared_registration_retained`
-status are Codex-only, since only Codex has a user-level transport a project table depends on.
+Decisions from the 0.3 port review (2026-10-15), per host: for Codex, Yoetz-era pieces found
+without a record do not by themselves keep anything. They make trusted checkouts that serve
+FinishUP's manifest possible users (which keep the registration, or stop the disconnect as
+`membership_unverified`), and the bound Yoetz-era project is a member; with neither, an ordinary
+disconnect removes the registration, also with a single project. Cursor's rule for
+`plugins/local/yoetz` is stronger (found without a record, it stays until `--remove-shared`),
+because Cursor has no binding that names a project. Claude Code lists every project's install
+itself and needs neither. The `mcp_servers.yoetz` leftover diagnosis, keeping an owned `yoetz`
+entry a project still needs, and the post-disconnect `shared_registration_retained` status are
+Codex-only, since only Codex has a user-level transport a project table depends on.
 
 **Project skill.** Skill install and remove also take a `.agents/skills/yoetz` tree that matches its
 own install marker (preview warning `legacy_skill_tree_owned`; disconnect removes it too, change

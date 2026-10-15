@@ -936,6 +936,31 @@ class FinishUpTui(App[int]):
         if plan.foreign_entry:
             await self._handle_foreign_entry(option)
             return False
+        if plan.legacy_registration_route_conflict:
+            # The owned ``yoetz`` entry a project still needs stays beside ``finishup`` and
+            # serves the whole home on its own review mode: never run both modes (#1073).
+            from finishup.cli.codex_connection import legacy_kept_disclosure
+            from finishup.cli.host_connection import refusal_step
+
+            reason = "connection_legacy_registration_route_kept"
+            text = refusal_step(
+                reason,
+                {
+                    "route_profile_before": plan.legacy_registration_route_profile,
+                    "route_profile": plan.route_profile,
+                    **legacy_kept_disclosure(
+                        plan.legacy_registration_kept_for,
+                        plan.legacy_registration_kept_unchecked,
+                    ),
+                },
+            )
+            self.say(
+                Level.BLOCKED,
+                "The earlier yoetz registration stays, on its own review mode",
+                tuple(line.strip() for line in (text or "").splitlines() if line.strip()),
+                details=(f"reason={reason}",),
+            )
+            return False
         if not await self._approve_plan(plan):
             self.say(Level.OPTIONAL, "This project was left unchanged.")
             return False
@@ -1642,8 +1667,11 @@ class FinishUpTui(App[int]):
             apply_selected,
             connection_continuation,
             connection_summary,
+            kept_pieces_steps,
             launch_details,
             prepare_selected,
+            refusal_step,
+            rendered_status,
             select_installation,
         )
         from finishup.protocol.ids import IdKind, new_id
@@ -1716,23 +1744,56 @@ class FinishUpTui(App[int]):
                     return False
             else:
                 status = await run_sync(plan.status)
+            # What stays for others, with the exact command that goes further: the terminal
+            # interface offers no home-wide removal of its own (#1073, cursor-integration.md).
+            kept_steps = kept_pieces_steps(
+                "disconnect" if disconnect else "connect",
+                status,
+                selected,
+                self.runtime.project_root(),
+            )
             self.say(
                 Level.ACTIVE,
-                "Integration removed" if disconnect else "Integration configured",
+                (
+                    "Integration removed from this project; shared pieces kept"
+                    if kept_steps
+                    else "Integration removed"
+                )
+                if disconnect
+                else "Integration configured",
                 (
                     "Start a fresh session: "
                     + str(launch_details(selected, self.runtime.project_root())["shell_command"])
                     if not disconnect
                     else "Restart the host. Your FinishUP data is retained.",
+                    *(
+                        line.strip()
+                        for step in kept_steps
+                        for line in step.splitlines()
+                        if line.strip()
+                    ),
                 ),
                 details=tuple(f"{key}: {value}" for key, value in status.items()),
             )
             return True
         except CONNECTION_ERRORS as error:
+            from finishup.application.host_connection import ConnectionError as SetupError
+
+            step = (
+                refusal_step(str(error), rendered_status(error.status))
+                if isinstance(error, SetupError) and error.status is not None
+                else None
+            )
             self.say(
                 Level.BLOCKED,
                 "Connection needs attention",
-                ("Run finishup setup run --host " + option.host + " in a trusted local terminal.",),
+                tuple(line.strip() for line in step.splitlines() if line.strip())
+                if step is not None
+                else (
+                    "Run finishup setup run --host "
+                    + option.host
+                    + " in a trusted local terminal.",
+                ),
                 details=(type(error).__name__,),
             )
             return False

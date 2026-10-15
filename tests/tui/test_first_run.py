@@ -463,6 +463,41 @@ async def test_a_foreign_mcp_entry_blocks_and_never_offers_to_replace_it(
         assert "Nothing was replaced or removed." in transcript(app)
 
 
+async def test_a_kept_yoetz_entry_on_another_review_mode_blocks_before_approval(
+    make_app: MakeApp,
+) -> None:
+    """A project's Codex configuration still needs the owned ``yoetz`` entry, which serves the
+    whole home with local-only review; first-run setup registers the policy route, which would
+    run both modes side by side. The terminal interface stops before the approval and names the
+    way on (#1073)."""
+
+    import dataclasses
+
+    from builders.tui_runtime import PLAN
+
+    runtime = FakeRuntime(
+        plan=dataclasses.replace(
+            PLAN,
+            legacy_registration="legacy_only",
+            legacy_registration_kept_for=("/work/a",),
+            legacy_registration_route_profile="strict",
+        )
+    )
+    app = make_app(first_run=True, runtime=runtime)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")  # trust
+        await pilot.pause()
+        await answer_review(pilot)
+        assert runtime.applied == []
+        text = transcript(app)
+        assert "The earlier yoetz registration stays, on its own review mode" in text
+        assert "/work/a" in text
+        assert "--route-profile strict" in text
+
+
 async def test_a_failed_registration_is_reported_as_a_failure(make_app: MakeApp) -> None:
     runtime = FakeRuntime(
         apply_result=IntegrationOutcome(

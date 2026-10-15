@@ -1547,6 +1547,25 @@ def _readiness_layers(
     }
 
 
+def _legacy_route_kept_step(preview: McpRegistrationPreview) -> str:
+    """The way on when a kept ``yoetz`` entry serves another review mode (#1073)."""
+
+    from finishup.cli.codex_connection import legacy_kept_disclosure
+    from finishup.cli.host_connection import refusal_step
+
+    return (
+        refusal_step(
+            "connection_legacy_registration_route_kept",
+            {
+                "route_profile_before": preview.legacy_route_profile,
+                "route_profile": preview.route_profile,
+                **legacy_kept_disclosure(preview.legacy_kept_for, preview.legacy_kept_unchecked),
+            },
+        )
+        or ""
+    )
+
+
 async def _codex_integration_step(
     binary: HarnessBinary,
     *,
@@ -1719,6 +1738,21 @@ async def _codex_integration_step(
                 "skill": {"outcome": "skipped", "presence": None},
                 "observation_consent": {"outcome": "absent", "workspace_commitment": None},
             }
+
+    if "legacy_registration_route_kept" in mcp_preview.warnings:
+        # An owned ``yoetz`` entry a project's Codex configuration still needs stays beside
+        # ``finishup`` and serves the whole home on its own review mode; registering another
+        # mode next to it would run both (#1073). Nothing has changed yet.
+        return {
+            "outcome": "failed",
+            "reason": "connection_legacy_registration_route_kept",
+            "next_step": _legacy_route_kept_step(mcp_preview),
+            "state": None,
+            "plugin": {"outcome": "skipped", "presence": None},
+            "plugin_activation": {"outcome": "skipped", "state": "unknown"},
+            "skill": {"outcome": "skipped", "presence": None},
+            "observation_consent": {"outcome": "absent", "workspace_commitment": None},
+        }
 
     plugin_preview = plugin_service.preview(project)
     check_policy = _check_policy_preview(workspace)
@@ -4270,6 +4304,15 @@ async def integrate_mcp(
                     "inspected_codex_home": str(selected_home),
                     "isolated_root": preview.isolated_root,
                     "legacy_registration": preview.legacy_registration,
+                    # An owned ``yoetz`` entry kept beside ``finishup`` for these projects (#1073).
+                    **(
+                        {
+                            "legacy_registration_kept_for": list(preview.legacy_kept_for),
+                            "legacy_registration_kept_unchecked": preview.legacy_kept_unchecked,
+                        }
+                        if preview.legacy_kept_for or preview.legacy_kept_unchecked
+                        else {}
+                    ),
                     "preview_digest": shown_digest,
                     "route_profile": preview.route_profile,
                     "route_profile_before": route_profile_before,
@@ -4292,6 +4335,11 @@ async def integrate_mcp(
             return _mcp_error_exit("preview_stale")
         if preview.state_before is McpRegistrationState.FOREIGN_PRESENT:
             return _mcp_error_exit("foreign_entry_present")
+        if "legacy_registration_route_kept" in preview.warnings:
+            # The kept ``yoetz`` entry would go on serving another review mode (#1073).
+            typer.echo("mcp_registration_legacy_registration_route_kept", err=True)
+            typer.echo(_legacy_route_kept_step(preview), err=True)
+            return 2
         if route_change and accept and preview_digest is None:
             # Other projects' review mode would change: only the exact preview may approve it.
             from finishup.cli.setup_readiness import continuation

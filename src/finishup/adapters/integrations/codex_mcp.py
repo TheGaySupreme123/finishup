@@ -60,6 +60,8 @@ __all__ = [
     "CommandOutput",
     "codex_project_mcp_leftover",
     "codex_project_mcp_leftovers",
+    "home_project_candidates",
+    "legacy_registration_dependents",
     "legacy_registration_shaped",
     "read_bounded_toml",
     "probe_project_config_load",
@@ -67,6 +69,9 @@ __all__ = [
 ]
 
 _COMMAND_TIMEOUT_SECONDS: Final = 10.0
+# At most this many of the home's projects are read before an owned ``yoetz`` entry is migrated;
+# past it the entry is kept, since absence from a partial read is not proof (#1073).
+_LEGACY_SCAN_LIMIT: Final = 32
 _OUTPUT_LIMIT_BYTES: Final = 65_536
 # Both spellings of the isolation root a registration may carry (ADR-048). New registrations
 # write both with one value so an older bare ``yoetz`` launcher resolved through PATH still
@@ -560,23 +565,46 @@ class CodexMcpAdapter:
         serve_command, launcher_digest = self._desired_command()
         effective = registrations.effective
         state, current_command, current_root = effective.state, effective.command, effective.root
-        action = (
-            McpRegistrationAction.REGISTER
-            if state is McpRegistrationState.ABSENT
-            else (
+        legacy_owned = registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED
+        # An owned legacy-key entry migrates unless a project's Codex configuration still names
+        # the ``yoetz`` server without a transport of its own: removing it would stop Codex
+        # loading there, so it stays beside ``finishup`` until those tables go (#1073).
+        kept_for, unchecked = (
+            legacy_registration_dependents(self._codex_home) if legacy_owned else ((), False)
+        )
+        keep_legacy = bool(kept_for) or unchecked
+        legacy_route = (
+            mcp_command_profile(registrations.legacy.command)
+            if keep_legacy and registrations.legacy.command is not None
+            else None
+        )
+        if state is McpRegistrationState.ABSENT:
+            action = McpRegistrationAction.REGISTER
+        elif state is not McpRegistrationState.FINISHUP_OWNED:
+            action = McpRegistrationAction.NOOP
+        elif keep_legacy:
+            # Only the ``finishup`` key is written; the kept entry is left as it is.
+            action = (
+                McpRegistrationAction.NOOP
+                if self._current_is_desired(registrations.current, serve_command, expected_root)
+                else McpRegistrationAction.REREGISTER
+            )
+        else:
+            action = (
                 McpRegistrationAction.REREGISTER
-                if state is McpRegistrationState.FINISHUP_OWNED
-                and (
-                    # An owned legacy-key entry always migrates, even beside a current one.
-                    registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED
-                    or not self._current_is_desired(effective, serve_command, expected_root)
-                )
+                # An owned legacy-key entry always migrates, even beside a current one.
+                if legacy_owned
+                or not self._current_is_desired(effective, serve_command, expected_root)
                 else McpRegistrationAction.NOOP
             )
-        )
         warnings: list[str] = list(registrations.legacy_warnings())
         if state is McpRegistrationState.FOREIGN_PRESENT:
             warnings.append("foreign_entry_present")
+        if keep_legacy:
+            warnings.append("legacy_registration_kept")
+            if legacy_route is not None and legacy_route != self._route_profile:
+                # The kept entry serves every project of the home on its own review mode.
+                warnings.append("legacy_registration_route_kept")
         digest_input: dict[str, object] = {
             "action": action.value,
             "executable_path": binary.executable_path,
@@ -603,6 +631,13 @@ class CodexMcpAdapter:
         if not effective.env_current:
             digest_input["current_env_complete"] = False
         registrations.bind_legacy(digest_input)
+        if keep_legacy:
+            # The decision to keep the legacy entry, and for whom, is part of what is approved.
+            digest_input.update(
+                schema=str(digest_input["schema"]).rsplit("/", 1)[0] + "/6",
+                legacy_kept_for=list(kept_for),
+                legacy_kept_unchecked=unchecked,
+            )
         digest = canonical_digest(cast(JsonValue, digest_input))
         return McpRegistrationPreview(
             binary.harness_id,
@@ -617,6 +652,9 @@ class CodexMcpAdapter:
             None
             if state is not McpRegistrationState.FINISHUP_OWNED or current_command is None
             else mcp_command_profile(current_command),
+            kept_for,
+            unchecked,
+            legacy_route,
         )
 
     async def preview_registration(self, binary: HarnessBinary) -> McpRegistrationPreview:
@@ -697,7 +735,9 @@ class CodexMcpAdapter:
                     McpRegistrationReason.REGISTRATION_FAILED,
                     {"exit_code_class": "nonzero"},
                 )
-        if registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+        # A legacy entry another project's Codex configuration still needs stays (#1073).
+        keep_legacy = bool(preview.legacy_kept_for) or preview.legacy_kept_unchecked
+        if registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED and not keep_legacy:
             # The new key is written first, so a failed removal leaves a working duplicate
             # rather than no registration at all.
             self._remove_legacy_entry(binary, registrations.legacy)
@@ -710,9 +750,12 @@ class CodexMcpAdapter:
                 McpRegistrationReason.REGISTRATION_FAILED,
                 {"verified_state": after.current.state.value},
             )
-        if after.legacy.state is McpRegistrationState.FINISHUP_OWNED or (
-            registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED
-            and after.legacy.state is not McpRegistrationState.ABSENT
+        if not keep_legacy and (
+            after.legacy.state is McpRegistrationState.FINISHUP_OWNED
+            or (
+                registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED
+                and after.legacy.state is not McpRegistrationState.ABSENT
+            )
         ):
             raise McpRegistrationError(
                 McpRegistrationReason.REGISTRATION_FAILED,
@@ -1018,6 +1061,68 @@ def legacy_registration_shaped(config: Mapping[str, object]) -> bool:
         return False
     tokens = _entry_command_tokens(cast(Mapping[str, object], entry))
     return tokens is not None and mcp_command_profile(tokens) is not None
+
+
+def home_project_candidates(codex_home: Path) -> tuple[tuple[str, ...], bool]:
+    """The existing project directories this Codex home knows, and whether that list is whole.
+
+    Candidates are the ``[projects."<path>"]`` rows of the user ``config.toml`` and the home's
+    verified members (the FinishUP marketplace binding, the connected-projects record, and a
+    Yoetz-era bound project, ADR-012). The second value is false when the user configuration or
+    the members could not be read, so a caller never reads the list as complete.
+    """
+
+    from finishup.adapters.integrations.codex_marketplace import connected_projects
+    from finishup.ports.integrations import IntegrationError
+
+    if not os.path.lexists(codex_home):
+        # A home that does not exist knows no projects (and holds no registration).
+        return (), True
+    path = codex_home / "config.toml"
+    config = read_bounded_toml(path)
+    complete = config is not None or not os.path.lexists(path)
+    candidates: set[str] = set()
+    projects = (config or {}).get("projects")
+    if isinstance(projects, Mapping):
+        candidates.update(str(key) for key in cast(Mapping[object, object], projects))
+    try:
+        candidates.update(connected_projects(codex_home))
+    except IntegrationError:
+        complete = False
+    return (
+        tuple(
+            sorted(
+                candidate
+                for candidate in candidates
+                if Path(candidate).is_absolute() and Path(candidate).is_dir()
+            )
+        ),
+        complete,
+    )
+
+
+def legacy_registration_dependents(codex_home: Path | None) -> tuple[tuple[str, ...], bool]:
+    """Projects whose Codex layer still needs the user-level ``yoetz`` transport (ADR-048).
+
+    Such a project's ``.codex/config.toml`` names ``mcp_servers.yoetz`` without a ``command`` or
+    ``url`` of its own (the exact ``[mcp_servers.yoetz.tools.check]`` a Yoetz 0.2
+    ``integrate codex admission grant`` wrote, for example), or cannot be read safely. Removing
+    the owned ``yoetz`` entry would stop Codex loading configuration there (#1073). At most
+    ``_LEGACY_SCAN_LIMIT`` projects are read; the second value is true when that read was not
+    whole, so the entry is kept rather than assumed unused.
+    """
+
+    candidates, complete = home_project_candidates(_selected_codex_home(codex_home))
+    inspected = candidates[:_LEGACY_SCAN_LIMIT]
+    dependents = tuple(
+        candidate
+        for candidate in inspected
+        if project_transport_dependence(
+            Path(candidate), after_sweep=False, names=(MCP_LEGACY_SERVER_NAME,)
+        )
+        != "none"
+    )
+    return dependents, not complete or len(candidates) > len(inspected)
 
 
 def codex_project_mcp_leftovers(

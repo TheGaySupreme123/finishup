@@ -239,6 +239,69 @@ async def test_wizard_refuses_a_bare_accept_that_changes_other_projects(
     assert not (project / ".agents").exists()
 
 
+async def test_wizard_stops_on_a_kept_yoetz_entry_serving_another_review_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The owned ``yoetz`` entry a project's Codex configuration still needs stays beside
+    ``finishup`` on local-only review; registering AI-powered review next to it would run both.
+    The wizard (and every apply that reuses this step) stops before anything changes (#1073)."""
+
+    preview = McpRegistrationPreview(
+        HarnessId.CODEX,
+        McpRegistrationAction.REREGISTER,
+        McpRegistrationState.FINISHUP_OWNED,
+        (
+            "legacy_registration_kept",
+            "legacy_registration_owned",
+            "legacy_registration_route_kept",
+        ),
+        _DIGEST,
+        MCP_SERVE_COMMAND,
+        "policy",
+        None,
+        "legacy_only",
+        "strict",
+        ("/work/a",),
+        False,
+        "strict",
+    )
+
+    async def fake_preview(self: object, _binary: object) -> McpRegistrationPreview:
+        return preview
+
+    async def fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
+        return McpRegistrationObservation(
+            HarnessId.CODEX,
+            McpRegistrationState.FINISHUP_OWNED,
+            "strict",
+            "ambient",
+            MCP_LEGACY_STRICT_SERVE_COMMAND,
+            "legacy_only",
+        )
+
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.preview", fake_preview)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", fake_observe)
+    home = tmp_path / "codex"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    project = tmp_path / "b"
+    project.mkdir(mode=0o700)
+
+    report = await setup_cli._codex_integration_step(  # pyright: ignore[reportPrivateUsage]
+        _BINARY,
+        interactive=False,
+        accept=True,
+        route_profile="policy",
+        workspace=project,
+    )
+
+    assert report["outcome"] == "failed"
+    assert report["reason"] == "connection_legacy_registration_route_kept"
+    assert "/work/a" in str(report["next_step"])
+    assert "--route-profile strict" in str(report["next_step"])
+    assert not (project / ".agents").exists()
+
+
 async def test_a_launcher_only_reregistration_keeps_the_legacy_strict_mode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
