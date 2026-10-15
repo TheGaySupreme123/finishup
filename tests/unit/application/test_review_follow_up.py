@@ -88,7 +88,11 @@ from finishup.domain.values import (
     timestamp_from_string,
 )
 from finishup.kernel.deterministic_checks import DeterministicCase
-from finishup.kernel.projections import EvidenceProjectionRecord, ProjectionRecord
+from finishup.kernel.projections import (
+    EvidenceProjectionRecord,
+    PendingMissingForAssessment,
+    ProjectionRecord,
+)
 from finishup.ports.semantic import MissingForAssessment, SemanticCase, SemanticJudgment
 from finishup.protocol.canonical import JsonValue, strict_json_parse
 from finishup.protocol.coverage import EvidenceImmutability
@@ -2169,3 +2173,85 @@ def test_captured_command_output_stays_inside_the_follow_up_byte_budget() -> Non
         not part.startswith(OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX)
         for part in follow_up_new_parts(built, follow_up)
     )
+
+
+_PUBLISHED_SUMMARY = "pytest: 12 passed, the lookup returns the id\n"
+_OTHER_SUMMARY = "ruff: all checks passed\n"
+
+
+def _published_answer_case() -> DeterministicCase:
+    """An action the reviewer named, then a later result whose summary is the output."""
+
+    actions = {
+        act(1): record(
+            ActionRecordedPayload(act(1), ActionKind.COMMAND, "Run pytest", command="pytest -q"),
+            5,
+        ),
+        act(2): record(
+            ActionRecordedPayload(act(2), ActionKind.COMMAND, "Run ruff", command="ruff check ."),
+            6,
+        ),
+    }
+    results = {
+        res(1): record(
+            ResultRecordedPayload(
+                res(1), act(1), ResultOutcome.SUCCESS, summary=_PUBLISHED_SUMMARY
+            ),
+            20,
+        ),
+        res(2): record(
+            ResultRecordedPayload(res(2), act(2), ResultOutcome.SUCCESS, summary=_OTHER_SUMMARY),
+            21,
+        ),
+    }
+    case = make_case(actions=actions, results=results, extra_refs=(act(1), act(2), res(1), res(2)))
+    pending = PendingMissingForAssessment(
+        evt(10),
+        10,
+        (MissingForAssessmentItem("verification_output", (str(act(1)),), "agent_suppliable"),),
+    )
+    return replace(
+        case, projection=replace(case.projection, pending_missing_for_assessment=pending)
+    )
+
+
+def test_next_packet_carries_the_published_result_summary_for_the_named_command() -> None:
+    semantic = _build(_published_answer_case())
+    excerpts = [item for item in semantic.items if item.section == "excerpt"]
+    carried = [item for item in excerpts if _PUBLISHED_SUMMARY.encode() in item.content]
+    assert len(carried) == 1
+    assert carried[0].source_ref == str(res(1))
+    assert str(act(1)) in carried[0].linked_subject_refs
+    assert all(_OTHER_SUMMARY.encode() not in item.content for item in semantic.items)
+    assert not any(item.content.startswith(b"[FinishUP:") for item in carried)
+
+
+def test_private_and_command_only_selections_do_not_carry_a_published_summary() -> None:
+    case = _published_answer_case()
+    structural = _build(
+        case,
+        selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.STRUCTURAL),
+    )
+    assert all(_PUBLISHED_SUMMARY.encode() not in item.content for item in structural.items)
+    assisted = ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED)
+    command_only = replace(assisted, excerpt_kinds=("command",))
+    narrowed = _build(case, selection=command_only)
+    assert all(_PUBLISHED_SUMMARY.encode() not in item.content for item in narrowed.items)
+    assert all(_OTHER_SUMMARY.encode() not in item.content for item in narrowed.items)
+
+
+def test_a_published_summary_that_does_not_fit_is_omitted_inside_the_existing_budget() -> None:
+    tight = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED),
+        max_excerpt_bytes=64,
+        max_total_excerpt_bytes=32,
+    )
+    semantic = _build(_published_answer_case(), selection=tight)
+    assert all(_PUBLISHED_SUMMARY.encode() not in item.content for item in semantic.items)
+    assert "content_unselected" in semantic.packet.coverage.known_gaps
+    assert any(
+        omission.subject_ref == str(res(1)) and omission.reason == "not_selected"
+        for omission in semantic.packet.omissions
+    )
+    excerpt_bytes = sum(len(item.content) for item in semantic.items if item.section == "excerpt")
+    assert excerpt_bytes <= 32

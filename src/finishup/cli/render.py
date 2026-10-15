@@ -370,8 +370,10 @@ def _render_overall_next(
 ) -> str:
     if next_step.action == "supply_missing_input":
         action = (
-            "Supply the named review input as new records tied to the named refs "
-            "(never change your work to fit the reviewer)"
+            "If `missing_for_assessment` names an `agent_suppliable` item you can supply, "
+            "publish exactly that item once, linked to its target, then `check` again. If it "
+            "is already supplied, or it is a packet, type or authority limit, go to the receipt "
+            "and state that specific limit. Never change your work to fit the reviewer"
         )
     elif next_step.action == "disclose_limitations":
         action = (

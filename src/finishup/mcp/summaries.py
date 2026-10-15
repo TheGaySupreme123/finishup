@@ -29,6 +29,7 @@ from finishup.domain.receipts import (
 )
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
+    publish_exactly,
     render_review_input_manifest_compact,
 )
 from finishup.domain.review_mode_render import (
@@ -725,7 +726,13 @@ def _missing_items_part(source: Mapping[str, JsonValue]) -> Part | None:
             else ()
         )
         target = f"[{','.join(safe_refs)}]" if safe_refs else ""
-        tokens.append(f"{kind}={availability}{target}")
+        instruction = (
+            publish_exactly(kind)
+            if availability == "agent_suppliable" and type(kind) is str
+            else ""
+        )
+        published = f": {instruction}" if instruction else ""
+        tokens.append(f"{kind}={availability}{target}{published}")
     if not tokens:
         return None
     limit_note = (

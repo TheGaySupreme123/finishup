@@ -695,8 +695,7 @@ recorded review answered such a follow-up; its `missing_inputs` name what Finish
 (`supplied_refs`). Do not publish that material again; what `missing_for_assessment` still lists is
 what remained after the follow-up.
 
-When `missing_for_assessment` contains an `agent_suppliable` item, supplying or repairing that
-item is the overall next action before requesting an ordinary receipt. The structured
+If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
 it. When open obligations or undisclosed live failures remain, or a delivered file may read a
@@ -730,8 +729,7 @@ AI-powered review finding unless `evidence_refs` cites evidence or a result reco
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or
 “limitation accepted” is not a repair, a verification result, or a finding resolution. After an
-`insufficient_packet` result with no material repair to publish, go to the receipt and disclose
-`semantic_packet_insufficient` (never a `deterministic_only` fallback).
+`insufficient_packet` result, if `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit (never a `deterministic_only` fallback).
 
 The reviewer verifies from what its packet carries. When a completed review other than
 `insufficient_packet` raised nothing about verification whose readable output the packet carried,

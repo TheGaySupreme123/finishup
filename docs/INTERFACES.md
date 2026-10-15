@@ -9084,7 +9084,12 @@ never answers it. Only an item with no target is matched by record family alone,
 hook-captured tool output: authorship is the service-stamped envelope fact, carried on the frozen
 case as `observation_event_ids`, the observation-authored events recorded after the request, emitted
 only when non-empty so other cases keep their bytes; and a result answers `verification_output` only
-when it carries output (linked evidence or a summary). FinishUP classifies each kept item as
+when it carries output (linked evidence or a summary). The next packet carries that published
+summary as an evidence excerpt when the selection already allows an evidence or test excerpt,
+ranked after the current diff and inside the existing excerpt budgets; a summary that does not
+fit is omitted and named. A command the request does not name is not carried this way, and
+Private sends nothing. Public check, MCP, terminal and receipt text names, per kind, the one
+record to publish. FinishUP classifies each kept item as
 `agent_suppliable`, `structurally_unavailable_on_this_host` (a kind the effective review selection
 or channel can never carry, or a redacted target) or a FinishUP limit (`yoetz_limit_unsupported_data_type`,
 `yoetz_limit_packet_room`; ADR-006, issue #983), adding `semantic_missing_agent_suppliable`,

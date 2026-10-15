@@ -3398,6 +3398,7 @@ def _select_targeted_excerpts(
     workspace_root: str | None = None,
     follow_up: ReviewFollowUp | None = None,
     check_time_change: CheckChangeCapture | None = None,
+    supplied_refs: frozenset[str] = frozenset(),
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -3415,6 +3416,12 @@ def _select_targeted_excerpts(
 
     ``declared_output_refs`` (``declared_output_capture_refs``) rank with the current diff: they
     are the current state of a deliverable the check-time change cannot hold (tb4n2 R7).
+
+    ``supplied_refs`` are agent-published records that answer a still-pending missing-item
+    request (issue #1079). Their excerpts rank after the current diff and before other
+    recorded excerpts, inside the existing count and byte budgets. A result summary is added
+    only when this selection already allows an evidence or test excerpt and no excerpt of
+    that result exists yet. Nothing here widens the selection or the ceilings.
 
     ``follow_up`` (issue #1047) is the reviewer's own in-check request: the excerpts of its
     requested rows rank ahead of every other recorded excerpt, item by item in request order and
@@ -3575,6 +3582,77 @@ def _select_targeted_excerpts(
                     identity_refs=frozenset(
                         {ref, str(record.payload.action_id), str(record.source_event_id)}
                     ),
+                    verification_identity=None if verification is None else verification[0],
+                    verification_outcome=None if verification is None else verification[1],
+                    verification_action=None if verification is None else verification[2],
+                    verification_run=None if verification is None else verification[3],
+                    part_keys=(_span_keys(ref, kept, encoded),),
+                )
+            )
+
+    # Agent-published output that answers a pending missing item (issue #1079). Failure rows
+    # are already candidates. A success or partial summary is the same evidence-excerpt
+    # category the selection already allows, never a new category and never hook capture
+    # (those refs are not in ``supplied_refs``).
+    summary_kind = (
+        "evidence"
+        if "evidence" in selection.excerpt_kinds
+        else "test"
+        if "test" in selection.excerpt_kinds
+        else None
+    )
+    if supplied_refs and summary_kind is not None:
+        present = {candidate.source_ref for candidate in candidates}
+        for result_id, record in sorted(projection.results.items(), key=lambda pair: str(pair[0])):
+            ref = str(result_id)
+            if ref not in supplied_refs or ref in present or ref not in allowed:
+                continue
+            if record.payload is None or record.redacted:
+                continue
+            summary = record.payload.summary
+            if summary is None or not summary.strip():
+                continue
+            linked = tuple(
+                sorted(
+                    {
+                        item
+                        for item in (
+                            ref,
+                            str(record.payload.action_id),
+                            str(record.source_event_id),
+                            *(str(item) for item in record.payload.evidence_refs),
+                        )
+                        if item in allowed
+                    },
+                    key=str.encode,
+                )
+            )[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]
+            if not linked:
+                continue
+            summary = _neutralised_agent_text(summary)
+            encoded = summary.encode("utf-8")
+            clipped = len(encoded) > excerpt_limit
+            clip, kept = (
+                _head_tail_kept(encoded, excerpt_limit)
+                if clipped
+                else (summary, ((0, len(encoded)),))
+            )
+            if not clip:
+                continue
+            verification = verification_by_result.get(ref)
+            candidates.append(
+                _ExcerptCandidate(
+                    source_ref=ref,
+                    item_base=f"excerpt-supplied-{ref}",
+                    source_kind=summary_kind,
+                    category=DataCategory.EVIDENCE_EXCERPT,
+                    parts=(clip,),
+                    clipped=clipped,
+                    linked=linked,
+                    occurred_order=record.source_frontier,
+                    content_visibility="available",
+                    digest_provenance=None,
+                    identity_refs=frozenset(linked),
                     verification_identity=None if verification is None else verification[0],
                     verification_outcome=None if verification is None else verification[1],
                     verification_action=None if verification is None else verification[2],
@@ -3873,6 +3951,21 @@ def _select_targeted_excerpts(
                 _RANK_CURRENT_DIFF,
                 0,
                 min(declared) - _DECLARED_ORDER_OFFSET,
+                0,
+                candidate.source_ref.encode("ascii"),
+                candidate.item_base.encode("ascii"),
+            )
+        # After the current diff, before other recorded excerpts: the answer the agent
+        # published for a still-pending missing item. The current diff keeps its place.
+        if (
+            supplied_refs
+            and index not in current_diffs
+            and (candidate.source_ref in supplied_refs or candidate.identity_refs & supplied_refs)
+        ):
+            return (
+                _RANK_CURRENT_DIFF,
+                1,
+                -candidate.occurred_order,
                 0,
                 candidate.source_ref.encode("ascii"),
                 candidate.item_base.encode("ascii"),
@@ -5322,8 +5415,9 @@ def _build_semantic_case_once(
     prior_missing_item: SemanticCaseItem | None = None
     missing_answers: tuple[tuple[str, ...], ...] = ()
     pending_missing = projection.pending_missing_for_assessment
-    if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
-        answered = supplied_since(
+    answered_since: tuple[tuple[str, ...], ...] = ()
+    if pending_missing is not None:
+        answered_since = supplied_since(
             projection,
             pending_missing,
             frozenset(allowed),
@@ -5331,6 +5425,9 @@ def _build_semantic_case_once(
             _edit_paths_by_ref(captured_groups),
             workspace_root,
         )
+    supplied_answer_refs = frozenset(ref for group in answered_since for ref in group)
+    if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
+        answered = answered_since
         missing_answers = answered
         check_ref = str(pending_missing.source_check_event_id)
         prior_missing_item = _content_item(
@@ -5683,6 +5780,7 @@ def _build_semantic_case_once(
             ),
             workspace_root=workspace_root,
             follow_up=follow_up,
+            supplied_refs=supplied_answer_refs,
             # A follow-up may answer from the frozen change, only when this recipe carries it.
             check_time_change=(
                 check_time_change.capture

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from finishup.domain.review_input_render import (
     FINISHUP_LIMIT_MISSING_TEXT,
+    MISSING_SUPPLY_SENTENCE,
     has_agent_suppliable_missing,
     render_missing_for_assessment_lines,
     render_missing_for_assessment_next,
@@ -139,14 +140,10 @@ def test_missing_renderer_prioritizes_agent_suppliable_input_over_a_receipt() ->
     ]
 
     assert has_agent_suppliable_missing(items)
-    assert render_missing_for_assessment_next(items) == (
-        "Overall next: supply the named agent-suppliable review input as new records tied to "
-        "the named ref before requesting an ordinary receipt. Never change your work to fit "
-        "the reviewer."
-    )
-    assert render_missing_for_assessment_lines(items)[-1] == render_missing_for_assessment_next(
-        items
-    )
+    assert render_missing_for_assessment_next(items) == "Overall next: " + MISSING_SUPPLY_SENTENCE
+    lines = render_missing_for_assessment_lines(items)
+    assert lines[-1] == render_missing_for_assessment_next(items)
+    assert "result_recorded of that target whose summary is the command output" in lines[1]
 
 
 def test_finishup_limit_items_are_named_as_finishup_limits_never_agent_work() -> None:

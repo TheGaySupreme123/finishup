@@ -32,7 +32,7 @@ Do these steps in order.
 
 - Do not repeat a check on unchanged state: it returns the same findings. After one current-state
   recheck still cannot qualify, stop rechecking and disclose the gap.
-- After `insufficient_packet`, go to the receipt rather than a local-only fallback.
+- After `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit.
 - Anything material you publish after the closing check needs another check before the receipt.
 - Never empty, delete or withdraw a working deliverable to close a finding or a Stop message.
 

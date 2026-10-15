@@ -173,7 +173,9 @@ command output never appears in status, logs, hook advice, or AI-powered review 
 hook-captured output of a command the agent ran may appear in a follow-up review packet only when
 the reviewer asked for verification output, only as a repository excerpt the owner's policy already
 allows, and only within the existing excerpt limits (ADR-009). Private sends nothing. Output of a
-command the agent did not run is never included.
+command the agent did not run is never included. An agent-published result summary that answers a still-pending missing item may travel
+in the next packet as an evidence excerpt when an evidence or test excerpt is already allowed, within the
+existing excerpt limits. Private sends nothing.
 
 ## Outbound pipeline and state machine
 

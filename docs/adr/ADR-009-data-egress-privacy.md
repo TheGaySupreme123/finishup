@@ -1241,3 +1241,14 @@ not name is never included. Secret-like command output still never appears. The 
 excerpt as observed capture, not an agent-published result. Hook capture still does not count as
 the agent having supplied the missing item. A command recorded without a run key
 (`omitted:structural`) is not auto-supplied.
+
+### Published answers in the next packet (2026-10-15, issue #1079)
+
+When the agent publishes material that answers a still-pending `missing_for_assessment` item, the
+next review packet carries that material inside the existing excerpt budgets. A result summary is
+added only when the effective selection already allows an evidence or test excerpt, only for a
+result `supplied_since` already counts (agent-published, tied to the named target), and only up to
+the existing per-excerpt and total limits. It is an evidence excerpt, the category a failure
+summary already uses. It does not widen consent, add a category, or raise a ceiling. A summary
+that does not fit is omitted and the omission is reported. Private sends nothing. Output the
+request does not name is not added.
