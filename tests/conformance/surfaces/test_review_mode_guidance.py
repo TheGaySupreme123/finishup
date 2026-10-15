@@ -81,7 +81,7 @@ def test_the_switch_draft_is_never_reused_verbatim() -> None:
 
     section = _section()
     assert "Use a fresh `event_id` and the real `occurred_at`" in section
-    assert "publish a new decision (fresh `event_id`) with `review_mode: \"local\"`" in section
+    assert 'publish a new decision (fresh `event_id`) with `review_mode: "local"`' in section
     assert "a `final_review: true` check that omits `mode` runs that review" in section
     assert "mode: semantic_if_configured" not in section
 
