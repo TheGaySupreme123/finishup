@@ -113,7 +113,8 @@ def admission_cleanup_needed(plan: dict[str, JsonValue]) -> bool:
     """True when at least one surface carries an exact FinishUP entry the sweep removes.
 
     An exact legacy ``yoetz`` entry counts too, also on an otherwise absent surface: the sweep
-    removes it, and a stale project entry must not outlive the registration (ADR-048).
+    removes it, and a stale project entry must not outlive the registration (ADR-048). A foreign
+    or unknown surface never counts: the sweep never edits it, whatever exact entries it holds.
     """
 
     surfaces = plan.get("surfaces")
@@ -121,7 +122,10 @@ def admission_cleanup_needed(plan: dict[str, JsonValue]) -> bool:
         isinstance(item, dict)
         and (
             item.get("state") == HostAdmissionState.PRESENT.value
-            or bool(item.get("legacy_entries"))
+            or (
+                item.get("state") == HostAdmissionState.ABSENT.value
+                and bool(item.get("legacy_entries"))
+            )
         )
         for item in surfaces
     )
@@ -367,7 +371,10 @@ class SharedProjectsStep:
                 else "connection_outcome_unknown"
             ) from error
 
-    def status(self) -> dict[str, JsonValue]:
+    def status(self, shared_present: bool | None = None) -> dict[str, JsonValue]:
+        """The record now; ``shared_present`` is whether shared pieces exist now (default: as
+        the plan found them), so a status after the pieces went does not call them unknown."""
+
         try:
             current = (
                 load_connected_projects(self._config_root).projects
@@ -378,19 +385,20 @@ class SharedProjectsStep:
             return {}
         if not self._recorded:
             return {}
+        present = self._shared_present if shared_present is None else shared_present
         return {
             "connected_projects": cast(list[JsonValue], list(current)),
-            **({"membership_unknown": True} if self._current_unknown() else {}),
+            **({"membership_unknown": True} if self._current_unknown(present) else {}),
         }
 
-    def _current_unknown(self) -> bool:
+    def _current_unknown(self, shared_present: bool) -> bool:
         # Before any record exists, shared pieces found without one are already unknown
         # membership (CHECK_MULTIPROJ_R2 P3); status must say so, not only a preview.
         try:
             current = load_connected_projects(self._config_root)
         except HostProjectsError:
             return False
-        return current.unknown_members or (current.raw is None and self._shared_present)
+        return current.unknown_members or (current.raw is None and shared_present)
 
 
 @dataclass(frozen=True, slots=True)
@@ -543,8 +551,11 @@ def prepare_connection(
                 changes.extend(("install_plugin", "enable_plugin", "plugin_mcp"))
             elif before.state is not PluginArtifactState.ABSENT:
                 if shared.others and not shared.remove_shared:
-                    # Other projects keep the shared marketplace source and its plugin MCP.
-                    changes.append("uninstall_plugin")
+                    # Other projects keep the shared marketplace source and its plugin MCP. A
+                    # project whose own install is not discovered (only its Yoetz-era install
+                    # remains) has nothing of its own to uninstall; apply skips it too.
+                    if before.discovered:
+                        changes.append("uninstall_plugin")
                 else:
                     # This project's own install may already be gone (an earlier disconnect
                     # kept the shared pieces for a project since deleted): only they remain.
@@ -624,12 +635,16 @@ def prepare_connection(
             raise ConnectionError("connection_modified_plugin")
         # The user plugin (hooks, skill) serves every project under this config root; only the
         # project MCP entry is per project. The record names who still needs the plugin (#1058).
+        # An owned Yoetz-era ``plugins/local/yoetz`` tree is that shared plugin from before the
+        # rename: Yoetz 0.2 connected several projects to one config root and kept no record, so
+        # finding it without one makes membership unknown too (ADR-012, ADR-048).
         shared = SharedProjectsStep(
             installation.config_root,
             project,
             action,
             remove_shared=remove_shared,
-            shared_present=observed.state is not PluginArtifactState.ABSENT,
+            shared_present=observed.state is not PluginArtifactState.ABSENT
+            or observed.legacy_installation in _OWNED_LEGACY,
         )
         cursor_action = (
             PluginArtifactAction.REMOVE
@@ -704,6 +719,10 @@ def prepare_connection(
                 isolation_root=isolation_root,
                 known_launchers=recorded,
             )
+            shared_now = (
+                current.state is not PluginArtifactState.ABSENT
+                or current.legacy_installation in _OWNED_LEGACY
+            )
             return {
                 "installed": current.installed_digest == cursor_artifact.artifact_digest,
                 "enabled": None,
@@ -714,9 +733,9 @@ def prepare_connection(
                 "connection_observed": False,
                 "reload_required": action == "connect",
                 "project_mcp": registration,
-                **shared.status(),
+                **shared.status(shared_now),
                 **_cursor_observed_members(
-                    shared.status(),
+                    shared.status(shared_now),
                     installation.config_root,
                     project_target,
                     launcher,

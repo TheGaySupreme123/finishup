@@ -701,20 +701,36 @@ def _codex_duplicate_step(config_root: Path | None, project: Path) -> str:
 
 def _leftover_next_step(status: dict[str, JsonValue]) -> str | None:
     leftover = status.get("project_mcp_leftover")
+    servers = status.get("project_mcp_leftover_servers")
+    names = (
+        [str(item) for item in servers]
+        if isinstance(servers, list) and servers
+        else [MCP_SERVER_NAME]
+    )
+    tables = " and ".join(f"[mcp_servers.{name}]" for name in names)
     if leftover == "tools_only":
         return (
-            "This project's .codex/config.toml keeps a FinishUP tool-approval table for a server "
-            "that is no longer registered, so Codex cannot load its configuration here. Revoke "
-            "it, then accept the shown digest: " + str(status.get("next_command"))
+            f"This project's .codex/config.toml keeps a FinishUP tool-approval table ({tables}) "
+            "for a server that is no longer registered, so Codex cannot load its configuration "
+            "here. Revoke it, then accept the shown digest: " + str(status.get("next_command"))
         )
     if leftover == "retained_tables":
+        problem = (
+            f"This project's .codex/config.toml keeps {tables} tables that FinishUP did not "
+            "write (or that were edited), for a server that is no longer registered, so Codex "
+            "cannot load its configuration here. FinishUP does not edit them."
+        )
+        if names == [MCP_SERVER_NAME] and status.get("next_command") is not None:
+            return (
+                problem + " Either remove those tables from that file yourself, or connect the "
+                "project again so the server is registered: " + str(status.get("next_command"))
+            )
+        # FinishUP registers only the ``finishup`` server now, so connecting again never gives
+        # an earlier-name ``yoetz`` table its transport back (ADR-048).
         return (
-            "This project's .codex/config.toml keeps [mcp_servers."
-            + MCP_SERVER_NAME
-            + "] tables that FinishUP did not write (or that were edited), for a server that is no "
-            "longer registered, so Codex cannot load its configuration here. FinishUP does not "
-            "edit them. Either remove those tables from that file yourself, or connect the "
-            "project again so the server is registered: " + str(status.get("next_command"))
+            problem + " Remove those tables from that file yourself; FinishUP no longer "
+            "registers a server under the earlier name yoetz, so connecting again does not "
+            "restore it."
         )
     return None
 

@@ -359,6 +359,96 @@ def test_disconnect_keeps_registration_another_project_uses(
 
     assert fake.registered
     assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+    # The registration stays for another project's Codex configuration, not as this project's
+    # (#1058 review round 2 P1: reporting it as configured invited a re-run).
+    status = plan.status()
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
+
+
+def _deactivating_removal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connected project's removal plan: `remove` until apply, `already_absent` after."""
+
+    state = {"outcome": RemovalOutcome.REMOVE}
+
+    def preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            preview_digest=DIGEST,
+            outcome=state["outcome"],
+            possible_users=(),
+            shared_with=(),
+            rebind_to=None,
+            unserved_members=(),
+            keeps_shared=False,
+            missing_members=(),
+            legacy_removed_block="",
+            legacy_cache_versions=(),
+        )
+
+    def apply(*_args: object, **_kwargs: object) -> None:
+        state["outcome"] = RemovalOutcome.ALREADY_ABSENT
+
+    monkeypatch.setattr(codex_connection, "preview_removal", preview)
+    monkeypatch.setattr(codex_connection, "apply_removal", apply)
+
+
+def test_a_deactivated_project_does_not_report_a_registration_kept_for_another(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A connected project disconnects while another project's approval table needs the
+    transport: after apply it is neither enabled nor configured, and says the registration was
+    kept for others."""
+
+    home, project, installation = _layout(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir(mode=0o700)
+    _grant(other)
+    (home / "config.toml").write_text(
+        f'[projects."{project}"]\ntrust_level = "trusted"\n\n'
+        f'[projects."{other}"]\ntrust_level = "trusted"\n'
+    )
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+    _deactivating_removal(monkeypatch)
+
+    plan = _plan(installation, project)
+    assert "deactivate_plugin" in _items(plan.body["changes"])
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    plan.apply_reviewed_steps()
+
+    status = plan.status()
+    assert fake.registered
+    assert status["enabled"] is False
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
+
+
+def test_a_registration_kept_by_the_scan_bound_is_not_reported_as_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The only connected project in a home whose trust list exceeds the 32-project scan: the
+    unread projects keep the registration, which is then not this project's configuration."""
+
+    home, project, installation = _layout(tmp_path)
+    rows = [f'[projects."{project}"]\ntrust_level = "trusted"\n']
+    for index in range(40):
+        directory = tmp_path / f"p{index:02d}"
+        directory.mkdir(mode=0o700)
+        rows.append(f'[projects."{directory}"]\ntrust_level = "trusted"\n')
+    (home / "config.toml").write_text("\n".join(rows))
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+    _deactivating_removal(monkeypatch)
+
+    plan = _plan(installation, project)
+    assert "other_projects_partially_checked" in _items(plan.body["warnings"])
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    plan.apply_reviewed_steps()
+
+    status = plan.status()
+    assert fake.registered
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
 
 
 def test_plugin_only_or_own_transport_projects_do_not_hold_the_registration(
@@ -426,6 +516,9 @@ def test_incomplete_scan_keeps_the_transport(
     plan.apply_reviewed_steps()
     assert fake.registered
     assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+    status = plan.status()
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
 
     with pytest.raises(ConnectionError, match="connection_other_projects_need_registration"):
         codex_connection.prepare_codex_connection(
@@ -501,6 +594,80 @@ def test_transport_dependence_counts_the_earlier_key_only_when_it_is_removed(
     # ... while the exact Yoetz-written table goes with the admission sweep.
     assert project_transport_dependence(exact, after_sweep=False, names=both) == "depends"
     assert project_transport_dependence(exact, after_sweep=True, names=both) == "none"
+
+
+def _leftover_layout(
+    tmp_path: Path, project_config: str, user_config: str = ""
+) -> tuple[Path, Path]:
+    home, project = tmp_path / "home", tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text(user_config)
+    (project / ".codex" / "config.toml").write_text(project_config)
+    return home, project
+
+
+def test_leftover_detector_explains_the_yoetz_era_table(tmp_path: Path) -> None:
+    """ADR-048 x #1070: Yoetz 0.2.x disconnects never swept admission, so they left
+    `[mcp_servers.yoetz.tools.check]` behind and Codex refused to start in that project
+    ("invalid transport in `mcp_servers.yoetz`"). Status names it with the revoke that removes
+    it, as it does for the `finishup` table."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+    from finishup.application.host_connection import admission_revoke_arguments
+
+    home, project = _leftover_layout(tmp_path, CODEX_LEGACY_ADMISSION_TABLES[0])
+
+    assert codex_project_mcp_leftover(home, project) == "tools_only"
+    assert codex_connection.project_mcp_leftover_status(home, project) == {
+        "project_mcp_leftover": "tools_only",
+        "project_mcp_leftover_servers": ["yoetz"],
+        "next_arguments": admission_revoke_arguments("codex", project),
+    }
+    # A transport under the other key does not supply this one.
+    (home / "config.toml").write_text('[mcp_servers.finishup]\ncommand = "finishup"\n')
+    assert codex_project_mcp_leftover(home, project) == "tools_only"
+    # A user-level transport under the same key: Codex loads it, nothing is left over.
+    (home / "config.toml").write_text('[mcp_servers.yoetz]\ncommand = "yoetz"\n')
+    assert codex_project_mcp_leftover(home, project) is None
+    # The revoke the status names removes it.
+    preview = preview_host_admission(
+        "codex", project, HostAdmissionAction.REVOKE, route_profile=None, grant_permits=None
+    )
+    assert b"yoetz" not in preview.files_after[".codex/config.toml"]
+
+
+def test_an_edited_yoetz_era_table_is_named_with_its_own_repair(tmp_path: Path) -> None:
+    """A Yoetz-era table the owner edited cannot be revoked, and connecting again registers only
+    the `finishup` server, so the repair is editing the file; while an owned `yoetz` registration
+    still supplies the transport, status says a disconnect would need it."""
+
+    from finishup.cli import host_connection
+
+    edited = '[mcp_servers.yoetz.tools.check]\napproval_mode = "prompt"\n'
+    home, project = _leftover_layout(tmp_path, edited)
+
+    assert codex_project_mcp_leftover(home, project) == "retained_tables"
+    status = codex_connection.project_mcp_leftover_status(home, project)
+    assert status == {
+        "project_mcp_leftover": "retained_tables",
+        "project_mcp_leftover_servers": ["yoetz"],
+    }
+    step = host_connection._leftover_next_step(  # pyright: ignore[reportPrivateUsage]
+        host_connection._rendered_status(status)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert step is not None and "[mcp_servers.yoetz]" in step
+    assert "[mcp_servers.finishup]" not in step and "connect the project again" not in step
+
+    # An owned (FinishUP-shaped) `yoetz` registration supplies it: loads today, but a disconnect
+    # that removes that entry would stop at these tables.
+    (home / "config.toml").write_text(
+        '[mcp_servers.yoetz]\ncommand = "yoetz"\nargs = ["mcp", "serve", "--host", "codex"]\n'
+    )
+    assert codex_project_mcp_leftover(home, project) is None
+    assert codex_connection.project_mcp_leftover_status(home, project) == {
+        "project_mcp_needs_registration": True
+    }
 
 
 def test_leftover_detector_respects_user_transport(tmp_path: Path) -> None:
@@ -647,6 +814,55 @@ def test_a_legacy_only_admission_entry_is_disclosed_and_swept(tmp_path: Path) ->
     step.apply(True)
     assert cast(dict[str, Any], step.status()["admission_cleanup"])["outcome"] == "removed"
     assert not config.exists() or "yoetz" not in config.read_text()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # The project's own transport with an edited approval table: the surface is foreign.
+        '[mcp_servers.finishup]\ncommand = "finishup"\nargs = ["mcp", "serve", "--host", "codex"]\n\n'
+        '[mcp_servers.finishup.tools.check]\napproval_mode = "prompt"\n\n',
+        # An edited plugin-form table, no transport of its own.
+        '[plugins."finishup@finishup".mcp_servers.finishup.tools.check]\n'
+        'approval_mode = "prompt"\n\n',
+        # An exact external table beside an edited plugin-form table (the pre-rename analogue).
+        CODEX_EXTERNAL_ADMISSION_TABLE + "\n"
+        '[plugins."finishup@finishup".mcp_servers.finishup.tools.check]\n'
+        'approval_mode = "prompt"\n\n',
+    ],
+)
+def test_a_foreign_surface_is_neither_swept_nor_modeled_as_swept(
+    tmp_path: Path, content: str
+) -> None:
+    """The sweep never edits a foreign approval file, so an exact Yoetz-era (or FinishUP) table
+    in it stays: the plan must not claim `remove_project_admission`, and the after-sweep model
+    must still see the table that needs the transport."""
+
+    from finishup.adapters.integrations.codex_mcp import project_transport_dependence
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+    from finishup.application.host_connection import admission_cleanup_needed
+
+    project = tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    config = project / ".codex" / "config.toml"
+    config.write_text(content + CODEX_LEGACY_ADMISSION_TABLES[0])
+    config.chmod(0o600)
+    before = config.read_bytes()
+    both = ("finishup", "yoetz")
+    step = AdmissionCleanupStep(project)
+    body: dict[str, Any] = {"changes": []}
+
+    needed = step.plan(body, "codex", "disconnect")
+
+    cleanup = cast(dict[str, Any], step.disclosure["admission_cleanup"])
+    assert cleanup["state"] == "foreign"
+    assert needed is False and admission_cleanup_needed(cleanup) is False
+    assert body["changes"] == []
+    step.apply(needed)
+    assert config.read_bytes() == before
+    real = project_transport_dependence(project, after_sweep=False, names=both)
+    assert real == "depends"
+    assert project_transport_dependence(project, after_sweep=True, names=both) == real
 
 
 def test_admission_change_after_preview_makes_plan_stale(

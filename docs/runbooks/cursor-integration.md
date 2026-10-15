@@ -46,8 +46,9 @@ another live project remains removes only that project's MCP entry (the preview'
 the record. Status reports `connected_projects` (recorded) and `connected_projects_observed`
 (recorded projects whose own project MCP entry is still FinishUP's); a recorded project that is no
 longer observed keeps the plugin until `setup disconnect` runs for it, which forgets it. When the
-plugin is found without a record (it was set up by an earlier release, or the record was lost),
-other projects may use it that no record names: the record and every preview carry
+plugin is found without a record (it was set up by an earlier release, including a Yoetz-era
+`plugins/local/yoetz`, or the record was lost), other projects may use it that no record names:
+the record and every preview carry
 `membership_unknown`, an ordinary disconnect keeps the plugin, and among the setup commands only
 `setup disconnect --remove-shared` removes it. The low-level `integrate cursor plugin remove`
 removes the user plugin for every project by design; its preview (`--action remove`) names who
@@ -626,10 +627,25 @@ fails closed with `destination_conflict`; status shows the real state.
 With several projects connected to one configuration root (#1058), the legacy user tree is shared
 the same way as `plugins/local/finishup`: a disconnect that keeps the user plugin for other recorded
 projects (`shared_with`, or unknown membership) also keeps an owned `plugins/local/yoetz`, and the
-last disconnect, or `--remove-shared`, removes both. A legacy-only tree with no renamed plugin is
-not counted as shared pieces present, so a single-project disconnect still takes it. Recorded
-members whose project entry is still FinishUP's under the earlier `yoetz` key, proven by a
-marker-recorded launcher, count as observed connected.
+last disconnect, or `--remove-shared`, removes both. Yoetz 0.2 connected several projects to one
+configuration root and kept no record of them, so an owned `plugins/local/yoetz` alone (no renamed
+plugin, no record) counts as shared pieces found without a record: status and every preview carry
+`membership_unknown`, an ordinary disconnect removes only the project's MCP entry and keeps the
+tree, and only `setup disconnect --remove-shared` removes it (change `remove_legacy_plugin`). A
+connect that migrates it records the project with `unknown_members`, which later connects keep;
+the low-level `integrate cursor plugin preview --action remove` says `membership_unknown` too.
+Recorded members whose project entry is still FinishUP's under the earlier `yoetz` key, proven by
+a marker-recorded launcher, count as observed connected.
+
+Decisions from the 0.3 port review (2026-10-15), per host: Cursor's Yoetz-era rule above matches
+Codex, where Yoetz-era tables or an owned `yoetz` registration found without a record make
+membership uncertain and the project the legacy binding names counts as a member; Claude Code
+needs neither, since it lists every project's install itself. The transport-less
+`mcp_servers.yoetz` leftover diagnosis and the post-disconnect `shared_registration_retained`
+status are Codex-only: Cursor has no user-level transport a project table depends on, and its
+`configured` reads the project's own MCP entry. A disconnect never plans the admission sweep for a
+surface it does not edit (exact legacy entries count only on an otherwise absent
+`.cursor/permissions.json` or `.cursor/cli.json`, never on a foreign one), as for every host.
 
 **Project MCP migration.** A project entry under `yoetz` that launches this installation (its
 `finishup` script, its `yoetz` alias, or a launcher a FinishUP marker recorded) is owned but

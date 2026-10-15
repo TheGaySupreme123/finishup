@@ -210,9 +210,9 @@ class _LocalAuthenticationAttestation:
 class MacOSLocalAuthenticationPresence:
     """Service-side Touch ID / device-password presence for scoped reauthentication purposes."""
 
-    # Frozen legacy identifier (ADR-048): presence adapter ids share the `yoetz.` namespace with the
-    # released keyring and capability names that protocol 0.1 keeps.
-    adapter_id: Final = "yoetz.presence.macos-local-authentication"
+    # New in 0.3 and never stored, released or carried by a schema, so it uses the FinishUP spelling
+    # (ADR-048 §1); a runtime-support `user_presence_cells` row would name it this way.
+    adapter_id: Final = "finishup.presence.macos-local-authentication"
     profile_id: Final = "device-owner-authentication/1"
 
     def __init__(

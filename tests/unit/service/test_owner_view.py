@@ -176,3 +176,18 @@ def test_closed_connection_memory_stays_bounded_while_an_early_connection_lives(
     digest = owner_receipt_view_target_digest(owner_receipt_view_target(_REQUEST, early_nonce))
     grants.issue(digest, control_connection_digest(early_nonce))
     assert grants.consume(early, digest) is True
+
+
+def test_the_connection_digest_keeps_its_frozen_domain_bytes() -> None:
+    """ADR-048: the client and the service each derive this digest; a renamed domain prefix
+    (a prefixed SHA-256, not an HMAC key) would split a client from an older service."""
+
+    import hashlib
+
+    nonce = "a" * 64
+    expected = (
+        "sha256:"
+        + hashlib.sha256(b"yoetz.owner-view.control-connection/1\x00" + nonce.encode()).hexdigest()
+    )
+    assert control_connection_digest(nonce) == expected
+    assert expected == "sha256:b141b37b26c7ed3b2334c96e45f0364f421d1903c3d62d9feeee05836ac2190f"

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Final, Literal, Never, cast
 
 from finishup import __version__
+from finishup.adapters.integrations.codex_mcp import legacy_registration_shaped
 from finishup.adapters.integrations.codex_plugin import (
     PluginHookPresence,
     inspect_plugin,
@@ -795,6 +796,82 @@ def _legacy_marketplace_table(project: Path) -> str:
     )
 
 
+def _exact_legacy_binding(config_raw: bytes, config: Mapping[str, object]) -> str | None:
+    """The project a byte-identical ``[marketplaces.yoetz]`` table names, if any (ADR-048)."""
+
+    marketplaces = config.get("marketplaces")
+    row = (
+        cast(Mapping[str, object], marketplaces).get(_LEGACY_MARKETPLACE_NAME)
+        if isinstance(marketplaces, Mapping)
+        else None
+    )
+    if not isinstance(row, Mapping):
+        return None
+    table = cast(Mapping[str, object], row)
+    source = table.get("source")
+    if (
+        type(source) is not str
+        or not Path(source).is_absolute()
+        or dict(table) != {"source_type": "local", "source": source}
+        or exact_table_span(config_raw, _legacy_marketplace_table(Path(source))) is None
+    ):
+        return None
+    return source
+
+
+def _holds_legacy_activation(anchor: Path) -> bool:
+    """Whether a live checkout still serves the exact Yoetz-era marketplace document."""
+
+    try:
+        if anchor.is_symlink() or not anchor.is_dir() or anchor.resolve() != anchor:
+            return False
+        snapshot = _load_marketplace(anchor / _MARKETPLACE_RELATIVE_PATH)
+    except IntegrationError, OSError:
+        return False
+    return snapshot is not None and snapshot[0] == _legacy_marketplace_bytes()
+
+
+def _legacy_member(config_raw: bytes, config: Mapping[str, object]) -> str | None:
+    """The Yoetz-era bound project that still holds its own activation, if any (ADR-048).
+
+    Yoetz 0.1-0.2 bound one project per home with ``[marketplaces.yoetz]`` and registered the
+    user-level MCP server every project in the home uses, but kept no record. The project a
+    byte-identical legacy marketplace table names, while its checkout still serves the exact
+    legacy marketplace document, therefore uses the home's shared registration like a connected
+    project: another project's connect records it, another project's disconnect keeps the
+    registration for it, and status reports it. It never anchors the FinishUP binding (it does
+    not serve FinishUP's manifest), and its legacy activation stays its own.
+    """
+
+    source = _exact_legacy_binding(config_raw, config)
+    return source if source is not None and _holds_legacy_activation(Path(source)) else None
+
+
+def _legacy_pieces_present(config_raw: bytes, config: Mapping[str, object]) -> bool:
+    """Whether the home holds Yoetz-era shared pieces (ADR-048).
+
+    An exact legacy marketplace or plugin table, or a FinishUP-shaped user-level ``yoetz``
+    registration. Found without a record they make membership uncertain, as shared pieces of an
+    earlier release do: Yoetz kept no record of the projects that used them.
+    """
+
+    if _exact_legacy_binding(config_raw, config) is not None:
+        return True
+    plugins = config.get("plugins")
+    plugin = (
+        cast(Mapping[str, object], plugins).get(_LEGACY_PLUGIN_ID)
+        if isinstance(plugins, Mapping)
+        else None
+    )
+    if (
+        isinstance(plugin, Mapping)
+        and dict(cast(Mapping[str, object], plugin)) == {"enabled": True}
+        and exact_table_span(config_raw, _LEGACY_PLUGIN_TABLE) is not None
+    ):
+        return True
+    return legacy_registration_shaped(config)
+
+
 def _legacy_config_plan(
     raw: bytes, config: Mapping[str, object], project: Path
 ) -> tuple[bool, bool, bytes]:
@@ -1060,35 +1137,45 @@ def _member(project: Path, relation: _Relation, members: tuple[str, ...]) -> boo
 def connected_projects(codex_home: Path | str | None) -> tuple[str, ...]:
     """Every verified member of this Codex home: the record's projects and the bound project.
 
-    Includes members whose checkout is gone or no longer serves the manifest; status and
-    previews use ``serving_projects``.
+    The bound project includes a Yoetz-era one still holding its activation (``_legacy_member``,
+    ADR-048). Includes members whose checkout is gone or no longer serves the manifest; status
+    and previews use ``serving_projects``.
     """
 
     home = _codex_root(codex_home)
     projects = set(_load_projects(home).projects)
-    _raw, config = _load_config(home / "config.toml")
+    raw, config = _load_config(home / "config.toml")
     marketplaces = _table(config, "marketplaces")
     marketplace = None if marketplaces is None else marketplaces.get(_MARKETPLACE_NAME)
     if isinstance(marketplace, Mapping):
         source = cast(Mapping[str, object], marketplace).get("source")
         if type(source) is str and Path(source).is_absolute():
             projects.add(source)
+    # A Yoetz-era bound project still holding its activation uses the shared registration.
+    legacy = _legacy_member(raw, config)
+    if legacy is not None:
+        projects.add(legacy)
     return tuple(sorted(projects))
 
 
 def serving_projects(codex_home: Path | str | None) -> tuple[str, ...]:
     """Verified members whose checkout still exists and serves the exact FinishUP manifest.
 
-    A deleted project, or one whose manifest is gone (a binding to it makes Codex fail every
-    plugin command), is not reported as connected (#1058 review, P2-2).
+    A Yoetz-era bound project serves its own exact legacy marketplace document instead
+    (ADR-048). A deleted project, or one whose manifest is gone (a binding to it makes Codex fail
+    every plugin command), is not reported as connected (#1058 review, P2-2).
     """
 
-    members = connected_projects(codex_home)
-    live = set(live_projects(members, excluding=Path(_codex_root(codex_home).anchor)))
+    home = _codex_root(codex_home)
+    members = connected_projects(home)
+    raw, config = _load_config(home / "config.toml")
+    # A Yoetz-era bound project serves its own legacy activation (ADR-048).
+    legacy = _legacy_member(raw, config)
+    live = set(live_projects(members, excluding=Path(home.anchor)))
     return tuple(
         member
         for member in members
-        if member in live and _anchor_manifest_state(Path(member)) == "serves"
+        if member in live and (member == legacy or _anchor_manifest_state(Path(member)) == "serves")
     )
 
 
@@ -1127,12 +1214,15 @@ def possible_projects(codex_home: Path | str | None) -> tuple[str, ...]:
 
     home = _codex_root(codex_home)
     snapshot = _load_projects(home)
-    _raw, config = _load_config(home / "config.toml")
+    raw, config = _load_config(home / "config.toml")
     marketplaces = _table(config, "marketplaces")
     marketplace = None if marketplaces is None else marketplaces.get(_MARKETPLACE_NAME)
     plugins = _table(config, "plugins")
-    shared_present = marketplace is not None or (
-        plugins is not None and plugins.get(_PLUGIN_ID) is not None
+    shared_present = (
+        marketplace is not None
+        or (plugins is not None and plugins.get(_PLUGIN_ID) is not None)
+        # Yoetz-era shared pieces count too: Yoetz kept no record of who used them (ADR-048).
+        or _legacy_pieces_present(raw, config)
     )
     if not shared_present:
         # Nothing shared is left to keep for anyone.
@@ -1678,9 +1768,19 @@ def _activation_plan(
     if relation == "shared":
         # A home bound before #1058 has no record; its bound project stays connected.
         projects_after = tuple(sorted({*projects_after, source}))
-    # A missing record with shared pieces present (a lost record), or one already marked, keeps
-    # its uncertainty while trusted checkouts that might use those pieces exist (round 3), and
-    # earlier members this installation recorded keep it whatever the record says (review P2-4).
+    legacy_member = _legacy_member(config_bytes, config)
+    if (
+        legacy_member is not None
+        and legacy_member != str(project)
+        and not same_directory(Path(legacy_member), project)
+    ):
+        # The Yoetz-era bound project uses the user-level registration this connect migrates
+        # and keeps using it; it is recorded as connected, never made the anchor (ADR-048).
+        projects_after = tuple(sorted({*projects_after, legacy_member}))
+    # A missing record with shared pieces present (a lost record, or Yoetz-era pieces: Yoetz
+    # kept no record), or one already marked, keeps its uncertainty while trusted checkouts that
+    # might use those pieces exist (round 3), and earlier members this installation recorded
+    # keep it whatever the record says (review P2-4).
     unknown_after = bool(
         _possible_users(
             config,
@@ -1688,7 +1788,13 @@ def _activation_plan(
             projects_after,
             home=home,
             uncertain=projects_before.unknown_members
-            or (projects_before.raw is None and relation in {"self", "shared", "missing"}),
+            or (
+                projects_before.raw is None
+                and (
+                    relation in {"self", "shared", "missing"}
+                    or _legacy_pieces_present(config_bytes, config)
+                )
+            ),
         )
     )
     plugin_source_digest = _plugin_source_digest(codex_version=binary.codex_version)
@@ -2739,10 +2845,12 @@ def _removal_plan(
         unknown_after = False
     # Recorded projects (and a dangling anchor) whose directory exists but that do not serve the manifest right now:
     # a removal takes the shared pieces from them too, a detach keeps them for them.
+    # A Yoetz-era bound project serves its own legacy activation; it is not missing files.
+    legacy_member = _legacy_member(config_bytes, config)
     unserved: tuple[str, ...] = tuple(
         candidate
         for candidate in live_recorded
-        if _anchor_manifest_state(Path(candidate)) != "serves"
+        if candidate != legacy_member and _anchor_manifest_state(Path(candidate)) != "serves"
     )
     # The dangling binding's project whose directory is missing right now: the reason a
     # non-member's disconnect keeps the shared pieces when no recorded project is live.

@@ -229,7 +229,7 @@ async def test_capability_on_macos_is_active_but_matches_no_release_cell() -> No
     # Keyring first-install authority needs a qualified runtime-support row; this adapter
     # deliberately names none.
     assert capability.release_cell == "unqualified"
-    assert capability.adapter_id == "yoetz.presence.macos-local-authentication"
+    assert capability.adapter_id == "finishup.presence.macos-local-authentication"
 
 
 async def test_an_attestation_is_bound_to_its_exact_challenge_and_expires() -> None:

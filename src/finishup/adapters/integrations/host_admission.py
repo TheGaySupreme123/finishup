@@ -83,6 +83,7 @@ __all__ = [
     "McpOwnerForm",
     "admission_surfaces",
     "apply_host_admission",
+    "codex_sweep_edits",
     "observe_host_admission",
     "preview_host_admission",
     "sweep_host_admission",
@@ -758,6 +759,20 @@ def _codex_legacy_tables(raw: bytes, parsed: Mapping[str, object]) -> tuple[str,
         ):
             found.append(table.splitlines()[0])
     return tuple(sorted(found))
+
+
+def codex_sweep_edits(raw: bytes) -> bool:
+    """Whether a revoke or disconnect sweep edits a Codex approval file holding ``raw``.
+
+    The sweep edits a surface that carries an exact FinishUP table, or an otherwise absent one
+    that carries an exact legacy table (ADR-048); a foreign or unparsable surface is never
+    edited, so a caller modeling the file after the sweep strips nothing from it.
+    """
+
+    entry = _observe_codex(_Read(raw, None), None)
+    return entry.state is HostAdmissionState.PRESENT or (
+        entry.state is HostAdmissionState.ABSENT and bool(entry.legacy_entries)
+    )
 
 
 def _codex_table(owner: McpOwnerForm | None) -> str:

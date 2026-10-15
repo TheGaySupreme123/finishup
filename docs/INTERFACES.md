@@ -3593,7 +3593,8 @@ from the confirmation code. The helper's single stdout token (`approved`, `cance
 `unavailable`, `timeout`, optionally newline-terminated, exit status 0) is parsed exactly; anything
 else is `unavailable`. `approved` yields an opaque, unpicklable attestation bound to the exact
 `UserPresenceChallenge`, consumed once within 30 seconds. Its `UserPresenceCapability` names
-`adapter_id="yoetz.presence.macos-local-authentication"`,
+`adapter_id="finishup.presence.macos-local-authentication"` (the FinishUP spelling: new in 0.3 and
+never stored, released or carried by a schema, ADR-048 §1),
 `profile_id="device-owner-authentication/1"`, `release_cell="unqualified"`, and the helper digest
 as both evidence digests, so it never satisfies a runtime-support `user_presence_cells` row. `UnlockCoordinator` exclusively owns the durable passphrase throttle and calls the vault
 only after admission/reservation; `unlock_rate_limited` is therefore a coordinator outcome and not
@@ -6711,8 +6712,10 @@ reports it as `admission_cleanup` and its preview discloses the same, including 
 MCP registration action is already a `noop`. A disconnect plan lists the change token
 `remove_project_admission`; because the released `yoetz.host-connection-plan/1` body is closed,
 the cleanup detail (`admission_cleanup`: per-surface state and file digest, plus `legacy_entries`
-naming exact pre-rename entries the same sweep removes, ADR-048; a surface holding only those still
-plans the sweep) and, for Codex,
+naming exact pre-rename entries, ADR-048; an otherwise `absent` surface holding only those still
+plans the sweep, while a `foreign` surface never does: the sweep never edits one, so
+`admission_cleanup_needed` counts `legacy_entries` only on an `absent` surface, as
+`cli/host_admission.admission_cleanup_preview` does) and, for Codex,
 `admission_other_projects` travel in the preview report's `status` and are folded into
 `preview_digest` (a grant or revoke after preview makes the plan stale). Apply sweeps before any
 registration removal; a sweep that ends `unknown|write_failed` stops the disconnect as
@@ -6720,10 +6723,13 @@ registration removal; a sweep that ends `unknown|write_failed` stops the disconn
 unreadable observation) refuses the same way when the plan is prepared and again before the sweep,
 whatever else the surfaces hold, with `status.admission_unreadable_surfaces`. Codex additionally
 projects the project's `.codex/config.toml` after the sweep (`codex_mcp.project_transport_dependence`
-`none|depends|unknown`): when it removes the user-level transport and `depends`, preparation
-refuses `connection_project_mcp_tables_retained` (`status.project_mcp_retained`); when the
-unregistration also removes an owned entry under the earlier `yoetz` key, `mcp_servers.yoetz` tables
-count too (`names`), after the exact legacy tables are swept. Other projects
+`none|depends|unknown`; `after_sweep` strips the exact FinishUP and legacy tables only from a
+surface the sweep edits, `host_admission.codex_sweep_edits(raw)`: `present`, or `absent` with exact
+legacy entries, so a foreign surface is modeled unchanged): when it removes the user-level
+transport and `depends`, preparation refuses `connection_project_mcp_tables_retained`
+(`status.project_mcp_retained`); when the unregistration also removes an owned entry under the
+earlier `yoetz` key, `mcp_servers.yoetz` tables count too (`names`), after the exact legacy tables
+are swept. Other projects
 whose layer `depends` (or is `unknown`) keep the transport: `status.admission_other_projects`
 entries carry `project_root`, `dependence`, and a revoke `next_command` only when exact FinishUP
 tables alone remain; warning `mcp_registration_kept_for_other_projects`; a bound of 32 inspected
@@ -6733,9 +6739,19 @@ an incomplete read keeps the transport (`--remove-shared` refuses). `setup disco
 `remove_shared: true`, carried by the continuation) removes the shared pieces for every project and
 refuses `connection_other_projects_need_registration` while one still depends. Codex reports
 `status.project_config_load: loads|fails|unknown`; `fails` is
-`connection_project_config_unloadable`; `project_mcp_leftover` is `tools_only` (revoke) or
-`retained_tables` (reconnect), and status adds `project_mcp_needs_registration` while it loads. `setup status --host codex` reports a transport-less project
-`mcp_servers.finishup` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
+`connection_project_config_unloadable`. `codex_mcp.codex_project_mcp_leftovers(home, project)` reads
+both server keys, `finishup` and the earlier `yoetz` (whose exact `[mcp_servers.yoetz.tools.check]`
+a Yoetz 0.2.x `integrate codex admission grant` wrote and a Yoetz 0.2.x disconnect left behind,
+ADR-048), and names each key whose project table has no `command` or `url` in the project or the
+user layer; `project_mcp_leftover` is `tools_only` when only exact approval tables remain and
+`retained_tables` otherwise, and `project_mcp_leftover_servers` lists the keys. The continuation
+(`next_command`) is the admission revoke for `tools_only`, the reconnect for `retained_tables` under
+`finishup` alone, and none for a retained `yoetz` table (FinishUP no longer registers that key; the
+step names the file to edit). While it loads, status adds `project_mcp_needs_registration` when the
+tables need the transport, counting `yoetz` tables while an owned `yoetz` registration supplies
+them (the observed `legacy_registration`, or statically a FinishUP-shaped entry,
+`codex_mcp.legacy_registration_shaped`). `setup status --host codex` and every failed Codex setup
+command report such a leftover.
 Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
 `<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, a frozen
 literal that does not follow `MCP_SERVER_NAME`; canonical JSON `{"projects": [<absolute roots>]}`
@@ -6763,10 +6779,19 @@ names the lock folder). Verified members are the record's projects plus, for Cod
 the `[marketplaces.finishup]` binding names; only they are recorded, anchor the binding, or keep a
 disconnect `detach`; `codex_marketplace.serving_projects(home)` (status `codex_home_projects`,
 `shared_with`, `shared_removed_from`) lists those whose checkout still exists and serves the
-manifest. Possible users (Codex only), each a live checkout serving the exact manifest and a
+manifest. A Codex project a byte-identical `[marketplaces.yoetz]` table names while its checkout
+still serves the exact Yoetz-era marketplace document (`codex_marketplace._legacy_member`, ADR-048)
+is a verified member too: Yoetz bound one project per home and registered the user-level server
+every project uses without a record, so another project's connect records it, `connected_projects`
+and `serving_projects` list it (serving its own legacy activation), `other_members` names it, and a
+disconnect keeps the user-level registration for it; it never anchors the FinishUP binding or makes
+a disconnect `detach` (it does not serve FinishUP's manifest), and it is not `unserved_members`. Possible users (Codex only), each a live checkout serving the exact manifest and a
 marker-valid plugin source and never a verified member under any path spelling: the witness's
-projects, always; and, while the record is missing with shared pieces present or marked
-`unknown_members`, `[projects."<path>"]` rows with `trust_level = "trusted"`;
+projects, always; and, while the record is missing with shared pieces present (including Yoetz-era
+ones: a byte-identical `[marketplaces.yoetz]` or `[plugins."yoetz@yoetz"]` table, or a
+FinishUP-shaped `[mcp_servers.yoetz]` entry) or marked `unknown_members`, `[projects."<path>"]`
+rows with `trust_level = "trusted"`; the same Yoetz-era pieces found without a record make a
+connect record `unknown_members` while such a possible user exists;
 `codex_marketplace.possible_projects(home)` lists them,
 `RemovalPreview.possible_users` carries them (bound into the removal digest with `unknown_after`),
 status adds `codex_home_possible_projects` and `membership_unknown: true`, and the connect and
@@ -6778,7 +6803,10 @@ never anchor: a disconnect that would leave possible users and no verified membe
 `IntegrationReason.REMOVE_REFUSED` with `conflict: membership_unverified`, reported by the CLI as
 reason `membership_unverified` with reconnect and `--remove-shared` continuations. Cursor
 discloses `membership_unknown` and keeps the shared plugin while it is set (status reports it
-before any record exists), and its status adds `connected_projects_observed`; Claude Code's own `plugin list` rows (one
+before any record exists, reading whether shared pieces exist when it is asked); an owned Yoetz-era
+`plugins/local/yoetz` counts as shared pieces present (`SharedProjectsStep(shared_present=...)`,
+ADR-048), as it does for `integrate cursor plugin preview --action remove`; and its status adds
+`connected_projects_observed`; Claude Code's own `plugin list` rows (one
 `projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
 (Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
 forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
@@ -6827,7 +6855,10 @@ users) is non-empty, a non-member's disconnect finds another live recorded proje
 manifest or not), or membership is unknown; also for an already detached or never-connected
 project (`retained`, `shared_with` naming those projects, in the plan and the status, plus
 `membership_unknown`; post-apply status `configured: false`, `shared_registration_retained:
-true`). `other_members` returns `((), ())` only for a home that does not exist and raises
+true`). A disconnect that keeps the registration for other projects' own Codex configuration
+(`admission_other_projects`, or a scan stopped at its bound of 32) reports the same post-apply
+status: a project that is not connected reports `configured` only while its plan still removes the
+registration. `other_members` returns `((), ())` only for a home that does not exist and raises
 `IntegrationError` when membership cannot be read; callers treat that as unknown. A damaged
 membership witness (`host_projects.recorded_members`) names no one rather than raising. When the
 kept pieces serve the dangling binding's project whose directory is missing right now,

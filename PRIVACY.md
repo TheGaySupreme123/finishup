@@ -334,12 +334,12 @@ every profile, `full_local` included: a format or profile is not a disclosure gr
 
 The token can be longer than the name it replaces. A field that would then pass its wire bound
 (32,768 characters for `human_text`, at least its original length for a document field) or the
-16 KiB per-item privacy bound is cut deterministically at a whole token and ends with a visible
-`[receipt text truncated after withholding: N characters not shown]` marker; only text already
-past the withholding is dropped, and the audit still records every per-name decision.
+16 KiB per-item privacy bound is cut at a whole token, the same way every time, and ends with a
+visible `[receipt text truncated after withholding: N characters not shown]` marker; only text
+already past the withholding is dropped, and the audit still records every per-name decision.
 `privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
-bound the list coalesces deterministically to containing fields, so a large receipt still renders;
-the local disclosure audit keeps one decision per name and field
+bound the list coalesces to containing fields, the same way every time, so a large receipt still
+renders; the local disclosure audit keeps one decision per name and field
 (`<field pointer>/@repository_name/<name index>`). The digest and object ID identify the unchanged
 stored owner receipt. An earlier stored receipt meets the same rule when reread, with name
 provenance read at the current ledger head, so redacting the publication that spelled a name

@@ -477,7 +477,20 @@ row and its declaration) whether or not other projects keep the shared `finishup
 the shared-source decision counts only `finishup@finishup-local` rows, so another project's legacy
 install neither keeps nor loses the renamed source. When other projects keep the renamed source,
 the disconnect also drops this project's own `finishup-local` declaration; the operation reaches
-`completed` only once the legacy install reads `absent` as well.
+`completed` only once the legacy install reads `absent` as well. A project whose only install is
+its Yoetz-era one (it reads `duplicate` beside another project's renamed install, with nothing of
+its own discovered) plans only `remove_legacy_plugin`: there is no FinishUP install of its own to
+uninstall, and apply skips that uninstall too.
+
+Decisions from the 0.3 port review (2026-10-15), per host: Claude Code lists every project-scope
+install itself (`claude plugin list`), so there is no Yoetz-era membership to infer here; that is
+the Codex and Cursor rule that a Yoetz-era shared piece found without a record makes membership
+unknown (Cursor's `plugins/local/yoetz`; Codex's legacy tables and `yoetz` registration, whose
+bound project counts as a member). The transport-less `mcp_servers.yoetz` leftover diagnosis is
+Codex-only: a stale Claude approval entry does not stop Claude Code from loading its
+configuration. The rule that a disconnect never claims the admission sweep for a surface it does
+not edit (exact legacy entries count only on an otherwise absent surface, never on a foreign one)
+applies to Claude Code's `.claude/settings.local.json` as to every host.
 
 The one exception is an in-place update: `plugin update --marketplace-root <.../yoetz-local>` (the
 upgrade plan's form for an old install) names the old folder itself, which the renamed tree then

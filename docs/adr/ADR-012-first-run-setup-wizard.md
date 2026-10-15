@@ -503,7 +503,13 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
      `[marketplaces.finishup]` binding names (a home bound before this amendment has no record, and
      earlier releases served one project per home). Only a verified member is recorded by a later
      connect, becomes the Codex binding's anchor, or makes a disconnect `detach`. Status and
-     previews name only members whose checkout still exists and serves the manifest.
+     previews name only members whose checkout still exists and serves the manifest. The real
+     earlier release is Yoetz (ADR-048), whose Codex binding was `[marketplaces.yoetz]`: the project
+     a byte-identical legacy table names, while its checkout still serves the exact Yoetz-era
+     marketplace document, is a verified member of the shared user-level registration (recorded by
+     another project's connect, kept for on another project's disconnect, listed in status), but
+     never the FinishUP binding's anchor and never what makes a disconnect `detach`, since it does
+     not serve FinishUP's manifest (2026-10-15 port review).
    - *Possible users* (Codex) are live checkouts that serve the exact FinishUP manifest and a plugin
      source matching its own install marker, never a verified member under any spelling of its
      path, from two sources: the witness's projects, always, so a record deleted by hand or lost
@@ -517,7 +523,10 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
      no witness for the root (it was written by another installation, or this state directory was
      reset) falls back to the binding and trusted checkouts only. Cursor has no equivalent list:
      shared pieces found without a record make membership unknown, and that state survives later
-     connects. Status (Codex `codex_home_possible_projects` and `membership_unknown`; Cursor
+     connects. Yoetz-era shared pieces count (Yoetz kept no record and connected several Cursor
+     projects to one configuration root): Cursor's owned `plugins/local/yoetz`, and for Codex a
+     byte-identical `[marketplaces.yoetz]` or `[plugins."yoetz@yoetz"]` table or a FinishUP-shaped
+     `[mcp_servers.yoetz]` entry, also when only one project used them. Status (Codex `codex_home_possible_projects` and `membership_unknown`; Cursor
      `membership_unknown`) and every preview (`membership_unknown`, plus Codex `possible_users`,
      also in `integrate codex plugin preview`) disclose it.
 3. **Reverse path.** Disconnecting a project while another verified live member remains removes
@@ -566,7 +575,10 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    disconnect itself while its directory is gone (triage, 2026-10-15). `setup status --host codex`
    uses the same split: only a connected project (activation `active`) reports `enabled` and
    `configured`; for a detached or never-connected one the shared registration is
-   `shared_registration_retained`. Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
+   `shared_registration_retained`. The disconnect status follows it whatever kept the registration
+   (other projects' use of the shared pieces, another project's own Codex configuration, or a scan
+   stopped at its bound): a project that is not connected reports `configured` only while its plan
+   still removes the registration. Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
    that stopped at its bound of 32, keep them on an ordinary disconnect. A Codex disconnect that
    would leave possible users but no verified member to carry the binding refuses before any
    change (`remove_refused` with `conflict: membership_unverified`; CLI reason
