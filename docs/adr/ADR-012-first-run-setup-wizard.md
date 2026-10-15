@@ -224,7 +224,8 @@ exactly those contracts and connects the steps without weakening any existing tr
    `--route-profile strict|policy`. Without that input, an existing yoetz-owned registration keeps
    its observed route — the structural configuration derivation (including its fail-closed
    exception fallback) applies only to a fresh registration, and non-interactive `--accept` alone
-   never changes an existing route. The interactive wizard still derives the route from the
+   never changes an existing route (guided `setup run|status|disconnect --host codex` too since
+   2026-10-15; see "Several projects in one host configuration", item 5). The interactive wizard still derives the route from the
    review-mode answer, and any transition of an existing owned route is shown in the confirmed
    preview and reported as `route_profile_before` → `route_profile`. Separately, when an explicit
    Codex home was supplied, the registration and readiness `plugin_activation` blocks echo the
@@ -530,7 +531,19 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    serving verified member or a possible user), whatever this project's own state: re-running
    the disconnect of an already detached project, or disconnecting one that never connected,
    leaves it (disclosed as retained, with `shared_with`), and a detached project does not report
-   `configured` (2026-10-15 review round 2). Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
+   `configured` (2026-10-15 review round 2). That also holds while another recorded project's
+   directory exists but its plugin files are absent right now (a branch switch, `git clean`, an
+   unmounted volume): a project the record does not name removes only its own pieces, the
+   removal plan says it keeps the shared ones (`keeps_shared`, also when its outcome is
+   `already_absent`), and the disclosure names the projects they stay for (`shared_with`); with
+   the binding removed by hand, a member detaches while another recorded member serves, keeping
+   the plugin table, cache and record. Membership that cannot be read (an unsafe witness, a
+   symlinked or unsafe home) is unknown, never "nobody else": an ordinary disconnect keeps the
+   registration and says so (`membership_unknown`); a record that cannot be read still stops
+   setup as `connection_projects_record_invalid` (review round 3). `setup status --host codex`
+   uses the same split: only a connected project (activation `active`) reports `enabled` and
+   `configured`; for a detached or never-connected one the shared registration is
+   `shared_registration_retained`. Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
    that stopped at its bound of 32, keep them on an ordinary disconnect. A Codex disconnect that
    would leave possible users but no verified member to carry the binding refuses before any
    change (`remove_refused` with `conflict: membership_unverified`; CLI reason
@@ -578,6 +591,26 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    (ADR-009), and the hybrid default (#1068) moves new setups to `policy` for every review
    choice, where a flag would fire on every upgrade. A registration from another Yoetz
    installation stays `foreign_entry_present`.
+   Review round 3 (2026-10-15): the current mode is read from the registration itself
+   (`observe`), never inferred from a planned re-registration, which may change only the
+   launcher or isolation root (a legacy bare `yoetz mcp serve ... --semantic off` entry stays
+   local only). Membership that cannot be read is unknown, not "no other projects": a mode change
+   then reports `membership_unknown: true`, which the preview digest binds, so the historical
+   wizard and `integrate codex mcp install` refuse a bare `--accept`
+   (`route_change_affects_other_projects`), and `setup run --host codex` and the TUI stop before
+   any change (`connection_projects_record_invalid`, adapter `source_invalid`);
+   `integrate codex mcp preview-remove|remove` report it with the shared warning and bind it. The
+   refusal names the exact preview command, with the same `--route-profile`.
+   *Missing route input.* Without `--route-profile`, non-interactive `setup run|status|disconnect
+   --host codex` (and `setup status --next` outside `--operation review`) keep the home's
+   registered mode, read from its Yoetz-owned registration, as the historical wizard and
+   `integrate codex mcp` already did (#389); only a fresh home (no Yoetz registration) registers
+   `strict`, so fresh-home behaviour is unchanged. Claude Code and Cursor still use `strict`
+   without the flag. An interactive answer is explicit route input: today it registers `strict`
+   or `policy` from the review-mode choice, and under the hybrid default (#1068, release branch)
+   every interactive answer registers `policy`. Either way a change to a home that other projects
+   use goes through the disclosure above, and a non-interactive fresh registration stays
+   `strict`.
 6. **One setup at a time per configuration root.** Every setup apply for any host through
    `apply_connection` (`setup run|disconnect`, `/connect` for Claude Code and Cursor) holds an
    exclusive `flock` from plan revalidation through the shared changes and the record update, so

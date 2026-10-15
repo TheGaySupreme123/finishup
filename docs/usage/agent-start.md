@@ -25,12 +25,14 @@ starts normally in that project afterwards; if it cannot do that safely (an appr
 read, or approval settings you added yourself), it stops before changing anything and says which
 file to fix. Other projects connected to the same agent installation keep working: a disconnect
 keeps what the projects Yoetz knows of still use, also when you run it again or for a project
-that was never connected, and only `setup disconnect --remove-shared` removes it for all of them
-(the preview names who stops using Yoetz). When Yoetz cannot verify which projects use those
+that was never connected, and among the setup commands only `setup disconnect --remove-shared`
+removes it for all of them (the preview names who stops using Yoetz). When Yoetz cannot verify which projects use those
 shared pieces, it keeps them; a Codex disconnect may then stop and ask you to connect the project
 you use again first. Connecting a project with another review mode changes it for the other
 projects of that Codex installation or Claude Code configuration; every setup preview says so,
-and an unattended `--accept` that would change them stops and asks for the reviewed preview.
+and an unattended `--accept` that would change them stops and asks for the reviewed preview. An
+unattended Codex setup that names no review mode keeps the one that Codex installation already
+uses (local only for a new one).
 For Codex, the preview also names other projects whose configuration uses the Yoetz server and says when it
 could not check them all. Claude/Cursor connection can require an OS-authenticated local prompt;
 hand the exact continuation to a trusted local terminal when your host cannot provide it.

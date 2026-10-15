@@ -61,7 +61,14 @@ of a project whose directory was deleted; Yoetz counts only live projects, in th
 apply alike, so such a row holds nothing open and the last live project's disconnect (an unscoped
 `marketplace remove`) clears it too. A disconnect whose own project-scope install is already gone
 (Claude Code refuses to uninstall it again) plans only `remove_marketplace` and
-`remove_plugin_mcp`. The shared source carries the plugin MCP server's review mode for every
+`remove_plugin_mcp`. Known gap (recorded 2026-10-15, #1058 review round 3; follow-up on #1058):
+such a project, or one that never had an install, can still remove the shared marketplace and
+source while the only other project's directory is missing for now (an unmounted volume, a
+moved checkout), because a missing directory counts as not live. Codex keeps the shared pieces
+in that case (its binding still names the missing project, and only a connected project may
+remove such a binding); Claude Code has no equivalent anchor yet. The unscoped marketplace
+removal also removes that project's install, so when its directory returns it needs connecting
+again. The preview names `remove_marketplace` before approval. The shared source carries the plugin MCP server's review mode for every
 project's install: connecting a project on another review mode re-renders it for all of them, and
 the preview names them (`status.route_profile_before`, `status.route_changes_for`, and a summary
 sentence with both modes). `integrate claude plugin preview` reports the same keys and sentence
@@ -95,7 +102,7 @@ preview were also read through the real CLI and agreed.
 | Connect A and B; `rm -rf A`; disconnect B (2026-10-15) | the plan is `uninstall_plugin`, `remove_marketplace`, `remove_plugin_mcp`; apply removes the marketplace, and `claude plugin list` no longer shows A's dead row |
 | Connect A and B; `rm -rf A`; `claude plugin uninstall --scope project` in B; disconnect B | a second uninstall fails in Claude Code 2.1.300 (`not installed in project scope`); the plan is `remove_marketplace`, `remove_plugin_mcp` and completes with no marketplace left |
 | Connect A on `strict`; connect B on `policy` | B's plan discloses `route_profile_before: strict`, `route_changes_for: [A]`; the shared source's `.mcp.json` then runs the policy route |
-| Then `integrate claude plugin preview --action update --route-profile strict` in A (round 2) | `route_profile_before: policy`, `route_changes_for: [B]` |
+| Then `integrate claude plugin preview --claude-path ... --claude-config-root ... --cache-root ... --marketplace-root ... --project-root A --mcp-ownership plugin-managed --route-profile strict --action update` (round 2) | `route_profile_before: policy`, `route_changes_for: [B]`. A route profile needs `--mcp-ownership plugin-managed`; without it the command refuses as `claude_code_mcp_route_forbidden` |
 
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The

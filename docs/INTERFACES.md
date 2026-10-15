@@ -6557,17 +6557,37 @@ route_changes_possible_for`); in the historical Codex wizard report, which refus
 `preview_digest` then binds them (`canonical_digest({"mcp_preview_digest", "route_change"})`) and
 whose `install` needs it (exit 2, `mcp_registration_route_change_affects_other_projects`); and in
 `integrate claude plugin preview` (bound by its host-state digest over `installed_plugins.json`).
-`integrate codex mcp preview-remove|remove` reports `shared_with`, `possible_users` and warning
+`route_profile_before` is read from the registration (`HarnessMcpService.observe`), never
+inferred from a `reregister` action, which may change only the launcher or isolation root. When
+membership cannot be read, the route change also carries `membership_unknown: true` (bound into
+the same digests; the historical wizard and `install` refuse a bare `--accept`; the TUI and
+`setup run --host codex` raise `source_invalid`). The `install` refusal names the exact
+`integrate codex mcp preview --codex-path --codex-home --route-profile <requested>` command.
+Without `--route-profile`, `run_host_connection(route=None)` (non-interactive `setup
+run|status|disconnect --host`, and `setup status --next` outside `--operation review`) lets
+`prepare_codex_connection` use the Codex home's registered Yoetz route (`strict` for a fresh home);
+Claude Code and Cursor use `strict`.
+`integrate codex mcp preview-remove|remove` reports `shared_with`, `possible_users` (plus
+`membership_unknown: true` when membership cannot be read) and warning
 `mcp_registration_shared_with_other_projects` and binds them the same way;
 `integrate cursor plugin preview --action remove` reports `shared_with`, `membership_unknown`,
 `shared_removed_for_every_project`. A Codex `setup disconnect` keeps the user-level registration
-whenever `codex_marketplace.other_members(home, project)` (serving members, possible users) is
-non-empty, also for an already detached or never-connected project (`retained`, `shared_with`;
-post-apply status `configured: false`, `shared_registration_retained: true`). The disconnect plan
-disclosure adds `rebind_to` and `members_not_serving` (`RemovalPreview.unserved_members`: live
-recorded projects, or a dangling anchor, that do not serve the manifest). Only a recorded project
-may move or remove a dangling binding. `integrate codex plugin preview` reports `possible_users`
-(and `membership_unknown`). CLI:
+whenever the removal plan keeps the shared pieces (`RemovalPreview.keeps_shared`, also for
+`already_absent`), `codex_marketplace.other_members(home, project)` (serving members, possible
+users) is non-empty, a non-member's disconnect finds another live recorded project (serving the
+manifest or not), or membership is unknown; also for an already detached or never-connected
+project (`retained`, `shared_with` naming those projects, in the plan and the status, plus
+`membership_unknown`; post-apply status `configured: false`, `shared_registration_retained:
+true`). `other_members` returns `((), ())` only for a home that does not exist and raises
+`IntegrationError` when membership cannot be read; callers treat that as unknown. The connect-path
+`setup status --host codex` reports `enabled` and `configured` only for a connected project
+(activation `active`), otherwise `shared_registration_retained: true` when a Yoetz registration
+exists, and `membership_unknown: true` when membership cannot be read. The disconnect plan
+disclosure adds `rebind_to` and, when the shared pieces go, `members_not_serving`
+(`RemovalPreview.unserved_members`: live recorded projects, or a dangling anchor, that do not
+serve the manifest). Only a recorded project may move or remove a dangling binding.
+`integrate codex plugin preview` reports `possible_users` (and `membership_unknown`),
+`members_not_serving` and `keeps_shared`. CLI:
 `yoetz integrate <host> admission status|preview|grant|revoke --project-root`
 (preview `--action grant|revoke`; Claude `--checkpoint`; the host roots the route observation
 needs; `--accept --preview-digest` for the apply verbs, exit 3 without them, exit 1
