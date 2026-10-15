@@ -350,6 +350,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "fact_lineage",
                 # #1044: absent unless a delivered file names an undeclared one.
                 "undeclared_references",
+                # #1079: absent unless a flagged obligation has a recorded verification link.
+                "admissible_verification",
             }
         ),
     ),
@@ -1299,6 +1301,9 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     # #1044: a readiness naming no undeclared file omits the list; null is refused too.
     with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
         StatusClosureReadinessModel.model_validate({**dumped, "undeclared_references": None})
+    # #1079: no recorded verification link omits the list; null is refused too.
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusClosureReadinessModel.model_validate({**dumped, "admissible_verification": None})
 
 
 def test_fact_lineage_omits_every_unset_field() -> None:
@@ -1872,6 +1877,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "fact_lineage",
         # #1044: absent unless a delivered file names an undeclared one.
         "undeclared_references",
+        # #1079: absent unless a flagged obligation has a recorded verification link.
+        "admissible_verification",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
