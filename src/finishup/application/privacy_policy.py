@@ -12,6 +12,7 @@ from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
+    ConversationReview,
     CredentialHeuristic,
     EgressChannel,
     PolicyOverlay,
@@ -24,6 +25,7 @@ from finishup.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
     conversation_review_widens,
+    narrower_conversation_review,
     policy_field_omitted,
     sort_privacy_changes,
     validate_privacy_change_set,
@@ -392,6 +394,36 @@ async def privacy_get_setup(
     return PrivacySetupView(effective, choices, examples, recipes, False, authority)
 
 
+def _llm_inference_enabled(policy: PrivacyPolicy) -> bool:
+    return any(
+        item.channel is EgressChannel.LLM_INFERENCE and item.enabled
+        for item in policy.channel_policies
+    )
+
+
+def _machine_conversation_review(
+    machine: PrivacyPolicy, candidate: PrivacyPolicy
+) -> ConversationReview | None:
+    """The installation row's conversation setting after a repository-bound proposal (ADR-049).
+
+    The installation row is only the default a repository without its own grant inherits, so a
+    repository's proposal never widens it: an explicit setting stays as it is. An unset row whose
+    inference channel this proposal turns on would read as the released "every task" setting in
+    every other repository (review round 2), so it takes the narrower of the repository's answer
+    and the recommended hybrid: an "every task" answer never widens other repositories, and the
+    hybrid default holds for them. A row whose inference channel was already on (an installation
+    that predates the setting) keeps its released reading.
+    """
+
+    if machine.conversation_review is not None:
+        return machine.conversation_review
+    if _llm_inference_enabled(machine) or not _llm_inference_enabled(candidate):
+        return None
+    return narrower_conversation_review(
+        candidate.effective_conversation_review, ConversationReview.LOCAL_AGENT_OPT_IN
+    )
+
+
 async def privacy_propose_policy(
     app: PrivacyPolicyApplication, request: ProposePrivacyPolicyRequest
 ) -> PolicyProposalResult:
@@ -480,13 +512,12 @@ async def privacy_propose_policy(
         compound: list[PolicyTransitionMember] = []
         # The credential-heuristic opt-out belongs to the repository grant (owner decision,
         # 2026-10-07): a repository-bound proposal never moves the installation-wide default.
-        # Nor does the conversation setting (ADR-049, review round 1): widening one repository's
-        # tasks to AI-powered review must not become every new repository's default unasked.
+        # Nor does the conversation setting (ADR-049): see ``_machine_conversation_review``.
         machine_candidate = _policy_for_scope(
             replace(
                 candidate,
                 credential_heuristic=machine.policy.credential_heuristic,
-                conversation_review=machine.policy.conversation_review,
+                conversation_review=_machine_conversation_review(machine.policy, candidate),
             ),
             machine_scope,
             policy_id=machine.policy.policy_id,

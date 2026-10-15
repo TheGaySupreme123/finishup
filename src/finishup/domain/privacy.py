@@ -61,6 +61,7 @@ __all__ = [
     "ConversationReview",
     "CredentialHeuristic",
     "conversation_review_widens",
+    "narrower_conversation_review",
     "policy_field_omitted",
     "external_review_credential_heuristic",
     "DataCategory",
@@ -300,6 +301,14 @@ def conversation_review_widens(before: ConversationReview, after: ConversationRe
     """Whether moving from *before* to *after* needs less of the owner (a loosening)."""
 
     return _CONVERSATION_REVIEW_OPENNESS[after] > _CONVERSATION_REVIEW_OPENNESS[before]
+
+
+def narrower_conversation_review(
+    first: ConversationReview, second: ConversationReview
+) -> ConversationReview:
+    """The setting of the two that needs more of the owner (ADR-049)."""
+
+    return min((first, second), key=lambda item: _CONVERSATION_REVIEW_OPENNESS[item])
 
 
 class EgressChannel(str, Enum):  # noqa: UP042 - durable enum

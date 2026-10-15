@@ -17,7 +17,9 @@ from finishup.protocol.ids import IdKind, is_valid_id
 __all__ = [
     "AI_REVIEW_SETUP_COMMAND",
     "CONVERSATION_SETTING_WORDS",
+    "GRANT_MISSING_WORDS",
     "LOCAL_LABEL",
+    "NOT_SET_UP_HERE",
     "RELEASED_LOCAL_ONLY_WORDS",
     "ROUTE_REREGISTER_COMMAND",
     "check_review_mode_line",
@@ -54,6 +56,16 @@ CONVERSATION_SETTING_WORDS: Final[Mapping[str, str]] = {
 # owner never chose it: say what is true (nothing is set up), not that agents are forbidden.
 RELEASED_LOCAL_ONLY_WORDS: Final = (
     "AI-powered review is not set up for this repository, so every task runs local checks only"
+)
+# Status beside any other setting when nothing can be reviewed here yet (no reviewer, credential
+# or repository privacy grant).
+NOT_SET_UP_HERE: Final = "AI-powered review is not set up for this repository yet"
+# A repository without a privacy grant of its own reads the installation row, which is not its
+# setting: say what is true there (review round 2).
+GRANT_MISSING_WORDS: Final = (
+    "AI-powered review is not set up for this repository: it has no privacy grant of its own "
+    "yet, so no work is sent for AI-powered review. 'finishup --privacy' sets it up and asks how "
+    "this repository's tasks use it"
 )
 
 _CONTINUATIONS: Final[Mapping[str, str]] = {
@@ -175,7 +187,16 @@ def status_review_mode_line(value: object) -> str:
     if switch is not None:
         at = f" at sequence {sequence}" if type(sequence) is str and sequence.isdigit() else ""
         parts.append(f"latest switch {switch}{at}")
-    parts.append(f"owner setting: {_setting_words(setting, source.get('setting_explicit'))}")
+    explicit = source.get("setting_explicit")
+    parts.append(f"owner setting: {_setting_words(setting, explicit)}")
+    if (
+        source.get("ai_review_available") is False
+        and setting != "local_only"
+        and reason != "ai_review_not_set_up"
+    ):
+        # No reviewer, credential or repository grant (review round 2): say so, beside the
+        # setting the repository would follow once it is set up.
+        parts.append(NOT_SET_UP_HERE)
     return "; ".join(parts) + "."
 
 
@@ -187,16 +208,22 @@ def _setting_words(setting: str, explicit: object) -> str:
     return CONVERSATION_SETTING_WORDS[setting]
 
 
-def conversation_setting_line(setting: object, *, explicit: bool = True) -> str:
+def conversation_setting_line(
+    setting: object, *, explicit: bool = True, grant_missing: bool = False
+) -> str:
     """The owner's conversation setting as one sentence, with the command that changes it.
 
     ``explicit`` is whether the owner chose ``setting``: a policy that predates the setting and
     reads as local only says AI-powered review is not set up, with the one-time setup.
+    ``grant_missing`` is a repository without a privacy grant of its own: it says AI-powered
+    review is not set up there, unless the owner explicitly chose local only.
     """
 
     token = _token(setting, CONVERSATION_SETTING_WORDS)
     if token is None:
         return ""
+    if grant_missing and not (explicit and token == "local_only"):
+        return f"Tasks: {GRANT_MISSING_WORDS}."
     if token == "local_only" and not explicit:
         return (
             f"Tasks: {RELEASED_LOCAL_ONLY_WORDS}. One-time owner setup in a local terminal: "

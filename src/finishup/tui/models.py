@@ -367,7 +367,9 @@ class PrivacyPosture:
 
         return (
             conversation_setting_text(
-                self.conversation_review, explicit=self.conversation_review_explicit
+                self.conversation_review,
+                explicit=self.conversation_review_explicit,
+                grant_missing=self.repository_grant_state == "missing",
             )
             or None
         )

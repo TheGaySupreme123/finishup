@@ -268,8 +268,14 @@ def build_candidate_policy(
     answers: PrivacySetupAnswers,
     *,
     now: datetime,
+    first_grant: bool = False,
 ) -> PrivacyPolicy:
-    """Materialize one reviewed questionnaire into the closed policy type."""
+    """Materialize one reviewed questionnaire into the closed policy type.
+
+    ``first_grant`` is a repository's first grant of its own (ADR-049): its conversation setting,
+    when no answer carries one, starts where the conversation question would
+    (``_first_grant_conversation_default``), never on what the installation row inherited.
+    """
 
     if type(current) is not PrivacyPolicy or type(answers) is not PrivacySetupAnswers:
         raise TypeError("privacy_setup_candidate_invalid")
@@ -362,7 +368,7 @@ def build_candidate_policy(
         # A recipe change keeps the owner's credential-heuristic choice (issue #982); only
         # ``finishup privacy credential-heuristic`` moves it.
         current.credential_heuristic,
-        _candidate_conversation_review(current, answers),
+        _candidate_conversation_review(current, answers, first_grant=first_grant),
     )
     identity = encode_privacy_policy_json(placeholder)
     identity.pop("policy_digest")
@@ -370,7 +376,7 @@ def build_candidate_policy(
 
 
 def _candidate_conversation_review(
-    current: PrivacyPolicy, answers: PrivacySetupAnswers
+    current: PrivacyPolicy, answers: PrivacySetupAnswers, *, first_grant: bool = False
 ) -> ConversationReview | None:
     """The conversation setting a candidate carries (ADR-049).
 
@@ -384,6 +390,9 @@ def _candidate_conversation_review(
 
     if answers.conversation_review is not None:
         return answers.conversation_review
+    if first_grant and answers.network_egress:
+        # A repository's first grant that sends work (the chat grant path asks no question).
+        return _first_grant_conversation_default(current)
     if current.conversation_review is not None:
         return current.conversation_review
     current_llm = next(

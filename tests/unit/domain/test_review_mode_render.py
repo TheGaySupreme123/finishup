@@ -170,6 +170,50 @@ def test_a_released_local_only_says_review_is_not_set_up_not_that_agents_are_for
     assert "agents may not" in conversation_setting_line("local_only")
 
 
+def test_status_says_when_ai_review_is_not_set_up_here() -> None:
+    """ADR-049 review round 2: a repository without its own grant cannot review yet."""
+
+    line = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "local",
+            "setting": "local_agent_opt_in",
+            "setting_explicit": True,
+            "ai_review_available": False,
+            "local_reason": "conversation_default",
+        }
+    )
+    assert line.endswith("AI-powered review is not set up for this repository yet.")
+    # Not repeated where the reason or the owner's local-only choice already says it.
+    opted = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "ai_powered",
+            "setting": "local_agent_opt_in",
+            "setting_explicit": True,
+            "ai_review_available": False,
+            "local_reason": "ai_review_not_set_up",
+        }
+    )
+    assert opted.count("not set up") == 1
+    chosen = status_review_mode_line(
+        {
+            "mode": "local",
+            "requested": "local",
+            "setting": "local_only",
+            "setting_explicit": True,
+            "ai_review_available": False,
+        }
+    )
+    assert "not set up" not in chosen
+    missing = conversation_setting_line("ai_powered", explicit=False, grant_missing=True)
+    assert "AI-powered review is not set up for this repository" in missing
+    assert "every task runs with AI-powered review" not in missing
+    assert "agents may not" in conversation_setting_line(
+        "local_only", explicit=True, grant_missing=True
+    )
+
+
 def test_status_says_when_the_owner_setting_overrides_a_switch_to_local() -> None:
     line = status_review_mode_line(
         {

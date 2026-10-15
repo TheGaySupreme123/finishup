@@ -706,15 +706,18 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
 _FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
 
 
-def conversation_setting_text(setting: object, *, explicit: bool = True) -> str:
+def conversation_setting_text(
+    setting: object, *, explicit: bool = True, grant_missing: bool = False
+) -> str:
     """The owner's conversation setting as one sentence (ADR-049); ``""`` when unknown.
 
     Every human surface (``finishup privacy conversations status``, the terminal interface) uses
     this text for the same token, and it names the command that changes it. ``explicit`` false
-    is a policy that predates the setting (a released ``local_only`` says nothing is set up).
+    is a policy that predates the setting (a released ``local_only`` says nothing is set up);
+    ``grant_missing`` is a repository without a privacy grant of its own.
     """
 
-    return conversation_setting_line(setting, explicit=explicit)
+    return conversation_setting_line(setting, explicit=explicit, grant_missing=grant_missing)
 
 
 def credential_heuristic_line(repository: object, machine_default: object) -> str:

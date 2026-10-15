@@ -242,3 +242,31 @@ async def test_the_local_only_answer_applies_on_enter(
     _capture(monkeypatch)
     await module.run_privacy_setup(recipe_hint="private", conversation_review=setting)
     assert defaults == [expected_default]
+
+
+@pytest.mark.parametrize(
+    ("inherited", "first_grant", "expected"),
+    [
+        (ConversationReview.AI_POWERED, True, ConversationReview.LOCAL_AGENT_OPT_IN),
+        (None, True, ConversationReview.LOCAL_AGENT_OPT_IN),
+        (ConversationReview.LOCAL_ONLY, True, ConversationReview.LOCAL_ONLY),
+        (ConversationReview.AI_POWERED, False, ConversationReview.AI_POWERED),
+        (None, False, None),
+    ],
+)
+def test_a_candidate_for_a_first_grant_starts_on_the_first_grant_default(
+    inherited: ConversationReview | None,
+    first_grant: bool,
+    expected: ConversationReview | None,
+) -> None:
+    """ADR-049 review round 2: the chat grant path asks no question, so the candidate decides."""
+
+    from dataclasses import replace
+    from datetime import UTC, datetime
+
+    current = replace(minimal_external_policy(), conversation_review=inherited)
+    answers = module.recipe_answers("assisted_review", current, _external())
+    candidate = module.build_candidate_policy(
+        current, answers, now=datetime(2026, 10, 15, tzinfo=UTC), first_grant=first_grant
+    )
+    assert candidate.conversation_review is expected
