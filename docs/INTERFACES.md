@@ -9018,7 +9018,12 @@ of it is marked `superseded_by` the newer result and ranked with superseded runs
 evidence rows naming the same plain path are one output, and the older is marked `superseded_by` the
 newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045
 amendment) rank after the reserved classes and ahead of older hunks, within a quarter of the excerpt
-bytes. The obligations section begins with one `declared-deliverables` item
+bytes. A resolved obligation's item also carries `resolved_basis`: `claimed_result_refs`,
+`latest_observed_verification_refs` (the newest hook-captured verification of those results,
+at most four) and `missing_input` (`claimed_result` and/or `verification_output` when that
+piece is not readable). The criterion is the obligation text itself. The basis adds no command
+text, summary, or path, and no category the obligation item did not already use (issue #1079).
+The obligations section begins with one `declared-deliverables` item
 (`yoetz.declared-deliverables/1`, obligation text): each declared `role: output` item with its
 obligation, index, kind, value and `in_check_time_change` (`added`, `modified`, `deleted`,
 `renamed`, `changed`, `not_changed`, `outside_repository`, `unknown`), and `facts`, the check's

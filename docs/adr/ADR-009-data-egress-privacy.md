@@ -1242,6 +1242,15 @@ excerpt as observed capture, not an agent-published result. Hook capture still d
 the agent having supplied the missing item. A command recorded without a run key
 (`omitted:structural`) is not auto-supplied.
 
+### Resolved criterion, shown as one question (2026-10-15, issue #1079)
+
+A resolved obligation's packet item gains `resolved_basis`: the result refs its resolution
+already cites, the newest hook-captured verification refs of those results, and closed
+`missing_input` tokens when either is not readable. The criterion remains the obligation text
+in that same item. The basis copies no summary, command, or path, and it does not add a
+category or raise a ceiling. A channel that withholds obligation text withholds the basis with
+it. Private sends nothing.
+
 ### Published answers in the next packet (2026-10-15, issue #1079)
 
 When the agent publishes material that answers a still-pending `missing_for_assessment` item, the

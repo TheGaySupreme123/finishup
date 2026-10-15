@@ -4638,6 +4638,81 @@ def _settled_finding_candidates(
     return [(ref, record) for _order, ref, record in rows]
 
 
+def _observed_evidence(record: EvidenceProjectionRecord) -> bool:
+    """Whether one evidence row is hook-captured and readable."""
+
+    payload = record.payload
+    binding = None if payload is None else payload.digest_binding
+    return (
+        payload is not None
+        and not record.redacted
+        and binding is not None
+        and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+    )
+
+
+def _resolved_criterion_basis(
+    payload: ObligationPublishedPayload,
+    projection: ProjectionState,
+    allowed: frozenset[str],
+) -> dict[str, JsonValue] | None:
+    """Refs that let the reviewer judge one resolved obligation as one question.
+
+    The criterion stays the obligation's own text. This adds only refs already inside the
+    fence and closed tokens: the result the resolution cites, the newest hook-captured
+    verification of that result, and ``missing_input`` when either is not readable. No command
+    text, summary, or path is copied in, so the row stays obligation text the policy already
+    sends. A redacted result is not readable, so the evidence it cites is not walked.
+    """
+
+    if payload.status is not ObligationStatus.RESOLVED:
+        return None
+    results = {str(key): row for key, row in projection.results.items()}
+    evidence = {str(key): row for key, row in projection.evidence.items()}
+    claimed: list[str] = []
+    observed: list[tuple[int, str]] = []
+
+    def consider(token: str) -> None:
+        row = evidence.get(token)
+        if row is None or token not in allowed or not _observed_evidence(row):
+            return
+        observed.append((row.source_frontier, token))
+
+    for ref in payload.resolution_evidence_refs:
+        token = str(ref)
+        if token not in allowed:
+            continue
+        result = results.get(token)
+        if result is not None and result.payload is not None and not result.redacted:
+            claimed.append(token)
+            for evidence_ref in result.payload.evidence_refs:
+                consider(str(evidence_ref))
+            continue
+        # A resolution ref that is not a readable result may itself be observed evidence.
+        # A redacted result is neither: its payload is gone, so its evidence is not named.
+        if result is None:
+            consider(token)
+    claimed_refs: list[JsonValue] = []
+    for token in sorted(set(claimed), key=str.encode)[:16]:
+        claimed_refs.append(token)
+    newest: list[JsonValue] = []
+    for _frontier, token in sorted(set(observed), key=lambda item: (-item[0], item[1].encode())):
+        if token not in newest:
+            newest.append(token)
+        if len(newest) == 4:
+            break
+    missing: list[JsonValue] = []
+    if not claimed_refs:
+        missing.append("claimed_result")
+    if not newest:
+        missing.append("verification_output")
+    return {
+        "claimed_result_refs": claimed_refs,
+        "latest_observed_verification_refs": newest,
+        "missing_input": missing,
+    }
+
+
 def _obligation_disclosures(
     projection: ProjectionState, allowed: frozenset[str]
 ) -> dict[str, dict[str, JsonValue]]:
@@ -5223,6 +5298,11 @@ def _build_semantic_case_once(
             # the obligation they cover, so the reviewer cannot read them as undisclosed.
             # Frozen legacy identifier (ADR-048): packet key; the recorded manifest is re-verified.
             obligation_json["yoetz_already_disclosed"] = cast(JsonValue, disclosed)
+        basis = _resolved_criterion_basis(payload, projection, allowed)
+        if basis is not None:
+            # Issue #1079: the criterion (this item), the claimed result, the latest observed
+            # verification and any missing input, as one object. Refs and closed tokens only.
+            obligation_json["resolved_basis"] = cast(JsonValue, basis)
         text, fit = _bounded_json(cast(Mapping[str, JsonValue], obligation_json))
         item = _content_item(
             item_id=f"obligation-{ref}",

@@ -609,6 +609,32 @@ def test_the_settled_and_ruling_glossaries_name_the_limitation_and_newer_materia
     assert "shown by material newer than its answer" in verdict
 
 
+def test_a_recommendation_must_be_reachable_and_a_rebuttal_is_addressed() -> None:
+    """Issue #1079: judge the visible interface, the resolved criterion, and the rebuttal."""
+
+    assert (
+        "Before you recommend a change to an input, a guard, or a state, check that the visible "
+        "interface in the packet can reach it: the types, conditions, and contracts the excerpts "
+        "show. If that interface cannot produce the input or state, do not recommend the change; "
+        "say what the interface allows." in _TEXT
+    )
+    assert (
+        "A resolved obligation carries resolved_basis beside its own text. Judge that criterion, "
+        "its claimed_result_refs, its latest_observed_verification_refs, and missing_input as one "
+        "question. Do not say the work matches a contract while missing_input is not empty, or "
+        "while a cited result or verification contradicts the criterion." in _TEXT
+    )
+    assert (
+        "A follow-up packet still carries a supported rebuttal: a prior-finding response that "
+        "cites evidence. Address that rebuttal. Do not recommend a change the rebuttal shows the "
+        "visible interface cannot reach, and do not repeat the finding unless material newer than "
+        "the rebuttal shows the problem remains." in _TEXT
+    )
+    # The standing instruction names no task, repository, or fixture.
+    for hint in ("numba", "llvmlite", "vigenere", "interleaved"):
+        assert hint not in _TEXT, hint
+
+
 def test_pre_rename_markers_and_labels_read_as_their_finishup_forms() -> None:
     """ADR-048: recorded decisions keep the Yoetz-era spelling the kernel still parses."""
 

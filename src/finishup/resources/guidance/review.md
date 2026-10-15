@@ -72,6 +72,12 @@ Read the finding's row in `status view=findings` and find its case below before 
 | You dispute an AI-powered finding | `rejected` with the reason, then `check` with `final_review: true` so the reviewer rules. |
 | You truly will not or cannot do it | `acknowledged_not_done` with the reason. Keep the working deliverable. |
 
+A supported rebuttal is a `rejected` or `acknowledged` answer that cites evidence. The next
+review packet carries that answer. The reviewer must check that a recommended input or state is
+reachable under the interface the packet shows, and must judge a resolved obligation together
+with the result it cites, the latest observed verification, and any missing input. Do not treat
+a match as shown while one of those is missing.
+
 ## Turn on AI-powered review for a task when local checks cannot judge it
 
 A task can start local: FinishUP's local checks only. `status` `review_mode` says so: `setting`

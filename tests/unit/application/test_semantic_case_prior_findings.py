@@ -32,6 +32,7 @@ from builders.policy_cases import (
     record,
     res,
 )
+from finishup.application.missing_for_assessment import ReviewFollowUp, ReviewFollowUpItem
 from finishup.application.semantic_case import (
     MAX_PRIOR_FINDINGS,
     build_semantic_case,
@@ -196,6 +197,7 @@ def _build(
     profile: ReviewContextProfile = ReviewContextProfile.GOAL_AWARE,
     *,
     selection: ReviewSelectionPolicy | None = None,
+    follow_up: ReviewFollowUp | None = None,
 ) -> SemanticCase:
     return build_semantic_case(
         case_id="cas_10000000-0000-4000-8000-000000000001",
@@ -206,6 +208,7 @@ def _build(
         review_selection=selection or ReviewSelectionPolicy.for_profile(profile),
         policy_id="pvy_10000000-0000-4000-8000-000000000001",
         policy_version="1",
+        follow_up=follow_up,
     )
 
 
@@ -248,6 +251,32 @@ def test_prior_findings_carry_the_challenge_the_answer_and_newer_material() -> N
     )
     packet = cast(Mapping[str, JsonValue], payload["review_packet"])
     assert packet["prior_finding_item_ids"] == list(case.packet.prior_finding_item_ids)
+
+
+def test_a_follow_up_packet_still_carries_the_supported_rebuttal() -> None:
+    """Issue #1079: rebuilding the case for a follow-up keeps the answer that cites evidence."""
+
+    follow_up = ReviewFollowUp(
+        round=1,
+        items=(
+            ReviewFollowUpItem(
+                kind="verification_output",
+                target_refs=(str(res(1)),),
+                source_refs=frozenset({str(res(1)), str(res(2)), str(evd(1))}),
+            ),
+        ),
+        shown_refs=frozenset(),
+    )
+    built = _build(_numba_case(), follow_up=follow_up)
+    texts = {
+        item.item_id: item.content.decode("utf-8")
+        for item in built.items
+        if item.section == "prior_finding" and item.category is DataCategory.FINDING_SUMMARY
+    }
+    assert "already been met" in texts[f"prior-finding-response-{fnd(2)}"]
+    response = cast(Mapping[str, JsonValue], _row(built, f"prior-finding-{fnd(2)}")["response"])
+    assert response["disposition"] == "rejected"
+    assert response["evidence_refs"] == [str(res(1)), str(res(2))]
 
 
 def test_three_prose_bearing_findings_give_one_rulable_ref_each() -> None:
