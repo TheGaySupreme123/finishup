@@ -78,8 +78,11 @@ def _move_detail(extras: tuple[str, ...] | None) -> str:
         "Its package step keeps it current while the alias is published. Until you move, any "
         "finishup command that FinishUP shows also works as yoetz with the same subcommand. To "
         f"move, first install the new name: {shlex.join(install)}.{unread} Then refresh each "
-        "host above with finishup instead of yoetz so it runs the finishup command, and only "
-        "then remove the old tool with uv tool uninstall yoetz. Hosts connected earlier keep "
+        "host above with finishup instead of yoetz so it runs the finishup command. For Codex, "
+        "if finishup setup status --host codex still reports the MCP registration kept under "
+        "the earlier name yoetz, take the steps it lists and connect again until it no longer "
+        "does: that entry still starts the old tool. Only then remove the old tool with uv "
+        "tool uninstall yoetz. Hosts connected earlier keep "
         "running yoetz until they are refreshed. Existing tasks, settings and permissions stay "
         "where they are."
     )

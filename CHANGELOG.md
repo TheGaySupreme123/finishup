@@ -4,22 +4,11 @@ FinishUP was previously called Yoetz. All notable user-visible changes to Finish
 through 0.2.5) are documented in this file. Format is a lightweight, project-native heading style
 that marks the pending version as unreleased above reverse-chronological released versions.
 
-## Unreleased
+## 0.3.0 — Unreleased
 
-- **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
-  advice packet to your configured reviewer when external review is configured and your privacy
-  policy allows unattended requests (#1019). The background switch was already on by default, but
-  an invalid review envelope meant nothing was sent before. Set
-  `observation.semantic_advice_enabled = false` to stop background sends on every host.
-- Background advice is skipped under policies that require you to preview each request (the
-  Metadata only recipe, or `preview_required` on the AI-powered review channel). It shows
-  `advice_semantic_preview_required`; nothing is queued or sent, no approval waits for you, and no
-  provider attempt or retry backoff is recorded. Explicit checks keep their preview. The advice
-  packet follows your review-context choice (a choice changed while a review waits is applied, never
-  the stale one), a policy change that lands mid-request is recorded as not sent rather than as a
-  provider failure, the MCP status advice text names the preview skip, and
-  `finishup privacy receipts get|list` now marks refused receipts whose category approvals were never
-  sent (#1019).
+Public-alpha release candidate; publication remains gated by #785 and by the rename's release
+gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
+[release notes](docs/releases/v0.3.0.md) for changes and validation limits.
 
 ### Yoetz is now FinishUP
 
@@ -52,8 +41,11 @@ that marks the pending version as unreleased above reverse-chronological release
   prints a one-line notice in interactive terminals only. Until you move, any `finishup` command
   shown works as `yoetz` with the same subcommand, and update tips, the upgrade plan and consent
   requests started through `yoetz` name `yoetz`. Move with
-  `uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup` (plus any extras; `finishup upgrade`
-  prints the command), reconnect each host, then `uv tool uninstall yoetz`; see
+  `uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup` (plus any
+  extras; `finishup upgrade` prints the command), reconnect each host in each project you
+  connected, and for Codex take the steps `finishup setup status --host codex` lists until it no
+  longer says the registration under the earlier name `yoetz` stays beside `finishup` (that kept
+  entry still starts the `yoetz` command from the old tool); then `uv tool uninstall yoetz`. See
   [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
 - **Some identifiers stay spelled `yoetz` permanently** under protocol 0.1, because they live inside
   stored or released bytes: ledger protocol tags, object and vault formats, crypto domain
@@ -62,178 +54,6 @@ that marks the pending version as unreleased above reverse-chronological release
   their `$id`s under `https://schemas.yoetz.dev/0.1/`. They are not leftovers.
 - A consent prepared before the upgrade stays reviewable after it, with the warning it was prepared
   with, and expires within 15 minutes as usual.
-### Fixed
-
-- A non-root user can now use FinishUP in a project directory that root owns, as container images
-  commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
-  and MCP tools accept such a project root when no other account can write it, or when it is a
-  sticky directory, for Codex, Claude Code and Cursor alike. Before, `setup run` failed with
-  `internal_error` and host connections with `target_unsafe`. Files FinishUP writes inside the
-  project must still belong to the user, and a root-owned Git worktree is used as a plain
-  directory, because Git itself refuses another owner's worktree. Claude Code's own executable
-  must still be installed as the user who runs it: a root-installed `claude` is refused
-  (`target_unsafe`), whereas Codex accepts a root-owned launcher.
-
-- In such a root-owned project, a checkout root made (`/app` and `/app/.git` owned by root, or
-  your own `git init` in a sticky root-owned `/app`) now works as a plain directory instead of
-  being refused at every service connection: the service starts, hooks and MCP attach from the
-  checkout's top or any folder beneath it (one identity for all of them), and work is checked as
-  published. Git-based change capture does not read it, because Git refuses another owner's
-  checkout; the receipt says "the repository failed a safety check (… another owner …)" rather
-  than "not a Git repository". Cursor's project registration status, connect and disconnect work
-  in a root-owned project, and a Codex disconnect removes the project's `marketplace.json` instead
-  of failing half-way on every retry. A `.claude`, `.codex` or `.cursor` folder root committed to
-  the image no longer makes revoking auto-review admission, a Codex disconnect or the privacy
-  ceremony report a failure; Claude Code's plugin setup and Cursor's project registration still
-  refuse such a folder (`target_unsafe`) until root makes it the user's. FinishUP also no longer reads or writes host settings in such a folder
-  that another account created (possible in a shared, sticky project folder such as `/app` with
-  mode 1777): admission status reports it as unknown, auto-review admission and Claude Code's
-  project-scope setup refuse it, and writes go through the folder FinishUP checked, never a link
-  swapped in after.
-
-- `finishup instance create --bind-runtime` on a FinishUP runtime the current user cannot write (for
-  example one root installed in a container image) now fails with `runtime_pin_unwritable` and
-  removes what it created. Before, it reported `internal_error` and left a half-created instance
-  behind, so the retry after fixing permissions reported `instance_exists`.
-
-- A FinishUP installation whose private runtime directory (`.<name>-releases`, next to the
-  installation) belongs to another account is now refused by name, `release_runtime_not_owned`,
-  with that directory and the repair that fits: install FinishUP as the account that runs it (or have
-  root prepare that directory for that one user), or, when the installation is yours and the
-  directory was made by someone else (for example with sudo), remove it and FinishUP recreates it.
-  Before, the service, MCP connection and hooks stopped with
-  `release_runtime_unavailable: permission_denied` or "could not be verified", and setup connected
-  agents to a runtime that could not start. Every way of connecting an agent (`setup run`, with or
-  without `--host`, the full-screen interface's first run and `/connect`, the menu,
-  `finishup integrate … install` for Codex MCP, Claude Code and Cursor, and
-  `finishup recommend accept codex-plugin-activation`) now refuses that connection,
-  and one another account can write, with the same reason; disconnect, removal and status still
-  work.
-
-- One Codex home, Claude Code configuration or Cursor configuration now serves several projects
-  connected one after another (#1058). `finishup setup run --host codex` for a second project no
-  longer stops with `destination_conflict` and advice to create a new Codex home: it adds only that
-  project's pieces and reuses the home's shared plugin and MCP registration. Disconnecting one
-  project keeps the shared pieces the other connected projects FinishUP knows of use (Codex moves its
-  marketplace binding to one of them; Claude Code no longer runs the marketplace removal that
-  uninstalled every project's copy; Cursor keeps the user plugin). The last project's disconnect
-  removes them, also when another project's folder was deleted in the meantime or a Codex
-  project that held the marketplace binding was deleted or lost its plugin files. `setup status`
-  lists the connected projects. Connecting the same directory again through a symlink, a
-  different letter case or its old path after a move is refused as
-  `project_connected_via_other_path`, with the path already connected and the disconnect that
-  clears it. When the shared pieces predate this release, or FinishUP's record of the connected
-  projects was lost, FinishUP keeps those pieces on an ordinary disconnect and says so in status and
-  the preview. For Codex, the projects this installation of FinishUP connected stay known even if the
-  record is deleted, and a trusted checkout that carries FinishUP's plugin files but never connected
-  through FinishUP only counts as a project that *may* use the shared pieces: they keep those pieces
-  and never take over the home's marketplace binding, and a disconnect that would leave only such
-  projects stops with `membership_unverified` and offers reconnecting the project you use or
-  `--remove-shared`. A project connected only through another FinishUP installation is not detected
-  once the record is lost. Running a Codex disconnect again, or for a project that never
-  connected, no longer removes the MCP registration the other connected projects use, also while
-  another connected project's plugin files or folder are missing for now (a branch switch, `git
-  clean`, an unmounted volume); the disconnect names the project they stay for and, when its
-  folder is missing, the home-wide preview that removes them if it is gone for good. Connecting
-  a project on another review mode (local only or AI-powered review) changes it for every project
-  sharing that Codex home or Claude Code configuration; `setup run`, the terminal interface's
-  first-run preview, `integrate codex mcp preview` and `integrate claude plugin preview` now name
-  those projects and both modes, and an unattended `--accept` that would change them stops and
-  asks for the reviewed preview (Cursor keeps the review mode per project). That also holds when
-  FinishUP cannot read which projects use the home (`membership_unknown`), and a legacy registration
-  that differs only in how it starts FinishUP no longer switches local-only review to AI-powered
-  review. An unattended `finishup setup run|status|disconnect --host codex` without
-  `--route-profile` keeps the home's current review mode (local only for a new home).
-  `setup disconnect --remove-shared` previews and asks for consent naming the projects that stop
-  using FinishUP; the low-level `integrate codex mcp remove` and `integrate cursor plugin remove`
-  stay home-wide but now name them too. Two setups for the same agent configuration at once can no longer lose a project:
-  setup holds a private lock per configuration in FinishUP's own state folder, so a first Claude Code
-  or Cursor setup into a configuration folder that does not exist yet needs no manual `mkdir`
-  (Codex still needs its home to exist and now says so), and a lock that cannot be taken stops
-  with `connection_lock_unavailable` before anything changes. A damaged connected-projects record
-  is reported as `connection_projects_record_invalid` by `setup run`, `setup status` and `setup
-  disconnect`, with the file and the way out (make it owner-only again, or restore it). After
-  disconnecting projects in any order, each can be connected again (Claude Code previously
-  refused the first one with `destination_conflict`).
-  A project still carrying its Yoetz-era activation (ADR-048) loses that activation with its own
-  disconnect also when the other projects keep the shared pieces; a Yoetz-era MCP entry or Cursor
-  plugin folder that other projects may still load stays with the shared pieces until the last
-  disconnect, and the disconnect's approval cleanup removes exact earlier-name approval entries too.
-  Yoetz kept no record of the projects it connected. For Cursor, a Yoetz-era plugin folder found
-  without a record counts as shared pieces whose users FinishUP cannot confirm: an ordinary
-  disconnect keeps it, also when only one project used it, and only `--remove-shared` removes it;
-  a connect that migrates it keeps that uncertainty for later disconnects, and the disconnect (in
-  the terminal interface too) names the `--remove-shared` command. For Codex, a project's own
-  Yoetz-era activation goes with that project's own disconnect, never with another project's
-  `--remove-shared`. A project still carrying it counts as connected: another project's connect
-  records it, and another project's disconnect keeps the MCP registration it uses. Yoetz-era Codex
-  tables or a Yoetz-era MCP entry found without a record make trusted checkouts that carry
-  FinishUP's plugin files possible users, which keep the MCP registration or stop the disconnect
-  as `membership_unverified`; with neither another project nor such a checkout, an ordinary
-  disconnect removes the registration. A Codex connect no longer moves the MCP registration from
-  the earlier name `yoetz` while a project's Codex settings still need it (such as the approval
-  table Yoetz 0.2's `integrate codex admission grant` wrote): moving it made Codex refuse to load
-  that project. The earlier entry stays beside `finishup`, and the plan and `setup status` say for
-  each project what holds it and what releases it: the exact revoke where only an approval
-  FinishUP (or Yoetz) wrote holds it, what to fix in a project file FinishUP could not read, or
-  the edited tables to remove by hand. All of a home's projects are read for this; the entry also
-  stays while the Codex home's own `config.toml`, its record of connected projects, or a project
-  path with a control character cannot be read, and the step says what makes it readable.
-  Connecting again once nothing listed holds it finishes the move. Every case also names the
-  explicit way out, as your choice: remove FinishUP's MCP registration under both names with
-  `integrate codex mcp preview-remove` and `remove`, then connect again; the step says that every
-  project of the home loses FinishUP until one connects again, and that a project still naming the
-  earlier server stops loading its Codex configuration until those tables go. A connect that would
-  also change the review mode stops first, since the earlier entry serves every project on its own
-  mode, and offers both the current mode and that way out. A Codex disconnect now also keeps the
-  registration when one of those inputs cannot be read, and says so. The interactive `finishup
-  setup` approval, `integrate codex mcp install`, the menu and the terminal interface say the
-  earlier entry is kept (and whether a project uses it or only not every project could be read)
-  instead of promising its removal. After a Codex disconnect that keeps the registration for other
-  projects, also for their own Codex settings or because not every project could be checked,
-  status reports the disconnected project `configured: false` with `shared_registration_retained:
-  true`. A Codex disconnect that removes the shared plugin while the registration stays for a
-  Yoetz-era project now says so, and names the projects whose plugin files are missing as losing
-  it too.
-
-- `finishup setup disconnect` now removes the selected project's FinishUP tool-approval entry (the one
-  `integrate <host> admission grant` writes) as part of the same previewed plan, before the
-  registration itself. Previously (Yoetz 0.2.x) a Codex disconnect left
-  `[mcp_servers.yoetz.tools.check]` in the project's `.codex/config.toml`; Codex then refused to
-  start in that project ("invalid transport in `mcp_servers.yoetz`"), and the disconnect ended
-  `incomplete` with the project skill still installed. Claude Code and Cursor disconnects remove
-  their entries the same way. After a Codex disconnect, FinishUP checks that Codex still loads its
-  configuration in the project. `setup status --host codex` explains such a leftover under either
-  spelling, `mcp_servers.yoetz` (left by a Yoetz 0.2.x disconnect) or `mcp_servers.finishup`, and
-  prints the exact command that removes it (or, for a table you edited, names the file to fix;
-  with both kinds in one file it names which is which and still gives the revoke for the exact
-  one), and FinishUP's own Codex registration commands no longer fail because of it. A
-  disconnect that cannot remove the entry safely (an approval file FinishUP cannot read, such as a
-  symlink, or approval settings you added or edited yourself that still need the FinishUP server)
-  now stops before changing anything and names the file to fix, instead of leaving the project
-  unable to start. A Codex disconnect keeps the FinishUP server registered while another project's
-  configuration uses it, lists those projects, and says when it could not check them all.
-  `setup disconnect --remove-shared` removes the pieces shared by every connected project.
-
-- The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
-  in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
-  bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer
-  runs no commands and writes no files, so the sandbox confines nothing there. The fact is
-  disclosed, not hidden. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true`
-  with the new `codex_sandbox_unavailable_reason` (`bubblewrap_missing` or
-  `user_namespaces_unavailable`), and the terminal interface says the evaluator runs without
-  Codex's verified Linux sandbox. Only reviewed Codex releases are admitted; others are refused
-  as `codex_sandbox_unavailable_unreviewed_runtime`. Every other warning, including Codex's WSL1
-  one, still stops setup. Approved network-denied checks still need a usable `bwrap`.
-  Receipts do not carry this fact yet.
-
-- MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
-  schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
-  and variant rules are available through `read_guidance` in request templates. Claude Code and
-  Cursor use the same compact inputs. Full server-side validation and output schemas are unchanged.
-  Field descriptions are preserved when they fit; larger tools keep priority field rules first.
-  If a future schema exceeds the budget even without descriptions, the bridge logs a diagnostic
-  and serves the minimal form instead of failing startup. CI still rejects oversized schemas.
 
 ### Added
 
@@ -271,7 +91,7 @@ that marks the pending version as unreleased above reverse-chronological release
   local only is enforced at the privacy gateway as well, including for a check already in flight,
   and a failed read of the setting runs the check local. A switch is a request, never a grant. Guidance `review.md` says when to turn it on and
   when to stay local, with the exact draft; the startup card points at it. Same MCP path on Codex,
-  Claude Code and Cursor (#1073, ADR-049).
+  Claude Code and Cursor (#1068, #1073, ADR-049).
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
   in FinishUP's own observation), what the host's hooks observed since the last check, and whether each
@@ -346,7 +166,7 @@ that marks the pending version as unreleased above reverse-chronological release
   repository. `--machine-default` changes the installation-wide default new grants start from.
   `finishup status` and MCP `status` show the repository state and the default before any check;
   `privacy show`, `provider status`, `/privacy`, every external privacy receipt
-  (`secret_scan.credential_heuristic`) and every check whose external review ran under it
+  (`secret_scan.credential_heuristic`) and every check whose AI-powered review ran under it
   (`semantic_review_credential_heuristic_disabled`) say so. Existing policies keep their exact
   bytes and digests.
 
@@ -450,8 +270,8 @@ that marks the pending version as unreleased above reverse-chronological release
   so, instead of being refused. Resuming a stored review rechecks the current limits. Choosing
   Assisted, or proposing the earlier limits, takes you back to 16 without a new approval.
   Content your channel does not allow out no longer costs allowed excerpts their room, and a case
-  too large to build is cut to fit with the dropped excerpts named. Semantic-case diagnostics now
-  record the approved excerpt limits and the effective limits the case was built with beside what
+  too large to build is cut to fit with the dropped excerpts named. AI-powered review case
+  diagnostics now record the approved excerpt limits and the effective limits the case was built with beside what
   was selected (#907).
 
 - Codex, Claude Code and Cursor session-start context can show a fresh repository-grant snapshot
@@ -481,7 +301,55 @@ that marks the pending version as unreleased above reverse-chronological release
   complete aggregate. Codex `PostToolUse` registration is unchanged until these numbers confirm its
   cost (#915).
 
+- One guided installation and connection lifecycle for Codex, Claude Code, Cursor IDE and
+  Cursor Agent CLI, including preview, status, disconnect and reconnect, carried from 0.2.4
+  (#767).
+- Multiple agents can work in independent tasks within one repository. Parents can delegate
+  work, children can register for explicit acceptance, and lineage views and receipts retain
+  each child's findings, unfinished work, and observation gaps. Requesting a receipt does not
+  close a task or erase a child dependency (issues #494–#504, #509).
+- Projects group concurrent tasks and surface declared overlaps under each source workspace's
+  existing consent. The CLI supports project creation, membership changes, grouping opt-out and
+  opt-in, and generation-bound coordination grants. Retrying a project mutation recovers its
+  recorded operation without creating a second project or repeating a membership change
+  (issues #505–#508).
+- Opt-in required startup for native Claude Code and Cursor plugins, with scope-bound plan
+  checks, owner controls, and same-task pending-operation recovery (#692, #797). Native acceptance
+  remains bounded as documented in the required-startup runbook.
+- `finishup setup status --json` reports each Claude installation's MCP mode (plugin-managed or
+  bare) and whether a session-start cue is installed; a bare registration has none (#789).
+- Observation capacity can be set to a custom queue count from 64 to 8,192 rows with
+  `--capacity custom --queue-count N`, in addition to standard (512), larger (2,048) and largest
+  (8,192). Every capacity preview discloses the scope, current and requested limits, possible
+  disk, memory and CPU cost, the limits that still apply, and how to lower, pause and resume, in
+  the CLI, the terminal interface's `/observe`, and agent guidance. Sessions in a workspace share
+  one queue sized by the largest active selection, so an increase says it raises that queue for
+  every session; a smaller session count limits only that session. Status reports the effective
+  budget and its limiting dimension (#828).
+- Requesting No FinishUP cap (`--capacity none`) returns `capacity_no_cap_unsupported` and changes
+  nothing: the local observation state has a 16 MiB safety ceiling, so the largest supported
+  capacity is 8,192 rows. With `--json` the facts are under `error.capacity` beside the standard
+  `error.recovery` (#828).
+
 ### Changed
+
+- **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
+  advice packet to your configured reviewer where every task uses AI-powered review and your
+  privacy policy allows unattended requests (#1019). That is the "AI-powered review on every task"
+  answer, or a privacy policy approved before 0.3 that enables AI-powered review; where tasks start
+  local (the recommended "FinishUP (recommended)" answer, owner approval or local only), nothing is
+  sent in the background (ADR-049 decision 11). The background switch was already on by default,
+  but an invalid review envelope meant nothing was sent before. Set
+  `observation.semantic_advice_enabled = false` to stop background sends on every host.
+- Background advice is skipped under policies that require you to preview each request (the
+  Metadata only recipe, or `preview_required` on the AI-powered review channel). It shows
+  `advice_semantic_preview_required`; nothing is queued or sent, no approval waits for you, and no
+  provider attempt or retry backoff is recorded. Explicit checks keep their preview. The advice
+  packet follows your review-context choice (a choice changed while a review waits is applied, never
+  the stale one), a policy change that lands mid-request is recorded as not sent rather than as a
+  provider failure, the MCP status advice text names the preview skip, and
+  `finishup privacy receipts get|list` now marks refused receipts whose category approvals were never
+  sent (#1019).
 
 - Rereading `status` without writing now gets a direct answer. From the third first-page `status`
   read in a row by the same agent on the same task with no `publish_work`, `check`, `respond`,
@@ -554,7 +422,8 @@ that marks the pending version as unreleased above reverse-chronological release
   their origin "local" or "AI-powered review"; guidance, usage docs and the README follow. The
   terminal interface no longer says "Nothing leaves this computer" for the Private policy or a
   local-only check; it says no work is sent for AI-powered review. Wire values keep their
-  spellings (`deterministic_only`, `deterministic_mode`, `no_unresolved_deterministic_findings`).
+  spellings: `deterministic_only`, `deterministic_mode` and `no_unresolved_deterministic_findings`
+  (#1068).
 - **First-run setup asks three review answers, all on the policy route.** "FinishUP
   (recommended): local checks; your agent can turn on AI-powered review for a task when it
   helps", "FinishUP, local only (agents may not opt in)", or "AI-powered review on every task".
@@ -583,8 +452,8 @@ that marks the pending version as unreleased above reverse-chronological release
   is not marked recommended, and the listing says its draft records no evidence requirement); a
   first Private grant reads as local only rather than the hybrid an earlier repository chose. Abandoning AI-powered review setup in the
   terminal interface now finishes as local only without re-registering. Installations set up
-  earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1073,
-  ADR-049).
+  earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1068,
+  #1073, ADR-049).
 
 - **New Codex-subscription setups suggest `gpt-6.1-sol` at reasoning effort `medium`** for final
   reviews, and `medium` for routine checkpoints as before. Released 0.2.x setups suggested
@@ -718,9 +587,10 @@ that marks the pending version as unreleased above reverse-chronological release
   in `structuredContent.text`. Claude Code and the generic host are unchanged. Codex dogfood
   acceptance is pending (#918).
 
-- Background AI-powered observation advice stays on by default wherever AI-powered review is
-  configured (`[verification] semantic` is `required` or `optional`), so upgrading does not change
-  it. `[observation] semantic_advice_enabled` is now an explicit owner choice: `false` turns
+- Background AI-powered observation advice stays switched on by default wherever AI-powered review
+  is configured (`[verification] semantic` is `required` or `optional`), so upgrading does not
+  change it; it sends only in a repository whose tasks all use AI-powered review (see the
+  background-advice entry above, ADR-049). `[observation] semantic_advice_enabled` is now an explicit owner choice: `false` turns
   background advice off and `true` keeps it on whatever the default. FinishUP writes the line only
   when you set it, so a config without it follows the default. `finishup provider status`,
   `finishup setup status --next` and the terminal interface `/status` show whether it is on and why.
@@ -734,10 +604,221 @@ that marks the pending version as unreleased above reverse-chronological release
 
 - The generic-host initialize instructions (`agent-instructions.md`) no longer state the `client`
   shape and the JSON-string rule for canonical integers twice; each rule is kept once, in the
-  canonical-values section. This keeps the combined 0.3 MCP surface inside its reviewed 224,000-byte
+  canonical-values section. This keeps the combined 0.3 MCP surface inside its reviewed 253,000-byte
   budget without dropping any rule.
 
+- `finishup service isolation --json` now emits the versioned `yoetz.isolation-report/1`. Its
+  `path_identity` block replaces the untagged 0.2 `identity` block, whose `config_digest` was a
+  digest of the config file's path, not of its content; a consumer detects the 0.2 output by its
+  missing `schema` key. `--content-digests` adds a bounded SHA-256, size, existence and time
+  observation of the selected config, never its content, and `finishup instance status` reports
+  the same `path_identity` block (#567, #571, #807).
+
+- Updating FinishUP no longer requires quitting agent apps or stopping the service. `finishup upgrade
+  --accept` runs from inside an open session, which keeps working on the previous version; the
+  first FinishUP call of the next session switches to the new version and retires the previous
+  service. Upgrading from 0.2 still follows 0.2's stop-first procedure once (#820).
+- Updating from 0.2 preserves existing tasks, settings, permissions, and host registrations.
+  On ordinary service startup after unlock, supported task ledgers receive a verified backup
+  and automatic schema upgrade before new work is admitted. Interrupted upgrades resume from
+  recorded progress; failed verification keeps the service unavailable for writes and retains
+  recovery evidence (issue #496).
+- The 0.3 functionality uses additive control contracts and migrations while retaining the
+  released 0.2 schemas and migration bytes. Observation selection, runtime isolation, and
+  recovery improvements from 0.2 remain in effect.
+- Small status reads reuse immutable projection pages instead of replaying the ledger for
+  each query (#748). New Codex subscription review bindings default to a 15-minute budget
+  and allow explicit budgets up to one hour; existing explicit budgets remain unchanged (#750).
+- Linux sandbox readiness is documented as a fact of the client host, separately from the
+  AI-powered review evaluator runtime; this adds no WSL or AppArmor acceptance claim (#765).
+- The Grok provider preset names grok-4.6 (#763).
+- Native startup guidance is delivered independently of observation consent and availability
+  (#692). Claude Code sessions receive a compact MCP initialize block that fits the host's
+  observed 2,048-character rendering cap, with the "call `start` first" trigger and the
+  late-start rule as its first two sentences (#789); Codex and Cursor now get their own compact
+  body (see above), and the generic host keeps the full document.
+- Guidance, the Claude skill and `AGENTS.md` state what to do when material work began before
+  `start`, and how to load deferred FinishUP tool schemas by name (#789).
+- Local control schema 2.9.0 carries custom capacity counts, capacity labels and the effective
+  budget; both client and service must run it. Defaults are unchanged (Focused, 512), and a
+  saved custom count reads as the default on an older version. Agent guidance and the skills
+  say that a larger or uncapped capacity needs a disclosed, owner-accepted preview and is never
+  chosen for an ordinary task (#828).
+
 ### Fixed
+
+- A non-root user can now use FinishUP in a project directory that root owns, as container images
+  commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
+  and MCP tools accept such a project root when no other account can write it, or when it is a
+  sticky directory, for Codex, Claude Code and Cursor alike. Before, `setup run` failed with
+  `internal_error` and host connections with `target_unsafe`. Files FinishUP writes inside the
+  project must still belong to the user, and a root-owned Git worktree is used as a plain
+  directory, because Git itself refuses another owner's worktree. Claude Code's own executable
+  must still be installed as the user who runs it: a root-installed `claude` is refused
+  (`target_unsafe`), whereas Codex accepts a root-owned launcher (#1071).
+
+- In such a root-owned project, a checkout that root made (`/app` and `/app/.git` owned by root, or
+  your own `git init` in a sticky root-owned `/app`) now works as a plain directory instead of
+  being refused at every service connection: the service starts, hooks and MCP attach from the
+  checkout's top or any folder beneath it (one identity for all of them), and work is checked as
+  published. Git-based change capture does not read it, because Git refuses another owner's
+  checkout; the receipt says "the repository failed a safety check (… another owner …)" rather
+  than "not a Git repository". Cursor's project registration status, connect and disconnect work
+  in a root-owned project, and a Codex disconnect removes the project's `marketplace.json` instead
+  of failing half-way on every retry. A `.claude`, `.codex` or `.cursor` folder root committed to
+  the image no longer makes revoking auto-review admission, a Codex disconnect or the privacy
+  ceremony report a failure; Claude Code's plugin setup and Cursor's project registration still
+  refuse such a folder (`target_unsafe`) until root makes it the user's. FinishUP also no longer
+  reads or writes host settings in such a folder that another account created (possible in a
+  shared, sticky project folder such as `/app` with mode 1777): admission status reports it as
+  unknown, auto-review admission and Claude Code's project-scope setup refuse it, and writes go
+  through the folder FinishUP checked, never a link swapped in after (#1071).
+
+- `finishup instance create --bind-runtime` on a FinishUP runtime the current user cannot write (for
+  example one root installed in a container image) now fails with `runtime_pin_unwritable` and
+  removes what it created. Before, it reported `internal_error` and left a half-created instance
+  behind, so the retry after fixing permissions reported `instance_exists` (#1071).
+
+- A FinishUP installation whose private runtime directory (`.<name>-releases`, next to the
+  installation) belongs to another account is now refused by name, `release_runtime_not_owned`,
+  with that directory and the repair that fits: install FinishUP as the account that runs it (or have
+  root prepare that directory for that one user), or, when the installation is yours and the
+  directory was made by someone else (for example with sudo), remove it and FinishUP recreates it.
+  Before, the service, MCP connection and hooks stopped with
+  `release_runtime_unavailable: permission_denied` or "could not be verified", and setup connected
+  agents to a runtime that could not start. Every way of connecting an agent (`setup run`, with or
+  without `--host`, the full-screen interface's first run and `/connect`, the menu,
+  `finishup integrate … install` for Codex MCP, Claude Code and Cursor, and
+  `finishup recommend accept codex-plugin-activation`) now refuses that connection with
+  `release_runtime_not_owned`, and a connection to a runtime another account can write with
+  `release_runtime_group_writable` or `release_runtime_world_writable`; disconnect, removal and
+  status still work (#1071).
+
+- One Codex home, Claude Code configuration or Cursor configuration now serves several projects
+  connected one after another (#1058, #1070). `finishup setup run --host codex` for a second project no
+  longer stops with `destination_conflict` and advice to create a new Codex home: it adds only that
+  project's pieces and reuses the home's shared plugin and MCP registration. Disconnecting one
+  project keeps the shared pieces the other connected projects FinishUP knows of use (Codex moves its
+  marketplace binding to one of them; Claude Code no longer runs the marketplace removal that
+  uninstalled every project's copy; Cursor keeps the user plugin). The last project's disconnect
+  removes them, also when another project's folder was deleted in the meantime or a Codex
+  project that held the marketplace binding was deleted or lost its plugin files. `setup status`
+  lists the connected projects. Connecting the same directory again through a symlink, a
+  different letter case or its old path after a move is refused as
+  `project_connected_via_other_path`, with the path already connected and the disconnect that
+  clears it. When the shared pieces predate this release, or FinishUP's record of the connected
+  projects was lost, FinishUP keeps those pieces on an ordinary disconnect and says so in status and
+  the preview (for Codex, only while another project or a trusted checkout carrying FinishUP's
+  plugin files may use them; see below). For Codex, the projects this installation of FinishUP connected stay known even if the
+  record is deleted, and a trusted checkout that carries FinishUP's plugin files but never connected
+  through FinishUP only counts as a project that *may* use the shared pieces: they keep those pieces
+  and never take over the home's marketplace binding, and a disconnect that would leave only such
+  projects stops with `membership_unverified` and offers reconnecting the project you use or
+  `--remove-shared`. A project connected only through another FinishUP installation is not detected
+  once the record is lost. Running a Codex disconnect again, or for a project that never
+  connected, no longer removes the MCP registration the other connected projects use, also while
+  another connected project's plugin files or folder are missing for now (a branch switch, `git
+  clean`, an unmounted volume); the disconnect names the project they stay for and, when its
+  folder is missing, the home-wide preview that removes them if it is gone for good. Connecting
+  a project on another review mode (local only or AI-powered review) changes it for every project
+  sharing that Codex home or Claude Code configuration; `setup run`, the terminal interface's
+  first-run preview, `integrate codex mcp preview` and `integrate claude plugin preview` now name
+  those projects and both modes, and an unattended `--accept` that would change them stops and
+  asks for the reviewed preview (Cursor keeps the review mode per project). That also holds when
+  FinishUP cannot read which projects use the home (`membership_unknown`), and a legacy registration
+  that differs only in how it starts FinishUP no longer switches local-only review to AI-powered
+  review. An unattended `finishup setup run|status|disconnect --host codex` without
+  `--route-profile` keeps the home's current review mode (local only for a new home).
+  `setup disconnect --remove-shared` previews and asks for consent naming the projects that stop
+  using FinishUP; the low-level `integrate codex mcp remove` and `integrate cursor plugin remove`
+  stay home-wide but now name them too. Two setups for the same agent configuration at once can no longer lose a project:
+  setup holds a private lock per configuration in FinishUP's own state folder, so a first Claude Code
+  or Cursor setup into a configuration folder that does not exist yet needs no manual `mkdir`
+  (Codex still needs its home to exist and now says so), and a lock that cannot be taken stops
+  with `connection_lock_unavailable` before anything changes. A damaged connected-projects record
+  is reported as `connection_projects_record_invalid` by `setup run`, `setup status` and `setup
+  disconnect`, with the file and the way out (make it owner-only again, or restore it). After
+  disconnecting projects in any order, each can be connected again (Claude Code previously
+  refused the first one with `destination_conflict`).
+  A project still carrying its Yoetz-era activation (ADR-048) loses that activation with its own
+  disconnect also when the other projects keep the shared pieces; a Yoetz-era MCP entry or Cursor
+  plugin folder that other projects may still load stays with the shared pieces until the last
+  disconnect, and the disconnect's approval cleanup removes exact earlier-name approval entries too.
+  Yoetz kept no record of the projects it connected. For Cursor, a Yoetz-era plugin folder found
+  without a record counts as shared pieces whose users FinishUP cannot confirm: an ordinary
+  disconnect keeps it, also when only one project used it, and only `--remove-shared` removes it;
+  a connect that migrates it keeps that uncertainty for later disconnects, and the disconnect (in
+  the terminal interface too) names the `--remove-shared` command. For Codex, a project's own
+  Yoetz-era activation goes with that project's own disconnect, never with another project's
+  `--remove-shared`. A project still carrying it counts as connected: another project's connect
+  records it, and another project's disconnect keeps the MCP registration it uses. Yoetz-era Codex
+  tables or a Yoetz-era MCP entry found without a record make trusted checkouts that carry
+  FinishUP's plugin files possible users, which keep the MCP registration or stop the disconnect
+  as `membership_unverified`; with neither another project nor such a checkout, an ordinary
+  disconnect removes the registration. A Codex connect no longer moves the MCP registration from
+  the earlier name `yoetz` while a project's Codex settings still need it (such as the approval
+  table Yoetz 0.2's `integrate codex admission grant` wrote): moving it made Codex refuse to load
+  that project. The earlier entry stays beside `finishup`, and the plan and `setup status` say for
+  each project what holds it and what releases it: the exact revoke where only an approval
+  FinishUP (or Yoetz) wrote holds it, what to fix in a project file FinishUP could not read, or
+  the edited tables to remove by hand. All of a home's projects are read for this; the entry also
+  stays while the Codex home's own `config.toml`, its record of connected projects, or a project
+  path with a control character cannot be read, and the step says what makes it readable.
+  Connecting again once nothing listed holds it finishes the move. Every case also names the
+  explicit way out, as your choice: remove FinishUP's MCP registration under both names with
+  `integrate codex mcp preview-remove` and `remove`, then connect again; the step says that every
+  project of the home loses FinishUP until one connects again, and that a project still naming the
+  earlier server stops loading its Codex configuration until those tables go. A connect that would
+  also change the review mode stops first, since the earlier entry serves every project on its own
+  mode, and offers both the current mode and that way out. A Codex disconnect now also keeps the
+  registration when one of those inputs cannot be read, and says so. The interactive `finishup
+  setup` approval, `integrate codex mcp install`, the menu and the terminal interface say the
+  earlier entry is kept (and whether a project uses it or only not every project could be read)
+  instead of promising its removal. After a Codex disconnect that keeps the registration for other
+  projects, also for their own Codex settings or because not every project could be checked,
+  status reports the disconnected project `configured: false` with `shared_registration_retained:
+  true`. A Codex disconnect that removes the shared plugin while the registration stays for a
+  Yoetz-era project now says so, and names the projects whose plugin files are missing as losing
+  it too.
+
+- `finishup setup disconnect` now removes the selected project's FinishUP tool-approval entry (the one
+  `integrate <host> admission grant` writes) as part of the same previewed plan, before the
+  registration itself. Previously (Yoetz 0.2.x) a Codex disconnect left
+  `[mcp_servers.yoetz.tools.check]` in the project's `.codex/config.toml`; Codex then refused to
+  start in that project ("invalid transport in `mcp_servers.yoetz`"), and the disconnect ended
+  `incomplete` with the project skill still installed. Claude Code and Cursor disconnects remove
+  their entries the same way. After a Codex disconnect, FinishUP checks that Codex still loads its
+  configuration in the project. `setup status --host codex` explains such a leftover under either
+  spelling, `mcp_servers.yoetz` (left by a Yoetz 0.2.x disconnect) or `mcp_servers.finishup`, and
+  prints the exact command that removes it (or, for a table you edited, names the file to fix;
+  with both kinds in one file it names which is which and still gives the revoke for the exact
+  one), and FinishUP's own Codex registration commands no longer fail because of it. A
+  disconnect that cannot remove the entry safely (an approval file FinishUP cannot read, such as a
+  symlink, or approval settings you added or edited yourself that still need the FinishUP server)
+  now stops before changing anything and names the file to fix, instead of leaving the project
+  unable to start. A Codex disconnect keeps the FinishUP server registered while another project's
+  configuration uses it, lists those projects, and says when it could not check them all.
+  `setup disconnect --remove-shared` removes the pieces shared by every connected project.
+
+- The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
+  in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
+  bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer
+  runs no commands and writes no files, so the sandbox confines nothing there. The fact is
+  disclosed, not hidden. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true`
+  with the new `codex_sandbox_unavailable_reason` (`bubblewrap_missing` or
+  `user_namespaces_unavailable`), and the terminal interface says the evaluator runs without
+  Codex's verified Linux sandbox. Only reviewed Codex releases are admitted; others are refused
+  as `codex_sandbox_unavailable_unreviewed_runtime`. Every other warning, including Codex's WSL1
+  one, still stops setup. Approved network-denied checks still need a usable `bwrap`.
+  Receipts do not carry this fact yet.
+
+- MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
+  schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
+  and variant rules are available through `read_guidance` in request templates. Claude Code and
+  Cursor use the same compact inputs. Full server-side validation and output schemas are unchanged.
+  Field descriptions are preserved when they fit; larger tools keep priority field rules first.
+  If a future schema exceeds the budget even without descriptions, the bridge logs a diagnostic
+  and serves the minimal form instead of failing startup. CI still rejects oversized schemas.
 
 - Automatic AI-powered observation advice can now reach the configured reviewer through the
   approved review-packet envelope on Codex, Claude Code and Cursor. Scoped gaps and rule metadata
@@ -777,7 +858,7 @@ that marks the pending version as unreleased above reverse-chronological release
   folder name has spaces), a top-level file without an extension included; the rest of the receipt stays readable, and a name
   the agent published itself returns to it. A receipt with many withheld names still renders: past
   its bound the omitted-field list names the containing sections, and an over-long field ends with
-  a visible truncation note. Older receipts follow the same rule when read again.
+  a visible truncation note. Older receipts follow the same rule when read again (#1069, #1073).
 
 - Every result the CLI and the terminal interface show (receipts, status and the rest) now follows
   the agent's privacy view, as it already did over MCP: a terminal is not proof that you are the one
@@ -797,7 +878,8 @@ that marks the pending version as unreleased above reverse-chronological release
   another open one as `ceremony_busy` and a throttled passphrase as `reauthentication_rate_limited`
   (wait up to five minutes), where both used to read `state_forbidden`. On Linux and WSL 2 only a
   vault passphrase you type works for now: a system-keychain installation there, whose generated
-  passphrase you were never shown, reports that the full receipt is unavailable and shows nothing.
+  passphrase you were never shown, reports that the full receipt is unavailable and shows nothing
+  (#1069, #1073).
 
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `finishup-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
@@ -836,7 +918,7 @@ that marks the pending version as unreleased above reverse-chronological release
   changes in plain words, as Codex plans already did. When more than one installation of an agent
   is found, connect and disconnect list the paths to pass with `--host-path`. The privacy policy
   setup approves is the grant for the folder it connected: each other repository needs its own
-  privacy grant (`finishup --privacy` there) before its tasks can use AI-powered review.
+  privacy grant (`finishup --privacy` there) before its tasks can use AI-powered review (#1067).
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), FinishUP's local, names-only read of what changed no longer fails: it reads the nested
   repository the same way the change shown to the reviewer does. So the check again tells whether
@@ -1046,27 +1128,25 @@ that marks the pending version as unreleased above reverse-chronological release
 - Codex subscription AI-powered review no longer stops at a `runtime_warning` on Codex `0.157.1`.
   FinishUP's retained evaluator runtime now keeps Codex's `codex-code-mode-host` helper, pinned by
   digest, beside the native executable. Setup, repair, launch, `runtime status` and
-  `runtime remove` now cover both files. The evaluator capability is now
-  `codex-evaluator/0.157.1/v2`, with an unchanged isolated config, so existing sign-ins keep
-  working. `finishup provider codex-subscription repair` moves a `v1` binding and keeps its sign-in
-  and choices. Retaining Codex's bundled `bwrap` remains open (#874).
-- Codex subscription AI-powered review now admits Codex `0.157.1` on macOS arm64 and Linux
-  x86_64 in place of `0.150.1`, which cannot run the `gpt-6-luna` default. Existing bindings
-  report `codex_runtime_capability_unsupported`. `finishup provider codex-subscription repair`
-  moves them to FinishUP's own verified copy of `0.157.1` and keeps the sign-in, model and
-  settings. Rate-limit bookkeeping accepts the new `normalModelSlug` field, and the native
+  `runtime remove` now cover both files. `finishup provider codex-subscription repair` moves an
+  older binding and keeps its sign-in and choices. Retaining Codex's bundled `bwrap` remains open
+  (#874).
+- Codex `0.157.1` is now the oldest release Codex subscription AI-powered review admits on macOS
+  arm64 and Linux x86_64, in place of `0.150.1`. Existing bindings report
+  `codex_runtime_profile_outdated`, and `finishup provider codex-subscription repair` moves them,
+  keeping the sign-in, model and settings. Rate-limit bookkeeping accepts the new `normalModelSlug` field, and the native
   `rateLimitExceeded` error is reported as rate-limited. Other new app-server events still fail
   closed. Authenticated live evidence for `0.157.1` is pending (#871).
 - Codex subscription AI-powered review no longer breaks when your everyday Codex updates. Setup
-  binds FinishUP's own verified private copy of the one admitted Codex release. It offers only an
-  eligible runtime as the default, and it can download that release with your npm after asking.
+  binds FinishUP's own verified private copy of the Codex release it admits. It offers only an
+  eligible runtime as the default, and it can download a release with your npm after asking.
   The new `finishup provider codex-subscription repair` rebinds a binding stranded by a replaced
   executable or an older capability identity. It reuses the existing ChatGPT sign-in and never
   signs in, logs out, or switches accounts. Re-running setup or repair keeps the model, reasoning
   effort, timeout, retries, and fallback role. `runtime status`, `provider status`, the prompt
   menu and `/provider` now name the exact structural cause, such as
   `codex_runtime_executable_changed`, and its fix, and the upgrade guide ends with that check.
-  Exact-version admission is unchanged, and native acceptance remains pending (#855).
+  Native acceptance remains pending (#855).
 - Delegation guidance now tells parents to give each child its selector, distinct actor and
   complete publication/check/receipt/closure duties. Helpers assigned no child selector are
   explicitly kept off the child ledger; Claude's compact startup text states that exception
@@ -1099,77 +1179,6 @@ that marks the pending version as unreleased above reverse-chronological release
   records the superseded context as history and can resolve the finding, and the receipt says the
   generation was superseded. Declaring or disposing against the old generation now returns
   `coordination_generation_superseded` with a recovery step you can take (#842).
-
-## 0.3.0 — 2026-09-21
-
-Prepared public-alpha release candidate; publication remains gated by #785. See
-[release notes](docs/releases/v0.3.0.md) for changes and validation limits.
-
-### Added
-
-- One guided installation and connection lifecycle for Codex, Claude Code, Cursor IDE and
-  Cursor Agent CLI, including preview, status, disconnect and reconnect, carried from 0.2.4
-  (#767).
-- Multiple agents can work in independent tasks within one repository. Parents can delegate
-  work, children can register for explicit acceptance, and lineage views and receipts retain
-  each child's findings, unfinished work, and observation gaps. Requesting a receipt does not
-  close a task or erase a child dependency (issues #494–#504, #509).
-- Projects group concurrent tasks and surface declared overlaps under each source workspace's
-  existing consent. The CLI supports project creation, membership changes, grouping opt-out and
-  opt-in, and generation-bound coordination grants. Retrying a project mutation recovers its
-  recorded operation without creating a second project or repeating a membership change
-  (issues #505–#508).
-- Opt-in required startup for native Claude Code and Cursor plugins, with scope-bound plan
-  checks, owner controls, and same-task pending-operation recovery (#692, #797). Native acceptance
-  remains bounded as documented in the required-startup runbook.
-- `finishup setup status --json` reports each Claude installation's MCP mode (plugin-managed or
-  bare) and whether a session-start cue is installed; a bare registration has none (#789).
-- Observation capacity can be set to a custom queue count from 64 to 8,192 rows with
-  `--capacity custom --queue-count N`, in addition to standard (512), larger (2,048) and largest
-  (8,192). Every capacity preview discloses the scope, current and requested limits, possible
-  disk, memory and CPU cost, the limits that still apply, and how to lower, pause and resume, in
-  the CLI, the terminal interface's `/observe`, and agent guidance. Sessions in a workspace share
-  one queue sized by the largest active selection, so an increase says it raises that queue for
-  every session; a smaller session count limits only that session. Status reports the effective
-  budget and its limiting dimension (#828).
-- Requesting No FinishUP cap (`--capacity none`) returns `capacity_no_cap_unsupported` and changes
-  nothing: the local observation state has a 16 MiB safety ceiling, so the largest supported
-  capacity is 8,192 rows. With `--json` the facts are under `error.capacity` beside the standard
-  `error.recovery` (#828).
-
-### Changed
-
-- Updating FinishUP no longer requires quitting agent apps or stopping the service. `finishup upgrade
-  --accept` runs from inside an open session, which keeps working on the previous version; the
-  first FinishUP call of the next session switches to the new version and retires the previous
-  service. Upgrading from 0.2 still follows 0.2's stop-first procedure once (#820).
-- Updating from 0.2 preserves existing tasks, settings, permissions, and host registrations.
-  On ordinary service startup after unlock, supported task ledgers receive a verified backup
-  and automatic schema upgrade before new work is admitted. Interrupted upgrades resume from
-  recorded progress; failed verification keeps the service unavailable for writes and retains
-  recovery evidence (issue #496).
-- The 0.3 functionality uses additive control contracts and migrations while retaining the
-  released 0.2 schemas and migration bytes. Observation selection, runtime isolation, and
-  recovery improvements from 0.2 remain in effect.
-- Small status reads reuse immutable projection pages instead of replaying the ledger for
-  each query (#748). New Codex subscription review bindings default to a 15-minute budget
-  and allow explicit budgets up to one hour; existing explicit budgets remain unchanged (#750).
-- Linux sandbox readiness is documented as a fact of the client host, separately from the
-  semantic runtime evaluator; this adds no WSL or AppArmor acceptance claim (#765).
-- The Grok provider preset names grok-4.6 (#763).
-- Native startup guidance is delivered independently of observation consent and availability
-  (#692). Claude Code sessions receive a compact MCP initialize block that fits the host's
-  observed 2,048-character rendering cap, with the "call `start` first" trigger and the
-  late-start rule as its first two sentences; other hosts keep the full document (#789).
-- Guidance, the Claude skill and `AGENTS.md` state what to do when material work began before
-  `start`, and how to load deferred FinishUP tool schemas by name (#789).
-- Local control schema 2.9.0 carries custom capacity counts, capacity labels and the effective
-  budget; both client and service must run it. Defaults are unchanged (Focused, 512), and a
-  saved custom count reads as the default on an older version. Agent guidance and the skills
-  say that a larger or uncapped capacity needs a disclosed, owner-accepted preview and is never
-  chosen for an ordinary task (#828).
-
-### Fixed
 
 - Connecting Codex, rerunning setup, or repeating `finishup observe grant` no longer turns off
   native content capture you enabled for Claude Code or Cursor. Repeating consent that is

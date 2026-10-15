@@ -36,8 +36,11 @@ instead of the npm launcher. See the upgrade guide below.
    `npx finishup`). If you installed `yoetz` with extras, install the same ones, for example
    `'finishup[semantic-openai]'`. `yoetz upgrade` prints this command with your extras when
    it can read them from the installation, and otherwise says to add them yourself.
-2. Reconnect your agents to the `finishup` command. `finishup upgrade` shows the host refresh
-   steps for each agent.
+2. Reconnect your agents to the `finishup` command, in each project you connected.
+   `finishup upgrade` shows the host refresh steps for each agent. For Codex, run
+   `finishup setup status --host codex`: if it says the registration under the earlier name
+   `yoetz` stays beside `finishup`, take the step it lists for each project and connect again
+   until it no longer says so, because that kept registration still starts the `yoetz` command.
 3. Only then remove the old name: `uv tool uninstall yoetz`.
 
 See [Upgrading from Yoetz](https://github.com/TheGaySupreme123/finishup/blob/main/docs/usage/upgrading.md#upgrading-from-yoetz).

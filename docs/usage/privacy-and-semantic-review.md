@@ -318,7 +318,8 @@ include the configured pair in the review screen before approval.
 
 ## What AI-powered review actually sends
 
-When you accept the CLI's recommended `assisted-review` recipe, it shows and confirms a standing
+When you choose **Assisted review** (the default choice, marked recommended only for a provider
+route with reviewed data-use terms), the CLI shows and confirms a standing
 exact-repository policy that sends the reviewer a structured packet: the goal, obligations, claims, the
 material timeline, local findings and their exact bases, coverage gaps, and bounded
 problem-local excerpts of evidence, tests, diffs, or source **already recorded in the case**, plus

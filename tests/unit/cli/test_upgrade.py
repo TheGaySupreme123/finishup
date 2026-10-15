@@ -433,6 +433,10 @@ def test_alias_plan_names_the_alias_and_the_way_off_it() -> None:
     assert "for example 'finishup[semantic-openai]'." in move.detail
     assert "also works as yoetz with the same subcommand" in move.detail
     assert "uv tool uninstall yoetz" in move.detail
+    # A Codex registration kept under the earlier name still starts the old tool, so the move
+    # names the status check before the uninstall.
+    status_check = move.detail.index("finishup setup status --host codex")
+    assert status_check < move.detail.index("uv tool uninstall yoetz")
 
 
 @pytest.mark.parametrize(

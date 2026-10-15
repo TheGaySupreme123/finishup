@@ -146,29 +146,43 @@ uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
 ```
 
 If you installed `yoetz` with extras, install the same ones, for example
-`uv tool install --managed-python --python 3.14.6 'finishup[semantic-openai]'`. `yoetz upgrade`
-ends with a *Move from the yoetz name* step that prints this command with your extras when it can
-confirm them, and otherwise asks you to add them yourself.
+`uv tool install --compile-bytecode --managed-python --python 3.14.6 'finishup[semantic-openai]'`.
+`yoetz upgrade` ends with a *Move from the yoetz name* step that prints this command with your
+extras when it can confirm them, and otherwise asks you to add them yourself.
 
-Then reconnect each agent host with the new command. The guided connection, `finishup setup run
---host codex|claude|cursor-ide|cursor-cli`, shows one reviewed change that replaces the host's
-Yoetz-era registration with the FinishUP one; `finishup upgrade` lists the same host steps. Check
-each host afterwards with `finishup setup status --host <host>`: a registration reported as
-`legacy_only` or `duplicate` still uses the old name and needs reconnecting. Something reported as
-`foreign` under the old name is not provably FinishUP's, so FinishUP leaves it alone; the host's
-integration guide ([Codex](../runbooks/codex-integration.md#legacy-yoetz-registrations), [Claude
+Then reconnect each agent host with the new command, in each project you connected. The guided
+connection, `finishup setup run --host codex|claude|cursor-ide|cursor-cli`, shows one reviewed
+change that replaces the host's Yoetz-era registration with the FinishUP one; `finishup upgrade`
+lists the same host steps. Check each host afterwards with `finishup setup status --host <host>`:
+a registration reported as `legacy_only` or `duplicate` still uses the old name and needs
+reconnecting. Something reported as `foreign` under the old name is not provably FinishUP's, so
+FinishUP leaves it alone; the host's integration guide ([Codex](../runbooks/codex-integration.md#legacy-yoetz-registrations), [Claude
 Code](../runbooks/claude-code-integration.md#legacy-yoetz-registrations),
 [Cursor](../runbooks/cursor-integration.md#legacy-yoetz-registrations)) says how to remove it by
 hand.
 
-Only after every host is reconnected, remove the old command:
+For Codex, the connection can also keep the earlier registration on purpose. While a project's own
+Codex settings still name the `yoetz` server (such as the approval entry Yoetz 0.2's admission grant
+wrote), or FinishUP cannot read them, removing the earlier registration would stop Codex loading
+that project, so the MCP registration under the earlier name `yoetz` stays beside `finishup`. That
+kept registration still starts the `yoetz` command from your old installation, for every project of
+that Codex home. `finishup setup status --host codex` says when the registration under the earlier
+name yoetz stays beside finishup, and lists each project that still needs it with its step: the
+exact command that revokes an earlier-name approval entry, what to fix in a project file FinishUP
+could not read, or tables you edited, to remove by hand. Take those steps, then run
+`finishup setup run --host codex` again; once nothing holds the earlier registration, that
+connection finishes the move and status no longer mentions it.
+
+Only after every host is reconnected, and `finishup setup status --host codex` no longer says the
+registration under the earlier name yoetz stays, remove the old command:
 
 ```text
 uv tool uninstall yoetz
 ```
 
-A host still connected through `yoetz` stops working when that tool is removed. Your data is not
-affected: it stays in the folders the installation already uses.
+A host still connected through `yoetz` stops working when that tool is removed, and so does every
+Codex project that still relied on a kept `yoetz` registration. Your data is not affected: it stays
+in the folders the installation already uses.
 
 ### If something refuses after the rename
 
