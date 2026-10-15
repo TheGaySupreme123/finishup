@@ -3593,7 +3593,8 @@ from the confirmation code. The helper's single stdout token (`approved`, `cance
 `unavailable`, `timeout`, optionally newline-terminated, exit status 0) is parsed exactly; anything
 else is `unavailable`. `approved` yields an opaque, unpicklable attestation bound to the exact
 `UserPresenceChallenge`, consumed once within 30 seconds. Its `UserPresenceCapability` names
-`adapter_id="yoetz.presence.macos-local-authentication"`,
+`adapter_id="finishup.presence.macos-local-authentication"` (the FinishUP spelling: new in 0.3 and
+never stored, released or carried by a schema, ADR-048 §1),
 `profile_id="device-owner-authentication/1"`, `release_cell="unqualified"`, and the helper digest
 as both evidence digests, so it never satisfies a runtime-support `user_presence_cells` row. `UnlockCoordinator` exclusively owns the durable passphrase throttle and calls the vault
 only after admission/reservation; `unlock_rate_limited` is therefore a coordinator outcome and not

@@ -215,7 +215,7 @@ and the scenarios have not been re-run on the renamed build:
 
 | Scenario | Result |
 | --- | --- |
-| Foreign clone: connect A; delete the record; add a never-connected trusted checkout `a-clone` with FinishUP's committed plugin files (sorts first); connect B; disconnect A; delete `a-clone` | B's connect records A and B with `unknown_members`, not `a-clone`; A's disconnect preview: `detach_project`, `shared_with` B, `possible_users` `a-clone`; the binding moves to B; after deleting `a-clone`, B reads `active` and `codex plugin list --marketplace yoetz --json` and `codex mcp list --json` from B succeed |
+| Foreign clone: connect A; delete the record; add a never-connected trusted checkout `a-clone` with FinishUP's committed plugin files (sorts first); connect B; disconnect A; delete `a-clone` | B's connect records A and B with `unknown_members`, not `a-clone`; A's disconnect preview: `detach_project`, `shared_with` B, `possible_users` `a-clone`; the binding moves to B; after deleting `a-clone`, B reads `active` and `codex plugin list --marketplace finishup --json` and `codex mcp list --json` from B succeed |
 | Lost record, no verified member left: connect A and B; delete the record; trust both; disconnect A | refused `membership_unverified`, nothing changed, continuation names B; reconnecting B records it, then A's disconnect detaches and the binding moves to B |
 | Deleted record, no trust rows at all: connect A and B; delete the record; disconnect A | refused `membership_unverified` naming B (from the witness), `config.toml` byte-identical; reconnecting B, then A's disconnect detaches to B and B reads `active` |
 | Anchor deleted: connect A and B; `rm -rf A`; disconnect B | status lists only B; disconnect plans `deactivate_plugin`, `remove_mcp_registration`, `remove_project_skill` and completes; `config.toml` holds no FinishUP table; `codex plugin list` works again |
@@ -1885,11 +1885,15 @@ While another verified connected project that still serves the exact FinishUP ma
 the home (see [Several projects in one Codex home](#several-projects-in-one-codex-home-issue-1058)),
 the preview's outcome is `detach` instead: it lists those projects in `shared_with`, names the
 project the binding moves to in `rebind_to` when it named this one or a project that no longer
-serves its manifest, lists unverified `possible_users` (with `membership_unknown`), and plans neither host command nor any cache
-deletion (`--purge-cache` has no effect). Apply rewrites only the exact `[marketplaces.finishup]`
-table in place, then removes this project's canonical `marketplace.json`, then updates the
-connected-projects record; the disconnected project then reads `installed_not_activated` while
-the remaining projects stay `active`. With possible users but no verified project left, the
+serves its manifest, lists unverified `possible_users` (with `membership_unknown`), and plans
+neither host command nor any deletion from the shared FinishUP cache (`--purge-cache` has no
+effect). A Yoetz-era activation of this project is its own and is deactivated in the same plan
+(`legacy_removed_block`, `legacy_cache_versions`, `legacy_marketplace_json_planned`; see [Legacy
+Yoetz registrations](#legacy-yoetz-registrations)). Apply rewrites the exact
+`[marketplaces.finishup]` table (and this project's exact legacy tables) in place, then removes
+this project's canonical `marketplace.json` (or its exact Yoetz-era document) and its
+marker-validated legacy cache, then updates the connected-projects record; the disconnected
+project then reads `installed_not_activated` while the remaining projects stay `active`. With possible users but no verified project left, the
 preview refuses as `codex_plugin_remove_refused:membership_unverified` before any change.
 
 ### External MCP registration

@@ -33,8 +33,9 @@ __all__ = [
     "owner_receipt_view_target_digest",
 ]
 
-# Frozen legacy identifier (ADR-048): HMAC domain separator in the shared `yoetz.<name>/<n>` tag
-# family; changing it changes every derived connection binding.
+# Frozen legacy identifier (ADR-048): the digest domain separator (a prefixed SHA-256, no key) in
+# the shared `yoetz.<name>/<n>` tag family. The client and the service each derive the digest, so
+# it must match across builds; changing it changes every derived connection binding.
 _CONNECTION_DOMAIN: Final = b"yoetz.owner-view.control-connection/1\x00"
 _MAX_PENDING_GRANTS: Final = 8
 _MAX_SEEN_CONNECTIONS: Final = 65_536
