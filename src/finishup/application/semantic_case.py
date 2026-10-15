@@ -2991,7 +2991,12 @@ type _VerificationRun = tuple[str, ResultOutcome, str, str]
 
 def _verification_identities(
     projection: ProjectionState,
-) -> tuple[dict[str, _VerificationRun], dict[str, _VerificationRun], dict[str, tuple[int, str]]]:
+) -> tuple[
+    dict[str, _VerificationRun],
+    dict[str, _VerificationRun],
+    dict[str, tuple[int, str]],
+    frozenset[str],
+]:
     """Map evidence and result refs to the command whose run they record.
 
     Each run is ``(identity, outcome, action ref, result ref)``. Identity is the digest of the
@@ -3000,13 +3005,17 @@ def _verification_identities(
     request was answered by another run of the same command. A hook run recorded without a command
     identity (``omitted:structural``) identifies nothing, so unrelated commands never supersede
     each other. The third map holds, per identity, the newest recorded run (its frontier and result
-    ref), whether or not that run's output can be carried. The digest never leaves this function's
-    callers.
+    ref), whether or not that run's output can be carried. The fourth set is identities whose
+    newest run is a readable command action no readable result cites: a tombstoned result no
+    longer names that action, and an older capture of the command must not be sent in its place.
+    A tombstoned action has no command text and is absent here. The digest never leaves this
+    function's callers.
     """
 
     by_evidence: dict[str, _VerificationRun] = {}
     by_result: dict[str, _VerificationRun] = {}
     newest: dict[str, tuple[int, str]] = {}
+    cited_actions: set[object] = set()
     for result_ref, row in sorted(
         projection.results.items(),
         key=lambda pair: (pair[1].source_frontier, str(pair[0]).encode("ascii")),
@@ -3014,6 +3023,7 @@ def _verification_identities(
         payload = row.payload
         if payload is None or row.redacted:
             continue
+        cited_actions.add(payload.action_id)
         action = projection.actions.get(payload.action_id)
         if (
             action is None
@@ -3031,7 +3041,29 @@ def _verification_identities(
         newest[identity] = (row.source_frontier, str(result_ref))
         for evidence_ref in payload.evidence_refs:
             by_evidence[str(evidence_ref)] = run
-    return by_evidence, by_result, newest
+    # A tombstoned result cannot cite its action. The action still names the command, and its
+    # frontier is the newest run when no readable result of that command is later.
+    redacted_newest: set[str] = set()
+    for action_ref, action_row in projection.actions.items():
+        if action_ref in cited_actions:
+            continue
+        action_payload = action_row.payload
+        if (
+            action_payload is None
+            or action_row.redacted
+            or action_payload.action_kind is not ActionKind.COMMAND
+        ):
+            continue
+        key = command_run_key(action_payload)
+        if key is None:
+            continue
+        identity = "command:" + hashlib.sha256("\x00".join(key).encode("utf-8")).hexdigest()
+        rank = (action_row.source_frontier, str(action_ref))
+        previous = newest.get(identity)
+        if previous is None or rank > previous:
+            newest[identity] = rank
+            redacted_newest.add(identity)
+    return by_evidence, by_result, newest, frozenset(redacted_newest)
 
 
 def _artifact_path(payload: EvidenceRecordedPayload) -> str | None:
@@ -4058,9 +4090,12 @@ def _select_targeted_excerpts(
     part_limit = min(excerpt_limit, selection.max_total_excerpt_bytes)
     omissions: list[ReviewOmission] = []
     gaps: set[str] = set()
-    verification_by_evidence, verification_by_result, newest_runs = _verification_identities(
-        projection
-    )
+    (
+        verification_by_evidence,
+        verification_by_result,
+        newest_runs,
+        redacted_command_runs,
+    ) = _verification_identities(projection)
     candidates = _evidence_candidates(
         projection=projection,
         allowed=allowed,
@@ -4371,8 +4406,22 @@ def _select_targeted_excerpts(
     # Issue #1047: what the reviewer asked for in this check, in request order, within its share.
     # tb4n5: chosen per part (see the docstring), so a partly shown source can still progress.
     # Held-back indexes are newest hook-captured command outputs a verification-output follow-up
-    # must not send as a raw evidence excerpt (issue #1079).
+    # must not send as a raw evidence excerpt (issue #1079), and older runs of a command whose
+    # newest run is a redacted occupancy (a tombstoned result whose action is still readable).
     held_back: set[int] = set()
+    for index, candidate in enumerate(candidates):
+        if candidate.verification_identity not in redacted_command_runs:
+            continue
+        held_back.add(index)
+        gaps.add("content_unselected")
+        _append_omission(
+            omissions,
+            candidate.source_ref,
+            candidate.linked,
+            candidate.category,
+            candidate.source_kind,
+            "withheld_by_policy",
+        )
     requested: dict[int, int] = {}
     promoted: dict[int, tuple[int, ...]] = {}
     if follow_up is not None:
@@ -4539,7 +4588,7 @@ def _select_targeted_excerpts(
                         "not_selected",
                     )
             for index in matching:
-                if index in observed_indexes:
+                if index in observed_indexes or index in held_back:
                     continue
                 promote(index)
 

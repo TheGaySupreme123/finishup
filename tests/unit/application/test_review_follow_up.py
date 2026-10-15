@@ -1955,6 +1955,40 @@ def test_observed_command_output_names_only_the_newest_run_of_a_named_command() 
     assert observed_command_output_refs(blocked.projection, (str(res(12)),), allowed) == frozenset()
 
 
+def test_a_tombstoned_newest_result_occupies_its_command() -> None:
+    """A redacted newest result keeps its command, so the older capture is not sent."""
+
+    case, captured, scope = _capture_scene()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    tombstoned = replace(case.projection.results[res(22)], payload=None, redacted=True)
+    blocked = replace(
+        case,
+        projection=replace(
+            case.projection, results={**case.projection.results, res(22): tombstoned}
+        ),
+    )
+    assert observed_command_output_refs(blocked.projection, (str(res(12)),), allowed) == frozenset()
+    assert observed_command_output_refs(blocked.projection, (str(res(22)),), allowed) == frozenset()
+    follow_up = plan_review_follow_up(
+        blocked.projection,
+        allowed,
+        (_requested("verification_output", str(res(12)), availability="agent_suppliable"),),
+        previous=None,
+        shown_refs=frozenset(),
+    )
+    assert follow_up is not None
+    built = _build(
+        blocked,
+        follow_up=follow_up,
+        selection=_assisted(),
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    prepared = _provider_contents(_send(built))
+    assert _PYTEST_OLD not in prepared
+    assert _OBSERVED_MARKER.encode() not in prepared
+
+
 def test_a_shown_digest_still_owes_marked_command_output_until_that_span_is_sent() -> None:
     case = _command_projection()
     allowed = frozenset(str(ref) for ref in case.allowed_ids)
