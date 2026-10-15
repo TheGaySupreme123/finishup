@@ -74,7 +74,9 @@ def rechecks_from_closures(
     * ``acceptance`` (A-12): at least one resolved obligation the ledger flags as risky to call
       met (``facts.acceptance_risk_obligation_ids``, tb4n5 #1050); the key names that set, so a
       changed set asks again and an unchanged one does not. A fact set without the risk list (a
-      hand-built one that predates the rule) names every resolved obligation, as before.
+      hand-built one that predates the rule) names every resolved obligation, as before. An
+      obligation with a recorded ``verification_limit`` disclosure is left out (#1079): that
+      statement is already on the ledger, and the receipt still names it.
     * ``acknowledgement``: an obligation acknowledged as not done that is not disclosed as
       verifiable only outside this environment. ``since_frontier`` is when it was acknowledged,
       so an acknowledgement recorded after an acceptance re-read was delivered is not asked again.
@@ -86,10 +88,19 @@ def rechecks_from_closures(
     out: list[Recheck] = []
     risky_ids = None if facts is None else facts.acceptance_risk_obligation_ids
     risky = None if risky_ids is None else frozenset(risky_ids)
+    # A recorded verification limit is the statement the flagged rule asks for (#1079). It leaves
+    # the acceptance re-read, including the legacy unflagged rule. The receipt still lists it.
+    limited = {
+        obligation
+        for obligation, kind, _decision in (() if facts is None else facts.disclosed_obligations)
+        if kind == "verification_limit"
+    }
     asked = [
         item
         for item in rows
-        if item.basis == "resolved" and (risky is None or item.obligation_id in risky)
+        if item.basis == "resolved"
+        and (risky is None or item.obligation_id in risky)
+        and item.obligation_id not in limited
     ]
     resolved = sorted((str(item.obligation_id) for item in asked), key=str.encode)
     if resolved:

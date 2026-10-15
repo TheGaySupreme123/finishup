@@ -123,6 +123,7 @@ from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.models import (
     FactLineageModel,
     SemanticProgressPhase,
+    StatusAdmissibleVerificationModel,
     StatusAdvicePageModel,
     StatusAssignmentFilterModel,
     StatusAssignmentPageModel,
@@ -1808,6 +1809,14 @@ async def _closure_readiness(
         optional_fields["fact_lineage"] = tuple(
             FactLineageModel.model_validate(lineage_to_wire(item))
             for item in facts.fact_lineage[:64]
+        )
+    if facts.admissible_verification:
+        # #1079: the Stop gate accepts a cited evd_ or res_ id only when it is in this list.
+        # Omitted when empty, so an older client and a task with no recorded link keep the
+        # same bytes. The gate treats absence as "not linked".
+        optional_fields["admissible_verification"] = tuple(
+            StatusAdmissibleVerificationModel(obligation_id=obligation, refs=refs)
+            for obligation, refs in facts.admissible_verification
         )
     if facts.undeclared_references:
         # tb4n4 (#1044): the files a delivered file names that no item declares, so the Stop

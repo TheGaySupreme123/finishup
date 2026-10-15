@@ -242,10 +242,15 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   requested item never attempted, evidence not linked to a declared item, or only self-asserted
   evidence), an obligation you acknowledged as not done, a recorded blocker, a premise dispute. A
   Stop asks nothing that list does not name. Once you have read a flagged obligation's
-  `acceptance_criteria` against your output and it is met, a line
-  `finishup-acceptance:<obligation id>:met` in your final answer answers its re-read on Codex and
-  Claude Code; Cursor passes FinishUP no final answer, so there it is asked once and saying the
-  criteria are met in your final answer ends it. If it is not met, republish it
+  `acceptance_criteria` against your output, answer it with
+  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id
+  that is already a recorded link for that obligation, or with
+  `finishup-verification-limit:<obligation id>`, in your final answer on Codex and Claude Code.
+  A well-formed id that is not that link does not answer it. Saying every criterion is met does
+  not answer it. Cursor passes FinishUP no
+  final answer, so there publish a decision `finishup-verification-limit:<obligation id>` or
+  link the observed evd_ or res_ id in a record; the re-read is asked once for the set. If it
+  is not met, republish it
   `acknowledged_not_done` instead.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
   you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
@@ -312,16 +317,15 @@ confirmation step that re-check gives you, then stop. A Stop also asks you once 
 marked `acknowledged_not_done` that the review says the task itself requires
 (`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
 finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
-A Stop asks once to read each resolved obligation's `acceptance_criteria` against your final output.
-Where your host passes your final answer to the Stop hook, it asks only about the resolved
-obligations that answer neither names by id nor addresses (states most of the criterion's terms), and
-names them: say in your final answer how each resolved obligation's criterion is met. If the output
-does not meet them, republish that obligation `acknowledged_not_done` with the reason; if the
-criteria can only be checked outside this environment (a hidden verifier, a withheld artifact) and
-you did the work, keep it resolved and record a decision with the line
-`finishup-verification-limit:<obligation id>`. If every criterion is met, say so in your final answer
-and stop: that confirmation needs no new record, check or receipt. An acknowledgement you publish in
-answer to that question is not challenged again.
+A Stop asks once to read each resolved obligation FinishUP flags against your final output.
+On Codex and Claude Code, answer a flagged obligation with
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
+is already a recorded link for that obligation, or with `finishup-verification-limit:<obligation id>`.
+A well-formed id that is not that link does not answer it. Saying every criterion is met does
+not answer it. Cursor passes FinishUP no final answer: publish a decision
+`finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a record.
+If the output does not meet them, republish that obligation `acknowledged_not_done` with the
+reason. An acknowledgement you publish in answer to that question is not challenged again.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed

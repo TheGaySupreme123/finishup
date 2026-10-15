@@ -64,6 +64,7 @@ from finishup.protocol.readiness_text import (
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    coordinator_failure_note,
     obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
@@ -660,6 +661,9 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         announced = recheck_note(readiness, host="generic")
         if announced is not None:
             lines.append(announced)
+        failure = coordinator_failure_note(readiness)
+        if failure is not None:
+            lines.append(failure)
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
     if readiness.check_cause is not None and readiness.state != "unknown":

@@ -1029,3 +1029,69 @@ Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the ho
 `tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host),
 `tests/integration/application/test_closure_composer.py` (the `closure_prepare` host) and
 `tests/unit/mcp/test_tb4n3_closure_verdict_text.py` (the MCP summaries per host).
+
+## Amendment (2026-10-15, issue #1079 item 3): a new closing review needs a material delta
+
+tb4n5 asked for a closing review 5 times across trials where the only later records were
+bookkeeping or dispositions. `closing_review_required` now goes stale only after a material task
+or verification change (`kernel/closing_review_delta`): an observed edit or shell write, an
+unclassified observed command or its result, or a cooperative edit or command. Claims, decisions,
+plans, responses, coordination, assignments, findings, and evidence publication do not. An
+unchanged newest check that failed with reason `coordinator_failure` does not ask for the same
+`final_review` again; readiness adds the standing code `semantic_coordinator_failure` and the
+status, closure-prepare, and receipt text name that FinishUP limit. A material change after the
+failure asks again and clears the code. `invalidates_recorded_check` is unchanged, so a real edit
+still makes the check inapplicable and still re-arms the closing review. The code is a readiness
+token, not a coverage gap and not a new wire field.
+
+## Amendment (2026-10-15, issue #1079 item 3): the check-cell pragma follows the capability
+
+The Stop gate used to repeat `// @exec: {"yield_time_ms": 300000}` whenever the host was Codex.
+Plain Codex exec and the benchmark host expose direct MCP calls plus `exec_command` and
+`write_stdin`, which are not code-mode cells, and FinishUP's MCP server records no `clientInfo`
+that says the client uses cells. The close instruction is now the neutral sentence unless code
+mode was positively observed: a recorded `exec` cell for this session
+(`LocalObservationStore.session_observed_code_mode`), or `check_cause.tool == "exec"`. Claude Code
+and Cursor do not record those cells, so they keep the neutral sentence. `guidance/startup.md`
+says the pragma and `yield_time_ms` apply only to a JavaScript `exec` cell.
+
+## Amendment (2026-10-15, issue #1079 item 7): a risky completion claim names its verification
+
+In 6 of 28 smoke trials the agent resolved a criterion or said every criterion was met when the
+external verifier showed that was false. `acceptance_risk` still checks attempt and evidence
+lineage, not whether the claim is true. This step does not reject a claim at publish time and
+does not grade the sentence.
+
+For rule `resolved_obligations_acceptance_risk`, the Stop re-read is answered only by
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or
+`finishup-verification-limit:<obligation id>` (the `yoetz-` spellings too). A bare `:met` and a
+generic all-met claim do not answer it. The legacy rule `resolved_obligations_acceptance_reread`
+still accepts a bare `:met`, and still ends an alone re-read with the confirmation sentence.
+Codex and Claude Code read those lines in the final message. Cursor's `stop` carries no final
+message, so its text never contains `finishup-acceptance`: the agent publishes the
+verification-limit decision or links the observed id in a record. The re-read is still asked once
+per flagged set. An obligation that already has a `verification_limit` disclosure leaves the
+recheck; the receipt still lists it.
+
+`kernel.claim_verification.claim_verification_lines` appends that pairing to the receipt evidence
+section in JSON, markdown and text: a header that a generic all-met claim does not stand in, then
+one line per flagged obligation with its reason tokens and `verification_limit` or
+`no_verification_limit`. A final-message line does not create the ledger link the receipt
+reports. Compact receipt wording is unchanged. A projection hole does not fail the receipt: the
+pairing for that obligation is omitted and the limitations section says the pairing could not
+be read, naming only the obligation id when the scope can still be read.
+
+## Amendment (2026-10-15, issue #1079 item 7): the cited id must be a recorded link
+
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` does not pass because the id is
+well-formed. Status carries `closure_readiness.admissible_verification` for a flagged
+obligation when `kernel.verification_link` finds a readable `evd_` or `res_` row at or before
+the closing frontier that the obligation cites, that `source_actions` ties to the obligation or
+to one of its requested items, or that an effective claim's `supporting_refs` names for that
+obligation or for the whole task. The gate accepts the line only when the cited id is in that
+list. A missing id, or one linked only to another obligation, is unattested, and the re-read
+says `` `<id>` is not linked to obligation `<obligation id>`. `` The
+`finishup-verification-limit:<obligation id>` line remains the honest alternative and does not
+need a row. There is still no truth grade and no publish-time rejection. Cursor still has no
+final message: a published verification-limit decision leaves the recheck, and a nonempty
+admissible list for an obligation is the record link that answers it. An absent list does not.

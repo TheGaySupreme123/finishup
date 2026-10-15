@@ -21,11 +21,15 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
 * the acceptance re-read (A-12) invites the agent to republish an obligation whose output does
   not meet its acceptance_criteria as ``acknowledged_not_done``. An acknowledgement published
   after that invite answers it and is never challenged by the acknowledgement re-check. Since
-  tb4n5 (#1050) readiness announces it only for the resolved obligations the ledger flags, and a
-  ``finishup-acceptance:<obligation id>:met`` line in the host's final message answers it for that
-  obligation (``unattested_acceptance``). Cursor's ``stop`` carries no final message, so on
-  Cursor the text never names that line: a confirmation in the final answer ends the re-read,
-  which is asked once per flagged set;
+  tb4n5 (#1050) readiness announces it only for the resolved obligations the ledger flags.
+  For that flagged rule (#1079) the final message answers an obligation only with
+  ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` when status names that id in
+  ``admissible_verification`` for the obligation, or with
+  ``finishup-verification-limit:<obligation id>`` (``unattested_acceptance``). A bare ``:met``,
+  a well-formed id that is not that link, and a generic all-met claim do not. Cursor's ``stop``
+  carries no final message, so on Cursor the text never names the ``finishup-acceptance`` line:
+  the agent publishes the verification-limit decision or already has the record link. The
+  re-read is still asked once per flagged set that has neither;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. FinishUP cannot verify the claim,
   so a Stop that finds a blocker the agent has not been asked about continues the agent once
@@ -65,7 +69,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Awaitable, Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
@@ -285,22 +289,34 @@ _BLOCKER_OFFER_SHORT_TEXT: Final = (
 _CLOSE_TEXT: Final = (
     "Then run `check` and request the receipt. A FinishUP limit is never a `finishup-blocker`."
 )
-# tb4n5 (P6): in Codex code mode a `check` cell without a yield deadline yields; the yielded cell
-# then lands after the check and makes it stale (FinishUP-only yielded check cells in 5 of 9 S
-# attempts, a stale final check in 6). The deadline pragma was only in `startup.md`, read at start
-# and forgotten by closure, so the Codex Stop gate repeats it where it asks for that check. The
-# value is the bridge's `check` deadline (``CODEX_CHECK_YIELD_TIME_MS``; a test pins the two
-# together). Claude Code and Cursor run a tool call to completion, so their text is unchanged.
+# tb4n5 (P6): a code-mode `check` cell without a yield deadline yields; the yielded `exec` cell
+# then lands after the check and makes it stale. The deadline pragma is for that cell only.
+# Issue #1079: the gate emits it when code mode was positively observed (a recorded `exec` cell
+# for this session, or ``check_cause.tool == "exec"``), never because the host brand is Codex.
+# Plain Codex ``exec_command`` / ``write_stdin`` and the other hosts keep the neutral sentence.
 _CLOSE_TEXT_CODEX: Final = (
     f"Then run `check`, starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}` so it does not"
     " yield, and request the receipt. A FinishUP limit is never a `finishup-blocker`."
 )
 
 
-def _close_text(host: str | None) -> str:
-    """The close instruction; on Codex it repeats the `check` cell's yield deadline (tb4n5)."""
+def _code_mode_observed(readiness: object, code_mode: bool) -> bool:
+    """Whether this Stop has positive evidence of a code-mode ``exec`` cell.
 
-    return _CLOSE_TEXT_CODEX if host == "codex" else _CLOSE_TEXT
+    ``code_mode`` is the hook's session observation. ``check_cause.tool == "exec"`` is the
+    recorded cause of a stale check. Either is enough. Absence is the neutral instruction.
+    """
+
+    if code_mode is True:
+        return True
+    cause = getattr(readiness, "check_cause", None)
+    return getattr(cause, "tool", None) == "exec"
+
+
+def _close_text(*, code_mode: bool) -> str:
+    """The close instruction; the cell pragma only when code mode was observed."""
+
+    return _CLOSE_TEXT_CODEX if code_mode else _CLOSE_TEXT
 
 
 # tb4n2 FH A-12 (cargo D): an obligation was published resolved while the agent's own output said
@@ -339,9 +355,18 @@ _ACCEPTANCE_NAMED_HEAD: Final = (
     " final output."
 )
 # The attestation: one line per obligation, bound to the obligation ids the current status names.
+# The legacy unflagged re-read still accepts a bare ``:met``. The flagged rule does not.
 _ACCEPTANCE_ATTEST_TEXT: Final = (
     " If it is met, end your final answer with the line `finishup-acceptance:<obligation id>:met`"
     " for it."
+)
+# Issue #1079 item 7: a resolved risky criterion needs the observed evidence or result, or an
+# explicit verification limit. A generic "all met" does not stand in for either.
+_ACCEPTANCE_RISK_ATTEST_TEXT: Final = (
+    " End your final answer with `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`"
+    " naming the observed evidence or result, or record"
+    " `finishup-verification-limit:<obligation id>`. Saying every criterion is met does not"
+    " answer this."
 )
 # Cursor's ``stop`` payload carries no final message (status and ``loop_count`` only), and its
 # ``afterAgentResponse`` is not dispatched by the Cursor CLI or Cloud Agents and has no documented
@@ -351,6 +376,12 @@ _ACCEPTANCE_ATTEST_TEXT: Final = (
 _ACCEPTANCE_ATTEST_TEXT_CURSOR: Final = (
     " If it is met, keep it resolved and say so in your final answer: Cursor passes FinishUP no final"
     " answer, so no answer line is read, and this re-read is not asked again for this set."
+)
+_ACCEPTANCE_RISK_ATTEST_TEXT_CURSOR: Final = (
+    " Publish a decision `finishup-verification-limit:<obligation id>` or link the observed"
+    " evd_ or res_ id in a record. Cursor passes FinishUP no final answer, so no answer line"
+    " is read, and this re-read is not asked again for this set. Saying every criterion is met"
+    " does not answer this."
 )
 # #1050 item 2: a pure "criteria confirmed" answer is the end of the re-read. Said only where the
 # re-read rides alone (no item asks for a check in the same text).
@@ -363,22 +394,56 @@ _MAX_FINAL_MESSAGE_CHARS: Final = 65_536
 # ``finishup-acceptance:<obligation id>:met`` anywhere in the message (a line, a bullet or inline
 # code); ``:not_met`` or any other outcome is not an attestation. The legacy
 # ``yoetz-acceptance:`` spelling a 0.3 development build taught is one marker with it (ADR-048).
+_OBLIGATION_ID: Final = r"obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+_LINKED_ID: Final = (
+    r"(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
+_OBLIGATION_ID_EXACT: Final = re.compile(rf"{_OBLIGATION_ID}\Z")
+_LINKED_ID_EXACT: Final = re.compile(rf"{_LINKED_ID}\Z")
 _ATTESTATION: Final = re.compile(
-    r"(?:finishup|yoetz)-acceptance:(obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
-    r":met(?![A-Za-z0-9_-])",
+    rf"(?:finishup|yoetz)-acceptance:({_OBLIGATION_ID}):met(?![A-Za-z0-9_-])",
+    re.ASCII,
+)
+# A colon is not in the bare lookahead, so ``:met:evd_...`` also matches ``_ATTESTATION``.
+# The flagged rule uses this pattern and does not treat a bare ``:met`` as an answer.
+_LINKED_ATTESTATION: Final = re.compile(
+    rf"(?:finishup|yoetz)-acceptance:({_OBLIGATION_ID}):met:({_LINKED_ID})(?![A-Za-z0-9_-])",
+    re.ASCII,
+)
+_VERIFICATION_LIMIT_LINE: Final = re.compile(
+    rf"(?:finishup|yoetz)-verification-limit:({_OBLIGATION_ID})(?![A-Za-z0-9_-])",
     re.ASCII,
 )
 
 
-def attested_acceptance(final_message: str) -> frozenset[str]:
+def attested_acceptance(
+    final_message: str,
+    *,
+    linked: bool = False,
+    admissible: Mapping[str, Collection[str]] | None = None,
+) -> frozenset[str]:
     """The obligation ids the final message attests as meeting their acceptance criteria.
 
-    Only the exact ``finishup-acceptance:<obligation id>:met`` form (or its legacy
-    ``yoetz-acceptance:`` spelling) counts, in the first 65,536
-    characters. The message is read in this process only: never sent, stored or logged.
+    The default is the legacy exact ``finishup-acceptance:<obligation id>:met`` form (or its
+    ``yoetz-acceptance:`` spelling), in the first 65,536 characters. ``linked`` is the flagged
+    rule (#1079): a ``finishup-verification-limit:`` line counts, and
+    ``:met:<evd_ or res_ id>`` counts only when *admissible* lists that id for that obligation.
+    A well-formed id with no such list, or one the list does not name, does not. A bare ``:met``
+    and prose that every criterion is met do not. The message is read in this process only:
+    never sent, stored or logged. A line in the message does not create a ledger link.
     """
 
-    return frozenset(_ATTESTATION.findall(final_message[:_MAX_FINAL_MESSAGE_CHARS]))
+    window = final_message[:_MAX_FINAL_MESSAGE_CHARS]
+    if not linked:
+        return frozenset(_ATTESTATION.findall(window))
+    allowed: Mapping[str, Collection[str]] = {} if admissible is None else admissible
+    linked_ids = {
+        obligation
+        for obligation, ref in _LINKED_ATTESTATION.findall(window)
+        if ref in allowed.get(obligation, ())
+    }
+    limited = set(_VERIFICATION_LIMIT_LINE.findall(window))
+    return frozenset(linked_ids | limited)
 
 
 def _subjects_key(subjects: tuple[str, ...]) -> str:
@@ -386,35 +451,120 @@ def _subjects_key(subjects: tuple[str, ...]) -> str:
     return "accept:" + hashlib.sha256("\n".join(ordered).encode("ascii")).hexdigest()[:8]
 
 
-def unattested_acceptance(recheck: _Recheck, final_message: str | None) -> tuple[str, ...] | None:
+def unattested_acceptance(
+    recheck: _Recheck,
+    final_message: str | None,
+    *,
+    admissible: Mapping[str, Collection[str]] | None = None,
+    host: str | None = None,
+) -> tuple[str, ...] | None:
     """The announced obligations the final message does not attest, or ``None`` when unknown.
 
     Unknown (``None``) when the host gave no final message, or the announced subjects are not the
     whole set the key names (more than eight, or an older service's list): the re-read is then
     asked for every announced obligation. The attestation binds to the set this Stop's status
     read announced, so a message that attests an earlier set covers only what is still in it.
+
+    Cursor passes no final message. For the flagged rule, a nonempty admissible set for an
+    obligation is the record link that answers it; a verification-limit disclosure already left
+    the recheck. Every other announced obligation is still asked.
     """
 
-    if final_message is None or not recheck.subjects:
+    if not recheck.subjects:
         return None
     if not all(item.isascii() for item in recheck.subjects):
         return None
     if _subjects_key(recheck.subjects) != recheck.key:
         return None
-    attested = attested_acceptance(final_message)
+    linked = recheck.rule == _ACCEPTANCE_RISK_RULE
+    if final_message is None:
+        if host == "cursor" and linked:
+            allowed: Mapping[str, Collection[str]] = {} if admissible is None else admissible
+            return tuple(
+                subject
+                for subject in sorted(recheck.subjects, key=str.encode)
+                if not allowed.get(subject)
+            )
+        return None
+    attested = attested_acceptance(final_message, linked=linked, admissible=admissible)
     return tuple(
         subject for subject in sorted(recheck.subjects, key=str.encode) if subject not in attested
     )
 
 
+def _admissible_fields(item: object) -> tuple[object, object]:
+    if isinstance(item, Mapping):
+        mapping = cast("Mapping[object, object]", item)
+        return mapping.get("obligation_id"), mapping.get("refs")
+    return getattr(item, "obligation_id", None), getattr(item, "refs", None)
+
+
+def _admissible_map(readiness: object) -> dict[str, frozenset[str]]:
+    """Obligation id to the evd_ or res_ ids status names as linked. Malformed rows are dropped.
+
+    Absence and a malformed value are an empty map: a cited id is then not linked. Only id
+    tokens are kept.
+    """
+
+    raw = getattr(readiness, "admissible_verification", None)
+    if not isinstance(raw, (tuple, list)):
+        return {}
+    found: dict[str, set[str]] = {}
+    for item in cast("Sequence[object]", raw):
+        obligation, refs = _admissible_fields(item)
+        if type(obligation) is not str or _OBLIGATION_ID_EXACT.fullmatch(obligation) is None:
+            continue
+        if not isinstance(refs, (tuple, list)):
+            continue
+        good: set[str] = set()
+        for ref in cast("Sequence[object]", refs):
+            if type(ref) is str and _LINKED_ID_EXACT.fullmatch(ref) is not None:
+                good.add(ref)
+        if good:
+            found.setdefault(obligation, set()).update(good)
+    return {key: frozenset(value) for key, value in found.items()}
+
+
+def _unlinked_notes(
+    final_message: str, unattested: tuple[str, ...], admissible: Mapping[str, Collection[str]]
+) -> tuple[str, ...]:
+    """Up to three sentences naming a cited id that is not a recorded link for that obligation.
+
+    The only copied text is the id token the line matched. A verification-limit answer, and a
+    citation whose id is admissible, are not named.
+    """
+
+    still = set(unattested)
+    if not still:
+        return ()
+    notes: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    window = final_message[:_MAX_FINAL_MESSAGE_CHARS]
+    for obligation, ref in _LINKED_ATTESTATION.findall(window):
+        if obligation not in still or ref in admissible.get(obligation, ()):
+            continue
+        key = (obligation, ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        notes.append(f"`{ref}` is not linked to obligation `{obligation}`.")
+        if len(notes) == _MAX_NAMED_ACCEPTANCE:
+            break
+    return tuple(notes)
+
+
 def _acceptance_sentence(
-    recheck: _Recheck, named: tuple[str, ...] | None, host: str | None = None
+    recheck: _Recheck,
+    named: tuple[str, ...] | None,
+    host: str | None = None,
+    notes: tuple[str, ...] = (),
 ) -> str:
     """The re-read for the obligations still to read: named, flagged when the service flagged.
 
-    The answer it names is host-aware: Codex and Claude Code pass the final message, so the
-    ``finishup-acceptance:<obligation id>:met`` line answers it; Cursor passes none, so its text
-    never asks for a line the gate cannot read.
+    The answer it names is host-aware. For the flagged rule, Codex and Claude Code pass the
+    final message, so the linked ``:met:<evd_ or res_ id>`` line or a verification-limit line
+    answers it; Cursor passes none, so its text never names ``finishup-acceptance``. The legacy
+    unflagged re-read still names a bare ``:met``.
     """
 
     ids_source = named if named is not None else recheck.subjects
@@ -429,8 +579,16 @@ def _acceptance_sentence(
         if recheck.rule == _ACCEPTANCE_RISK_RULE
         else _ACCEPTANCE_NAMED_HEAD
     )
-    attest = _ACCEPTANCE_ATTEST_TEXT_CURSOR if host == "cursor" else _ACCEPTANCE_ATTEST_TEXT
-    return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + attest
+    if recheck.rule == _ACCEPTANCE_RISK_RULE:
+        attest = (
+            _ACCEPTANCE_RISK_ATTEST_TEXT_CURSOR
+            if host == "cursor"
+            else _ACCEPTANCE_RISK_ATTEST_TEXT
+        )
+    else:
+        attest = _ACCEPTANCE_ATTEST_TEXT_CURSOR if host == "cursor" else _ACCEPTANCE_ATTEST_TEXT
+    note = (" " + " ".join(notes)) if notes else ""
+    return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + attest + note
 
 
 _BLOCKER_OFFER_TEXT: Final = (
@@ -1023,12 +1181,15 @@ def closure_gate_from_readiness(
     active_stop: bool = False,
     final_message: str | None = None,
     host: str | None = None,
+    code_mode: bool = False,
 ) -> ClosureGate | None:
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
 
-    ``host`` is the hook host (``codex``, ``claude`` or ``cursor``). On ``codex`` the close
-    instruction repeats the `check` cell's ``yield_time_ms`` deadline (tb4n5). On ``cursor`` the
-    acceptance re-read never names the ``finishup-acceptance`` line, which Cursor cannot deliver.
+    ``host`` is the hook host (``codex``, ``claude`` or ``cursor``). The close instruction repeats
+    the `check` cell's ``yield_time_ms`` deadline only when ``code_mode`` is true or
+    ``check_cause.tool`` is ``exec`` (a recorded code-mode cell), not because the host is Codex
+    (tb4n5, #1079). On ``cursor`` the acceptance re-read never names the ``finishup-acceptance``
+    line, which Cursor cannot deliver.
 
     ``final_message`` (#1050) is the agent's last message when the host passed one. The acceptance
     re-read names the obligations readiness announced (since tb4n5 only the resolved obligations
@@ -1110,13 +1271,27 @@ def closure_gate_from_readiness(
             DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
         }
     )
+    admissible = _admissible_map(readiness)
     acceptance_named = (
-        None if acceptance is None else unattested_acceptance(acceptance, final_message)
+        None
+        if acceptance is None
+        else unattested_acceptance(acceptance, final_message, admissible=admissible, host=host)
     )
     accept_allowed = (
         acceptance is not None
         and not accept_excluded
         and (acceptance_named is None or bool(acceptance_named))
+    )
+    accept_notes = (
+        _unlinked_notes(final_message, acceptance_named, admissible)
+        if (
+            accept_allowed
+            and acceptance is not None
+            and acceptance.rule == _ACCEPTANCE_RISK_RULE
+            and acceptance_named
+            and final_message
+        )
+        else ()
     )
     prediction = predicted_receipt_variants(
         getattr(readiness, "predicted_receipt", None), state=state
@@ -1146,10 +1321,16 @@ def closure_gate_from_readiness(
             else "FinishUP closure gate (shown once):"
         )
         blocker = _blocker_text(rows) if rows else ""
+        # The flagged rule does not offer a generic "all met" shortcut (#1079). The legacy
+        # unflagged re-read still does, and only where the re-read rides alone.
+        confirm = (
+            ""
+            if acceptance is not None and acceptance.rule == _ACCEPTANCE_RISK_RULE
+            else " " + _ACCEPTANCE_CONFIRMED_TEXT
+        )
         accept_sentence = (
-            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
-            + " "
-            + _ACCEPTANCE_CONFIRMED_TEXT
+            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host, accept_notes)
+            + confirm
             if accept_allowed
             else ""
         )
@@ -1252,7 +1433,7 @@ def closure_gate_from_readiness(
     )
     why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
     accept_text = (
-        _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
+        _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host, accept_notes)
         if accept_allowed
         else ""
     )
@@ -1265,6 +1446,7 @@ def closure_gate_from_readiness(
         else (_FINDING_NO_SELF_VERIFY_TEXT, _FINDING_NO_SELF_VERIFY_SHORT_TEXT)
     )
     lineage_variants = _lineage_variants(readiness, items)
+    close = _close_text(code_mode=_code_mode_observed(readiness, code_mode))
 
     def compose(
         *,
@@ -1300,7 +1482,7 @@ def closure_gate_from_readiness(
             # FH A-12, announced by readiness: the first optional sentence dropped under the host
             # bound, with the drain note.
             parts.append(accept_text)
-        parts.append(_close_text(host))
+        parts.append(close)
         # The blocker exit is offered only for open obligations: findings, reviews and FinishUP
         # limits are never excused by a blocker (F1, #984).
         if offers_blocker:
@@ -1384,7 +1566,7 @@ def closure_gate_from_readiness(
             accept_text=accept_text,
             lineage=lineage_variants,
             undeclared=undeclared,
-            close_text=_close_text(host),
+            close_text=close,
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         # The predicted conclusion yields before anything else: it is added only when the whole
@@ -1465,6 +1647,7 @@ async def read_closure_gate(
     final_message: str | None = None,
     on_acceptance_covered: Callable[[], object] | None = None,
     host: str | None = None,
+    code_mode: bool = False,
 ) -> ClosureGate | None:
     """Read the mapped session's compact status and decide the gate.
 
@@ -1472,9 +1655,11 @@ async def read_closure_gate(
     could not answer raises ``ClosureGateUnavailable`` so the caller records it as unavailable;
     either way the agent may stop.
 
+    ``code_mode`` is true when the hook observed a recorded code-mode cell for this session.
     ``final_message`` (#1050) is the agent's last message when the host passed one. An acceptance
-    re-read the message answers with a ``finishup-acceptance:<obligation id>:met`` line for every
-    announced obligation is not asked, and ``on_acceptance_covered`` is called. The message is
+    re-read the message answers for every announced obligation is not asked (a bare ``:met`` for
+    the legacy rule; a linked ``:met:<id>`` or a verification-limit line for the flagged rule),
+    and ``on_acceptance_covered`` is called. The message is
     read in this process only: never sent, stored or logged. No second status read is made.
     """
 
@@ -1510,6 +1695,7 @@ async def read_closure_gate(
             active_stop=active_stop,
             final_message=message,
             host=host,
+            code_mode=code_mode,
         )
         if (
             message is not None
@@ -1526,6 +1712,7 @@ async def read_closure_gate(
                 reasked_blockers=reasked_blockers,
                 active_stop=active_stop,
                 host=host,
+                code_mode=code_mode,
             )
             if unanswered is not None and ACCEPTANCE_RECHECK_ITEM in unanswered.items:
                 with contextlib.suppress(Exception):

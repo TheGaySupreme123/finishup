@@ -22,8 +22,11 @@ __all__ = [
     "OBLIGATION_RESOLVE_RECIPE_VARIANTS",
     "READINESS_STATES",
     "awaiting_ruling_variants",
+    "COORDINATOR_FAILURE_SENTENCE",
+    "COORDINATOR_FAILURE_TOKEN",
     "check_cause_sentence",
     "closure_counts_variants",
+    "coordinator_failure_note",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
     "readiness_directive",
@@ -44,13 +47,14 @@ _ACTION_REQUIRED: Final = (
     "Work remains. Clear each agent-actionable item; standing limitations need no action."
 )
 _READY: Final = "Nothing further to do. Request the receipt."
-# tb4n5 (P6): a Codex code-mode `check` cell without this deadline yields, and the yielded `exec`
-# cell lands after the check and makes it stale. `startup.md` states the pragma; the status
-# sentence for an `exec` cause and the Codex Stop gate repeat it where they ask for that check.
-# The value is the bridge's `check` call deadline (a test pins the two together).
+# tb4n5 (P6): a code-mode `check` cell without this deadline yields, and the yielded `exec`
+# cell lands after the check and makes it stale. `startup.md` states the pragma for a JavaScript
+# `exec` cell. The status sentence repeats it only when the cause's tool is that cell (`exec`),
+# and the Stop gate repeats it only when code mode was positively observed (#1079). The value is
+# the bridge's `check` call deadline (a test pins the two together).
 CODEX_CHECK_YIELD_TIME_MS: Final = 300_000
 CODEX_CHECK_CELL_PRAGMA: Final = '// @exec: {"yield_time_ms": 300000}'
-# The tool name Codex records for a code-mode cell.
+# The tool name a code-mode cell records. Direct ``exec_command`` is a shell tool, not this.
 _CODEX_CELL_TOOL: Final = "exec"
 _UNKNOWN: Final = (
     "Readiness is unknown at this frontier. Read status again once the projection is readable."
@@ -63,6 +67,27 @@ def _count(value: object) -> int:
     if type(value) is str and value.isascii() and value.isdigit():
         return int(value)
     raise ValueError("readiness_count_invalid")
+
+
+# Issue #1079 item 3: an unchanged coordinator failure is a FinishUP limit, not another identical
+# closing-review request. The token is a readiness standing code, not a coverage gap.
+COORDINATOR_FAILURE_TOKEN: Final = "semantic_coordinator_failure"
+COORDINATOR_FAILURE_SENTENCE: Final = (
+    "The closing review stopped on an unchanged coordinator failure. That is a FinishUP limit;"
+    " do not send the same check again."
+)
+
+
+def coordinator_failure_note(readiness: object) -> str | None:
+    """The standing sentence when readiness names an unchanged coordinator failure.
+
+    ``None`` when the token is absent, so a checklist without it keeps its exact text.
+    """
+
+    raw = _field(readiness, "standing_limitations")
+    if isinstance(raw, (tuple, list)) and COORDINATOR_FAILURE_TOKEN in raw:
+        return COORDINATOR_FAILURE_SENTENCE
+    return None
 
 
 def readiness_directive(state: str, *, standing: object = 0, acknowledged: object = 0) -> str:
@@ -105,7 +130,7 @@ def check_cause_sentence(
     """
 
     via = "" if tool is None else f" via {tool}"
-    # A Codex code-mode cell after the check is usually the yielded check cell itself (tb4n5).
+    # An observed code-mode cell (`exec`), not the host brand. Usually the yielded check cell.
     cell = tool == _CODEX_CELL_TOOL
     if compact:
         # The short form for a byte-bounded text: no id, no rule, the same record and frontier.
@@ -330,22 +355,29 @@ _RECHECK_PHRASES: Final[Mapping[str, str]] = {
 _ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
 _ACCEPTANCE_RISK_PHRASE: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; a line"
-    " `finishup-acceptance:<obligation id>:met` per obligation in your final answer answers it)"
+    " `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or"
+    " `finishup-verification-limit:<obligation id>` in your final answer answers it; saying every"
+    " criterion is met does not)"
 )
-# Cursor's Stop hook receives no final message, so the line above can never answer the re-read
-# there; the Cursor note names the path that works (the re-read is asked once per flagged set).
+# Cursor's Stop hook receives no final message, so it never names the acceptance line. The note
+# tells the agent to record the limit or the observed id. Saying the criteria are met does not
+# answer the re-read; the re-read is still asked once per flagged set.
 _ACCEPTANCE_RISK_PHRASE_CURSOR: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; Cursor"
-    " passes FinishUP no final answer, so it is asked once and saying they are met in your final"
-    " answer ends it)"
+    " passes FinishUP no final answer, so publish a decision"
+    " `finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a"
+    " record; this re-read is asked once for the set, and saying every criterion is met does not"
+    " answer it)"
 )
 # A surface that does not know its host (the CLI, the TUI, a generic MCP profile) names which
-# hosts read the line, so an agent on Cursor is never told it answers the re-read.
+# hosts read the line, so an agent on Cursor is never told a final-answer line answers the re-read.
 _ACCEPTANCE_RISK_PHRASE_ANY_HOST: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; on"
-    " Codex and Claude Code a line `finishup-acceptance:<obligation id>:met` per obligation in your"
-    " final answer answers it; Cursor passes no final answer, so there it is asked once and saying"
-    " they are met ends it)"
+    " Codex and Claude Code a line `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or"
+    " `finishup-verification-limit:<obligation id>` in your final answer answers it; Cursor passes"
+    " no final answer, so there publish a decision `finishup-verification-limit:<obligation id>`"
+    " or link the observed evd_ or res_ id in a record; saying every criterion is met does not"
+    " answer it)"
 )
 _MAX_NAMED_RULING_FINDINGS: Final = 3
 
@@ -359,10 +391,11 @@ def recheck_note(readiness: object, *, host: str | None = None) -> str | None:
     announces none (or an older service sent no list).
 
     ``host`` decides how a flagged acceptance re-read is answered: ``None``, ``codex`` or
-    ``claude`` (the hosts whose Stop passes the final message) name the
-    ``finishup-acceptance:<obligation id>:met`` line; ``cursor`` (no final message at Stop) names
-    the confirmation that ends it there; ``generic`` (a surface that does not know its host)
-    names both.
+    ``claude`` (the hosts whose Stop passes the final message) name the linked
+    ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line or a verification-limit
+    line; ``cursor`` (no final message at Stop) never names ``finishup-acceptance`` and instead
+    names a recorded limit or an evidence link; ``generic`` (a surface that does not know its
+    host) names both. Saying every criterion is met does not answer the flagged re-read.
     """
 
     raw = _field(readiness, "rechecks")

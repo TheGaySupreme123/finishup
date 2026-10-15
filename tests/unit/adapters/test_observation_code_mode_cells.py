@@ -176,6 +176,19 @@ def test_an_evicted_session_reconciled_before_its_nested_hook_keeps_the_cell_loc
     assert stream.delivered_cell_rows() == []
 
 
+def test_session_observed_code_mode_is_positive_only(tmp_path: Path) -> None:
+    """A recorded cell for this session is the signal; anything else is false (#1079)."""
+
+    store, workspace = _store(tmp_path)
+    session = _session(4)
+    other = _session(5)
+    assert store.session_observed_code_mode(workspace, session) is False
+    assert store.session_observed_code_mode("", session) is False
+    store.begin_code_mode_cell(workspace, session, "call_seen")
+    assert store.session_observed_code_mode(workspace, session) is True
+    assert store.session_observed_code_mode(workspace, other) is False
+
+
 def test_a_cell_read_before_the_sessions_first_tool_hook_follows_its_own_hooks(
     tmp_path: Path,
 ) -> None:

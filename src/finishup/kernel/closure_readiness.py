@@ -46,6 +46,7 @@ from finishup.kernel.acceptance_risk import acceptance_risk
 from finishup.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from finishup.kernel.claim_limitations import required_limitation_ids_for_projection
 from finishup.kernel.claims import completion_claim_present
+from finishup.kernel.closing_review_delta import closing_review_delta
 from finishup.kernel.closure_class import (
     FINDING_REJECTION_AWAITING_RULING_GAP,
     UNDELIVERABLE_SEMANTIC_STATUSES,
@@ -93,7 +94,8 @@ from finishup.kernel.task_facts import (
     open_effective_obligations,
     task_fact_signals,
 )
-from finishup.protocol.models import SemanticStatus
+from finishup.kernel.verification_link import admissible_verification_refs
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 # L5's D7 predicate (#984, D7a), looked up by name so this module works on a build without it:
 # absent, nothing is reported as disputed. Tests monkeypatch this attribute.
@@ -305,6 +307,10 @@ type CheckApplicability = Literal[
     "applicable", "not_recorded", "not_applicable", "payload_unavailable"
 ]
 
+_ADMISSIBLE_REF: Final = re.compile(
+    r"^(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ClosureReadinessFacts:
@@ -382,6 +388,16 @@ class ClosureReadinessFacts:
     # asks only for these. ``None`` marks a hand-built fact set that predates the rule: the
     # re-read then names every resolved obligation, exactly as before.
     acceptance_risk_obligation_ids: tuple[ObligationId, ...] | None = None
+    # Issue #1079 item 3: the newest check failed with ``coordinator_failure`` and no material
+    # task or verification change followed it, and no current closing review covers this state.
+    # Readiness names that as ``semantic_coordinator_failure`` and does not ask for the same
+    # closing review again. A hand-built fact set defaults to false.
+    coordinator_failure_unchanged: bool = False
+    # #1079: recorded ``evd_`` / ``res_`` ids that are admissible verification for a flagged
+    # obligation (a real row linked to that obligation, its target, or the task, at or before
+    # this frontier). ``None`` is a hand-built fact set: the Stop gate then does not treat a
+    # well-formed id as linked. An empty tuple was computed and found no such id.
+    admissible_verification: tuple[tuple[ObligationId, tuple[str, ...]], ...] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -396,6 +412,7 @@ class ClosureReadinessFacts:
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
             or type(self.semantic_review_deferred) is not bool
+            or type(self.coordinator_failure_unchanged) is not bool
             or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
             or (
                 self.finding_closures is not None
@@ -447,6 +464,25 @@ class ClosureReadinessFacts:
         risky = self.acceptance_risk_obligation_ids
         if risky is not None and (
             type(risky) is not tuple or risky != tuple(sorted(set(risky), key=str.encode))
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        linked_refs = self.admissible_verification
+        if linked_refs is not None and (
+            type(linked_refs) is not tuple
+            or len(linked_refs) > 8
+            or any(type(item) is not tuple or len(item) != 2 for item in linked_refs)
+            or tuple(item[0] for item in linked_refs)
+            != tuple(sorted({item[0] for item in linked_refs}, key=str.encode))
+            or any(
+                type(refs) is not tuple
+                or not refs
+                or len(refs) > 8
+                or refs != tuple(sorted(set(refs), key=str.encode))
+                or any(
+                    type(ref) is not str or _ADMISSIBLE_REF.fullmatch(ref) is None for ref in refs
+                )
+                for _obligation, refs in linked_refs
+            )
         ):
             raise ValueError("closure_readiness_facts_invalid")
 
@@ -611,56 +647,92 @@ def _review_mode_undeliverable(payload: CheckRecordedPayload) -> bool:
     return review_mode is not None and review_mode.local_reason is not None
 
 
+def _closing_delta_after(
+    check: LedgerRecord, records: tuple[LedgerRecord, ...], state: ProjectionState
+) -> bool:
+    """Whether a material task or verification change was recorded after *check*."""
+
+    sequence = check.ledger.ingestion_sequence
+    return any(
+        later.ledger.ingestion_sequence > sequence and closing_review_delta(later, state)
+        for later in records
+    )
+
+
+def _coordinator_failure(payload: CheckRecordedPayload) -> bool:
+    return (
+        payload.semantic_status is SemanticStatus.FAILED
+        and payload.semantic_reason is SemanticReason.COORDINATOR_FAILURE
+    )
+
+
+def _closing_review_current_check(payload: CheckRecordedPayload, state: ProjectionState) -> bool:
+    """Whether this check is a closing review that still covers *state*."""
+
+    manifest = payload.review_input_manifest
+    phase = None if manifest is None else manifest.get("review_phase")
+    if phase == "final":
+        return True
+    return phase is None and completion_claim_present(state)
+
+
 def _closing_review_facts(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
     limitations: frozenset[FindingId],
-) -> tuple[bool, bool, bool]:
-    """``(closing_review_current, semantic_review_used, semantic_review_deferred)`` (#976).
+) -> tuple[bool, bool, bool, bool]:
+    """``(current, used, deferred, coordinator_failure_unchanged)`` (#976, #1079).
 
     A check is the closing review when its recorded review input manifest names the final
     phase. A check recorded before the manifest carried the phase was final exactly when an
-    effective completion claim preceded it; with no material change since it, the current
-    projection's claim answers that.
+    effective completion claim preceded it; with no material task or verification change since
+    it, the current projection's claim answers that. Bookkeeping and dispositions do not count
+    as that change (``closing_review_delta``). ``limitations`` is unused here: check staleness
+    still reads it through ``invalidates_recorded_check``, which this walk no longer calls.
 
     Issue #1046 (review): a check that deferred, before the first material edit, a review its
     route requires counts as using AI-powered review, because it stands in for the review the task
     owes; so a task whose work is not an edit is still asked for the closing review there. The
     third value says the latest check so deferred: no routine check can supply that review.
+
+    The fourth value is true only when the newest check failed with ``coordinator_failure``,
+    nothing material followed it, and no earlier closing review still covers this state. That
+    failure is a FinishUP limit, not another identical ``final_review`` request. A material
+    change after it asks again and clears the flag.
     """
 
+    del limitations
     checks = _recorded_checks(records)
     used = semantic_review_used(records)
     deferred = bool(checks) and _review_deferred(checks[-1])
+    newest_coordinator_failure = False
+    first = True
     for record in reversed(records):
         payload = record.payload
         if record.schema.name != "check_recorded" or type(payload) is not CheckRecordedPayload:
             continue
-        if any(
-            invalidates_recorded_check(
-                later,
-                record.ledger.ingestion_sequence,
-                payload.returned_finding_ids,
-                limitation_finding_ids=limitations,
-                projection=state,
-            )
-            for later in records
-        ):
-            return False, used, deferred
+        stale = _closing_delta_after(record, records, state)
+        is_newest = first
+        first = False
+        if is_newest and stale:
+            return False, used, deferred, False
+        if stale:
+            continue
+        if is_newest and _coordinator_failure(payload):
+            newest_coordinator_failure = True
+            continue
         status = payload.semantic_status
         if status in _UNDELIVERABLE_SEMANTIC_STATUSES or _review_mode_undeliverable(payload):
-            return True, used, deferred
+            return True, used, deferred, False
         if _review_round_stopped(payload):
-            return review_round_stopped(records), used, deferred
+            return review_round_stopped(records), used, deferred, False
         if status is not SemanticStatus.SUCCEEDED:
             continue
-        manifest = payload.review_input_manifest
-        phase = None if manifest is None else manifest.get("review_phase")
-        if phase == "final":
-            return True, used, deferred
-        if phase is None and completion_claim_present(state):
-            return True, used, deferred
-    return False, used, deferred
+        if _closing_review_current_check(payload, state):
+            return True, used, deferred, False
+    if newest_coordinator_failure:
+        return True, used, deferred, True
+    return False, used, deferred, False
 
 
 def _acknowledged_obligation_ids(state: ProjectionState) -> tuple[ObligationId, ...]:
@@ -788,10 +860,15 @@ def closure_readiness_facts(
     blocked_open = tuple(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
     )
-    closing_current, review_used, review_deferred = _closing_review_facts(
+    closing_current, review_used, review_deferred, coordinator_failure = _closing_review_facts(
         state, records, limitations
     )
     applicability, standing = _check_applicability(state, records)
+    risky_pairs = acceptance_risk(
+        state,
+        records,
+        (item.obligation_id for item in obligation_classes.values() if item.basis == "resolved"),
+    )
     return ClosureReadinessFacts(
         check_applicability=applicability,
         check_cause=standing.cause if applicability in {"applicable", "not_applicable"} else None,
@@ -831,17 +908,10 @@ def closure_readiness_facts(
         ),
         fact_lineage=current_fact_lineage(state, records, applicability),
         undeclared_references=current_undeclared_references(state, records, applicability),
-        acceptance_risk_obligation_ids=tuple(
-            obligation
-            for obligation, _reasons in acceptance_risk(
-                state,
-                records,
-                (
-                    item.obligation_id
-                    for item in obligation_classes.values()
-                    if item.basis == "resolved"
-                ),
-            )
+        acceptance_risk_obligation_ids=tuple(obligation for obligation, _reasons in risky_pairs),
+        coordinator_failure_unchanged=coordinator_failure,
+        admissible_verification=admissible_verification_refs(
+            state, records, (obligation for obligation, _reasons in risky_pairs)
         ),
     )
 
@@ -1083,6 +1153,10 @@ def derive_closure_readiness(
             standing.add(FINDING_PREMISE_DISPUTED_GAP)
         if facts.disputed_after_rebuttal_finding_ids:
             standing.add(FINDING_DISPUTED_AFTER_REBUTTAL_GAP)
+        if facts.coordinator_failure_unchanged:
+            # Not a coverage gap: the check recorded the failure. Status names it so the Stop
+            # gate does not ask for the same closing review again.
+            standing.add("semantic_coordinator_failure")
     acknowledged: tuple[str, ...] = ()
     if facts is not None:
         acknowledged = tuple(

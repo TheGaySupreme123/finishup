@@ -7799,7 +7799,12 @@ after the check counts; FinishUP's own calls, read-only reads and host bookkeepi
 `kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
 #976: AI-powered review is required on the route, or completed on the task, or was deferred before
 the first material edit by a check whose route requires it (#1046), and no completed final-phase
-review, or undeliverable review attempt, is current since the last material change; an actionable
+review, or undeliverable review attempt, is current since the last material task or verification
+change — an observed edit or shell write, an unclassified observed command or its result, or a
+cooperative edit or command; bookkeeping and dispositions do not count
+(`kernel/closing_review_delta`, #1079). An unchanged newest check that failed with
+`coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
+of asking for the same closing review; an actionable
 `semantic_review_not_requested` takes its place unless the latest check so deferred the review),
 then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.
@@ -7915,11 +7920,22 @@ the basis could not be read):
   `evidence_alignment`; the inventories are indexed once per call, each cited reference's
   source actions are resolved once per call (`source_cache`) and deduplicated by action id, and an
   identical call is answered from a one-entry memo (Stop's status deadline is 4,000 ms). The status
-  directive's re-check note names the flagged set and the `finishup-acceptance:<obligation id>:met`
-  line that answers it. `recheck_note(readiness, *, host=None)` is host-aware (#1050 follow-up):
-  `None`, `codex` and `claude` name the line; `cursor` (no final message at Stop) names the
-  confirmation that ends the once-asked re-read instead; `generic` (the CLI and TUI, which do not
-  know the agent's host) names which hosts read the line. `prepare_closure(..., host="generic")`
+  directive's re-check note names the flagged set and, since #1079, the linked
+  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` line or a
+  `finishup-verification-limit:<obligation id>` line that answers it. The linked id counts only
+  when `admissible_verification` on this object names it for that obligation (a recorded row
+  linked to the obligation, its target, or the task, at or before the frontier). A bare `:met`
+  and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
+  with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
+  still lists it.
+  `kernel.claim_verification.claim_verification_lines` renders that pairing in the receipt evidence
+  section (JSON, markdown and text): one header and one line per flagged obligation,
+  `<obligation id> <comma-joined reasons> verification_limit|no_verification_limit`. A final-message
+  line does not create the ledger link that line reports. `recheck_note(readiness, *, host=None)`
+  is host-aware (#1050 follow-up, #1079): `None`, `codex` and `claude` name the linked line;
+  `cursor` (no final message at Stop) never names `finishup-acceptance` and names a recorded limit
+  or an evidence link instead; `generic` (the CLI and TUI, which do not know the agent's host)
+  names which hosts read the line. `prepare_closure(..., host="generic")`
   passes it; the MCP bridge passes its host profile, and also to
   `render_safe_compact_summary_detailed(envelope, *, host=None)`, whose status and
   `closure_prepare` summaries read it through a render-scoped context (a direct builder call keeps
@@ -10531,7 +10547,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the gate text; a path is never remembered. tb4n5: when a name was withheld it adds why and the
   agent's own listing command, `git status --porcelain --untracked-files=all`).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
-  observation_pending=, reasked_blockers=, active_stop=, final_message=) ->
+  observation_pending=, reasked_blockers=, active_stop=, final_message=, host=, code_mode=) ->
   ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks
   `closure_readiness.rechecks` announces** (tb4n3 RC-8,
   ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
@@ -10558,24 +10574,42 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   2026-10-13; it replaced `acceptance_uncovered=`): the acceptance re-read names the obligations
   readiness announced (the ledger-flagged resolved set when the recheck's `rule` is
   `resolved_obligations_acceptance_risk`, with the flag sentence), except those the final message
-  attests; `attested_acceptance(final_message) -> frozenset[obligation id]` reads every exact
-  `finishup-acceptance:<obligation id>:met` (any other outcome, `:not_met` included, is no
-  attestation) in the first 65,536 characters, and `unattested_acceptance(recheck, final_message) ->
-  tuple[obligation id, ...] | None` is `None` (every announced obligation is asked) without a
-  message or when the announced subjects do not hash to the recheck's `accept:<h8>` key (more than
-  eight, or an older list), else the announced obligations not attested; `()` means the re-read is
-  not asked. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where the re-read rides
-  alone it ends with the sentence that a pure confirmation needs no new record, check or receipt.
-  Both decision functions take `host=` (tb4n5 P6), the hook host the Stop came from: on `codex` the
-  required close instruction asks for the `check` with the cell's deadline pragma,
-  `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the bridge's
-  `check` deadline), because a yielded check cell lands after its check and makes it stale; Claude
-  Code and Cursor run a tool call to completion and keep the unchanged sentence. On `cursor` the
+  attests; `attested_acceptance(final_message, *, linked=False) -> frozenset[obligation id]` reads
+  every exact `finishup-acceptance:<obligation id>:met` when `linked` is false (the legacy
+  unflagged rule; any other outcome, `:not_met` included, is no attestation). When `linked` is
+  true (rule `resolved_obligations_acceptance_risk`, #1079) only
+  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` whose id is in
+  `admissible` for that obligation, or `finishup-verification-limit:<obligation id>`, counts
+  (legacy `yoetz-` spellings too). `admissible` is
+  `closure_readiness.admissible_verification`; a missing argument or a missing row does not
+  treat a well-formed id as linked. A bare `:met` and prose that every criterion is met do not.
+  The read is the first 65,536 characters. A cited id that is not admissible adds one sentence,
+  `` `<id>` is not linked to obligation `<obligation id>`. ``, up to three, and copies no other
+  message text. `unattested_acceptance(recheck, final_message, *, admissible=None, host=None) ->
+  tuple[obligation id, ...] | None` passes `linked` from the recheck rule. It is `None` (every
+  announced obligation is asked) without a message or when the announced subjects do not hash to
+  the recheck's `accept:<h8>` key (more than eight, or an older list), else the announced
+  obligations not attested; `()` means the re-read is not asked. On `cursor`, with no final
+  message, a nonempty admissible set for an obligation is the record link that answers the
+  flagged rule. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where a legacy
+  unflagged re-read rides alone it still ends with the sentence that a pure confirmation needs no
+  new record, check or receipt. The flagged rule does not: saying every criterion is met does not
+  answer it. The receipt evidence section states whether the ledger has the pairing
+  (`claim_verification_lines`); the final-message line does not write that link.
+  Both decision functions take `host=` and `code_mode=` (tb4n5 P6, #1079). `host` is the hook host
+  the Stop came from. The required close instruction asks for the `check` with the cell's deadline
+  pragma, `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the
+  bridge's `check` deadline), only when code mode was positively observed: `code_mode` is true
+  (the hook saw a recorded `exec` cell for this session via
+  `LocalObservationStore.session_observed_code_mode`) or `check_cause.tool` is `exec`. Otherwise
+  the neutral sentence is used, including when `host` is `codex` (plain `exec_command` /
+  `write_stdin` are not cells). There is no MCP `clientInfo` signal for this capability. Claude
+  Code and Cursor do not record code-mode cells, so they keep the neutral sentence. On `cursor` the
   acceptance re-read never names the `finishup-acceptance` line (Cursor's `stop` carries no final
   message): it says a met criterion stays resolved and is confirmed in the final answer, and that
   the re-read is not asked again for the set (#1050 follow-up); Codex and Claude Code keep the line.
   `readiness_text.check_cause_sentence` repeats the same pragma when the cause's `tool` is `exec`
-  (a Codex code-mode cell), in both its full and short forms.
+  (the observed code-mode cell tool, not the host brand), in both its full and short forms.
   `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;
   the tb4n4 `obligations` page read is gone) and raises `ClosureGateUnavailable` when it cannot,
   and calls `on_acceptance_covered` when the message attests every announced obligation of an
