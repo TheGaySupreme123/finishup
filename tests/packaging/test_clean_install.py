@@ -482,6 +482,12 @@ def test_mcp_initialize_and_tools_list_raw_handshake(
 # ---------------------------------------------------------------------------
 
 
+# The installed client's own wait for a service it starts (service/client.py
+# _SERVICE_START_TIMEOUT_SECONDS). A first start also builds the retained release-runtime snapshot,
+# bytecode included, so it is slower than a warm start.
+_SERVICE_START_WAIT_SECONDS: Final = 30.0
+
+
 def _start_service(finishup_exe: Path, env: dict[str, str]) -> subprocess.Popen[bytes]:
     proc = subprocess.Popen(
         [str(finishup_exe), "service", "run"],
@@ -490,7 +496,7 @@ def _start_service(finishup_exe: Path, env: dict[str, str]) -> subprocess.Popen[
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _SERVICE_START_WAIT_SECONDS
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise AssertionError("service exited during startup")
