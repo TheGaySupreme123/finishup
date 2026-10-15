@@ -1406,8 +1406,14 @@ more of the owner. `local_owner_approval` makes every LLM-inference dispatch und
 preview-required (`awaiting_human`, the `decide-disclosure` continuation). An explicit
 `local_only` refuses `semantic-review` egress at the gateway (`egress.conversation_review_refuses`,
 inside `semantic_policy_refusal` and again after the pre-dispatch policy refresh:
-`blocked_by_policy` / `policy_denied`). A repository-bound `privacy_propose_policy` pins the
-machine member's `conversation_review` to the installation row's own value.
+`blocked_by_policy` / `policy_denied`). A repository-bound `privacy_propose_policy` never widens
+the machine member's `conversation_review` (`privacy_policy._machine_conversation_review`): an
+explicit row value stays; an unset row whose inference channel the proposal turns on takes
+`narrower_conversation_review(candidate.effective_conversation_review, local_agent_opt_in)`; a row
+already sending stays unset. `build_candidate_policy(..., first_grant=True)` (the chat grant path
+passes the snapshot's `grant_state == "missing"`) starts the setting at
+`_first_grant_conversation_default`. `ai_review_available` also requires the repository's own
+grant (`repository_authority(scope).grant_state == "granted"`).
 `kernel/review_mode.py` owns `ReviewModeSwitch(event_id, sequence, mode, authority)`,
 `review_mode_switches(projection)` (unredacted, unsuperseded, ledger order),
 `ConversationReviewContext(setting, ai_review_available, setting_explicit)`,

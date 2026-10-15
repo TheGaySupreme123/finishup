@@ -296,15 +296,20 @@ unreleased above reverse-chronological released versions.
   helps", "FinishUP, local only (agents may not opt in)", or "AI-powered review on every task".
   Every answer registers the policy MCP route, so you can allow agent opt-in later without
   reconnecting; the privacy policy alone decides what may be sent. The prompt wizard, the
-  host-connection path and the terminal interface (first run and `/connect`) ask the same question
-  and set up what it chose; non-interactive setup keeps the strict default for a fresh
-  registration. The two answers that add AI-powered review list the privacy options with Assisted
+  host-connection path and the terminal interface's first run ask the same question and set up what
+  it chose, and so does `/connect` for Claude Code and Cursor (Codex `/connect` still inspects or
+  repairs on its configured route); non-interactive setup keeps the strict default for a fresh
+  registration, so an agent driving setup passes `--route-profile policy`. The two answers that add AI-powered review list the privacy options with Assisted
   review as the default (recommended only for a provider with reviewed data-use terms, so a ChatGPT
   subscription is your explicit choice); Private stays selectable and says tasks stay local under
   it. The local-only answer applies on Enter. A repository's first privacy grant asks how its
-  tasks use AI-powered review, and widening one repository never changes the installation-wide
-  default; status says "AI-powered review is not set up" rather than "agents may not" for an
-  installation that never chose. Abandoning AI-powered review setup in the
+  tasks use AI-powered review (a chat grant starts on the same default), and widening one
+  repository never widens the installation-wide default: a fresh install's first grant gives it the
+  hybrid (or the narrower answer), so another project or an independent clone starts local instead
+  of waiting for its own grant on every check. A repository without its own privacy grant says
+  "AI-powered review is not set up for this repository" in status, the terminal interface and
+  `finishup privacy conversations status`, and an agent's opt-in there stays local and says why;
+  status says "not set up" rather than "agents may not" for an installation that never chose. Abandoning AI-powered review setup in the
   terminal interface now finishes as local only without re-registering. Installations set up
   earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1073,
   ADR-049).

@@ -2088,3 +2088,13 @@ Claude Code-specific is involved: no hook, skill or registration field changes.
   Private stays selectable and says that tasks stay local under it. The terminal interface's
   `/connect` for Claude Code now runs the chosen answer's setup after connecting, as first run
   does (it asked the question and dropped the answer before).
+- **Other repositories (review round 2).** A fresh install's first repository grant gives the
+  installation row the hybrid (or the narrower answer), so another project or an independent clone
+  starts local; a repository without its own privacy grant reports "AI-powered review is not set
+  up for this repository" (`ai_review_available` false) and an opt-in there records
+  `ai_review_not_set_up` until the owner approves that repository's grant (terminal or chat; a chat
+  grant starts on the same first-grant default). Installations whose row already sent work keep
+  the released repository-grant handoff.
+- **Agent-driven setup.** Preview with `finishup setup run --host claude --route-profile policy
+  --non-interactive --json` for every answer; without `--route-profile policy` a fresh
+  non-interactive registration is strict and every task stays local (`route_local_only`).

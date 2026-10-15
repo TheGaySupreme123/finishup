@@ -86,10 +86,15 @@ host already has.
    (checks and background advice) is refused `blocked_by_policy`, re-checked against the refreshed
    policy immediately before dispatch, so a failed setting read or a narrowing while a check is in
    flight cannot send a review; the fixed-literal credential probe keeps its own consent. A
-   repository-bound proposal never moves the installation row's setting (like the
-   credential-heuristic opt-out), and a repository's first grant asks the conversation question
-   whatever the installation row it inherits already sends (default `local_agent_opt_in`, or the
-   installation row's own explicit setting where that is narrower).
+   repository-bound proposal never widens the installation row's setting (like the
+   credential-heuristic opt-out): an explicit row value stays as it is, and an unset row whose
+   inference channel that proposal turns on (a fresh install's first grant) takes the narrower of
+   the repository's answer and `local_agent_opt_in`, so other repositories do not fall back to
+   the released "every task" reading and an "every task" answer never widens them (review round
+   2); a row whose inference channel was already on keeps its released reading. A repository's
+   first grant asks the conversation question whatever the installation row it inherits already
+   sends, and the chat grant path, which asks nothing, starts there too (default
+   `local_agent_opt_in`, or the installation row's own explicit setting where that is narrower).
 
 4. **Upgrade rule: unset means released.** A policy written before the field existed encodes
    nothing, so its bytes, digest and every meet and receipt digest are unchanged. It reads as the
@@ -123,8 +128,14 @@ host already has.
 6. **Availability** (`ai_review_available`) means a reviewer is bound with AI-powered review not
    disabled, its credential or subscription login is structurally present (the same memoized
    facts provider status reads; an unreadable fact counts as present, so a locked vault never
-   strands a switched task), and the repository policy's inference channel is on. A task without a
-   repository-bound route reads the installation-wide setting and reports review unavailable.
+   strands a switched task), the repository has a privacy grant of its own, and the composed
+   policy's inference channel is on. A task without a repository-bound route reads the
+   installation-wide setting and reports review unavailable; so does a repository without its own
+   grant (review round 2): status, the terminal interface and `finishup privacy conversations
+   status` say "AI-powered review is not set up for this repository", its checks follow the
+   inherited setting (under the hybrid they complete locally) and an agent's opt-in there records
+   `ai_review_not_set_up`. Under a released installation row (unset, inference on) such a check
+   still takes the released repository-grant handoff.
 
 7. **Status shows the mode** (`status-result` 1.4.0 `review_mode`: `mode`, `requested`, `setting`,
    `setting_explicit`, `ai_review_available`, optional `local_reason`, `switch_event_id`,
@@ -158,8 +169,11 @@ host already has.
    without a switch whose applicable check recorded a mode gets the mode sentence alone (a local
    one: "The applicable check ran local checks only (FinishUP); AI-powered review was not requested
    for this task."). A check that recorded no mode (a policy that predates the setting, no switch)
-   adds nothing, so released receipt bytes stay. No decision statement or rationale reaches any
-   MCP text.
+   adds nothing, so released receipt bytes stay. The MCP receipt summary points at those
+   sentences with fixed wording ("review mode switched in this task ...", "review mode: local
+   (FinishUP); limitations section says how the check ran"). No decision statement or rationale
+   reaches any MCP text. The wire shape has golden vectors (`fixtures/canonical/review-mode-1.4.0`,
+   CAN-018).
 
 9. **First-run setup asks three answers, all on the policy route.** (1) "FinishUP
    (recommended): local checks; your agent can turn on AI-powered review for a task when it
@@ -168,8 +182,10 @@ host already has.
    (3) "AI-powered review on every task" — `ai_powered`. The default is (1). All three register the
    `policy` MCP route so the owner can let an agent opt in later without re-registering; the
    privacy policy, not the route, decides what may be sent. The prompt wizard, the host-connection
-   path and the terminal interface (first run and `/connect` alike) ask the same question and set
-   up what it chose. Answers (1) and (3) list the privacy recipes with `assisted_review` as the
+   path and the terminal interface's first run ask the same question and set up what it chose;
+   so does `/connect` for Claude Code and Cursor. Codex `/connect` asks no review question: it
+   inspects or repairs the connection on its configured route (the Codex runbook says so), and
+   `finishup setup run --route-profile policy` re-registers a strict one. Answers (1) and (3) list the privacy recipes with `assisted_review` as the
    default choice, marked recommended only for a provider route with reviewed data-use evidence
    (never the released Private recommendation a subscription reviewer would get); Private stays
    selectable and warns that tasks stay local under it. Answer (2)'s Private confirmation defaults
@@ -244,6 +260,9 @@ same; nothing here is platform-specific.
 `tests/unit/application/test_conversation_review_egress.py`,
 `tests/integration/application/test_conversation_review_mode.py`,
 `tests/integration/closure/test_review_mode_closing_review.py`,
+`tests/integration/service/test_review_mode_second_repository.py`,
+`tests/unit/protocol/test_review_mode_fixture.py`, `tests/unit/mcp/test_summaries_receipt_review_mode.py`,
+`tests/unit/cli/test_elevated.py`,
 `tests/unit/application/test_privacy_policy.py`, `tests/tui/test_commands.py`,
 `tests/integration/service/test_ready_composition.py`,
 `tests/unit/domain/test_decision_review_mode.py`, `tests/unit/domain/test_review_mode_render.py`,

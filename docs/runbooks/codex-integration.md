@@ -2734,3 +2734,13 @@ Codex-specific is involved: no hook, skill or registration field changes.
   the owner picks Assisted or Expanded explicitly. Private stays selectable and says that tasks
   stay local under it. The terminal interface's `/connect` for Codex keeps its own
   inspect/repair path and asks no review question (same as before).
+- **Other repositories (review round 2).** A fresh install's first repository grant gives the
+  installation row the hybrid (or the narrower answer), so another project or an independent clone
+  starts local; a repository without its own privacy grant reports "AI-powered review is not set
+  up for this repository" (`ai_review_available` false) and an opt-in there records
+  `ai_review_not_set_up` until the owner approves that repository's grant (terminal or chat; a chat
+  grant starts on the same first-grant default). Installations whose row already sent work keep
+  the released repository-grant handoff.
+- **Agent-driven setup.** Preview with `finishup setup run --host codex --route-profile policy
+  --non-interactive --json` for every answer; without `--route-profile policy` a fresh
+  non-interactive registration is strict and every task stays local (`route_local_only`).

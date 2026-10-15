@@ -184,7 +184,10 @@ The last five are deliberately separate lines, because each can be true while th
 ### `/connect`
 
 Inspect the current connection, connect or repair it, or view the exact technical state. Any
-action that would change something shows the same preview and approval the first run does. When a
+action that would change something shows the same preview and approval the first run does. For
+Claude Code and Cursor it first asks how your tasks use AI-powered review, connects on the policy
+route, and then sets up what you chose, as the first run does; for Codex it keeps the connection's
+configured route (`finishup setup run --route-profile policy` re-registers a strict one). When a
 newer package is available under the durable `update_checks` policy, `/connect` offers upgrade
 first or continue with the running version before harness add/repair — it never reinstalls the same
 package bits to add a harness.

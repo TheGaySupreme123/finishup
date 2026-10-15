@@ -11,8 +11,11 @@ curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs
 `https://finishup.dev/agent-start` is the intended future home; this file is the authority today.
 Codex, Claude Code, and Cursor share guided desktop connection setup. Use `finishup setup status
 --json` to discover installations, then `finishup setup run --host codex|claude|cursor-ide|cursor-cli
---non-interactive --json` to preview the selected connection. Present the project, review mode,
-scope and proposed changes in plain language. After approval, use the exact `next_step` command
+--route-profile policy --non-interactive --json` to preview the selected connection. Keep
+`--route-profile policy` for every review-mode answer and show the preview's `route_profile` (it
+must read `policy`): without it a fresh non-interactive registration is strict, and every task then
+stays local (`route_local_only`) until the connection is re-registered. Present the project, review
+mode, scope and proposed changes in plain language. After approval, use the exact `next_step` command
 returned by the preview, including its request ID and preview digest. `--accept` alone does not
 authorize unseen changes. Keep executable/configuration details available when needed; do not
 make the user enter paths that discovery already found. Use explicit path overrides for another
@@ -144,8 +147,9 @@ Guide these decisions in order:
      up. Zero-configuration and fully useful.
    - **AI-powered review on every task**: every task is reviewed, as in earlier releases.
 
-   All three register the same MCP route (policy, `finishup mcp serve`), so the user can change
-   the answer later with `finishup privacy conversations` without reconnecting.
+   All three use the same MCP route (policy, `finishup mcp serve`), so the user can change the
+   answer later with `finishup privacy conversations` without reconnecting. The interactive
+   wizard registers it for every answer; a preview you run gets it from `--route-profile policy`.
 4. **Approve the exact proposed change** — project skill, plugin/hook sources, MCP registration;
    digest-bound, explicit, no default answer.
 5. **Secret storage** — system secure storage or a FinishUP passphrase. The full-screen interface
@@ -213,9 +217,20 @@ recommendations. Each answer decides the next step; stop after each and wait.
    ceremony or the exact prepared chat grant.
 7. **Credential**: never a question. Hand over the terminal for `finishup provider credential set`.
 
-When every answer is in, run the setup, verify (section 5), and report each layer separately.
-Setup is finished when the user's chosen answer is reached — local only is a finished state, not a
-fallback.
+When every answer is in, run the setup (the preview with `--route-profile policy`, whatever the
+answer; show its `route_profile`), then record the answer:
+
+- **(a)** The repository's first privacy grant records it, whether the user approves that grant
+  in the terminal or as the exact prepared chat grant.
+- **(b)** Hand over the terminal for `finishup privacy conversations local-only`. It applies at
+  once where the repository already has a grant, and otherwise walks the user through the Private
+  policy that records it.
+- **(c)** After the grant, hand over the terminal for `finishup privacy conversations ai-powered`:
+  it needs less of the user, so it takes the trusted local approval.
+
+`finishup privacy conversations status` confirms the result. Then verify (section 5) and report
+each layer separately. Setup is finished when the user's chosen answer is reached — local only is
+a finished state, not a fallback.
 
 ### Hand over the terminal like it is their first
 

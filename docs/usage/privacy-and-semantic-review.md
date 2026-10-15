@@ -38,7 +38,11 @@ once. Anything that needs less of you is a widening: it applies only after the t
 approval, like any other widening. Where this repository cannot send anything for review yet, the
 command walks you through the one-time privacy policy that turns AI-powered review on, with your
 setting included. A repository's first privacy policy asks this question too, starting on agent
-opt-in; choosing a setting for one repository never changes what another repository starts with.
+opt-in (or your installation-wide choice, where that is narrower); choosing a setting for one
+repository never widens what another repository starts with. A repository without a privacy
+policy of its own sends nothing for AI-powered review: `status` and `finishup privacy
+conversations status` say AI-powered review is not set up there, and where tasks start local an
+agent that turns it on for a task there is told to continue locally.
 
 The agent turns AI-powered review on for its task by recording one decision. That decision is a
 request, never a grant: what may be sent is still exactly what this policy allows, the never-send
