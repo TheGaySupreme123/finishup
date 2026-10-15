@@ -536,3 +536,51 @@ def test_summary_names_unserved_members_rebind_and_possible_route_changes() -> N
     assert "/work/maybe (may use Yoetz)" in joined
     assert "missing right now" in joined and "/work/away" in joined
     assert "binding moves to /work/next" in joined
+
+
+def test_an_unchanged_disconnect_names_who_keeps_the_shared_pieces(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A re-run or never-connected disconnect changes nothing; text mode says who keeps them."""
+
+    installation = HostInstallation(
+        "codex", Path("/opt/codex"), "0.162.1", Path("/workspace/home"), "Codex"
+    )
+    plan = ConnectionPlan(
+        {
+            "schema": "yoetz.host-connection-plan/1",
+            "request_id": REQUEST,
+            "host": "codex",
+            "host_version": "0.162.1",
+            "executable": "/opt/codex",
+            "config_root": "/workspace/home",
+            "project_root": "/workspace/b",
+            "action": "disconnect",
+            "route_profile": "strict",
+            "preview_digest": DIGEST,
+            "connection_observed": False,
+            "changes": [],
+        },
+        lambda: {"configured": False, "shared_with": ["/workspace/a"]},
+        lambda: None,
+    )
+
+    def selected(*_args: object) -> HostInstallation:
+        return installation
+
+    def prepared_plan(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        return plan
+
+    monkeypatch.setattr(cli, "select_installation", selected)
+    monkeypatch.setattr(cli, "prepare_selected", prepared_plan)
+    code = cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/b"),
+        action="disconnect",
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "codex: unchanged" in out
+    assert "stay for the other projects using this configuration: /workspace/a" in out

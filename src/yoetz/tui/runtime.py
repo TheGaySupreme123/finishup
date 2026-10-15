@@ -243,6 +243,7 @@ async def _shared_route_change(
 
     from yoetz.adapters.integrations.codex_marketplace import other_members
     from yoetz.ports.harness_mcp import McpRegistrationState
+    from yoetz.ports.integrations import IntegrationError
 
     if preview.state_before is not McpRegistrationState.YOETZ_OWNED:
         return None, (), ()
@@ -250,7 +251,14 @@ async def _shared_route_change(
     before = observed.route_profile
     if before is None or before == route:
         return None, (), ()
-    others, possible = other_members(codex_home, project)
+    try:
+        others, possible = other_members(codex_home, project)
+    except IntegrationError as error:
+        # Unknown membership is never "nobody else": stop before the shared mode changes
+        # (#1058 review round 3); `setup` names the record and the way out.
+        raise RuntimeError_(
+            "source_invalid", "the projects using this Codex home could not be read"
+        ) from error
     if not others and not possible:
         return None, (), ()
     return before, others, possible

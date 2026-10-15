@@ -49,6 +49,7 @@ def test_disconnect_keeps_removal_outcome(
             shared_with=(),
             rebind_to=None,
             unserved_members=(),
+            keeps_shared=False,
         )
 
     class Skill:

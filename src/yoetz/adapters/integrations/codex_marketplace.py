@@ -202,8 +202,12 @@ class RemovalPreview:
     # anchor (CHECK_MULTIPROJ_R2).
     possible_users: tuple[str, ...] = ()
     # Connected projects whose directory exists but no longer serves the manifest (for example
-    # its plugin files are absent right now): a removal of the shared pieces affects them too.
+    # its plugin files are absent right now): a removal of the shared pieces affects them too,
+    # a detach keeps the pieces for them.
     unserved_members: tuple[str, ...] = ()
+    # This plan keeps the home's shared pieces (plugin table, cache, binding, user-level MCP
+    # registration) for other projects, whatever its outcome (also ``already_absent``).
+    keeps_shared: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -857,15 +861,15 @@ def other_members(
 
     These are the projects whose sessions use the home's shared pieces, notably the user-level
     MCP registration and its review mode (#1058 review). ``project`` ``None`` excludes nothing.
-    An unreadable record or config names none (callers that act on membership read it
-    themselves and refuse).
+    A home that does not exist has none. Membership that cannot be read (a damaged record, an
+    unsafe or symlinked home) raises ``IntegrationError``: callers treat it as unknown and fail
+    closed wherever the shared registration would be rewritten or removed (review round 3).
     """
 
-    try:
-        serving = serving_projects(codex_home)
-        possible = possible_projects(codex_home)
-    except IntegrationError:
+    if codex_home is not None and not os.path.lexists(Path(codex_home).expanduser()):
         return (), ()
+    serving = serving_projects(codex_home)
+    possible = possible_projects(codex_home)
 
     def other(item: str) -> bool:
         return project is None or (item != str(project) and not same_directory(Path(item), project))
@@ -2337,13 +2341,26 @@ def _removal_plan(
     # Only a connected project may move or remove a dangling binding: for a project that never
     # connected, the binding is another member's whose manifest may be absent only for now
     # (a branch switch, `git clean`, an unmounted volume) (#1058 review round 2).
-    member = any(
+    member = relation in {"self", "duplicate"} or any(
         item == str(project) or same_directory(Path(item), project)
         for item in projects_before.projects
     )
-    dangling_other = anchor_missing and not member and not remove_shared
+    # Recorded projects (and a dangling anchor) whose directory still exists, serving the
+    # manifest right now or not: a disconnect of anything else must not take their pieces.
+    live_recorded = live_projects(
+        {*projects_before.projects, *((source,) if anchor_missing else ())}, excluding=project
+    )
+    # A project that never connected (or was already detached) removes only its own pieces
+    # while the binding dangles or another recorded project still exists, even one whose
+    # plugin files are absent right now (#1058 review rounds 2 and 3).
+    dangling_other = not member and not remove_shared and (anchor_missing or bool(live_recorded))
     holds_shared = (
-        relation in {"self", "shared", "duplicate", "missing"}
+        (
+            relation in {"self", "shared", "duplicate", "missing"}
+            # Without a binding (lost or removed by hand) the shared plugin, cache and record
+            # still serve the other recorded projects that serve the manifest (round 3 P3).
+            or (relation == "absent" and bool(remaining))
+        )
         and not remove_shared
         and not dangling_other
     )
@@ -2412,19 +2429,12 @@ def _removal_plan(
         # The last connected project's removal leaves no record behind.
         projects_after = ()
         unknown_after = False
-    # Members (and a dangling anchor) whose directory still exists but that do not serve the
-    # manifest right now lose the shared pieces with a removal: name them (round 2 P3).
-    unserved: tuple[str, ...] = (
-        ()
-        if detach
-        else tuple(
-            candidate
-            for candidate in live_projects(
-                {*projects_before.projects, *((source,) if anchor_missing else ())},
-                excluding=project,
-            )
-            if _anchor_manifest_state(Path(candidate)) != "serves"
-        )
+    # Recorded projects (and a dangling anchor) whose directory exists but that do not serve the manifest right now:
+    # a removal takes the shared pieces from them too, a detach keeps them for them.
+    unserved: tuple[str, ...] = tuple(
+        candidate
+        for candidate in live_recorded
+        if _anchor_manifest_state(Path(candidate)) != "serves"
     )
     cache_versions = tuple(version for version, _digest in cache_digests)
     inspection = inspect_activation(
@@ -2545,6 +2555,8 @@ def _removal_plan(
         rebind_to,
         possible,
         unserved,
+        # A detach, and a non-member's removal of only its own pieces, keep the shared ones.
+        detach,
     )
     return _RemovalPlan(
         preview,
@@ -3487,7 +3499,13 @@ def _apply_detach(
         inspection = inspect_activation(
             target, executable_path=executable_path, codex_home=home, _run=_run
         )
-        if inspection.state in {ActivationState.ACTIVE, ActivationState.FOREIGN}:
+        # Nothing may become foreign; a home that already read foreign before the detach (its
+        # binding was removed by hand while the shared cache stays) keeps reading so.
+        became_foreign = (
+            inspection.state is ActivationState.FOREIGN
+            and preview.inspection.state is not ActivationState.FOREIGN
+        )
+        if inspection.state is ActivationState.ACTIVE or became_foreign:
             raise _error(IntegrationReason.WRITE_FAILED)
         skill_state = skill_tree_state(target)
         if skill_state != preview.skill_tree_state:

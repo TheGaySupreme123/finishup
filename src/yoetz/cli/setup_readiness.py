@@ -104,7 +104,7 @@ def setup_next(
     executable: Path | None,
     config_root: Path | None,
     project: Path,
-    route: Literal["strict", "policy"],
+    route: Literal["strict", "policy"] | None,
     json_output: bool,
 ) -> int:
     """Evaluate only the selected recipe; connection alone needs no service/provider login."""
@@ -157,8 +157,8 @@ def setup_next(
                         selected_home,
                         "--project",
                         str(project),
-                        "--route-profile",
-                        route,
+                        # Without one, a Codex home keeps its registered review mode.
+                        *(["--route-profile", route] if route is not None else []),
                     ]
         except CONNECTION_ERRORS:
             if arguments is None:

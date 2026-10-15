@@ -119,6 +119,7 @@ def _wire(
             shared_with=(),
             rebind_to=None,
             unserved_members=(),
+            keeps_shared=False,
         )
 
     class Skill:
@@ -648,6 +649,7 @@ def test_detaching_disconnect_keeps_the_shared_mcp_registration(
             possible_users=(),
             rebind_to=None,
             unserved_members=(),
+            keeps_shared=True,
         )
 
     monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
@@ -693,6 +695,7 @@ def test_disconnect_preview_names_projects_that_may_use_the_shared_pieces(
             possible_users=(maybe,),
             rebind_to=None,
             unserved_members=(),
+            keeps_shared=True,
         )
 
     monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
@@ -833,3 +836,104 @@ def test_rerunning_a_disconnect_keeps_the_registration_other_projects_use(
     status = plan.status()
     # This project is not connected: the shared registration is not its configuration.
     assert status["configured"] is False
+
+
+def test_a_recorded_project_without_its_plugin_files_keeps_the_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1058 review round 3 T1: the other recorded project's manifest is absent only for now
+    (branch switch, `git clean`, unmounted volume); a re-run or never-connected disconnect must
+    still leave the shared registration and name that project."""
+
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE, encode_projects
+
+    home, project, installation = _layout(tmp_path)
+    fake, cleanup = FakeCodex(home, project), list[str]()
+    _wire(monkeypatch, fake, cleanup)
+    other = _serving_member(tmp_path, "other")
+    record = home / CONNECTED_PROJECTS_FILE
+    record.write_bytes(encode_projects((str(other),)))
+    record.chmod(0o600)
+    (other / ".agents/plugins/marketplace.json").unlink()
+
+    plan = _plan(installation, project)
+
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    assert plan.disclosure["shared_with"] == [str(other)]
+    plan.apply_reviewed_steps()
+    assert fake.registered
+    status = plan.status()
+    assert status["configured"] is False and status["shared_with"] == [str(other)]
+
+
+@pytest.mark.parametrize(
+    ("state", "connected"),
+    [("active", True), ("installed_not_activated", False)],
+)
+def test_connect_status_reports_the_shared_registration_as_retained_when_not_connected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: str, connected: bool
+) -> None:
+    """`setup status --host codex` for a detached or never-connected project (round 3 P3).
+
+    The home's shared plugin and registration serve every project; only a connected project
+    reports them as its configuration, as the disconnect status does.
+    """
+
+    from yoetz.adapters.integrations.codex_marketplace import ActivationState
+    from yoetz.ports.harness_mcp import (
+        MCP_SERVE_COMMAND,
+        HarnessId,
+        McpRegistrationObservation,
+        McpRegistrationState,
+    )
+
+    _home, project, installation = _layout(tmp_path)
+
+    class Runtime:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def integration_plan(self, *_args: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                changes=["register_mcp"], route_profile_before=None, already_registered=False
+            )
+
+    async def observe(self: object, _binary: object) -> McpRegistrationObservation:
+        return McpRegistrationObservation(
+            HarnessId.CODEX,
+            McpRegistrationState.YOETZ_OWNED,
+            "policy",
+            "ambient",
+            MCP_SERVE_COMMAND,
+        )
+
+    def activation(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            plugin_cached=True,
+            plugin_enabled=True,
+            state=ActivationState(state),
+            inventory_verified=True,
+        )
+
+    def nothing(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(codex_connection, "YoetzRuntime", Runtime)
+    def no_plan(_plan: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(codex_connection, "asdict", no_plan)
+    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.observe", observe)
+    monkeypatch.setattr(codex_connection, "inspect_activation", activation)
+    monkeypatch.setattr(codex_connection, "home_projects_status", nothing)
+    monkeypatch.setattr(codex_connection, "project_mcp_leftover_status", nothing)
+
+    # No --route-profile: the policy home's own mode, so a connected project is configured.
+    plan = codex_connection.prepare_codex_connection(
+        installation, project, action="connect", route=None, request_value=REQUEST
+    )
+    assert plan.body["route_profile"] == "policy"
+    status = plan.status()
+    assert status["configured"] is connected
+    assert status["enabled"] is connected
+    assert status.get("shared_registration_retained", False) is (not connected)

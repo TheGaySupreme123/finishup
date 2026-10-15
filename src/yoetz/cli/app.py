@@ -3163,9 +3163,8 @@ def setup_disconnect(
             config_root=host_config_root,
             project=(project or Path.cwd()).expanduser().resolve(),
             action="disconnect",
-            route=cast(
-                Literal["strict", "policy"], _validated_route_profile(route_profile) or "strict"
-            ),
+            # Without --route-profile, a Codex home keeps its registered review mode.
+            route=cast(Literal["strict", "policy"] | None, _validated_route_profile(route_profile)),
             accept=accept,
             interactive=not non_interactive and sys.stdin.isatty(),
             request_value=request_value,
@@ -3217,10 +3216,11 @@ def setup_status(
                 executable=host_path,
                 config_root=host_config_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
+                # Review needs the AI-powered route; otherwise a Codex home keeps its mode.
                 route=cast(
-                    Literal["strict", "policy"],
+                    Literal["strict", "policy"] | None,
                     _validated_route_profile(route_profile)
-                    or ("policy" if operation == "review" else "strict"),
+                    or ("policy" if operation == "review" else None),
                 ),
                 json_output=json_output,
             )
@@ -3235,8 +3235,9 @@ def setup_status(
                 executable=host_path,
                 config_root=host_config_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
+                # Without --route-profile, a Codex home keeps its registered review mode.
                 route=cast(
-                    Literal["strict", "policy"], _validated_route_profile(route_profile) or "strict"
+                    Literal["strict", "policy"] | None, _validated_route_profile(route_profile)
                 ),
                 json_output=json_output,
                 status_only=True,

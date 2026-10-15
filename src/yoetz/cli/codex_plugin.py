@@ -86,6 +86,10 @@ def _preview_body(preview: RemovalPreview) -> dict[str, object]:
         # Unverified projects that may still use the shared pieces (bound into the digest).
         "possible_users": list(preview.possible_users),
         **({"membership_unknown": True} if preview.possible_users else {}),
+        # Connected projects whose plugin files are absent right now (bound into the digest):
+        # a removal of the shared pieces takes them from these too; a detach keeps them.
+        "members_not_serving": list(preview.unserved_members),
+        "keeps_shared": preview.keeps_shared,
         "skill_tree": preview.skill_tree_state,
         "state_before": preview.inspection.state.value,
     }

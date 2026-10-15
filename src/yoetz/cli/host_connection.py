@@ -209,9 +209,9 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     if body.get("membership_unknown") is True:
         lines.append(
             "Yoetz cannot confirm every project that uses its shared pieces here (they were set "
-            "up before it recorded connected projects, its record was lost, or projects it "
-            "connected are missing from the record), so an ordinary disconnect keeps them. Only "
-            "--remove-shared removes them for every project."
+            "up before it recorded connected projects, its record was lost or cannot be read, or "
+            "projects it connected are missing from the record), so an ordinary disconnect "
+            "keeps them. Only --remove-shared removes them for every project."
         )
     possible = body.get("possible_users")
     if isinstance(possible, list) and possible:
@@ -684,10 +684,12 @@ def prepare_selected(
     project: Path,
     *,
     action: ConnectionAction,
-    route: Literal["strict", "policy"],
+    route: Literal["strict", "policy"] | None,
     request_value: str,
     remove_shared: bool = False,
 ) -> ConnectionPlan:
+    """``route=None``: no explicit review mode (Codex keeps the home's current one)."""
+
     if installation.host == "codex":
         from yoetz.cli.codex_connection import prepare_codex_connection
 
@@ -708,7 +710,7 @@ def prepare_selected(
         installation,
         project,
         action=action,
-        route=route,
+        route=route or "strict",
         launcher=resolve_yoetz_launcher(invocation),
         isolation_root=None if root is None else str(root),
         remove_shared=remove_shared,
@@ -745,7 +747,7 @@ def run_host_connection(
     config_root: Path | None,
     project: Path,
     action: ConnectionAction = "connect",
-    route: Literal["strict", "policy"] = "strict",
+    route: Literal["strict", "policy"] | None = None,
     accept: bool = False,
     interactive: bool = False,
     request_value: str | None = None,
@@ -965,6 +967,14 @@ def run_host_connection(
                 {**plan_body, **(status if isinstance(status, dict) else {})}
             ):
                 typer.echo(line)
+        if report["outcome"] == "unchanged" and action == "disconnect" and isinstance(status, dict):
+            kept = status.get("shared_with")
+            if isinstance(kept, list) and kept:
+                # A re-run or a never-connected project changed nothing; say who keeps them.
+                typer.echo(
+                    "The shared Yoetz pieces stay for the other projects using this "
+                    "configuration: " + ", ".join(str(item) for item in kept)
+                )
         if "reason" in report:
             typer.echo(str(report["reason"]))
         if "next_step" in report:

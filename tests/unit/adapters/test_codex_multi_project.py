@@ -702,3 +702,63 @@ def test_removing_a_dangling_binding_names_members_without_their_plugin_files(
     assert preview.unserved_members == (str(root_a),)
     assert _disconnect(target_b, home) is RemovalOutcome.REMOVE
     _shared_gone(home)
+
+
+@pytest.mark.parametrize("who", ["detached", "never-connected"])
+def test_a_rerun_or_outsider_disconnect_keeps_pieces_for_a_member_without_its_files(
+    tmp_path: Path, who: str
+) -> None:
+    """#1058 review round 3 T1: the removal plan itself reports that it keeps the shared pieces."""
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, _root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    if who == "detached":
+        _connect(target_b, home)
+        assert _disconnect(target_b, home) is RemovalOutcome.DETACH
+        target = target_b
+    else:
+        target, _root_c = _clone(tmp_path, "c")
+    (root_a / ".agents/plugins/marketplace.json").unlink()
+    config_before = (home / "config.toml").read_bytes()
+
+    preview = preview_removal(target, codex_home=home)
+
+    assert preview.keeps_shared is True
+    assert preview.unserved_members == (str(root_a),)
+    from yoetz.cli.codex_plugin import _preview_body  # pyright: ignore[reportPrivateUsage]
+
+    # `integrate codex plugin preview` names them too (bound into the digest).
+    body = _preview_body(preview)
+    assert body["members_not_serving"] == [str(root_a)] and body["keeps_shared"] is True
+    _disconnect(target, home)
+    assert (home / "config.toml").read_bytes() == config_before
+    assert _cache(home).exists()
+    assert connected_projects(home) == (str(root_a),)
+
+
+def test_without_a_binding_a_member_detaches_and_keeps_the_others_pieces(
+    tmp_path: Path,
+) -> None:
+    """#1058 review round 3 P3: the binding table was removed by hand; B's disconnect must not
+    remove the plugin table, cache and record A still uses."""
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, _root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    _connect(target_b, home)
+    config = home / "config.toml"
+    text = config.read_text(encoding="utf-8")
+    table = f'[marketplaces.yoetz]\nsource_type = "local"\nsource = "{root_a}"\n'
+    assert table in text
+    config.write_text(text.replace(table, ""), encoding="utf-8")
+
+    preview = preview_removal(target_b, codex_home=home)
+
+    assert preview.outcome is RemovalOutcome.DETACH and preview.keeps_shared is True
+    assert _disconnect(target_b, home) is RemovalOutcome.DETACH
+    assert '[plugins."yoetz@yoetz"]' in config.read_text(encoding="utf-8")
+    assert _cache(home).exists()
+    assert connected_projects(home) == (str(root_a),)

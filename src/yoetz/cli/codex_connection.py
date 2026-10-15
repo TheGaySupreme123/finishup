@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Literal, cast
@@ -64,10 +65,17 @@ def prepare_codex_connection(
     project: Path,
     *,
     action: ConnectionAction,
-    route: Literal["policy", "strict"],
+    route: Literal["policy", "strict"] | None,
     request_value: str,
     remove_shared: bool = False,
 ) -> ConnectionPlan:
+    """Plan one Codex connect, status, or disconnect for ``project``.
+
+    ``route=None`` means no explicit review mode: the home's registration is user-level and
+    every project of the home shares it, so its current mode stays; a fresh home uses
+    ``strict`` (local only) (#1058 review round 3).
+    """
+
     runtime = YoetzRuntime(cwd=project)
     option = HarnessOption(
         str(installation.executable), installation.version, installation.label, ""
@@ -75,6 +83,8 @@ def prepare_codex_connection(
     binary = HarnessBinary(
         HarnessId.CODEX, str(installation.executable), installation.version, "untested"
     )
+    if route is None:
+        route = _current_route(binary, installation.config_root)
     service = HarnessMcpService(
         CodexMcpAdapter(route_profile=route, codex_home=installation.config_root)
     )
@@ -177,13 +187,18 @@ def prepare_codex_connection(
                 codex_home=installation.config_root,
             )
             registration = anyio.run(observe)
+            # `active` only for a project connected to this home; the shared plugin and
+            # registration alone serve every project in it (#1058). A detached or never-connected
+            # project reports them as retained, not as its configuration, as the disconnect
+            # status does (#1058 review round 3).
+            connected = current.state is ActivationState.ACTIVE
+            registered = registration.route_profile is not None
             return {
                 "installed": current.plugin_cached,
-                "enabled": current.plugin_enabled,
-                # `active` only for a project connected to this home; the shared plugin alone
-                # is cached and enabled for every project in it (#1058).
+                "enabled": current.plugin_enabled and connected,
                 "activation_state": current.state.value,
-                "configured": registration.route_profile == route,
+                "configured": connected and registration.route_profile == route,
+                **({"shared_registration_retained": True} if registered and not connected else {}),
                 "connection_observed": False,
                 "reload_required": True,
                 **home_projects_status(installation.config_root),
@@ -210,9 +225,48 @@ def prepare_codex_connection(
         # Whatever this project's own state (already detached, never connected), the shared
         # registration stays while another project uses the home's shared pieces: a verified
         # member that still serves the manifest, or a possible user (#1058 review round 2 P1).
-        serving_others, possible_others = other_members(installation.config_root, project)
+        # A project that is not (or no longer) a member never takes the shared pieces from a
+        # recorded project, even one whose plugin files are absent right now (a branch switch,
+        # `git clean`, an unmounted volume) (#1058 review round 3). Membership that cannot be
+        # read keeps them too: unknown is never "nobody else".
+        membership_unknown = False
+        serving_others: tuple[str, ...] = ()
+        possible_others: tuple[str, ...] = ()
+        members: tuple[str, ...] = ()
+        if os.path.lexists(installation.config_root):
+            try:
+                serving_others, possible_others = other_members(installation.config_root, project)
+                members = connected_projects(installation.config_root)
+            except IntegrationError:
+                membership_unknown = True
+        is_member = any(
+            item == str(project) or same_directory(Path(item), project) for item in members
+        )
+        recorded_others = () if is_member else live_projects(members, excluding=project)
+        # The removal plan's own decision comes first: it keeps the shared pieces for recorded
+        # projects whose plugin files are absent right now too.
         shared_kept = not remove_shared and (
-            detach or bool(serving_others) or bool(possible_others)
+            removal.keeps_shared
+            or bool(serving_others)
+            or bool(possible_others)
+            or bool(recorded_others)
+            or membership_unknown
+        )
+        # Who the kept pieces are for: serving members, and recorded projects whose plugin
+        # files are absent right now (they use them again once the files return).
+        kept_for: tuple[str, ...] = (
+            tuple(
+                sorted(
+                    {
+                        *removal.shared_with,
+                        *serving_others,
+                        *removal.unserved_members,
+                        *recorded_others,
+                    }
+                )
+            )
+            if shared_kept
+            else ()
         )
         # Projects whose own Codex layer uses the user-level transport (an approval table
         # without a transport of its own) also keep it, connected through Yoetz or not.
@@ -264,10 +318,16 @@ def prepare_codex_connection(
         if shared_kept:
             cast(list[JsonValue], body["retained"]).append(
                 "shared Codex plugin and MCP registration used by other connected projects"
+                if removal.keeps_shared or removal.outcome is not RemovalOutcome.REMOVE
+                # The plan removes the shared plugin (no project can carry it); only the
+                # user-level registration stays for the projects that still use it.
+                else "Yoetz MCP registration used by other connected projects"
             )
-            admission.disclosure["shared_with"] = cast(
-                list[JsonValue], list(removal.shared_with if detach else serving_others)
-            )
+            admission.disclosure["shared_with"] = cast(list[JsonValue], list(kept_for))
+        if membership_unknown:
+            # Unreadable membership: an ordinary disconnect keeps the shared pieces, and a
+            # home-wide one says it cannot name everyone it removes them from.
+            admission.disclosure["membership_unknown"] = True
         if keep_transport:
             cast(list[JsonValue], body["retained"]).append(
                 "Yoetz MCP registration used by other projects' Codex configuration"
@@ -288,7 +348,7 @@ def prepare_codex_connection(
         )
         if removal.rebind_to is not None:
             admission.disclosure["rebind_to"] = removal.rebind_to
-        if removal.unserved_members:
+        if removal.unserved_members and not shared_kept:
             # Connected projects whose plugin files are absent right now lose the shared pieces
             # with this removal too (#1058 review round 2).
             admission.disclosure["members_not_serving"] = cast(
@@ -417,6 +477,8 @@ def prepare_codex_connection(
                     if registered and not connected and shared_kept
                     else {}
                 ),
+                # Kept for these projects (also when this disconnect changed nothing).
+                **({"shared_with": cast(list[JsonValue], list(kept_for))} if kept_for else {}),
                 "connection_observed": False,
                 "reload_required": True,
                 "retained": body["retained"],
@@ -431,6 +493,22 @@ def prepare_codex_connection(
 
 
 _OTHER_PROJECTS_LIMIT = 32
+
+
+def _current_route(binary: HarnessBinary, codex_home: Path) -> Literal["policy", "strict"]:
+    """The review mode of the home's Yoetz-owned MCP registration; ``strict`` without one."""
+
+    async def observe():
+        return await HarnessMcpService(
+            CodexMcpAdapter(route_profile="strict", codex_home=codex_home)
+        ).observe(binary)
+
+    try:
+        observed = anyio.run(observe)
+    except McpRegistrationError:
+        # The later steps read the same configuration and report what is wrong with it.
+        return "strict"
+    return observed.route_profile or "strict"
 
 
 def _other_projects_needing_transport(
@@ -540,15 +618,21 @@ def possible_users_disclosure(
 
 
 def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:
-    """Every project this Codex home's shared Yoetz pieces serve (#1058); empty if unreadable."""
+    """Every project this Codex home's shared Yoetz pieces serve (#1058).
 
+    Unreadable membership reports ``membership_unknown`` rather than nobody; a home that does
+    not exist yet reports nothing.
+    """
+
+    if not os.path.lexists(codex_home):
+        return {}
     try:
         # Verified members that still serve the manifest: a deleted anchor, or one whose
         # manifest is gone, is not reported as connected (#1058 review P2-2).
         projects = serving_projects(codex_home)
         possible = possible_projects(codex_home)
     except IntegrationError:
-        return {}
+        return {"membership_unknown": True}
     status: dict[str, JsonValue] = {"codex_home_projects": cast(list[JsonValue], list(projects))}
     if possible:
         # Possible users, not verified connections: they keep the shared pieces, never anchor.
