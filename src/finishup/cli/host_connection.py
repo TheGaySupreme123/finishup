@@ -34,7 +34,7 @@ from finishup.application.host_connection import (
 from finishup.cli.setup_readiness import continuation
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, isolated_root
 from finishup.domain.values import request_id
-from finishup.ports.harness_mcp import MCP_SERVER_NAME
+from finishup.ports.harness_mcp import MCP_LEGACY_SERVER_NAME, MCP_SERVER_NAME
 from finishup.ports.integrations import IntegrationError, IntegrationReason
 from finishup.ports.plugin_artifacts import ArtifactAuthority, PluginArtifactError
 from finishup.protocol.canonical import JsonValue
@@ -675,38 +675,58 @@ def _codex_duplicate_step(config_root: Path | None, project: Path) -> str:
 
 def _leftover_next_step(status: dict[str, JsonValue]) -> str | None:
     leftover = status.get("project_mcp_leftover")
-    servers = status.get("project_mcp_leftover_servers")
-    names = (
-        [str(item) for item in servers]
-        if isinstance(servers, list) and servers
-        else [MCP_SERVER_NAME]
-    )
-    tables = " and ".join(f"[mcp_servers.{name}]" for name in names)
-    if leftover == "tools_only":
+    if leftover not in {"tools_only", "retained_tables"}:
+        return None
+
+    def keys(field: str) -> list[str]:
+        value = status.get(field)
+        return [str(item) for item in value] if isinstance(value, list) else []
+
+    servers = keys("project_mcp_leftover_servers") or [MCP_SERVER_NAME]
+    retained = keys("project_mcp_leftover_retained_servers")
+    tools_only = keys("project_mcp_leftover_tools_only_servers")
+    if not retained and not tools_only:
+        # A status written before the per-kind lists: every key is of the one kind.
+        retained, tools_only = (servers, []) if leftover == "retained_tables" else ([], servers)
+    command = status.get("next_command")
+
+    def tables(names: list[str]) -> str:
+        return " and ".join(f"[mcp_servers.{name}]" for name in names)
+
+    if not retained:
         return (
-            f"This project's .codex/config.toml keeps a FinishUP tool-approval table ({tables}) "
-            "for a server that is no longer registered, so Codex cannot load its configuration "
-            "here. Revoke it, then accept the shown digest: " + str(status.get("next_command"))
+            f"This project's .codex/config.toml keeps a FinishUP tool-approval table "
+            f"({tables(tools_only)}) for a server that is no longer registered, so Codex cannot "
+            "load its configuration here. Revoke it, then accept the shown digest: " + str(command)
         )
-    if leftover == "retained_tables":
-        problem = (
-            f"This project's .codex/config.toml keeps {tables} tables that FinishUP did not "
-            "write (or that were edited), for a server that is no longer registered, so Codex "
-            "cannot load its configuration here. FinishUP does not edit them."
+    parts = [
+        f"This project's .codex/config.toml keeps {tables(retained)} tables that FinishUP did "
+        "not write (or that were edited), for a server that is no longer registered, so Codex "
+        "cannot load its configuration here. FinishUP does not edit them."
+    ]
+    if tools_only:
+        parts.append(
+            f"It also keeps the exact FinishUP tool-approval table under {tables(tools_only)}, "
+            "which a revoke removes; accept the shown digest: " + str(command)
         )
-        if names == [MCP_SERVER_NAME] and status.get("next_command") is not None:
-            return (
-                problem + " Either remove those tables from that file yourself, or connect the "
-                "project again so the server is registered: " + str(status.get("next_command"))
-            )
+    if retained == [MCP_SERVER_NAME] and not tools_only and command is not None:
+        parts.append(
+            "Either remove those tables from that file yourself, or connect the project again "
+            "so the server is registered: " + str(command)
+        )
+    elif MCP_LEGACY_SERVER_NAME in retained:
         # FinishUP registers only the ``finishup`` server now, so connecting again never gives
         # an earlier-name ``yoetz`` table its transport back (ADR-048).
-        return (
-            problem + " Remove those tables from that file yourself; FinishUP no longer "
-            "registers a server under the earlier name yoetz, so connecting again does not "
-            "restore it."
+        parts.append(
+            "Remove those tables from that file yourself; FinishUP no longer registers a server "
+            "under the earlier name yoetz, so connecting again does not restore it."
         )
-    return None
+    else:
+        parts.append(
+            "Remove those tables from that file yourself, or connect the project again once "
+            "the other tables are gone."
+        )
+    return " ".join(parts)
 
 
 def _refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:

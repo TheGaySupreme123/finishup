@@ -179,8 +179,9 @@ unreleased above reverse-chronological released versions.
   their entries the same way. After a Codex disconnect, FinishUP checks that Codex still loads its
   configuration in the project. `setup status --host codex` explains such a leftover under either
   spelling, `mcp_servers.yoetz` (left by a Yoetz 0.2.x disconnect) or `mcp_servers.finishup`, and
-  prints the exact command that removes it (or, for a table you edited, names the file to fix),
-  and FinishUP's own Codex registration commands no longer fail because of it. A
+  prints the exact command that removes it (or, for a table you edited, names the file to fix;
+  with both kinds in one file it names which is which and still gives the revoke for the exact
+  one), and FinishUP's own Codex registration commands no longer fail because of it. A
   disconnect that cannot remove the entry safely (an approval file FinishUP cannot read, such as a
   symlink, or approval settings you added or edited yourself that still need the FinishUP server)
   now stops before changing anything and names the file to fix, instead of leaving the project

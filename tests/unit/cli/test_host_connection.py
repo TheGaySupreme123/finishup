@@ -1023,3 +1023,67 @@ def test_shared_pieces_kept_only_for_a_missing_directory_name_the_way_out(
     )
     report = json.loads(capsys.readouterr().out)
     assert "--remove-shared" in report["next_step"]
+
+
+def test_a_mixed_leftover_names_each_key_and_keeps_the_revoke(tmp_path: Path) -> None:
+    """An exact FinishUP approval table beside an edited Yoetz-era one: the step names which is
+    which, and the revoke that removes the exact one (#1073)."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_EXTERNAL_ADMISSION_TABLE
+    from finishup.cli.codex_connection import project_mcp_leftover_status
+
+    home, project = tmp_path / "home", tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text("")
+    edited_yoetz = '[mcp_servers.yoetz.tools.check]\napproval_mode = "prompt"\n'
+    (project / ".codex" / "config.toml").write_text(
+        CODEX_EXTERNAL_ADMISSION_TABLE + "\n" + edited_yoetz
+    )
+
+    status = project_mcp_leftover_status(home, project)
+
+    assert status["project_mcp_leftover"] == "retained_tables"
+    assert status["project_mcp_leftover_retained_servers"] == ["yoetz"]
+    assert status["project_mcp_leftover_tools_only_servers"] == ["finishup"]
+    step = cli._leftover_next_step(  # pyright: ignore[reportPrivateUsage]
+        cli._rendered_status(status)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert step is not None
+    assert "[mcp_servers.yoetz] tables that FinishUP did not write" in step
+    assert "[mcp_servers.finishup]" in step
+    assert "--action revoke" in step
+    assert "[mcp_servers.finishup] and [mcp_servers.yoetz]" not in step
+
+
+def test_an_edited_finishup_table_beside_an_exact_yoetz_one_gives_no_wrong_command(
+    tmp_path: Path,
+) -> None:
+    """The reverse mix: the revoke cannot edit a file holding edited FinishUP tables (so neither
+    key's tables are its to remove), and connecting again restores only ``finishup``; the step
+    names both keys and offers no command."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+    from finishup.cli.codex_connection import project_mcp_leftover_status
+
+    home, project = tmp_path / "home", tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text("")
+    edited_finishup = '[mcp_servers.finishup.tools.check]\napproval_mode = "prompt"\n'
+    (project / ".codex" / "config.toml").write_text(
+        edited_finishup + "\n" + CODEX_LEGACY_ADMISSION_TABLES[0]
+    )
+
+    status = project_mcp_leftover_status(home, project)
+
+    assert status["project_mcp_leftover_retained_servers"] == ["finishup", "yoetz"]
+    assert status["project_mcp_leftover_tools_only_servers"] == []
+    assert "next_arguments" not in status
+    step = cli._leftover_next_step(  # pyright: ignore[reportPrivateUsage]
+        cli._rendered_status(status)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert step is not None
+    assert "[mcp_servers.finishup] and [mcp_servers.yoetz] tables" in step
+    assert "Remove those tables from that file yourself" in step
+    assert "None" not in step

@@ -766,15 +766,21 @@ def project_mcp_leftover_status(
             return {"project_mcp_needs_registration": True}
         return {}
     retained = [name for name, kind in leftovers if kind == "retained_tables"]
+    tools_only = [name for name, kind in leftovers if kind == "tools_only"]
     status: dict[str, JsonValue] = {
         "project_mcp_leftover": "retained_tables" if retained else "tools_only",
         "project_mcp_leftover_servers": cast(list[JsonValue], [name for name, _ in leftovers]),
+        # Each key by kind, so a step never calls an exact FinishUP table one the owner edited.
+        "project_mcp_leftover_retained_servers": cast(list[JsonValue], retained),
+        "project_mcp_leftover_tools_only_servers": cast(list[JsonValue], tools_only),
     }
-    if not retained:
+    if tools_only:
+        # A ``tools_only`` key is one the revoke removes (its file is still FinishUP's to sweep),
+        # also beside tables the owner edited under the other key.
         status["next_arguments"] = cast(
             list[JsonValue], admission_revoke_arguments("codex", project)
         )
-    elif all(name == MCP_SERVER_NAME for name, _kind in leftovers):
+    elif all(name == MCP_SERVER_NAME for name in retained):
         status["next_arguments"] = [
             "setup",
             "run",

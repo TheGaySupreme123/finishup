@@ -34,8 +34,10 @@ setup command) as `status.project_mcp_leftover: "tools_only"` with the revoke co
 either server key: `[mcp_servers.finishup.tools.check]`, or the Yoetz-era
 `[mcp_servers.yoetz.tools.check]` that a Yoetz 0.2.x `integrate codex admission grant` wrote and a
 Yoetz 0.2.x disconnect never removed (Codex then fails with `invalid transport in
-mcp_servers.yoetz`); `status.project_mcp_leftover_servers` names the key, and the revoke removes
-the exact table under both.
+mcp_servers.yoetz`); `status.project_mcp_leftover_servers` names the keys and
+`project_mcp_leftover_retained_servers` / `project_mcp_leftover_tools_only_servers` name them by
+kind, and the revoke removes the exact table under both. With an exact `finishup` table beside an
+edited `yoetz` one, the step names each and still gives the revoke for the exact one.
 Before any change, disconnect refuses an approval file it cannot read safely (a symlinked,
 oversized or unparsable `.codex/config.toml`: `connection_admission_cleanup_failed`, rechecked
 again before removal), and projects the project's `.codex/config.toml` after the sweep: if tables
