@@ -470,7 +470,9 @@ _SET_ORDER_CORRECTIONS: Final[Mapping[str, str]] = MappingProxyType(
 )
 _REF_MIRROR_EVIDENCE_RULE: Final = (
     "The event batch is invalid. The draft envelope evidence_refs must repeat the payload "
-    "evidence_refs exactly: the same ids in the same ascending order, or both empty. See "
+    "evidence_refs exactly: the same ids in the same ascending order, or both empty. "
+    "example: payload evidence_refs "
+    '["evd_00000000-0000-4000-8000-000000000001"] and envelope evidence_refs the same list. See '
     "finishup://guidance/publication-policy.md section reference mirrors. Correct the event payload "
     "before retrying."
 )
@@ -483,18 +485,26 @@ _REF_MIRROR_CORRECTIONS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyTy
                 "evidence_recorded": (
                     "The event batch is invalid. The draft envelope artifact_refs must be exactly "
                     "the payload captured_object_id, or empty when the payload declares no "
-                    "captured object. See finishup://guidance/publication-policy.md section "
+                    "captured object. example: payload captured_object_id "
+                    '"obj_00000000-0000-4000-8000-000000000001" and envelope artifact_refs '
+                    '["obj_00000000-0000-4000-8000-000000000001"], or artifact_refs [] when there '
+                    "is no captured object. See finishup://guidance/publication-policy.md section "
                     "reference mirrors. Correct the event payload before retrying."
                 ),
                 "receipt_recorded": (
                     "The event batch is invalid. The draft envelope artifact_refs must be exactly "
-                    "the payload receipt_object_id. See finishup://guidance/publication-policy.md "
-                    "section reference mirrors. Correct the event payload before retrying."
+                    "the payload receipt_object_id. example: payload receipt_object_id "
+                    '"obj_00000000-0000-4000-8000-000000000001" and envelope artifact_refs '
+                    '["obj_00000000-0000-4000-8000-000000000001"]. See '
+                    "finishup://guidance/publication-policy.md section reference mirrors. Correct "
+                    "the event payload before retrying."
                 ),
                 "redaction_recorded": (
                     "The event batch is invalid. The draft envelope artifact_refs must repeat the "
                     "payload target_object_ids exactly: the same ids in the same ascending order, "
-                    "or both empty. See finishup://guidance/publication-policy.md section reference "
+                    "or both empty. example: payload target_object_ids "
+                    '["obj_00000000-0000-4000-8000-000000000001"] and envelope artifact_refs the '
+                    "same list. See finishup://guidance/publication-policy.md section reference "
                     "mirrors. Correct the event payload before retrying."
                 ),
             }

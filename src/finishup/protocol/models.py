@@ -61,7 +61,7 @@ from finishup.protocol.guidance_uris import (
 from finishup.protocol.guidance_uris import (
     canonical_guidance_uri as _canonical_guidance_uri,
 )
-from finishup.protocol.ids import IdKind, validate_actor_id, validate_id
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind, validate_actor_id, validate_id
 from finishup.protocol.redacted_values import (
     MAX_SEMANTIC_REDACTED_VALUE_ITEMS,
     MAX_SEMANTIC_REDACTED_VALUE_LINE,
@@ -1563,6 +1563,51 @@ class CheckScopeModel(_ClosedModel):
         return self
 
 
+def _context_with_received_prefix(
+    context: dict[str, object], document: object, path: tuple[str | int, ...]
+) -> dict[str, object]:
+    """Attach a closed id prefix when the value at ``path`` starts with one."""
+
+    prefix = _received_id_prefix(document, path)
+    if prefix is not None:
+        context["received_prefix"] = prefix
+    return context
+
+
+def _received_id_prefix(document: object, path: tuple[str | int, ...]) -> str | None:
+    """The closed id prefix at one schema path, or nothing.
+
+    Schema failures re-raise with ``input`` cleared so a caller value cannot ride the error.
+    Only a prefix that is already one of ``PREFIX_BY_KIND`` is returned; the rest of the value
+    stays in the dumped document and is not copied onto the error.
+    """
+
+    current: object = document
+    for segment in path:
+        if type(segment) is int:
+            if type(current) is not list:
+                return None
+            items = cast(list[object], current)
+            if not 0 <= segment < len(items):
+                return None
+            current = items[segment]
+        elif type(segment) is str:
+            if type(current) is not dict:
+                return None
+            mapping = cast(dict[str, object], current)
+            if segment not in mapping:
+                return None
+            current = mapping[segment]
+        else:
+            return None
+    if type(current) is not str or len(current) < 4:
+        return None
+    prefix = current[:4]
+    if prefix not in PREFIX_BY_KIND.values():
+        return None
+    return prefix
+
+
 def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
     from pydantic import ValidationError as PydanticValidationError
 
@@ -1595,13 +1640,17 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
                         "type": "value_error",
                         "loc": tuple(path),
                         "input": None,
-                        "ctx": {
-                            "error": ValueError(reason),
-                            "schema_name": exc.family,
-                            "schema_version": exc.family_version,
-                            "condition_field": exc.condition_field,
-                            "condition_value": exc.condition_value,
-                        },
+                        "ctx": _context_with_received_prefix(
+                            {
+                                "error": ValueError(reason),
+                                "schema_name": exc.family,
+                                "schema_version": exc.family_version,
+                                "condition_field": exc.condition_field,
+                                "condition_value": exc.condition_value,
+                            },
+                            dumped,
+                            tuple(path),
+                        ),
                     }
                     for path, reason in exc.location_reasons
                 ],
@@ -1613,30 +1662,37 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
             # generic token (issue #240). The version rides along because a family may have
             # several admitted versions, and naming the wrong one hands back the wrong contract
             # (issue #239).
+            located = tuple(exc.absolute_path)
             raise PydanticValidationError.from_exception_data(
                 type(model).__name__,
                 [
                     {
                         "type": "value_error",
-                        "loc": tuple(exc.absolute_path),
+                        "loc": located,
                         "input": None,
-                        "ctx": {
-                            "error": ValueError(exc.reason or "schema_instance_invalid"),
-                            "schema_name": exc.family,
-                            "schema_version": exc.family_version,
-                            "count": exc.unknown_count or None,
-                            # Frozen schema vocabulary, never a caller-invented key: the validator
-                            # admits it only when it byte-equals a catalogued payload property
-                            # name, so MCP can name the field's one legal owner (issue #266).
-                            "misplaced_field": exc.misplaced_field,
-                            # Schema-listed required names the instance lacks (frozen schema
-                            # vocabulary), so the hint names the absent key, not the whole list.
-                            "missing_fields": exc.missing_fields or None,
-                            # tb4n5 (#1049): the frozen const of the sibling that narrowed this
-                            # value (``evidence_kind`` for ``digest_binding/subject``).
-                            "condition_field": exc.condition_field,
-                            "condition_value": exc.condition_value,
-                        },
+                        "ctx": _context_with_received_prefix(
+                            {
+                                "error": ValueError(exc.reason or "schema_instance_invalid"),
+                                "schema_name": exc.family,
+                                "schema_version": exc.family_version,
+                                "count": exc.unknown_count or None,
+                                # Frozen schema vocabulary, never a caller-invented key: the
+                                # validator admits it only when it byte-equals a catalogued
+                                # payload property name, so MCP can name the field's one legal
+                                # owner (issue #266).
+                                "misplaced_field": exc.misplaced_field,
+                                # Schema-listed required names the instance lacks (frozen schema
+                                # vocabulary), so the hint names the absent key, not the whole
+                                # list.
+                                "missing_fields": exc.missing_fields or None,
+                                # tb4n5 (#1049): the frozen const of the sibling that narrowed
+                                # this value (``evidence_kind`` for ``digest_binding/subject``).
+                                "condition_field": exc.condition_field,
+                                "condition_value": exc.condition_value,
+                            },
+                            dumped,
+                            located,
+                        ),
                     }
                 ],
             ) from None

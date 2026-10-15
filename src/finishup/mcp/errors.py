@@ -16,7 +16,7 @@ from finishup.protocol.errors import (
     PublicErrorCode,
     PublicOperationError,
 )
-from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind, new_id
 from finishup.protocol.models import FRONTIER_LEAVES, OperationFailureModel
 
 # One definition of the admission shapes the protocol validator already enforces on the way out.
@@ -331,6 +331,14 @@ _CORRECTIVE_HINTS: Final[Mapping[tuple[str, str, str], tuple[str, tuple[str, ...
                 "without the head digest; omit at_frontier to read the current frontier",
                 ("at_frontier",),
             ),
+            # A cursor that fails the wire pattern never reached kernel decode. The same sentence
+            # is the kernel's message (application.status); a test keeps the two copies equal.
+            ("status", "/cursor", "invalid_type_or_value"): (
+                "field `cursor` expects the opaque next_cursor the previous status page "
+                "returned; do not invent one. example: repeat that next_cursor unchanged with "
+                "the same view, filter, and limit.",
+                ("cursor",),
+            ),
         }
     )
 )
@@ -379,8 +387,31 @@ _FIELD_LEVEL_REFERENCE_CORRECTIONS: Final = frozenset(
 _FIELD_LEVEL_REFERENCE_REASONS: Final = frozenset(
     {"invalid_type_or_value", "conditional_field_required"}
 )
+# Closed id prefixes only. A rejection may say ``got `res_```; it never repeats the rest of the
+# sent value. Examples are checked-in shape ids, not caller values.
+_CLOSED_ID_PREFIXES: Final = frozenset(PREFIX_BY_KIND.values())
+_CHECKED_EXAMPLE_ID: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        prefix: f"{prefix}00000000-0000-4000-8000-000000000001"
+        for prefix in ("act_", "clm_", "evd_", "evt_", "fnd_", "obj_", "obl_", "res_")
+    }
+)
+_REFERENCE_LIST_EXPECTATION: Final[Mapping[tuple[str, str], tuple[str, ...]]] = MappingProxyType(
+    {
+        ("claim_recorded", "limitation_refs"): ("res_",),
+        ("result_recorded", "evidence_refs"): ("evd_",),
+        ("claim_recorded", "disputes_refs"): ("clm_", "evt_"),
+        ("obligation_published", "resolution_evidence_refs"): ("evd_", "res_"),
+    }
+)
+_ENVELOPE_REF_EXPECTATION: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {"artifact_refs": ("obj_",), "evidence_refs": ("evd_",)}
+)
 _EVENT_DRAFT_PAYLOAD_MEMBER_POINTER: Final = re.compile(
     r"/event_drafts/[0-9]{1,3}/payload/([a-z][a-z0-9_]{0,63})/[0-9]{1,3}", re.ASCII
+)
+_EVENT_DRAFT_ENVELOPE_MEMBER_POINTER: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/(evidence_refs|artifact_refs)/[0-9]{1,3}", re.ASCII
 )
 _MAX_VALIDATION_LOCATIONS: Final = 8
 # Bounded so the hint stays a hint: a long enum dump would bury the field locations it explains.
@@ -545,6 +576,49 @@ def _conditional_requirement_from_validation_item(
     return (field, value)
 
 
+def _received_prefix_from_validation_item(item: Mapping[str, object]) -> str | None:
+    """Return a closed id prefix the schema re-raise recorded, or nothing."""
+
+    ctx = item.get("ctx")
+    if not isinstance(ctx, Mapping):
+        return None
+    prefix = cast(Mapping[object, object], ctx).get("received_prefix")
+    if type(prefix) is str and prefix in _CLOSED_ID_PREFIXES:
+        return prefix
+    return None
+
+
+def _closed_id_prefix(value: object) -> str | None:
+    """The sent value's id prefix when it is one of the closed kinds, else nothing.
+
+    Only the four-character prefix is returned. The remainder of a caller id never leaves this
+    function, so a hint can say ``got `res_``` without copying the submitted value.
+    """
+
+    if type(value) is not str or len(value) < 4:
+        return None
+    prefix = value[:4]
+    if prefix in _CLOSED_ID_PREFIXES:
+        return prefix
+    return None
+
+
+def _id_kind_clause(field: str, expected: tuple[str, ...], got: str | None) -> str:
+    """Field, expected closed prefix, optional sent prefix, and a checked-in example id."""
+
+    if len(expected) == 1:
+        article = "an" if expected[0][0] in "aeiou" else "a"
+        expects = f"{article} `{expected[0]}` id"
+    else:
+        listed = " or ".join(f"`{prefix}`" for prefix in expected)
+        expects = f"a {listed} id"
+    example = _CHECKED_EXAMPLE_ID[expected[0]]
+    got_clause = ""
+    if type(got) is str and got in _CLOSED_ID_PREFIXES and got not in expected:
+        got_clause = f"; got `{got}`"
+    return f"field `{field}` expects {expects}{got_clause}; example: `{example}`."
+
+
 def safe_validation_locations(exc: object) -> tuple[dict[str, str], ...]:
     """Project Pydantic failures to allowlisted locations and bounded reason tokens.
 
@@ -559,8 +633,9 @@ def safe_validation_locations(exc: object) -> tuple[dict[str, str], ...]:
         return ()
     projected: list[dict[str, str]] = []
     try:
-        # Context is required to recover closed object-rule reason tokens; inputs stay excluded.
-        errors = exc.errors(include_url=False, include_context=True, include_input=False)
+        # Context recovers closed object-rule tokens. The input is reduced to a closed id prefix
+        # below and then dropped; the raw value is not stored on the location.
+        errors = exc.errors(include_url=False, include_context=True, include_input=True)
     except BaseException:
         return ()
     for item in errors:
@@ -576,6 +651,13 @@ def safe_validation_locations(exc: object) -> tuple[dict[str, str], ...]:
         source = cast(Mapping[str, object], item)
         reason = _reason_from_validation_item(source)
         entry = {"field": pointer, "reason": reason}
+        received_prefix = _closed_id_prefix(source.get("input"))
+        if received_prefix is None:
+            # Schema re-raises clear ``input``. The prefix, when one was recorded, is already a
+            # closed kind token on ctx; anything else is ignored.
+            received_prefix = _received_prefix_from_validation_item(source)
+        if received_prefix is not None:
+            entry["received_prefix"] = received_prefix
         if reason == _EXTRA_FORBIDDEN_REASON:
             family = _family_from_validation_item(source)
             if family is not None:
@@ -1564,8 +1646,10 @@ def _reference_list_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[s
         reason = location.get("reason")
         pointer = location.get("field", "")
         family = location.get("family")
-        if type(pointer) is not str or type(family) is not str:
+        if type(pointer) is not str:
             continue
+        if type(family) is not str:
+            family = ""
         key: tuple[str, str] | None = None
         member = _EVENT_DRAFT_PAYLOAD_MEMBER_POINTER.fullmatch(pointer)
         if member is not None and reason == "invalid_type_or_value":
@@ -1577,9 +1661,24 @@ def _reference_list_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[s
             candidate = (family, pointer.rsplit("/", 1)[-1])
             key = candidate if candidate in _FIELD_LEVEL_REFERENCE_CORRECTIONS else None
         entry = _REFERENCE_LIST_CORRECTIONS.get(key) if key is not None else None
-        if entry is None or entry[0] in parts:
+        text = ""
+        if entry is not None:
+            expected = _REFERENCE_LIST_EXPECTATION.get(key) if key is not None else None
+            clause = (
+                ". " + _id_kind_clause(key[1], expected, location.get("received_prefix"))
+                if expected is not None and key is not None
+                else ""
+            )
+            text = entry[0] + clause
+        elif member is None and reason == "invalid_type_or_value":
+            envelope = _EVENT_DRAFT_ENVELOPE_MEMBER_POINTER.fullmatch(pointer)
+            if envelope is not None:
+                field_name = envelope.group(1)
+                expected = _ENVELOPE_REF_EXPECTATION[field_name]
+                text = _id_kind_clause(field_name, expected, location.get("received_prefix"))
+        if not text or text in parts:
             continue
-        parts.append(entry[0])
+        parts.append(text)
         if len(parts) == _MAX_HINT_FIELDS:
             break
     return parts
@@ -2385,6 +2484,14 @@ def _check_locatable_required_names() -> None:
                 )
         if field not in declared_by_family or not set(fields) <= _SAFE_LOCATION_SEGMENTS:
             raise RuntimeError("reference_list_correction_names_unknown_field")
+    if set(_CHECKED_EXAMPLE_ID) - _CLOSED_ID_PREFIXES:
+        raise RuntimeError("checked_example_id_prefix_unregistered")
+    for expected in (
+        *_REFERENCE_LIST_EXPECTATION.values(),
+        *_ENVELOPE_REF_EXPECTATION.values(),
+    ):
+        if not set(expected) <= set(_CHECKED_EXAMPLE_ID):
+            raise RuntimeError("id_kind_expectation_prefix_unregistered")
     registered_tools = {tool for tool, _, _ in _CORRECTIVE_HINTS}
     if not registered_tools <= {"start", "publish_work", "check", "respond", "status", "receipt"}:
         raise RuntimeError("corrective_hint_names_unknown_tool")

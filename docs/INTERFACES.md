@@ -324,7 +324,10 @@ continuation travels rather than the wrong one.
 A body the schema validator rejected before any write is a **correction, not a retry**. The MCP
 bridge's argument validator is the only producer of location-shaped `safe_details` (`fields` and
 `reasons` lists), and it attaches `input_correction_new_identity` to every such rejection: the
-field pointer and authoring hint say what to fix, and the directive says the corrected body is
+field pointer and authoring hint say what to fix. An id-kind hint names the field, the closed
+prefix it expects, the sent prefix when that prefix is one of the closed id kinds, and a
+checked-in example id; the rest of the sent value is not copied into the hint, `safe_details`, or
+logs. The directive says the corrected body is
 submitted once under a new `request_id` rather than resent or treated as an ambiguous write. The
 `publish_work` draft validator attaches the same token to every non-retryable `EVENT_INVALID`
 whose reason has no directive of its own; it is classified at that producer rather than mapped

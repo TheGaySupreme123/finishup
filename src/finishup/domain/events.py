@@ -1946,7 +1946,9 @@ def public_error_for_obligation_resolution_mismatch(
             "and retry the rest with a new request_id; status view obligations lists which "
             "obligations are still open. If the resolved work no longer holds, republish it "
             "with status open, or acknowledged_not_done with a reason on "
-            f"obligation_published/1.1.0, repeating every meaning field. {guidance}"
+            "obligation_published/1.1.0, repeating every meaning field. "
+            "example: omit this draft, or republish status open with every meaning field "
+            f"unchanged. {guidance}"
         )
     elif mismatch.invariant == "open_to_resolved_only":
         message = (

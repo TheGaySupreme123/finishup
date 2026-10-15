@@ -69,9 +69,12 @@ obligation refs. A revision restates the declaration, so omission clears an earl
 Reading `status` or previewing before a publish is optional: a publish that fails validation
 appends nothing and names what stopped it, not every error (for events, the first rejected event
 and its field), so fix that and send it again; one that succeeds returns the new frontier and the
-accepted ids. Before resolving an obligation, account for every requested item that has no attempt
-yet. When unsure about a batch, set `dry_run: true` to validate it and preview what would be
-accepted without appending. The preview is not evidential and is not citable as a check,
+accepted ids. When an id is the wrong kind, the message names the field, the kind it expects, the
+kind that was sent when that kind is one FinishUP already uses, and a shape-valid example. The
+rest of the sent value is not repeated. Before resolving an obligation, account for every
+requested item that has no attempt yet. When unsure about a batch, set `dry_run: true` to
+validate it and preview what would be accepted without appending. The preview is not evidential
+and is not citable as a check,
 publication, or coverage source. Reuse the same `request_id` for the real publish after the
 preview succeeds.
 

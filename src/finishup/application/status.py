@@ -617,6 +617,13 @@ def _filter_digest(request: StatusRequest) -> str:
 # encode body and signature back-to-back with no separator character, matching the frozen
 # wire ``CursorWire`` pattern (``^[A-Za-z0-9_-]+$``), which admits no ``.`` or other delimiter.
 _SIGNATURE_B64_LEN: Final = 43
+# Same sentence as the status `/cursor` authoring hint. A test keeps the copies equal. The
+# cursor value itself is never interpolated.
+_STATUS_CURSOR_INVALID: Final = (
+    "field `cursor` expects the opaque next_cursor the previous status page returned; "
+    "do not invent one. example: repeat that next_cursor unchanged with the same view, "
+    "filter, and limit."
+)
 
 
 def _b64(data: bytes) -> str:
@@ -627,7 +634,7 @@ def _unb64(value: str) -> bytes:
     try:
         return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     except Exception as exc:
-        raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.") from exc
+        raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID) from exc
 
 
 def _position_json(position: ProjectionPosition | int | None) -> JsonValue:
@@ -753,7 +760,7 @@ def _decode_cursor(
     except PublicOperationError:
         raise
     except Exception as exc:
-        raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.") from exc
+        raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID) from exc
 
 
 def _port_filter(value: StatusFilter | None) -> ProjectionFilter | None:
@@ -2017,9 +2024,9 @@ async def execute_status(
             frontier, expected_version, position = decoded
             exact, head = await _exact_frontier(runtime, frontier.sequence)
             if exact != frontier:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             if request.at_frontier is not None and int(request.at_frontier) != frontier.sequence:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
 
         result_view = request.view
         import_status = await _import_status(runtime)
@@ -2027,11 +2034,11 @@ async def execute_status(
         compact_page: ProjectionPage | None = None
         if request.view == "operation":
             if position is not None:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             if type(request.filter) is not StatusOperationFilterModel:
                 raise _error(PublicErrorCode.INVALID_REQUEST, "The status filter is invalid.")
             if request.cursor is not None:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             operation = await runtime.ledger.lookup_task_operation(
                 request.writer_id, request.filter.operation_request_id
             )
@@ -2136,7 +2143,7 @@ async def execute_status(
                     rebuild_state = next_rebuild
         elif request.view == "advice":
             if position is not None:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             raw_page = await runtime.ledger.query_projection(
                 ProjectionQuery(
                     runtime.session_id,
@@ -2238,7 +2245,7 @@ async def execute_status(
                     "Current task views require the current task frontier.",
                 )
             if position is not None and type(position) is not int:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             if request.view == "lineage":
                 if request.task_id is not None and request.task_id != runtime.task_id:
                     raise _error(
@@ -2300,7 +2307,7 @@ async def execute_status(
             gaps = tuple(sorted(set(compact_page.gaps) | set(view_gaps)))
         elif request.view == "candidate_findings":
             if position is not None and type(position) is not int:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             page, coverage, gaps, _ = await _candidate_page(
                 app, request, runtime, frontier, head, position or 0
             )
@@ -2310,7 +2317,7 @@ async def execute_status(
             rebuild_state = "current"
         else:
             if type(position) is int:
-                raise _error(PublicErrorCode.INVALID_REQUEST, "The status cursor is invalid.")
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             try:
                 query = ProjectionQuery(
                     runtime.session_id,
