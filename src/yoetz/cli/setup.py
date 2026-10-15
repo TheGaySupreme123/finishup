@@ -64,6 +64,7 @@ from yoetz.ports.harness_mcp import (
     HarnessBinary,
     McpRegistrationAction,
     McpRegistrationError,
+    McpRegistrationPreview,
     McpRegistrationReason,
     McpRegistrationState,
 )
@@ -77,7 +78,7 @@ from yoetz.ports.integrations import (
     SkillApplyCommand,
     SkillPreviewCommand,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from yoetz.protocol.ids import IdKind, new_id
 
 __all__ = [
@@ -856,6 +857,81 @@ def _activate_check_policy_trust(
         return {**preview, "outcome": "untrusted_activation_failed"}
 
 
+def _shared_route_change_members(
+    codex_home: Path | None,
+    project: Path | None,
+    before: str | None,
+    after: str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
+    """Other projects of the Codex home whose review mode this registration change rewrites.
+
+    ``[mcp_servers.yoetz]`` is user-level: every project in the home runs its review mode
+    (#1058 review round 2). ``(verified serving members, possible users, unknown)``, the lists
+    excluding ``project``; empty when the mode does not change. ``unknown`` is True when the
+    membership cannot be read (a damaged record, an unsafe home): never "nobody else".
+    """
+
+    if before is None or after is None or before == after:
+        return (), (), False
+    from yoetz.adapters.integrations.codex_marketplace import other_members
+    from yoetz.adapters.integrations.codex_session_stream import resolve_codex_home
+
+    try:
+        home = resolve_codex_home(codex_home).absolute()
+        verified, possible = other_members(home, project)
+    except OSError, ValueError, IntegrationError:
+        return (), (), True
+    return verified, possible, False
+
+
+def _route_change_report(
+    before: str | None,
+    after: str | None,
+    verified: tuple[str, ...],
+    possible: tuple[str, ...],
+    unknown: bool = False,
+) -> dict[str, JsonValue]:
+    """The disclosure keys every shared review-mode change carries (setup run, TUI, integrate)."""
+
+    if before is None or after is None or before == after or not (verified or possible or unknown):
+        return {}
+    report: dict[str, JsonValue] = {
+        "route_profile_before": before,
+        "route_changes_for": cast(list[JsonValue], list(verified)),
+    }
+    if possible:
+        report["route_changes_possible_for"] = cast(list[JsonValue], list(possible))
+    if unknown:
+        # The projects using this home cannot be read: the change may reach any of them.
+        report["membership_unknown"] = True
+    return report
+
+
+async def _observed_route_before(
+    service: HarnessMcpService, binary: HarnessBinary, preview: McpRegistrationPreview
+) -> Literal["policy", "strict"] | None:
+    """The review mode the home's Yoetz registration has now, read from the registration.
+
+    Not inferred from the preview's action: a re-registration may change only the launcher or
+    isolation root (a legacy bare `yoetz` entry) and keep the mode (#1058 review round 3).
+    A failed read raises: the caller reports it rather than guessing the mode.
+    """
+
+    if preview.state_before is not McpRegistrationState.YOETZ_OWNED:
+        return None
+    return (await service.observe(binary)).route_profile
+
+
+def _route_change_sentence(report: Mapping[str, JsonValue], after: str | None) -> str | None:
+    from yoetz.cli.host_connection import (
+        _route_change_line,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    if not report or after is None:
+        return None
+    return _route_change_line({**report, "route_profile": after})
+
+
 def _emit_registration_preview(
     binary: HarnessBinary,
     mcp_preview: object,
@@ -865,6 +941,7 @@ def _emit_registration_preview(
     activation_target: Path | None = None,
     *,
     route_profile_before: str | None = None,
+    route_change: Mapping[str, JsonValue] | None = None,
 ) -> None:
     typer.echo("Proposed change: complete Yoetz Codex project integration:")
     typer.echo("  1. Install discoverable guidance under .agents/skills/yoetz")
@@ -884,6 +961,9 @@ def _emit_registration_preview(
                 f"  MCP route profile change: {route_profile_before} -> {route_profile} "
                 "(the existing yoetz-owned registration will be rewritten)"
             )
+            sentence = _route_change_sentence(route_change or {}, route_profile)
+            if sentence is not None:
+                typer.echo(f"  {sentence}")
         else:
             typer.echo(f"  MCP route profile: {route_profile}")
     typer.echo(f"  Codex executable: {binary.executable_path}")
@@ -1393,15 +1473,21 @@ async def _codex_integration_step(
             "observation_consent": {"outcome": "absent", "workspace_commitment": None},
         }
 
-    # Only two Yoetz routes exist, so the preview's own probe already names the
-    # observed profile of an existing owned registration: ``noop`` means it
-    # matches the previewing route, ``reregister`` means it is the other one.
-    route_profile_before: Literal["policy", "strict"] | None = None
-    if mcp_preview.state_before is McpRegistrationState.YOETZ_OWNED:
-        if mcp_preview.action is McpRegistrationAction.REREGISTER:
-            route_profile_before = "policy" if mcp_preview.route_profile == "strict" else "strict"
-        else:
-            route_profile_before = mcp_preview.route_profile
+    # The existing owned registration's mode is read from the registration itself: a
+    # ``reregister`` may change only the launcher or isolation root (#1058 review round 3).
+    try:
+        route_profile_before = await _observed_route_before(mcp_service, binary, mcp_preview)
+    except McpRegistrationError as error:
+        return {
+            "outcome": "failed",
+            "reason": error.reason.value,
+            "detail": error.safe_details.get("detail"),
+            "state": None,
+            "plugin": {"outcome": "skipped", "presence": None},
+            "plugin_activation": {"outcome": "skipped", "state": "unknown"},
+            "skill": {"outcome": "skipped", "presence": None},
+            "observation_consent": {"outcome": "absent", "workspace_commitment": None},
+        }
     if (
         route_profile is None
         and route_profile_before is not None
@@ -1427,6 +1513,18 @@ async def _codex_integration_step(
     check_policy = _check_policy_preview(workspace)
     already_registered = mcp_preview.action is McpRegistrationAction.NOOP
     foreign = mcp_preview.state_before is McpRegistrationState.FOREIGN_PRESENT
+    # The registration is user-level: a review-mode change reaches every other project of the
+    # home, so the preview names them and a bare --accept cannot apply it (#1058 review round 2).
+    route_change = _route_change_report(
+        route_profile_before,
+        mcp_preview.route_profile,
+        *_shared_route_change_members(
+            bound_home,
+            Path(project.project_root),
+            route_profile_before,
+            mcp_preview.route_profile,
+        ),
+    )
 
     if foreign:
         inspection = plugin_service.inspect(project)
@@ -1503,6 +1601,46 @@ async def _codex_integration_step(
             "observation_consent": {"outcome": "absent", "workspace_commitment": None},
         }
 
+    if route_change and accept and not external_approval:
+        from yoetz.cli.setup_readiness import continuation
+
+        return {
+            "outcome": "failed",
+            "reason": "route_change_affects_other_projects",
+            **route_change,
+            "next_step": (
+                "Nothing was changed. This review mode change would also apply to the other "
+                "projects using this Codex home, so it needs a preview you have seen: "
+                + continuation(
+                    [
+                        "setup",
+                        "run",
+                        "--host",
+                        "codex",
+                        "--host-path",
+                        binary.executable_path,
+                        *(
+                            ["--host-config-root", str(bound_home)]
+                            if bound_home is not None
+                            else []
+                        ),
+                        "--route-profile",
+                        mcp_preview.route_profile,
+                        "--project",
+                        project.project_root,
+                    ]
+                )
+                + f". To keep the current mode, rerun with --route-profile {route_profile_before}."
+            ),
+            "state": mcp_preview.state_before.value,
+            "plugin": {"outcome": "skipped", "presence": plugin_preview.presence_before.value},
+            "plugin_activation": {"outcome": "skipped", "state": activation_state_before},
+            "skill": {
+                "outcome": "skipped",
+                "presence": skill_plan.preview.state_before.value,
+            },
+            "observation_consent": {"outcome": "absent", "workspace_commitment": None},
+        }
     accepted = accept
     activation_approved = False
     policy_digest_confirmed = False
@@ -1528,6 +1666,7 @@ async def _codex_integration_step(
             activation_plan,
             Path(project.project_root),
             route_profile_before=route_profile_before,
+            route_change=route_change,
         )
         typer.echo(
             f"  Plugin presence before apply: {plugin_preview.presence_before.value} "
@@ -1546,6 +1685,7 @@ async def _codex_integration_step(
         return {
             "outcome": "declined",
             "reason": None,
+            **route_change,
             "state": mcp_preview.state_before.value,
             "plugin": {
                 "outcome": "declined",
@@ -2700,8 +2840,10 @@ async def run_setup_wizard(
                 selected.config_root,
             )
     if host is not None:
-        selected_route = route_profile or (
-            "policy" if interactive and _choose_review_mode() == "semantic" else "strict"
+        # Non-interactive without --route-profile: a Codex home keeps its registered review
+        # mode (every project of the home shares it); a fresh home and other hosts use strict.
+        selected_route: Literal["policy", "strict"] | None = route_profile or (
+            ("policy" if _choose_review_mode() == "semantic" else "strict") if interactive else None
         )
 
         def connect() -> int:
@@ -2773,7 +2915,7 @@ async def run_setup_wizard(
         registration = _registration_report(None, outcome="skipped", reason="codex_not_found")
     else:
         if route_profile is not None:
-            selected_route: Literal["policy", "strict"] | None = route_profile
+            selected_route = route_profile
         elif interactive:
             selected_route = "policy" if review_mode == "semantic" else "strict"
         else:
@@ -3279,7 +3421,12 @@ def _platform_diagnostics() -> dict[str, JsonValue]:
 
 
 _MCP_EXIT_USAGE: Final = frozenset(
-    {"confirmation_required", "preview_stale", "foreign_entry_present"}
+    {
+        "confirmation_required",
+        "preview_stale",
+        "foreign_entry_present",
+        "route_change_affects_other_projects",
+    }
 )
 
 
@@ -3300,12 +3447,32 @@ def _connect_refused() -> int | None:
     return 20
 
 
-def _mcp_error_exit(reason: str) -> int:
+def _sharing_clause(sharing: tuple[str, ...], maybe: tuple[str, ...], unknown: bool) -> str:
+    """Name the other projects a shared-registration removal reaches."""
+
+    named = [*sharing, *(f"{item} (may use Yoetz)" for item in maybe)]
+    if unknown:
+        return "and the projects using it could not be read" + (
+            ("; known: " + ", ".join(named)) if named else ""
+        )
+    return "including: " + ", ".join(named)
+
+
+def _mcp_error_exit(reason: str, *, preview_command: str | None = None) -> int:
     typer.echo(f"mcp_registration_{reason}", err=True)
     if reason == "foreign_entry_present":
         typer.echo(
             "Foreign configuration was preserved. Create a new owner-private Codex home "
             "(mode 0700), then preview again with --codex-home <new-home>.",
+            err=True,
+        )
+    if reason == "route_change_affects_other_projects":
+        typer.echo(
+            "Nothing was changed. The Yoetz MCP registration is shared by every project using "
+            "this Codex home, so this review mode change would apply to them too. Run "
+            + (preview_command or "the preview with the same --route-profile")
+            + ", check the projects it names, then install with the same --route-profile and "
+            "its exact --preview-digest.",
             err=True,
         )
     return 2 if reason in _MCP_EXIT_USAGE else 20
@@ -3403,6 +3570,38 @@ async def integrate_mcp(
             return 0
         if action in {"preview-remove", "remove"}:
             preview = await service.preview_unregistration(chosen)
+            # The registration is user-level: removing it removes it for every project of the
+            # home. This low-level command still may (`setup disconnect` keeps it while others
+            # use it), but it names them and its digest binds them (#1058 review round 2).
+            from yoetz.adapters.integrations.codex_marketplace import other_members
+
+            sharing: tuple[str, ...] = ()
+            maybe: tuple[str, ...] = ()
+            membership_unknown = False
+            if preview.action is not McpRegistrationAction.NOOP:
+                try:
+                    sharing, maybe = other_members(
+                        selected_home,
+                        None if project_root is None else project_root.expanduser().resolve(),
+                    )
+                except IntegrationError:
+                    # The projects using this home cannot be read: never "nobody else".
+                    membership_unknown = True
+            shared_report: dict[str, JsonValue] = {}
+            if sharing or maybe or membership_unknown:
+                shared_report = {
+                    "shared_with": cast(list[JsonValue], list(sharing)),
+                    "possible_users": cast(list[JsonValue], list(maybe)),
+                }
+                if membership_unknown:
+                    shared_report["membership_unknown"] = True
+            removal_digest = (
+                preview.preview_digest
+                if not shared_report
+                else canonical_digest(
+                    {"mcp_preview_digest": preview.preview_digest, "shared": shared_report}
+                )
+            )
             if action == "preview-remove":
                 _emit(
                     {
@@ -3411,16 +3610,31 @@ async def integrate_mcp(
                         "harness": harness,
                         "inspected_codex_home": str(selected_home),
                         "isolated_root": preview.isolated_root,
-                        "preview_digest": preview.preview_digest,
+                        "preview_digest": removal_digest,
                         "route_profile": preview.route_profile,
                         "serve_command": list(preview.serve_command),
                         "state_before": preview.state_before.value,
-                        "warnings": list(preview.warnings),
+                        "warnings": [
+                            *preview.warnings,
+                            *(
+                                ["mcp_registration_shared_with_other_projects"]
+                                if shared_report
+                                else []
+                            ),
+                        ],
+                        **shared_report,
                     },
                     json_output=json_output,
                 )
+                if shared_report and not json_output:
+                    typer.echo(
+                        "This removes the Yoetz MCP registration for every project using this "
+                        "Codex home, "
+                        + _sharing_clause(sharing, maybe, membership_unknown)
+                        + ". To disconnect only one project, use `yoetz setup disconnect`."
+                    )
                 return 0
-            if preview_digest is not None and preview_digest != preview.preview_digest:
+            if preview_digest is not None and preview_digest != removal_digest:
                 return _mcp_error_exit("preview_stale")
             if preview.state_before is McpRegistrationState.FOREIGN_PRESENT:
                 return _mcp_error_exit("foreign_entry_present")
@@ -3429,6 +3643,11 @@ async def integrate_mcp(
             accepted = accept
             if interactive and not accepted:
                 _emit_unregistration_preview(preview)
+                if shared_report:
+                    typer.echo(
+                        "  This removes it for every project using this Codex home, "
+                        + _sharing_clause(sharing, maybe, membership_unknown)
+                    )
                 accepted = _confirm_registration()
             if not accepted:
                 return _mcp_error_exit("confirmation_required")
@@ -3453,6 +3672,9 @@ async def integrate_mcp(
                     json_output=json_output,
                 )
                 return 0
+            # Sweep the project admission first: once the user-level transport is gone, a
+            # trusted project's leftover `mcp_servers.yoetz` table stops Codex loading there.
+            admission_cleanup = _admission_reverse_sweep(project_root)
             result = await service.unregister(
                 chosen,
                 McpRegistrationConfirmation(
@@ -3465,7 +3687,7 @@ async def integrate_mcp(
             _emit(
                 {
                     "action": result.action.value,
-                    "admission_cleanup": _admission_reverse_sweep(project_root),
+                    "admission_cleanup": admission_cleanup,
                     "harness": harness,
                     "inspected_codex_home": str(selected_home),
                     "state_after": result.state_after.value,
@@ -3476,16 +3698,9 @@ async def integrate_mcp(
             )
             return 0
         preview = await service.preview(chosen)
-        route_profile_before: Literal["policy", "strict"] | None = None
-        if preview.state_before is McpRegistrationState.YOETZ_OWNED:
-            # Only two Yoetz routes exist, so the preview's probe names the
-            # observed profile: ``noop``/register match the previewing route,
-            # ``reregister`` means the entry carries the other one.
-            route_profile_before = (
-                ("policy" if preview.route_profile == "strict" else "strict")
-                if preview.action is McpRegistrationAction.REREGISTER
-                else preview.route_profile
-            )
+        # Read the owned registration's mode from the registration: a ``reregister`` may change
+        # only the launcher or isolation root and keep the mode (#1058 review round 3).
+        route_profile_before = await _observed_route_before(service, chosen, preview)
         if (
             route_profile is None
             and route_profile_before is not None
@@ -3497,6 +3712,26 @@ async def integrate_mcp(
                 _mcp_adapter(route_profile_before, codex_home=selected_home)
             )
             preview = await service.preview(chosen)
+        # The registration is user-level: a review-mode change reaches every other project of
+        # the home. The preview names them and its digest binds them; an install that would
+        # change them needs that digest (#1058 review round 2).
+        route_change = _route_change_report(
+            route_profile_before,
+            preview.route_profile,
+            *_shared_route_change_members(
+                selected_home,
+                None if project_root is None else project_root.expanduser().resolve(),
+                route_profile_before,
+                preview.route_profile,
+            ),
+        )
+        shown_digest = (
+            preview.preview_digest
+            if not route_change
+            else canonical_digest(
+                {"mcp_preview_digest": preview.preview_digest, "route_change": route_change}
+            )
+        )
         if action == "preview":
             _emit(
                 {
@@ -3509,23 +3744,62 @@ async def integrate_mcp(
                     "harness": harness,
                     "inspected_codex_home": str(selected_home),
                     "isolated_root": preview.isolated_root,
-                    "preview_digest": preview.preview_digest,
+                    "preview_digest": shown_digest,
                     "route_profile": preview.route_profile,
                     "route_profile_before": route_profile_before,
+                    **{
+                        key: value
+                        for key, value in route_change.items()
+                        if key != "route_profile_before"
+                    },
                     "serve_command": list(preview.serve_command),
                     "state_before": preview.state_before.value,
                     "warnings": list(preview.warnings),
                 },
                 json_output=json_output,
             )
+            sentence = _route_change_sentence(route_change, preview.route_profile)
+            if sentence is not None and not json_output:
+                typer.echo(sentence)
             return 0
-        if preview_digest is not None and preview_digest != preview.preview_digest:
+        if preview_digest is not None and preview_digest != shown_digest:
             return _mcp_error_exit("preview_stale")
         if preview.state_before is McpRegistrationState.FOREIGN_PRESENT:
             return _mcp_error_exit("foreign_entry_present")
+        if route_change and accept and preview_digest is None:
+            # Other projects' review mode would change: only the exact preview may approve it.
+            from yoetz.cli.setup_readiness import continuation
+
+            return _mcp_error_exit(
+                "route_change_affects_other_projects",
+                preview_command=continuation(
+                    [
+                        "integrate",
+                        "codex",
+                        "mcp",
+                        "preview",
+                        "--codex-path",
+                        chosen.executable_path,
+                        "--codex-home",
+                        str(selected_home),
+                        "--route-profile",
+                        preview.route_profile,
+                        *(
+                            ["--project-root", str(project_root)]
+                            if project_root is not None
+                            else []
+                        ),
+                    ]
+                ),
+            )
         accepted = accept
         if interactive and not accepted:
-            _emit_registration_preview(chosen, preview)
+            _emit_registration_preview(
+                chosen,
+                preview,
+                route_profile_before=route_profile_before,
+                route_change=route_change,
+            )
             accepted = _confirm_registration()
         if not accepted:
             return _mcp_error_exit("confirmation_required")

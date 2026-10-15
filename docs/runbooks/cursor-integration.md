@@ -32,9 +32,62 @@ Agents first request `--non-interactive --json`, present the plan, and repeat it
 and digest with `--accept`. OS-authenticated artifact presence still applies.
 
 `setup status|disconnect --host cursor-ide|cursor-cli` uses the same target options. Disconnect
-removes the owned user plugin and selected project's separately managed MCP entry; it preserves
-other projects, unrelated configuration and Yoetz data. A changed or foreign source is refused.
-A repeated exact connection is a no-op; a partial connection is re-previewed from its actual state.
+removes the selected project's separately managed MCP entry and, when it is the last connected
+project, the owned user plugin; it preserves other projects, unrelated configuration and Yoetz
+data. A changed or foreign source is refused. A repeated exact connection is a no-op; a partial
+connection is re-previewed from its actual state.
+
+**Several projects in one config root (issue #1058).** The user plugin (hooks, skill) serves every
+project under the config root; only the project MCP entry is per project. Cursor does not list
+which projects use the plugin, so setup keeps `<config root>/.yoetz-connected-projects.json` (the
+record shared with Codex's model, ADR-012): connect records the project, a disconnect while
+another live project remains removes only that project's MCP entry (the preview's
+`status.shared_with` names the others), and the last project's disconnect removes the plugin and
+the record. Status reports `connected_projects` (recorded) and `connected_projects_observed`
+(recorded projects whose own project MCP entry is still Yoetz's); a recorded project that is no
+longer observed keeps the plugin until `setup disconnect` runs for it, which forgets it. When the
+plugin is found without a record (it was set up by an earlier release, or the record was lost),
+other projects may use it that no record names: the record and every preview carry
+`membership_unknown`, an ordinary disconnect keeps the plugin, and among the setup commands only
+`setup disconnect --remove-shared` removes it. The low-level `integrate cursor plugin remove`
+removes the user plugin for every project by design; its preview (`--action remove`) names who
+uses it (`shared_with`, `membership_unknown`, `shared_removed_for_every_project`), which the
+artifact digest does not bind, so prefer `setup disconnect` to disconnect one project. `setup status --host cursor-ide|cursor-cli` names unknown membership as soon as the plugin
+is found without a record and gives the exact `--remove-shared` preview command. Cursor has no list of
+trusted projects to inspect, so there are no Codex-style possible users and no
+`membership_unverified` refusal here: unknown membership simply keeps the plugin. Every Cursor
+setup apply for one config root holds Yoetz's per-configuration lock across revalidation, the
+plugin and MCP changes, and the record update, so a concurrent setup is refused as stale and its
+retry joins. The lock is an exclusive `flock` on a 0600 file under Yoetz's own state directory
+(`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded; it touches no
+Cursor directory, so the first setup into a config root that does not exist yet (for example a
+nested `--host-config-root`, or Cursor Agent CLI's `CURSOR_CONFIG_DIR`) creates it without a
+manual `mkdir`. That case is covered by unit
+tests for both Cursor IDE and Cursor Agent CLI, not by a native Cursor run (no Cursor binary was
+available for the 2026-10-14 re-check). A lock that cannot be taken stops as
+`connection_lock_unavailable` before any change, naming the lock folder; it does not serialise
+a setup run by another Yoetz installation, where the record's compare-then-rename is the only
+guard (it narrows that race; it does not close it).
+Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`) or another network or FUSE
+filesystem (ADR-012 amendment item 7). The record keeps the name
+`.yoetz-connected-projects.json` whatever the MCP server key is called; one that is not an
+owner-only regular file with valid content stops `setup run`, `setup status` and `setup
+disconnect` as `connection_projects_record_invalid` with a continuation naming the file (make it
+owner-only again with `chmod 600` or restore it; removing it makes membership unknown, so the
+plugin stays on an ordinary disconnect). Cursor keeps the review mode in each project's own MCP
+entry, not in the shared plugin, so connecting a project on another review mode changes no other
+project (no `route_changes_for` here). `--remove-shared` previews and the interactive consent say
+the disconnect is home-wide and name the projects that stop using Yoetz. The TUI has no
+`--remove-shared` and shows a generic continuation for these refusals; use `yoetz setup
+disconnect|status --host cursor-ide|cursor-cli` from a terminal.
+A second path to an already connected directory is
+refused as `project_connected_via_other_path`; disconnecting under the current path clears it. A
+moved project's `.cursor/mcp.json` entry still names its old path and reads as foreign under the
+new one; remove that entry by hand before that disconnect. `setup disconnect --remove-shared` is
+the explicit home-wide disconnect: it removes the user plugin and the record even while other
+projects use them (their project MCP entries stay). A disconnect whose approval file
+(`.cursor/permissions.json` or `.cursor/cli.json`) cannot be read safely, such as a symlink, stops
+before any change as `connection_admission_cleanup_failed`.
 
 macOS uses LocalAuthentication; Linux and Windows through WSL 2 use the trusted PAM console path.
 Windows-side IDE discovery/configuration is not inferred from a Linux executable or directory.
@@ -494,7 +547,10 @@ writer in the final syscall window. If the second surface drifts after the first
 operation reports `write_failed` rather than claiming a transaction-wide rollback.
 
 Reverse: `admission revoke`; `plugin remove` and an install/replace onto the strict route sweep
-the entry when `--project-root` is given and report `admission_cleanup`; a privacy commit that
+the entry when `--project-root` is given and report `admission_cleanup`; `setup disconnect --host
+cursor-ide|cursor-cli` plans `remove_project_admission` for `--project` (both Cursor surfaces),
+sweeps it before the plugin and project MCP removal and reports `status.admission_cleanup`
+(other projects are not enumerated); a privacy commit that
 stops external review sweeps it; `provider status` reports `host_admission_drift`. That report
 walks from the launch directory to the repository root, so a subdirectory cwd does not read as
 `absent`. Cursor publishes no hook for a classifier denial. A held `check` is visible only through

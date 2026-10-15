@@ -6563,9 +6563,139 @@ only a grant whose requested mode is already set is `noop`. Revoke needs no rout
 current owner and removes every exact external/plugin form Yoetz can write.
 `sweep_host_admission` is the reverse transition (outcome `removed|absent|retained_foreign|
 unknown|write_failed` per host) used by the privacy ceremony, `integrate <host> plugin remove`,
-strict plugin re-renders, `integrate codex plugin remove`, and `integrate codex mcp
-install|remove --project-root`; each reports it as `admission_cleanup` and its preview discloses
-the same, including when the primary MCP registration action is already a `noop`. CLI:
+strict plugin re-renders, `integrate codex plugin remove`, `integrate codex mcp
+install|remove --project-root`, and `setup disconnect --host <host>` for its `--project`; each
+reports it as `admission_cleanup` and its preview discloses the same, including when the primary
+MCP registration action is already a `noop`. A disconnect plan lists the change token
+`remove_project_admission`; because the released `yoetz.host-connection-plan/1` body is closed,
+the cleanup detail (`admission_cleanup`: per-surface state and file digest) and, for Codex,
+`admission_other_projects` travel in the preview report's `status` and are folded into
+`preview_digest` (a grant or revoke after preview makes the plan stale). Apply sweeps before any
+registration removal; a sweep that ends `unknown|write_failed` stops the disconnect as
+`connection_admission_cleanup_failed` before anything else changes; an `unknown` surface (or an
+unreadable observation) refuses the same way when the plan is prepared and again before the sweep,
+whatever else the surfaces hold, with `status.admission_unreadable_surfaces`. Codex additionally
+projects the project's `.codex/config.toml` after the sweep (`codex_mcp.project_transport_dependence`
+`none|depends|unknown`): when it removes the user-level transport and `depends`, preparation
+refuses `connection_project_mcp_tables_retained` (`status.project_mcp_retained`). Other projects
+whose layer `depends` (or is `unknown`) keep the transport: `status.admission_other_projects`
+entries carry `project_root`, `dependence`, and a revoke `next_command` only when exact Yoetz
+tables alone remain; warning `mcp_registration_kept_for_other_projects`; a bound of 32 inspected
+candidates (after filtering missing and same-directory ones) is reported as
+`admission_other_projects_known|_inspected` with warning `other_projects_partially_checked`, and
+an incomplete read keeps the transport (`--remove-shared` refuses). `setup disconnect --remove-shared` (disclosure
+`remove_shared: true`, carried by the continuation) removes the shared pieces for every project and
+refuses `connection_other_projects_need_registration` while one still depends. Codex reports
+`status.project_config_load: loads|fails|unknown`; `fails` is
+`connection_project_config_unloadable`; `project_mcp_leftover` is `tools_only` (revoke) or
+`retained_tables` (reconnect), and status adds `project_mcp_needs_registration` while it loads. `setup status --host codex` reports a transport-less project
+`mcp_servers.yoetz` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
+Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
+`<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, a frozen
+literal that does not follow `MCP_SERVER_NAME`; canonical JSON `{"projects": [<absolute roots>]}`
+plus optional `"unknown_members": true`; refused unless a regular file owned by the invoking
+account with no group or other bits; a compare-then-rename replace through a 0600 temporary
+with a parent-directory fsync) names the projects that connected a Codex home or Cursor config
+root. Each installation also keeps a membership witness, `host_projects.witness_path_for(root)` =
+`<state_dir()>/host-config-locks/<same key>.members` (same canonical JSON and checks as the record,
+0600): every project it recorded for that root minus those it saw disconnect
+(`write_connected_projects(..., departed=..., shared_removed=...)`); `recorded_members(root)`
+reads it (absent or unreadable names none; maintained best effort after each record write and
+deleted when the shared pieces go). The record write re-reads and compares the record with the
+bytes the approved plan read, then publishes through an fsynced 0600 temporary and an atomic
+rename with a parent-directory fsync; between the compare and the rename a writer that holds
+neither lock (another installation) can still change it, so cross-installation updates are
+narrowed, not excluded. `host_projects.host_config_lock(config_root)` is the per-root setup lock `apply_connection`
+holds for every host across refresh, apply and the record update: an exclusive `flock` on
+`host_projects.lock_path_for(config_root)` = `<state_dir()>/host-config-locks/<sha256 of the
+resolved absolute path, NFC, case-folded>.lock`, a 0600 regular file owned by the invoking account
+in a 0700 directory without symlinked components, opened `O_NOFOLLOW`, never deleted; it does not
+serialise another installation's setups (the record's compare-then-rename narrows that race; it does not close it). A lock that cannot be
+created, opened or taken raises `HostProjectsError("lock_unavailable")`, surfaced as the
+`ConnectionError` reason `connection_lock_unavailable` before any change (the CLI `next_step`
+names the lock folder). Verified members are the record's projects plus, for Codex, the project
+the `[marketplaces.yoetz]` binding names; only they are recorded, anchor the binding, or keep a
+disconnect `detach`; `codex_marketplace.serving_projects(home)` (status `codex_home_projects`,
+`shared_with`, `shared_removed_from`) lists those whose checkout still exists and serves the
+manifest. Possible users (Codex only), each a live checkout serving the exact manifest and a
+marker-valid plugin source and never a verified member under any path spelling: the witness's
+projects, always; and, while the record is missing with shared pieces present or marked
+`unknown_members`, `[projects."<path>"]` rows with `trust_level = "trusted"`;
+`codex_marketplace.possible_projects(home)` lists them,
+`RemovalPreview.possible_users` carries them (bound into the removal digest with `unknown_after`),
+status adds `codex_home_possible_projects` and `membership_unknown: true`, and the connect and
+disconnect plan disclosure adds `membership_unknown: true` and `possible_users` (bound into
+`preview_digest`; a connect excludes the connecting project), and a Codex `--remove-shared`
+preview adds `shared_removed_from` (the other live verified members), as Claude Code and Cursor
+do. They keep the shared pieces but
+never anchor: a disconnect that would leave possible users and no verified member raises
+`IntegrationReason.REMOVE_REFUSED` with `conflict: membership_unverified`, reported by the CLI as
+reason `membership_unverified` with reconnect and `--remove-shared` continuations. Cursor
+discloses `membership_unknown` and keeps the shared plugin while it is set (status reports it
+before any record exists), and its status adds `connected_projects_observed`; Claude Code's own `plugin list` rows (one
+`projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
+(Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
+forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
+the other projects that keep the shared pieces and is bound into `preview_digest`. Status adds
+`codex_home_projects` and the project's own `activation_state` (Codex; `active` only for a
+connected project) or `connected_projects` (Claude Code, Cursor). A connect through a
+second path to an already connected directory fails as `project_connected_via_other_path`
+(`IntegrationReason.PROJECT_CONNECTED_VIA_OTHER_PATH` for Codex, the same `ConnectionError`
+reason for Claude Code and Cursor) with a `next_step` naming the connected path and the
+disconnect that clears it; a malformed record is `connection_projects_record_invalid` (Cursor;
+the Codex adapters raise `source_invalid` with `conflict: connected_projects`, and the CLI reports
+`connection_projects_record_invalid` for Codex too on `setup run|status|disconnect`, probing the
+record when a wrapper kept only `source_invalid`; Claude Code keeps no record), with a `next_step`
+naming the file: make it owner-only again (`chmod 600`) or restore it; for Codex, if it must be
+removed, connect every project again before disconnecting any (until then the witness and trusted
+checkouts keep the shared pieces and a disconnect stops as `membership_unverified`); for Cursor,
+removing it makes membership unknown. A plan that rewrites a shared Yoetz route on another
+review mode while other projects use it (the Codex user-level registration, the Claude Code
+shared source; Cursor's route is per project) reports `route_profile_before`,
+`route_changes_for` (other serving members) and `route_changes_possible_for` (possible users):
+digest-bound in `setup run --host` plans; in the TUI first-run plan
+(`IntegrationPlan.mcp_reregister|route_profile_before|route_changes_for|
+route_changes_possible_for`); in the historical Codex wizard report, which refuses a bare
+`--accept` as `route_change_affects_other_projects`; in `integrate codex mcp preview`, whose
+`preview_digest` then binds them (`canonical_digest({"mcp_preview_digest", "route_change"})`) and
+whose `install` needs it (exit 2, `mcp_registration_route_change_affects_other_projects`); and in
+`integrate claude plugin preview` (bound by its host-state digest over `installed_plugins.json`).
+`route_profile_before` is read from the registration (`HarnessMcpService.observe`), never
+inferred from a `reregister` action, which may change only the launcher or isolation root. When
+membership cannot be read, the route change also carries `membership_unknown: true` (bound into
+the same digests; the historical wizard and `install` refuse a bare `--accept`; the TUI and
+`setup run --host codex` raise `source_invalid`). The `install` refusal names the exact
+`integrate codex mcp preview --codex-path --codex-home --route-profile <requested>` command.
+Without `--route-profile`, `run_host_connection(route=None)` (non-interactive `setup
+run|status|disconnect --host`, and `setup status --next` outside `--operation review`) lets
+`prepare_codex_connection` use the Codex home's registered Yoetz route (`strict` for a fresh home);
+Claude Code and Cursor use `strict`.
+`integrate codex mcp preview-remove|remove` reports `shared_with`, `possible_users` (plus
+`membership_unknown: true` when membership cannot be read) and warning
+`mcp_registration_shared_with_other_projects` and binds them the same way;
+`integrate cursor plugin preview --action remove` reports `shared_with`, `membership_unknown`,
+`shared_removed_for_every_project`. A Codex `setup disconnect` keeps the user-level registration
+whenever the removal plan keeps the shared pieces (`RemovalPreview.keeps_shared`, also for
+`already_absent`), `codex_marketplace.other_members(home, project)` (serving members, possible
+users) is non-empty, a non-member's disconnect finds another live recorded project (serving the
+manifest or not), or membership is unknown; also for an already detached or never-connected
+project (`retained`, `shared_with` naming those projects, in the plan and the status, plus
+`membership_unknown`; post-apply status `configured: false`, `shared_registration_retained:
+true`). `other_members` returns `((), ())` only for a home that does not exist and raises
+`IntegrationError` when membership cannot be read; callers treat that as unknown. A damaged
+membership witness (`host_projects.recorded_members`) names no one rather than raising. When the
+kept pieces serve the dangling binding's project whose directory is missing right now,
+`RemovalPreview.missing_members` names it (bound into the digest) and the disclosure and status
+add `members_missing`; with no live project among `shared_with`, an `unchanged` disconnect's
+`next_step` also names the exact `setup disconnect ... --remove-shared` preview. The connect-path
+`setup status --host codex` reports `enabled` and `configured` only for a connected project
+(activation `active`), otherwise `shared_registration_retained: true` when a Yoetz registration
+exists, and `membership_unknown: true` when membership cannot be read. The disconnect plan
+disclosure adds `rebind_to` and, when the shared pieces go, `members_not_serving`
+(`RemovalPreview.unserved_members`: live recorded projects, or a dangling anchor, that do not
+serve the manifest). Only a recorded project may move or remove a dangling binding.
+`integrate codex plugin preview` reports `possible_users` (and `membership_unknown`),
+`members_not_serving` and `keeps_shared`. CLI:
 `yoetz integrate <host> admission status|preview|grant|revoke --project-root`
 (preview `--action grant|revoke`; Claude `--checkpoint`; the host roots the route observation
 needs; `--accept --preview-digest` for the apply verbs, exit 3 without them, exit 1
@@ -6792,7 +6922,20 @@ presence cell. The ADR-012 setup composition remains its own separately authoriz
 Codex `preview_removal` / `apply_removal` refuse foreign, modified, dual, or otherwise
 conflicting marketplace, config, inventory, or cache surfaces with `remove_refused` and a closed
 `conflict` token (`personal_marketplace|repository_marketplace|config_marketplace|config_plugin|
-inventory|cache`). Cache purge is default-off. The removal digest binds the exact trusted project
+inventory|cache|membership_unverified`). `RemovalOutcome` is `remove|already_absent|detach`:
+`detach` (#1058) means other connected projects that still serve the exact Yoetz manifest keep the
+home's binding, enable table, cache and MCP registration; the preview names them in `shared_with`
+and, when the binding named this project or names a project that is deleted or lost its manifest,
+the project it moves to in `rebind_to`; apply rebinds first, then removes the project's canonical
+`marketplace.json`, then updates the connected-projects record. With no verified member left, a
+binding to a deleted or manifest-less project is removed with the shared pieces: its exact
+tables and managed cache trees are removed directly (no `codex plugin` command, which fails
+through such a binding), also under `--remove-shared`. The
+activation side treats a binding to another such project as the shared marketplace
+(`_plugin_inventory` expects that anchor's source), counts a project as activated only when it is
+the anchor or in the record, moves a binding whose project lost its manifest to the connecting
+project, and refuses an alias of the same directory as `project_connected_via_other_path`.
+Cache purge is default-off. The removal digest binds the exact trusted project
 root as well as the selected executable, Codex home, configuration/cache preimages, planned host
 commands, and cache-purge choice. Cache preview and apply share descriptor-relative no-follow
 total-entry, recursion-depth, relative-path, file-count, per-member, and aggregate-byte bounds.

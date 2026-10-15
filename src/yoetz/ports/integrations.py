@@ -153,6 +153,9 @@ class IntegrationReason(str, Enum):  # noqa: UP042 - exact wire-valued Enum is r
     MARKER_INVALID = "marker_invalid"
     WRITE_FAILED = "write_failed"
     REMOVE_REFUSED = "remove_refused"
+    # The same project directory is already connected to this host configuration root under a
+    # different path (a symlink, a case variant, or a moved directory) (#1058).
+    PROJECT_CONNECTED_VIA_OTHER_PATH = "project_connected_via_other_path"
 
 
 def _token(value: object, reason: str = "integration_value_invalid") -> str:

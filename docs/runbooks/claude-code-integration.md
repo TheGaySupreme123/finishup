@@ -32,6 +32,78 @@ The existing OS-authenticated artifact review still applies. Status and disconne
 `yoetz setup status|disconnect --host claude` with the same target options. Standalone `plugin
 install` below retains its disabled-by-default behavior.
 
+**Several projects in one config root (issue #1058).** The marketplace source under
+`<config root>/plugins/marketplaces/yoetz-local` and its `known_marketplaces.json` entry are shared
+by every project; each project has its own project-scope install, enable flag and
+`.claude/settings.json` `extraKnownMarketplaces` declaration. Verified with Claude Code 2.1.299
+against a scratch `CLAUDE_CONFIG_DIR`: `claude plugin list --json` lists one `yoetz@yoetz-local`
+row per project, each with its `projectPath`, from any working directory, and the unscoped
+`claude plugin marketplace remove yoetz-local` removes every project's install. Yoetz therefore
+reads its own project's row only (other rows are not a conflict), and a disconnect while another
+project still has its row plans `uninstall_plugin` alone: the other projects keep the shared
+source and marketplace, the disconnected project's own exact `extraKnownMarketplaces`
+declaration is removed (Claude's project-scope uninstall keeps it; an edited declaration stays
+yours), and the preview's `status.shared_with` names them. A project detached before this fix
+still declares a source that the last disconnect removed; setup treats that exact declaration
+as repairable prior setup and connects over it. The last project's disconnect
+removes the marketplace and its source as before. Status reports `connected_projects`. Claude
+Code's own rows name the projects, so no Yoetz record is kept for this host. A second path to an
+already connected directory is refused as `project_connected_via_other_path`. Because the shared
+source carries the launcher and route, connecting a project with another route or launcher
+re-renders it for every project. `setup disconnect --remove-shared` is the explicit home-wide disconnect:
+it runs the marketplace removal even while other projects keep their rows, so they stop using
+Yoetz too. A disconnect whose approval file (`.claude/settings.local.json`) cannot be read safely,
+such as a symlink, stops before any change as `connection_admission_cleanup_failed`.
+Because Claude Code's rows are the membership, this host has no unknown membership (a Codex and
+Cursor state), no possible users or `membership_unverified` refusal (Codex only), and no
+connected-projects record (so no `connection_projects_record_invalid`). Claude Code keeps the row
+of a project whose directory was deleted; Yoetz counts only live projects, in the preview and in
+apply alike, so such a row holds nothing open and the last live project's disconnect (an unscoped
+`marketplace remove`) clears it too. A disconnect whose own project-scope install is already gone
+(Claude Code refuses to uninstall it again) plans only `remove_marketplace` and
+`remove_plugin_mcp`. Known gap (recorded 2026-10-15, #1058 review round 3; follow-up on #1058):
+such a project, or one that never had an install, can still remove the shared marketplace and
+source while the only other project's directory is missing for now (an unmounted volume, a
+moved checkout), because a missing directory counts as not live. Codex keeps the shared pieces
+in that case (its binding still names the missing project, and only a connected project may
+remove such a binding); Claude Code has no equivalent anchor yet. The unscoped marketplace
+removal also removes that project's install, so when its directory returns it needs connecting
+again. The preview names `remove_marketplace` before approval. The shared source carries the plugin MCP server's review mode for every
+project's install: connecting a project on another review mode re-renders it for all of them, and
+the preview names them (`status.route_profile_before`, `status.route_changes_for`, and a summary
+sentence with both modes). `integrate claude plugin preview` reports the same keys and sentence
+for an install or update on another review mode; its preview digest already binds every
+project's install row (`installed_plugins.json`), and its apply needs that digest and the OS
+password prompt. `integrate claude plugin remove` removes this project's install and, like
+`setup disconnect`, keeps the shared marketplace while another live project has its row. `--remove-shared` previews and the interactive consent say the
+disconnect is home-wide and name the projects that stop using Yoetz. The TUI has no
+`--remove-shared`; use `yoetz setup disconnect --host claude --remove-shared`. Like every
+host, each setup apply holds Yoetz's per-configuration lock from revalidation through the last
+change: an exclusive `flock` on a 0600 file under Yoetz's own state directory
+(`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded, never inside
+the Claude config root. A lock that cannot be taken stops as `connection_lock_unavailable` before
+any change, naming the lock folder. It does not serialise a setup run by another Yoetz
+installation. Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`) or another
+network or FUSE filesystem (ADR-012 amendment item 7).
+
+Native evidence, Linux x86_64 (ext4), Claude Code 2.1.300, scratch `HOME`, `CLAUDE_CONFIG_DIR`,
+XDG and isolation root (2026-10-14 and, for the review fixes, 2026-10-15, #1058). Plans were
+prepared and applied through the same
+`prepare_selected`/`apply_connection` composition `setup run|disconnect --host claude` uses; the
+one substitution is the OS-presence review (the trusted PAM console prompt), which the container
+cannot provide, so a test stub consumed the exact plan digest. `setup status` and the disconnect
+preview were also read through the real CLI and agreed.
+
+| Scenario | Result |
+| --- | --- |
+| Connect A and B; disconnect A, then B; reconnect A | A's disconnect plans `uninstall_plugin` alone with `shared_with` B; B keeps its enabled row and `yoetz-local` stays in `claude plugin marketplace list`; B's disconnect removes the marketplace; reconnecting A succeeds (no `destination_conflict`) and its row is enabled |
+| Connect A and B; disconnect B, then A; reconnect B, then A | Same in reverse: each step leaves the remaining project's row enabled; both reconnect, and the second reconnect lists the first in `shared_with` |
+| First setup with `CLAUDE_CONFIG_DIR` under parents that do not exist yet | Connects; the plugin row is listed |
+| Connect A and B; `rm -rf A`; disconnect B (2026-10-15) | the plan is `uninstall_plugin`, `remove_marketplace`, `remove_plugin_mcp`; apply removes the marketplace, and `claude plugin list` no longer shows A's dead row |
+| Connect A and B; `rm -rf A`; `claude plugin uninstall --scope project` in B; disconnect B | a second uninstall fails in Claude Code 2.1.300 (`not installed in project scope`); the plan is `remove_marketplace`, `remove_plugin_mcp` and completes with no marketplace left |
+| Connect A on `strict`; connect B on `policy` | B's plan discloses `route_profile_before: strict`, `route_changes_for: [A]`; the shared source's `.mcp.json` then runs the policy route |
+| Then `integrate claude plugin preview --claude-path ... --claude-config-root ... --cache-root ... --marketplace-root ... --project-root A --mcp-ownership plugin-managed --route-profile strict --action update` (round 2) | `route_profile_before: policy`, `route_changes_for: [B]`. A route profile needs `--mcp-ownership plugin-managed`; without it the command refuses as `claude_code_mcp_route_forbidden` |
+
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The
 common connection code does not establish native acceptance on any OS. Track current exact-head
@@ -1096,7 +1168,9 @@ rules until the folder is trusted; Yoetz itself refuses to edit through the syml
 
 Reverse: `admission revoke` removes both exact owner forms; `plugin remove` and a `plugin
 install|update` onto the strict route sweep it for `--project-root` and report
-`admission_cleanup`; a privacy commit that stops external review sweeps it; a leftover entry
+`admission_cleanup`; `setup disconnect --host claude` plans `remove_project_admission` for
+`--project`, sweeps it before the plugin removal and reports `status.admission_cleanup`
+(other projects are not enumerated; inspect them with `admission status --project-root`); a privacy commit that stops external review sweeps it; a leftover entry
 shows as `host_admission_drift` in `provider status`. That report walks from the launch
 directory to the repository root, so a subdirectory cwd does not read as `absent`.
 

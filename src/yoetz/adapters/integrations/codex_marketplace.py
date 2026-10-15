@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Final, Never, cast
+from typing import Final, Literal, Never, cast
 
 from yoetz import __version__
 from yoetz.adapters.integrations.codex_plugin import (
@@ -30,6 +30,16 @@ from yoetz.adapters.integrations.codex_session_stream import resolve_codex_home
 from yoetz.adapters.integrations.codex_skill import (
     inspect_destination,
     load_packaged_skill_source,
+)
+from yoetz.adapters.integrations.host_projects import (
+    ConnectedProjects,
+    HostProjectsError,
+    duplicate_of,
+    live_projects,
+    load_connected_projects,
+    recorded_members,
+    same_directory,
+    write_connected_projects,
 )
 from yoetz.adapters.integrations.toml_tables import (
     append_table_block,
@@ -60,10 +70,15 @@ __all__ = [
     "RemovalResult",
     "apply_activation",
     "apply_removal",
+    "connected_projects",
     "inspect_activation",
+    "other_members",
+    "possible_projects",
     "preview_activation",
     "preview_removal",
+    "project_registered_elsewhere",
     "resolve_codex_home_for_binary",
+    "serving_projects",
     "skill_tree_state",
 ]
 
@@ -147,6 +162,9 @@ class ActivationPreview:
 class RemovalOutcome(str, Enum):  # noqa: UP042 - exact structural enum
     REMOVE = "remove"
     ALREADY_ABSENT = "already_absent"
+    # Other connected projects still use the Codex home's shared plugin, marketplace binding,
+    # and MCP registration: only this project's pieces go (#1058).
+    DETACH = "detach"
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +194,24 @@ class RemovalPreview:
     marketplace_preimage_digest: str
     config_preimage_digest: str
     config_toml_block: str
+    # Projects that keep the home's shared Yoetz pieces after a ``DETACH`` (#1058).
+    shared_with: tuple[str, ...] = ()
+    # The connected project the home's marketplace binding moves to, when it named this one.
+    rebind_to: str | None = None
+    # Trusted checkouts that may use the shared pieces though no record names them; never an
+    # anchor (CHECK_MULTIPROJ_R2).
+    possible_users: tuple[str, ...] = ()
+    # Connected projects whose directory exists but no longer serves the manifest (for example
+    # its plugin files are absent right now): a removal of the shared pieces affects them too,
+    # a detach keeps the pieces for them.
+    unserved_members: tuple[str, ...] = ()
+    # This plan keeps the home's shared pieces (plugin table, cache, binding, user-level MCP
+    # registration) for other projects, whatever its outcome (also ``already_absent``).
+    keeps_shared: bool = False
+    # Projects the shared pieces are kept for whose directory is missing right now: the
+    # dangling binding's project, when a project that is not a member leaves it alone (an
+    # unmounted volume or moved checkout may come back). Named so the kept pieces have an owner.
+    missing_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +233,9 @@ class _ActivationPlan:
     cache_members: Mapping[str, bytes]
     cache_before: str | None
     binary: _CodexBinaryProbe
+    projects_before: ConnectedProjects
+    projects_after: tuple[str, ...]
+    unknown_after: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +314,9 @@ def _run_bounded_command(
             shell=False,
             env=dict(env),
             close_fds=True,
+            # User-scope plugin commands run from the selected Codex home so a broken
+            # trusted-project `.codex` layer in the invoking directory cannot fail them.
+            cwd=_neutral_cwd(env),
         )
         if process.stdout is None or process.stderr is None:
             raise OSError("missing_subprocess_pipe")
@@ -317,6 +359,11 @@ def _run_bounded_command(
                 process.stdout.close()
             if process.stderr is not None:
                 process.stderr.close()
+
+
+def _neutral_cwd(env: Mapping[str, str]) -> str | None:
+    home = env.get("CODEX_HOME")
+    return home if home and Path(home).is_dir() else None
 
 
 def _command_output(
@@ -593,17 +640,16 @@ def _table(root: Mapping[str, object], name: str) -> Mapping[str, object] | None
 
 
 def _config_state(config: Mapping[str, object], project: Path) -> tuple[bool, bool, bool]:
-    """Return ``(marketplace_configured, plugin_enabled, foreign)``."""
+    """Return ``(marketplace_configured, plugin_enabled, foreign)``.
 
-    marketplaces = _table(config, "marketplaces")
-    marketplace = None if marketplaces is None else marketplaces.get(_MARKETPLACE_NAME)
-    configured = marketplace is not None
-    if marketplace is not None:
-        if not isinstance(marketplace, Mapping):
-            return False, False, True
-        row = cast(Mapping[str, object], marketplace)
-        if row.get("source_type") != "local" or row.get("source") != str(project):
-            return False, False, True
+    A binding to another connected project that still serves the exact Yoetz manifest is the
+    home's shared marketplace, not a foreign one (#1058).
+    """
+
+    relation, _source = _marketplace_relation(config, project)
+    configured = relation in {"self", "shared"}
+    if relation in {"foreign", "duplicate"}:
+        return False, False, True
 
     plugins = _table(config, "plugins")
     plugin = None if plugins is None else plugins.get(_PLUGIN_ID)
@@ -617,6 +663,281 @@ def _config_state(config: Mapping[str, object], project: Path) -> tuple[bool, bo
             return configured, False, True
         enabled = flag
     return configured, enabled, False
+
+
+# How the home's one ``[marketplaces.yoetz]`` binding relates to the project in question (#1058):
+# ``self`` names it; ``shared`` names another project that still serves the exact Yoetz manifest;
+# ``missing`` names a project whose directory or manifest is gone (Codex then fails every plugin
+# command in the home); ``duplicate`` names this same directory under another path; ``foreign``
+# is anything else.
+type _Relation = Literal["absent", "self", "shared", "missing", "duplicate", "foreign"]
+
+
+def _anchor_manifest_state(anchor: Path) -> Literal["serves", "missing", "foreign"]:
+    try:
+        if anchor.is_symlink() or not anchor.is_dir() or anchor.resolve() != anchor:
+            return "foreign" if os.path.lexists(anchor) else "missing"
+        manifest = anchor / _MARKETPLACE_RELATIVE_PATH
+        if not os.path.lexists(manifest):
+            return "missing"
+        snapshot = _load_marketplace(manifest)
+    except IntegrationError, OSError:
+        return "foreign"
+    registered, foreign = _classify_manifest(None if snapshot is None else snapshot[1])
+    if not registered or foreign:
+        return "foreign"
+    # The plugin source must be an exact managed render, not merely a directory: Codex resolves
+    # the shared marketplace from it (CHECK_MULTIPROJ_R2: an invalid descriptor still served).
+    source = anchor / _PLUGIN_RELATIVE_PATH.removeprefix("./")
+    try:
+        if source.is_symlink() or not source.is_dir():
+            return "foreign"
+        # Any managed render that byte-matches its own install marker (which inventories the
+        # descriptor) serves; an edited or invalid descriptor does not.
+        managed = plugin_tree_matches_marker(_read_managed_tree(source))
+    except IntegrationError, OSError:
+        return "foreign"
+    return "serves" if managed else "foreign"
+
+
+def _marketplace_relation(config: Mapping[str, object], project: Path) -> tuple[_Relation, str]:
+    marketplaces = _table(config, "marketplaces")
+    marketplace = None if marketplaces is None else marketplaces.get(_MARKETPLACE_NAME)
+    if marketplace is None:
+        return "absent", ""
+    if not isinstance(marketplace, Mapping):
+        return "foreign", ""
+    row = cast(Mapping[str, object], marketplace)
+    source = row.get("source")
+    if row.get("source_type") != "local" or type(source) is not str:
+        return "foreign", ""
+    if source == str(project):
+        return "self", source
+    anchor = Path(source)
+    if not anchor.is_absolute():
+        return "foreign", source
+    if same_directory(anchor, project):
+        return "duplicate", source
+    state = _anchor_manifest_state(anchor)
+    if state == "serves":
+        return "shared", source
+    return ("missing" if state == "missing" else "foreign"), source
+
+
+def _possible_users(
+    config: Mapping[str, object],
+    project: Path,
+    verified: tuple[str, ...],
+    *,
+    home: Path,
+    uncertain: bool,
+) -> tuple[str, ...]:
+    """Projects that may use the home's shared pieces although no record names them.
+
+    Two sources, each limited to a live checkout that still serves the exact Yoetz manifest and
+    a marker-valid plugin source, and never a verified member under any spelling:
+
+    - projects this installation recorded for the home and has not seen disconnect (its
+      membership witness), whatever the record now says, so a record deleted by hand or lost
+      does not make them disappear (#1058 review, P2-4);
+    - while the record is missing or marked ``unknown_members``, project rows with
+      ``trust_level = "trusted"``. That is not evidence the checkout connected to this home
+      (every Yoetz checkout carries those files).
+
+    A possible user is never recorded as connected and never becomes the binding's anchor; it
+    only stops an ordinary disconnect from removing what it might use (CHECK_MULTIPROJ_R2).
+    """
+
+    keys = {key for key in recorded_members(home) if Path(key).is_absolute()}
+    rows = config.get("projects")
+    if uncertain and isinstance(rows, Mapping):
+        keys.update(
+            key
+            for key, row in cast(Mapping[str, object], rows).items()
+            if Path(key).is_absolute()
+            and isinstance(row, Mapping)
+            and cast(Mapping[str, object], row).get("trust_level") == "trusted"
+        )
+    keys.difference_update(verified)
+    return tuple(
+        key
+        for key in live_projects(keys, excluding=project)
+        # A row naming a verified member's directory another way (a letter-case variant on a
+        # case-insensitive filesystem) is that member, not a possible user (#1058).
+        if not any(same_directory(Path(key), Path(member)) for member in verified)
+        and _anchor_manifest_state(Path(key)) == "serves"
+    )
+
+
+def _anchor(config: Mapping[str, object], project: Path) -> Path:
+    """The project whose manifest Codex resolves the shared marketplace from."""
+
+    relation, source = _marketplace_relation(config, project)
+    return Path(source) if relation in {"self", "shared"} else project
+
+
+def _load_projects(home: Path) -> ConnectedProjects:
+    try:
+        return load_connected_projects(home)
+    except HostProjectsError as exc:
+        raise _error(IntegrationReason.SOURCE_INVALID, {"conflict": "connected_projects"}) from exc
+
+
+def _write_projects(
+    snapshot: ConnectedProjects,
+    projects: tuple[str, ...],
+    unknown: bool = False,
+    *,
+    departed: tuple[str, ...] = (),
+    shared_removed: bool = False,
+) -> None:
+    try:
+        write_connected_projects(
+            snapshot,
+            projects,
+            unknown_members=unknown,
+            departed=departed,
+            shared_removed=shared_removed,
+        )
+    except HostProjectsError as exc:
+        raise _error(
+            IntegrationReason.PREVIEW_STALE
+            if exc.reason == "registry_stale"
+            else IntegrationReason.WRITE_FAILED
+        ) from exc
+
+
+def _refuse_duplicate(project: Path, relation: _Relation, members: tuple[str, ...]) -> None:
+    if relation == "duplicate" or duplicate_of(project, members) is not None:
+        raise _error(IntegrationReason.PROJECT_CONNECTED_VIA_OTHER_PATH)
+
+
+def _member(project: Path, relation: _Relation, members: tuple[str, ...]) -> bool:
+    """Whether this project connected to the home, as opposed to only seeing its shared plugin.
+
+    A home written before #1058 has no record; its one bound project is its one member.
+    """
+
+    return relation == "self" or (relation == "shared" and str(project) in members)
+
+
+def connected_projects(codex_home: Path | str | None) -> tuple[str, ...]:
+    """Every verified member of this Codex home: the record's projects and the bound project.
+
+    Includes members whose checkout is gone or no longer serves the manifest; status and
+    previews use ``serving_projects``.
+    """
+
+    home = _codex_root(codex_home)
+    projects = set(_load_projects(home).projects)
+    _raw, config = _load_config(home / "config.toml")
+    marketplaces = _table(config, "marketplaces")
+    marketplace = None if marketplaces is None else marketplaces.get(_MARKETPLACE_NAME)
+    if isinstance(marketplace, Mapping):
+        source = cast(Mapping[str, object], marketplace).get("source")
+        if type(source) is str and Path(source).is_absolute():
+            projects.add(source)
+    return tuple(sorted(projects))
+
+
+def serving_projects(codex_home: Path | str | None) -> tuple[str, ...]:
+    """Verified members whose checkout still exists and serves the exact Yoetz manifest.
+
+    A deleted project, or one whose manifest is gone (a binding to it makes Codex fail every
+    plugin command), is not reported as connected (#1058 review, P2-2).
+    """
+
+    members = connected_projects(codex_home)
+    live = set(live_projects(members, excluding=Path(_codex_root(codex_home).anchor)))
+    return tuple(
+        member
+        for member in members
+        if member in live and _anchor_manifest_state(Path(member)) == "serves"
+    )
+
+
+def other_members(
+    codex_home: Path | str | None, project: Path | None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(serving verified members, possible users)`` of the home other than ``project``.
+
+    These are the projects whose sessions use the home's shared pieces, notably the user-level
+    MCP registration and its review mode (#1058 review). ``project`` ``None`` excludes nothing.
+    A home that does not exist has none. Membership that cannot be read (a damaged record, an
+    unsafe or symlinked home) raises ``IntegrationError``: callers treat it as unknown and fail
+    closed wherever the shared registration would be rewritten or removed (review round 3).
+    """
+
+    if codex_home is not None and not os.path.lexists(Path(codex_home).expanduser()):
+        return (), ()
+    serving = serving_projects(codex_home)
+    possible = possible_projects(codex_home)
+
+    def other(item: str) -> bool:
+        return project is None or (item != str(project) and not same_directory(Path(item), project))
+
+    return tuple(item for item in serving if other(item)), tuple(
+        item for item in possible if other(item)
+    )
+
+
+def possible_projects(codex_home: Path | str | None) -> tuple[str, ...]:
+    """Projects that may use the home's shared pieces though the record does not name them.
+
+    This installation's earlier members (its witness) and, while the record is missing or
+    marked ``unknown_members``, trusted checkouts with Yoetz's plugin files. These are possible
+    users, not verified connections (CHECK_MULTIPROJ_R2): reconnecting one records it.
+    """
+
+    home = _codex_root(codex_home)
+    snapshot = _load_projects(home)
+    _raw, config = _load_config(home / "config.toml")
+    marketplaces = _table(config, "marketplaces")
+    marketplace = None if marketplaces is None else marketplaces.get(_MARKETPLACE_NAME)
+    plugins = _table(config, "plugins")
+    shared_present = marketplace is not None or (
+        plugins is not None and plugins.get(_PLUGIN_ID) is not None
+    )
+    if not shared_present:
+        # Nothing shared is left to keep for anyone.
+        return ()
+    uncertain = snapshot.raw is None or snapshot.unknown_members
+    return _possible_users(
+        config,
+        Path(home.anchor),
+        connected_projects(home),
+        home=home,
+        uncertain=uncertain,
+    )
+
+
+def project_registered_elsewhere(codex_home: Path | str | None, project: Path) -> str | None:
+    """The recorded path that names ``project``'s directory differently, if any (refusal text)."""
+
+    try:
+        return duplicate_of(project, connected_projects(codex_home))
+    except IntegrationError:
+        return None
+
+
+def _rebind_marketplace(raw: bytes, old: str, new: Path) -> bytes:
+    """Point the exact Yoetz marketplace table at another connected project, in place."""
+
+    old_table = _expected_marketplace_table(Path(old))
+    span = exact_table_span(raw, old_table)
+    if span is None:
+        raise _error(IntegrationReason.DESTINATION_CONFLICT, {"conflict": "config_marketplace"})
+    start, _end = span
+    rebound = (
+        raw[:start]
+        + _expected_marketplace_table(new).encode()
+        + raw[start + len(old_table.encode()) :]
+    )
+    try:
+        tomllib.loads(rebound.decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise _error(IntegrationReason.DESTINATION_CONFLICT) from exc
+    return rebound
 
 
 def _paths(
@@ -861,11 +1182,15 @@ def _run_json_command(
 
 def _plugin_inventory(
     binary: _CodexBinaryProbe,
-    project: Path,
+    anchor: Path,
     *,
     _run: Callable[..., subprocess.CompletedProcess[bytes]],
 ) -> tuple[bool, str | None]:
-    """Return exact Yoetz installed state/version from canonical Codex inventory."""
+    """Return exact Yoetz installed state/version from canonical Codex inventory.
+
+    ``anchor`` is the project the home's marketplace binding names: with several connected
+    projects it is one of them, not necessarily the project being inspected (#1058).
+    """
 
     document = _run_json_command(
         binary,
@@ -889,8 +1214,8 @@ def _plugin_inventory(
     if len(matches) != 1:
         raise _error(IntegrationReason.DESTINATION_CONFLICT)
     row = matches[0]
-    expected_source = {"source": "local", "path": str(project / ".agents/plugins/yoetz")}
-    expected_marketplace = {"sourceType": "local", "source": str(project)}
+    expected_source = {"source": "local", "path": str(anchor / ".agents/plugins/yoetz")}
+    expected_marketplace = {"sourceType": "local", "source": str(anchor)}
     if row.get("source") != expected_source or row.get("marketplaceSource") != expected_marketplace:
         raise _error(IntegrationReason.DESTINATION_CONFLICT)
     installed = row.get("installed")
@@ -928,12 +1253,18 @@ def inspect_activation(
     exact_source = presence is PluginHookPresence.INSTALLED
     plugin_cached = False
     cache_foreign = False
-    if exact_source:
+    _raw, config = _load_config(config_path)
+    relation, _source = _marketplace_relation(config, project)
+    if exact_source and relation != "missing":
+        # A missing binding makes Codex fail every plugin command in the home; the inventory
+        # cannot be read until activation rebinds it, so the plugin reads as not cached.
         try:
             cache_members = _source_cache_members(target, codex_version=binary.codex_version)
             local_digest = _installed_cache_digest_anchored(home, __version__, cache_members)
             if _canonical_inventory:
-                inventory_installed, version = _plugin_inventory(binary, project, _run=_run)
+                inventory_installed, version = _plugin_inventory(
+                    binary, _anchor(config, project), _run=_run
+                )
                 if inventory_installed:
                     assert version is not None
                     plugin_cached = _installed_cache_digest_anchored(
@@ -964,15 +1295,24 @@ def inspect_activation(
     if personal_path != marketplace_path:
         personal_snapshot = _load_marketplace(personal_path)
         personal_document = None if personal_snapshot is None else personal_snapshot[1]
-    _raw, config = _load_config(config_path)
     config_registered, plugin_enabled, config_foreign = _config_state(config, project)
+    try:
+        members = _load_projects(home).projects
+        record_foreign = False
+    except IntegrationError:
+        members, record_foreign = (), True
     foreign = (
         repo_foreign
         or _personal_manifest_conflicts(personal_document)
         or config_foreign
         or cache_foreign
+        or record_foreign
     )
-    marketplace_registered = repo_registered and config_registered
+    # Another project's binding serves this project's sessions too, but this project is only
+    # connected once its own setup recorded it (#1058).
+    marketplace_registered = (
+        repo_registered and config_registered and _member(project, relation, members)
+    )
     if foreign:
         state = ActivationState.FOREIGN
     elif not installed:
@@ -1019,6 +1359,9 @@ def _toml_string(value: str) -> str:
 
 
 def _activation_block(project: Path, config: Mapping[str, object]) -> str:
+    relation, _source = _marketplace_relation(config, project)
+    if relation == "duplicate":
+        raise _error(IntegrationReason.PROJECT_CONNECTED_VIA_OTHER_PATH)
     configured, enabled, foreign = _config_state(config, project)
     if foreign:
         raise _error(IntegrationReason.DESTINATION_CONFLICT)
@@ -1067,14 +1410,36 @@ def _activation_plan(
         _run=_run,
         _canonical_inventory=False,
     )
+    config_bytes, config = _load_config(config_path)
+    relation, source = _marketplace_relation(config, project)
+    projects_before = _load_projects(home)
+    # The same directory under a second path would give one project two registrations that
+    # disagree about every later disconnect; name that before any generic conflict (#1058).
+    _refuse_duplicate(project, relation, projects_before.projects)
     if inspection.state is ActivationState.FOREIGN:
         raise _error(IntegrationReason.DESTINATION_CONFLICT)
     marketplace_snapshot = _load_marketplace(marketplace_path)
     marketplace_before = None if marketplace_snapshot is None else marketplace_snapshot[0]
     marketplace_document = None if marketplace_snapshot is None else marketplace_snapshot[1]
     marketplace_bytes = _merged_marketplace_bytes(marketplace_document)
-    config_bytes, config = _load_config(config_path)
     config_before = config_bytes if config_path.exists() else None
+    projects_after = projects_before.with_project(project)
+    if relation == "shared":
+        # A home bound before #1058 has no record; its bound project stays connected.
+        projects_after = tuple(sorted({*projects_after, source}))
+    # A missing record with shared pieces present (a lost record), or one already marked, keeps
+    # its uncertainty while trusted checkouts that might use those pieces exist (round 3), and
+    # earlier members this installation recorded keep it whatever the record says (review P2-4).
+    unknown_after = bool(
+        _possible_users(
+            config,
+            project,
+            projects_after,
+            home=home,
+            uncertain=projects_before.unknown_members
+            or (projects_before.raw is None and relation in {"self", "shared", "missing"}),
+        )
+    )
     block = _activation_block(project, config)
     plugin_source_digest = _plugin_source_digest(codex_version=binary.codex_version)
     cache_members = _source_cache_members(target, codex_version=binary.codex_version)
@@ -1123,6 +1488,10 @@ def _activation_plan(
         + canonical_encode(list(_PLUGIN_LIST_COMMAND))
         + b"\0"
         + canonical_encode(list(_PLUGIN_ADD_COMMAND))
+        + b"\0"
+        + _sha(b"" if projects_before.raw is None else projects_before.raw).encode()
+        + b"\0"
+        + canonical_encode({"projects": list(projects_after), "unknown": unknown_after})
     )
     preview = ActivationPreview(
         marketplace_bytes,
@@ -1154,6 +1523,9 @@ def _activation_plan(
         cache_members,
         cache_before,
         binary,
+        projects_before,
+        projects_after,
+        unknown_after,
     )
 
 
@@ -1534,11 +1906,20 @@ def _validate_add_result(
 
 
 def _activated_config_bytes(raw: bytes, config: Mapping[str, object], project: Path) -> bytes:
+    relation, source = _marketplace_relation(config, project)
+    if relation == "duplicate":
+        raise _error(IntegrationReason.PROJECT_CONNECTED_VIA_OTHER_PATH)
     configured, enabled, foreign = _config_state(config, project)
     if foreign:
         raise _error(IntegrationReason.DESTINATION_CONFLICT)
     if configured and enabled:
         return raw
+    if relation == "missing":
+        # The binding names a project whose manifest is gone, so Codex already fails every plugin
+        # command in this home: move the exact Yoetz table to this project instead of adding a
+        # second one (#1058).
+        raw = _rebind_marketplace(raw, source, project)
+        config = cast(Mapping[str, object], tomllib.loads(raw.decode("utf-8")))
     merged = append_table_block(raw, _activation_block(project, config))
     try:
         tomllib.loads(merged.decode("utf-8"))
@@ -1601,8 +1982,9 @@ def apply_activation(
                 )
                 _assert_snapshot(config_path, plan.config_before)
                 _atomic_write(config_path, plan.config_after)
+            _raw_after, config_after = _load_config(config_path)
             inventory_installed, inventory_version = _plugin_inventory(
-                plan.binary, project, _run=_run
+                plan.binary, _anchor(config_after, project), _run=_run
             )
             if inventory_installed:
                 if inventory_version != __version__ or plan.cache_before is None:
@@ -1677,6 +2059,8 @@ def apply_activation(
                 plan.cache_members,
                 codex_version=plan.binary.codex_version,
             )
+            # Record this project last: the home's shared pieces now serve it (#1058).
+            _write_projects(plan.projects_before, plan.projects_after, plan.unknown_after)
         except IntegrationError:
             # Preserve already-approved partial state for an honest retry. Pathname
             # verify-then-rollback cannot exclude a non-cooperating concurrent replacement.
@@ -1701,6 +2085,12 @@ class _RemovalPlan:
     cache_members: Mapping[str, bytes]
     cache_digests: tuple[tuple[str, str], ...]
     binary: _CodexBinaryProbe
+    projects_before: ConnectedProjects
+    projects_after: tuple[str, ...]
+    # The path the home's Yoetz tables name for this project (itself, or an alias of its
+    # directory that this removal also clears).
+    owned: Path
+    unknown_after: bool = False
 
 
 def _refuse_conflict(candidate: str) -> Never:
@@ -1914,6 +2304,7 @@ def _removal_plan(
     executable_path: str,
     codex_home: Path | str | None = None,
     purge_cache: bool = False,
+    remove_shared: bool = False,
     _run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> _RemovalPlan:
     binary = _probe_codex_binary(executable_path, codex_home=codex_home, _run=_run)
@@ -1931,27 +2322,141 @@ def _removal_plan(
     marketplace_before = None if marketplace_snapshot is None else marketplace_snapshot[0]
     config_bytes, config = _load_config(config_path)
     config_before = config_bytes if config_path.exists() else None
-    plugin_table_owned, marketplace_table_owned, config_after = _config_table_plan(
-        config_bytes, config, project
+    relation, source = _marketplace_relation(config, project)
+    # ``missing``: the binding names a project that is deleted or lost its manifest, so Codex
+    # already fails every plugin command in this home (#1058 review, P2-2). The binding is then
+    # nobody's anchor: it moves to a remaining verified member, or goes with the shared pieces.
+    anchor_missing = relation == "missing"
+    projects_before = _load_projects(home)
+    # Verified connections that can still anchor the home's shared marketplace: the record and
+    # the current binding. Only these become the anchor (#1058, CHECK_MULTIPROJ_R2).
+    candidates = {*projects_before.projects, *((source,) if relation == "shared" else ())}
+    remaining = tuple(
+        candidate
+        for candidate in live_projects(candidates, excluding=project)
+        if _anchor_manifest_state(Path(candidate)) == "serves"
+    )
+    uncertain = projects_before.raw is None or projects_before.unknown_members
+    possible = _possible_users(
+        config, project, tuple(sorted(candidates)), home=home, uncertain=uncertain
+    )
+    # Only a connected project may move or remove a dangling binding: for a project that never
+    # connected, the binding is another member's whose manifest may be absent only for now
+    # (a branch switch, `git clean`, an unmounted volume) (#1058 review round 2).
+    member = relation in {"self", "duplicate"} or any(
+        item == str(project) or same_directory(Path(item), project)
+        for item in projects_before.projects
+    )
+    # Recorded projects (and a dangling anchor) whose directory still exists, serving the
+    # manifest right now or not: a disconnect of anything else must not take their pieces.
+    live_recorded = live_projects(
+        {*projects_before.projects, *((source,) if anchor_missing else ())}, excluding=project
+    )
+    # A project that never connected (or was already detached) removes only its own pieces
+    # while the binding dangles or another recorded project still exists, even one whose
+    # plugin files are absent right now (#1058 review rounds 2 and 3).
+    dangling_other = not member and not remove_shared and (anchor_missing or bool(live_recorded))
+    holds_shared = (
+        (
+            relation in {"self", "shared", "duplicate", "missing"}
+            # Without a binding (lost or removed by hand) the shared plugin, cache and record
+            # still serve the other recorded projects that serve the manifest (round 3 P3).
+            or (relation == "absent" and bool(remaining))
+        )
+        and not remove_shared
+        and not dangling_other
+    )
+    if holds_shared and not remaining and possible:
+        # No verified project can carry the binding, but projects this installation recorded
+        # earlier, or trusted checkouts, might still use the shared pieces: refuse before any
+        # change rather than guess (recovery: reconnect them, which records them, or remove the
+        # shared pieces explicitly with --remove-shared).
+        _refuse_conflict("membership_unverified")
+    # A non-member leaves the dangling binding and every shared piece alone (only its own
+    # project pieces go): the same plan shape as a detach, without a rebind.
+    detach = (holds_shared and bool(remaining)) or dangling_other
+    rebind_to = (
+        remaining[0]
+        if detach and not dangling_other and relation in {"self", "duplicate", "missing"}
+        else None
+    )
+    # Disconnecting a project also removes an entry that names its directory under another path
+    # (a symlink, a case variant, the path before a move): that entry is this same project, and
+    # removing it is the way out of a ``project_connected_via_other_path`` refusal (#1058).
+    # An explicit home-wide removal (``remove_shared``) also clears a binding that names another
+    # connected project; an ordinary one never does (#1058). A dangling binding goes with the
+    # shared pieces it no longer serves.
+    owned = (
+        Path(source)
+        if relation == "duplicate"
+        or (remove_shared and relation == "shared")
+        or (anchor_missing and not detach)
+        else project
     )
     cache_members = render_plugin_install_tree(codex_version=binary.codex_version)
-    cache_root = _cache_root(home)
-    _validate_descendant_ancestors(home, Path("plugins/cache/yoetz/yoetz"))
-    cache_digests = _managed_cache_versions(
-        cache_root,
-        cache_members,
-        include_all_managed=purge_cache,
-        anchor_root=home,
+    if detach:
+        # The shared plugin, its cache, its enable table, and the user-level MCP registration
+        # keep serving the remaining projects; only this project's pieces go.
+        plugin_table_owned = marketplace_table_owned = inventory_owned = False
+        config_after = (
+            config_bytes
+            if rebind_to is None
+            else _rebind_marketplace(config_bytes, source, Path(rebind_to))
+        )
+        cache_digests: tuple[tuple[str, str], ...] = ()
+        projects_after = tuple(
+            item
+            for item in projects_before.without_project(project)
+            if not same_directory(Path(item), project)
+        )
+        # Still uncertain while trusted checkouts might use the pieces that stay.
+        unknown_after = bool(possible)
+    else:
+        plugin_table_owned, marketplace_table_owned, config_after = _config_table_plan(
+            config_bytes, config, owned
+        )
+        _validate_descendant_ancestors(home, Path("plugins/cache/yoetz/yoetz"))
+        cache_digests = _managed_cache_versions(
+            _cache_root(home),
+            cache_members,
+            include_all_managed=purge_cache,
+            anchor_root=home,
+        )
+        if cache_digests:
+            _require_safe_cache_removal_primitives()
+        # Codex cannot read or change its plugin inventory through a dangling binding; the
+        # exact tables and managed cache trees are then removed directly, and the inventory is
+        # verified once the binding is gone.
+        inventory_owned = False if anchor_missing else _inventory_owned(binary, owned, _run=_run)
+        # The last connected project's removal leaves no record behind.
+        projects_after = ()
+        unknown_after = False
+    # Recorded projects (and a dangling anchor) whose directory exists but that do not serve the manifest right now:
+    # a removal takes the shared pieces from them too, a detach keeps them for them.
+    unserved: tuple[str, ...] = tuple(
+        candidate
+        for candidate in live_recorded
+        if _anchor_manifest_state(Path(candidate)) != "serves"
     )
-    if cache_digests:
-        _require_safe_cache_removal_primitives()
+    # The dangling binding's project whose directory is missing right now: the reason a
+    # non-member's disconnect keeps the shared pieces when no recorded project is live.
+    missing_members: tuple[str, ...] = (
+        (source,)
+        if dangling_other
+        and anchor_missing
+        and source != str(project)
+        and source not in live_recorded
+        else ()
+    )
     cache_versions = tuple(version for version, _digest in cache_digests)
-    inventory_owned = _inventory_owned(binary, project, _run=_run)
     inspection = inspect_activation(
         target,
         executable_path=executable_path,
         codex_home=home,
         _run=_run,
+    )
+    record_changes = projects_before.raw is not None and (
+        not projects_after or projects_after != projects_before.projects
     )
     planned = (
         inventory_owned
@@ -1959,8 +2464,16 @@ def _removal_plan(
         or marketplace_table_owned
         or marketplace_json_planned
         or bool(cache_versions)
+        or record_changes
+        or config_after != config_bytes
     )
-    outcome = RemovalOutcome.REMOVE if planned else RemovalOutcome.ALREADY_ABSENT
+    outcome = (
+        RemovalOutcome.ALREADY_ABSENT
+        if not planned
+        else RemovalOutcome.DETACH
+        if detach
+        else RemovalOutcome.REMOVE
+    )
     digest_body = (
         b"yoetz.codex-marketplace-removal/1\0"
         + str(project).encode("utf-8")
@@ -2008,6 +2521,23 @@ def _removal_plan(
         + canonical_encode(list(_PLUGIN_REMOVE_COMMAND))
         + b"\0"
         + canonical_encode(list(_MARKETPLACE_REMOVE_COMMAND))
+        + b"\0"
+        + _sha(b"" if projects_before.raw is None else projects_before.raw).encode()
+        + b"\0"
+        + canonical_encode(
+            {
+                "detach": detach,
+                "remove_shared": remove_shared,
+                "projects_after": list(projects_after),
+                "rebind_to": rebind_to,
+                "shared_with": list(remaining) if detach else [],
+                "possible_users": list(possible),
+                "unknown_after": unknown_after,
+                "anchor_missing": anchor_missing,
+                "unserved_members": list(unserved),
+                "missing_members": list(missing_members),
+            }
+        )
     )
     preview = RemovalPreview(
         _sha(digest_body),
@@ -2015,7 +2545,8 @@ def _removal_plan(
         outcome,
         purge_cache,
         inventory_owned,
-        marketplace_table_owned,
+        # The exact table is stripped directly when the binding dangles (Codex cannot load it).
+        marketplace_table_owned and not anchor_missing,
         marketplace_json_planned,
         cache_versions,
         cache_digests,
@@ -2032,7 +2563,14 @@ def _removal_plan(
         (("CODEX_HOME", str(home)), ("CODEX_TESTING_HOME", str(home))),
         _sha(b"" if marketplace_before is None else marketplace_before),
         _sha(config_bytes),
-        _removed_tables_block(plugin_table_owned, marketplace_table_owned, project),
+        _removed_tables_block(plugin_table_owned, marketplace_table_owned, owned),
+        remaining if detach else (),
+        rebind_to,
+        possible,
+        unserved,
+        # A detach, and a non-member's removal of only its own pieces, keep the shared ones.
+        detach,
+        missing_members,
     )
     return _RemovalPlan(
         preview,
@@ -2042,6 +2580,10 @@ def _removal_plan(
         cache_members,
         cache_digests,
         binary,
+        projects_before,
+        projects_after,
+        owned,
+        unknown_after,
     )
 
 
@@ -2051,6 +2593,7 @@ def preview_removal(
     executable_path: str,
     codex_home: Path | str | None = None,
     purge_cache: bool = False,
+    remove_shared: bool = False,
     _run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> RemovalPreview:
     """Return the exact proposed removal plan and stale-safe digest."""
@@ -2060,6 +2603,7 @@ def preview_removal(
         executable_path=executable_path,
         codex_home=codex_home,
         purge_cache=purge_cache,
+        remove_shared=remove_shared,
         _run=_run,
     ).preview
 
@@ -2742,6 +3286,7 @@ def apply_removal(
     executable_path: str,
     codex_home: Path | str | None = None,
     purge_cache: bool = False,
+    remove_shared: bool = False,
     _run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> RemovalResult:
     """Apply one exact approved removal preview, refusing stale or foreign state."""
@@ -2755,6 +3300,7 @@ def apply_removal(
             executable_path=executable_path,
             codex_home=codex_home,
             purge_cache=purge_cache,
+            remove_shared=remove_shared,
             _run=_run,
         )
         preview = plan.preview
@@ -2781,6 +3327,14 @@ def apply_removal(
         _assert_snapshot(marketplace_path, plan.marketplace_before)
         _assert_snapshot(config_path, plan.config_before)
         _assert_binary_probe(plan.binary, _run=_run)
+        if preview.outcome is RemovalOutcome.DETACH:
+            return _apply_detach(
+                target,
+                plan,
+                executable_path=executable_path,
+                paths=(project, home, marketplace_path, config_path),
+                _run=_run,
+            )
         mutation_started = False
         if preview.plugin_remove_planned:
             mutation_started = True
@@ -2832,7 +3386,7 @@ def apply_removal(
             _, _, stripped = _config_table_plan(
                 current_config,
                 cast(Mapping[str, object], parsed_config),
-                project,
+                plan.owned,
             )
         except IntegrationError as exc:
             if mutation_started:
@@ -2918,6 +3472,10 @@ def apply_removal(
             skill_state = skill_tree_state(target)
             if skill_state != preview.skill_tree_state:
                 raise _error(IntegrationReason.WRITE_FAILED)
+            # The shared pieces are gone: no project of this home is connected any more.
+            _write_projects(
+                plan.projects_before, plan.projects_after, plan.unknown_after, shared_removed=True
+            )
         except IntegrationError as exc:
             if mutation_started and exc.reason is not IntegrationReason.WRITE_FAILED:
                 conflict = exc.safe_details.get("conflict")
@@ -2925,3 +3483,65 @@ def apply_removal(
                 raise _error(IntegrationReason.WRITE_FAILED, details) from exc
             raise
     return RemovalResult(RemovalOutcome.REMOVE, inspection, skill_state, purge_cache)
+
+
+def _apply_detach(
+    target: IntegrationTarget,
+    plan: _RemovalPlan,
+    *,
+    executable_path: str,
+    paths: tuple[Path, Path, Path, Path],
+    _run: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> RemovalResult:
+    """Remove one project's pieces while other connected projects keep the shared ones (#1058).
+
+    The caller holds the activation lock and already fenced the approved snapshots. The order
+    keeps Codex loadable at every step: the binding moves to a remaining project before this
+    project's manifest goes, and the record changes last.
+    """
+
+    preview = plan.preview
+    project, home, marketplace_path, config_path = paths
+    mutation_started = False
+    try:
+        if plan.config_after != (plan.config_before or b""):
+            _atomic_write(config_path, plan.config_after)
+            mutation_started = True
+        if preview.marketplace_json_planned:
+            _remove_exact_managed_file(
+                marketplace_path,
+                _canonical_marketplace_bytes(),
+                mismatch_reason=(
+                    IntegrationReason.WRITE_FAILED
+                    if mutation_started
+                    else IntegrationReason.PREVIEW_STALE
+                ),
+                anchor_root=project,
+            )
+            mutation_started = True
+        _write_projects(
+            plan.projects_before,
+            plan.projects_after,
+            plan.unknown_after,
+            departed=(str(project), str(plan.owned)),
+        )
+        mutation_started = True
+        inspection = inspect_activation(
+            target, executable_path=executable_path, codex_home=home, _run=_run
+        )
+        # Nothing may become foreign; a home that already read foreign before the detach (its
+        # binding was removed by hand while the shared cache stays) keeps reading so.
+        became_foreign = (
+            inspection.state is ActivationState.FOREIGN
+            and preview.inspection.state is not ActivationState.FOREIGN
+        )
+        if inspection.state is ActivationState.ACTIVE or became_foreign:
+            raise _error(IntegrationReason.WRITE_FAILED)
+        skill_state = skill_tree_state(target)
+        if skill_state != preview.skill_tree_state:
+            raise _error(IntegrationReason.WRITE_FAILED)
+    except IntegrationError as exc:
+        if mutation_started and exc.reason is not IntegrationReason.WRITE_FAILED:
+            raise _error(IntegrationReason.WRITE_FAILED) from exc
+        raise
+    return RemovalResult(RemovalOutcome.DETACH, inspection, skill_state, preview.purge_cache)

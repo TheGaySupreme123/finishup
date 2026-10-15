@@ -80,6 +80,16 @@ def _preview_body(preview: RemovalPreview) -> dict[str, object]:
         "plugin_remove_planned": preview.plugin_remove_planned,
         "preview_digest": preview.preview_digest,
         "purge_cache": preview.purge_cache,
+        # `detach` (#1058): other connected projects keep the home's shared pieces.
+        "rebind_to": preview.rebind_to,
+        "shared_with": list(preview.shared_with),
+        # Unverified projects that may still use the shared pieces (bound into the digest).
+        "possible_users": list(preview.possible_users),
+        **({"membership_unknown": True} if preview.possible_users else {}),
+        # Connected projects whose plugin files are absent right now (bound into the digest):
+        # a removal of the shared pieces takes them from these too; a detach keeps them.
+        "members_not_serving": list(preview.unserved_members),
+        "keeps_shared": preview.keeps_shared,
         "skill_tree": preview.skill_tree_state,
         "state_before": preview.inspection.state.value,
     }

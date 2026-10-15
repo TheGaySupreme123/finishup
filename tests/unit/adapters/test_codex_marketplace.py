@@ -107,10 +107,19 @@ class _FakeCodex:
             body: object
             config = self.home / "config.toml"
             cache = self.home / f"plugins/cache/yoetz/yoetz/{__version__}"
-            if not config.exists() or "marketplaces.yoetz" not in config.read_text(
-                encoding="utf-8"
-            ):
+            parsed = tomllib.loads(config.read_text(encoding="utf-8")) if config.exists() else {}
+            binding = cast(dict[str, object], parsed.get("marketplaces", {})).get("yoetz")
+            source_root = (
+                Path(str(cast(dict[str, object], binding)["source"]))
+                if isinstance(binding, dict)
+                else None
+            )
+            if source_root is None:
                 body = {"installed": [], "available": []}
+            elif not (source_root / ".agents/plugins/marketplace.json").is_file():
+                # Real Codex 0.162.1: a binding whose root lost its manifest fails every
+                # plugin command in the home ("does not contain a supported manifest").
+                return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"")
             else:
                 installed = cache.is_dir()
                 row = {
@@ -122,17 +131,18 @@ class _FakeCodex:
                     "enabled": True,
                     "source": {
                         "source": "local",
-                        "path": str(self.project / ".agents/plugins/yoetz"),
+                        "path": str(source_root / ".agents/plugins/yoetz"),
                     },
                     "marketplaceSource": {
                         "sourceType": "local",
-                        "source": str(self.project),
+                        "source": str(source_root),
                     },
                 }
                 body = {"installed" if installed else "available": [row]}
                 body["available" if installed else "installed"] = []
         elif args == ("plugin", "add", "yoetz@yoetz", "--json"):
-            source = self.project / ".agents/plugins/yoetz"
+            bound = tomllib.loads((self.home / "config.toml").read_text(encoding="utf-8"))
+            source = Path(bound["marketplaces"]["yoetz"]["source"]) / ".agents/plugins/yoetz"
             destination = self.home / f"plugins/cache/yoetz/yoetz/{__version__}"
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, destination)
@@ -701,8 +711,13 @@ def test_foreign_same_name_entry_is_refused(tmp_path: Path) -> None:
 def test_foreign_config_source_is_refused(tmp_path: Path) -> None:
     target, _project, home = _target(tmp_path)
     _install(target)
+    # An existing directory whose manifest is not Yoetz's: a genuinely foreign binding (#1058
+    # keeps this a conflict; only a binding to another Yoetz-connected project is shared).
+    other = tmp_path / "other"
+    (other / ".agents/plugins").mkdir(parents=True, mode=0o700)
+    (other / ".agents/plugins/marketplace.json").write_text('{"name":"yoetz","plugins":[]}\n')
     (home / "config.toml").write_text(
-        '[marketplaces.yoetz]\nsource_type = "local"\nsource = "/some/other/project"\n',
+        f'[marketplaces.yoetz]\nsource_type = "local"\nsource = "{other}"\n',
         encoding="utf-8",
     )
     assert inspect_activation(target, codex_home=home).state is ActivationState.FOREIGN

@@ -43,6 +43,25 @@ def _isolated_diagnostic_log(  # pyright: ignore[reportUnusedFunction]
 
 
 @pytest.fixture(autouse=True)
+def _isolated_host_config_locks(  # pyright: ignore[reportUnusedFunction]
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep setup's per-configuration lock files out of the developer's real state directory.
+
+    ``host_config_lock`` (#1058) keys a lock file under ``state_dir()``; every test that applies
+    a host connection would otherwise create one in the machine's own Yoetz state.
+    """
+
+    try:
+        import yoetz.adapters.integrations.host_projects as host_projects_module
+    except ImportError:
+        return
+    root = tmp_path_factory.mktemp("host-config-locks")
+    root.chmod(0o700)
+    monkeypatch.setattr(host_projects_module, "state_dir", lambda: Path(root))
+
+
+@pytest.fixture(autouse=True)
 def _isolated_command_identity_key() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     """Undo a service composition's process-wide command-identity key after each test (#977).
 

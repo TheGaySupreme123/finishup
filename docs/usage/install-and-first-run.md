@@ -9,6 +9,21 @@ through WSL 2; this does not add native Windows or mobile support.
 Use `/connect` to connect or repair and `/disconnect` to remove an integration while retaining
 your Yoetz data. From a terminal, `yoetz setup run`, `yoetz setup status`, and
 `yoetz setup disconnect --host codex|claude|cursor-ide|cursor-cli` expose the same lifecycle.
+You can connect several projects to the same agent installation one after another: each adds only
+what that project needs, disconnecting one keeps the others working, and `setup status` lists the
+connected projects. Connecting the same folder a second time under another path (a symlink, other
+letter case, or its old location) is refused with the command that resolves it. If Yoetz cannot
+tell which projects use what an agent installation shares (an earlier version set it up, or its
+list of connected projects was lost), a disconnect keeps those shared pieces and says so. For
+Codex, Yoetz still remembers the projects it connected itself, and a disconnect that would leave
+only projects it cannot verify stops before changing anything and offers two ways on: connect
+again the project you use, or preview removing the shared pieces for every project with
+`--remove-shared`. A project connected only through another Yoetz installation is not detected
+once that list is lost, so keep the list; if Yoetz reports it damaged, follow the message rather
+than deleting it. The review mode (local only, or AI-powered review) is shared by the projects of
+one Codex installation or Claude Code configuration: connecting a project with another mode
+changes it for the others too, and the preview names them. A Codex installation's settings folder
+must exist before setup; Claude Code and Cursor create theirs.
 The [Codex](../runbooks/codex-integration.md), [Claude Code](../runbooks/claude-code-integration.md)
 and [Cursor](../runbooks/cursor-integration.md) runbooks retain version/platform evidence and
 operator details. Configuration success alone does not prove a fresh host session is connected.

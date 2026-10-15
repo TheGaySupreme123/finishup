@@ -45,6 +45,10 @@ from yoetz.protocol.canonical import canonical_digest
 __all__ = [
     "CodexMcpAdapter",
     "CommandOutput",
+    "codex_project_mcp_leftover",
+    "read_bounded_toml",
+    "probe_project_config_load",
+    "project_transport_dependence",
 ]
 
 _COMMAND_TIMEOUT_SECONDS: Final = 10.0
@@ -63,7 +67,29 @@ class CommandOutput:
 type CommandRunner = Callable[[tuple[str, ...]], CommandOutput]
 
 
-def _default_runner(argv: tuple[str, ...], *, codex_home: Path | None = None) -> CommandOutput:
+def _selected_codex_home(codex_home: Path | None) -> Path:
+    if codex_home is not None:
+        return codex_home
+    configured = os.environ.get("CODEX_HOME")
+    return Path(configured) if configured else Path.home() / ".codex"
+
+
+def _neutral_cwd(codex_home: Path | None) -> str | None:
+    """Run user-scope registration commands outside any project layer.
+
+    ``codex mcp add|get|list|remove`` act on ``$CODEX_HOME/config.toml``, but Codex also merges
+    a trusted project's ``.codex/config.toml`` found from the working directory. Launching from
+    the selected Codex home keeps an unrelated or broken project layer in the invoking shell's
+    directory from changing or failing the user-scope observation.
+    """
+
+    home = _selected_codex_home(codex_home)
+    return str(home) if home.is_dir() else None
+
+
+def _default_runner(
+    argv: tuple[str, ...], *, codex_home: Path | None = None, cwd: str | None = None
+) -> CommandOutput:
     environment = None
     if codex_home is not None:
         environment = dict(os.environ)
@@ -82,6 +108,7 @@ def _default_runner(argv: tuple[str, ...], *, codex_home: Path | None = None) ->
                 check=False,
                 shell=False,
                 env=environment,
+                cwd=cwd if cwd is not None else _neutral_cwd(codex_home),
             )
             stdout_size = stdout_file.tell()
             stdout_file.seek(0)
@@ -635,3 +662,130 @@ class CodexMcpAdapter:
             preview.preview_digest,
             ("host_remove_returned_nonzero",) if remove_output.exit_code != 0 else (),
         )
+
+
+def probe_project_config_load(
+    executable_path: str,
+    codex_home: Path | None,
+    project: Path,
+    *,
+    runner: Callable[[tuple[str, ...], str], CommandOutput] | None = None,
+) -> Literal["loads", "fails", "unknown"]:
+    """Ask Codex itself whether it loads configuration with ``project`` as working directory.
+
+    ``codex mcp list --json`` merges the user layer with a trusted project's ``.codex`` layer
+    exactly as a session there would; a nonzero exit means a session in that project cannot
+    start. Output is never echoed. A probe that cannot run is ``unknown``, never ``loads``.
+    """
+
+    argv = (executable_path, "mcp", "list", "--json")
+    try:
+        output = (
+            runner(argv, str(project))
+            if runner is not None
+            else _default_runner(argv, codex_home=codex_home, cwd=str(project))
+        )
+    except McpRegistrationError:
+        return "unknown"
+    return "loads" if output.exit_code == 0 else "fails"
+
+
+def _has_transport(table: object) -> bool:
+    if not isinstance(table, Mapping):
+        return False
+    entry = cast(Mapping[str, object], table)
+    return entry.get("command") is not None or entry.get("url") is not None
+
+
+def read_bounded_toml(path: Path) -> Mapping[str, object] | None:
+    import tomllib
+
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > _OUTPUT_LIMIT_BYTES:
+            return None
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError, UnicodeError, tomllib.TOMLDecodeError:
+        return None
+
+
+def project_transport_dependence(
+    project: Path, *, after_sweep: bool
+) -> Literal["none", "depends", "unknown"]:
+    """Whether ``project``'s Codex layer needs the user-level ``mcp_servers.yoetz`` transport.
+
+    ``depends`` means ``<project>/.codex/config.toml`` declares ``mcp_servers.yoetz`` (for
+    example a ``tools.*`` approval table) without its own ``command`` or ``url``: Codex then
+    refuses to load configuration in that project once the user-level registration is gone.
+    ``after_sweep`` first removes the exact tables the admission sweep would remove, so the
+    answer describes the project after a disconnect. ``unknown`` is a file Yoetz cannot read
+    safely (symlink, oversized, not UTF-8 TOML).
+    """
+
+    from yoetz.adapters.integrations.host_admission import (
+        CODEX_EXTERNAL_ADMISSION_TABLE,
+        CODEX_PLUGIN_ADMISSION_TABLE,
+    )
+    from yoetz.adapters.integrations.toml_tables import strip_exact_table
+
+    path = project / ".codex" / "config.toml"
+    if not os.path.lexists(path):
+        return "none"
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > _OUTPUT_LIMIT_BYTES:
+            return "unknown"
+        raw = path.read_bytes()
+    except OSError:
+        return "unknown"
+    if after_sweep:
+        for table in (CODEX_EXTERNAL_ADMISSION_TABLE, CODEX_PLUGIN_ADMISSION_TABLE):
+            raw = strip_exact_table(raw, table)
+    import tomllib
+
+    try:
+        parsed = tomllib.loads(raw.decode("utf-8"))
+    except UnicodeError, tomllib.TOMLDecodeError:
+        return "unknown"
+    servers = parsed.get("mcp_servers")
+    if not isinstance(servers, Mapping):
+        return "none"
+    entry = cast(Mapping[str, object], servers).get(MCP_SERVER_NAME)
+    if entry is None or _has_transport(entry):
+        return "none"
+    return "depends"
+
+
+def codex_project_mcp_leftover(codex_home: Path | None, project: Path) -> str | None:
+    """Name a project ``mcp_servers.yoetz`` table that has no transport anywhere, statically.
+
+    Returns ``"tools_only"`` when ``<project>/.codex/config.toml`` declares ``mcp_servers.yoetz``
+    (for example only its ``tools.check`` admission) while neither that layer nor the user layer
+    supplies ``command`` or ``url``. Codex then rejects the merged server as ``invalid
+    transport`` and refuses to start in that project. ``None`` means no such leftover was read.
+    """
+
+    project_config = read_bounded_toml(project / ".codex" / "config.toml")
+    if project_config is None:
+        return None
+    servers = project_config.get("mcp_servers")
+    if not isinstance(servers, Mapping):
+        return None
+    project_entry = cast(Mapping[str, object], servers).get(MCP_SERVER_NAME)
+    if project_entry is None or _has_transport(project_entry):
+        return None
+    user_config = read_bounded_toml(_selected_codex_home(codex_home) / "config.toml") or {}
+    user_servers = user_config.get("mcp_servers")
+    user_entry = (
+        cast(Mapping[str, object], user_servers).get(MCP_SERVER_NAME)
+        if isinstance(user_servers, Mapping)
+        else None
+    )
+    if _has_transport(user_entry):
+        return None
+    # ``tools_only``: only exact Yoetz approval tables remain, which an admission revoke removes.
+    # ``retained_tables``: tables Yoetz did not write (or that were edited) remain; a revoke cannot
+    # remove them, so the repair is editing the file or restoring the registration.
+    return (
+        "tools_only"
+        if project_transport_dependence(project, after_sweep=True) == "none"
+        else "retained_tables"
+    )
