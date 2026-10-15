@@ -11,9 +11,11 @@ from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     CheckRecordedPayload,
+    DecisionRecordedPayload,
     LedgerRecord,
     PlanRevisedPayload,
     ResponseRecordedPayload,
+    ReviewMode,
 )
 from finishup.kernel.closing_review_delta import closing_review_delta
 from finishup.kernel.projections import ProjectionState
@@ -57,7 +59,9 @@ def test_bookkeeping_is_not_a_closing_review_delta_and_an_edit_is() -> None:
         if record.schema.name == "action_recorded" and type(record.payload) is ActionRecordedPayload
     )
 
-    def _with_payload(record: LedgerRecord, payload: ActionRecordedPayload) -> LedgerRecord:
+    def _with_payload(
+        record: LedgerRecord, payload: ActionRecordedPayload | DecisionRecordedPayload
+    ) -> LedgerRecord:
         clone = object.__new__(type(record))
         for field in fields(type(record)):
             object.__setattr__(clone, field.name, getattr(record, field.name))
@@ -68,3 +72,8 @@ def test_bookkeeping_is_not_a_closing_review_delta_and_an_edit_is() -> None:
     assert closing_review_delta(_with_payload(source, edited), state) is True
     command = replace(edited, action_kind=ActionKind.COMMAND, command="pytest -q")
     assert closing_review_delta(_with_payload(source, command), state) is True
+    decision = next(record for record in prefix if record.schema.name == "decision_recorded")
+    assert type(decision.payload) is DecisionRecordedPayload
+    assert decision.payload.review_mode is None
+    switched = replace(decision.payload, review_mode=ReviewMode.LOCAL)
+    assert closing_review_delta(_with_payload(decision, switched), state) is True

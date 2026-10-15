@@ -12,7 +12,9 @@ A later record requires a new closing review when:
   cannot prove harmless);
 * an observed result has no readable action (fail closed);
 * it is a cooperative ``action_recorded`` of kind ``edit`` or ``command``, or the result of one,
-  including a result whose action row cannot be read.
+  including a result whose action row cannot be read;
+* it is a ``decision_recorded`` that switches review mode (ADR-049). Any other decision stays
+  bookkeeping.
 
 FinishUP's own calls, exploration, host bookkeeping, and non-counting writes do not.
 """
@@ -22,6 +24,7 @@ from __future__ import annotations
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    DecisionRecordedPayload,
     LedgerRecord,
     ResultRecordedPayload,
     is_observation_authored,
@@ -86,4 +89,8 @@ def closing_review_delta(record: LedgerRecord, projection: ProjectionState) -> b
         action = projection.actions.get(payload.action_id)
         kind = None if action is None or action.payload is None else action.payload.action_kind
         return kind in {None, ActionKind.EDIT, ActionKind.COMMAND}
+    # ADR-049: switching review mode after the closing review makes that review stale. A decision
+    # that does not switch mode is still bookkeeping.
+    if name == "decision_recorded" and type(payload) is DecisionRecordedPayload:
+        return payload.review_mode is not None
     return False
