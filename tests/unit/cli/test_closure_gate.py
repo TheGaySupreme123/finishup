@@ -1203,19 +1203,30 @@ def test_the_acceptance_answer_is_host_aware_and_codex_claude_text_is_unchanged(
     assert "Cursor passes FinishUP no final answer" in beside.text
 
 
-def test_only_the_codex_stop_gate_repeats_the_check_cell_deadline(
+def test_no_host_repeats_the_check_cell_deadline_without_a_recorded_cell(
     tmp_path: Path, host: _Host
 ) -> None:
-    """tb4n5 (P6): a yielded Codex `check` cell stales its own check; the gate names the pragma."""
-
-    from finishup.protocol.readiness_text import CODEX_CHECK_CELL_PRAGMA
+    """The pragma follows an observed code-mode cell, not the host brand (#1079)."""
 
     session = "gate-pragma"
     h = _Harness(tmp_path, host.key(session))
     text = host.assert_gate(_stop(h, host, session))
-    if host.name == "codex":
-        assert f"starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}`" in text
-    else:
-        # Claude Code and Cursor run a tool call to completion: their close text is unchanged.
-        assert "yield_time_ms" not in text
-        assert gate_module._CLOSE_TEXT in text  # pyright: ignore[reportPrivateUsage]
+    assert "yield_time_ms" not in text
+    assert gate_module._CLOSE_TEXT in text  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_recorded_code_mode_cell_repeats_the_check_cell_deadline(tmp_path: Path) -> None:
+    """A cell stored for this session is the positive capability signal."""
+
+    from finishup.protocol.readiness_text import CODEX_CHECK_CELL_PRAGMA
+
+    host = _Host("codex")
+    session = "gate-pragma-cell"
+    h = _Harness(tmp_path, host.key(session))
+    workspace = h.store.workspace_commitment(str(tmp_path.resolve()))
+    commitment = h.store.session_commitment(host.key(session))
+    assert h.store.session_observed_code_mode(workspace, commitment) is False
+    assert h.store.begin_code_mode_cell(workspace, commitment, "call_check") is True
+    assert h.store.session_observed_code_mode(workspace, commitment) is True
+    text = host.assert_gate(_stop(h, host, session))
+    assert f"starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}`" in text

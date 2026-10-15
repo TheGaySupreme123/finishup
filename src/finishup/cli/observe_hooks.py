@@ -4242,6 +4242,16 @@ def _decide_closure_gate(
             pending = True
         # Blockers this session was already re-asked about are honoured without asking again.
         reasked = closure_gate_reasked_blockers(mapping.yoetz_session_id, _state=_state)
+        # A recorded code-mode ``exec`` cell is the capability signal (#1079). No cell, a store
+        # that cannot answer, or any error is the neutral close instruction. The host brand is not.
+        code_mode = False
+        try:
+            commitment = store.session_commitment(codex_session_id)
+            probe = getattr(store, "session_observed_code_mode", None)
+            if callable(probe):
+                code_mode = probe(workspace_commitment, commitment) is True
+        except Exception:
+            code_mode = False
 
         async def _read() -> ClosureGate | None:
             return await read_closure_gate(
@@ -4255,6 +4265,7 @@ def _decide_closure_gate(
                 active_stop=active_stop,
                 final_message=final_message,
                 host=harness_id,
+                code_mode=code_mode,
                 on_acceptance_covered=lambda: record_hook_diagnostic(
                     "closure_gate_acceptance_covered", "Stop", _state=_state
                 ),

@@ -10526,7 +10526,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the gate text; a path is never remembered. tb4n5: when a name was withheld it adds why and the
   agent's own listing command, `git status --porcelain --untracked-files=all`).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
-  observation_pending=, reasked_blockers=, active_stop=, final_message=) ->
+  observation_pending=, reasked_blockers=, active_stop=, final_message=, host=, code_mode=) ->
   ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks
   `closure_readiness.rechecks` announces** (tb4n3 RC-8,
   ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
@@ -10561,16 +10561,20 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   eight, or an older list), else the announced obligations not attested; `()` means the re-read is
   not asked. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where the re-read rides
   alone it ends with the sentence that a pure confirmation needs no new record, check or receipt.
-  Both decision functions take `host=` (tb4n5 P6), the hook host the Stop came from: on `codex` the
-  required close instruction asks for the `check` with the cell's deadline pragma,
-  `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the bridge's
-  `check` deadline), because a yielded check cell lands after its check and makes it stale; Claude
-  Code and Cursor run a tool call to completion and keep the unchanged sentence. On `cursor` the
+  Both decision functions take `host=` and `code_mode=` (tb4n5 P6, #1079). `host` is the hook host
+  the Stop came from. The required close instruction asks for the `check` with the cell's deadline
+  pragma, `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the
+  bridge's `check` deadline), only when code mode was positively observed: `code_mode` is true
+  (the hook saw a recorded `exec` cell for this session via
+  `LocalObservationStore.session_observed_code_mode`) or `check_cause.tool` is `exec`. Otherwise
+  the neutral sentence is used, including when `host` is `codex` (plain `exec_command` /
+  `write_stdin` are not cells). There is no MCP `clientInfo` signal for this capability. Claude
+  Code and Cursor do not record code-mode cells, so they keep the neutral sentence. On `cursor` the
   acceptance re-read never names the `finishup-acceptance` line (Cursor's `stop` carries no final
   message): it says a met criterion stays resolved and is confirmed in the final answer, and that
   the re-read is not asked again for the set (#1050 follow-up); Codex and Claude Code keep the line.
   `readiness_text.check_cause_sentence` repeats the same pragma when the cause's `tool` is `exec`
-  (a Codex code-mode cell), in both its full and short forms.
+  (the observed code-mode cell tool, not the host brand), in both its full and short forms.
   `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;
   the tb4n4 `obligations` page read is gone) and raises `ClosureGateUnavailable` when it cannot,
   and calls `on_acceptance_covered` when the message attests every announced obligation of an

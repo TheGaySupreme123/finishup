@@ -285,22 +285,34 @@ _BLOCKER_OFFER_SHORT_TEXT: Final = (
 _CLOSE_TEXT: Final = (
     "Then run `check` and request the receipt. A FinishUP limit is never a `finishup-blocker`."
 )
-# tb4n5 (P6): in Codex code mode a `check` cell without a yield deadline yields; the yielded cell
-# then lands after the check and makes it stale (FinishUP-only yielded check cells in 5 of 9 S
-# attempts, a stale final check in 6). The deadline pragma was only in `startup.md`, read at start
-# and forgotten by closure, so the Codex Stop gate repeats it where it asks for that check. The
-# value is the bridge's `check` deadline (``CODEX_CHECK_YIELD_TIME_MS``; a test pins the two
-# together). Claude Code and Cursor run a tool call to completion, so their text is unchanged.
+# tb4n5 (P6): a code-mode `check` cell without a yield deadline yields; the yielded `exec` cell
+# then lands after the check and makes it stale. The deadline pragma is for that cell only.
+# Issue #1079: the gate emits it when code mode was positively observed (a recorded `exec` cell
+# for this session, or ``check_cause.tool == "exec"``), never because the host brand is Codex.
+# Plain Codex ``exec_command`` / ``write_stdin`` and the other hosts keep the neutral sentence.
 _CLOSE_TEXT_CODEX: Final = (
     f"Then run `check`, starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}` so it does not"
     " yield, and request the receipt. A FinishUP limit is never a `finishup-blocker`."
 )
 
 
-def _close_text(host: str | None) -> str:
-    """The close instruction; on Codex it repeats the `check` cell's yield deadline (tb4n5)."""
+def _code_mode_observed(readiness: object, code_mode: bool) -> bool:
+    """Whether this Stop has positive evidence of a code-mode ``exec`` cell.
 
-    return _CLOSE_TEXT_CODEX if host == "codex" else _CLOSE_TEXT
+    ``code_mode`` is the hook's session observation. ``check_cause.tool == "exec"`` is the
+    recorded cause of a stale check. Either is enough. Absence is the neutral instruction.
+    """
+
+    if code_mode is True:
+        return True
+    cause = getattr(readiness, "check_cause", None)
+    return getattr(cause, "tool", None) == "exec"
+
+
+def _close_text(*, code_mode: bool) -> str:
+    """The close instruction; the cell pragma only when code mode was observed."""
+
+    return _CLOSE_TEXT_CODEX if code_mode else _CLOSE_TEXT
 
 
 # tb4n2 FH A-12 (cargo D): an obligation was published resolved while the agent's own output said
@@ -1023,12 +1035,15 @@ def closure_gate_from_readiness(
     active_stop: bool = False,
     final_message: str | None = None,
     host: str | None = None,
+    code_mode: bool = False,
 ) -> ClosureGate | None:
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
 
-    ``host`` is the hook host (``codex``, ``claude`` or ``cursor``). On ``codex`` the close
-    instruction repeats the `check` cell's ``yield_time_ms`` deadline (tb4n5). On ``cursor`` the
-    acceptance re-read never names the ``finishup-acceptance`` line, which Cursor cannot deliver.
+    ``host`` is the hook host (``codex``, ``claude`` or ``cursor``). The close instruction repeats
+    the `check` cell's ``yield_time_ms`` deadline only when ``code_mode`` is true or
+    ``check_cause.tool`` is ``exec`` (a recorded code-mode cell), not because the host is Codex
+    (tb4n5, #1079). On ``cursor`` the acceptance re-read never names the ``finishup-acceptance``
+    line, which Cursor cannot deliver.
 
     ``final_message`` (#1050) is the agent's last message when the host passed one. The acceptance
     re-read names the obligations readiness announced (since tb4n5 only the resolved obligations
@@ -1265,6 +1280,7 @@ def closure_gate_from_readiness(
         else (_FINDING_NO_SELF_VERIFY_TEXT, _FINDING_NO_SELF_VERIFY_SHORT_TEXT)
     )
     lineage_variants = _lineage_variants(readiness, items)
+    close = _close_text(code_mode=_code_mode_observed(readiness, code_mode))
 
     def compose(
         *,
@@ -1300,7 +1316,7 @@ def closure_gate_from_readiness(
             # FH A-12, announced by readiness: the first optional sentence dropped under the host
             # bound, with the drain note.
             parts.append(accept_text)
-        parts.append(_close_text(host))
+        parts.append(close)
         # The blocker exit is offered only for open obligations: findings, reviews and FinishUP
         # limits are never excused by a blocker (F1, #984).
         if offers_blocker:
@@ -1384,7 +1400,7 @@ def closure_gate_from_readiness(
             accept_text=accept_text,
             lineage=lineage_variants,
             undeclared=undeclared,
-            close_text=_close_text(host),
+            close_text=close,
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         # The predicted conclusion yields before anything else: it is added only when the whole
@@ -1465,6 +1481,7 @@ async def read_closure_gate(
     final_message: str | None = None,
     on_acceptance_covered: Callable[[], object] | None = None,
     host: str | None = None,
+    code_mode: bool = False,
 ) -> ClosureGate | None:
     """Read the mapped session's compact status and decide the gate.
 
@@ -1472,6 +1489,7 @@ async def read_closure_gate(
     could not answer raises ``ClosureGateUnavailable`` so the caller records it as unavailable;
     either way the agent may stop.
 
+    ``code_mode`` is true when the hook observed a recorded code-mode cell for this session.
     ``final_message`` (#1050) is the agent's last message when the host passed one. An acceptance
     re-read the message answers with a ``finishup-acceptance:<obligation id>:met`` line for every
     announced obligation is not asked, and ``on_acceptance_covered`` is called. The message is
@@ -1510,6 +1528,7 @@ async def read_closure_gate(
             active_stop=active_stop,
             final_message=message,
             host=host,
+            code_mode=code_mode,
         )
         if (
             message is not None
@@ -1526,6 +1545,7 @@ async def read_closure_gate(
                 reasked_blockers=reasked_blockers,
                 active_stop=active_stop,
                 host=host,
+                code_mode=code_mode,
             )
             if unanswered is not None and ACCEPTANCE_RECHECK_ITEM in unanswered.items:
                 with contextlib.suppress(Exception):

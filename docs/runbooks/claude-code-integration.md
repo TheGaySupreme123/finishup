@@ -1609,8 +1609,10 @@ retry offer.
   its end marker (`FINISHUP_GUIDANCE_SECTIONS ...`, one `#<anchor> <bytes>` line each) and carries
   `structuredContent.sections`. The list is outside the page bytes, so `GuidancePageAssembler`
   verifies the page as before. Decision: supported.
-- **Check-cell deadline at closure.** Not applicable: Claude Code runs a tool call to completion,
-  so there is no yielding cell to stale a check. The Stop gate text is unchanged on this host.
+- **Check-cell deadline at closure.** Not applicable: Claude Code runs a tool call to completion
+  and does not use code-mode `exec` cells. The close instruction is chosen from an observed
+  capability, not the host brand, so Claude Code gets the neutral sentence and no `yield_time_ms`
+  pragma.
 
 ### Bounded workflow recovery examples (#613)
 

@@ -47,13 +47,14 @@ _ACTION_REQUIRED: Final = (
     "Work remains. Clear each agent-actionable item; standing limitations need no action."
 )
 _READY: Final = "Nothing further to do. Request the receipt."
-# tb4n5 (P6): a Codex code-mode `check` cell without this deadline yields, and the yielded `exec`
-# cell lands after the check and makes it stale. `startup.md` states the pragma; the status
-# sentence for an `exec` cause and the Codex Stop gate repeat it where they ask for that check.
-# The value is the bridge's `check` call deadline (a test pins the two together).
+# tb4n5 (P6): a code-mode `check` cell without this deadline yields, and the yielded `exec`
+# cell lands after the check and makes it stale. `startup.md` states the pragma for a JavaScript
+# `exec` cell. The status sentence repeats it only when the cause's tool is that cell (`exec`),
+# and the Stop gate repeats it only when code mode was positively observed (#1079). The value is
+# the bridge's `check` call deadline (a test pins the two together).
 CODEX_CHECK_YIELD_TIME_MS: Final = 300_000
 CODEX_CHECK_CELL_PRAGMA: Final = '// @exec: {"yield_time_ms": 300000}'
-# The tool name Codex records for a code-mode cell.
+# The tool name a code-mode cell records. Direct ``exec_command`` is a shell tool, not this.
 _CODEX_CELL_TOOL: Final = "exec"
 _UNKNOWN: Final = (
     "Readiness is unknown at this frontier. Read status again once the projection is readable."
@@ -129,7 +130,7 @@ def check_cause_sentence(
     """
 
     via = "" if tool is None else f" via {tool}"
-    # A Codex code-mode cell after the check is usually the yielded check cell itself (tb4n5).
+    # An observed code-mode cell (`exec`), not the host brand. Usually the yielded check cell.
     cell = tool == _CODEX_CELL_TOOL
     if compact:
         # The short form for a byte-bounded text: no id, no rule, the same record and frontier.

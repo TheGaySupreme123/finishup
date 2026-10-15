@@ -2461,12 +2461,15 @@ tool cannot carry a hint per mode, and a separate tool is the alternative ADR-04
   `structuredContent.sections`, one `{uri, byte_count}` per catalogued section, and the bounded
   pointer in `content` names the anchors and sizes. A code-mode cell that prints the structured
   result (the `startup.md` snippet prints the whole page) shows the list. Decision: supported.
-- **Check-cell deadline at closure.** A `check` cell without `yield_time_ms` yields, and the
-  yielded `exec` cell lands after the check and makes it stale (5 of 9 S attempts, a stale final
-  check in 6). The Codex Stop gate's close instruction now repeats
-  `// @exec: {"yield_time_ms": 300000}`, and the status `check_cause` sentence repeats it when the
-  cause's tool is `exec`. Decision: supported. Evidence boundary: unit tests only; the Codex
-  dogfood lane is pending.
+- **Check-cell deadline at closure.** A code-mode `check` cell without `yield_time_ms` yields, and
+  the yielded `exec` cell lands after the check and makes it stale (5 of 9 S attempts, a stale
+  final check in 6). The Stop gate repeats `// @exec: {"yield_time_ms": 300000}` only after a
+  recorded code-mode `exec` cell for this session (`session_observed_code_mode`), or when
+  `check_cause.tool` is `exec`. The host brand Codex does not select it: plain `exec_command` and
+  `write_stdin` get the neutral close sentence. The status `check_cause` sentence repeats the
+  pragma when the cause's tool is `exec`. Decision: supported for observed code mode; direct MCP
+  stays on the neutral sentence. Evidence boundary: unit tests only; the Codex dogfood lane is
+  pending.
 
 ### Closure readiness and standing limitations (#913)
 

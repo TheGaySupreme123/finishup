@@ -1706,8 +1706,9 @@ not listed at all; `action_count` counts only what the record holds.
   the text channel: page zero appends it after its end marker (`FINISHUP_GUIDANCE_SECTIONS ...`, one
   `#<anchor> <bytes>` line each). It is outside the page bytes; `GuidancePageAssembler` accepts it
   only there. Decision: supported; the Cursor dogfood lane is pending.
-- **Check-cell deadline at closure.** Not applicable: Cursor runs a tool call to completion, so
-  there is no yielding cell to stale a check. The Stop gate text is unchanged on this host.
+- **Check-cell deadline at closure.** Not applicable: Cursor runs a tool call to completion and
+  does not use code-mode `exec` cells. The close instruction is chosen from an observed capability,
+  not the host brand, so Cursor gets the neutral sentence and no `yield_time_ms` pragma.
 
 ### Bounded workflow recovery examples (#613)
 

@@ -1042,3 +1042,14 @@ status, closure-prepare, and receipt text name that FinishUP limit. A material c
 failure asks again and clears the code. `invalidates_recorded_check` is unchanged, so a real edit
 still makes the check inapplicable and still re-arms the closing review. The code is a readiness
 token, not a coverage gap and not a new wire field.
+
+## Amendment (2026-10-15, issue #1079 item 3): the check-cell pragma follows the capability
+
+The Stop gate used to repeat `// @exec: {"yield_time_ms": 300000}` whenever the host was Codex.
+Plain Codex exec and the benchmark host expose direct MCP calls plus `exec_command` and
+`write_stdin`, which are not code-mode cells, and FinishUP's MCP server records no `clientInfo`
+that says the client uses cells. The close instruction is now the neutral sentence unless code
+mode was positively observed: a recorded `exec` cell for this session
+(`LocalObservationStore.session_observed_code_mode`), or `check_cause.tool == "exec"`. Claude Code
+and Cursor do not record those cells, so they keep the neutral sentence. `guidance/startup.md`
+says the pragma and `yield_time_ms` apply only to a JavaScript `exec` cell.

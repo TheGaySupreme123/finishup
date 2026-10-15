@@ -54,21 +54,22 @@ cadence, startup failure precedence, selectors, and handoff table remain in
 
 ## Code mode
 
-Use one cell per FinishUP call. The cells name the `finishup` server; where the host still registers
-the pre-rename server name, use the `mcp__yoetz__` names `ALL_TOOLS` lists. Discover the exact
-declaration before calling a tool:
+One JavaScript `exec` cell per FinishUP call (`tools.mcp__finishup__*`). The `// @exec`
+pragma and `yield_time_ms` apply only to that cell. Direct MCP, `exec_command` and
+`write_stdin` are not cells; do not set `yield_time_ms` on them. Discover the declaration
+before calling:
 
 ```js
 const decl=name=>{const d=ALL_TOOLS.find(t=>t.name===`mcp__finishup__${name}`)?.description??"";const i=d.indexOf("exec tool declaration:");text(i<0?d:d.slice(i))};decl("start");
 ```
 
-Read a page through its structured result and verify its byte metadata before using it:
+Read a page through its structured result:
 
 ```js
 const g=await tools.mcp__finishup__read_guidance({uri:"finishup://guidance/workflow.md",page:"0",page_size:"1024"});const p=g.structuredContent;if(!p||p.ok!==true||typeof p.text!=="string")throw new Error("guidance page missing");const n=new TextEncoder().encode(p.text).length;if(n!==p.page_byte_count||p.revision!==p.digest||p.complete!==(Number(p.page)+1===Number(p.page_count)))throw new Error("guidance page metadata mismatch");text(JSON.stringify(p));
 ```
 
-Mint every request or event id with this helper; its last branch is explicitly non-cryptographic:
+Mint every id with this helper:
 
 ```js
 const uuid4=()=>{const c=globalThis.crypto;if(typeof c?.randomUUID==="function")return c.randomUUID().toLowerCase();const b=new Uint8Array(16);if(typeof c?.getRandomValues==="function")c.getRandomValues(b);else for(let i=0;i<16;i++)b[i]=Math.floor(Math.random()*256);// fallback: not cryptographic
