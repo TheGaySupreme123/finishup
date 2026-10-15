@@ -3134,24 +3134,35 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
             "recorded."
         )
     if gap_codes & _SEMANTIC_REVIEW_NOT_RUN_GAPS:
+        provenance = document.semantic_provenance
+        deferred = review_deferred_before_first_edit(
+            None if provenance is None else provenance.reason,
+            gap_codes,
+        )
+        # The deferral is not "review was not run": AI-powered review is on and waits
+        # for the first edit. The exact sentence is the one every other surface uses.
+        review_clause = (
+            DEFERRED_BEFORE_FIRST_EDIT_TEXT
+            if deferred
+            else "AI-powered relevance review was not run."
+        )
         if document.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN:
             count = len(unresolved)
             noun = "finding" if count == 1 else "findings"
             verb = "remains" if count == 1 else "remain"
             return _compact_not_run_clause(
                 document,
-                prefix
-                + f"{count} unresolved {noun} {verb}; AI-powered relevance review was not run.",
+                prefix + f"{count} unresolved {noun} {verb}; {review_clause}",
             )
         if document.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
             return _compact_not_run_clause(
                 document,
-                prefix + "coverage is insufficient; AI-powered relevance review was not run.",
+                prefix + f"coverage is insufficient; {review_clause}",
             )
         return _compact_not_run_clause(
             document,
             prefix + "no unresolved local issue was found in the published record; "
-            "AI-powered relevance review was not run.",
+            f"{review_clause}",
         )
     if {
         "import_source_range_not_universal",

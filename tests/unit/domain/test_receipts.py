@@ -683,6 +683,51 @@ def test_semantic_relevance_review_not_run_gap_shares_not_run_wording() -> None:
     assert "AI-powered relevance review was not run" in rendered
 
 
+def test_compact_receipt_names_a_pre_edit_deferral() -> None:
+    """A not-requested receipt that also carries the deferral gap uses the deferral sentence."""
+
+    from finishup.domain.receipts import (
+        DEFERRED_BEFORE_FIRST_EDIT_TEXT,
+        SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+        SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+    )
+
+    gaps = sorted(
+        (
+            SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+            SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+        )
+    )
+
+    def rendered(conclusion: str) -> str:
+        wire = _variant("deterministic-current.case.json", "current_complete")
+        wire["conclusion"] = conclusion
+        coverage = cast(dict[str, Any], wire["coverage"])
+        coverage["known_gaps"] = gaps
+        coverage["ledger_freshness"] = "partial"
+        wire["gaps"] = [{"code": code, "subject_refs": []} for code in gaps]
+        for section in cast(list[dict[str, Any]], wire["sections"]):
+            if section["key"] == "limitations_and_coverage":
+                section["body"] = (
+                    f"{DEFERRED_BEFORE_FIRST_EDIT_TEXT} Coverage is limited by: "
+                    + ", ".join(gaps)
+                    + "."
+                )
+                section["items"] = list(gaps)
+            if section["key"] == "summary":
+                section["body"] = "Coverage is insufficient at frontier 7."
+        return render_receipt_compact(receipt_document_from_json(wire))
+
+    for conclusion in (
+        "insufficient_coverage",
+        "unresolved_findings_remain",
+        "no_unresolved_deterministic_findings",
+    ):
+        text = rendered(conclusion)
+        assert DEFERRED_BEFORE_FIRST_EDIT_TEXT in text
+        assert "AI-powered relevance review was not run" not in text
+
+
 def test_semantic_review_not_run_never_hides_unresolved_findings() -> None:
     """An AI-powered gap must not turn an unresolved local receipt into a clean claim."""
 
