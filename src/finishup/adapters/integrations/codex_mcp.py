@@ -953,17 +953,20 @@ def project_transport_dependence(
     example a ``tools.*`` approval table) without its own ``command`` or ``url``: Codex then
     refuses to load configuration in that project once the user-level registration is gone.
     ``after_sweep`` first removes the exact tables the admission sweep would remove, so the
-    answer describes the project after a disconnect. ``unknown`` is a file FinishUP cannot read
-    safely (symlink, oversized, not UTF-8 TOML). ``names`` are the user-level server keys the
-    caller is about to remove: a disconnect that also removes an owned entry under the earlier
-    ``yoetz`` key passes both, so a project table that still needs that transport stops it too
-    (ADR-048). The sweep removes the exact legacy approval tables as well.
+    answer describes the project after a disconnect; the sweep never edits a foreign surface (an
+    edited approval table, a server-wide default), so nothing is removed from one. ``unknown``
+    is a file FinishUP cannot read safely (symlink, oversized, not UTF-8 TOML). ``names`` are
+    the user-level server keys the caller is about to remove: a disconnect that also removes an
+    owned entry under the earlier ``yoetz`` key passes both, so a project table that still needs
+    that transport stops it too (ADR-048). The sweep removes the exact legacy approval tables as
+    well.
     """
 
     from finishup.adapters.integrations.host_admission import (
         CODEX_EXTERNAL_ADMISSION_TABLE,
         CODEX_LEGACY_ADMISSION_TABLES,
         CODEX_PLUGIN_ADMISSION_TABLE,
+        codex_sweep_edits,
     )
     from finishup.adapters.integrations.toml_tables import strip_exact_table
 
@@ -976,7 +979,7 @@ def project_transport_dependence(
         raw = path.read_bytes()
     except OSError:
         return "unknown"
-    if after_sweep:
+    if after_sweep and codex_sweep_edits(raw):
         for table in (
             CODEX_EXTERNAL_ADMISSION_TABLE,
             CODEX_PLUGIN_ADMISSION_TABLE,

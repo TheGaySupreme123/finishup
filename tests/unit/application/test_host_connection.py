@@ -600,3 +600,75 @@ def test_cursor_remove_shared_summary_names_who_stops_using_finishup(tmp_path: P
         "Home-wide disconnect" in line and str(project_c) in line and "stop using FinishUP" in line
         for line in summary
     )
+
+
+def test_claude_disconnect_of_a_yoetz_era_only_project_lists_only_what_it_removes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B has a FinishUP project-scope install (so the shared ``finishup-local`` source exists);
+    A has only its owned Yoetz-era install, which therefore reads ``duplicate`` with nothing of
+    A's own discovered. A's disconnect retires the legacy install; apply skips the FinishUP
+    uninstall for a project whose install is not discovered, so the plan must not list it."""
+
+    from types import SimpleNamespace
+
+    from finishup.adapters.integrations import claude_code_integration as claude
+    from finishup.application import host_connection as module
+    from finishup.ports.plugin_artifacts import PluginArtifactState
+
+    project, other, config = tmp_path / "a", tmp_path / "b", tmp_path / "claude"
+    for item in (project, other, config):
+        item.mkdir(mode=0o700)
+    status = SimpleNamespace(
+        state=PluginArtifactState.PARTIAL,
+        discovered=False,
+        enabled=None,
+        legacy_installation="duplicate",
+    )
+
+    def target(*args: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            project_root=args[0],
+            claude_config_root=args[1],
+            cache_root=args[2],
+            marketplace_root=args[3],
+        )
+
+    def preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            action=claude.ClaudeCodePluginAction.REMOVE, preview_digest="sha256:" + "a" * 64
+        )
+
+    def anything(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    def nothing(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def observed(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return status
+
+    def others(*_args: object, **_kwargs: object) -> tuple[str, ...]:
+        return (str(other),)
+
+    monkeypatch.setattr(claude, "ClaudeCodePluginTarget", target)
+    monkeypatch.setattr(claude, "discover_claude_code", anything)
+    monkeypatch.setattr(claude, "installed_claude_startup_mode", nothing)
+    monkeypatch.setattr(claude, "render_claude_code_plugin", anything)
+    monkeypatch.setattr(claude, "status_claude_code_plugin", observed)
+    monkeypatch.setattr(claude, "claude_code_other_projects", others)
+    monkeypatch.setattr(claude, "installed_claude_route_profile", nothing)
+    monkeypatch.setattr(claude, "preview_claude_code_plugin", preview)
+    installation = HostInstallation("claude", tmp_path / "claude-bin", "2.1.299", config, "Claude")
+
+    plan = module.prepare_connection(
+        request_id("req_50000000-0000-4000-8000-000000000009"),
+        installation,
+        project,
+        action="disconnect",
+        route="strict",
+        launcher=("/x/finishup",),
+    )
+
+    assert plan.body["changes"] == ["remove_legacy_plugin"]
+    assert plan.disclosure["shared_with"] == [str(other)]

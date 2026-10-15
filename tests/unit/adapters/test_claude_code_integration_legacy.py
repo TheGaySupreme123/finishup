@@ -841,6 +841,78 @@ def test_migrating_one_project_keeps_the_shared_tree_for_the_next(tmp_path: Path
     assert _legacy_root(first).is_dir()
 
 
+def test_a_detached_yoetz_era_project_plans_only_its_legacy_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented upgrade path: A migrates, so B's Yoetz-era install reads ``duplicate`` and B
+    has no FinishUP install of its own. B's guided disconnect retires only B's legacy install;
+    the plan must not list an ``uninstall_plugin`` that apply never runs."""
+
+    from finishup.adapters.integrations import claude_code_integration as module
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.application.host_connection import apply_connection, prepare_connection
+
+    first, artifact, first_claude = _legacy_install(tmp_path)
+    second, second_claude = _second_project(tmp_path, first, artifact)
+    claude = _Projects(first_claude, second_claude)
+    request = _request(44)
+    preview = preview_claude_code_plugin(
+        request, first, ClaudeCodePluginAction.CONNECT, artifact, commands=claude
+    )
+    apply_claude_code_plugin(
+        request,
+        first,
+        ClaudeCodePluginAction.CONNECT,
+        artifact,
+        accepted_preview_digest=preview.preview_digest,
+        authority=ArtifactAuthority("review_only", preview.preview_digest, "a" * 64),
+        review=_Review(),
+        commands=claude,
+    )
+    before = status_claude_code_plugin(second, artifact, commands=claude)
+    assert before.legacy_installation == "duplicate" and not before.discovered
+
+    def discover(_executable: Path) -> ClaudeCodeCapabilityIdentity:
+        return second.identity
+
+    monkeypatch.setattr(module, "discover_claude_code", discover)
+    monkeypatch.setattr(module, "SubprocessClaudeCodeCommands", lambda: claude)
+    installation = HostInstallation(
+        "claude",
+        Path(second.executable),
+        second.identity.version,
+        Path(second.claude_config_root),
+        "Claude Code",
+    )
+
+    def prepare():  # noqa: ANN202
+        return prepare_connection(
+            _request(45),
+            installation,
+            Path(second.project_root),
+            action="disconnect",
+            route="policy",
+            launcher=artifact.finishup_launcher,
+        )
+
+    plan = prepare()
+    assert plan.body["changes"] == ["remove_legacy_plugin"]
+    assert plan.disclosure["shared_with"] == [first.project_root]
+    first_install = first_claude.installed.get(_NEW[1])
+    apply_connection(
+        plan,
+        accepted_digest=plan.digest,
+        refresh=prepare,
+        authority=ArtifactAuthority("review_only", plan.digest, "test"),
+        review=_Review(),
+    )
+    assert second_claude.installed[_OLD[1]] is False
+    assert first_claude.installed.get(_NEW[1]) == first_install
+    assert not any(
+        call[:2] == ("plugin", "uninstall") and _NEW[1] in call for call in second_claude.calls
+    )
+
+
 def test_an_unreferenced_legacy_tree_is_retained_not_this_projects(tmp_path: Path) -> None:
     target = _target(tmp_path)
     artifact = render_claude_code_plugin(finishup_launcher=_launcher(tmp_path))

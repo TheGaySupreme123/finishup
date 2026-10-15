@@ -6711,8 +6711,10 @@ reports it as `admission_cleanup` and its preview discloses the same, including 
 MCP registration action is already a `noop`. A disconnect plan lists the change token
 `remove_project_admission`; because the released `yoetz.host-connection-plan/1` body is closed,
 the cleanup detail (`admission_cleanup`: per-surface state and file digest, plus `legacy_entries`
-naming exact pre-rename entries the same sweep removes, ADR-048; a surface holding only those still
-plans the sweep) and, for Codex,
+naming exact pre-rename entries, ADR-048; an otherwise `absent` surface holding only those still
+plans the sweep, while a `foreign` surface never does: the sweep never edits one, so
+`admission_cleanup_needed` counts `legacy_entries` only on an `absent` surface, as
+`cli/host_admission.admission_cleanup_preview` does) and, for Codex,
 `admission_other_projects` travel in the preview report's `status` and are folded into
 `preview_digest` (a grant or revoke after preview makes the plan stale). Apply sweeps before any
 registration removal; a sweep that ends `unknown|write_failed` stops the disconnect as
@@ -6720,10 +6722,13 @@ registration removal; a sweep that ends `unknown|write_failed` stops the disconn
 unreadable observation) refuses the same way when the plan is prepared and again before the sweep,
 whatever else the surfaces hold, with `status.admission_unreadable_surfaces`. Codex additionally
 projects the project's `.codex/config.toml` after the sweep (`codex_mcp.project_transport_dependence`
-`none|depends|unknown`): when it removes the user-level transport and `depends`, preparation
-refuses `connection_project_mcp_tables_retained` (`status.project_mcp_retained`); when the
-unregistration also removes an owned entry under the earlier `yoetz` key, `mcp_servers.yoetz` tables
-count too (`names`), after the exact legacy tables are swept. Other projects
+`none|depends|unknown`; `after_sweep` strips the exact FinishUP and legacy tables only from a
+surface the sweep edits, `host_admission.codex_sweep_edits(raw)`: `present`, or `absent` with exact
+legacy entries, so a foreign surface is modeled unchanged): when it removes the user-level
+transport and `depends`, preparation refuses `connection_project_mcp_tables_retained`
+(`status.project_mcp_retained`); when the unregistration also removes an owned entry under the
+earlier `yoetz` key, `mcp_servers.yoetz` tables count too (`names`), after the exact legacy tables
+are swept. Other projects
 whose layer `depends` (or is `unknown`) keep the transport: `status.admission_other_projects`
 entries carry `project_root`, `dependence`, and a revoke `next_command` only when exact FinishUP
 tables alone remain; warning `mcp_registration_kept_for_other_projects`; a bound of 32 inspected

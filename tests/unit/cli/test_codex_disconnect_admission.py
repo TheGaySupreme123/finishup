@@ -816,6 +816,55 @@ def test_a_legacy_only_admission_entry_is_disclosed_and_swept(tmp_path: Path) ->
     assert not config.exists() or "yoetz" not in config.read_text()
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        # The project's own transport with an edited approval table: the surface is foreign.
+        '[mcp_servers.finishup]\ncommand = "finishup"\nargs = ["mcp", "serve", "--host", "codex"]\n\n'
+        '[mcp_servers.finishup.tools.check]\napproval_mode = "prompt"\n\n',
+        # An edited plugin-form table, no transport of its own.
+        '[plugins."finishup@finishup".mcp_servers.finishup.tools.check]\n'
+        'approval_mode = "prompt"\n\n',
+        # An exact external table beside an edited plugin-form table (the pre-rename analogue).
+        CODEX_EXTERNAL_ADMISSION_TABLE + "\n"
+        '[plugins."finishup@finishup".mcp_servers.finishup.tools.check]\n'
+        'approval_mode = "prompt"\n\n',
+    ],
+)
+def test_a_foreign_surface_is_neither_swept_nor_modeled_as_swept(
+    tmp_path: Path, content: str
+) -> None:
+    """The sweep never edits a foreign approval file, so an exact Yoetz-era (or FinishUP) table
+    in it stays: the plan must not claim `remove_project_admission`, and the after-sweep model
+    must still see the table that needs the transport."""
+
+    from finishup.adapters.integrations.codex_mcp import project_transport_dependence
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+    from finishup.application.host_connection import admission_cleanup_needed
+
+    project = tmp_path / "project"
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    config = project / ".codex" / "config.toml"
+    config.write_text(content + CODEX_LEGACY_ADMISSION_TABLES[0])
+    config.chmod(0o600)
+    before = config.read_bytes()
+    both = ("finishup", "yoetz")
+    step = AdmissionCleanupStep(project)
+    body: dict[str, Any] = {"changes": []}
+
+    needed = step.plan(body, "codex", "disconnect")
+
+    cleanup = cast(dict[str, Any], step.disclosure["admission_cleanup"])
+    assert cleanup["state"] == "foreign"
+    assert needed is False and admission_cleanup_needed(cleanup) is False
+    assert body["changes"] == []
+    step.apply(needed)
+    assert config.read_bytes() == before
+    real = project_transport_dependence(project, after_sweep=False, names=both)
+    assert real == "depends"
+    assert project_transport_dependence(project, after_sweep=True, names=both) == real
+
+
 def test_admission_change_after_preview_makes_plan_stale(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -113,7 +113,8 @@ def admission_cleanup_needed(plan: dict[str, JsonValue]) -> bool:
     """True when at least one surface carries an exact FinishUP entry the sweep removes.
 
     An exact legacy ``yoetz`` entry counts too, also on an otherwise absent surface: the sweep
-    removes it, and a stale project entry must not outlive the registration (ADR-048).
+    removes it, and a stale project entry must not outlive the registration (ADR-048). A foreign
+    or unknown surface never counts: the sweep never edits it, whatever exact entries it holds.
     """
 
     surfaces = plan.get("surfaces")
@@ -121,7 +122,10 @@ def admission_cleanup_needed(plan: dict[str, JsonValue]) -> bool:
         isinstance(item, dict)
         and (
             item.get("state") == HostAdmissionState.PRESENT.value
-            or bool(item.get("legacy_entries"))
+            or (
+                item.get("state") == HostAdmissionState.ABSENT.value
+                and bool(item.get("legacy_entries"))
+            )
         )
         for item in surfaces
     )
@@ -543,8 +547,11 @@ def prepare_connection(
                 changes.extend(("install_plugin", "enable_plugin", "plugin_mcp"))
             elif before.state is not PluginArtifactState.ABSENT:
                 if shared.others and not shared.remove_shared:
-                    # Other projects keep the shared marketplace source and its plugin MCP.
-                    changes.append("uninstall_plugin")
+                    # Other projects keep the shared marketplace source and its plugin MCP. A
+                    # project whose own install is not discovered (only its Yoetz-era install
+                    # remains) has nothing of its own to uninstall; apply skips it too.
+                    if before.discovered:
+                        changes.append("uninstall_plugin")
                 else:
                     # This project's own install may already be gone (an earlier disconnect
                     # kept the shared pieces for a project since deleted): only they remain.
