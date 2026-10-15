@@ -658,6 +658,33 @@ def test_activation_cache_mcp_uses_the_pinned_launcher_not_path(
     assert bound["hooks/hooks.json"] == legacy["hooks/hooks.json"]
 
 
+def test_activation_cache_refuses_a_bare_command_when_no_launcher_is_proven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An embed with neither an installed RECORD nor an invoking launcher must not write PATH."""
+
+    import shutil
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.adapters.integrations.codex_plugin import activation_cache_members
+
+    def path_which(cmd: str, mode: int = 0, path: str | None = None) -> str:
+        del cmd, mode, path
+        raise AssertionError("PATH was consulted")
+
+    monkeypatch.setattr(codex_mcp, "installed_launcher", lambda name="finishup": None)
+    monkeypatch.setattr(codex_mcp, "invoking_launcher", lambda: None)
+    monkeypatch.setattr(shutil, "which", path_which)
+    original = {".mcp.json": b'{"mcpServers":{}}\n', "hooks/hooks.json": b"{}\n"}
+
+    with pytest.raises(IntegrationError) as caught:
+        activation_cache_members(original)
+
+    assert caught.value.reason is IntegrationReason.SOURCE_INVALID
+    assert caught.value.safe_details.get("detail") == "launcher_unproven"
+    assert original[".mcp.json"] == b'{"mcpServers":{}}\n'
+
+
 def test_an_unproven_launcher_is_not_replaced_from_path(monkeypatch: pytest.MonkeyPatch) -> None:
     import shutil
 

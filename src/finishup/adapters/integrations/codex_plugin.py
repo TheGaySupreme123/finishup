@@ -52,6 +52,7 @@ __all__ = [
     "PLUGIN_ROOT",
     "PluginHookPresence",
     "PluginInspection",
+    "activation_cache_mcp_binding",
     "activation_cache_members",
     "codex_supports_async_hooks",
     "inspect_plugin",
@@ -353,6 +354,41 @@ def _mcp_json(
     return canonical_encode(body) + b"\n"
 
 
+def _binding_error(exc: McpRegistrationError) -> IntegrationError:
+    reason = (
+        IntegrationReason.TARGET_UNSAFE
+        if exc.reason is McpRegistrationReason.ISOLATION_INVALID
+        else IntegrationReason.SOURCE_INVALID
+    )
+    token = exc.safe_details.get("detail", exc.safe_details.get("reason"))
+    details: dict[str, DomainJsonValue] = {}
+    if type(token) is str and token.isascii() and "/" not in token and len(token) <= 64:
+        details["detail"] = token
+    return _error(reason, details)
+
+
+def activation_cache_mcp_binding() -> tuple[tuple[str, ...], dict[str, str] | None]:
+    """The MCP argv and isolation environment the activation cache writes.
+
+    The same pair ``activation_cache_members`` stores in ``.mcp.json``, and the argv a
+    noninteractive connect must approve. An embed with no proven console script keeps a bare
+    command for external registration; the cache refuses that case (``launcher_unproven``)
+    rather than writing a command ``PATH`` would resolve. An unsafe isolation root is refused.
+    ``PATH`` is never consulted.
+    """
+
+    try:
+        command, _digest = proven_serve_command(MCP_SERVE_COMMAND)
+        environment = isolated_root_environment()
+    except McpRegistrationError as exc:
+        raise _binding_error(exc) from exc
+    # ``proven_serve_command`` returns the historical bare argv when this process has neither
+    # an installed RECORD nor an invoking launcher. That is not a cache command.
+    if len(command) < 1 or not Path(command[0]).is_absolute():
+        raise _error(IntegrationReason.SOURCE_INVALID, {"detail": "launcher_unproven"})
+    return command, environment
+
+
 def activation_cache_members(members: Mapping[str, bytes]) -> dict[str, bytes]:
     """Cache-layer plugin tree: the managed source with its MCP entry bound to this runtime.
 
@@ -364,20 +400,7 @@ def activation_cache_members(members: Mapping[str, bytes]) -> dict[str, bytes]:
     unsafe isolation root is refused. ``PATH`` is never consulted.
     """
 
-    try:
-        command, _digest = proven_serve_command(MCP_SERVE_COMMAND)
-        environment = isolated_root_environment()
-    except McpRegistrationError as exc:
-        reason = (
-            IntegrationReason.TARGET_UNSAFE
-            if exc.reason is McpRegistrationReason.ISOLATION_INVALID
-            else IntegrationReason.SOURCE_INVALID
-        )
-        token = exc.safe_details.get("detail", exc.safe_details.get("reason"))
-        details: dict[str, DomainJsonValue] = {}
-        if type(token) is str and token.isascii() and "/" not in token and len(token) <= 64:
-            details["detail"] = token
-        raise _error(reason, details) from exc
+    command, environment = activation_cache_mcp_binding()
     rewritten = {path: data for path, data in members.items() if path != _MARKER_NAME}
     rewritten[".mcp.json"] = _mcp_json(command=command, environment=environment)
     return {**rewritten, _MARKER_NAME: _build_marker(rewritten)}
