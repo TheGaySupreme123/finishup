@@ -169,7 +169,11 @@ ingestion and retains already-kept evidence. Never retain hidden reasoning or co
 prose. Sensitive bounded observation evidence lives only in encrypted objects; plaintext state is
 allowlisted structural fields plus commitments. Never create an unencrypted transcript spool on
 vault/service outage. AI-powered review receives only minimized approved packets. Secret-like
-command output never appears in status, logs, hook advice, or AI-powered review packets.
+command output never appears in status, logs, hook advice, or AI-powered review packets. Ordinary
+hook-captured output of a command the agent ran may appear in a follow-up review packet only when
+the reviewer asked for verification output, only as a repository excerpt the owner's policy already
+allows, and only within the existing excerpt limits (ADR-009). Private sends nothing. Output of a
+command the agent did not run is never included.
 
 ## Outbound pipeline and state machine
 

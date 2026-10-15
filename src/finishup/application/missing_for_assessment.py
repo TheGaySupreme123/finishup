@@ -79,6 +79,8 @@ __all__ = [
     "excerpt_span_covered",
     "excerpt_span_key",
     "excerpt_span_whole",
+    "OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX",
+    "observed_command_output_refs",
     "observed_image_evidence",
     "plan_review_follow_up",
     "review_missing_for_assessment",
@@ -359,6 +361,9 @@ class ReviewFollowUpItem:
 
 # The source ref of the service's own check-time change excerpts (ADR-031); never a ledger ref.
 CHECK_TIME_CHANGE_SOURCE_REF: Final = "check-time-change"
+# Span prefix of a follow-up excerpt that carries hook-captured command output (issue #1079).
+# The bytes are the command the agent ran, marked observed; the prefix is not a ledger ref.
+OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX: Final = "observed-command-output:"
 # One excerpt part's place in its source (tb4n5, #1047 follow-up): ``<ref>#<start>-<end>/<total>``,
 # the byte interval of the source's excerpt text the part holds and that text's length. The
 # source is the candidate's own ref (a captured group's lead, ``check-time-change`` for the
@@ -508,7 +513,10 @@ def plan_review_follow_up(
     (``semantic_case.current_section_parts``): a ``current_diff_for_path`` request for that edit
     is still owed while some of those bytes no packet carried, even when the edit itself was
     shown whole. Whether a round's packet really adds a part is decided once it is composed
-    (``semantic_case.follow_up_new_parts``).
+    (``semantic_case.follow_up_new_parts``). A ``verification_output`` item also names
+    hook-captured output of the newest run of each command its targets name. That output stays
+    owed until a sent packet carried its observed span, even when a digest of the same evidence
+    was shown whole. Selection, not this planner, applies the repository-excerpt gate.
     """
 
     if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
@@ -527,6 +535,11 @@ def plan_review_follow_up(
         ):
             continue
         sources = _recorded_sources(projection, entry.target_refs, allowed)
+        if entry.kind == "verification_output":
+            # Maintainer-approved (issue #1079): hook-captured output of a command this
+            # target names may ride the follow-up. Selection still applies the repository
+            # excerpt gate, the privacy policy and the existing byte limits.
+            sources |= observed_command_output_refs(projection, entry.target_refs, allowed)
         if not sources:
             continue
         asked = True
@@ -549,8 +562,16 @@ def plan_review_follow_up(
         ),
         added_parts=frozenset() if previous is None else previous.added_parts,
     )
-    if not follow_up.source_refs - shown - added and not _current_section_pending(
-        follow_up, section_parts or {}
+    observed_refs = frozenset(
+        ref
+        for item in follow_up.items
+        if item.kind == "verification_output"
+        for ref in observed_command_output_refs(projection, item.target_refs, allowed)
+    )
+    if (
+        not follow_up.source_refs - shown - added
+        and not _current_section_pending(follow_up, section_parts or {})
+        and not _observed_output_pending(follow_up, observed_refs)
     ):
         return None
     return follow_up
@@ -574,6 +595,23 @@ def _current_section_pending(
         if item.kind == "current_diff_for_path"
         for ref in item.source_refs
         for key in section_parts.get(ref, ())
+    )
+
+
+def _observed_output_pending(follow_up: ReviewFollowUp, observed_refs: frozenset[str]) -> bool:
+    """Whether a verification-output item still owes marked hook-captured command output.
+
+    A digest excerpt of the same evidence can be shown whole while the captured bytes were
+    not. The marked follow-up excerpt uses ``OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX``, so the
+    round stays owed until a sent packet carried that span. Evidence the target does not
+    name, and evidence that is not hook-captured command output, is never in ``observed_refs``.
+    """
+
+    seen = follow_up.seen_parts
+    prefix = OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX
+    return any(
+        not any(part.startswith(f"{prefix}{ref}#") for part in seen)
+        for ref in observed_refs & follow_up.source_refs
     )
 
 
@@ -608,6 +646,109 @@ def _recorded_sources(
         for key in family
     }
     return frozenset(refs & allowed & rows) - _redacted_refs(projection)
+
+
+def observed_command_output_refs(
+    projection: ProjectionState, targets: Iterable[str], allowed: frozenset[str]
+) -> frozenset[str]:
+    """Hook-captured output of commands ``targets`` name, for a verification-output follow-up.
+
+    Only evidence a command result cites, stamped ``observation_captured``, allowed, and not
+    redacted. The newest run of each named command wins; an older run is not a fallback when
+    that newest run has no such evidence.     A command with no run key (``omitted:structural``) identifies nothing and is not included:
+    unrelated commands must not be grouped, and a keyless capture is not auto-supplied.
+    Output of a command the targets do not name, and tool output an edit or file read recorded,
+    is never included. This names refs only; whether the bytes may leave is the repository
+    excerpt gate in selection.
+    """
+
+    named = {ref for ref in targets if type(ref) is str}
+    if not named:
+        return frozenset()
+    evidence_events = {
+        str(ref): str(row.source_event_id) for ref, row in projection.evidence.items()
+    }
+    claim_supports: list[frozenset[str]] = []
+    for claim_ref, row in projection.claims.items():
+        payload = row.payload
+        if payload is None or row.redacted:
+            continue
+        if str(claim_ref) not in named and str(row.source_event_id) not in named:
+            continue
+        claim_supports.append(frozenset(str(ref) for ref in payload.supporting_refs))
+
+    # ``(key, frontier, result ref, evidence refs, redacted, directly named, related)``.
+    # A redacted newest run still occupies the command so an older capture is not substituted.
+    runs: list[tuple[_RunKey | None, int, str, tuple[str, ...], bool, bool, bool]] = []
+    for result_ref, row in projection.results.items():
+        payload = row.payload
+        if payload is None:
+            continue
+        action_row = projection.actions.get(payload.action_id)
+        if (
+            action_row is None
+            or action_row.payload is None
+            or action_row.redacted
+            or action_row.payload.action_kind is not ActionKind.COMMAND
+        ):
+            continue
+        action = action_row.payload
+        key = _run_key(action)
+        evidence_refs = tuple(str(ref) for ref in payload.evidence_refs)
+        tokens = {
+            str(result_ref),
+            str(row.source_event_id),
+            str(payload.action_id),
+            str(action_row.source_event_id),
+            *evidence_refs,
+            *(evidence_events.get(ref, "") for ref in evidence_refs),
+        }
+        tokens.discard("")
+        direct = bool(named & tokens)
+        related = any(str(ref) in named for ref in action.obligation_refs) or any(
+            supports & tokens for supports in claim_supports
+        )
+        if key is None:
+            # No identity: do not group this run with any other, and do not auto-supply it.
+            continue
+        runs.append(
+            (
+                key,
+                row.source_frontier,
+                str(result_ref),
+                evidence_refs,
+                row.redacted,
+                direct,
+                related,
+            )
+        )
+
+    named_keys = {run[0] for run in runs if run[0] is not None and (run[5] or run[6])}
+    newest: dict[_RunKey, tuple[int, bytes, tuple[str, ...], bool]] = {}
+    for key, frontier, result_ref, evidence_refs, redacted, _direct, _related in runs:
+        if key is None or key not in named_keys:
+            continue
+        current = newest.get(key)
+        rank = (frontier, result_ref.encode("ascii"))
+        if current is None or rank > (current[0], current[1]):
+            newest[key] = (frontier, rank[1], evidence_refs, redacted)
+
+    chosen: list[str] = []
+    for _frontier, _result_id, evidence_refs, redacted in newest.values():
+        if not redacted:
+            chosen.extend(evidence_refs)
+
+    redacted_refs = _redacted_refs(projection)
+    kept: set[str] = set()
+    by_ref = {str(ref): row for ref, row in projection.evidence.items()}
+    for ref in chosen:
+        if ref not in allowed or ref in redacted_refs:
+            continue
+        row = by_ref.get(ref)
+        if row is None or row.redacted or row.payload is None or not _hook_observed(row.payload):
+            continue
+        kept.add(ref)
+    return frozenset(kept)
 
 
 def unsuppliable_missing_kinds(

@@ -680,12 +680,17 @@ what answers each kind (path evidence first for a new, untracked file; never sta
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
-report the named limitation instead. Hook-captured tool output never counts as supplied. A named
+report the named limitation instead. Hook-captured tool output never counts as the agent having
+supplied it. When the reviewer asks for verification output, FinishUP may include hook-captured
+output of a command the agent ran in the follow-up packet, within the privacy policy and the
+existing excerpt limits. Private sends nothing. Output of a command the agent did not run is never
+included. The packet marks that output as observed, not an agent-published result. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names
-recorded run output, an exact command or a captured edit the packet had no room for, FinishUP sends the
-packet again with that content first, up to three times. A manifest with `follow_up_round` shows the
+recorded run output, an exact command, a captured edit the packet had no room for, or verification
+output of a command the agent ran, FinishUP sends the packet again with that content first, up to
+three times. A manifest with `follow_up_round` shows the
 recorded review answered such a follow-up; its `missing_inputs` name what FinishUP added
 (`supplied_refs`). Do not publish that material again; what `missing_for_assessment` still lists is
 what remained after the follow-up.

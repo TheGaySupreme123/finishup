@@ -1224,3 +1224,20 @@ retry. Only `outcome_unknown` keeps the provider identity. The coordinator also 
 candidate built for a review-context profile that is no longer in force (`scope_mismatch`); the
 next admission rebuilds it from the current profile. The gateway's own consume fence for a switch
 after authorization is unchanged and not re-tested here (the provider gateway is faked).
+
+### Observed command output in a verification follow-up (2026-10-15, issue #1079)
+
+Maintainer acknowledgement: auto-supply of captured verification output is approved for this
+design-gated privacy change, and only on the terms below.
+
+When an AI-powered review returns `missing_for_assessment` for `verification_output`, a follow-up
+packet may include hook-captured output of a command the named targets actually ran. The bytes are
+the newest run of that command. They travel only as a repository excerpt, only when the effective
+review selection would already send repository excerpts, only through the existing minimization,
+redaction, secret scan and category withhold, and only inside the existing per-excerpt and total
+excerpt limits. This does not widen consent, add authority, or send anything the policy would not
+already allow as a repository excerpt. Private sends nothing. Output of a command the targets do
+not name is never included. Secret-like command output still never appears. The packet labels the
+excerpt as observed capture, not an agent-published result. Hook capture still does not count as
+the agent having supplied the missing item. A command recorded without a run key
+(`omitted:structural`) is not auto-supplied.

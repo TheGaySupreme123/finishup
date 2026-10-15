@@ -25,6 +25,7 @@ from finishup.application.check import (
 )
 from finishup.application.missing_for_assessment import (
     CHECK_TIME_CHANGE_SOURCE_REF,
+    OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
     ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
@@ -2858,6 +2859,14 @@ _OBSERVED_IMAGE_NOTICE_MARKER: Final = (
     "[FinishUP: an image was observed (evidence {ref}); "
     "it was not sent and its content is not assessable from this packet]\n"
 )
+# Follow-up only (issue #1079). Prefixed after agent text is neutralised, so a capture cannot
+# forge the label. The bytes stay a repository excerpt: a selection that would not already send
+# one does not receive them.
+_OBSERVED_COMMAND_OUTPUT_MARKER: Final = (
+    "[FinishUP: observed command output captured from a command the agent ran; "
+    "not an agent-published result]\n"
+)
+_LEDGER_SUBJECT_PREFIXES: Final = ("evt_", "obl_", "clm_", "act_", "res_", "evd_", "fnd_")
 _BINARY_RENDERING_MARKER: Final = (
     "[FinishUP: agent-rendered text of {path} (evidence {ref}); the binary file itself is not"
     " sent]\n"
@@ -3264,6 +3273,113 @@ def _evidence_candidates(
     return candidates
 
 
+def _observed_span_refs(keys: Iterable[str]) -> frozenset[str]:
+    """Evidence refs whose observed-command-output spans ``keys`` name."""
+
+    prefix = OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX
+    refs: set[str] = set()
+    for key in keys:
+        if not key.startswith(prefix):
+            continue
+        span = excerpt_span(key)
+        if span is None:
+            continue
+        ref = span[0][len(prefix) :]
+        if ref.startswith("evd_"):
+            refs.add(ref)
+    return frozenset(refs)
+
+
+def _linked_observed_subjects(
+    existing: Sequence[str], targets: Sequence[str], allowed: frozenset[str]
+) -> tuple[str, ...]:
+    """Ledger subjects the marked command-output excerpt may name, within the 16-ref bound."""
+
+    seen: list[str] = []
+    for ref in (*existing, *targets):
+        if (
+            type(ref) is str
+            and ref in allowed
+            and ref.startswith(_LEDGER_SUBJECT_PREFIXES)
+            and ref not in seen
+        ):
+            seen.append(ref)
+    return tuple(sorted(seen, key=str.encode)[:MAX_SEMANTIC_ITEM_SUBJECT_REFS])
+
+
+def _marked_observed_command_candidate(
+    candidate: _ExcerptCandidate,
+    content: bytes,
+    *,
+    targets: Sequence[str],
+    allowed: frozenset[str],
+    source_refs: frozenset[str],
+    excerpt_limit: int,
+) -> _ExcerptCandidate | None:
+    """The same capture, labelled observed, as one repository excerpt within the excerpt bound."""
+
+    marker = _OBSERVED_COMMAND_OUTPUT_MARKER
+    marker_bytes = len(marker.encode("ascii"))
+    if marker_bytes >= excerpt_limit or not content:
+        return None
+    body = _neutralised_agent_text(content.decode("utf-8", errors="replace"))
+    encoded = body.encode("utf-8")
+    room = excerpt_limit - marker_bytes
+    clipped = len(encoded) > room
+    if clipped:
+        clip, kept = _head_tail_kept(encoded, room)
+    else:
+        clip, kept = body, ((0, len(encoded)),) if encoded else ()
+    text = marker + clip
+    if len(text.encode("utf-8")) > excerpt_limit or not kept:
+        return None
+    span_refs = sorted(
+        {
+            ref
+            for ref in (candidate.source_ref, *candidate.identity_refs)
+            if ref.startswith("evd_") and ref in source_refs
+        },
+        key=str.encode,
+    )
+    if candidate.source_ref not in span_refs and candidate.source_ref.startswith("evd_"):
+        span_refs.append(candidate.source_ref)
+    total = len(encoded)
+    part_keys = tuple(
+        excerpt_span_key(f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{ref}", low, high, total)
+        for ref in span_refs
+        for low, high in kept
+        if low < high <= total
+    )
+    if not part_keys:
+        return None
+    linked = _linked_observed_subjects(candidate.linked, targets, allowed)
+    if not linked and candidate.source_ref in allowed:
+        linked = (candidate.source_ref,)
+    if not linked:
+        return None
+    item_base = f"observed-output-{candidate.source_ref}"
+    if len(item_base) > 128:
+        return None
+    return _ExcerptCandidate(
+        source_ref=candidate.source_ref,
+        item_base=item_base,
+        source_kind="command",
+        category=DataCategory.REPOSITORY_EXCERPT,
+        parts=(text,),
+        clipped=clipped,
+        linked=linked,
+        occurred_order=candidate.occurred_order,
+        content_visibility="available",
+        digest_provenance=candidate.digest_provenance,
+        identity_refs=candidate.identity_refs | frozenset(linked),
+        verification_identity=candidate.verification_identity,
+        verification_outcome=candidate.verification_outcome,
+        verification_action=candidate.verification_action,
+        verification_run=candidate.verification_run,
+        part_keys=(part_keys,),
+    )
+
+
 def _select_targeted_excerpts(
     *,
     projection: ProjectionState,
@@ -3583,6 +3699,9 @@ def _select_targeted_excerpts(
 
     # Issue #1047: what the reviewer asked for in this check, in request order, within its share.
     # tb4n5: chosen per part (see the docstring), so a partly shown source can still progress.
+    # Held-back indexes are newest hook-captured command outputs a verification-output follow-up
+    # must not send as a raw evidence excerpt (issue #1079).
+    held_back: set[int] = set()
     requested: dict[int, int] = {}
     promoted: dict[int, tuple[int, ...]] = {}
     if follow_up is not None:
@@ -3614,6 +3733,22 @@ def _select_targeted_excerpts(
             requested[index] = len(requested)
             promoted[index] = tuple(chosen)
             return True
+
+        def observed_capture(index: int, source_refs: frozenset[str]) -> bool:
+            candidate = candidates[index]
+            if not candidate.identity_refs & source_refs:
+                return False
+            group = captured_groups.get(candidate.source_ref)
+            if (
+                group is None
+                or group.source_kind != "evidence"
+                or candidate.verification_identity is None
+                or candidate.verification_action is None
+                or candidate.verification_run is None
+            ):
+                return False
+            newest = newest_runs.get(candidate.verification_identity)
+            return newest is not None and newest[1] == candidate.verification_run
 
         served: set[int] = set()
         for follow_up_item in follow_up.items:
@@ -3654,7 +3789,64 @@ def _select_targeted_excerpts(
                             if not promote(len(candidates) - 1):
                                 # Only ever carried as the answer to this request.
                                 candidates.pop()
+            observed_indexes = {
+                index
+                for index in matching
+                if follow_up_item.kind == "verification_output"
+                and observed_capture(index, follow_up_item.source_refs)
+            }
             for index in matching:
+                if index not in observed_indexes or index in held_back:
+                    continue
+                held_back.add(index)
+                # A selection that would not already send a repository excerpt must not
+                # receive the capture, including through the raw evidence-excerpt path.
+                if not selection.carries_check_time_change:
+                    continue
+                raw = candidates[index]
+                prefix = f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{raw.source_ref}#"
+                if any(part.startswith(prefix) for part in follow_up.seen_parts):
+                    held_back.discard(index)
+                    continue
+                group = captured_groups.get(raw.source_ref)
+                assert group is not None
+                marked = _marked_observed_command_candidate(
+                    raw,
+                    group.content,
+                    targets=follow_up_item.target_refs,
+                    allowed=allowed,
+                    source_refs=follow_up_item.source_refs,
+                    excerpt_limit=excerpt_limit,
+                )
+                if marked is None:
+                    gaps.add("content_unselected")
+                    _append_omission(
+                        omissions,
+                        raw.source_ref,
+                        raw.linked,
+                        DataCategory.REPOSITORY_EXCERPT,
+                        "command",
+                        "not_selected",
+                    )
+                    continue
+                candidates.append(marked)
+                new_index = len(candidates) - 1
+                if promote(new_index):
+                    latest_for[new_index] = "command"
+                else:
+                    candidates.pop()
+                    gaps.add("content_unselected")
+                    _append_omission(
+                        omissions,
+                        marked.source_ref,
+                        marked.linked,
+                        marked.category,
+                        marked.source_kind,
+                        "not_selected",
+                    )
+            for index in matching:
+                if index in observed_indexes:
+                    continue
                 promote(index)
 
     def requested_rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
@@ -3754,6 +3946,8 @@ def _select_targeted_excerpts(
     omitted_indexes: set[int] = set()
     part_keys: list[tuple[str, str]] = []
     for entry_rank, index, part_indexes in entries:
+        if index in held_back:
+            continue
         candidate = candidates[index]
         if not lower_ranks_offered and entry_rank[0] >= _RANK_OLDER_EDIT:
             offer_lower_rank_room()
@@ -6663,11 +6857,13 @@ def review_input_manifest(
                     )
                     & follow_up_item.source_refs
                 )
-                if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
-                    # A served current section answers its edit even when the first packet
-                    # showed that edit whole; any other excerpt adds only what it did not.
-                    refs -= follow_up.shown_refs
                 keys = placed.get(item.item_id, ())
+                if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF and not (
+                    _observed_span_refs(keys) & follow_up_item.source_refs
+                ):
+                    # A served current section, and a marked observed-command excerpt, answer
+                    # even when the first packet showed the underlying ref whole.
+                    refs -= follow_up.shown_refs
                 if refs and (
                     not keys
                     or any(not excerpt_span_covered(key, follow_up.shown_parts) for key in keys)
@@ -7328,13 +7524,17 @@ def follow_up_new_parts(
                 item.section, item.category.value, item.source_ref, item.linked_subject_refs
             )
         )
+        keys = placed.get(item.item_id)
+        observed = bool(_observed_span_refs(keys or ()) & follow_up.source_refs)
         if not refs & (
-            # A served current section answers the edit it links whatever was shown of the
-            # edit itself; whether its bytes are new is the part test below.
-            follow_up.source_refs if item.source_ref == _CHECK_TIME_CHANGE_SOURCE_REF else wanted
+            # A served current section, and a marked observed-command excerpt, answer even
+            # when the first packet showed the underlying ref whole. Whether the bytes are
+            # new is the part test below.
+            follow_up.source_refs
+            if item.source_ref == _CHECK_TIME_CHANGE_SOURCE_REF or observed
+            else wanted
         ):
             continue
-        keys = placed.get(item.item_id)
         if keys is None:
             new.add(item.item_id)
         else:
@@ -7376,9 +7576,11 @@ def _follow_up_supplied_item_ids(
             )
             & follow_up.source_refs
         )
-        if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
-            refs -= follow_up.shown_refs
         keys = placed.get(item.item_id, ())
+        if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF and not (
+            _observed_span_refs(keys) & follow_up.source_refs
+        ):
+            refs -= follow_up.shown_refs
         if refs and (
             not keys or any(not excerpt_span_covered(key, follow_up.shown_parts) for key in keys)
         ):

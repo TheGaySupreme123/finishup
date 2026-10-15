@@ -9134,8 +9134,15 @@ a `current_diff_for_path`, `verification_output` or `command_identity` item that
 asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times and only when the rebuilt packet carries
 a requested excerpt no earlier packet of the check carried. A target resolves to itself, the rows
 an `evt_` target recorded, and for a run its results, its action and the evidence they cite;
-redacted rows never count. Each round goes through the same privacy path, is its own egress, and is
-its own durable semantic job keyed by its case digest (`LedgerPort.load_semantic_job(writer,
+redacted rows never count. A `verification_output` item may also name hook-captured output of the
+newest run of each command those targets name (`observed_command_output_refs`). Selection admits
+those bytes only when the recipe would already send a repository excerpt, as category
+`repository_excerpt` and source kind `command`, labelled observed rather than agent-published, and
+only inside the existing excerpt budget. A channel that withholds `repository_excerpt` drops them.
+Private sends nothing. Output of a command the targets do not name is not included. A command
+recorded as `omitted:structural` has no run key and is not auto-supplied. The capture still does
+not count as the agent having supplied the item. Each round goes through the same privacy path,
+is its own egress, and is its own durable semantic job keyed by its case digest (`LedgerPort.load_semantic_job(writer,
 operation, case_digest=None)`); its `semantic-case/2` object names the base job
 (`follow_up.base_case_digest`, `round`) and keeps the base job's endpoint, retries and budget
 profile with its own deadline. The check records the last round: a failed round is recorded as a
@@ -10106,7 +10113,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   that token: when count, byte or aggregate case bounds drop the excerpt, the omission names each
   valid linked ledger subject (category and reason unchanged) and `content_unselected` stays set.
   A linked token that is not a ledger subject is skipped; subject validation is not relaxed
-  (issue #1077). A follow-up packet that adds no new part is not sent, so the completed
+  (issue #1077). A verification-output follow-up may also carry hook-captured output of the newest
+  run of a command the request names, as a `repository_excerpt` labelled observed, only when that
+  recipe already sends repository excerpts and only inside the existing byte limits. Private sends
+  nothing. A follow-up packet that adds no new part is not sent, so the completed
   `insufficient_packet` review stands. Each part is at most
   `min(max_excerpt_bytes, max_total_excerpt_bytes, item bound)` bytes, marker included (16 KiB
   under Expanded; issue #983). `_check_time_change_reservation(selection, first_part_bytes)`

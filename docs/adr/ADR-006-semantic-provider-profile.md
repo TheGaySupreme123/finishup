@@ -2088,3 +2088,11 @@ admission:
    bound exactly or refused. Upgrades keep every existing binding's model and efforts.
 3. **Admission is unchanged.** Sign-in, status and every review still prove the exact model and
    efforts against Codex's catalog.
+
+### Hook-captured verification output in a follow-up packet (2026-10-15, issue #1079)
+
+Hook-captured tool output never counts as supplied, and `supplied_since` still skips it. Separately,
+when the reviewer asks for verification output, the follow-up packet may include the newest
+hook-captured output of a command that request names, under ADR-009: the repository-excerpt gate,
+the existing excerpt limits, Private sends nothing, labelled observed rather than agent-published.
+A command with no run key (`omitted:structural`) is not included.

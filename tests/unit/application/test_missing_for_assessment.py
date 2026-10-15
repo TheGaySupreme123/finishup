@@ -225,6 +225,56 @@ def test_only_agent_published_actions_and_results_answer_a_request() -> None:
     )
 
 
+def test_hook_captured_command_output_does_not_count_as_agent_supplied() -> None:
+    """Auto-supply may quote a capture later; it never marks the missing item supplied."""
+
+    case = make_case(
+        actions={
+            act(62): record(
+                ActionRecordedPayload(act(62), ActionKind.COMMAND, "ran", command="pytest -q"),
+                62,
+            )
+        },
+        results={
+            res(63): record(
+                ResultRecordedPayload(
+                    res(63), act(62), ResultOutcome.SUCCESS, evidence_refs=(evd(64),)
+                ),
+                63,
+            )
+        },
+        evidence={
+            evd(64): evidence_record(
+                EvidenceRecordedPayload(
+                    evd(64),
+                    EvidenceKind.OTHER,
+                    EvidenceImmutability.IMMUTABLE_SNAPSHOT,
+                    timestamp_from_string("2026-09-27T00:00:00.000Z"),
+                    captured_object_id=object_id("obj_00000000-0000-4000-8000-000000000064"),
+                    content_digest="sha256:" + "c" * 64,
+                    description="Observation-captured tool output",
+                    digest_binding=EvidenceDigestBinding(
+                        subject=EvidenceDigestSubject.BOUNDED_EXCERPT,
+                        content_availability=EvidenceContentAvailability.CAPTURED,
+                        byte_count=8,
+                        provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
+                    ),
+                ),
+                64,
+            )
+        },
+        extra_refs=(act(62), res(63), evd(64)),
+    )
+    pending = PendingMissingForAssessment(
+        evt(50),
+        50,
+        (MissingForAssessmentItem("verification_output", (str(res(63)),), "agent_suppliable"),),
+    )
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    assert supplied_since(case.projection, pending, allowed) == ((str(res(63)),),)
+    assert str(evd(64)) not in supplied_since(case.projection, pending, allowed)[0]
+
+
 def test_packet_planning_ceiling_is_the_narrower_owner_channel_limit() -> None:
     """Issue #907: plan against max_bytes or max_tokens at four bytes per token, whichever binds."""
 
