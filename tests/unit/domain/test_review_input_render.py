@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import re
+from collections.abc import Mapping
+
+from finishup.domain.events import PAYLOAD_TYPES, EventSchema
 from finishup.domain.review_input_render import (
+    _PUBLISH_EXACTLY,  # pyright: ignore[reportPrivateUsage]
     FINISHUP_LIMIT_MISSING_TEXT,
     MISSING_SUPPLY_SENTENCE,
     has_agent_suppliable_missing,
@@ -13,6 +19,7 @@ from finishup.domain.review_input_render import (
     render_review_input_manifest_coverage_note,
     render_review_input_manifest_lines,
 )
+from finishup.protocol.schemas import SchemaArtifactRole, load_schema_catalog
 
 _DIGEST = "sha256:" + "a" * 64
 
@@ -166,6 +173,103 @@ def test_finishup_limit_items_are_named_as_finishup_limits_never_agent_work() ->
     assert lines[-1] == FINISHUP_LIMIT_MISSING_TEXT
     assert "never a blocker" in FINISHUP_LIMIT_MISSING_TEXT
     assert "git-add" in FINISHUP_LIMIT_MISSING_TEXT
+
+
+# Prose subjects the publish instructions use for an event family.
+_EVENT_SUBJECTS = {"action": "action_recorded", "evidence": "evidence_recorded"}
+
+
+def _event_versions(name: str) -> tuple[str, ...]:
+    return tuple(sorted(schema.version for schema in PAYLOAD_TYPES if schema.name == name))
+
+
+def _schema_fields(name: str, version: str) -> frozenset[str]:
+    wanted = name.replace("_", "-")
+    matched = [
+        document
+        for document in load_schema_catalog().documents
+        if document.artifact_role is SchemaArtifactRole.EVENT_PAYLOAD
+        and document.schema_name == wanted
+        and document.schema_version == version
+    ]
+    assert len(matched) == 1, (name, version)
+    properties = matched[0].json_schema["properties"]
+    assert isinstance(properties, Mapping)
+    return frozenset(str(key) for key in properties)
+
+
+def _model_fields(name: str, version: str) -> frozenset[str]:
+    payload = PAYLOAD_TYPES[EventSchema(name, version)]
+    return frozenset(item.name for item in dataclasses.fields(payload))
+
+
+def _publish_claims(instruction: str) -> list[tuple[str, str | None, str | None]]:
+    """Event mentions and the payload fields each instruction attributes to them."""
+
+    families = frozenset(schema.name for schema in PAYLOAD_TYPES)
+    events: list[tuple[int, int, str, str | None]] = []
+    for match in re.finditer(r"\b([a-z][a-z0-9_]*)\b(?:\s+(\d+\.\d+\.\d+))?", instruction):
+        name, version = match.group(1), match.group(2)
+        if name in families:
+            events.append((match.start(), match.end(), name, version))
+    claims: list[tuple[str, str | None, str | None]] = [
+        (name, version, None) for _start, _end, name, version in events
+    ]
+
+    def event_before(offset: int) -> tuple[str, str | None] | None:
+        earlier = [item for item in events if item[1] <= offset]
+        if not earlier:
+            return None
+        return earlier[-1][2], earlier[-1][3]
+
+    claimed_fields: set[str] = set()
+    for match in re.finditer(r"\bwhose\s+([a-z][a-z0-9_]*)", instruction):
+        named = event_before(match.start())
+        if named is None:
+            subject = re.search(r"\b([a-z_]+)\s+$", instruction[: match.start()])
+            assert subject is not None, instruction
+            alias = _EVENT_SUBJECTS.get(subject.group(1))
+            assert alias is not None, (subject.group(1), instruction)
+            named = (alias, None)
+        claims.append((named[0], named[1], match.group(1)))
+        claimed_fields.add(match.group(1))
+    for match in re.finditer(r"\bwith its\s+([a-z][a-z0-9_]*)", instruction):
+        named = event_before(match.start())
+        assert named is not None, instruction
+        claims.append((named[0], named[1], match.group(1)))
+        claimed_fields.add(match.group(1))
+    for match in re.finditer(r"\b([a-z]+)'s(?:\s+exact)?\s+([a-z][a-z0-9_]*)", instruction):
+        subject = match.group(1)
+        event = _EVENT_SUBJECTS.get(subject)
+        if event is None and subject not in families:
+            continue
+        claims.append((event or subject, None, match.group(2)))
+        claimed_fields.add(match.group(2))
+    for token in re.findall(r"\b[a-z]+_[a-z0-9_]+\b", instruction):
+        assert token in families or token in claimed_fields, (token, instruction)
+    return claims
+
+
+def test_publish_exactly_names_fields_the_payload_admits() -> None:
+    """Each named event exists, and each named field exists on that version's payload."""
+
+    assert _PUBLISH_EXACTLY["task_statement"] == (
+        "Publish one plan_revised 1.1.0 whose task_statement is the user's whole request, "
+        "linked to the target."
+    )
+    checked = 0
+    for instruction in _PUBLISH_EXACTLY.values():
+        for event, version, field in _publish_claims(instruction):
+            versions = (version,) if version is not None else _event_versions(event)
+            assert versions, event
+            for item in versions:
+                assert EventSchema(event, item) in PAYLOAD_TYPES
+                if field is None:
+                    continue
+                assert field in _schema_fields(event, item), (event, item, field)
+                assert field in _model_fields(event, item), (event, item, field)
+                checked += 1
+    assert checked >= 1
 
 
 def test_recorded_manifest_accepts_the_omission_total_and_refuses_a_smaller_one() -> None:

@@ -654,12 +654,14 @@ def observed_command_output_refs(
     """Hook-captured output of commands ``targets`` name, for a verification-output follow-up.
 
     Only evidence a command result cites, stamped ``observation_captured``, allowed, and not
-    redacted. The newest run of each named command wins; an older run is not a fallback when
-    that newest run has no such evidence.     A command with no run key (``omitted:structural``) identifies nothing and is not included:
-    unrelated commands must not be grouped, and a keyless capture is not auto-supplied.
-    Output of a command the targets do not name, and tool output an edit or file read recorded,
-    is never included. This names refs only; whether the bytes may leave is the repository
-    excerpt gate in selection.
+    redacted. The newest run of each named command wins. A readable command action that no
+    readable result cites occupies that command: a tombstoned result no longer names its action,
+    so an older capture is not substituted. A tombstoned action has no command text left and
+    cannot occupy a key. A command with no run key (``omitted:structural``) identifies nothing
+    and is not included: unrelated commands must not be grouped, and a keyless capture is not
+    auto-supplied. Output of a command the targets do not name, and tool output an edit or file
+    read recorded, is never included. This names refs only; whether the bytes may leave is the
+    repository excerpt gate in selection.
     """
 
     named = {ref for ref in targets if type(ref) is str}
@@ -679,11 +681,15 @@ def observed_command_output_refs(
 
     # ``(key, frontier, result ref, evidence refs, redacted, directly named, related)``.
     # A redacted newest run still occupies the command so an older capture is not substituted.
+    # The result payload is what named the action, so a tombstone cannot cite it; the readable
+    # action occupies the key instead.
     runs: list[tuple[_RunKey | None, int, str, tuple[str, ...], bool, bool, bool]] = []
+    cited_actions: set[object] = set()
     for result_ref, row in projection.results.items():
         payload = row.payload
         if payload is None:
             continue
+        cited_actions.add(payload.action_id)
         action_row = projection.actions.get(payload.action_id)
         if (
             action_row is None
@@ -720,6 +726,32 @@ def observed_command_output_refs(
                 row.redacted,
                 direct,
                 related,
+            )
+        )
+    for action_ref, action_row in projection.actions.items():
+        if action_ref in cited_actions:
+            continue
+        action_payload = action_row.payload
+        if (
+            action_payload is None
+            or action_row.redacted
+            or action_payload.action_kind is not ActionKind.COMMAND
+        ):
+            continue
+        key = _run_key(action_payload)
+        if key is None:
+            continue
+        tokens = {str(action_ref), str(action_row.source_event_id)}
+        runs.append(
+            (
+                key,
+                action_row.source_frontier,
+                str(action_ref),
+                (),
+                True,
+                bool(named & tokens),
+                any(str(ref) in named for ref in action_payload.obligation_refs)
+                or any(supports & tokens for supports in claim_supports),
             )
         )
 

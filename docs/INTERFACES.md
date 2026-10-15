@@ -9191,9 +9191,16 @@ redacted rows never count. A `verification_output` item may also name hook-captu
 newest run of each command those targets name (`observed_command_output_refs`). Selection admits
 those bytes only when the recipe would already send a repository excerpt, as category
 `repository_excerpt` and source kind `command`, labelled observed rather than agent-published, and
-only inside the existing excerpt budget. A channel that withholds `repository_excerpt` drops them.
-Private sends nothing. Output of a command the targets do not name is not included. A command
-recorded as `omitted:structural` has no run key and is not auto-supplied. The capture still does
+only inside the existing excerpt budget. The command must already class as test, build, lint, or
+typecheck. An environment dump, a credential-named path, a path outside the workspace, or a path
+the frozen check-time change refused is withheld whole (`withheld_by_policy`). The check-time
+disclosure scan, including a private-key body or END line, drops the whole item
+(`redacted_never_send` or `never_send_heuristic`); a partly redacted capture is not sent. A
+gitignored path the change did not list is not re-probed. A channel that withholds
+`repository_excerpt` drops them. Private sends nothing. Output of a command the targets do not
+name is not included. A readable command action that no readable result cites occupies the
+command, so a tombstoned newest result is not replaced by an older capture. A command recorded
+as `omitted:structural` has no run key and is not auto-supplied. The capture still does
 not count as the agent having supplied the item. Each round goes through the same privacy path,
 is its own egress, and is its own durable semantic job keyed by its case digest (`LedgerPort.load_semantic_job(writer,
 operation, case_digest=None)`); its `semantic-case/2` object names the base job
@@ -10182,7 +10189,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `[FinishUP check-time change, part 1 of n, cut to the packet's room]`; nothing follows it and
   `check_time_change_truncated` is disclosed (issue #983).
   When that budget cannot hold the whole change and the files are not all the same kind, sections
-  that change a decision are admitted before boilerplate (comments, imports, license text). The
+  that change a decision are admitted before boilerplate (comments, imports, license or
+  copyright comment and header lines). A decision line counts even when it names a license. The
   decision's own section is still a run from its start. A one-file change, equal-rank files, and
   a change that fits stay a leading prefix. The first reordered part carries one fixed line that
   decision-changing sections were shown ahead of boilerplate and that sections which did not fit

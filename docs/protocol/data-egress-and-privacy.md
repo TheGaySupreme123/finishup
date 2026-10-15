@@ -168,12 +168,17 @@ confirmation records a private workspace commitment (never a raw path). Revocati
 ingestion and retains already-kept evidence. Never retain hidden reasoning or complete transcript
 prose. Sensitive bounded observation evidence lives only in encrypted objects; plaintext state is
 allowlisted structural fields plus commitments. Never create an unencrypted transcript spool on
-vault/service outage. AI-powered review receives only minimized approved packets. Secret-like
-command output never appears in status, logs, hook advice, or AI-powered review packets. Ordinary
-hook-captured output of a command the agent ran may appear in a follow-up review packet only when
-the reviewer asked for verification output, only as a repository excerpt the owner's policy already
-allows, and only within the existing excerpt limits (ADR-009). Private sends nothing. Output of a
-command the agent did not run is never included. An agent-published result summary that answers a still-pending missing item may travel
+vault/service outage. AI-powered review receives only minimized approved packets. High-confidence
+secrets are withheld from status, logs, and hook advice. Hook-captured output may appear in a
+follow-up review packet only when the reviewer asked for verification output, only for a command
+already classed as a test, build, lint, or typecheck, and only as a repository excerpt the
+owner's policy would already allow, within the existing excerpt limits (ADR-009). An environment
+dump, a credential-named path, a path outside the workspace, or a path the frozen check-time
+change refused is withheld whole. The check-time disclosure scan, including a private-key body
+or END line, drops the whole item on a hit; a partly redacted capture is not sent, and the
+omission records why. A gitignored path the change did not list is not read again. A value the
+scan does not recognise is not treated as a hit. Private sends nothing. Output of a command the
+targets do not name is never included. An agent-published result summary that answers a still-pending missing item may travel
 in the next packet as an evidence excerpt when an evidence or test excerpt is already allowed, within the
 existing excerpt limits. Private sends nothing. A resolved obligation item may also carry
 `resolved_basis`: result refs and hook-captured verification refs that obligation already cites,

@@ -52,6 +52,7 @@ from finishup.adapters.git_version import (
 )
 from finishup.adapters.repository_identity import root_owned_checkout
 from finishup.config.foreign_write import owner_private_group
+from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.ports.change_capture import (
     MAX_BASELINE_UNTRACKED_FILES,
@@ -141,48 +142,12 @@ _COMMAND_LINE_ORIGIN: Final = b"command line:"
 _DIFF_SECTION: Final = b"diff --git "
 # Files with these names hold local credentials far more often than code, and the pattern scanner
 # cannot recognise every provider's key format (``DB_PASS=...``, ``rk_live_...``). Tracked or
-# untracked, they are listed by name only and their content is never shown (ADR-031). The list is a
-# name heuristic: it catches common conventions, not every file that holds a secret.
-_CREDENTIAL_NAMES: Final = frozenset(
-    {
-        b".env",
-        b".envrc",
-        b".git-credentials",
-        b".htpasswd",
-        b".netrc",
-        b"_netrc",
-        b".npmrc",
-        b".pgpass",
-        b".pypirc",
-        b"credentials",
-        b"credentials.json",
-        b"id_dsa",
-        b"id_ecdsa",
-        b"id_ed25519",
-        b"id_rsa",
-    }
-)
-_CREDENTIAL_PREFIXES: Final = (b".env.",)
-_CREDENTIAL_SUFFIXES: Final = (
-    b".jks",
-    b".kdbx",
-    b".key",
-    b".keystore",
-    b".p12",
-    b".pem",
-    b".pfx",
-    b".tfstate",
-    b".tfvars",
-)
+# untracked, they are listed by name only and their content is never shown (ADR-031). The names
+# live in ``domain.repository_excerpt`` so auto-supplied command output uses the same check.
 
 
 def _credential_name(path: bytes) -> bool:
-    name = path.rsplit(b"/", 1)[-1].lower()
-    return (
-        name in _CREDENTIAL_NAMES
-        or name.startswith(_CREDENTIAL_PREFIXES)
-        or name.endswith(_CREDENTIAL_SUFFIXES)
-    )
+    return credential_named_bytes(path)
 
 
 type _OmitReason = Literal[

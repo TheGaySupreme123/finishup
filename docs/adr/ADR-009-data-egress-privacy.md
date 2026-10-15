@@ -1231,16 +1231,50 @@ Maintainer acknowledgement: auto-supply of captured verification output is appro
 design-gated privacy change, and only on the terms below.
 
 When an AI-powered review returns `missing_for_assessment` for `verification_output`, a follow-up
-packet may include hook-captured output of a command the named targets actually ran. The bytes are
-the newest run of that command. They travel only as a repository excerpt, only when the effective
-review selection would already send repository excerpts, only through the existing minimization,
-redaction, secret scan and category withhold, and only inside the existing per-excerpt and total
-excerpt limits. This does not widen consent, add authority, or send anything the policy would not
-already allow as a repository excerpt. Private sends nothing. Output of a command the targets do
-not name is never included. Secret-like command output still never appears. The packet labels the
-excerpt as observed capture, not an agent-published result. Hook capture still does not count as
-the agent having supplied the missing item. A command recorded without a run key
-(`omitted:structural`) is not auto-supplied.
+packet may include hook-captured output of a command the named targets ran. The bytes are the
+newest readable run of that command. A readable command action that no readable result cites
+occupies the command, so a tombstoned newest result does not fall back to an older capture. A
+tombstoned action has no command text left and cannot occupy a key. A command with no run key
+(`omitted:structural`), and any command recorded as `omitted:`, is not auto-supplied.
+
+The item is sent only when every gate below passes. It is one repository excerpt, inside the
+existing per-excerpt and total excerpt limits. This does not widen consent or add authority.
+Private, and any selection that would not already send a repository excerpt, sends nothing. A
+channel that withholds `repository_excerpt` drops the item. Output of a command the targets do
+not name is never included. The packet labels the excerpt as observed capture, not an
+agent-published result. Hook capture still does not count as the agent having supplied the
+missing item. A refused capture is not sent as a raw evidence excerpt either.
+
+- The command must already class as test, build, lint, or typecheck (`command_is_verification`,
+  the same classes `command_runner_class` uses). A compound is included only when that
+  classifier's strongest class is one of those four. Anything else, including a `cat` or a file
+  read, is withheld whole.
+- An environment dump is withheld whole, including when it is composed with a verifier
+  (`pytest -q; printenv`). The dump shapes are `printenv`, `export -p`, `declare -p`,
+  `typeset -p`, `set` with no arguments or only `-o` / `+o` / `-p`, a bare `env` (assignments
+  and options, and no command after them), and any `/proc/<self-or-pid>/environ` operand.
+  `env pytest` runs pytest and is not a dump. `set -e` is not a dump.
+- A path operand is withheld whole when a repository excerpt would withhold it: a credential
+  file name (the same names as the check-time change), an absolute path outside the workspace
+  (or any absolute path when the workspace root is unknown), a `..` or `.git` component, or a
+  path the frozen check-time change marked `not shown` or as a nested repository whose own
+  change was not read (including a parent of that nested prefix). The program path
+  (`/usr/bin/pytest`) is the tool, not a repository file. Wrapper directory options (`-C`,
+  `--chdir`, `--directory`) and redirection targets count as paths. This gate does not call
+  Git. Gitignored paths are absent from the frozen change, so a verifier that names an unlisted
+  ignored path, and whose output the scan below does not hit, can still be sent.
+- The output then takes the check-time change scan (`redact_sensitive_content`, heuristics
+  included) plus a private-key END line or OpenSSH key-body check. The capture store only
+  replaces a BEGIN banner, so those two are checked here. Any hit drops the whole item. A
+  partly redacted capture is not sent. A value the scan does not recognise (for example
+  `DB_PASS=`) is not a hit by itself.
+
+A class, dump, or path withhold is omission reason `withheld_by_policy` and gap
+`content_unselected`. A high-confidence secret, a private-key body or END line, or a scanner
+failure is `redacted_never_send` and gap `content_redacted`. A heuristic-only hit is
+`never_send_heuristic` and the same gap. An item that does not fit the excerpt budget is
+`not_selected` and gap `content_unselected`. Older output held back because a newer run is a
+redacted occupancy is `withheld_by_policy` and gap `content_unselected`.
 
 ### Resolved criterion, shown as one question (2026-10-15, issue #1079)
 

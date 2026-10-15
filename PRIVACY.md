@@ -256,8 +256,10 @@ logs, status, or receipts). Revocation stops new ingestion and retains already-k
 Observation never retains hidden reasoning or complete transcript prose. Sensitive bounded evidence
 lives only in encrypted objects; plaintext observation state is allowlisted structural fields plus
 commitments. On vault or service outage FinishUP never creates an unencrypted transcript spool.
-Semantic review receives only minimized approved packets. Secret-like command output never appears
-in status, logs, hook advice, or semantic packets. Live observation uses local control methods, not
+Semantic review receives only minimized approved packets. High-confidence secrets are withheld
+from status, logs, and hook advice. Auto-supplied command output in a review packet follows the
+repository-excerpt gate in ADR-009: a secret hit drops the whole item, and a value the scan does
+not recognise is not treated as a hit. Live observation uses local control methods, not
 a seventh MCP tool; advice surfaces through nonblocking hooks and ordinary `status`.
 
 To tell a rerun of the same command from a different one, the hook computes an installation-keyed

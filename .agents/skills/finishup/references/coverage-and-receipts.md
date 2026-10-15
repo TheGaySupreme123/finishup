@@ -672,18 +672,12 @@ The check result lists what the reviewer needed in `missing_for_assessment`: eac
 refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a FinishUP limit
 (gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
 `semantic_missing_yoetz_limit`). A `yoetz_limit_*` item is content the packet cannot show
-(unsupported data type, packet room): never your work and never a blocker; verify it yourself (see
-[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts)). Never reshape a
-deliverable to fit the reviewer. Recheck only
-after supplying a named `agent_suppliable` item with new records tied directly to the named ref;
-what answers each kind (path evidence first for a new, untracked file; never stage it) is in
+(unsupported data type, packet room): never your work and never a blocker; verify it yourself.
+Never reshape a deliverable to fit the reviewer. What answers each kind is in
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
-report the named limitation instead. Hook-captured output never counts as supplied. On a
-verification follow-up, FinishUP may include observed output of a command the agent ran, within
-the privacy policy and excerpt limits. Private sends nothing. Output of a command the agent did
-not run is never included, and included output is marked observed. A named
+report the named limitation instead. Hook-captured output never counts as supplied. A verification follow-up may include observed test, build, lint, or typecheck output the agent ran only when a repository excerpt would already be allowed. Withheld whole: an environment dump, a credential-named path, a path outside the workspace, a path the check-time change refused, and output the secret scan hits (a private-key body or its END line). Ignore rules are not re-checked for a path the change did not list. The omission names the gate. Private sends nothing. A command the agent did not run is never included; included output is marked observed. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names
@@ -726,9 +720,8 @@ task says the outcome is achievable or recoverable, or the obvious prerequisite 
 AI-powered review finding unless `evidence_refs` cites evidence or a result recorded after the
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or
-“limitation accepted” is not a repair, a verification result, or a finding resolution. After an
-`insufficient_packet` result, follow the `agent_suppliable` step above (never a
-`deterministic_only` fallback).
+“limitation accepted” is not a repair, a verification result, or a finding resolution.
+Never a `deterministic_only` fallback for `insufficient_packet`.
 
 The reviewer verifies from what its packet carries. When a completed review other than
 `insufficient_packet` raised nothing about verification whose readable output the packet carried,

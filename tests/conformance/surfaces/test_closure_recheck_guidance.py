@@ -125,6 +125,10 @@ _SUPPLY_LIMIT: Final = (
     "that item once, linked to its target, then `check` again. If it is already supplied, or it "
     "is a packet, type or authority limit, go to the receipt and state that specific limit."
 )
+_OBSERVED_OUTPUT: Final = (
+    "Verification follow-ups include observed test, build, lint, or typecheck output only when a "
+    "repository excerpt would be sent; it never counts as agent-supplied."
+)
 
 
 @pytest.mark.parametrize(
@@ -136,6 +140,8 @@ def test_insufficient_packet_goes_to_the_receipt_not_a_deterministic_fallback(na
     assert "go to the receipt" in text
     if name != "workflow.md":
         assert _SUPPLY_LIMIT in text
+    if name in {"agent-instructions.md", "receipt.md"}:
+        assert _OBSERVED_OUTPUT in text
     # The workflow page keeps the explicit local-only ban; the other three share one sentence.
     assert any(
         phrase in text

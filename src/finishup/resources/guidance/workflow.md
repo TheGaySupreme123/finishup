@@ -792,11 +792,7 @@ ref, a shared obligation, or material for another path, run or claim do not answ
 item is suppliable (only FinishUP limits remain), the reviewer named none
 (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
-report the named limitation instead. Hook-captured tool output never counts as the agent having
-supplied it. When the reviewer asks for verification output, FinishUP may include hook-captured
-output of a command the agent ran in the follow-up packet, within the privacy policy and the
-existing excerpt limits. Private sends nothing. Output of a command the agent did not run is never
-included. The packet marks that output as observed, not an agent-published result. A named
+report the named limitation instead. Hook-captured output never counts as supplied. A verification follow-up may include observed test, build, lint, or typecheck output the agent ran only when a repository excerpt would already be allowed. Withheld whole: an environment dump, a credential-named path, a path outside the workspace, a path the check-time change refused, and output the secret scan hits (a private-key body or its END line). Ignore rules are not re-checked for a path the change did not list. The omission names the gate. Private sends nothing. A command the agent did not run is never included; included output is marked observed. A named
 item is a check limitation, never a finding.
 
 If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. When that item is still yours to supply, supplying or repairing it
