@@ -508,7 +508,14 @@ the `policy` route and the configured reviewer would dispatch a review (`semanti
 included); the frozen prefix records no material edit (`material_edit_recorded`: a counting
 observed edit or shell write under ADR-042/045, whether or not its result arrived, so a Codex shell
 `apply_patch <<EOF` counts by the files its patch names, or an agent-published `edit` action); and
-the check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
+the check-time capture did not observe a workspace change. Nothing is composed or sent.
+There is no supported downgrade over a ledger that holds a projected check-recorded 1.5.0 row.
+An older build raises `unknown_event_schema` while opening that row, and the open fails as
+`STORAGE_CORRUPT`; it does not skip the row. Unknown schemas stay in the ledger only when they
+were written `unknown_unprojected`. `admissible_verification` is an optional field on the
+unreleased status-result 1.4.0 (absent when no flagged obligation has a recorded link; absence
+never means a cited id is linked).
+The deferral
 comes before the review's own admission, so a pre-work check asks for no repository grant,
 disclosure decision or review input either, and a missing provider or a policy block
 (`not_configured`, `blocked_by_policy`) is reported by the first check after the edit. A resumed
