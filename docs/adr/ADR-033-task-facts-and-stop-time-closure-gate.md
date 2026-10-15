@@ -1017,8 +1017,11 @@ payload (status and `loop_count` only) can never carry to the gate.
 2. **Host-aware text, no new record.** The acceptance re-read sentence and the re-check note take
    the host. On `cursor` they say that Cursor passes FinishUP no final answer, that a met criterion
    stays resolved and is confirmed in the final answer, and that the re-read is not asked again for
-   the set; that is the existing per-session, per-key memory, so the continued Stop passes and a
-   later Stop with the same flagged set is not asked. The MCP bridge passes its host profile to
+   the set while `closing_material_frontier` is unchanged. That memory is the per-session file
+   `observation/closure-gate-blockers.json`, so the continued Stop passes and a later Stop with the
+   same flagged set and the same material frontier is not asked. A later material closing-review
+   input asks it again (amendment of 2026-10-15, below). Status that omits the field keeps the
+   older once-per-set memory. The MCP bridge passes its host profile to
    `closure_prepare` and to the status and `closure_prepare` summary text (so Cursor's summary
    fallback and a generic bridge follow it too); the CLI and TUI, which do not know the agent's host, name Codex and Claude
    Code as the hosts that read the line. Codex and Claude Code text is unchanged. No protocol,
@@ -1035,8 +1038,10 @@ Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the ho
 tb4n5 asked for a closing review 5 times across trials where the only later records were
 bookkeeping or dispositions. `closing_review_required` now goes stale only after a material task
 or verification change (`kernel/closing_review_delta`): an observed edit or shell write, an
-unclassified observed command or its result, or a cooperative edit or command. Claims, decisions,
-plans, responses, coordination, assignments, findings, and evidence publication do not. An
+unclassified observed command or its result, a cooperative edit or command, or a
+`decision_recorded` whose `review_mode` is set (ADR-049: switching review mode after the closing
+review makes that review stale). Claims, a decision that leaves `review_mode` unset, plans,
+responses, coordination, assignments, findings, and evidence publication do not. An
 unchanged newest check that failed with reason `coordinator_failure` does not ask for the same
 `final_review` again; readiness adds the standing code `semantic_coordinator_failure` and the
 status, closure-prepare, and receipt text name that FinishUP limit. A material change after the
@@ -1069,29 +1074,62 @@ generic all-met claim do not answer it. The legacy rule `resolved_obligations_ac
 still accepts a bare `:met`, and still ends an alone re-read with the confirmation sentence.
 Codex and Claude Code read those lines in the final message. Cursor's `stop` carries no final
 message, so its text never contains `finishup-acceptance`: the agent publishes the
-verification-limit decision or links the observed id in a record. The re-read is still asked once
-per flagged set. An obligation that already has a `verification_limit` disclosure leaves the
+verification-limit decision or links the observed id in a record. The re-read is asked again only
+after `closing_material_frontier` advances (amendment below). Status that omits the field keeps
+the older once-per-flagged-set memory. An obligation that already has a `verification_limit` disclosure leaves the
 recheck; the receipt still lists it.
 
 `kernel.claim_verification.claim_verification_lines` appends that pairing to the receipt evidence
 section in JSON, markdown and text: a header that a generic all-met claim does not stand in, then
-one line per flagged obligation with its reason tokens and `verification_limit` or
-`no_verification_limit`. A final-message line does not create the ledger link the receipt
+one line per flagged obligation with its reason tokens and `verification_limit`,
+`verification_limit linked <ids>`, `linked <ids>`, or `no_verification_limit`. `<ids>` are the
+admissible observed `evd_` or `res_` ids. A final-message line does not create the ledger link the receipt
 reports. Compact receipt wording is unchanged. A projection hole does not fail the receipt: the
 pairing for that obligation is omitted and the limitations section says the pairing could not
 be read, naming only the obligation id when the scope can still be read.
 
-## Amendment (2026-10-15, issue #1079 item 7): the cited id must be a recorded link
+## Amendment (2026-10-15, issue #1079 item 7): the cited id must be an observed verification
 
 `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` does not pass because the id is
 well-formed. Status carries `closure_readiness.admissible_verification` for a flagged
 obligation when `kernel.verification_link` finds a readable `evd_` or `res_` row at or before
 the closing frontier that the obligation cites, that `source_actions` ties to the obligation or
-to one of its requested items, or that an effective claim's `supporting_refs` names for that
-obligation or for the whole task. The gate accepts the line only when the cited id is in that
-list. A missing id, or one linked only to another obligation, is unattested, and the re-read
-says `` `<id>` is not linked to obligation `<obligation id>`. `` The
+to one of its requested items, or that an effective claim's `supporting_refs` names because the
+claim lists that obligation, and that row is an observed verification or is linked to one.
+A claim with empty `obligation_refs` does not lend its supporting ids to any obligation.
+Observed means hook-captured or observation-captured evidence, or a result of an observed
+command. An id the agent only asserted is unattested, including a self-asserted id named in
+`supporting_refs`. The gate accepts the line only when the cited id is in that list. A missing
+id, or one linked only to another obligation, is unattested, and the re-read says
+`` `<id>` is not linked to obligation `<obligation id>`. `` The
 `finishup-verification-limit:<obligation id>` line remains the honest alternative and does not
-need a row. There is still no truth grade and no publish-time rejection. Cursor still has no
-final message: a published verification-limit decision leaves the recheck, and a nonempty
-admissible list for an obligation is the record link that answers it. An absent list does not.
+need a row. There is still no truth grade and no publish-time rejection. The receipt line names
+each admissible id (`linked evd_…` or `linked res_…`) beside `verification_limit` when a
+disclosure is also recorded, and in place of `no_verification_limit` when the ids are the only
+pairing. Cursor still has no final message: a published verification-limit decision leaves the
+recheck, and a nonempty admissible list for an obligation is the observed link that answers it.
+An absent list does not.
+
+## Amendment (2026-10-15, issue #1079 item 3): an acceptance re-read returns only after a material delta
+
+Stop hooks are a fresh process on Codex, Claude Code and Cursor. The "already asked" memory is
+not process-local: `record_closure_gate_delivered` writes owner-only
+`observation/closure-gate-blockers.json`, and the next Stop in the same session reads it back
+through `closure_gate_reasked_blockers`. The file is keyed by the FinishUP session id.
+
+The acceptance entry used to be `accept:<h8>@<invite frontier>`, and any later entry with that
+prefix counted as already asked, so the frontier suffix was ignored. The same flagged set was
+never asked again, including after a material closing-review input. When status names
+`closure_readiness.closing_material_frontier` (the newest `closing_review_delta` ingestion
+sequence at or before the projection frontier, or `"0"` when none exists), the stored key is
+`accept:<h8>@<invite frontier>@m<material frontier>`. The gate matches that `@m` suffix. A newer
+ledger frontier of bookkeeping does not ask again. A higher material frontier does, including a
+`decision_recorded` whose `review_mode` is set (ADR-049). A memory entry written before the
+suffix existed does not match a known material frontier: the next Stop asks once, then stores
+the new key. Status that omits the field (an earlier build, or a hand-built fact set) keeps the
+prefix match. `closing_material_frontier` of `None` on `ClosureReadinessFacts` is that omission;
+`0` was computed. The wire field is optional on unreleased status-result 1.4.0 and is emitted
+including `"0"`.
+
+The acknowledgement re-check still reads the invite frontier as the decimal before `@m`, so an
+acknowledgement published after the invite is not challenged.

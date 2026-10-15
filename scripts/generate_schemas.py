@@ -5427,6 +5427,10 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "maxItems": 8,
                 "type": "array",
             },
+            # Newest material closing-review input's ingestion sequence, or "0" when none
+            # exists. Optional on the unreleased 1.4.0 wire; omitted by an earlier build.
+            # "0" is computed and distinct from omission.
+            "closing_material_frontier": {"$ref": "#/$defs/canonical_uint"},
             # F3: the result ids a whole-task completion claim recorded now must name in
             # `limitation_refs` (the reducer's own rule), sorted and bounded, plus the full count.
             # Ids only. Optional on the unreleased 1.4.0 wire; present together.

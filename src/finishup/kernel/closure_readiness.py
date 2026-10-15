@@ -46,7 +46,10 @@ from finishup.kernel.acceptance_risk import acceptance_risk
 from finishup.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from finishup.kernel.claim_limitations import required_limitation_ids_for_projection
 from finishup.kernel.claims import completion_claim_present
-from finishup.kernel.closing_review_delta import closing_review_delta
+from finishup.kernel.closing_review_delta import (
+    closing_material_frontier,
+    closing_review_delta,
+)
 from finishup.kernel.closure_class import (
     FINDING_REJECTION_AWAITING_RULING_GAP,
     UNDELIVERABLE_SEMANTIC_STATUSES,
@@ -394,10 +397,16 @@ class ClosureReadinessFacts:
     # closing review again. A hand-built fact set defaults to false.
     coordinator_failure_unchanged: bool = False
     # #1079: recorded ``evd_`` / ``res_`` ids that are admissible verification for a flagged
-    # obligation (a real row linked to that obligation, its target, or the task, at or before
-    # this frontier). ``None`` is a hand-built fact set: the Stop gate then does not treat a
-    # well-formed id as linked. An empty tuple was computed and found no such id.
+    # obligation (an observed verification row linked to that obligation, its target, or the
+    # task, at or before this frontier). An agent-asserted id is omitted. ``None`` is a
+    # hand-built fact set: the Stop gate then does not treat a well-formed id as linked. An
+    # empty tuple was computed and found no such id.
     admissible_verification: tuple[tuple[ObligationId, tuple[str, ...]], ...] | None = None
+    # Newest ``closing_review_delta`` ingestion sequence at or before this frontier, or 0 when
+    # none exists. ``None`` is a hand-built fact set: status omits the field and the Stop gate
+    # keeps the older once-per-obligation-set memory. ``0`` was computed and found no material
+    # record, which is distinct from an omitted field.
+    closing_material_frontier: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -484,6 +493,9 @@ class ClosureReadinessFacts:
                 for _obligation, refs in linked_refs
             )
         ):
+            raise ValueError("closure_readiness_facts_invalid")
+        material = self.closing_material_frontier
+        if material is not None and (type(material) is not int or material < 0):
             raise ValueError("closure_readiness_facts_invalid")
 
     @property
@@ -913,6 +925,7 @@ def closure_readiness_facts(
         admissible_verification=admissible_verification_refs(
             state, records, (obligation for obligation, _reasons in risky_pairs)
         ),
+        closing_material_frontier=closing_material_frontier(state, records),
     )
 
 

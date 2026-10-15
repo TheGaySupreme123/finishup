@@ -155,7 +155,13 @@ host already has.
    a policy that predates the setting keeps the released requirement, and under `ai_powered` no
    task is local by choice. A task that already used AI-powered review still owes its closing
    review after it runs local again; the Stop gate's `check` with `final_review: true` supplies it
-   (decision 5). A check whose recorded mode carries a `local_reason` asked for review that its
+   (decision 5). The switch is itself that material delta: a `decision_recorded` that sets
+   `review_mode` is a `closing_review_delta` (`kernel/closing_review_delta`, ADR-033). A decision
+   that leaves `review_mode` unset stays bookkeeping and does not ask for another closing review.
+   The Stop acceptance re-read remembers `closure_readiness.closing_material_frontier`, the newest
+   such delta, so this switch asks that re-read again and a decision that leaves `review_mode`
+   unset does not (ADR-033).
+   A check whose recorded mode carries a `local_reason` asked for review that its
    task's setting kept local, so no recheck can supply it: like an undeliverable review status, it
    makes the closing review current rather than owed forever. A released `local_only` reading
    (`setting_explicit` false) is worded "AI-powered review is not set up for this repository", not

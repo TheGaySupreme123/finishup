@@ -321,11 +321,15 @@ flags because a requested item was never attempted or their evidence is unlinked
 assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
 them. When a flagged obligation's criteria are met, answer with
 `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
-is already a recorded link for that obligation, or with `finishup-verification-limit:<obligation id>`,
-in your final answer in Codex and Claude Code. A well-formed id that is not that link does not
+is already an observed verification for that obligation (hook-captured or observation-captured
+evidence, or a result of an observed command), or with `finishup-verification-limit:<obligation id>`,
+in your final answer in Codex and Claude Code. A completion claim that names no obligation does not
+make those ids a link for an obligation. A well-formed id that is not that observed link,
+including one you only asserted, does not
 answer it. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
 FinishUP, so there publish a decision `finishup-verification-limit:<obligation id>` or link the
-observed evidence or result id in a record. The re-read is asked once for that set.
+observed evidence or result id in a record. The re-read is asked again only after the work, its
+verification, or the review mode changes.
 `ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 
@@ -358,9 +362,11 @@ blocked obligation is the task's main deliverable.
 
 Beyond the work `agent_actionable` lists, a Stop asks only what `closure_readiness.rechecks` named before you stopped: the acceptance
 criteria of the obligations you resolved, an obligation you recorded as not done, a blocker you
-recorded, or a finding you answered as not done that the review says the task requires. Each is
-asked once, so `ready_with_limitations` is never followed by a surprise. Reading the acceptance
-criteria costs one extra turn, once per set of resolved obligations: if your output does not meet
+recorded, or a finding you answered as not done that the review says the task requires. A blocker,
+an acknowledgement and a premise are each asked once, so `ready_with_limitations` is never followed
+by a surprise from those. Reading the acceptance
+criteria costs one extra turn for that set of resolved obligations, and again only after the work,
+its verification, or the review mode changes: if your output does not meet
 them, publish that obligation again as `acknowledged_not_done` with the reason; if they can only be
 checked outside this environment (a hidden verifier, a withheld artifact) and you did the work, keep
 it resolved and record a decision with the line `finishup-verification-limit:<obligation id>`. An

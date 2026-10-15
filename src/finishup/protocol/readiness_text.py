@@ -13,6 +13,7 @@ coverage stay bounded by them.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Final, Literal, cast
 
@@ -26,6 +27,7 @@ __all__ = [
     "COORDINATOR_FAILURE_TOKEN",
     "check_cause_sentence",
     "closure_counts_variants",
+    "admissible_verification_sentence",
     "coordinator_failure_note",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
@@ -76,6 +78,44 @@ COORDINATOR_FAILURE_SENTENCE: Final = (
     "The closing review stopped on an unchanged coordinator failure. That is a FinishUP limit;"
     " do not send the same check again."
 )
+
+
+_OBLIGATION_ID: Final = re.compile(
+    r"obl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+_VERIFICATION_ID: Final = re.compile(
+    r"(?:evd_|res_)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+
+
+def admissible_verification_sentence(readiness: object) -> str:
+    """One sentence naming admissible observed ids, or empty when none are listed.
+
+    Only obligation ids and ``evd_`` / ``res_`` ids are copied. A missing list, or a row that
+    is not those ids, adds nothing.
+    """
+
+    raw = _field(readiness, "admissible_verification")
+    if not isinstance(raw, (tuple, list)):
+        return ""
+    pieces: list[str] = []
+    for item in tuple(cast("tuple[object, ...] | list[object]", raw))[:8]:
+        obligation = _field(item, "obligation_id")
+        refs = _field(item, "refs")
+        if type(obligation) is not str or _OBLIGATION_ID.fullmatch(obligation) is None:
+            continue
+        if not isinstance(refs, (tuple, list)):
+            continue
+        shown = [
+            ref
+            for ref in tuple(cast("tuple[object, ...] | list[object]", refs))[:8]
+            if type(ref) is str and _VERIFICATION_ID.fullmatch(ref) is not None
+        ]
+        if shown:
+            pieces.append(f"{obligation} linked {','.join(shown)}")
+    if not pieces:
+        return ""
+    return "Admissible verification: " + "; ".join(pieces) + "."
 
 
 def coordinator_failure_note(readiness: object) -> str | None:
@@ -361,12 +401,14 @@ _ACCEPTANCE_RISK_PHRASE: Final = (
 )
 # Cursor's Stop hook receives no final message, so it never names the acceptance line. The note
 # tells the agent to record the limit or the observed id. Saying the criteria are met does not
-# answer the re-read; the re-read is still asked once per flagged set.
+# answer the re-read. The re-read returns only after the work, its verification, or the review
+# mode changes.
 _ACCEPTANCE_RISK_PHRASE_CURSOR: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; Cursor"
     " passes FinishUP no final answer, so publish a decision"
     " `finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a"
-    " record; this re-read is asked once for the set, and saying every criterion is met does not"
+    " record; this re-read is asked again only after the work, its verification, or the review mode"
+    " changes, and saying every criterion is met does not"
     " answer it)"
 )
 # A surface that does not know its host (the CLI, the TUI, a generic MCP profile) names which

@@ -99,6 +99,43 @@ _RECHECKS = [
 ]
 
 
+def test_status_and_checklist_name_admissible_observed_ids() -> None:
+    """CLI, the terminal interface and the MCP status text list the observed ids, not prose."""
+
+    from finishup.cli.render import render_closure_readiness_lines
+    from finishup.protocol.models import StatusClosureReadinessModel
+    from finishup.protocol.readiness_text import admissible_verification_sentence
+
+    obligation = "obl_00000000-0000-4000-8000-0000000000c4"
+    ref = "res_00000000-0000-4000-8000-0000000000d5"
+    sentence = f"Admissible verification: {obligation} linked {ref}."
+    text = summary_for_status(
+        _status(admissible_verification=[{"obligation_id": obligation, "refs": [ref]}])
+    )
+    assert sentence in text
+    model = StatusClosureReadinessModel.model_validate(
+        {
+            "declared_obligation_count": "1",
+            "no_obligations_reason": None,
+            "open_obligation_count": "0",
+            "unanswered_finding_count": "0",
+            "receipt_blocking_finding_count": "0",
+            "blocking_conditions": [],
+            "state": "ready",
+            "gap_classification_version": "8",
+            "agent_actionable": [],
+            "standing_limitations": [],
+            "acknowledged_not_done": [],
+            "acknowledged_not_done_count": "0",
+            "admissible_verification": [{"obligation_id": obligation, "refs": [ref]}],
+        }
+    )
+    assert sentence in render_closure_readiness_lines(model)
+    assert (
+        admissible_verification_sentence({"admissible_verification": [{"refs": ["hello"]}]}) == ""
+    )
+
+
 def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> None:
     """A "nothing further to do" is never followed by a surprise gate: the text names the re-reads."""
 

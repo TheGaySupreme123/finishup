@@ -612,6 +612,8 @@ def test_an_appended_check_keeps_the_failed_coordinator_attempt() -> None:
         semantic_provenance=None,
     )
     state = replay(failed)
+    baseline = closure_readiness_facts(state, failed)
+    assert baseline.closing_material_frontier is not None
     check = cast(AcceptedEvent, failed[-1])
     sequence = check.ledger.ingestion_sequence + 1
     source = next(
@@ -630,6 +632,7 @@ def test_an_appended_check_keeps_the_failed_coordinator_attempt() -> None:
     )
     unchanged = closure_readiness_facts(state, (*failed, bookkeeping))
     assert unchanged.coordinator_failure_unchanged is True
+    assert unchanged.closing_material_frontier == baseline.closing_material_frontier
     assert unchanged.closing_review_current is True
     held = derive_closure_readiness((), (), unchanged, semantic_review_required=True)
     assert "semantic_coordinator_failure" in held.standing_limitations
@@ -642,6 +645,9 @@ def test_an_appended_check_keeps_the_failed_coordinator_attempt() -> None:
     )
     moved = closure_readiness_facts(state, (*failed, edited))
     assert moved.coordinator_failure_unchanged is False
+    # The synthetic edit is past this projection's frontier. Status cuts the prefix at the
+    # frontier before this call, so the remembered sequence stays put until that replay.
+    assert moved.closing_material_frontier == baseline.closing_material_frontier
     assert moved.closing_review_current is False
     asked = derive_closure_readiness((), (), moved, semantic_review_required=True)
     assert "closing_review_required" in asked.agent_actionable
@@ -668,6 +674,7 @@ def test_an_appended_check_keeps_the_failed_coordinator_attempt() -> None:
     )
     cleared = closure_readiness_facts(state, (*failed, succeeded))
     assert cleared.coordinator_failure_unchanged is False
+    assert cleared.closing_material_frontier == baseline.closing_material_frontier
     assert cleared.closing_review_current is True
     done = derive_closure_readiness((), (), cleared, semantic_review_required=True)
     assert "closing_review_required" not in done.agent_actionable

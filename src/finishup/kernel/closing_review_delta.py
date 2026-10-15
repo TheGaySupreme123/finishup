@@ -32,7 +32,7 @@ from finishup.domain.events import (
 from finishup.kernel.later_material import LaterMaterialClass, classify_later_material
 from finishup.kernel.projections import ProjectionState
 
-__all__ = ["closing_review_delta"]
+__all__ = ["closing_material_frontier", "closing_review_delta"]
 
 _OBSERVED_COMMAND_RULES = frozenset(
     {
@@ -94,3 +94,25 @@ def closing_review_delta(record: LedgerRecord, projection: ProjectionState) -> b
     if name == "decision_recorded" and type(payload) is DecisionRecordedPayload:
         return payload.review_mode is not None
     return False
+
+
+def closing_material_frontier(
+    projection: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> int:
+    """The newest material closing-review input at or before the projection frontier.
+
+    Zero when this prefix has no such record. The Stop gate remembers an acceptance re-read
+    against this sequence, so bookkeeping at a later ledger frontier does not ask it again.
+    """
+
+    if type(projection) is not ProjectionState or type(records) is not tuple:
+        return 0
+    frontier = projection.frontier
+    best = 0
+    for record in records:
+        sequence = record.ledger.ingestion_sequence
+        if type(sequence) is not int or sequence > frontier or sequence <= best:
+            continue
+        if closing_review_delta(record, projection):
+            best = sequence
+    return best

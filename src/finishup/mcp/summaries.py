@@ -39,6 +39,7 @@ from finishup.domain.review_mode_render import (
     review_mode_continuation,
     status_review_mode_line,
 )
+from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
 from finishup.mcp.errors import VALIDATION_REASON_TOKENS
@@ -53,6 +54,7 @@ from finishup.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.readiness_text import (
     READINESS_STATES,
+    admissible_verification_sentence,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
@@ -143,6 +145,13 @@ _CORRELATION_ID: Final = re.compile(
 )
 # Closed shape for the frontier head: either the genesis sentinel or a canonical digest.
 _HEAD_DIGEST: Final = re.compile(r"^(?:genesis|sha256:[0-9a-f]{64})$", re.ASCII)
+_PAIRING_ID: Final = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_PAIRING_REF: Final = rf"(?:evd_|res_){_PAIRING_ID}"
+_PAIRING_LINE: Final = re.compile(
+    rf"obl_{_PAIRING_ID} [a-z_]+(?:,[a-z_]+)* "
+    rf"(?:verification_limit(?: linked {_PAIRING_REF}(?:,{_PAIRING_REF})*)?"
+    rf"|no_verification_limit|linked {_PAIRING_REF}(?:,{_PAIRING_REF})*)"
+)
 # Closed shape of a packaged guidance URI, the only location a guidance pointer may name. A
 # caller that read in the legacy ``yoetz://`` scheme is answered in it (ADR-048).
 _GUIDANCE_URI: Final = re.compile(r"^(?:finishup|yoetz)://guidance/[a-z0-9-]{1,64}\.md$", re.ASCII)
@@ -1699,8 +1708,12 @@ def summary_for_check(envelope: object) -> str:
     parts.extend(
         (
             _req(
-                _deferral_sentence(reason, source)
-                or f"AI-powered review status/reason: {status}/{reason};"
+                COORDINATOR_FAILURE_LIMITATION
+                if reason == "coordinator_failure"
+                else (
+                    _deferral_sentence(reason, source)
+                    or f"AI-powered review status/reason: {status}/{reason};"
+                )
             ),
             _req(f"{_frontier_clause(source)}."),
             _opt(
@@ -2324,6 +2337,10 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     failure = coordinator_failure_note(readiness)
     if failure is not None:
         parts.append(Part((failure,), priority=_P_BOILERPLATE))
+    admissible = admissible_verification_sentence(readiness)
+    if admissible:
+        # Ids only, and optional: a long checklist keeps the closure state ahead of this list.
+        parts.append(Part((admissible,), priority=_P_STATE))
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
     )
@@ -2451,12 +2468,45 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     return _compose(parts)
 
 
-def summary_for_receipt(envelope: object) -> str:
-    """Compose the receipt text: conclusion, frontier and limitation count first.
+def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]:
+    """The receipt's claim-verification header and one required line per flagged obligation.
 
-    Open obligation ids, withheld-from-review lists, gap codes and the historical (cleared) gaps
-    are granted room by priority; the suppressed-finding count and the fixed redaction line close
-    the text (tb4n3 RC-2).
+    The evidence section joins those lines with spaces. Only the fixed header and a line whose
+    tokens are an obligation id, closed reason tokens, and ``verification_limit``,
+    ``no_verification_limit``, or ``linked`` plus ``evd_`` / ``res_`` ids is copied. Other
+    evidence prose is left in the structured document.
+    """
+
+    if document is None:
+        return []
+    sections = document.get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return []
+    body = ""
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        text = section.get("body")
+        if section.get("key") == "evidence_and_claim_basis" and type(text) is str:
+            body = text
+            break
+    header_at = body.find(CLAIM_VERIFICATION_HEADER)
+    if header_at < 0:
+        return []
+    tail = body[header_at + len(CLAIM_VERIFICATION_HEADER) :]
+    parts = [_req(CLAIM_VERIFICATION_HEADER)]
+    parts.extend(_req(match.group(0)) for match in _PAIRING_LINE.finditer(tail))
+    return parts
+
+
+def summary_for_receipt(envelope: object) -> str:
+    """Compose the receipt text: conclusion, frontier, limitation count and pairing first.
+
+    The claim-verification header and one line per flagged obligation are required, ahead of
+    droppable gap codes. Open obligation ids, withheld-from-review lists, gap codes and the
+    historical (cleared) gaps are granted room by priority; the suppressed-finding count and the
+    fixed redaction line close the text (tb4n3 RC-2).
     """
 
     render = _Render("receipt")
@@ -2477,6 +2527,8 @@ def summary_for_receipt(envelope: object) -> str:
         _req(f"Receipt conclusion: {conclusion};"),
         _req(f"{_frontier_clause(source)};"),
         _req(f"coverage limitations: {limitations};"),
+        # The pairing is required and sits ahead of droppable gap codes (#1079).
+        *_claim_pairing_parts(typed_document),
     ]
     if typed_document is not None:
         document_source = typed_document
@@ -2507,7 +2559,8 @@ def summary_for_receipt(envelope: object) -> str:
         typed_document.get("sections")
     ):
         # The gap code stays semantic_relevance_review_not_run. Name the fault (issue #1077).
-        parts.append(_opt(COORDINATOR_FAILURE_LIMITATION, priority=_P_DISCLOSURE))
+        # Required: a tight summary must not drop the fault sentence (issue #1077).
+        parts.append(_req(COORDINATOR_FAILURE_LIMITATION))
     parts.append(
         _opt(
             render.text("review_mode", lambda: _receipt_review_mode_clause(source)),

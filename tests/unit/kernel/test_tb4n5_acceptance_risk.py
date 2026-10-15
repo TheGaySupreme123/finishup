@@ -20,6 +20,8 @@ from finishup.cli.closure_gate import closure_gate_from_readiness
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    ClaimKind,
+    ClaimRecordedPayloadV1_1,
     DecisionRecordedPayload,
     EventSchema,
     EvidenceContentAvailability,
@@ -44,6 +46,7 @@ from finishup.domain.values import (
     ResultId,
     action_id,
     actor_id,
+    claim_id,
     evidence_id,
     obligation_id,
     result_id,
@@ -65,6 +68,7 @@ from finishup.kernel.closure_verdict import (
 )
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import register_command_identity_key
+from finishup.kernel.verification_link import admissible_verification_refs
 from finishup.protocol.canonical import canonical_digest
 from finishup.protocol.readiness_text import recheck_note
 
@@ -343,9 +347,17 @@ def test_claim_verification_lines_name_each_flag_and_a_recorded_limit() -> None:
     assert lines[0] == CLAIM_VERIFICATION_HEADER
     body = "\n".join(lines)
     assert str(_CLEAN) not in body
+    facts = closure_readiness_facts(state, ledger.prefix)
+    assert facts.admissible_verification is not None
+    linked = dict(facts.admissible_verification)
+    assert _SELF not in linked
     assert f"{_SELF} {EVIDENCE_SELF_ASSERTED_ONLY} no_verification_limit" in lines
-    assert f"{_NEVER} {ITEM_NEVER_ATTEMPTED},{EVIDENCE_NOT_LINKED} no_verification_limit" in lines
-    assert f"{_OFF} {EVIDENCE_NOT_LINKED} no_verification_limit" in lines
+    assert (
+        f"{_NEVER} {ITEM_NEVER_ATTEMPTED},{EVIDENCE_NOT_LINKED} linked {','.join(linked[_NEVER])}"
+        in lines
+    )
+    assert f"{_OFF} {EVIDENCE_NOT_LINKED} linked {','.join(linked[_OFF])}" in lines
+    assert all(ref.startswith("res_") for ref in (*linked[_NEVER], *linked[_OFF]))
     ledger.append(
         EventSchema("decision_recorded", "1.0.0"),
         DecisionRecordedPayload(
@@ -376,13 +388,14 @@ _MISSING = "evd_00000000-0000-4000-8000-00000000ffff"
 _GATE_DIGEST = "sha256:" + "d" * 64
 
 
-def test_a_cited_id_must_resolve_to_a_link_for_that_obligation() -> None:
-    """The flagged line needs a real row linked to that obligation (#1079).
+def test_a_cited_id_must_be_an_observed_verification_for_that_obligation() -> None:
+    """The flagged line needs an observed verification linked to that obligation (#1079).
 
-    The self-asserted ``evd_`` and ``res_`` are admissible for that obligation even though
-    the risk flag stays. The other obligation's result is not. A missing id is not. The
-    legacy ``yoetz-`` spelling uses the same list. Cursor, which has no final message, is
-    answered by those record links; a published verification-limit decision leaves the recheck.
+    The self-asserted ``evd_`` and ``res_`` stay unattested even though the obligation cites
+    them. The observed runs cited by the other flagged obligations stay admissible. A missing
+    id is not. The legacy ``yoetz-`` spelling uses the same list. Cursor, which has no final
+    message, is answered by those observed links and still asks the self-asserted obligation.
+    A published verification-limit decision leaves that obligation's recheck.
     """
 
     ledger = _ledger()
@@ -390,10 +403,12 @@ def test_a_cited_id_must_resolve_to_a_link_for_that_obligation() -> None:
     facts = closure_readiness_facts(state, ledger.prefix)
     assert facts.admissible_verification is not None
     linked = dict(facts.admissible_verification)
-    assert _NOTE in linked[_SELF]
-    assert _ASSERTED in linked[_SELF]
+    assert _SELF not in linked
+    assert _NOTE not in {ref for refs in linked.values() for ref in refs}
+    assert _ASSERTED not in {ref for refs in linked.values() for ref in refs}
     assert linked[_OFF]
-    assert set(linked[_OFF]).isdisjoint(linked[_SELF])
+    assert linked[_NEVER]
+    assert set(linked[_OFF]).isdisjoint(linked[_NEVER])
     assert _CLEAN not in linked
     assert all(_MISSING not in refs for refs in linked.values())
     foreign = next(iter(linked[_OFF]))
@@ -423,9 +438,11 @@ def test_a_cited_id_must_resolve_to_a_link_for_that_obligation() -> None:
         final_message=message,
     )
     assert gate is not None
-    assert f"obligation(s) {_NEVER}:" in gate.text
-    assert str(_SELF) not in gate.text
+    assert f"obligation(s) {_SELF}, {_NEVER}:" in gate.text or (
+        str(_SELF) in gate.text and str(_NEVER) in gate.text
+    )
     assert str(_OFF) not in gate.text
+    assert f"`{_NOTE}` is not linked to obligation `{_SELF}`." in gate.text
     assert f"`{_ASSERTED}` is not linked to obligation `{_NEVER}`." in gate.text
     assert f"`{_MISSING}` is not linked to obligation `{_NEVER}`." in gate.text
     covered = closure_gate_from_readiness(
@@ -434,7 +451,7 @@ def test_a_cited_id_must_resolve_to_a_link_for_that_obligation() -> None:
         frontier_digest=_GATE_DIGEST,
         observation_pending=False,
         final_message=(
-            f"finishup-acceptance:{_SELF}:met:{_ASSERTED}\n"
+            f"finishup-verification-limit:{_SELF}\n"
             f"finishup-acceptance:{_NEVER}:met:{next(iter(linked[_NEVER]))}\n"
             f"yoetz-acceptance:{_OFF}:met:{foreign}"
         ),
@@ -448,4 +465,81 @@ def test_a_cited_id_must_resolve_to_a_link_for_that_obligation() -> None:
         final_message=None,
         host="cursor",
     )
-    assert cursor is None
+    assert cursor is not None
+    assert str(_SELF) in cursor.text
+    assert str(_OFF) not in cursor.text
+    assert str(_NEVER) not in cursor.text
+
+
+def test_an_empty_scope_claim_does_not_lend_its_ids() -> None:
+    """A completion claim that names no obligation lends no supporting id (#1079).
+
+    The reviewer's probe appended "all met" with ``obligation_refs=()`` and supporting refs
+    ``(_NOTE, foreign observed result)``. ``_NOTE`` stays unattested for ``_NEVER``, and citing
+    it leaves that obligation flagged with the not-linked note. The foreign observed result is
+    admissible for ``_NEVER`` only after a later claim lists that obligation.
+    """
+
+    ledger = _ledger()
+    foreign = ledger.passes("printf observed-foreign")
+    note = evidence_id(_NOTE)
+    ledger.append(
+        EventSchema("claim_recorded", "1.1.0"),
+        ClaimRecordedPayloadV1_1(
+            claim_id=claim_id("clm_00000000-0000-4000-8000-0000000000a1"),
+            claim_kind=ClaimKind.COMPLETION,
+            statement="all met",
+            supporting_refs=(note, foreign),
+            obligation_refs=(),
+        ),
+        observed=False,
+    )
+    state = replay(ledger.prefix)
+    linked = dict(admissible_verification_refs(state, ledger.prefix, (_CLEAN, _SELF, _NEVER, _OFF)))
+    assert all(_NOTE not in refs for refs in linked.values())
+    assert all(str(foreign) not in refs for refs in linked.values())
+    facts = closure_readiness_facts(state, ledger.prefix)
+    assert facts.admissible_verification is not None
+    assert all(_NOTE not in refs for _obligation, refs in facts.admissible_verification)
+    assert facts.obligation_closures is not None
+    readiness = SimpleNamespace(
+        state="ready_with_limitations",
+        agent_actionable=(),
+        open_obligation_count="0",
+        receipt_blocking_finding_count="0",
+        rechecks=rechecks_from_closures(facts.obligation_closures, facts, acknowledged_count=0),
+        admissible_verification=tuple(
+            SimpleNamespace(obligation_id=str(obligation), refs=refs)
+            for obligation, refs in facts.admissible_verification
+        ),
+    )
+    gate = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="7",
+        frontier_digest=_GATE_DIGEST,
+        observation_pending=False,
+        final_message=f"finishup-acceptance:{_NEVER}:met:{_NOTE}",
+    )
+    assert gate is not None
+    assert str(_NEVER) in gate.text
+    assert f"`{_NOTE}` is not linked to obligation `{_NEVER}`." in gate.text
+    ledger.append(
+        EventSchema("claim_recorded", "1.1.0"),
+        ClaimRecordedPayloadV1_1(
+            claim_id=claim_id("clm_00000000-0000-4000-8000-0000000000a2"),
+            claim_kind=ClaimKind.COMPLETION,
+            statement="The never-attempted item is met by the observed run.",
+            supporting_refs=(foreign,),
+            obligation_refs=(_NEVER,),
+        ),
+        observed=False,
+    )
+    named = replay(ledger.prefix)
+    admitted = dict(
+        admissible_verification_refs(named, ledger.prefix, (_CLEAN, _SELF, _NEVER, _OFF))
+    )
+    assert str(foreign) in admitted[_NEVER]
+    assert all(
+        str(foreign) not in refs for obligation, refs in admitted.items() if obligation != _NEVER
+    )
+    assert all(_NOTE not in refs for refs in admitted.values())

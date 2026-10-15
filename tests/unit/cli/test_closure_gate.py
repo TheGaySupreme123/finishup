@@ -1270,8 +1270,9 @@ def test_cursor_acceptance_reread_names_a_path_that_works_and_following_it_ends_
 ) -> None:
     """#1050 follow-up, #1079: Cursor's ``stop`` carries no final message, so the re-read never
     names the ``finishup-acceptance`` line. The instruction is a recorded verification limit or
-    an evidence link. The re-read is still asked once per flagged set: the continued Stop passes,
-    and a later Stop at a new frontier with the same set is not asked again."""
+    an evidence link. This harness omits ``closing_material_frontier``, so the older prefix
+    match applies: the continued Stop passes, and a later Stop at a new ledger frontier with
+    the same set is not asked again."""
 
     host = _Host("cursor")
     session = "gate-acceptance-cursor"

@@ -7783,7 +7783,9 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null).
 `closure_readiness.admissible_verification` is also optional on that unreleased 1.4.0 result
-(absent when no flagged obligation has a recorded link; absence never means a cited id is linked).
+(absent when no flagged obligation has an observed verification link; absence never means a cited
+id is linked). `closure_readiness.closing_material_frontier` is optional on the same wire
+(omitted by an earlier build; `"0"` means no material delta has been recorded).
 Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
 `gap_classification_version` (`"8"` since `deliverable_references_undeclared_file` became an
@@ -7811,8 +7813,9 @@ after the check counts; FinishUP's own calls, read-only reads and host bookkeepi
 #976: AI-powered review is required on the route, or completed on the task, or was deferred before
 the first material edit by a check whose route requires it (#1046), and no completed final-phase
 review, or undeliverable review attempt, is current since the last material task or verification
-change — an observed edit or shell write, an unclassified observed command or its result, or a
-cooperative edit or command; bookkeeping and dispositions do not count
+change — an observed edit or shell write, an unclassified observed command or its result, a
+cooperative edit or command, or a `decision_recorded` whose `review_mode` is set (ADR-049); a
+decision that leaves `review_mode` unset, and the rest of bookkeeping and dispositions, do not count
 (`kernel/closing_review_delta`, #1079). An unchanged newest check that failed with
 `coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
 of asking for the same closing review; an actionable
@@ -7935,14 +7938,20 @@ the basis could not be read):
   `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` line or a
   `finishup-verification-limit:<obligation id>` line that answers it. The linked id counts only
   when `admissible_verification` (optional on the unreleased status-result 1.4.0) on this object
-  names it for that obligation (a recorded row
-  linked to the obligation, its target, or the task, at or before the frontier). A bare `:met`
+  names it for that obligation (an observed verification row — hook-captured or
+  observation-captured evidence, or a result of an observed command — linked to the obligation,
+  its requested target, or a claim that lists that obligation, at or before the frontier; a claim
+  with empty `obligation_refs` lends nothing; an agent-asserted id is unattested). A bare `:met`
   and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
   with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
-  still lists it.
+  still lists it. `closing_material_frontier` (canonical uint, optional on this unreleased wire,
+  emitted including `"0"` when computed) is the newest `closing_review_delta` ingestion sequence
+  at or before the projection frontier. The Stop gate remembers an acceptance re-read against it.
+  Omission (an earlier build) keeps the older once-per-obligation-set memory; `"0"` means none.
   `kernel.claim_verification.claim_verification_lines` renders that pairing in the receipt evidence
   section (JSON, markdown and text): one header and one line per flagged obligation,
-  `<obligation id> <comma-joined reasons> verification_limit|no_verification_limit`. A final-message
+  `<obligation id> <comma-joined reasons> verification_limit|verification_limit linked <ids>|linked <ids>|no_verification_limit`.
+  `<ids>` are the admissible observed `evd_` or `res_` ids. A final-message
   line does not create the ledger link that line reports. `recheck_note(readiness, *, host=None)`
   is host-aware (#1050 follow-up, #1079): `None`, `codex` and `claude` name the linked line;
   `cursor` (no final message at Stop) never names `finishup-acceptance` and names a recorded limit
@@ -10607,8 +10616,14 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `PREMISE_RECHECK_ITEM`, `ACCEPTANCE_RECHECK_ITEM` (`acceptance_recheck`). Delivery memory stays
   client-side: `blocker_keys` holds the keys the gate asked (the historical field name): a blocker
   as `<obligation id>:<kind>`, `ack:<obligation id>`, `premise:<n>`,
-  `accept:<h8>@<invite frontier>` and `emptied:<h8 of the declaring obligation items>`. An
-  `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
+  `accept:<h8>@<invite frontier>@m<closing_material_frontier>` when status names that field
+  (otherwise `accept:<h8>@<invite frontier>`), and `emptied:<h8 of the declaring obligation items>`.
+  The acceptance re-read matches the `@m` suffix: the same flagged set is not asked again while
+  that material frontier is unchanged, including when the ledger frontier moves on bookkeeping,
+  and is asked again when `closing_material_frontier` advances. A stored key without `@m` does not
+  match a known material frontier, so the next Stop after the field appears asks once. Status
+  that omits the field keeps the prefix match. The earliest invite frontier is the decimal before
+  `@m`. An `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
   received answers that invite and is not asked (no invite-then-challenge). The acceptance sentence
   is never composed beside open obligations, a rejected finding awaiting a ruling, a withdrawn
   deliverable or an undeclared dependency (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
@@ -10629,7 +10644,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `admissible` for that obligation, or `finishup-verification-limit:<obligation id>`, counts
   (legacy `yoetz-` spellings too). `admissible` is
   `closure_readiness.admissible_verification`; a missing argument or a missing row does not
-  treat a well-formed id as linked. A bare `:met` and prose that every criterion is met do not.
+  treat a well-formed id as linked. The list holds only an observed verification (hook-captured
+  or observation-captured evidence, or a result of an observed command) linked to that
+  obligation, its requested target, or a claim that lists that obligation. A claim with empty
+  `obligation_refs` lends nothing. An agent-asserted id is unattested. A bare `:met` and
+  prose that every criterion is met do not.
   The read is the first 65,536 characters. A cited id that is not admissible adds one sentence,
   `` `<id>` is not linked to obligation `<obligation id>`. ``, up to three, and copies no other
   message text. `unattested_acceptance(recheck, final_message, *, admissible=None, host=None) ->
@@ -10654,7 +10673,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   Code and Cursor do not record code-mode cells, so they keep the neutral sentence. On `cursor` the
   acceptance re-read never names the `finishup-acceptance` line (Cursor's `stop` carries no final
   message): it says a met criterion stays resolved and is confirmed in the final answer, and that
-  the re-read is not asked again for the set (#1050 follow-up); Codex and Claude Code keep the line.
+  the re-read is not asked again for the set until the work, its verification, or the review mode
+  changes (#1050 follow-up, ADR-033); Codex and Claude Code keep the line.
   `readiness_text.check_cause_sentence` repeats the same pragma when the cause's `tool` is `exec`
   (the observed code-mode cell tool, not the host brand), in both its full and short forms.
   `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;

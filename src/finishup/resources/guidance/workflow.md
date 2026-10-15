@@ -244,12 +244,16 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   Stop asks nothing that list does not name. Once you have read a flagged obligation's
   `acceptance_criteria` against your output, answer it with
   `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id
-  that is already a recorded link for that obligation, or with
+  that is already an observed verification for that obligation (hook-captured or
+  observation-captured evidence, or a result of an observed command), or with
   `finishup-verification-limit:<obligation id>`, in your final answer on Codex and Claude Code.
-  A well-formed id that is not that link does not answer it. Saying every criterion is met does
+  A completion claim that names no obligation does not make those ids a link for an obligation.
+  A well-formed id that is not that observed link, including one you only asserted, does not
+  answer it. Saying every criterion is met does
   not answer it. Cursor passes FinishUP no
   final answer, so there publish a decision `finishup-verification-limit:<obligation id>` or
-  link the observed evd_ or res_ id in a record; the re-read is asked once for the set. If it
+  link the observed evd_ or res_ id in a record; the re-read is asked again only after the work,
+  its verification, or the review mode changes. If it
   is not met, republish it
   `acknowledged_not_done` instead.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
@@ -320,8 +324,9 @@ finish it, keep the working deliverable: acknowledgement never requires withdraw
 A Stop asks once to read each resolved obligation FinishUP flags against your final output.
 On Codex and Claude Code, answer a flagged obligation with
 `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
-is already a recorded link for that obligation, or with `finishup-verification-limit:<obligation id>`.
-A well-formed id that is not that link does not answer it. Saying every criterion is met does
+is already an observed verification for that obligation (hook-captured or observation-captured
+evidence, or a result of an observed command), or with `finishup-verification-limit:<obligation id>`.
+A well-formed id that is not that observed link, including one you only asserted, does not answer it. Saying every criterion is met does
 not answer it. Cursor passes FinishUP no final answer: publish a decision
 `finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a record.
 If the output does not meet them, republish that obligation `acknowledged_not_done` with the

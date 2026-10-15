@@ -5367,11 +5367,14 @@ class StatusUndeclaredReferenceModel(_ClosedModel):
 
 
 class StatusAdmissibleVerificationModel(_ClosedModel):
-    """Recorded evidence or result ids linked to one flagged obligation (#1079).
+    """Observed evidence or result ids linked to one flagged obligation (#1079).
 
-    Service-minted ids only. The Stop gate accepts a
+    Service-minted ids only. An id is here only when it is an observed verification (hook-captured
+    or observation-captured evidence, or a result of an observed command) linked to that
+    obligation. The Stop gate accepts a
     ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line only when the cited id
-    is in this list for that obligation. Absence never means a well-formed id is linked.
+    is in this list for that obligation. An agent-asserted id is absent. Absence never means a
+    well-formed id is linked.
     """
 
     obligation_id: ObligationIdWire
@@ -5476,6 +5479,11 @@ class StatusClosureReadinessModel(_ClosedModel):
     admissible_verification: tuple[StatusAdmissibleVerificationModel, ...] | None = Field(
         default=None, max_length=8
     )
+    # Newest material closing-review input's ingestion sequence, or ``"0"`` when this build
+    # computed none. Optional on the unreleased 1.4.0 wire: an earlier build omits it, and the
+    # Stop gate then keeps its older once-per-obligation-set memory. ``"0"`` is distinct from
+    # omission.
+    closing_material_frontier: CanonicalUInt64Wire | None = None
 
     optional_non_null_fields = frozenset(
         {
@@ -5498,6 +5506,7 @@ class StatusClosureReadinessModel(_ClosedModel):
             "limitation_refs_required",
             "limitation_refs_required_count",
             "admissible_verification",
+            "closing_material_frontier",
         }
     )
 
@@ -7376,6 +7385,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             # #1079: service-minted ids only. A cited acceptance id is linked only when it is here.
             "admissible_verification/*/obligation_id",
             "admissible_verification/*/refs/*",
+            # Ingestion sequence of the newest material closing-review input, or "0".
+            "closing_material_frontier",
             "undeclared_references/*/obligation_id",
             "undeclared_references/*/item_index",
             "undeclared_references/*/total",
@@ -8194,12 +8205,12 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1629
+        len(result) != 1630
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,
-        # #1079 +2 admissible_verification
+        # #1079 +2 admissible_verification, +1 closing_material_frontier
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
