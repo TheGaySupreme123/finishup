@@ -1,14 +1,15 @@
 # FinishUP — decision ledger and release-gate dispositions
 
-**ADRs:** ADR-001 through ADR-029 | **Related:** [`docs/INTERFACES.md`](INTERFACES.md),
+**ADRs:** ADR-001 through ADR-049 | **Related:** [`docs/INTERFACES.md`](INTERFACES.md),
 [`docs/adr/`](adr/), release-evidence generation
 
 ## Purpose
 
-The next product release candidate is **0.3.0** (release tracking: #785); **0.2.4** remains
-the published line until the candidate's gates pass. The candidate carries Linux/WSL
-compatibility fixes (**0.2.1**), install-path fixes (**0.2.2**), the integration and session
-recovery repairs (**0.2.3**, #786) and the guided desktop installation (**0.2.4**, #767). The
+The next product release candidate is **0.3.0** (release tracking: #785), the first under the
+FinishUP name; **Yoetz 0.2.5** remains the published line until the candidate's gates pass. The
+candidate carries Linux/WSL compatibility fixes (**0.2.1**), install-path fixes (**0.2.2**), the
+integration and session recovery repairs (**0.2.3**, #786), the guided desktop installation
+(**0.2.4**, #767) and the session recovery and setup repairs (**0.2.5**). The
 dated v0.1 decisions below remain history; the 0.2 re-dispositions govern the current line. Real
 WSL 2 and native Linux Claude/Cursor session acceptance remain untested and native Codex
 multi-agent acceptance (#499, #507) remains open. The #767 first-run gate landed in 0.2.4 and is
