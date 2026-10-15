@@ -62,9 +62,16 @@ unreleased above reverse-chronological released versions.
   interface and MCP text say "Review mode: local (FinishUP)" or "Review mode: AI-powered review"
   with the reason, and a task that asked and still runs local gets the exact command to run (one-time
   reviewer setup, the owner's local-only choice, or re-registering a local-only host connection).
-  A receipt names each switch by sequence, event id and who recorded it, only for a task that
-  switched. A local task's checks complete at local coverage, and its closure readiness and the
-  Stop gate ask for no AI-powered review it will never run. A switch is a request, never a grant. Guidance `review.md` says when to turn it on and
+  A receipt names each switch by sequence, event id, the actor the ledger recorded (with its
+  assurance) and the declared authority, and says how its check ran ("ran local checks only
+  (FinishUP); AI-powered review was not requested for this task" for a local task). A local
+  task's checks complete at local coverage, and its closure readiness and the Stop gate ask for no
+  AI-powered review it will never run; a task that already used AI-powered review still gets its
+  closing review from the Stop gate's `check` with `final_review: true`, even after it runs local
+  again. Under "every task" (and on installations set up earlier that review every task) an
+  agent's switch to local changes nothing, so it can never drop a required review. The owner's
+  local only is enforced at the privacy gateway as well, including for a check already in flight,
+  and a failed read of the setting runs the check local. A switch is a request, never a grant. Guidance `review.md` says when to turn it on and
   when to stay local, with the exact draft; the startup card points at it. Same MCP path on Codex,
   Claude Code and Cursor (#1073, ADR-049).
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
@@ -289,8 +296,15 @@ unreleased above reverse-chronological released versions.
   helps", "FinishUP, local only (agents may not opt in)", or "AI-powered review on every task".
   Every answer registers the policy MCP route, so you can allow agent opt-in later without
   reconnecting; the privacy policy alone decides what may be sent. The prompt wizard, the
-  host-connection path and the terminal interface ask the same question; non-interactive setup
-  keeps the strict default for a fresh registration. Abandoning AI-powered review setup in the
+  host-connection path and the terminal interface (first run and `/connect`) ask the same question
+  and set up what it chose; non-interactive setup keeps the strict default for a fresh
+  registration. The two answers that add AI-powered review list the privacy options with Assisted
+  review as the default (recommended only for a provider with reviewed data-use terms, so a ChatGPT
+  subscription is your explicit choice); Private stays selectable and says tasks stay local under
+  it. The local-only answer applies on Enter. A repository's first privacy grant asks how its
+  tasks use AI-powered review, and widening one repository never changes the installation-wide
+  default; status says "AI-powered review is not set up" rather than "agents may not" for an
+  installation that never chose. Abandoning AI-powered review setup in the
   terminal interface now finishes as local only without re-registering. Installations set up
   earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1073,
   ADR-049).

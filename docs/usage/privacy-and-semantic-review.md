@@ -30,28 +30,34 @@ one task:
 | Agent opt-in (recommended) | Tasks start local; your agent turns on AI-powered review for a task when it helps, without asking you again. | `finishup privacy conversations agent-opt-in` |
 | Owner approval | Tasks start local; each review an agent turns on waits for your approval, like **Ask every time**. | `finishup privacy conversations owner-approval` |
 | Local only | Agents may not turn on AI-powered review; every task runs local checks only. | `finishup privacy conversations local-only` |
-| Every task | Every task starts with AI-powered review. | `finishup privacy conversations ai-powered` |
+| Every task | Every task runs with AI-powered review; an agent cannot switch a task out of it. | `finishup privacy conversations ai-powered` |
 
 `finishup privacy conversations status` shows the setting for the current repository; `/privacy`
 in the terminal interface shows it too. Moving toward local checks or your approval applies at
 once. Anything that needs less of you is a widening: it applies only after the trusted local
 approval, like any other widening. Where this repository cannot send anything for review yet, the
 command walks you through the one-time privacy policy that turns AI-powered review on, with your
-setting included.
+setting included. A repository's first privacy policy asks this question too, starting on agent
+opt-in; choosing a setting for one repository never changes what another repository starts with.
 
 The agent turns AI-powered review on for its task by recording one decision. That decision is a
 request, never a grant: what may be sent is still exactly what this policy allows, the never-send
 set is always withheld, and every disclosure gets a receipt. The task's checks and `status` say
-which mode the task is in and name the decision; the task's receipt lists each switch and the mode
-its check ran in. Other tasks are not affected, and a new task starts local again. If the agent
-turns it on where it cannot run, the task stays local and the check says why and what to run:
-you chose local only, AI-powered review is not set up for the repository yet (`finishup --set`,
-then `finishup --privacy`; `finishup provider status` shows what is missing), or the agent's
-connection was registered local-only (`finishup setup run --route-profile policy`).
+which mode the task is in and name the decision; the task's receipt lists each switch, the
+identity that recorded it, and the mode its check ran in, and a task that stayed local says so.
+Other tasks are not affected, and a new task starts local again. A task that used AI-powered
+review still gets its closing review before its receipt, even after going back to local checks.
+If the agent turns it on where it cannot run, the task stays local and the check says why and
+what to run: you chose local only, AI-powered review is not set up for the repository yet
+(`finishup --set`, then `finishup --privacy`; `finishup provider status` shows what is missing),
+AI-powered review is turned off in your verification settings, or the agent's connection was
+registered local-only (`finishup setup run --route-profile policy`). When you choose local only,
+no work is sent for AI-powered review from then on, even for a check that was already running.
 
 A policy approved before this setting existed keeps its behaviour: with AI-powered review on, every
-task is reviewed; without it, tasks run local checks only. Background project advice runs only
-when every task is reviewed.
+task is reviewed (an agent cannot switch a task out of it); without it, tasks run local checks only,
+and status says AI-powered review is not set up rather than that agents may not use it.
+Background project advice runs only when every task is reviewed.
 
 ## Native work evidence is a separate choice
 

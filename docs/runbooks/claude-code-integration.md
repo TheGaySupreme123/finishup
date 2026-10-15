@@ -2051,8 +2051,11 @@ Claude Code-specific is involved: no hook, skill or registration field changes.
   makes each review the agent turns on wait for `finishup privacy decide-disclosure`, the same
   `awaiting_human` path as **Ask every time**.
 - **Route.** Every interactive setup answer now registers the policy route. A registration made by
-  an earlier local-only setup is on the strict route: an opted-in task there runs local with
-  `route_local_only`, and the check names the fix, `finishup setup run --host claude --route-profile policy`, then a fresh Claude Code session.
+  an earlier local-only setup is on the strict route: an opted-in task there (or any task under
+  "every task") runs local with `route_local_only`, and the check prints the fix,
+  `finishup setup run --route-profile policy`; the Claude Code form is
+  `finishup setup run --host claude --route-profile policy`. Then start a fresh Claude Code
+  session.
   Non-interactive setup keeps the strict default for a fresh registration.
 - **Not set up.** Where no reviewer or repository policy exists, an opted-in task runs local with
   `ai_review_not_set_up` and the one-time owner commands (`finishup --set`, or
@@ -2062,3 +2065,26 @@ Claude Code-specific is involved: no hook, skill or registration field changes.
   section) holds these too until the owner grants admission or re-registers on the strict route.
 - **Upgrade.** A policy approved before the setting existed keeps its behaviour, and its checks and
   receipts are unchanged, until the owner chooses a setting or an agent switches a task.
+- **Every task.** Under `ai_powered`, or a policy approved before the setting existed with its
+  inference channel on, a `review_mode: "local"` switch is recorded but changes nothing: checks
+  that omit `mode` still run AI-powered review, and a check that names `deterministic_only` keeps a
+  required review as a bounding gap (review round 1).
+- **Closing review.** A task that already used AI-powered review and now runs local (it switched
+  back, or one check named an AI-powered `mode`) still owes its closing review; the Stop gate's
+  `check` with `final_review: true` and no `mode` runs it (recorded `source: check_request`).
+  Where the owner has since chosen local only, that check records `owner_local_only` and the
+  closing review is no longer owed.
+- **Enforced at dispatch.** The privacy gateway refuses AI-powered review (and background advice)
+  under an explicit `local_only`, including a check already in flight when the owner narrows; a
+  failed read of the setting runs a check that omits `mode` local, with any required review left
+  as a bounding gap. Background advice is admitted only under `ai_powered`.
+- **Receipt and status.** Each switch names the actor the ledger recorded, its actor type and
+  assurance, and the declared authority; a task whose check recorded a mode says how it ran even
+  without a switch. A policy that predates the setting and reads as local only says AI-powered
+  review is not set up, not that agents may not opt in. Review turned off in the verification
+  settings has its own reason, `review_disabled`.
+- **First-run privacy.** The first and third setup answers list the privacy options with Assisted
+  review as the default (marked recommended only for a provider with reviewed data-use terms);
+  Private stays selectable and says that tasks stay local under it. The terminal interface's
+  `/connect` for Claude Code now runs the chosen answer's setup after connecting, as first run
+  does (it asked the question and dropped the answer before).
