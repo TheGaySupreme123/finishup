@@ -251,7 +251,8 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   answer it. Saying every criterion is met does
   not answer it. Cursor passes FinishUP no
   final answer, so there publish a decision `finishup-verification-limit:<obligation id>` or
-  link the observed evd_ or res_ id in a record; the re-read is asked once for the set. If it
+  link the observed evd_ or res_ id in a record; the re-read is asked again only after the work,
+  its verification, or the review mode changes. If it
   is not met, republish it
   `acknowledged_not_done` instead.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure

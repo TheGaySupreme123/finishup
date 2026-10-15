@@ -7934,7 +7934,10 @@ the basis could not be read):
   agent-asserted id is unattested). A bare `:met`
   and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
   with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
-  still lists it.
+  still lists it. `closing_material_frontier` (canonical uint, optional on this unreleased wire,
+  emitted including `"0"` when computed) is the newest `closing_review_delta` ingestion sequence
+  at or before the projection frontier. The Stop gate remembers an acceptance re-read against it.
+  Omission (an earlier build) keeps the older once-per-obligation-set memory; `"0"` means none.
   `kernel.claim_verification.claim_verification_lines` renders that pairing in the receipt evidence
   section (JSON, markdown and text): one header and one line per flagged obligation,
   `<obligation id> <comma-joined reasons> verification_limit|verification_limit linked <ids>|linked <ids>|no_verification_limit`.
@@ -10603,8 +10606,14 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `PREMISE_RECHECK_ITEM`, `ACCEPTANCE_RECHECK_ITEM` (`acceptance_recheck`). Delivery memory stays
   client-side: `blocker_keys` holds the keys the gate asked (the historical field name): a blocker
   as `<obligation id>:<kind>`, `ack:<obligation id>`, `premise:<n>`,
-  `accept:<h8>@<invite frontier>` and `emptied:<h8 of the declaring obligation items>`. An
-  `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
+  `accept:<h8>@<invite frontier>@m<closing_material_frontier>` when status names that field
+  (otherwise `accept:<h8>@<invite frontier>`), and `emptied:<h8 of the declaring obligation items>`.
+  The acceptance re-read matches the `@m` suffix: the same flagged set is not asked again while
+  that material frontier is unchanged, including when the ledger frontier moves on bookkeeping,
+  and is asked again when `closing_material_frontier` advances. A stored key without `@m` does not
+  match a known material frontier, so the next Stop after the field appears asks once. Status
+  that omits the field keeps the prefix match. The earliest invite frontier is the decimal before
+  `@m`. An `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
   received answers that invite and is not asked (no invite-then-challenge). The acceptance sentence
   is never composed beside open obligations, a rejected finding awaiting a ruling, a withdrawn
   deliverable or an undeclared dependency (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
@@ -10653,7 +10662,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   Code and Cursor do not record code-mode cells, so they keep the neutral sentence. On `cursor` the
   acceptance re-read never names the `finishup-acceptance` line (Cursor's `stop` carries no final
   message): it says a met criterion stays resolved and is confirmed in the final answer, and that
-  the re-read is not asked again for the set (#1050 follow-up); Codex and Claude Code keep the line.
+  the re-read is not asked again for the set until the work, its verification, or the review mode
+  changes (#1050 follow-up, ADR-033); Codex and Claude Code keep the line.
   `readiness_text.check_cause_sentence` repeats the same pragma when the cause's `tool` is `exec`
   (the observed code-mode cell tool, not the host brand), in both its full and short forms.
   `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;

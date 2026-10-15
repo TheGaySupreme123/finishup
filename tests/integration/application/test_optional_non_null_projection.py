@@ -352,6 +352,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "undeclared_references",
                 # #1079: absent unless a flagged obligation has a recorded verification link.
                 "admissible_verification",
+                # Omitted by an earlier build. "0" is a computed empty material frontier.
+                "closing_material_frontier",
             }
         ),
     ),
@@ -1879,6 +1881,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "undeclared_references",
         # #1079: absent unless a flagged obligation has a recorded verification link.
         "admissible_verification",
+        # Omitted by an earlier build. A computed frontier, including 0, is present.
+        "closing_material_frontier",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (

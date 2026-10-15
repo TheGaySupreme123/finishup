@@ -325,9 +325,9 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "status",
         None,
-    ): 131,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
+    ): 132,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
     # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode;
-    # #1079 +2 admissible_verification
+    # #1079 +2 admissible_verification, +1 closing_material_frontier
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
@@ -2584,10 +2584,11 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1601
+        len(derived_patterns) == 1602
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
-    # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification
+    # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification,
+    # +1 closing_material_frontier
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2597,7 +2598,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1629  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification
+        len(rules) == 1630  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+    # +1 closing_material_frontier
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification
@@ -2609,7 +2611,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1601  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    assert len(registry_patterns) == 1602  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification
     assert registry_patterns == derived_patterns
 
@@ -3326,14 +3328,14 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_039
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_040
     )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
     # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),
     # tb4n5 +2 (read_guidance page-zero sections: the item and its uri), ADR-049 +9
     # (decision-recorded 1.1.0 and its draft branch, review_mode),
     # n6 item 4 +221 (check-result 1.5.0 and check-recorded 1.5.0),
-    # #1079 +3 (status admissible_verification refs)
+    # #1079 +3 (status admissible_verification refs), +1 closing_material_frontier
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:

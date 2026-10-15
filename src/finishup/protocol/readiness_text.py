@@ -99,7 +99,7 @@ def admissible_verification_sentence(readiness: object) -> str:
     if not isinstance(raw, (tuple, list)):
         return ""
     pieces: list[str] = []
-    for item in tuple(raw)[:8]:
+    for item in tuple(cast("tuple[object, ...] | list[object]", raw))[:8]:
         obligation = _field(item, "obligation_id")
         refs = _field(item, "refs")
         if type(obligation) is not str or _OBLIGATION_ID.fullmatch(obligation) is None:
@@ -108,7 +108,7 @@ def admissible_verification_sentence(readiness: object) -> str:
             continue
         shown = [
             ref
-            for ref in tuple(refs)[:8]
+            for ref in tuple(cast("tuple[object, ...] | list[object]", refs))[:8]
             if type(ref) is str and _VERIFICATION_ID.fullmatch(ref) is not None
         ]
         if shown:
@@ -401,12 +401,14 @@ _ACCEPTANCE_RISK_PHRASE: Final = (
 )
 # Cursor's Stop hook receives no final message, so it never names the acceptance line. The note
 # tells the agent to record the limit or the observed id. Saying the criteria are met does not
-# answer the re-read; the re-read is still asked once per flagged set.
+# answer the re-read. The re-read returns only after the work, its verification, or the review
+# mode changes.
 _ACCEPTANCE_RISK_PHRASE_CURSOR: Final = (
     "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; Cursor"
     " passes FinishUP no final answer, so publish a decision"
     " `finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a"
-    " record; this re-read is asked once for the set, and saying every criterion is met does not"
+    " record; this re-read is asked again only after the work, its verification, or the review mode"
+    " changes, and saying every criterion is met does not"
     " answer it)"
 )
 # A surface that does not know its host (the CLI, the TUI, a generic MCP profile) names which

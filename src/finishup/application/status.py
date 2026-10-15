@@ -1818,6 +1818,9 @@ async def _closure_readiness(
             StatusAdmissibleVerificationModel(obligation_id=obligation, refs=refs)
             for obligation, refs in facts.admissible_verification
         )
+    if facts.closing_material_frontier is not None:
+        # Including "0": the Stop gate tells a computed empty frontier from an omitted field.
+        optional_fields["closing_material_frontier"] = str(facts.closing_material_frontier)
     if facts.undeclared_references:
         # tb4n4 (#1044): the files a delivered file names that no item declares, so the Stop
         # gate can name them. Paths are repository-excerpt content under the privacy projection.

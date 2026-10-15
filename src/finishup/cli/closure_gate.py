@@ -29,7 +29,10 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   a well-formed id that is not that link, and a generic all-met claim do not. Cursor's ``stop``
   carries no final message, so on Cursor the text never names the ``finishup-acceptance`` line:
   the agent publishes the verification-limit decision or already has the record link. The
-  re-read is still asked once per flagged set that has neither;
+  re-read is remembered per session in the observation-state file. When status names
+  ``closing_material_frontier``, the same flagged set is asked again only after that material
+  frontier advances; bookkeeping at a newer ledger frontier does not ask again. Status that
+  omits the field keeps the older once-per-set memory;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. FinishUP cannot verify the claim,
   so a Stop that finds a blocker the agent has not been asked about continues the agent once
@@ -375,16 +378,18 @@ _ACCEPTANCE_RISK_ATTEST_TEXT: Final = (
 # Cursor's ``stop`` payload carries no final message (status and ``loop_count`` only), and its
 # ``afterAgentResponse`` is not dispatched by the Cursor CLI or Cloud Agents and has no documented
 # order against ``stop``, so no answer line can reach the gate there (#1050 follow-up). The text a
-# Cursor agent sees names the path that does work on that host: the re-read is asked once per
-# flagged set and key, so a confirmation in the final answer ends it.
+# Cursor agent sees names the path that does work on that host. The re-read returns only after
+# the work, its verification, or the review mode changes.
 _ACCEPTANCE_ATTEST_TEXT_CURSOR: Final = (
     " If it is met, keep it resolved and say so in your final answer: Cursor passes FinishUP no final"
-    " answer, so no answer line is read, and this re-read is not asked again for this set."
+    " answer, so no answer line is read, and this re-read is not asked again for this set until"
+    " the work, its verification, or the review mode changes."
 )
 _ACCEPTANCE_RISK_ATTEST_TEXT_CURSOR: Final = (
     " Publish a decision `finishup-verification-limit:<obligation id>` or link the observed"
     " evd_ or res_ id in a record. Cursor passes FinishUP no final answer, so no answer line"
-    " is read, and this re-read is not asked again for this set. Saying every criterion is met"
+    " is read, and this re-read is not asked again for this set until the work, its verification,"
+    " or the review mode changes. Saying every criterion is met"
     " does not answer this."
 )
 # #1050 item 2: a pure "criteria confirmed" answer is the end of the re-read. Said only where the
@@ -781,12 +786,28 @@ def _announced_rechecks(readiness: object) -> tuple[_Recheck, ...]:
     return tuple(found.values())
 
 
-def _asked(recheck: _Recheck, memory: frozenset[str]) -> bool:
-    """Whether this session was already asked this re-check (by its key)."""
+def _material_frontier(readiness: object) -> int | None:
+    """The status material frontier, or ``None`` when this build omitted the field."""
+
+    return _decimal(getattr(readiness, "closing_material_frontier", None))
+
+
+def _asked(recheck: _Recheck, memory: frozenset[str], *, material: int | None = None) -> bool:
+    """Whether this session was already asked this re-check (by its key).
+
+    An acceptance re-read whose status names ``closing_material_frontier`` matches only a memory
+    entry for that same material frontier. A newer ledger frontier of bookkeeping does not ask
+    again. A material change does. Status that omits the field keeps the older prefix match, so
+    an already-asked set is not asked again. A memory entry written before the field existed
+    does not match a known material frontier: the next Stop asks once, then stores the new key.
+    """
 
     if recheck.kind == "acceptance":
         prefix = recheck.key + "@"
-        return any(item.startswith(prefix) for item in memory)
+        if material is None:
+            return any(item.startswith(prefix) for item in memory)
+        suffix = f"@m{material}"
+        return any(item.startswith(prefix) and item.endswith(suffix) for item in memory)
     return recheck.memory_key in memory
 
 
@@ -796,7 +817,8 @@ def _first_invite_frontier(memory: frozenset[str]) -> int | None:
     frontiers: list[int] = []
     for item in memory:
         head, separator, tail = item.partition("@")
-        value = _decimal(tail) if separator and head.startswith("accept:") else None
+        number = tail.split("@", 1)[0] if separator else ""
+        value = _decimal(number) if separator and head.startswith("accept:") else None
         if value is not None:
             frontiers.append(value)
     return min(frontiers) if frontiers else None
@@ -1069,7 +1091,8 @@ class ClosureGate:
     items: tuple[str, ...]
     # The re-check keys this gate asked, remembered once it is delivered (the historical field
     # name): ``<obligation id>:<kind>`` blockers, ``ack:<obligation id>``, ``premise:<n>``,
-    # ``accept:<h8>@<invite frontier>`` and ``emptied:<h8>``.
+    # ``accept:<h8>@<invite frontier>`` or ``accept:<h8>@<invite frontier>@m<material>``,
+    # and ``emptied:<h8>``.
     blocker_keys: tuple[str, ...] = ()
 
 
@@ -1205,8 +1228,10 @@ def closure_gate_from_readiness(
 
     ``reasked_blockers`` holds the re-check keys this session was already asked (the historical
     name: blockers as ``<obligation id>:<kind>``, ``ack:<obligation id>``, ``premise:<n>``,
-    ``accept:<h8>@<invite frontier>``, ``emptied:<h8>``); any other re-check readiness announces
-    is asked once. ``active_stop`` is a Stop the host already continued this turn
+    ``accept:<h8>@<invite frontier>`` or ``accept:<h8>@<invite frontier>@m<material frontier>``,
+    ``emptied:<h8>``). An acceptance re-read whose status names ``closing_material_frontier`` is
+    asked again only when that frontier advances. Any other announced re-check is asked once.
+    ``active_stop`` is a Stop the host already continued this turn
     (``stop_hook_active``, Cursor ``loop_count > 0``): only a re-check not yet asked, or a
     withdrawn deliverable not yet voiced, may continue it, never the ordinary items (#985).
     """
@@ -1216,6 +1241,7 @@ def closure_gate_from_readiness(
         return None
     identity = f"{frontier_sequence}:{frontier_digest}"
     invite = _first_invite_frontier(reasked_blockers)
+    material = _material_frontier(readiness)
     blockers: list[_Recheck] = []
     acknowledgements: list[_Recheck] = []
     premise: _Recheck | None = None
@@ -1225,7 +1251,7 @@ def closure_gate_from_readiness(
     # a service older than the gate sends no list).
     blocker_already_asked = False
     for recheck in _announced_rechecks(readiness):
-        if _asked(recheck, reasked_blockers):
+        if _asked(recheck, reasked_blockers, material=material):
             blocker_already_asked = blocker_already_asked or recheck.kind == "blocker"
             continue
         if recheck.kind == "blocker":
@@ -1251,7 +1277,12 @@ def closure_gate_from_readiness(
     premise_items = (PREMISE_RECHECK_ITEM,) if premise is not None else ()
     premise_keys = (premise.key,) if premise is not None else ()
     premise_text = _PREMISE_TEXT if premise is not None else ""
-    accept_key = None if acceptance is None else f"{acceptance.key}@{frontier_sequence}"
+    if acceptance is None:
+        accept_key = None
+    elif material is None:
+        accept_key = f"{acceptance.key}@{frontier_sequence}"
+    else:
+        accept_key = f"{acceptance.key}@{frontier_sequence}@m{material}"
     present: frozenset[str] = frozenset()
     if state == "action_required":
         tokens = _present_tokens(readiness)
