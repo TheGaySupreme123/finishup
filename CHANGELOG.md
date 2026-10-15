@@ -166,22 +166,35 @@ unreleased above reverse-chronological released versions.
   the terminal interface too) names the `--remove-shared` command. For Codex, a project's own
   Yoetz-era activation goes with that project's own disconnect, never with another project's
   `--remove-shared`. A project still carrying it counts as connected: another project's connect
-  records it, and another project's disconnect keeps the MCP registration it uses. Yoetz-era
-  Codex tables or a Yoetz-era MCP entry found without a record make trusted checkouts that carry
+  records it, and another project's disconnect keeps the MCP registration it uses. Yoetz-era Codex
+  tables or a Yoetz-era MCP entry found without a record make trusted checkouts that carry
   FinishUP's plugin files possible users, which keep the MCP registration or stop the disconnect
   as `membership_unverified`; with neither another project nor such a checkout, an ordinary
   disconnect removes the registration. A Codex connect no longer moves the MCP registration from
   the earlier name `yoetz` while a project's Codex settings still need it (such as the approval
   table Yoetz 0.2's `integrate codex admission grant` wrote): moving it made Codex refuse to load
-  that project. The earlier entry stays beside `finishup`, the plan and `setup status` name the
-  projects and the exact revoke for each, and connecting again after those revokes finishes the
-  move; a connect that would also change the review mode stops first, since the earlier entry
-  serves every project on its own mode. After a Codex disconnect that keeps the registration for
-  other projects, also for their own Codex settings or because not every project could be
-  checked, status reports the disconnected project `configured: false` with
-  `shared_registration_retained: true`. A Codex disconnect that removes the shared plugin while
-  the registration stays for a Yoetz-era project now says so, and names the projects whose
-  plugin files are missing as losing it too.
+  that project. The earlier entry stays beside `finishup`, and the plan and `setup status` say for
+  each project what holds it and what releases it: the exact revoke where only an approval
+  FinishUP (or Yoetz) wrote holds it, what to fix in a project file FinishUP could not read, or
+  the edited tables to remove by hand. All of a home's projects are read for this; the entry also
+  stays while the Codex home's own `config.toml`, its record of connected projects, or a project
+  path with a control character cannot be read, and the step says what makes it readable.
+  Connecting again once nothing listed holds it finishes the move. Every case also names the
+  explicit way out, as your choice: remove FinishUP's MCP registration under both names with
+  `integrate codex mcp preview-remove` and `remove`, then connect again; the step says that every
+  project of the home loses FinishUP until one connects again, and that a project still naming the
+  earlier server stops loading its Codex configuration until those tables go. A connect that would
+  also change the review mode stops first, since the earlier entry serves every project on its own
+  mode, and offers both the current mode and that way out. A Codex disconnect now also keeps the
+  registration when one of those inputs cannot be read, and says so. The interactive `finishup
+  setup` approval, `integrate codex mcp install`, the menu and the terminal interface say the
+  earlier entry is kept (and whether a project uses it or only not every project could be read)
+  instead of promising its removal. After a Codex disconnect that keeps the registration for other
+  projects, also for their own Codex settings or because not every project could be checked,
+  status reports the disconnected project `configured: false` with `shared_registration_retained:
+  true`. A Codex disconnect that removes the shared plugin while the registration stays for a
+  Yoetz-era project now says so, and names the projects whose plugin files are missing as losing
+  it too.
 
 - `finishup setup disconnect` now removes the selected project's FinishUP tool-approval entry (the one
   `integrate <host> admission grant` writes) as part of the same previewed plan, before the

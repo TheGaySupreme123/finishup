@@ -490,12 +490,13 @@ and Yoetz-era pieces found without a record only make trusted FinishUP checkouts
 The transport-less `mcp_servers.yoetz` leftover diagnosis, and keeping an owned `yoetz`
 registration while a project's Codex configuration still needs it (#1073), are Codex-only: a
 stale Claude approval entry does not stop Claude Code from loading its configuration, and Claude
-Code's MCP server comes with the plugin, not a user-level entry FinishUP moves. As on every host,
-a completed or repeated disconnect that keeps shared pieces names the `--remove-shared` preview
-in `next_step`, and the terminal interface shows that command instead of a home-wide option.
-The rule that a disconnect never claims the admission sweep for a surface it does not edit (exact
-legacy entries count only on an otherwise absent surface, never on a foreign one) applies to
-Claude Code's `.claude/settings.local.json` as to every host.
+Code's MCP server comes with the plugin, not a user-level entry FinishUP moves. The step that
+names the `--remove-shared` preview after a completed or repeated disconnect appears on Codex and
+Cursor, when the shared pieces stay only for a project whose directory is missing or because
+membership is unknown; Claude Code lists its projects itself, so a Claude Code disconnect never
+needs it and never shows it. The rule that a disconnect never claims the admission sweep for a
+surface it does not edit (exact legacy entries count only on an otherwise absent surface, never on
+a foreign one) applies to Claude Code's `.claude/settings.local.json` as to every host.
 
 The one exception is an in-place update: `plugin update --marketplace-root <.../yoetz-local>` (the
 upgrade plan's form for an old install) names the old folder itself, which the renamed tree then
