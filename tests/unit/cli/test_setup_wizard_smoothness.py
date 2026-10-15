@@ -33,10 +33,6 @@ def _connected(*_args: object, **_kwargs: object) -> int:
     return 0
 
 
-def _no_layers() -> dict[str, object]:
-    return {}
-
-
 def _config(**fields: object) -> Callable[..., object]:
     def load(*_args: object, **_kwargs: object) -> object:
         return SimpleNamespace(**fields)
@@ -471,6 +467,18 @@ def _codex_only(
         run.workspaces["readiness"] = kwargs.get("workspace")
         return {}
 
+    # The real integration-layer inspection runs; only the two file inspections it makes are
+    # replaced, to record the folder they look at.
+    def skill_inspection(target: object, _source: object) -> object:
+        run.workspaces["skill"] = Path(cast(str, getattr(target, "project_root")))
+        return SimpleNamespace(state=SimpleNamespace(value="absent"), installed_digest=None)
+
+    def plugin_inspection(target: object) -> object:
+        run.workspaces["plugin"] = Path(cast(str, getattr(target, "project_root")))
+        return SimpleNamespace(
+            presence=SimpleNamespace(value="absent"), trust_observable=False, installed_digest=None
+        )
+
     async def recommendations(**kwargs: object) -> dict[str, object]:
         run.workspaces["recommendations"] = kwargs.get("workspace")
         return {"outcome": "refreshed", "pending": []}
@@ -488,7 +496,8 @@ def _codex_only(
     monkeypatch.setattr(wizard, "_readiness_layers", readiness)
     monkeypatch.setattr(wizard, "_refresh_setup_recommendations", recommendations)
     monkeypatch.setattr(wizard, "_resolve_setup_package_update", no_update)
-    monkeypatch.setattr(wizard, "_integration_layers", _no_layers)
+    monkeypatch.setattr(wizard, "inspect_destination", skill_inspection)
+    monkeypatch.setattr(wizard, "inspect_plugin", plugin_inspection)
     monkeypatch.setattr(wizard, "_write_setup_marker", _ignore)
     monkeypatch.setattr(wizard, "_emit_human_report", _ignore)
     return run
@@ -552,6 +561,8 @@ def test_codex_only_setup_from_home_refuses_without_a_terminal(
 def test_codex_only_setup_keeps_the_folder_the_user_typed(
     monkeypatch: pytest.MonkeyPatch, home: Path, tmp_path: Path, review: str
 ) -> None:
+    from finishup.cli import provider_status
+
     run = _codex_only(monkeypatch, home, tmp_path, review)
     project = tmp_path / "project"
     project.mkdir()
@@ -563,15 +574,33 @@ def test_codex_only_setup_keeps_the_folder_the_user_typed(
         default = kwargs.get("default")
         return "1" if default is None else str(default)
 
+    async def ready(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": True, "state": "ready"}
+
+    async def provider(
+        service: dict[str, object], **kwargs: object
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        run.workspaces["provider"] = kwargs.get("project")
+        before_credential = cast(Callable[[], Awaitable[str | None]], kwargs["before_credential"])
+        assert await before_credential() is None
+        return service, {"binding": "configured", "credential": "external_runtime_oauth"}
+
+    async def status_report(**kwargs: object) -> dict[str, object]:
+        run.workspaces["provider_status"] = kwargs.get("workspace_locator")
+        return {"semantic_ready": True}
+
     monkeypatch.setattr("typer.prompt", prompt)
+    monkeypatch.setattr(wizard, "_service_reachability", ready)
+    monkeypatch.setattr(wizard, "_interactive_provider_setup", provider)
+    monkeypatch.setattr(provider_status, "provider_status_report", status_report)
 
     assert _codex_wizard() == 0
 
     assert run.asked[0] == "Project folder to connect (Enter to stop)"
     assert run.reviewed == [review]
-    expected = {"registration", "privacy", "readiness", "recommendations"}
+    expected = {"registration", "privacy", "readiness", "recommendations", "skill", "plugin"}
     if review == "ai_powered":
-        expected.add("provider")
+        expected |= {"provider", "provider_status"}
     assert set(run.workspaces) == expected
     assert all(value == project.resolve() for value in run.workspaces.values())
 
@@ -654,3 +683,188 @@ def test_the_codex_wizard_offers_the_codex_a_plain_codex_command_runs(
 
     assert chosen == newer
     assert defaults == ["2"]
+
+
+# --- review round 2: the Codex-only wizard gates on the privacy outcome too ----------------------
+
+
+def _codex_wizard_with_codex_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    privacy: Callable[..., Awaitable[object]],
+    *,
+    semantic_ready: bool,
+) -> list[str]:
+    """Only Codex installed, run from the project, AI-powered review on every task, real provider
+    step through a Codex sign-in; returns the setup markers written."""
+
+    from finishup.cli import privacy_setup, provider_status
+
+    run = _codex_only(monkeypatch, home, tmp_path, "ai_powered")
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    markers = _codex_provider_run(monkeypatch, privacy)
+
+    def prompt(_text: str, *_args: object, **kwargs: object) -> str:
+        default = kwargs.get("default")
+        return "1" if default is None else str(default)
+
+    async def status_report(**_kwargs: object) -> dict[str, object]:
+        return {"semantic_ready": semantic_ready}
+
+    monkeypatch.setattr("typer.prompt", prompt)
+    monkeypatch.setattr(wizard, "_interactive_provider_setup", _REAL_PROVIDER_SETUP)
+    monkeypatch.setattr(privacy_setup, "run_privacy_setup", privacy)
+    monkeypatch.setattr(provider_status, "provider_status_report", status_report)
+    del run
+    return markers
+
+
+_REAL_PROVIDER_SETUP = wizard._interactive_provider_setup  # pyright: ignore[reportPrivateUsage]
+
+
+async def _declined_with_profile(**_kwargs: object) -> object:
+    return SimpleNamespace(
+        outcome="cancelled",
+        reason="privacy_decision_not_approved",
+        profile="private",
+        proposal_id=None,
+    )
+
+
+async def _approved_with_profile(**_kwargs: object) -> object:
+    return SimpleNamespace(
+        outcome="configured", reason=None, profile="assisted_review", proposal_id=None
+    )
+
+
+@pytest.mark.parametrize("semantic_ready", [False, True])
+@pytest.mark.parametrize(
+    ("privacy", "outcome"), [(_declined_with_profile, "cancelled"), (_raising, "failed")]
+)
+def test_the_codex_wizard_is_incomplete_when_the_privacy_step_is_not_approved(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    privacy: Callable[..., Awaitable[object]],
+    outcome: str,
+    semantic_ready: bool,
+) -> None:
+    markers = _codex_wizard_with_codex_sign_in(
+        monkeypatch, home, tmp_path, privacy, semantic_ready=semantic_ready
+    )
+
+    assert _codex_wizard() == 20
+
+    out = capsys.readouterr().out
+    assert f"Privacy policy: {outcome}" in out
+    assert "finishup --privacy" in out
+    assert "FinishUP never reads it" not in out
+    assert markers == []
+
+
+def test_the_codex_wizard_reports_codex_layers_after_a_complete_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    markers: list[str] = []
+    _codex_wizard_with_codex_sign_in(
+        monkeypatch, home, tmp_path, _approved_with_profile, semantic_ready=True
+    )
+
+    def marker(outcome: str) -> bool:
+        markers.append(outcome)
+        return True
+
+    monkeypatch.setattr(wizard, "_write_setup_marker", marker)
+
+    assert _codex_wizard() == 0
+
+    out = capsys.readouterr().out
+    assert "FinishUP never reads it" in out
+    assert "Privacy policy: configured" in out
+    assert markers == ["registered"]
+
+
+# --- review round 2: next steps name only what this run actually left undone ---------------------
+
+
+def test_an_api_key_left_unstored_by_a_declined_privacy_step_is_named(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import finishup.config.load as config_load
+    from finishup.cli import privacy_setup, provider_binding
+    from finishup.config.write import fireworks_provider
+
+    provider = fireworks_provider(model="accounts/fireworks/models/example")
+
+    async def ready(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": True, "state": "ready"}
+
+    def bind(_choice: object, model: str) -> tuple[Path, object]:
+        del model
+        return tmp_path / "config.toml", provider
+
+    monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(wizard, "_service_reachability", ready)
+    monkeypatch.setattr(wizard, "_restart_service_for_semantic_composition", ready)
+    monkeypatch.setattr(wizard, "load_config", _config(external_runtime=None))
+    monkeypatch.setattr(config_load, "load_config", _config(provider=provider))
+    monkeypatch.setattr(wizard, "_prompt_credential_probe_authorization", lambda: False)
+    monkeypatch.setattr(provider_binding, "apply_provider_endpoint_choice", bind)
+    monkeypatch.setattr(privacy_setup, "run_privacy_setup", _declined)
+
+    async def run() -> int:
+        return await wizard.run_provider_setup(
+            provider="fireworks", model="accounts/fireworks/models/example"
+        )
+
+    assert anyio.run(run) == 20
+
+    out = capsys.readouterr().out
+    assert "Privacy policy: cancelled" in out
+    assert "finishup --privacy" in out
+    assert "finishup provider credential set" in out
+
+
+def test_no_privacy_next_step_when_the_privacy_step_never_ran(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import finishup.config.load as config_load
+    from finishup.cli import privacy_setup, provider_binding
+    from finishup.config.write import fireworks_provider
+
+    provider = fireworks_provider(model="accounts/fireworks/models/example")
+
+    async def starting(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": True, "state": "starting"}
+
+    def bind(_choice: object, model: str) -> tuple[Path, object]:
+        del model
+        return tmp_path / "config.toml", provider
+
+    async def never(**_kwargs: object) -> object:
+        raise AssertionError("the privacy step must not run before the service is ready")
+
+    monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(wizard, "_service_reachability", starting)
+    monkeypatch.setattr(config_load, "load_config", _config(provider=provider))
+    monkeypatch.setattr(provider_binding, "apply_provider_endpoint_choice", bind)
+    monkeypatch.setattr(privacy_setup, "run_privacy_setup", never)
+
+    async def run() -> int:
+        return await wizard.run_provider_setup(
+            provider="fireworks", model="accounts/fireworks/models/example"
+        )
+
+    assert anyio.run(run) == 20
+
+    out = capsys.readouterr().out
+    assert "Reason: service_not_ready" in out
+    assert "Privacy policy" not in out
+    assert "finishup --privacy" not in out

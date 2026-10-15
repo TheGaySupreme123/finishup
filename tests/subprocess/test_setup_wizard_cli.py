@@ -430,7 +430,8 @@ def _wire_composed_provider_setup(
             reason=None,
         )
 
-    async def provider_status() -> dict[str, object]:
+    async def provider_status(*, workspace_locator: Path | None = None) -> dict[str, object]:
+        del workspace_locator
         state["status_reads"] = cast(int, state["status_reads"]) + 1
         if state["status_reads"] == 1:
             return {"credential_connected": False}
@@ -981,7 +982,8 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
             reason=None,
         )
 
-    async def provider_status() -> dict[str, object]:
+    async def provider_status(*, workspace_locator: Path | None = None) -> dict[str, object]:
+        del workspace_locator
         return {"semantic_ready": True}
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)

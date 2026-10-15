@@ -178,6 +178,10 @@ _NEXT_PRIVACY_AFTER_PROVIDER: Final = (
     "Next: from the project folder, run 'finishup --privacy' to choose the disclosure policy for "
     "AI-powered review; the provider binding is kept."
 )
+_NEXT_CREDENTIAL_AFTER_PRIVACY: Final = (
+    "No API key was stored: after that, rerun 'finishup --set' from the project folder, or run "
+    "'finishup provider credential set' there."
+)
 _PRIVACY_READY: Final = frozenset({"configured", "unchanged"})
 
 
@@ -599,9 +603,13 @@ def should_offer_first_run() -> bool:
     return interactive and not setup_marker_present()
 
 
-def _integration_layers() -> dict[str, JsonValue]:
-    """Inspect skill, plugin, hook, and trust state without inferring activation."""
+def _integration_layers(workspace: Path | None = None) -> dict[str, JsonValue]:
+    """Inspect skill, plugin, hook, and trust state without inferring activation.
 
+    ``workspace`` is the project setup connected; the current directory when omitted.
+    """
+
+    root = str(Path.cwd() if workspace is None else workspace)
     source = None
     try:
         source = load_packaged_skill_source()
@@ -617,7 +625,7 @@ def _integration_layers() -> dict[str, JsonValue]:
     if source is not None:
         try:
             skill_inspection = inspect_destination(
-                IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(Path.cwd())),
+                IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, root),
                 source,
             )
         except IntegrationError:
@@ -627,9 +635,7 @@ def _integration_layers() -> dict[str, JsonValue]:
             skill_digest = skill_inspection.installed_digest
             skill_compatibility = "supported" if tested_profiles else "unsupported"
     try:
-        inspection = inspect_plugin(
-            IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(Path.cwd()))
-        )
+        inspection = inspect_plugin(IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, root))
     except IntegrationError as error:
         return {
             "hooks": {
@@ -2667,6 +2673,18 @@ def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
     )
 
 
+def _emit_privacy_incomplete(
+    *, reason: object, privacy_outcome: str, api_key_unstored: bool
+) -> None:
+    """Name a declined or failed privacy step after the provider binding, and what is left."""
+
+    typer.echo(f"Reason: {_privacy_block_reason(reason)}")
+    typer.echo(f"Privacy policy: {privacy_outcome}")
+    typer.echo(_NEXT_PRIVACY_AFTER_PROVIDER)
+    if api_key_unstored:
+        typer.echo(_NEXT_CREDENTIAL_AFTER_PRIVACY)
+
+
 def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
     """The Codex-subscription route's own layers: no API key and no vault credential exist."""
 
@@ -2837,8 +2855,17 @@ async def run_provider_setup(
         or not _provider_credential_ready(provider_report)
         or not privacy_ready
     ):
+        privacy_attempted = privacy_outcome != "not_attempted"
+        if binding == "configured" and not privacy_ready and privacy_attempted:
+            _emit_privacy_incomplete(
+                reason=provider_report.get("credential_reason"),
+                privacy_outcome=privacy_outcome,
+                api_key_unstored=credential != "external_runtime_oauth"
+                and not _provider_credential_ready(provider_report),
+            )
+            return 20
         reason = provider_report.get("credential_reason")
-        if type(reason) is not str and binding == "configured" and not privacy_ready:
+        if type(reason) is not str and not privacy_ready:
             reason = "privacy_setup_incomplete"
         if type(reason) is str:
             typer.echo(f"Reason: {reason}")
@@ -2847,9 +2874,6 @@ async def run_provider_setup(
             remediation = subscription_remediation(reason)
             if remediation is not None:
                 typer.echo(f"Next: {remediation}")
-        if binding == "configured" and not privacy_ready:
-            typer.echo(f"Privacy policy: {privacy_outcome}")
-            typer.echo(_NEXT_PRIVACY_AFTER_PROVIDER)
         return 20
     if credential == "external_runtime_oauth":
         _emit_codex_subscription_layer_report(privacy_outcome=privacy_outcome)
@@ -3263,7 +3287,7 @@ async def run_setup_wizard(
                 # dispatches AI-powered review work, and it supplies authoritative blockers after a
                 # credential ceremony fails or returns an ambiguous result.
                 try:
-                    semantic_status = await provider_status_report()
+                    semantic_status = await provider_status_report(workspace_locator=codex_project)
                 except ControlError, OSError, ValueError:
                     semantic_status = None
     elif interactive and review_mode == "local_only":
@@ -3354,17 +3378,30 @@ async def run_setup_wizard(
         )
 
     mutating_run = interactive or accept
+    # A privacy step this run attempted for AI-powered review and that was declined or failed
+    # leaves setup incomplete, as on every provider path, even when an earlier policy keeps the
+    # evaluator composable.
+    privacy_incomplete = review_mode == "semantic" and privacy.get("outcome") not in {
+        "configured",
+        "unchanged",
+        "not_changed",
+        "deferred",
+    }
     setup_complete = (
         not interactive
         or (review_mode == "local_only" and privacy.get("outcome") in {"configured", "unchanged"})
-        or (semantic_status is not None and semantic_status.get("semantic_ready") is True)
+        or (
+            semantic_status is not None
+            and semantic_status.get("semantic_ready") is True
+            and not privacy_incomplete
+        )
     )
     marker_written = (
         _write_setup_marker(str(registration["outcome"]))
         if mutating_run and setup_complete
         else False
     )
-    integration = _integration_layers()
+    integration = _integration_layers(codex_project)
     consent: str | None = None
     observation = registration.get("observation_consent")
     if isinstance(observation, Mapping):
@@ -3443,6 +3480,22 @@ async def run_setup_wizard(
     }
     if interactive:
         _emit_human_report(report)
+        if privacy_incomplete:
+            typer.echo("")
+            _emit_privacy_incomplete(
+                reason=privacy.get("reason"),
+                privacy_outcome=str(privacy.get("outcome")),
+                api_key_unstored=provider.get("credential") != "external_runtime_oauth"
+                and not _provider_credential_ready(provider),
+            )
+            return 20
+        if (
+            provider.get("binding") == "configured"
+            and provider.get("credential") == "external_runtime_oauth"
+            and privacy.get("outcome") in _PRIVACY_READY
+        ):
+            typer.echo("")
+            _emit_codex_subscription_layer_report(privacy_outcome=str(privacy.get("outcome")))
     else:
         _emit(report, json_output=json_output)
     return 0
