@@ -20,6 +20,8 @@ from finishup.cli.closure_gate import closure_gate_from_readiness
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    ClaimKind,
+    ClaimRecordedPayloadV1_1,
     DecisionRecordedPayload,
     EventSchema,
     EvidenceContentAvailability,
@@ -44,6 +46,7 @@ from finishup.domain.values import (
     ResultId,
     action_id,
     actor_id,
+    claim_id,
     evidence_id,
     obligation_id,
     result_id,
@@ -65,6 +68,7 @@ from finishup.kernel.closure_verdict import (
 )
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import register_command_identity_key
+from finishup.kernel.verification_link import admissible_verification_refs
 from finishup.protocol.canonical import canonical_digest
 from finishup.protocol.readiness_text import recheck_note
 
@@ -465,3 +469,77 @@ def test_a_cited_id_must_be_an_observed_verification_for_that_obligation() -> No
     assert str(_SELF) in cursor.text
     assert str(_OFF) not in cursor.text
     assert str(_NEVER) not in cursor.text
+
+
+def test_an_empty_scope_claim_does_not_lend_its_ids() -> None:
+    """A completion claim that names no obligation lends no supporting id (#1079).
+
+    The reviewer's probe appended "all met" with ``obligation_refs=()`` and supporting refs
+    ``(_NOTE, foreign observed result)``. ``_NOTE`` stays unattested for ``_NEVER``, and citing
+    it leaves that obligation flagged with the not-linked note. The foreign observed result is
+    admissible for ``_NEVER`` only after a later claim lists that obligation.
+    """
+
+    ledger = _ledger()
+    foreign = ledger.passes("printf observed-foreign")
+    note = evidence_id(_NOTE)
+    ledger.append(
+        EventSchema("claim_recorded", "1.1.0"),
+        ClaimRecordedPayloadV1_1(
+            claim_id=claim_id("clm_00000000-0000-4000-8000-0000000000a1"),
+            claim_kind=ClaimKind.COMPLETION,
+            statement="all met",
+            supporting_refs=(note, foreign),
+            obligation_refs=(),
+        ),
+        observed=False,
+    )
+    state = replay(ledger.prefix)
+    linked = dict(admissible_verification_refs(state, ledger.prefix, (_CLEAN, _SELF, _NEVER, _OFF)))
+    assert all(_NOTE not in refs for refs in linked.values())
+    assert all(str(foreign) not in refs for refs in linked.values())
+    facts = closure_readiness_facts(state, ledger.prefix)
+    assert facts.admissible_verification is not None
+    assert all(_NOTE not in refs for _obligation, refs in facts.admissible_verification)
+    assert facts.obligation_closures is not None
+    readiness = SimpleNamespace(
+        state="ready_with_limitations",
+        agent_actionable=(),
+        open_obligation_count="0",
+        receipt_blocking_finding_count="0",
+        rechecks=rechecks_from_closures(facts.obligation_closures, facts, acknowledged_count=0),
+        admissible_verification=tuple(
+            SimpleNamespace(obligation_id=str(obligation), refs=refs)
+            for obligation, refs in facts.admissible_verification
+        ),
+    )
+    gate = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="7",
+        frontier_digest=_GATE_DIGEST,
+        observation_pending=False,
+        final_message=f"finishup-acceptance:{_NEVER}:met:{_NOTE}",
+    )
+    assert gate is not None
+    assert str(_NEVER) in gate.text
+    assert f"`{_NOTE}` is not linked to obligation `{_NEVER}`." in gate.text
+    ledger.append(
+        EventSchema("claim_recorded", "1.1.0"),
+        ClaimRecordedPayloadV1_1(
+            claim_id=claim_id("clm_00000000-0000-4000-8000-0000000000a2"),
+            claim_kind=ClaimKind.COMPLETION,
+            statement="The never-attempted item is met by the observed run.",
+            supporting_refs=(foreign,),
+            obligation_refs=(_NEVER,),
+        ),
+        observed=False,
+    )
+    named = replay(ledger.prefix)
+    admitted = dict(
+        admissible_verification_refs(named, ledger.prefix, (_CLEAN, _SELF, _NEVER, _OFF))
+    )
+    assert str(foreign) in admitted[_NEVER]
+    assert all(
+        str(foreign) not in refs for obligation, refs in admitted.items() if obligation != _NEVER
+    )
+    assert all(_NOTE not in refs for refs in admitted.values())

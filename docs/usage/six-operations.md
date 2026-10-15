@@ -323,7 +323,8 @@ them. When a flagged obligation's criteria are met, answer with
 `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
 is already an observed verification for that obligation (hook-captured or observation-captured
 evidence, or a result of an observed command), or with `finishup-verification-limit:<obligation id>`,
-in your final answer in Codex and Claude Code. A well-formed id that is not that observed link,
+in your final answer in Codex and Claude Code. A completion claim that names no obligation does not
+make those ids a link for an obligation. A well-formed id that is not that observed link,
 including one you only asserted, does not
 answer it. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
 FinishUP, so there publish a decision `finishup-verification-limit:<obligation id>` or link the

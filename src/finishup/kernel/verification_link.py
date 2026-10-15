@@ -2,10 +2,11 @@
 
 The Stop gate's flagged acceptance line cites an ``evd_`` or ``res_`` id. Shape is not enough:
 the id has to be a ledger row linked to that obligation, to a target the obligation requested,
-or to a task-scoped claim, at or before the closing frontier, and the row itself has to be an
-observed verification or be linked to one. An id the agent only asserted is unattested. This
-module only reads those links. It does not grade whether the evidence is true, and it does not
-reject a claim.
+or to a claim that lists that obligation, at or before the closing frontier, and the row itself
+has to be an observed verification or be linked to one. A claim that lists no obligation does
+not lend its supporting ids. An id the agent only asserted is unattested. This module only
+reads those links. It does not grade whether the evidence is true, and it does not reject a
+claim.
 """
 
 from __future__ import annotations
@@ -44,9 +45,9 @@ def admissible_verification_refs(
     the id is an observed verification or is linked to one. A recorded link is: the obligation's
     ``resolution_evidence_refs`` cite it; ``source_actions`` names an action that lists the
     obligation, or lists no obligation and names one of its requested items; or an effective
-    claim's ``supporting_refs`` contain it and the claim lists the obligation or lists none
-    (the whole task). Observed means hook-captured or observation-captured evidence
-    (observation-authored ``evidence_recorded``) or a result of an observed command
+    claim's ``supporting_refs`` contain it and the claim lists that obligation. A claim with
+    empty ``obligation_refs`` lends nothing. Observed means hook-captured or observation-captured
+    evidence (observation-authored ``evidence_recorded``) or a result of an observed command
     (``is_observed_run_record`` on the result or on its action), including an id whose
     ``source_actions`` reach such a row. An agent-asserted id with no such row is omitted.
     A global action with no attempted item is not a link. At most eight obligations and eight
@@ -59,7 +60,7 @@ def admissible_verification_refs(
     by_event = {row.event_id: row for row in records if row.ledger.ingestion_sequence <= frontier}
     evidence_actions = results_by_evidence(projection)
     source_cache: dict[str, tuple[tuple[ActionRecordedPayload, EventId], ...]] = {}
-    task_refs, claim_refs = _claim_refs(projection, frontier, by_event)
+    claim_refs = _claim_refs(projection, frontier, by_event)
     rows: list[tuple[ObligationId, tuple[str, ...]]] = []
     for obligation in tuple(sorted(set(obligations), key=str.encode))[:MAX_ADMISSIBLE_OBLIGATIONS]:
         refs = _refs_for(
@@ -69,7 +70,6 @@ def admissible_verification_refs(
             evidence_actions,
             source_cache,
             obligation,
-            task_refs,
             claim_refs.get(obligation, frozenset()),
         )
         if refs:
@@ -106,24 +106,26 @@ def _claim_refs(
     projection: ProjectionState,
     frontier: int,
     by_event: Mapping[EventId, LedgerRecord],
-) -> tuple[frozenset[str], dict[ObligationId, frozenset[str]]]:
-    task: set[str] = set()
+) -> dict[ObligationId, frozenset[str]]:
+    """Supporting ``evd_``/``res_`` ids from claims that list each obligation.
+
+    A claim with empty ``obligation_refs`` is a bounded assertion. It does not lend those ids
+    to any obligation.
+    """
+
     by_obligation: dict[ObligationId, set[str]] = {}
     for _claim_id, record in effective_claim_items(projection):
         if not _current(record, frontier, by_event):
             continue
         payload = record.payload
-        if payload is None:
+        if payload is None or not payload.obligation_refs:
             continue
         tokens = tuple(
             str(ref) for ref in payload.supporting_refs if str(ref).startswith(("evd_", "res_"))
         )
-        if not payload.obligation_refs:
-            task.update(tokens)
-            continue
         for obligation in payload.obligation_refs:
             by_obligation.setdefault(obligation, set()).update(tokens)
-    return frozenset(task), {key: frozenset(value) for key, value in by_obligation.items()}
+    return {key: frozenset(value) for key, value in by_obligation.items()}
 
 
 def _row(projection: ProjectionState, ref: str) -> object:
@@ -157,7 +159,6 @@ def _refs_for(
     evidence_actions: Mapping[str, tuple[ActionId, ...]],
     source_cache: dict[str, tuple[tuple[ActionRecordedPayload, EventId], ...]],
     obligation: ObligationId,
-    task_refs: frozenset[str],
     claim_refs: frozenset[str],
 ) -> tuple[str, ...]:
     record = projection.obligations.get(obligation)
@@ -165,8 +166,7 @@ def _refs_for(
         record.payload if record is not None and _current(record, frontier, by_event) else None
     )
     payload = raw_payload if type(raw_payload) is ObligationPublishedPayload else None
-    found: set[str] = set(task_refs)
-    found.update(claim_refs)
+    found: set[str] = set(claim_refs)
     if payload is not None:
         found.update(
             str(ref)

@@ -247,6 +247,7 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   that is already an observed verification for that obligation (hook-captured or
   observation-captured evidence, or a result of an observed command), or with
   `finishup-verification-limit:<obligation id>`, in your final answer on Codex and Claude Code.
+  A completion claim that names no obligation does not make those ids a link for an obligation.
   A well-formed id that is not that observed link, including one you only asserted, does not
   answer it. Saying every criterion is met does
   not answer it. Cursor passes FinishUP no

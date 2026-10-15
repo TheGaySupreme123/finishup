@@ -7930,7 +7930,8 @@ the basis could not be read):
   `finishup-verification-limit:<obligation id>` line that answers it. The linked id counts only
   when `admissible_verification` on this object names it for that obligation (an observed
   verification row — hook-captured or observation-captured evidence, or a result of an observed
-  command — linked to the obligation, its target, or the task, at or before the frontier; an
+  command — linked to the obligation, its requested target, or a claim that lists that
+  obligation, at or before the frontier; a claim with empty `obligation_refs` lends nothing; an
   agent-asserted id is unattested). A bare `:met`
   and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
   with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
@@ -10636,7 +10637,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `closure_readiness.admissible_verification`; a missing argument or a missing row does not
   treat a well-formed id as linked. The list holds only an observed verification (hook-captured
   or observation-captured evidence, or a result of an observed command) linked to that
-  obligation, its target, or the task. An agent-asserted id is unattested. A bare `:met` and
+  obligation, its requested target, or a claim that lists that obligation. A claim with empty
+  `obligation_refs` lends nothing. An agent-asserted id is unattested. A bare `:met` and
   prose that every criterion is met do not.
   The read is the first 65,536 characters. A cited id that is not admissible adds one sentence,
   `` `<id>` is not linked to obligation `<obligation id>`. ``, up to three, and copies no other

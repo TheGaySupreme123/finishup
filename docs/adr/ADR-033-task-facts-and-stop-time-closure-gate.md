@@ -1094,8 +1094,9 @@ be read, naming only the obligation id when the scope can still be read.
 well-formed. Status carries `closure_readiness.admissible_verification` for a flagged
 obligation when `kernel.verification_link` finds a readable `evd_` or `res_` row at or before
 the closing frontier that the obligation cites, that `source_actions` ties to the obligation or
-to one of its requested items, or that an effective claim's `supporting_refs` names for that
-obligation or for the whole task, and that row is an observed verification or is linked to one.
+to one of its requested items, or that an effective claim's `supporting_refs` names because the
+claim lists that obligation, and that row is an observed verification or is linked to one.
+A claim with empty `obligation_refs` does not lend its supporting ids to any obligation.
 Observed means hook-captured or observation-captured evidence, or a result of an observed
 command. An id the agent only asserted is unattested, including a self-asserted id named in
 `supporting_refs`. The gate accepts the line only when the cited id is in that list. A missing
