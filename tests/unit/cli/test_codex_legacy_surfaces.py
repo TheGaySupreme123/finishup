@@ -1278,3 +1278,36 @@ def test_an_unread_record_never_reads_as_nobody_needs_the_registration(tmp_path:
 
     assert needing == []
     assert enumeration.get("admission_other_projects_unread") == ["connected_projects_unreadable"]
+
+
+@pytest.mark.parametrize("low_level", [False, True])
+def test_interactive_kept_entry_way_out_names_the_selected_codex_home(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    low_level: bool,
+) -> None:
+    # The approval text's way out targets the Codex home the owner selected, never the default
+    # one: following it must preview the removal in the home that holds the kept entry.
+    home, root_a, root_b = _yoetz_era_home_with_grant(tmp_path)
+    host = _KeyedHost(home)
+    default_home = tmp_path / "default-codex"
+    default_home.mkdir(mode=0o700)
+    monkeypatch.setenv("CODEX_HOME", str(default_home))
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+    adapter = CodexMcpAdapter(host.run, route_profile="policy", codex_home=home)  # type: ignore[arg-type]
+    preview = anyio.run(lambda: adapter.preview_registration(_CODEX))
+    assert preview.legacy_kept_for == (str(root_a),)
+
+    setup._emit_registration_preview(  # pyright: ignore[reportPrivateUsage]
+        _CODEX,
+        preview,
+        codex_home=home,
+        project=None if low_level else root_b,
+        low_level=low_level,
+    )
+    out = capsys.readouterr().out
+
+    assert f"--codex-home {home}" in out
+    assert str(default_home) not in out

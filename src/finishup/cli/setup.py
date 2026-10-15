@@ -1075,6 +1075,9 @@ def _emit_registration_preview(
     *,
     route_profile_before: str | None = None,
     route_change: Mapping[str, JsonValue] | None = None,
+    codex_home: Path | None = None,
+    project: Path | None = None,
+    low_level: bool = False,
 ) -> None:
     typer.echo("Proposed change: complete FinishUP Codex project integration:")
     typer.echo("  1. Install discoverable guidance under .agents/skills/finishup")
@@ -1085,6 +1088,9 @@ def _emit_registration_preview(
         getattr(mcp_preview, "legacy_registration", "none"),
         mcp_preview if isinstance(mcp_preview, McpRegistrationPreview) else None,
         executable=binary.executable_path,
+        codex_home=codex_home,
+        project=project,
+        low_level=low_level,
     )
     serve_command = getattr(mcp_preview, "serve_command", ())
     typer.echo(f"  Command: {shlex.join(serve_command)}")
@@ -1184,6 +1190,9 @@ def _emit_legacy_registration(
     preview: McpRegistrationPreview | None = None,
     *,
     executable: str | None = None,
+    codex_home: Path | None = None,
+    project: Path | None = None,
+    low_level: bool = False,
 ) -> None:
     """Name what the approval does with an entry under the pre-rename key (ADR-048).
 
@@ -1198,7 +1207,13 @@ def _emit_legacy_registration(
             "  Legacy MCP server name: yoetz (FinishUP-owned from an earlier install; kept "
             "beside finishup by this change)"
         )
-        for line in _legacy_kept_text(preview, executable=executable):
+        for line in _legacy_kept_text(
+            preview,
+            executable=executable,
+            codex_home=codex_home,
+            project=project,
+            low_level=low_level,
+        ):
             typer.echo(f"    {line.strip()}")
     elif legacy_registration in {"legacy_only", "duplicate"}:
         typer.echo(
@@ -1601,11 +1616,18 @@ def _legacy_kept_text(
     executable: str | None,
     codex_home: Path | None = None,
     project: Path | None = None,
+    low_level: bool = False,
 ) -> tuple[str, ...]:
     from finishup.cli.host_connection import legacy_kept_lines
 
     return legacy_kept_lines(
-        _legacy_kept_facts(preview, executable=executable, codex_home=codex_home, project=project)
+        _legacy_kept_facts(
+            preview,
+            executable=executable,
+            codex_home=codex_home,
+            project=project,
+            low_level=low_level,
+        )
     )
 
 
@@ -2006,6 +2028,8 @@ async def _codex_integration_step(
             Path(project.project_root),
             route_profile_before=route_profile_before,
             route_change=route_change,
+            codex_home=bound_home,
+            project=Path(project.project_root),
         )
         typer.echo(
             f"  Plugin presence before apply: {plugin_preview.presence_before.value} "
@@ -4436,7 +4460,10 @@ async def integrate_mcp(
                 typer.echo(sentence)
             if not json_output and (preview.legacy_kept_for or preview.legacy_kept_unchecked):
                 for line in _legacy_kept_text(
-                    preview, executable=chosen.executable_path, codex_home=selected_home
+                    preview,
+                    executable=chosen.executable_path,
+                    codex_home=selected_home,
+                    low_level=True,
                 ):
                     typer.echo(line)
             return 0
@@ -4491,6 +4518,8 @@ async def integrate_mcp(
                 preview,
                 route_profile_before=route_profile_before,
                 route_change=route_change,
+                codex_home=selected_home,
+                low_level=True,
             )
             accepted = _confirm_registration()
         if not accepted:
