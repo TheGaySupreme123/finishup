@@ -80,7 +80,13 @@ async def test_status_closure_prepare_and_the_gate_name_the_same_rechecks(
     gate = _gate(readiness, sequence, frozenset())
     assert gate is not None
     assert gate.items == (ACCEPTANCE_RECHECK_ITEM,)
-    assert gate.blocker_keys == (f"{announced.key}@{sequence}",)
+    # #1079: a named closing_material_frontier is part of the remembered key, so a later
+    # bookkeeping frontier does not ask the same flagged set again.
+    material = readiness.closing_material_frontier
+    expected_key = f"{announced.key}@{sequence}"
+    if material is not None:
+        expected_key = f"{expected_key}@m{material}"
+    assert gate.blocker_keys == (expected_key,)
     assert "acceptance_criteria" in gate.text
     assert _gate(readiness, sequence, frozenset(gate.blocker_keys)) is None
     assert _gate(readiness, sequence, frozenset(gate.blocker_keys), active=True) is None
