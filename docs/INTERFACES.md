@@ -10172,7 +10172,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `[FinishUP check-time change, part 1 of n, cut to the packet's room]`; nothing follows it and
   `check_time_change_truncated` is disclosed (issue #983).
   When that budget cannot hold the whole change and the files are not all the same kind, sections
-  that change a decision are admitted before boilerplate (comments, imports, license text). The
+  that change a decision are admitted before boilerplate (comments, imports, license or
+  copyright comment and header lines). A decision line counts even when it names a license. The
   decision's own section is still a run from its start. A one-file change, equal-rank files, and
   a change that fits stay a leading prefix. The first reordered part carries one fixed line that
   decision-changing sections were shown ahead of boilerplate and that sections which did not fit

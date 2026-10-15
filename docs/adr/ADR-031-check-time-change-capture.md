@@ -206,7 +206,9 @@ content-returning read needed its own decision. This is that decision, for exact
    Amendment (issue #1079): when the captured change does not fit that excerpt budget and its
    files are not all the same kind, parts are admitted so a file section that changes a decision
    (`if`, `return`, `raise`, and the same shape) comes before a section that only changes
-   comments, imports or license text. The rest of the decision's own section is the rule that
+   comments, imports or license text. A changed line that is itself a decision counts as one
+   even when it names a license; only a license or copyright comment or header is boilerplate.
+   The rest of the decision's own section is the rule that
    branch implements, and it is still sent from the section start, so the shown-file record stays
    a run from that start. A one-file change, a change whose sections are the same kind, and a
    change that fits the budget keep the historical leading prefix, byte-identical. The first part

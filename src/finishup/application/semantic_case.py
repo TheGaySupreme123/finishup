@@ -1116,18 +1116,41 @@ def _changed_code_body(line: bytes) -> bytes | None:
     return line[1:].strip()
 
 
+def _pure_license_notice(body: bytes) -> bool:
+    """A comment or header line that is a license or copyright notice, not code.
+
+    ``(c)`` and ``(C)`` are the copyright mark. Any other parenthesis or an assignment is code
+    that happens to name a license.
+    """
+
+    if _BOILERPLATE_LINE.match(body) is not None:
+        return True
+    if b"=" in body:
+        return False
+    notice = re.sub(rb"\([cC]\)", b"", body)
+    if b"(" in notice or b")" in notice:
+        return False
+    return re.fullmatch(rb"[A-Za-z0-9 \t.,:;/_*+-]*", notice) is not None
+
+
 def _boilerplate_body(body: bytes) -> bool:
-    """A changed line that is blank, a comment, an import, or a license notice."""
+    """A changed line that is blank, a comment, an import, or a license notice.
+
+    A line that matches ``_DECISION_LINE`` is a decision even when it names a license. Only a
+    license or copyright comment or header is a notice; other code that mentions one is not.
+    """
 
     if not body:
         return True
+    if _DECISION_LINE.search(body) is not None:
+        return False
     lowered = body.lower()
     if (
         b"copyright" in lowered
         or b"license" in lowered
         or b"all rights reserved" in lowered
         or b"spdx-" in lowered
-    ):
+    ) and _pure_license_notice(body):
         return True
     return _BOILERPLATE_LINE.match(body) is not None
 
@@ -1137,8 +1160,9 @@ def _section_rank(section: bytes) -> int:
 
     A decision is a changed line that starts with a branch or result keyword (``if``,
     ``return``, ``raise``, and the same shape in other languages), or an ``if (`` / ``else:``
-    form. The rest of that section is the rule the branch implements, so the whole section is
-    kept from its start. Comments, imports and license text do not count.
+    form. It counts even when the line names a license. The rest of that section is the rule
+    the branch implements, so the whole section is kept from its start. Comments, imports and
+    license or copyright comment and header lines do not count.
     """
 
     rank = 2

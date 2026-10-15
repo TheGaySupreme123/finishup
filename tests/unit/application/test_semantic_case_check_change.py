@@ -1039,6 +1039,44 @@ def test_other_code_ranks_after_a_decision_and_ahead_of_a_license() -> None:
     assert b"Copyright notice" not in body
 
 
+def test_a_decision_that_names_a_license_outranks_an_assignment() -> None:
+    """A line matching ``_DECISION_LINE`` ranks first even when it contains ``license``.
+
+    With one excerpt, the decision file is the part offered and the preference note is true:
+    the assignment beside it is the section left out.
+    """
+
+    header = b"FinishUP check-time change: header\nEnd of header.\n"
+    assignment = _diff_file(
+        "src/total.py",
+        tuple(b"+total = left + right\n" for _ in range(200)),
+    )
+    decision = _diff_file("src/gate.py", (b"+if not self.has_license:\n",))
+    text = header + assignment + decision
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED, preset_version="1.1.0"),
+        max_excerpts=1,
+        max_excerpt_bytes=4_096,
+        max_total_excerpt_bytes=8_192,
+    )
+    semantic = _build(
+        _case_with_material(),
+        ReviewContextProfile.CUSTOM,
+        change=_change(text),
+        selection=selection,
+    )
+
+    parts = [
+        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    ]
+    assert len(parts) == 1
+    body = parts[0].content
+    assert b"if not self.has_license:" in body
+    assert b"total = left + right" not in body
+    assert b"decision-changing sections are shown ahead of boilerplate" in body
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
+
+
 def test_a_structural_recipe_does_not_send_the_decision_section() -> None:
     header = b"FinishUP check-time change: header\nEnd of header.\n"
     text = header + _diff_file("src/rule.py", (b"+if value > 0:\n", b"+    return value\n"))
