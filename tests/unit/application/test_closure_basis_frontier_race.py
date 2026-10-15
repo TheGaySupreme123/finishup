@@ -26,6 +26,8 @@ from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerSta
 from finishup.application.closure_basis import clear_closure_basis_memo, load_closure_basis
 from finishup.application.status import (
     _CLOSURE_BASIS_HEAD_RETRIES,
+    Application,
+    StatusInternalResult,
     _closure_basis_or_none,
     _closure_readiness,
     _status_closure_follows_head,
@@ -51,6 +53,7 @@ from finishup.protocol.coverage import (
     coverage_for_channel,
 )
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import StatusImportStatusModel, StatusRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -452,3 +455,113 @@ async def test_a_suffix_safe_observation_does_not_move_the_prediction() -> None:
     assert diagnostics == []
     assert (await ledger.load_frontier()).sequence == opened.sequence + 1
     assert all(record.ledger.ingestion_sequence <= opened.sequence for record in loaded.records)
+
+
+_LINEAGE_TOKEN = "lineage_manifest_not_recorded"
+
+
+def _status_request(runtime: TaskRuntime, view: str) -> StatusRequest:
+    return StatusRequest.model_validate(
+        {
+            "protocol_version": "0.1",
+            "schema_version": "1.0.0",
+            "request_id": "req_00000000-0000-4000-8000-0000000000a8",
+            "session_id": runtime.session_id,
+            "writer_id": runtime.writer_id,
+            "view": view,
+            "limit": "10",
+            "actor": {"actor_id": "harness:test", "actor_type": "harness"},
+            "client": {
+                "kind": "test_client",
+                "version": "0.1.0",
+                "integration": "cooperative_mcp",
+            },
+        }
+    )
+
+
+class _RoutedRuntime:
+    def __init__(self, runtime: TaskRuntime) -> None:
+        self._runtime = runtime
+
+    async def route(self, _command: object) -> TaskRuntime:
+        return self._runtime
+
+    async def release(self, runtime: TaskRuntime) -> None:
+        assert runtime is self._runtime
+
+
+class _StatusApp:
+    def __init__(self, runtime: TaskRuntime) -> None:
+        self.runtime = _RoutedRuntime(runtime)
+        self.status_cursor_key = b"k" * 32
+        self.start_catalog = object()
+        self.project_application = None
+        self.host_lineage_registry = None
+
+
+async def _quiet_import(_runtime: object) -> StatusImportStatusModel:
+    return StatusImportStatusModel(
+        pending_count="0",
+        terminal_count="0",
+        phase=None,
+        report_evidence_id=None,
+        source_identity_digest=None,
+    )
+
+
+async def _race_lineage_status(
+    monkeypatch: pytest.MonkeyPatch, view: str
+) -> tuple[StatusInternalResult, list[int], Frontier]:
+    """Append, during the basis read, the event that records the lineage the first gaps name."""
+
+    ledger, runtime, opened, records, objects = await _opened_ledger()
+    later = _command(records[1], objects, opened.sequence, 2)
+    landed_event = later.entries[0].draft.event_id
+    _arm(ledger, (later,), every=False)
+    asked: list[int] = []
+
+    async def gaps(
+        _app: object, bound: TaskRuntime, frontier: Frontier, _request_id: str
+    ) -> tuple[tuple[str, ...], bool]:
+        asked.append(frontier.sequence)
+        visible = False
+        async for record in bound.ledger.load_events(bound.session_id, through=frontier.sequence):
+            if getattr(record, "event_id", None) == landed_event:
+                visible = True
+                break
+        if visible:
+            return (), False
+        return (_LINEAGE_TOKEN,), False
+
+    monkeypatch.setattr(status_module, "_lineage_readiness_gaps", gaps)
+    monkeypatch.setattr(status_module, "_import_status", _quiet_import)
+    result = await execute_status(
+        cast(Application, _StatusApp(runtime)), _status_request(runtime, view)
+    )
+    clear_closure_basis_memo()
+    return result, asked, opened
+
+
+async def test_compact_status_drops_a_lineage_gap_the_landed_frontier_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, asked, opened = await _race_lineage_status(monkeypatch, "compact")
+
+    assert asked == [opened.sequence, opened.sequence + 1]
+    assert result.requested_frontier.sequence == opened.sequence + 1
+    assert _LINEAGE_TOKEN not in result.gaps
+    assert _LINEAGE_TOKEN not in result.coverage.known_gaps
+    assert _LINEAGE_TOKEN not in (result.closure_readiness.agent_actionable or ())
+
+
+async def test_advice_status_keeps_the_first_lineage_gap_off_the_advanced_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, asked, opened = await _race_lineage_status(monkeypatch, "advice")
+
+    assert asked == [opened.sequence, opened.sequence + 1]
+    assert result.requested_frontier == opened
+    assert result.head_frontier.sequence == opened.sequence + 1
+    assert _LINEAGE_TOKEN in result.gaps
+    assert _LINEAGE_TOKEN not in (result.closure_readiness.agent_actionable or ())

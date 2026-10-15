@@ -1716,11 +1716,17 @@ def _semantic_review_required(
 
 @dataclass(frozen=True, slots=True)
 class _ClosureReadinessRead:
-    """Closure readiness and the frontier its prediction was actually built at."""
+    """Closure readiness and the frontier its prediction was actually built at.
+
+    ``lineage_gaps`` are the tokens compared at that frontier, not at an earlier snapshot a
+    racing append has already left behind.
+    """
 
     model: StatusClosureReadinessModel
     frontier: Frontier
     compact_page: ProjectionPage | None
+    lineage_gaps: tuple[str, ...] = ()
+    lineage_self_verified: bool = False
 
 
 def _closure_readiness_unknown(frontier: Frontier) -> _ClosureReadinessRead:
@@ -1739,6 +1745,7 @@ async def _closure_readiness(
     lineage_self_verified: bool = False,
     follow_head: bool = False,
     _preloaded: LoadedClosureBasis | None = None,
+    app: Application | None = None,
 ) -> _ClosureReadinessRead:
     """Derive what currently bounds a completion conclusion, from the compact projection.
 
@@ -1761,7 +1768,9 @@ async def _closure_readiness(
 
     When ``follow_head`` is set and the basis load moves to a newer frontier, the compact page is
     read again at that frontier and the model is built from that one snapshot, using the basis
-    already loaded so a second availability read cannot tear it.
+    already loaded so a second availability read cannot tear it. Lineage gaps are read again at
+    that landed frontier when ``app`` is supplied; the gaps from the frontier this call started
+    at are not reused.
     """
 
     if compact_page is not None:
@@ -1824,17 +1833,24 @@ async def _closure_readiness(
                         live = landed
                     else:
                         in_flight = live == landed and await _check_in_flight(runtime)
+                    advanced_gaps = lineage_gaps
+                    advanced_verified = lineage_self_verified
+                    if app is not None:
+                        advanced_gaps, advanced_verified = await _lineage_readiness_gaps(
+                            app, runtime, landed, request_id or ""
+                        )
                     return await _closure_readiness(
                         runtime,
                         landed,
                         None,
                         request_id,
-                        lineage_gaps=lineage_gaps,
+                        lineage_gaps=advanced_gaps,
                         semantic_review_required=semantic_review_required,
                         check_in_flight=in_flight,
-                        lineage_self_verified=lineage_self_verified,
+                        lineage_self_verified=advanced_verified,
                         follow_head=False,
                         _preloaded=loaded,
+                        app=app,
                     )
         if loaded is not None:
             # The receipt folds gaps status does not read off the compact row (a retained finding's
@@ -1979,7 +1995,7 @@ async def _closure_readiness(
             tuple(blocking),
         ),
     )
-    return _ClosureReadinessRead(model, frontier, page)
+    return _ClosureReadinessRead(model, frontier, page, lineage_gaps, lineage_self_verified)
 
 
 async def _check_in_flight(runtime: TaskRuntime) -> bool:
@@ -2087,6 +2103,7 @@ async def current_closure_readiness(
         and not _task_local_by_choice(await _task_review_mode(app, runtime, route_profile)),
         check_in_flight=frontier == head and await _check_in_flight(runtime),
         follow_head=True,
+        app=app,
     )
     return read.frontier, read.model
 
@@ -2513,6 +2530,7 @@ async def execute_status(
                 cursor_bound=decoded is not None,
                 at_frontier=request.at_frontier,
             ),
+            app=app,
         )
         closure_readiness = read.model
         if (
@@ -2540,11 +2558,11 @@ async def execute_status(
                 )
             coverage = raw_page.coverage
             gaps = raw_page.gaps
-            if lineage_gaps:
-                gaps = tuple(sorted(set(gaps) | set(lineage_gaps)))
+            if read.lineage_gaps:
+                gaps = tuple(sorted(set(gaps) | set(read.lineage_gaps)))
                 coverage = replace(
                     coverage,
-                    known_gaps=tuple(sorted(set(coverage.known_gaps) | set(lineage_gaps))),
+                    known_gaps=tuple(sorted(set(coverage.known_gaps) | set(read.lineage_gaps))),
                     ledger_freshness=(
                         LedgerFreshness.PARTIAL
                         if coverage.ledger_freshness is LedgerFreshness.CURRENT
