@@ -41,6 +41,7 @@ from finishup.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
+    COORDINATOR_FAILURE_LIMITATION,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
@@ -176,7 +177,12 @@ from finishup.kernel.task_facts import (
     task_fact_signals,
 )
 from finishup.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
-from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
+from finishup.protocol.models import (
+    ReceiptInclude,
+    ReceiptRedactionProfile,
+    SemanticReason,
+    SemanticStatus,
+)
 from finishup.protocol.readiness_text import reason_phrases
 
 __all__ = [
@@ -2115,6 +2121,7 @@ def _sections(
     closure_summary: _ClosureSummary | None = None,
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
     review_mode_sentence: str = "",
+    coordinator_failure: bool = False,
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2418,6 +2425,16 @@ def _sections(
             "Coverage is bounded to the recorded evidence and is not proof of correctness."
         )
         items[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = ()
+    if coordinator_failure:
+        # Issue #1077: the gap code stays semantic_relevance_review_not_run. The limitations
+        # the reader sees name the fault inside FinishUP, on every rendering of this section.
+        body = bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE]
+        lead = "AI-powered relevance review was not run."
+        if lead in body:
+            body = body.replace(lead, COORDINATOR_FAILURE_LIMITATION, 1)
+        elif COORDINATOR_FAILURE_LIMITATION not in body:
+            body = f"{body} {COORDINATOR_FAILURE_LIMITATION}"
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = body
     if observed_failure_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + observed_failure_sentence
     bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += task_statement_source_sentence
@@ -2797,6 +2814,10 @@ def build_receipt(
             context.applicable_check, context.records
         ),
         review_mode_sentence=_review_mode_sentence(context),
+        coordinator_failure=(
+            context.applicable_check is not None
+            and context.applicable_check.semantic_reason is SemanticReason.COORDINATOR_FAILURE
+        ),
         semantic_usage_sentence=_semantic_usage_sentence(
             None
             if context.applicable_check is None

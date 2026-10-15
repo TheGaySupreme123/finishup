@@ -1428,7 +1428,11 @@ Shared structural gap codes for optional AI-powered relevance review (distinct f
   record. Carried alongside the ceiling gap above, never instead of it, so the terminal
   status/reason/provenance binding is unchanged;
 - `semantic_review_not_configured` — evaluator/provider not configured;
-- `semantic_relevance_review_not_run` — evaluation failed/timed out/unavailable without a clean pass;
+- `semantic_relevance_review_not_run` — evaluation failed/timed out/unavailable without a clean pass.
+  When the applicable check's `semantic_reason` is `coordinator_failure`, the limitations section
+  names that fault inside FinishUP in a fixed sentence (issue #1077). The gap code is unchanged.
+  JSON carries the sentence in the section body; markdown and text carry it in `human_text`;
+  the compact sentence, the CLI JSON receipt line, and the MCP receipt summary repeat it;
 - `semantic_review_not_requested` — local-only check; AI-powered review was never requested.
   It bounds the receipt conclusion unless the applicable check recorded
   `semantic_route_required: false` (issue #986, ADR-033 amendment of 2026-10-08): then the check's
@@ -10097,7 +10101,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   check_time_change_unavailable=bool, check_time_change_unavailable_reason=str | None)` admits
   parts with ids `change-check-time-NNN`, section `excerpt`, category `repository_excerpt`, source
   kind `diff`, source ref `check-time-change`, linked to effective claims and obligations (else the
-  latest plan), each prefixed `[FinishUP check-time change, part i of n]`. Each part is at most
+  latest plan), each prefixed `[FinishUP check-time change, part i of n]`. A current-file section
+  an in-check follow-up serves uses the same synthetic source ref. An omission row cannot name
+  that token: when count, byte or aggregate case bounds drop the excerpt, the omission names each
+  valid linked ledger subject (category and reason unchanged) and `content_unselected` stays set.
+  A linked token that is not a ledger subject is skipped; subject validation is not relaxed
+  (issue #1077). A follow-up packet that adds no new part is not sent, so the completed
+  `insufficient_packet` review stands. Each part is at most
   `min(max_excerpt_bytes, max_total_excerpt_bytes, item bound)` bytes, marker included (16 KiB
   under Expanded; issue #983). `_check_time_change_reservation(selection, first_part_bytes)`
   returns the share admitted before other excerpts (half the excerpt count, at least one, and half

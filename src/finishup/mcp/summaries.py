@@ -20,10 +20,12 @@ from finishup.domain.bounded_text import (
 from finishup.domain.closure import PREPARATION_REMEDIATIONS
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from finishup.domain.receipts import (
+    COORDINATOR_FAILURE_LIMITATION,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    limitations_name_coordinator_failure,
 )
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
@@ -2473,6 +2475,11 @@ def summary_for_receipt(envelope: object) -> str:
             )
         )
     parts.append(_list_part("gap codes: ", gap_codes, priority=_P_DISCLOSURE))
+    if typed_document is not None and limitations_name_coordinator_failure(
+        typed_document.get("sections")
+    ):
+        # The gap code stays semantic_relevance_review_not_run. Name the fault (issue #1077).
+        parts.append(_opt(COORDINATOR_FAILURE_LIMITATION, priority=_P_DISCLOSURE))
     parts.append(
         _opt(
             render.text("review_mode", lambda: _receipt_review_mode_clause(source)),

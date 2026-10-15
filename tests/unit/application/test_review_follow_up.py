@@ -1183,6 +1183,222 @@ def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_chan
     assert follow_up_new_parts(repeat, replace(after, round=2)) == frozenset()
 
 
+def _current_diff_follow_up():
+    """The stale-edit follow-up the #1077 reproductions build a second case from."""
+
+    case, captured, scope, change = _stale_edit_case()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    section_parts = _section_parts(case, captured, scope, change)
+    first = _build(
+        case, captured_content=captured, captured_content_scope=scope, check_time_change=change
+    )
+    sent = _provider_manifest(_send(first))
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("current_diff_for_path", str(evd(1))),),
+        previous=None,
+        shown_refs=sent_excerpt_content_refs(first, sent),
+        shown_parts=sent_excerpt_parts(first, sent),
+        section_parts=section_parts,
+    )
+    assert follow_up is not None
+    return case, captured, scope, change, follow_up
+
+
+def _assert_synthetic_omission_is_linked(semantic: object, *, section_admitted: bool) -> None:
+    from finishup.application.missing_for_assessment import CHECK_TIME_CHANGE_SOURCE_REF
+    from finishup.ports.semantic import SemanticCase
+
+    assert type(semantic) is SemanticCase
+    subjects = {omission.subject_ref for omission in semantic.packet.omissions}
+    assert CHECK_TIME_CHANGE_SOURCE_REF not in subjects
+    linked = [
+        omission
+        for omission in semantic.packet.omissions
+        if omission.subject_ref == str(evd(1))
+        and omission.category is DataCategory.REPOSITORY_EXCERPT
+        and omission.source_kind == "diff"
+        and omission.reason == "not_selected"
+    ]
+    admitted = any(
+        item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in semantic.items
+    )
+    assert admitted is section_admitted
+    if not section_admitted:
+        assert linked
+        assert "content_unselected" in semantic.packet.coverage.known_gaps
+
+
+def test_a_one_slot_current_diff_follow_up_omits_onto_the_linked_subject() -> None:
+    """Issue #1077: one excerpt slot used to raise semantic_case_invalid. The dropped current
+    section is disclosed against the edit it answers, and the round adds no new part."""
+
+    case, captured, scope, change, follow_up = _current_diff_follow_up()
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=_selection(1),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    _assert_synthetic_omission_is_linked(built, section_admitted=False)
+    assert follow_up_new_parts(built, follow_up) == frozenset()
+    again = _build(
+        case,
+        follow_up=replace(follow_up, round=2),
+        selection=_selection(1),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    _assert_synthetic_omission_is_linked(again, section_admitted=False)
+
+
+def test_two_excerpt_slots_still_carry_the_current_section() -> None:
+    """The same follow-up with room for the section still admits it (the #1077 control)."""
+
+    case, captured, scope, change, follow_up = _current_diff_follow_up()
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=_selection(2),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    assert any(item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in built.items)
+    assert follow_up_new_parts(built, follow_up)
+    assert all(omission.subject_ref != "check-time-change" for omission in built.packet.omissions)
+
+
+@pytest.mark.parametrize("total", (16_384, 24_576))
+def test_current_diff_follow_up_byte_budget_stays_a_valid_case(total: int) -> None:
+    """16,384 total excerpt bytes used to raise; 24,576 admitted the section. Both are valid."""
+
+    case, captured, scope, change, follow_up = _current_diff_follow_up()
+    built = _build(
+        case,
+        follow_up=follow_up,
+        selection=replace(_selection(), max_total_excerpt_bytes=total),
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    admitted = any(item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in built.items)
+    assert admitted is (total >= 24_576)
+    assert all(omission.subject_ref != "check-time-change" for omission in built.packet.omissions)
+    if admitted:
+        assert follow_up_new_parts(built, follow_up)
+    else:
+        assert follow_up_new_parts(built, follow_up) == frozenset()
+        assert any(
+            omission.subject_ref == str(evd(1))
+            and omission.category is DataCategory.REPOSITORY_EXCERPT
+            and omission.reason == "not_selected"
+            for omission in built.packet.omissions
+        )
+        assert "content_unselected" in built.packet.coverage.known_gaps
+
+
+def test_case_bound_trims_a_synthetic_excerpt_onto_its_linked_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Aggregate trimming (not only selection refusal) maps the synthetic source to its subject."""
+
+    import finishup.application.semantic_case as semantic_case_module
+    from finishup.ports.semantic import ReviewOmission, SubjectStateRelation, TargetedExcerptRef
+
+    content = "current section"
+    item = semantic_case_module._content_item(  # pyright: ignore[reportPrivateUsage]
+        item_id="change-section-011",
+        section="excerpt",
+        category=DataCategory.REPOSITORY_EXCERPT,
+        source_kind="diff",
+        source_ref=semantic_case_module._CHECK_TIME_CHANGE_SOURCE_REF,  # pyright: ignore[reportPrivateUsage]
+        linked_subject_refs=(str(evd(1)),),
+        occurred_order=0,
+        text=content,
+    )
+    excerpt = TargetedExcerptRef(
+        excerpt_item_id=item.item_id,
+        source_kind="diff",
+        linked_subject_refs=(str(evd(1)),),
+        subject_state_relation=SubjectStateRelation.UNKNOWN,
+        content_visibility="available",
+        content_digest=item.content_digest,
+        content_bytes=item.content_bytes,
+    )
+    monkeypatch.setattr(semantic_case_module, "MAX_SEMANTIC_CASE_BYTES", item.content_bytes - 1)
+    omissions: list[ReviewOmission] = []
+    gaps: set[str] = set()
+    dropped = semantic_case_module._fit_excerpts_within_case_bound(  # pyright: ignore[reportPrivateUsage]
+        (item,),
+        [excerpt],
+        omissions,
+        gaps,
+        fixed_item_ids=set(),
+    )
+    assert dropped == 1
+    assert gaps == {"content_unselected"}
+    (omission,) = omissions
+    assert omission.subject_ref == str(evd(1))
+    assert omission.category is DataCategory.REPOSITORY_EXCERPT
+    assert omission.reason == "not_selected"
+    # A recorded source keeps its own subject ref.
+    ordinary = semantic_case_module._content_item(  # pyright: ignore[reportPrivateUsage]
+        item_id="excerpt-evd_10000000-0000-4000-8000-000000000001",
+        section="excerpt",
+        category=DataCategory.EVIDENCE_EXCERPT,
+        source_kind="evidence",
+        source_ref=str(evd(1)),
+        linked_subject_refs=(str(evd(1)),),
+        occurred_order=1,
+        text="recorded",
+    )
+    recorded = TargetedExcerptRef(
+        excerpt_item_id=ordinary.item_id,
+        source_kind="evidence",
+        linked_subject_refs=(str(evd(1)),),
+        subject_state_relation=SubjectStateRelation.UNKNOWN,
+        content_visibility="available",
+        content_digest=ordinary.content_digest,
+        content_bytes=ordinary.content_bytes,
+    )
+    kept: list[ReviewOmission] = []
+    monkeypatch.setattr(semantic_case_module, "MAX_SEMANTIC_CASE_BYTES", ordinary.content_bytes - 1)
+    semantic_case_module._fit_excerpts_within_case_bound(  # pyright: ignore[reportPrivateUsage]
+        (ordinary,),
+        [recorded],
+        kept,
+        set(),
+        fixed_item_ids=set(),
+    )
+    assert kept[0].subject_ref == str(evd(1))
+    # A recorded source that is not a ledger subject still raises. Subject validation is unchanged.
+    with pytest.raises(ValueError, match="semantic_case_invalid"):
+        semantic_case_module._append_omission(  # pyright: ignore[reportPrivateUsage]
+            [],
+            "not-a-subject",
+            (),
+            DataCategory.EVIDENCE_EXCERPT,
+            "evidence",
+            "not_selected",
+        )
+    # A synthetic excerpt whose linked tokens are not ledger subjects adds no omission.
+    skipped: list[ReviewOmission] = []
+    semantic_case_module._append_omission(  # pyright: ignore[reportPrivateUsage]
+        skipped,
+        semantic_case_module._CHECK_TIME_CHANGE_SOURCE_REF,  # pyright: ignore[reportPrivateUsage]
+        ("not-a-subject",),
+        DataCategory.REPOSITORY_EXCERPT,
+        "diff",
+        "not_selected",
+    )
+    assert skipped == []
+
+
 def test_a_current_section_the_first_packet_carried_plans_no_round() -> None:
     """Checker P3 (tb4n5 fix review): the planner asks per requested path, so a section the
     first packet already carried never costs a rebuild just to find nothing new."""

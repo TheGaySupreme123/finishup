@@ -528,3 +528,17 @@ produced.
 PR CI's conda-image smoke (`scripts/ci/service_image_smoke.sh`) runs the real Git 2.25 there:
 ready status, `start` and a deterministic check whose change capture must succeed, inside a Git
 repository.
+
+## Amendment (issue #1077): a dropped synthetic excerpt names its linked subjects
+
+A check-time change part and a current-file section an in-check follow-up serves both use the
+synthetic source ref `check-time-change`. That token is a valid excerpt source and is not a ledger
+subject. `ReviewOmission` still accepts only ledger subject ids. When selection or the aggregate
+case bound drops one of those excerpts, the omission is recorded against each valid linked subject
+(the edit the section answers, or the change's claims, obligations, or plan) with the same category
+and `not_selected` reason. `content_unselected` remains. No linked ledger subject means no omission
+row and no `coordinator_failure`. Subject validation is not relaxed, and nothing new is sent.
+
+A follow-up whose packet adds no part the earlier packets lacked is not dispatched. The check keeps
+the completed `insufficient_packet` review. A real `coordinator_failure` still fails the check; the
+receipt limitations section names that fault inside FinishUP in a fixed sentence on every rendering.

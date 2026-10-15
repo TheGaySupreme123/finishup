@@ -9,9 +9,11 @@ from typing import Final, cast
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.findings import SELF_VERIFIED_GUIDANCE
 from finishup.domain.receipts import (
+    COORDINATOR_FAILURE_LIMITATION,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    limitations_name_coordinator_failure,
     semantic_redacted_value_text,
 )
 from finishup.domain.review_input_render import (
@@ -1049,11 +1051,20 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     lines = [f"Conclusion: {result.conclusion}"]
     if result.human_text is not None:
         lines.append(_projected_text(result.human_text))
+    document = result.document
+    shown = result.human_text if isinstance(result.human_text, str) else ""
+    if (
+        isinstance(document, Mapping)
+        and limitations_name_coordinator_failure(document.get("sections"))
+        and COORDINATOR_FAILURE_LIMITATION not in shown
+    ):
+        # JSON receipts keep the sentence in the document section. Markdown and text already
+        # carry it in human_text (issue #1077).
+        lines.append(COORDINATOR_FAILURE_LIMITATION)
     # The result's coverage names live gaps only (issue #1017); a JSON receipt also lists the
     # gaps a later check cleared, apart, and markdown/text carry them in ``human_text``.
     limitations = tuple(result.coverage.known_gaps)
     lines.append("Limitations: " + (", ".join(limitations) if limitations else "none declared"))
-    document = result.document
     if isinstance(document, Mapping) and result.human_text is None:
         # ADR-049: a JSON receipt names the task's review-mode switches in its limitations
         # section; markdown and text already carry that section in ``human_text``.

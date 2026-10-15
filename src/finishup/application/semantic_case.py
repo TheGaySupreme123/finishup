@@ -2125,6 +2125,50 @@ def _omit(
     )
 
 
+def _omission_subject_refs(source_ref: str, linked: Sequence[str]) -> tuple[str, ...]:
+    """Ledger subjects a dropped excerpt may name (issue #1077).
+
+    A check-time change excerpt's own source is the synthetic ``check-time-change`` token.
+    ``ReviewOmission`` accepts only ledger subject ids, so a dropped synthetic excerpt is
+    disclosed against the valid linked subjects it answers. A recorded source keeps its own ref.
+    Subject validation itself is unchanged.
+    """
+
+    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+        return (source_ref,)
+    seen: list[str] = []
+    for ref in linked:
+        if type(ref) is str and ref not in seen:
+            seen.append(ref)
+    return tuple(sorted(seen, key=str.encode))
+
+
+def _append_omission(
+    omissions: list[ReviewOmission],
+    source_ref: str,
+    linked: Sequence[str],
+    category: DataCategory,
+    source_kind: _SourceKind,
+    reason: _OmissionReason,
+) -> None:
+    """Record one omission per subject, mapping a synthetic excerpt onto its linked subjects.
+
+    A linked token that is not a ledger subject is skipped. The ``content_unselected`` gap the
+    caller already recorded stays the disclosure when no valid subject remains. A recorded
+    source still raises if its own ref is not a ledger subject.
+    """
+
+    subjects = _omission_subject_refs(source_ref, linked)
+    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+        omissions.append(_omit(subjects[0], category, source_kind, reason))
+        return
+    for subject in subjects:
+        try:
+            omissions.append(_omit(subject, category, source_kind, reason))
+        except ValueError:
+            continue
+
+
 def _fit_excerpts_within_case_bound(
     items: Sequence[SemanticCaseItem],
     targeted: list[TargetedExcerptRef],
@@ -2156,7 +2200,14 @@ def _fit_excerpts_within_case_bound(
         item = by_id[excerpt.excerpt_item_id]
         case_bytes -= item.content_bytes
         dropped_refs.add(item.source_ref)
-        omissions.append(_omit(item.source_ref, item.category, excerpt.source_kind, "not_selected"))
+        _append_omission(
+            omissions,
+            item.source_ref,
+            item.linked_subject_refs,
+            item.category,
+            excerpt.source_kind,
+            "not_selected",
+        )
     capture_gaps.add("content_unselected")
     if any(by_id[excerpt.excerpt_item_id].source_ref in dropped_refs for excerpt in targeted):
         # Later parts of a split excerpt were cut while its earlier parts stay.
@@ -3723,13 +3774,13 @@ def _select_targeted_excerpts(
                 gaps.add("content_unselected")
                 if index not in omitted_indexes:
                     omitted_indexes.add(index)
-                    omissions.append(
-                        _omit(
-                            candidate.source_ref,
-                            candidate.category,
-                            candidate.source_kind,
-                            "not_selected",
-                        )
+                    _append_omission(
+                        omissions,
+                        candidate.source_ref,
+                        candidate.linked,
+                        candidate.category,
+                        candidate.source_kind,
+                        "not_selected",
                     )
                 break
             item_id = (
