@@ -7912,9 +7912,12 @@ the basis could not be read):
   identical call is answered from a one-entry memo (Stop's status deadline is 4,000 ms). The status
   directive's re-check note names the flagged set and, since #1079, the linked
   `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` line or a
-  `finishup-verification-limit:<obligation id>` line that answers it. A bare `:met` and a generic
-  all-met claim do not. An obligation with a recorded `verification_limit` disclosure leaves the
-  acceptance recheck; the receipt still lists it.
+  `finishup-verification-limit:<obligation id>` line that answers it. The linked id counts only
+  when `admissible_verification` on this object names it for that obligation (a recorded row
+  linked to the obligation, its target, or the task, at or before the frontier). A bare `:met`
+  and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
+  with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
+  still lists it.
   `kernel.claim_verification.claim_verification_lines` renders that pairing in the receipt evidence
   section (JSON, markdown and text): one header and one line per flagged obligation,
   `<obligation id> <comma-joined reasons> verification_limit|no_verification_limit`. A final-message
@@ -10565,14 +10568,20 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   every exact `finishup-acceptance:<obligation id>:met` when `linked` is false (the legacy
   unflagged rule; any other outcome, `:not_met` included, is no attestation). When `linked` is
   true (rule `resolved_obligations_acceptance_risk`, #1079) only
-  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or
-  `finishup-verification-limit:<obligation id>` counts (legacy `yoetz-` spellings too). A bare
-  `:met` and prose that every criterion is met do not. The read is the first 65,536 characters.
-  `unattested_acceptance(recheck, final_message) -> tuple[obligation id, ...] | None` passes
-  `linked` from the recheck rule. It is `None` (every announced obligation is asked) without a
-  message or when the announced subjects do not hash to the recheck's `accept:<h8>` key (more than
-  eight, or an older list), else the announced obligations not attested; `()` means the re-read is
-  not asked. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where a legacy
+  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` whose id is in
+  `admissible` for that obligation, or `finishup-verification-limit:<obligation id>`, counts
+  (legacy `yoetz-` spellings too). `admissible` is
+  `closure_readiness.admissible_verification`; a missing argument or a missing row does not
+  treat a well-formed id as linked. A bare `:met` and prose that every criterion is met do not.
+  The read is the first 65,536 characters. A cited id that is not admissible adds one sentence,
+  `` `<id>` is not linked to obligation `<obligation id>`. ``, up to three, and copies no other
+  message text. `unattested_acceptance(recheck, final_message, *, admissible=None, host=None) ->
+  tuple[obligation id, ...] | None` passes `linked` from the recheck rule. It is `None` (every
+  announced obligation is asked) without a message or when the announced subjects do not hash to
+  the recheck's `accept:<h8>` key (more than eight, or an older list), else the announced
+  obligations not attested; `()` means the re-read is not asked. On `cursor`, with no final
+  message, a nonempty admissible set for an obligation is the record link that answers the
+  flagged rule. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where a legacy
   unflagged re-read rides alone it still ends with the sentence that a pure confirmation needs no
   new record, check or receipt. The flagged rule does not: saying every criterion is met does not
   answer it. The receipt evidence section states whether the ledger has the pairing

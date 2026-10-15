@@ -5325,6 +5325,33 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
                 "maxItems": 64,
                 "type": "array",
             },
+            # #1079: recorded evd_ or res_ ids linked to a flagged obligation. Ids only.
+            # Optional on the unreleased 1.4.0 wire; omitted when none. Absence never means a
+            # cited id is linked.
+            "admissible_verification": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "obligation_id": {"$ref": "#/$defs/obligation_id"},
+                        "refs": {
+                            "items": {
+                                "oneOf": [
+                                    {"$ref": "#/$defs/evidence_id"},
+                                    {"$ref": "#/$defs/result_id"},
+                                ]
+                            },
+                            "maxItems": 8,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": True,
+                        },
+                    },
+                    "required": ["obligation_id", "refs"],
+                    "type": "object",
+                },
+                "maxItems": 8,
+                "type": "array",
+            },
             # F3: the result ids a whole-task completion claim recorded now must name in
             # `limitation_refs` (the reducer's own rule), sorted and bounded, plus the full count.
             # Ids only. Optional on the unreleased 1.4.0 wire; present together.

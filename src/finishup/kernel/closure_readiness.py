@@ -94,6 +94,7 @@ from finishup.kernel.task_facts import (
     open_effective_obligations,
     task_fact_signals,
 )
+from finishup.kernel.verification_link import admissible_verification_refs
 from finishup.protocol.models import SemanticReason, SemanticStatus
 
 # L5's D7 predicate (#984, D7a), looked up by name so this module works on a build without it:
@@ -306,6 +307,10 @@ type CheckApplicability = Literal[
     "applicable", "not_recorded", "not_applicable", "payload_unavailable"
 ]
 
+_ADMISSIBLE_REF: Final = re.compile(
+    r"^(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ClosureReadinessFacts:
@@ -388,6 +393,11 @@ class ClosureReadinessFacts:
     # Readiness names that as ``semantic_coordinator_failure`` and does not ask for the same
     # closing review again. A hand-built fact set defaults to false.
     coordinator_failure_unchanged: bool = False
+    # #1079: recorded ``evd_`` / ``res_`` ids that are admissible verification for a flagged
+    # obligation (a real row linked to that obligation, its target, or the task, at or before
+    # this frontier). ``None`` is a hand-built fact set: the Stop gate then does not treat a
+    # well-formed id as linked. An empty tuple was computed and found no such id.
+    admissible_verification: tuple[tuple[ObligationId, tuple[str, ...]], ...] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -454,6 +464,25 @@ class ClosureReadinessFacts:
         risky = self.acceptance_risk_obligation_ids
         if risky is not None and (
             type(risky) is not tuple or risky != tuple(sorted(set(risky), key=str.encode))
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        linked_refs = self.admissible_verification
+        if linked_refs is not None and (
+            type(linked_refs) is not tuple
+            or len(linked_refs) > 8
+            or any(type(item) is not tuple or len(item) != 2 for item in linked_refs)
+            or tuple(item[0] for item in linked_refs)
+            != tuple(sorted({item[0] for item in linked_refs}, key=str.encode))
+            or any(
+                type(refs) is not tuple
+                or not refs
+                or len(refs) > 8
+                or refs != tuple(sorted(set(refs), key=str.encode))
+                or any(
+                    type(ref) is not str or _ADMISSIBLE_REF.fullmatch(ref) is None for ref in refs
+                )
+                for _obligation, refs in linked_refs
+            )
         ):
             raise ValueError("closure_readiness_facts_invalid")
 
@@ -835,6 +864,11 @@ def closure_readiness_facts(
         state, records, limitations
     )
     applicability, standing = _check_applicability(state, records)
+    risky_pairs = acceptance_risk(
+        state,
+        records,
+        (item.obligation_id for item in obligation_classes.values() if item.basis == "resolved"),
+    )
     return ClosureReadinessFacts(
         check_applicability=applicability,
         check_cause=standing.cause if applicability in {"applicable", "not_applicable"} else None,
@@ -874,19 +908,11 @@ def closure_readiness_facts(
         ),
         fact_lineage=current_fact_lineage(state, records, applicability),
         undeclared_references=current_undeclared_references(state, records, applicability),
-        acceptance_risk_obligation_ids=tuple(
-            obligation
-            for obligation, _reasons in acceptance_risk(
-                state,
-                records,
-                (
-                    item.obligation_id
-                    for item in obligation_classes.values()
-                    if item.basis == "resolved"
-                ),
-            )
-        ),
+        acceptance_risk_obligation_ids=tuple(obligation for obligation, _reasons in risky_pairs),
         coordinator_failure_unchanged=coordinator_failure,
+        admissible_verification=admissible_verification_refs(
+            state, records, (obligation for obligation, _reasons in risky_pairs)
+        ),
     )
 
 

@@ -317,9 +317,10 @@ a Stop will ask you once to re-read (the acceptance criteria of the resolved obl
 flags because a requested item was never attempted or their evidence is unlinked or only your own
 assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
 them. When a flagged obligation's criteria are met, answer with
-`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming the observed evidence or result,
-or with `finishup-verification-limit:<obligation id>`, in your final answer in Codex and Claude
-Code. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
+is already a recorded link for that obligation, or with `finishup-verification-limit:<obligation id>`,
+in your final answer in Codex and Claude Code. A well-formed id that is not that link does not
+answer it. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
 FinishUP, so there publish a decision `finishup-verification-limit:<obligation id>` or link the
 observed evidence or result id in a record. The re-read is asked once for that set.
 `ready` means

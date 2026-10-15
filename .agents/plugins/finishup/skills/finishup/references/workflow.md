@@ -243,9 +243,11 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   evidence), an obligation you acknowledged as not done, a recorded blocker, a premise dispute. A
   Stop asks nothing that list does not name. Once you have read a flagged obligation's
   `acceptance_criteria` against your output, answer it with
-  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming the observed evidence or
-  result, or with `finishup-verification-limit:<obligation id>`, in your final answer on Codex
-  and Claude Code. Saying every criterion is met does not answer it. Cursor passes FinishUP no
+  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id
+  that is already a recorded link for that obligation, or with
+  `finishup-verification-limit:<obligation id>`, in your final answer on Codex and Claude Code.
+  A well-formed id that is not that link does not answer it. Saying every criterion is met does
+  not answer it. Cursor passes FinishUP no
   final answer, so there publish a decision `finishup-verification-limit:<obligation id>` or
   link the observed evd_ or res_ id in a record; the re-read is asked once for the set. If it
   is not met, republish it
@@ -317,8 +319,9 @@ marked `acknowledged_not_done` that the review says the task itself requires
 finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
 A Stop asks once to read each resolved obligation FinishUP flags against your final output.
 On Codex and Claude Code, answer a flagged obligation with
-`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming the observed evidence or
-result, or with `finishup-verification-limit:<obligation id>`. Saying every criterion is met does
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
+is already a recorded link for that obligation, or with `finishup-verification-limit:<obligation id>`.
+A well-formed id that is not that link does not answer it. Saying every criterion is met does
 not answer it. Cursor passes FinishUP no final answer: publish a decision
 `finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a record.
 If the output does not meet them, republish that obligation `acknowledged_not_done` with the

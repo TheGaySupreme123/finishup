@@ -5302,6 +5302,24 @@ class StatusUndeclaredReferenceModel(_ClosedModel):
         return self
 
 
+class StatusAdmissibleVerificationModel(_ClosedModel):
+    """Recorded evidence or result ids linked to one flagged obligation (#1079).
+
+    Service-minted ids only. The Stop gate accepts a
+    ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line only when the cited id
+    is in this list for that obligation. Absence never means a well-formed id is linked.
+    """
+
+    obligation_id: ObligationIdWire
+    refs: Annotated[tuple[EvidenceOrResultIdWire, ...], Field(min_length=1, max_length=8)]
+
+    @model_validator(mode="after")
+    def _validate_admissible_refs(self) -> StatusAdmissibleVerificationModel:
+        if self.refs != tuple(sorted(set(self.refs), key=str.encode)):
+            raise ValueError("admissible_verification_refs_invalid")
+        return self
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -5388,6 +5406,12 @@ class StatusClosureReadinessModel(_ClosedModel):
     undeclared_references: tuple[StatusUndeclaredReferenceModel, ...] | None = Field(
         default=None, max_length=16
     )
+    # #1079: evd_ or res_ ids that are a recorded link for a flagged obligation. Optional on the
+    # unreleased 1.4.0 wire: omitted when none were computed, and from an earlier 0.3 build.
+    # Absence never means a cited id is linked.
+    admissible_verification: tuple[StatusAdmissibleVerificationModel, ...] | None = Field(
+        default=None, max_length=8
+    )
 
     optional_non_null_fields = frozenset(
         {
@@ -5409,6 +5433,7 @@ class StatusClosureReadinessModel(_ClosedModel):
             "blocked_obligations",
             "limitation_refs_required",
             "limitation_refs_required_count",
+            "admissible_verification",
         }
     )
 
@@ -5429,6 +5454,11 @@ class StatusClosureReadinessModel(_ClosedModel):
             _require_unique(
                 tuple(item.obligation_id for item in self.blocked_obligations), limit=64
             )
+        if self.admissible_verification is not None:
+            admissible_ids = tuple(item.obligation_id for item in self.admissible_verification)
+            _require_unique(admissible_ids, limit=8)
+            if admissible_ids != tuple(sorted(admissible_ids, key=str.encode)):
+                raise ValueError("closure_readiness_admissible_verification_invalid")
         _validate_fact_lineage_models(self.fact_lineage)
         self._validate_checklist()
         # Absent counts mean the compact singleton could not be read (an unreadable task title
@@ -7279,6 +7309,9 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             *(f"fact_lineage/*/{leaf}" for leaf in _FACT_LINEAGE_LEAVES),
             # tb4n4 (#1044): service-minted ids and counts; each path is repository-excerpt
             # content (``_STATUS_COMMON_CONTENT_RULES``) and a withheld one is the omission marker.
+            # #1079: service-minted ids only. A cited acceptance id is linked only when it is here.
+            "admissible_verification/*/obligation_id",
+            "admissible_verification/*/refs/*",
             "undeclared_references/*/obligation_id",
             "undeclared_references/*/item_index",
             "undeclared_references/*/total",
@@ -8097,11 +8130,11 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1626
+        len(result) != 1628
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
-        # ADR-049 +4 check / +8 status (review_mode)
+        # ADR-049 +4 check / +8 status (review_mode), #1079 +2 admissible_verification
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

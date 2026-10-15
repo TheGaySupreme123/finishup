@@ -11,10 +11,12 @@ ledger with only clean resolutions announces no acceptance re-read at all.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
+from finishup.cli.closure_gate import closure_gate_from_readiness
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
@@ -366,3 +368,84 @@ def test_claim_verification_lines_name_each_flag_and_a_recorded_limit() -> None:
     assert str(_NEVER) in subjects
     limited = claim_verification_lines(state, ledger.prefix)
     assert f"{_SELF} {EVIDENCE_SELF_ASSERTED_ONLY} verification_limit" in limited
+
+
+_NOTE = "evd_00000000-0000-4000-8000-00000000d004"
+_ASSERTED = "res_00000000-0000-4000-8000-00000000d003"
+_MISSING = "evd_00000000-0000-4000-8000-00000000ffff"
+_GATE_DIGEST = "sha256:" + "d" * 64
+
+
+def test_a_cited_id_must_resolve_to_a_link_for_that_obligation() -> None:
+    """The flagged line needs a real row linked to that obligation (#1079).
+
+    The self-asserted ``evd_`` and ``res_`` are admissible for that obligation even though
+    the risk flag stays. The other obligation's result is not. A missing id is not. The
+    legacy ``yoetz-`` spelling uses the same list. Cursor, which has no final message, is
+    answered by those record links; a published verification-limit decision leaves the recheck.
+    """
+
+    ledger = _ledger()
+    state = replay(ledger.prefix)
+    facts = closure_readiness_facts(state, ledger.prefix)
+    assert facts.admissible_verification is not None
+    linked = dict(facts.admissible_verification)
+    assert _NOTE in linked[_SELF]
+    assert _ASSERTED in linked[_SELF]
+    assert linked[_OFF]
+    assert set(linked[_OFF]).isdisjoint(linked[_SELF])
+    assert _CLEAN not in linked
+    assert all(_MISSING not in refs for refs in linked.values())
+    foreign = next(iter(linked[_OFF]))
+    assert facts.obligation_closures is not None
+    readiness = SimpleNamespace(
+        state="ready_with_limitations",
+        agent_actionable=(),
+        open_obligation_count="0",
+        receipt_blocking_finding_count="0",
+        rechecks=rechecks_from_closures(facts.obligation_closures, facts, acknowledged_count=0),
+        admissible_verification=tuple(
+            SimpleNamespace(obligation_id=str(obligation), refs=refs)
+            for obligation, refs in facts.admissible_verification
+        ),
+    )
+    message = (
+        f"yoetz-acceptance:{_SELF}:met:{_NOTE}\n"
+        f"finishup-acceptance:{_NEVER}:met:{_ASSERTED}\n"
+        f"finishup-acceptance:{_OFF}:met:{foreign}\n"
+        f"finishup-acceptance:{_NEVER}:met:{_MISSING}"
+    )
+    gate = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="7",
+        frontier_digest=_GATE_DIGEST,
+        observation_pending=False,
+        final_message=message,
+    )
+    assert gate is not None
+    assert f"obligation(s) {_NEVER}:" in gate.text
+    assert str(_SELF) not in gate.text
+    assert str(_OFF) not in gate.text
+    assert f"`{_ASSERTED}` is not linked to obligation `{_NEVER}`." in gate.text
+    assert f"`{_MISSING}` is not linked to obligation `{_NEVER}`." in gate.text
+    covered = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="7",
+        frontier_digest=_GATE_DIGEST,
+        observation_pending=False,
+        final_message=(
+            f"finishup-acceptance:{_SELF}:met:{_ASSERTED}\n"
+            f"finishup-acceptance:{_NEVER}:met:{next(iter(linked[_NEVER]))}\n"
+            f"yoetz-acceptance:{_OFF}:met:{foreign}"
+        ),
+    )
+    assert covered is None
+    cursor = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="7",
+        frontier_digest=_GATE_DIGEST,
+        observation_pending=False,
+        final_message=None,
+        host="cursor",
+    )
+    assert cursor is None

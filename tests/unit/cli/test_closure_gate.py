@@ -932,11 +932,21 @@ def _flagged(*obligations: str, rule: str = _RISK) -> Any:
     return invite
 
 
-def _flagged_readiness(*obligations: str, actionable: tuple[str, ...] = ()) -> Any:
+def _record_links(*obligations: str, ref: str = _LINKED) -> tuple[SimpleNamespace, ...]:
+    return tuple(SimpleNamespace(obligation_id=item, refs=(ref,)) for item in obligations)
+
+
+def _flagged_readiness(
+    *obligations: str,
+    actionable: tuple[str, ...] = (),
+    admissible: tuple[object, ...] | None = None,
+) -> Any:
     announced = _readiness(
         state="action_required" if actionable else "ready_with_limitations", actionable=actionable
     )
     announced.rechecks = (_flagged(*obligations),)
+    if admissible is not None:
+        announced.admissible_verification = admissible
     return announced
 
 
@@ -966,9 +976,11 @@ def test_only_the_exact_met_line_attests() -> None:
     linked = (
         f"finishup-acceptance:{_RESOLVED_A}:met:{_LINKED}\nyoetz-verification-limit:{_RESOLVED_B}"
     )
-    assert gate_module.attested_acceptance(linked, linked=True) == frozenset(
-        {_RESOLVED_A, _RESOLVED_B}
-    )
+    # A well-formed id is not an attestation until status names it as linked. The limit line is.
+    assert gate_module.attested_acceptance(linked, linked=True) == frozenset({_RESOLVED_B})
+    assert gate_module.attested_acceptance(
+        linked, linked=True, admissible={_RESOLVED_A: frozenset({_LINKED})}
+    ) == frozenset({_RESOLVED_A, _RESOLVED_B})
 
 
 def test_a_realistic_summary_without_attestation_is_asked_for_the_flagged_obligations_only() -> (
@@ -1000,7 +1012,9 @@ def test_a_realistic_summary_without_attestation_is_asked_for_the_flagged_obliga
 
 
 def test_attesting_every_flagged_obligation_skips_the_reread_and_partial_names_the_rest() -> None:
-    announced = _flagged_readiness(_RESOLVED_A, _RESOLVED_B)
+    announced = _flagged_readiness(
+        _RESOLVED_A, _RESOLVED_B, admissible=_record_links(_RESOLVED_A, _RESOLVED_B)
+    )
     message = _INTERLEAVED_D + "\n\n" + _attest(_RESOLVED_A, _RESOLVED_B)
     assert _decide(announced, message) is None
     partial = _decide(announced, _INTERLEAVED_D + "\n" + _attest(_RESOLVED_A))
@@ -1030,6 +1044,92 @@ def test_a_bare_met_line_does_not_answer_the_flagged_reread() -> None:
     assert gate_module.ACCEPTANCE_RECHECK_ITEM in gate.items
     limit = "\n".join(f"finishup-verification-limit:{item}" for item in (_RESOLVED_A, _RESOLVED_B))
     assert _decide(announced, limit) is None
+
+
+_EVIDENCE = "evd_97700000-0000-4000-8000-0000000000bb"
+_FOREIGN = "res_97700000-0000-4000-8000-0000000000cc"
+_MISSING = "evd_97700000-0000-4000-8000-0000000000dd"
+
+
+def test_a_cited_id_counts_only_when_status_names_it_for_that_obligation() -> None:
+    """A well-formed id is unattested until it is the recorded link for that obligation.
+
+    A missing id and an id linked only to another obligation are named in the re-read. A
+    linked ``evd_`` or ``res_``, including the legacy ``yoetz-`` spelling, answers it. A
+    verification-limit line still answers without a row.
+    """
+
+    links = (
+        SimpleNamespace(obligation_id=_RESOLVED_A, refs=(_EVIDENCE, _LINKED)),
+        SimpleNamespace(obligation_id=_RESOLVED_B, refs=(_FOREIGN,)),
+    )
+    announced = _flagged_readiness(_RESOLVED_A, _RESOLVED_B, admissible=links)
+    missing = _decide(announced, f"finishup-acceptance:{_RESOLVED_A}:met:{_MISSING}")
+    assert missing is not None
+    assert f"`{_MISSING}` is not linked to obligation `{_RESOLVED_A}`." in missing.text
+    assert f"obligation(s) {_RESOLVED_A}, {_RESOLVED_B}:" in missing.text
+    foreign = _decide(announced, f"finishup-acceptance:{_RESOLVED_A}:met:{_FOREIGN}")
+    assert foreign is not None
+    assert f"`{_FOREIGN}` is not linked to obligation `{_RESOLVED_A}`." in foreign.text
+    # The same id is a real link for B, so citing it there answers B and leaves A.
+    foreign_for_b = _decide(
+        announced,
+        f"finishup-acceptance:{_RESOLVED_A}:met:{_MISSING}\n"
+        f"finishup-acceptance:{_RESOLVED_B}:met:{_FOREIGN}",
+    )
+    assert foreign_for_b is not None
+    assert f"obligation(s) {_RESOLVED_A}:" in foreign_for_b.text
+    assert _RESOLVED_B not in foreign_for_b.text
+    evidence = _decide(announced, f"yoetz-acceptance:{_RESOLVED_A}:met:{_EVIDENCE}")
+    assert evidence is not None
+    assert f"obligation(s) {_RESOLVED_B}:" in evidence.text
+    assert f"`{_EVIDENCE}` is not linked" not in evidence.text
+    result = _decide(
+        announced,
+        f"finishup-acceptance:{_RESOLVED_A}:met:{_LINKED}\n"
+        f"yoetz-acceptance:{_RESOLVED_B}:met:{_FOREIGN}",
+    )
+    assert result is None
+    # No admissible list at all: the same well-formed lines do not answer, and say so.
+    unlisted = _flagged_readiness(_RESOLVED_A)
+    bare_shape = _decide(unlisted, f"finishup-acceptance:{_RESOLVED_A}:met:{_LINKED}")
+    assert bare_shape is not None
+    assert f"`{_LINKED}` is not linked to obligation `{_RESOLVED_A}`." in bare_shape.text
+
+
+def test_cursor_answers_the_flagged_reread_by_a_record_link() -> None:
+    """Cursor passes no final message. A recorded link for every flagged obligation is the
+    answer; a published verification-limit line is not read here. One obligation without a
+    link is still named, and the text never contains ``finishup-acceptance``."""
+
+    both = _flagged_readiness(
+        _RESOLVED_A, _RESOLVED_B, admissible=_record_links(_RESOLVED_A, _RESOLVED_B)
+    )
+    assert (
+        closure_gate_from_readiness(
+            both,
+            frontier_sequence="7",
+            frontier_digest=_DIGEST,
+            observation_pending=False,
+            final_message=None,
+            host="cursor",
+        )
+        is None
+    )
+    one = _flagged_readiness(_RESOLVED_A, _RESOLVED_B, admissible=_record_links(_RESOLVED_A))
+    gate = closure_gate_from_readiness(
+        one,
+        frontier_sequence="7",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        final_message=None,
+        host="cursor",
+    )
+    assert gate is not None
+    assert f"obligation(s) {_RESOLVED_B}:" in gate.text
+    assert _RESOLVED_A not in gate.text
+    assert "finishup-acceptance" not in gate.text
+    assert "`finishup-verification-limit:<obligation id>`" in gate.text
 
 
 def test_the_original_false_completion_is_still_asked() -> None:
@@ -1075,7 +1175,10 @@ def test_an_older_service_reread_is_named_without_the_flag_sentence() -> None:
 
 def test_beside_an_item_that_needs_a_check_the_named_reread_promises_no_shortcut() -> None:
     announced = _flagged_readiness(
-        _RESOLVED_A, _RESOLVED_B, actionable=("closing_review_required",)
+        _RESOLVED_A,
+        _RESOLVED_B,
+        actionable=("closing_review_required",),
+        admissible=_record_links(_RESOLVED_A, _RESOLVED_B),
     )
     gate = _decide(announced, _attest(_RESOLVED_B))
     assert gate is not None
@@ -1112,6 +1215,8 @@ def test_a_final_message_that_attests_every_flagged_obligation_skips_the_reread(
 
     session = "gate-acceptance-covered"
     h, invite = _acceptance_harness(tmp_path, host, session)
+    if host.name != "cursor":
+        h.readiness.admissible_verification = _record_links(_RESOLVED_A, _RESOLVED_B)
     output = _final_stop(h, host, session, _LIVE_DB_S + "\n\n" + _attest(_RESOLVED_A, _RESOLVED_B))
     assert h.views == ["compact"]
     if host.name == "cursor":
@@ -1144,6 +1249,7 @@ def test_the_reread_names_only_what_the_message_missed_and_the_downgrade_still_c
         pytest.skip("Cursor's stop carries no final message (asked as before, test above)")
     session = "gate-acceptance-named"
     h, invite = _acceptance_harness(tmp_path, host, session)
+    h.readiness.admissible_verification = _record_links(_RESOLVED_A, _RESOLVED_B)
     text = _text(host, _final_stop(h, host, session, _INTERLEAVED_D + "\n" + _attest(_RESOLVED_A)))
     assert f"obligation(s) {_RESOLVED_B}:" in text
     assert _RESOLVED_A not in text

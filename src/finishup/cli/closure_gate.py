@@ -23,12 +23,13 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   after that invite answers it and is never challenged by the acknowledgement re-check. Since
   tb4n5 (#1050) readiness announces it only for the resolved obligations the ledger flags.
   For that flagged rule (#1079) the final message answers an obligation only with
-  ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` or
-  ``finishup-verification-limit:<obligation id>`` (``unattested_acceptance``). A bare ``:met``
-  line and a generic all-met claim do not. Cursor's ``stop`` carries no final message, so on
-  Cursor the text never names the ``finishup-acceptance`` line: the agent publishes the
-  verification-limit decision or links the observed id in a record. The re-read is still asked
-  once per flagged set;
+  ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` when status names that id in
+  ``admissible_verification`` for the obligation, or with
+  ``finishup-verification-limit:<obligation id>`` (``unattested_acceptance``). A bare ``:met``,
+  a well-formed id that is not that link, and a generic all-met claim do not. Cursor's ``stop``
+  carries no final message, so on Cursor the text never names the ``finishup-acceptance`` line:
+  the agent publishes the verification-limit decision or already has the record link. The
+  re-read is still asked once per flagged set that has neither;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. FinishUP cannot verify the claim,
   so a Stop that finds a blocker the agent has not been asked about continues the agent once
@@ -68,7 +69,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Awaitable, Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
@@ -397,6 +398,8 @@ _OBLIGATION_ID: Final = r"obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f
 _LINKED_ID: Final = (
     r"(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
+_OBLIGATION_ID_EXACT: Final = re.compile(rf"{_OBLIGATION_ID}\Z")
+_LINKED_ID_EXACT: Final = re.compile(rf"{_LINKED_ID}\Z")
 _ATTESTATION: Final = re.compile(
     rf"(?:finishup|yoetz)-acceptance:({_OBLIGATION_ID}):met(?![A-Za-z0-9_-])",
     re.ASCII,
@@ -413,21 +416,32 @@ _VERIFICATION_LIMIT_LINE: Final = re.compile(
 )
 
 
-def attested_acceptance(final_message: str, *, linked: bool = False) -> frozenset[str]:
+def attested_acceptance(
+    final_message: str,
+    *,
+    linked: bool = False,
+    admissible: Mapping[str, Collection[str]] | None = None,
+) -> frozenset[str]:
     """The obligation ids the final message attests as meeting their acceptance criteria.
 
     The default is the legacy exact ``finishup-acceptance:<obligation id>:met`` form (or its
     ``yoetz-acceptance:`` spelling), in the first 65,536 characters. ``linked`` is the flagged
-    rule (#1079): only ``:met:<evd_ or res_ id>`` or a ``finishup-verification-limit:`` line for
-    that obligation counts. A bare ``:met`` and prose that every criterion is met do not. The
-    message is read in this process only: never sent, stored or logged. A line in the message
-    does not create a ledger link.
+    rule (#1079): a ``finishup-verification-limit:`` line counts, and
+    ``:met:<evd_ or res_ id>`` counts only when *admissible* lists that id for that obligation.
+    A well-formed id with no such list, or one the list does not name, does not. A bare ``:met``
+    and prose that every criterion is met do not. The message is read in this process only:
+    never sent, stored or logged. A line in the message does not create a ledger link.
     """
 
     window = final_message[:_MAX_FINAL_MESSAGE_CHARS]
     if not linked:
         return frozenset(_ATTESTATION.findall(window))
-    linked_ids = {pair[0] for pair in _LINKED_ATTESTATION.findall(window)}
+    allowed: Mapping[str, Collection[str]] = {} if admissible is None else admissible
+    linked_ids = {
+        obligation
+        for obligation, ref in _LINKED_ATTESTATION.findall(window)
+        if ref in allowed.get(obligation, ())
+    }
     limited = set(_VERIFICATION_LIMIT_LINE.findall(window))
     return frozenset(linked_ids | limited)
 
@@ -437,29 +451,113 @@ def _subjects_key(subjects: tuple[str, ...]) -> str:
     return "accept:" + hashlib.sha256("\n".join(ordered).encode("ascii")).hexdigest()[:8]
 
 
-def unattested_acceptance(recheck: _Recheck, final_message: str | None) -> tuple[str, ...] | None:
+def unattested_acceptance(
+    recheck: _Recheck,
+    final_message: str | None,
+    *,
+    admissible: Mapping[str, Collection[str]] | None = None,
+    host: str | None = None,
+) -> tuple[str, ...] | None:
     """The announced obligations the final message does not attest, or ``None`` when unknown.
 
     Unknown (``None``) when the host gave no final message, or the announced subjects are not the
     whole set the key names (more than eight, or an older service's list): the re-read is then
     asked for every announced obligation. The attestation binds to the set this Stop's status
     read announced, so a message that attests an earlier set covers only what is still in it.
+
+    Cursor passes no final message. For the flagged rule, a nonempty admissible set for an
+    obligation is the record link that answers it; a verification-limit disclosure already left
+    the recheck. Every other announced obligation is still asked.
     """
 
-    if final_message is None or not recheck.subjects:
+    if not recheck.subjects:
         return None
     if not all(item.isascii() for item in recheck.subjects):
         return None
     if _subjects_key(recheck.subjects) != recheck.key:
         return None
-    attested = attested_acceptance(final_message, linked=recheck.rule == _ACCEPTANCE_RISK_RULE)
+    linked = recheck.rule == _ACCEPTANCE_RISK_RULE
+    if final_message is None:
+        if host == "cursor" and linked:
+            allowed: Mapping[str, Collection[str]] = {} if admissible is None else admissible
+            return tuple(
+                subject
+                for subject in sorted(recheck.subjects, key=str.encode)
+                if not allowed.get(subject)
+            )
+        return None
+    attested = attested_acceptance(final_message, linked=linked, admissible=admissible)
     return tuple(
         subject for subject in sorted(recheck.subjects, key=str.encode) if subject not in attested
     )
 
 
+def _admissible_fields(item: object) -> tuple[object, object]:
+    if isinstance(item, Mapping):
+        mapping = cast("Mapping[object, object]", item)
+        return mapping.get("obligation_id"), mapping.get("refs")
+    return getattr(item, "obligation_id", None), getattr(item, "refs", None)
+
+
+def _admissible_map(readiness: object) -> dict[str, frozenset[str]]:
+    """Obligation id to the evd_ or res_ ids status names as linked. Malformed rows are dropped.
+
+    Absence and a malformed value are an empty map: a cited id is then not linked. Only id
+    tokens are kept.
+    """
+
+    raw = getattr(readiness, "admissible_verification", None)
+    if not isinstance(raw, (tuple, list)):
+        return {}
+    found: dict[str, set[str]] = {}
+    for item in cast("Sequence[object]", raw):
+        obligation, refs = _admissible_fields(item)
+        if type(obligation) is not str or _OBLIGATION_ID_EXACT.fullmatch(obligation) is None:
+            continue
+        if not isinstance(refs, (tuple, list)):
+            continue
+        good: set[str] = set()
+        for ref in cast("Sequence[object]", refs):
+            if type(ref) is str and _LINKED_ID_EXACT.fullmatch(ref) is not None:
+                good.add(ref)
+        if good:
+            found.setdefault(obligation, set()).update(good)
+    return {key: frozenset(value) for key, value in found.items()}
+
+
+def _unlinked_notes(
+    final_message: str, unattested: tuple[str, ...], admissible: Mapping[str, Collection[str]]
+) -> tuple[str, ...]:
+    """Up to three sentences naming a cited id that is not a recorded link for that obligation.
+
+    The only copied text is the id token the line matched. A verification-limit answer, and a
+    citation whose id is admissible, are not named.
+    """
+
+    still = set(unattested)
+    if not still:
+        return ()
+    notes: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    window = final_message[:_MAX_FINAL_MESSAGE_CHARS]
+    for obligation, ref in _LINKED_ATTESTATION.findall(window):
+        if obligation not in still or ref in admissible.get(obligation, ()):
+            continue
+        key = (obligation, ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        notes.append(f"`{ref}` is not linked to obligation `{obligation}`.")
+        if len(notes) == _MAX_NAMED_ACCEPTANCE:
+            break
+    return tuple(notes)
+
+
 def _acceptance_sentence(
-    recheck: _Recheck, named: tuple[str, ...] | None, host: str | None = None
+    recheck: _Recheck,
+    named: tuple[str, ...] | None,
+    host: str | None = None,
+    notes: tuple[str, ...] = (),
 ) -> str:
     """The re-read for the obligations still to read: named, flagged when the service flagged.
 
@@ -489,7 +587,8 @@ def _acceptance_sentence(
         )
     else:
         attest = _ACCEPTANCE_ATTEST_TEXT_CURSOR if host == "cursor" else _ACCEPTANCE_ATTEST_TEXT
-    return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + attest
+    note = (" " + " ".join(notes)) if notes else ""
+    return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + attest + note
 
 
 _BLOCKER_OFFER_TEXT: Final = (
@@ -1172,13 +1271,27 @@ def closure_gate_from_readiness(
             DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
         }
     )
+    admissible = _admissible_map(readiness)
     acceptance_named = (
-        None if acceptance is None else unattested_acceptance(acceptance, final_message)
+        None
+        if acceptance is None
+        else unattested_acceptance(acceptance, final_message, admissible=admissible, host=host)
     )
     accept_allowed = (
         acceptance is not None
         and not accept_excluded
         and (acceptance_named is None or bool(acceptance_named))
+    )
+    accept_notes = (
+        _unlinked_notes(final_message, acceptance_named, admissible)
+        if (
+            accept_allowed
+            and acceptance is not None
+            and acceptance.rule == _ACCEPTANCE_RISK_RULE
+            and acceptance_named
+            and final_message
+        )
+        else ()
     )
     prediction = predicted_receipt_variants(
         getattr(readiness, "predicted_receipt", None), state=state
@@ -1216,7 +1329,8 @@ def closure_gate_from_readiness(
             else " " + _ACCEPTANCE_CONFIRMED_TEXT
         )
         accept_sentence = (
-            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host) + confirm
+            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host, accept_notes)
+            + confirm
             if accept_allowed
             else ""
         )
@@ -1319,7 +1433,7 @@ def closure_gate_from_readiness(
     )
     why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
     accept_text = (
-        _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
+        _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host, accept_notes)
         if accept_allowed
         else ""
     )
