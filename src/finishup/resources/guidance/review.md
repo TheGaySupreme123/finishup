@@ -44,6 +44,7 @@ back as advisory notes in the review summary, not findings. `agent_criterion_unm
 you set yourself beyond the task's stated scope: fix it, or narrow it with `respond` `acknowledged`
 and the reason (a disclosed limitation that does not block); a `finishup-verification-limit` decision
 does not narrow it.
+If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Hook-captured output FinishUP may include on a verification follow-up is observed, not something you supplied.
 
 Before the receipt, run the closing review: `check` with `final_review: true`. It judges each stated
 requirement and requested output against the task, with or without a completion claim; closure
