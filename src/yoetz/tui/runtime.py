@@ -2146,8 +2146,9 @@ class YoetzRuntime:
             if reason == "passphrase_in_credential_store":
                 raise RuntimeError_(
                     "owner_view_unavailable",
-                    "no system dialog can be shown here and this vault's passphrase is kept in "
-                    "the system credential store, so the full receipt stays closed; if you chose "
+                    "no system dialog can be shown here and this vault's passphrase may be kept "
+                    "in the system credential store (or the store could not be read), so the "
+                    "full receipt stays closed; if you chose "
                     "that passphrase yourself, run 'yoetz receipt --owner-view --use-passphrase'",
                 ) from error
             if reason == "ceremony_busy":
@@ -2156,6 +2157,12 @@ class YoetzRuntime:
                     "another confirmation is already open, perhaps one an agent started; if a "
                     "system dialog is on screen it is not for this request, so cancel it; if "
                     "nothing is on screen, 'yoetz service restart' ends it; then try again",
+                ) from error
+            if reason == "passphrase_rate_limited":
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "too many wrong passphrases, so Yoetz waits up to five minutes before "
+                    "accepting another; restarting the service does not clear this wait",
                 ) from error
             if reason == "reauthentication_rate_limited":
                 raise RuntimeError_(

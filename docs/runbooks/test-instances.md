@@ -245,8 +245,8 @@ the Codex check the owner asked for has not been run either; an independent Clau
    code. Approve it: the full receipt prints with the names spelled out, and the command exits 0.
 Each dialog that does not approve lengthens the wait before the next one: 5, 15, 30, 60, 120,
 then 300 seconds, reset by an approval or by 10 minutes without a miss, and cleared by
-`$L service restart`. A dialog cancelled within 2 seconds does not count. The steps below approve
-between misses so each wait stays at 5 seconds.
+`$L service restart`. A dialog cancelled within 2 seconds does not lengthen the wait, but the next
+one still waits 5 seconds. The steps below approve between misses so each wait stays at 5 seconds.
 
 5. Repeat step 4 and choose Cancel in the dialog. Expect `owner_view_refused: the
    operating-system confirmation was cancelled or did not confirm it is you`, nothing on stdout,
@@ -259,7 +259,10 @@ between misses so each wait stays at 5 seconds.
    and approve.
 7. Repeat step 4 and press Ctrl-C in the terminal at least 2 seconds after the dialog appears. The
    dialog should close at once and nothing is shown. Wait 5 seconds; a new `$L receipt
-   --owner-view` raises a fresh dialog; approve it.
+   --owner-view` raises a fresh dialog; approve it. Then repeat step 4, press Ctrl-C as soon as
+   the dialog appears, and run step 4 again at once: expect `owner_view_refused: recent
+   confirmations did not succeed` and no dialog. After 5 seconds step 4 raises a dialog again,
+   and the wait has not grown; approve it.
 8. With a dialog from step 4 on screen, run step 4 again in a second terminal. Expect
    `owner_view_busy` naming that second command's code, which differs from the dialog's, and
    `yoetz service restart` for the case with nothing on screen; no second dialog. Approve the

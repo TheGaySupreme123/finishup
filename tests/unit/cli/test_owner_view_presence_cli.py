@@ -445,9 +445,75 @@ def test_busy_and_throttled_directives_never_ask_for_approval() -> None:
     assert busy == "ceremony_in_progress"
     assert throttled == "ceremony_retry_after_wait"
     busy_text = RECOVERY_DIRECTIVES["ceremony_in_progress"].directive
-    assert "Never approve" in busy_text and "yoetz service restart" in busy_text
-    assert "Authorize" not in busy_text
+    # Agents cannot see the screen: they report and let the owner decide (#1073 round 3).
+    assert "let the owner decide" in busy_text and "Do not approve" in busy_text
+    assert "Authorize" not in busy_text and "service restart" not in busy_text
     wait_text = RECOVERY_DIRECTIVES["ceremony_retry_after_wait"].directive
     assert "five minutes" in wait_text and "policy" not in wait_text
     assert "five minutes" in (ceremony_refusal_message("reauthentication_rate_limited") or "")
     assert "yoetz service restart" in (ceremony_refusal_message("ceremony_busy") or "")
+
+
+async def test_a_passphrase_throttle_is_not_described_as_the_dialog_backoff(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1073 review round 3, T2: on Linux, or with --use-passphrase, the wait is the durable
+    passphrase throttle: a restart does not clear it and --use-passphrase is not a way out."""
+
+    async def run(kind: object, target: object, **kwargs: Any) -> object:
+        del kind, target
+        choice = kwargs["authorization"]
+        choice.offered = ("secret_reauthentication",)
+        choice.selected = "secret_reauthentication"
+        raise ConfidentialClientError("reauthentication_rate_limited")
+
+    monkeypatch.setattr(unlock, "run_human_ceremony", run)
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+    for use_passphrase in (True, False):
+        with pytest.raises(unlock.HumanCeremonyCliError) as raised:
+            await unlock.authorize_owner_receipt_view(target, use_passphrase=use_passphrase)
+        assert raised.value.reason == "passphrase_rate_limited"
+
+    class _Client:
+        def owner_receipt_view_target(self, request: Any) -> Any:
+            del request
+            return target
+
+    code = await cli_app._authorize_owner_receipt_view(  # pyright: ignore[reportPrivateUsage]
+        _Client(),
+        _REQUEST,  # pyright: ignore[reportArgumentType]
+        use_passphrase=True,
+    )
+    assert code is not None and code != 0
+    err = capsys.readouterr().err
+    assert "wrong passphrases" in err and "does not clear" in err
+    assert "--use-passphrase" not in err and "clears the wait" not in err
+
+
+async def test_a_dialog_backoff_keeps_its_own_remedies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run(kind: object, target: object, **kwargs: Any) -> object:
+        del kind, target
+        choice = kwargs["authorization"]
+        choice.offered = ("os_user_presence",)
+        choice.selected = "os_user_presence"
+        raise ConfidentialClientError("reauthentication_rate_limited")
+
+    monkeypatch.setattr(unlock, "run_human_ceremony", run)
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+    with pytest.raises(ConfidentialClientError) as raised:
+        await unlock.authorize_owner_receipt_view(target)
+    assert raised.value.reason == "reauthentication_rate_limited"
+    assert "service restart" in cli_app._OWNER_VIEW_REFUSALS["reauthentication_rate_limited"]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_credential_store_refusal_does_not_claim_more_than_it_knows() -> None:
+    """#1073 review round 3: the check also fails closed when the store cannot be read, so the
+    refusal says the passphrase may be kept there, not that it is."""
+
+    refusals = cli_app._OWNER_VIEW_REFUSALS  # pyright: ignore[reportPrivateUsage]
+    cli_text = refusals["passphrase_in_credential_store"]
+    assert "may be kept in the system credential store" in cli_text
+    assert "could not be read" in cli_text
+    assert "is kept in the system credential store" not in cli_text

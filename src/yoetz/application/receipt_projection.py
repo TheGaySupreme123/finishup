@@ -117,11 +117,14 @@ def _absolute_prefix(segment: str) -> str:
     return rf"{_ROOTS}(?:{segment}{{0,{_MAX_SEGMENT_CHARS}}}+/){{0,{_MAX_PREFIX_SEGMENTS}}}+"
 
 
-# Unquoted prose has no token bound, so an unquoted segment stops at whitespace and at prose and
-# list delimiters (``,``, ``;``, ``:``, brackets); an unquoted absolute path through a directory
-# with spaces or those characters is not one token there. Stopping at them also keeps the
-# possessive prefix from running past the end of one path into the next (``/r/a.npz,/r/b.npz``).
-_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"[^\s/\"'`<>|,;:()\[\]{}]")
+# Unquoted prose has no token bound, so an unquoted segment stops at whitespace, quotes, ``<>|``
+# and the list delimiters ``,`` ``;`` and brackets, and at a ``:`` that starts another path
+# (``:/``); a ``:`` inside a directory or a URL port (``host:8080/``) is kept. An unquoted absolute
+# path through a directory with spaces or those characters is not one token there. Stopping at
+# them keeps the possessive prefix from running past one path into the next (``/r/a.npz,/r/b.npz``,
+# ``/r/a.npz:/r/b``). A name glued to other characters and then a ``/`` (``/r/a.npz~/x``) is read
+# as a directory of a longer path and not recognised.
+_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"(?:[^\s/\"'`<>|,;:()\[\]{}]|:(?!/))")
 # Inside one pair of quotes or backticks a path may contain spaces
 # (``"/Users/u/My Project/a.npz"``); the quotes bound the token, so a segment there may hold any
 # character but a quote, a backtick, a line break or a slash.
@@ -220,17 +223,25 @@ class _NameMatcher:
         found: set[str] = set()
         if self._pattern is None:
             return found
-        for match in self._pattern.finditer(text):
-            for group, index in (
-                ("quoted_relative", self._relative),
-                ("dotted_relative", self._relative),
-                ("bare", self._relative),
-                ("quoted_base", self._bases),
-                ("absolute_base", self._bases),
-            ):
-                value = match.group(group) if group in self._pattern.groupindex else None
-                if value is not None:
-                    found.update(index.get(_EXTRA_SEPARATORS.sub("/", value), ()))
+        spans = [(0, len(text))]
+        while spans:
+            start, end = spans.pop()
+            for match in self._pattern.finditer(text, start, end):
+                for group, index in (
+                    ("quoted_relative", self._relative),
+                    ("dotted_relative", self._relative),
+                    ("bare", self._relative),
+                    ("quoted_base", self._bases),
+                    ("absolute_base", self._bases),
+                ):
+                    value = match.group(group) if group in self._pattern.groupindex else None
+                    if value is not None:
+                        found.update(index.get(_EXTRA_SEPARATORS.sub("/", value), ()))
+                if match.group("quote") is not None:
+                    # A quoted token may hold several paths (``"/bin/cmp /r/b.npz /r/a.npz"``);
+                    # the match names only its last one, so search its interior too. The
+                    # interior holds no quote, so this never nests: still linear.
+                    spans.append((match.start() + 1, match.end() - 1))
         return found
 
 

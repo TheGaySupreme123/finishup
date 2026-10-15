@@ -612,3 +612,6 @@ only with a vault passphrase you type. A system-keychain installation there keep
 passphrase you were never shown, so its full receipt stays closed for now. Where no one can answer
 the prompt, or the vault has no passphrase at all, Yoetz says the full receipt is unavailable and
 shows nothing. Either way `git status --short` in your repository lists what your change created.
+On any system, after three wrong passphrases Yoetz waits 30 seconds before accepting another,
+longer after more, up to five minutes; the command says so, and restarting the service does not
+clear that wait.

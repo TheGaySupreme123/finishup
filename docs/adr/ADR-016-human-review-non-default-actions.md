@@ -83,7 +83,8 @@ documents that Yoetz cannot independently authenticate its chat provenance.
    deadline is `presence_timeout`, and no dialog (not macOS, no LocalAuthentication, no desktop
    session, or any unreadable helper result) is `presence_unavailable`; none grants anything.
    Prompts that do not approve back off (5 seconds rising to 5 minutes,
-   `reauthentication_rate_limited`), and a ceremony opened while another is active is
+   `reauthentication_rate_limited`; one cancelled within 2 seconds does not escalate but still
+   delays the next by 5 seconds), and a ceremony opened while another is active is
    `ceremony_busy`, so an agent cannot make the owner's command read as a locked vault. The
    backoff lives in the service process and a restart clears it: it slows repeated dialogs, it
    does not cap them, and an agent that causes misses can delay the owner's own dialog by up to

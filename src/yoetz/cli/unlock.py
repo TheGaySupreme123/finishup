@@ -106,6 +106,8 @@ _FIXED_ERROR_REASONS: Final = frozenset(
         # Owner view (#1073): the vault's passphrase is kept in the platform credential store,
         # so its owner may never have seen it; it is used only when asked for explicitly.
         "passphrase_in_credential_store",
+        # Owner view: the durable passphrase throttle (not the dialog backoff) refused.
+        "passphrase_rate_limited",
         # Owner view with an explicit passphrase request on a vault without one.
         "passphrase_unavailable",
         "preview_invalid",
@@ -271,6 +273,8 @@ class _AuthorizationChoice:
     passphrase_only: bool = False
     # Whether a passphrase prompt may be shown without an explicit request; None: always.
     passphrase_allowed: Callable[[], bool] | None = None
+    # The source this ceremony asked the service for, once chosen.
+    selected: str | None = None
 
 
 class _RotationStore(Protocol):
@@ -1104,6 +1108,8 @@ async def _drive_session(
             ):
                 # Never ask for a passphrase the owner may never have been shown.
                 raise HumanCeremonyCliError("passphrase_in_credential_store")
+            if authorization is not None:
+                authorization.selected = authorization_source
             terminal.write(f"Authorization: {authorization_source}\n")
             if (
                 authorization is not None
@@ -1775,13 +1781,25 @@ async def authorize_owner_receipt_view(
 
     if type(target) is not OwnerReceiptViewTarget:
         raise TypeError("owner_receipt_view_target_invalid")
+
+    async def ceremony(choice: _AuthorizationChoice) -> HumanResult:
+        try:
+            return await run_human_ceremony(
+                HumanCeremonyKind.OWNER_RECEIPT_VIEW, target, authorization=choice
+            )
+        except ConfidentialClientError as error:
+            # The same refusal code covers the dialog backoff and the durable passphrase
+            # throttle; only the source this command chose tells them apart.
+            if (
+                error.reason == "reauthentication_rate_limited"
+                and choice.selected == "secret_reauthentication"
+            ):
+                raise HumanCeremonyCliError("passphrase_rate_limited") from error
+            raise
+
     if use_passphrase:
-        result = await run_human_ceremony(
-            HumanCeremonyKind.OWNER_RECEIPT_VIEW,
-            target,
-            authorization=_AuthorizationChoice(
-                prefer="secret_reauthentication", passphrase_only=True
-            ),
+        result = await ceremony(
+            _AuthorizationChoice(prefer="secret_reauthentication", passphrase_only=True)
         )
     else:
         if sys.platform == "darwin":
@@ -1794,9 +1812,7 @@ async def authorize_owner_receipt_view(
             passphrase_allowed=lambda: not vault_passphrase_held_by_credential_store()
         )
         try:
-            result = await run_human_ceremony(
-                HumanCeremonyKind.OWNER_RECEIPT_VIEW, target, authorization=choice
-            )
+            result = await ceremony(choice)
         except (ConfidentialClientError, HumanCeremonyCliError) as error:
             # The service could not show an operating-system dialog (where the service runs
             # decides that, not where this command runs). When the vault also offered a
@@ -1807,14 +1823,12 @@ async def authorize_owner_receipt_view(
                 or "secret_reauthentication" not in choice.offered
             ):
                 raise
-            result = await run_human_ceremony(
-                HumanCeremonyKind.OWNER_RECEIPT_VIEW,
-                target,
-                authorization=_AuthorizationChoice(
+            result = await ceremony(
+                _AuthorizationChoice(
                     prefer="secret_reauthentication",
                     after_unavailable_dialog=True,
                     passphrase_allowed=choice.passphrase_allowed,
-                ),
+                )
             )
     if type(result) is not OwnerReceiptViewResult:
         raise HumanCeremonyCliError("result_invalid")

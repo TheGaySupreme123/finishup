@@ -669,12 +669,14 @@ async def test_the_real_ceremony_client_drives_presence_end_to_end(tmp_path: Pat
 
 
 async def test_a_prompt_cancelled_at_once_cannot_lock_the_owner_out(tmp_path: Path) -> None:
-    """#1073 review round 2: an agent that opens and cancels at once shows no dialog, so it
-    must not push the owner's next dialog behind a backoff."""
+    """#1073 review rounds 2-3: a quick open-and-cancel loop neither escalates the owner's wait
+    (no lockout without a visible dialog) nor raises dialogs faster than one per first step."""
+
+    from yoetz.service.human_control import PRESENCE_BACKOFF_SECONDS
 
     runner = _Runner(hold=True)
-    service, grants, admission, _clock, _ = _owner(tmp_path, "os_keyring", runner)
-    for nonce in ("1", "2", "3", "4"):
+    service, grants, admission, clock, _ = _owner(tmp_path, "os_keyring", runner)
+    for nonce, retry_nonce in (("1", "a"), ("2", "b"), ("3", "c"), ("4", "d")):
         runner.started.clear()
         opened = await _open(service, nonce)
         action = asyncio.create_task(
@@ -684,6 +686,14 @@ async def test_a_prompt_cancelled_at_once_cannot_lock_the_owner_out(tmp_path: Pa
         await service.cancel(opened.ceremony_id)
         with pytest.raises(HumanControlError, match="cancelled"):
             await asyncio.wait_for(action, 5.0)
+        # Spaced: an immediate retry raises no dialog.
+        retry = await _open(service, retry_nonce)
+        with pytest.raises(HumanControlError, match="reauthentication_rate_limited"):
+            await service.submit_action(ClientActionEnvelope(retry.ceremony_id, 2, _PRESENCE))
+        clock.monotonic += PRESENCE_BACKOFF_SECONDS[0]
+    assert len(runner.calls) == 4
+    # Never escalated: the owner waits at most the first step, not a growing backoff.
+    assert service._presence_misses == 0
     runner.hold = False
     opened = await _open(service, "5")
     result = await service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))

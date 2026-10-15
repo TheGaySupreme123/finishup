@@ -395,12 +395,12 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="ceremony_in_progress",
         directive=(
-            "Another confirmation is open on this computer; nothing changed. Never approve a "
-            "system dialog you did not start: cancel it. If none is on screen, 'yoetz service "
-            "restart' ends it. Then retry once."
+            "Another confirmation is open on this computer, so nothing changed. Do not approve, "
+            "cancel or restart anything yourself: report that a confirmation is already open and "
+            "let the owner decide. Retry once only when the owner asks."
         ),
         guidance_uri=_TEMPLATES_SETUP,
-        nudge="A confirmation someone else opened is never yours to approve.",
+        nudge="A confirmation someone else opened is never yours to approve or end.",
     ),
     RecoveryDirective(
         token="ceremony_retry_after_wait",

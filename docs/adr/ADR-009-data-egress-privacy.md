@@ -208,17 +208,24 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    still spell the same file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`,
    optionally behind `file://`) any directories may come before the name's last component: an
    absolute path that ends in a withheld file's base name counts as that file, which can only
-   withhold more. Unquoted, the prefix's directories stop at whitespace and at `,` `;` `:` and
-   brackets, so the next path in a list starts afresh. The whole prefixed token is withheld. A path
-   in single quotes, double quotes or backticks may run through directories with spaces and the
-   whole quoted token is withheld. An unquoted absolute path through a directory with spaces has no
-   token boundary in prose and is not recognised as one path. A different relative directory (`../`,
-   `x/`), a longer name, a suffix, a plain word such as `Summary` (or a top-level name written
-   without a prefix or quotes), and a different letter case stay readable: spellings are compared
-   exactly, because folding case or Unicode would conflate distinct files on a case-sensitive
-   filesystem. Every bound in the span pattern is fixed, so a search stays linear in the prose it
-   reads. The rule applies to JSON, markdown and text and to every profile, `full_local` included: a
-   format or profile is not a disclosure grant.
+   withhold more. Unquoted, the prefix's directories stop at whitespace, at quotes and backticks, at
+   `<` `>` `|` `,` `;` and brackets, and at a `:` that starts another path (`:/`), so the next path
+   in a list starts afresh; a `:` inside a directory or a port (`host:8080/`) is kept. The whole
+   prefixed token is withheld. A path in single quotes, double quotes or backticks may run through
+   directories with spaces, and the whole quoted token is withheld when the name ends the quoted
+   text; a name earlier in the quotes (`"/r/x/b.npz /r/y/a.npz"`) is found too, and its own path is
+   withheld. An absolute path through a directory with spaces is not recognised as one path when it
+   is unquoted, since prose gives it no token boundary, or when anything follows the name inside the
+   quotes (`"/My Docs/a.npz:12"`); nor is an unquoted one through a directory holding a stop
+   character (`/r/Bob's/a.npz`). A name glued to other characters and then a `/` (`/r/a.npz~/x`)
+   reads as a directory of a longer path and stays readable: the prefix never gives a directory
+   back, which keeps each search linear. A different relative directory (`../`, `x/`), a longer
+   name, a suffix, a plain word such as `Summary` (or a top-level name written without a prefix or
+   quotes), and a different letter case stay readable: spellings are compared exactly, because
+   folding case or Unicode would conflate distinct files on a case-sensitive filesystem. Every bound
+   in the span pattern is fixed, so a search stays linear in the prose it reads. The rule applies to
+   JSON, markdown and text and to every profile, `full_local` included: a format or profile is not a
+   disclosure grant.
 
    The token can be longer than the name it replaces. A field that would then pass its wire bound
    (32,768 characters for `human_text`, at least its original length for a document field) or the
@@ -314,12 +321,18 @@ case → single-use authorization → bounded gateway → bound sink/provider �
      expiry: such a ceremony can never complete, so the next open ends it and proceeds. A
      throttled passphrase is `reauthentication_rate_limited` on every ceremony.
    - *Backoff.* After a prompt that did not approve (refused or unanswered, or cancelled after it
-     was up for at least 2 seconds), the next prompt waits 5 seconds, then 15, 30, 60, 120 and
-     at most 300 seconds per consecutive miss. An approval resets it, and so do 10 minutes
-     without a miss. A prompt cancelled sooner never showed and does not count. Within the wait
-     no dialog is raised and the ceremony fails with `reauthentication_rate_limited`. The
-     backoff lives in the service process, so a restart clears it: it slows repeated dialogs,
-     it does not cap them.
+     was up for at least 2 seconds), the next prompt waits 5 seconds, then 15, 30, 60, 120 and at
+     most 300 seconds per consecutive miss. An approval resets it, and so do 10 minutes without a
+     miss. A prompt cancelled sooner does not lengthen the wait, since the owner may never have seen
+     it (2 seconds is the service's estimate, not a signal from the helper), but the next prompt
+     still waits the first step: after a dialog that did not approve, the service raises no other
+     for 5 seconds however quickly it was cancelled. Within the wait no dialog is raised and the
+     ceremony fails with `reauthentication_rate_limited`. The backoff lives in the service process,
+     so a restart clears it: it slows repeated dialogs, it does not cap them. The durable passphrase
+     throttle is separate: 30 seconds after the third wrong passphrase, doubling to 5 minutes, and a
+     restart does not clear it. The owner view tells the two apart by the source it chose and never
+     offers a restart or `--use-passphrase` for a throttled passphrase (`passphrase_rate_limited` on
+     the CLI; the terminal interface says the same).
    - *Why a helper process, not ctypes.* The same Apple executable and program shape already
      serve the `plugin_artifact_apply` cell (ADR-016, issue #409), so this adds no dependency and
      no new native surface. ctypes against `libobjc` and LocalAuthentication would need a
@@ -346,7 +359,9 @@ case → single-use authorization → bounded gateway → bound sink/provider �
      `yoetz service restart`. An agent that raises dialogs and lets each be refused, time out or
      stay up for 2 seconds before cancelling can push the owner's next dialog behind the
      backoff (at most 5 minutes); `yoetz service restart` clears it, and `--use-passphrase`
-     confirms with an owner-chosen passphrase instead. A program running as the owner's account
+     confirms with an owner-chosen passphrase instead. One that cancels each dialog sooner does
+     not lengthen the wait but can still raise a dialog every 5 seconds; the owner cancels any
+     dialog they did not ask for. A program running as the owner's account
      that can read the credential-store entry can confirm with that passphrase instead of the
      dialog (`--use-passphrase`), so the dialog protects against agents that cannot read the
      owner's keychain, not against everything that runs as the owner. Same-account code
@@ -356,8 +371,8 @@ case → single-use authorization → bounded gateway → bound sink/provider �
      daemon handler and ceremony client with a stub helper; no real Touch ID prompt has been
      exercised. The manual check on a real Mac in the test-instance runbook (*Owner view with
      Touch ID: manual check on a real Mac*) has not been run. The owner asked for a Codex check
-     of this round; it has not been run. An independent Claude review ran on 2026-10-14 instead,
-     and this round addresses its findings.
+     of this round; it has not been run. Three independent Claude review rounds ran instead
+     (2026-10-14 and 2026-10-15), and this round addresses their findings.
 
 4. **Data classes:** structural public data, ordinary task/user content, sensitive/confidential
    content, and secrets/cryptographic material are distinct. Classification combines source-owned

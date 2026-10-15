@@ -264,6 +264,10 @@ def test_one_search_per_leaf_whatever_the_number_of_names() -> None:
         ":/" * 16_384,
         " ".join(f"/x/file_{index}.npz" for index in range(512)) + ":/" * 8_000,
         "file_1.npz " * 3_000,
+        # Round 3: quoted interiors are searched again, and a ``:`` may sit inside a segment.
+        "`'\"" * 10_000,
+        "/" + "a:" * 16_000,
+        ("`" + "/x/file_1.npz " * 3 + "/x/file_2.npz`") * 600,
     ):
         started = time.perf_counter()
         matcher.paths_in(text)
@@ -273,3 +277,36 @@ def test_one_search_per_leaf_whatever_the_number_of_names() -> None:
         "dir9/sub/file_9.npz",
     }
     assert matcher.paths_in("Reads file_7 and x/dir7/sub/file_7.npz.") == set()
+
+
+def test_every_path_in_a_quoted_token_is_found_not_only_the_last() -> None:
+    """#1073 review round 3, T1: one quoted token can hold several paths."""
+
+    from yoetz.application.receipt_projection import (
+        _NameMatcher,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    matcher = _NameMatcher(["artifacts/a.npz", "data/b.npz"])
+    for text in (
+        "Ran `/usr/bin/cmp /home/u/repo/data/b.npz /home/u/repo/artifacts/a.npz` first.",
+        'Ran "/home/u/repo/data/b.npz and /home/u/repo/artifacts/a.npz" first.',
+        "Ran '~/repo/data/b.npz ~/repo/artifacts/a.npz' first.",
+    ):
+        assert matcher.paths_in(text) == {"artifacts/a.npz", "data/b.npz"}, text
+        # With only the earlier name withheld (the requester published the last one), the
+        # earlier one is still replaced inside the quotes and the published one stays.
+        shown = withheld_text(text, (_named("data/b.npz"),))
+        assert "b.npz" not in shown and "a.npz" in shown and WITHHELD in shown, shown
+
+
+def test_colons_inside_a_path_or_a_port_do_not_hide_the_name() -> None:
+    """#1073 review round 3: a ``:`` stops a prefix only where another path starts."""
+
+    excerpt = _named("artifacts/a.npz")
+    for text, expected in (
+        ("Fetched http://localhost:8000/r/artifacts/a.npz.", f"Fetched http:{WITHHELD}."),
+        ("Read /r/dir:x/artifacts/a.npz.", f"Read {WITHHELD}."),
+        ("PYTHONPATH=/r/x/a.npz:/r/y", f"PYTHONPATH={WITHHELD}:/r/y"),
+        ("files=/r/artifacts/a.npz,/r/b.npz", f"files={WITHHELD},/r/b.npz"),
+    ):
+        assert withheld_text(text, (excerpt,)) == expected, text

@@ -1351,6 +1351,36 @@ async def test_dot_slash_spellings_in_receipt_prose_are_withheld(
     assert "/document/sections/0/coverage_note" in privacy["omitted_pointers"]
 
 
+@pytest.mark.parametrize("quote", ["`", '"', "'"])
+async def test_a_published_name_cannot_carry_an_unpublished_one_out_of_a_quoted_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quote: str
+) -> None:
+    """#1073 review round 3, T1: the requester published english_ngrams.npz; a quoted command
+    naming english_words.npz before it must still withhold english_words.npz."""
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=32000)
+    started, _checked = await _run(app, 32000, named=("/app/" + _MODELS[0],))
+    status, _projected = await _projected_status(app, started, 32050)
+    case, receipt = await _receipt_case(app, started, status, 32060, "json", "default_local_export")
+    document = cast(dict[str, Any], receipt.document)
+    command = (
+        f"/usr/bin/cmp {repository}/artifacts/english_words.npz "
+        f"{repository}/artifacts/english_ngrams.npz"
+    )
+    if quote == "'":
+        command = "~/app/artifacts/english_words.npz ~/app/artifacts/english_ngrams.npz"
+    document["obligations"][0]["summary"] = f"Ran {quote}{command}{quote} first."
+    projected = await project_case(app, case, 32061)
+    summary = cast(Mapping[str, Any], projected["document"])["obligations"][0]["summary"]
+    assert "english_words" not in summary, summary
+    assert "english_ngrams.npz" in summary, summary
+    assert "(receipt prose withheld: repository_excerpt)" in summary
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+
+
 _TOP_LEVEL_LOADER = """import os
 
 import numpy as np

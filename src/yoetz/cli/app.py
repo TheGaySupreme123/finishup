@@ -1522,11 +1522,12 @@ _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
         ),
         "passphrase_in_credential_store": (
             "owner_view_unavailable: no system confirmation dialog can be shown here, and this "
-            "vault's passphrase is kept in the system credential store (Yoetz setup's system "
-            "keychain choice generates one you were never shown), so Yoetz does not ask you to "
-            "type it. Nothing was shown and nothing changed. If you chose that passphrase "
-            "yourself, run the command again with --use-passphrase. To see what your change "
-            "created, run 'git status --short' in your repository."
+            "vault's passphrase may be kept in the system credential store, or the store could "
+            "not be read (Yoetz setup's system keychain choice generates one you were never "
+            "shown), so Yoetz does not ask you to type it. Nothing was shown and nothing "
+            "changed. If you chose that passphrase yourself, run the command again with "
+            "--use-passphrase. To see what your change created, run 'git status --short' in "
+            "your repository."
         ),
         "passphrase_unavailable": (
             "owner_view_unavailable: this vault has no passphrase to confirm with, so "
@@ -1538,6 +1539,12 @@ _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
             "it is not for this command: cancel it, never approve it. If nothing is on screen, "
             "'yoetz service restart' ends the other confirmation. Then run the command again. "
             "Nothing was shown and nothing changed."
+        ),
+        "passphrase_rate_limited": (
+            "owner_view_refused: too many wrong passphrases, so Yoetz waits before accepting "
+            "another (30 seconds after the third, growing to five minutes). Restarting the "
+            "service does not clear this wait. Wait, then run the command again. Nothing was "
+            "shown and nothing changed."
         ),
         "reauthentication_rate_limited": (
             "owner_view_refused: recent confirmations did not succeed, so Yoetz waits before "

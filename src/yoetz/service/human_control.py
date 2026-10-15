@@ -101,9 +101,11 @@ _HUMAN_CONTROL_REASONS: Final = frozenset(
 
 # After an OS presence prompt that did not approve (refused, unanswered, or cancelled after it was
 # up for PRESENCE_MIN_SHOWN_SECONDS), the next prompt waits this long, escalating per consecutive
-# miss. An approval resets it, and so do PRESENCE_MISS_DECAY_SECONDS without a miss. It lives in
-# this service process, so a restart clears it: it slows repeated dialogs, it does not cap them
-# (#1073 review).
+# miss. An approval resets it, and so do PRESENCE_MISS_DECAY_SECONDS without a miss. A prompt
+# cancelled sooner does not escalate, but the next one still waits the first step, so after any
+# prompt that did not approve the next starts no sooner than PRESENCE_BACKOFF_SECONDS[0] later.
+# It lives in this service process, so a restart clears it: it slows repeated dialogs, it does
+# not cap them (#1073 review).
 PRESENCE_BACKOFF_SECONDS: Final = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0)
 PRESENCE_MIN_SHOWN_SECONDS: Final = 2.0
 PRESENCE_MISS_DECAY_SECONDS: Final = 600.0
@@ -1003,8 +1005,8 @@ class HumanControlService:
         if presence_task is not None and not presence_task.done():
             # Cancelling the provider's task stops its OS prompt (the helper is killed). A prompt
             # that was up long enough to be seen counts as a miss, like a refusal; one cancelled
-            # at once never showed and does not (another caller could otherwise lock the owner
-            # out without a single dialog).
+            # sooner may never have been seen, so it does not escalate (another caller could
+            # otherwise lock the owner out without a visible dialog).
             presence_task.cancel()
             try:
                 shown = self._sample_monotonic() - session.presence_started
@@ -1012,6 +1014,9 @@ class HumanControlService:
                 shown = 0.0
             if shown >= PRESENCE_MIN_SHOWN_SECONDS:
                 self._note_presence_miss()
+            else:
+                # Still spaced, so quick cancels cannot drive an unbounded dialog loop.
+                self._space_presence_prompts()
         await self._secret_ingress.cancel_pending()
         await self._unlock.cancel()
         if type(session.request.target) is InstallationRecoveryTarget:
@@ -1057,6 +1062,15 @@ class HumanControlService:
             min(self._presence_misses, len(PRESENCE_BACKOFF_SECONDS)) - 1
         ]
         self._presence_backoff_until = max(self._presence_backoff_until, now + delay)
+
+    def _space_presence_prompts(self) -> None:
+        try:
+            now = self._sample_monotonic()
+        except HumanControlError:
+            return
+        self._presence_backoff_until = max(
+            self._presence_backoff_until, now + PRESENCE_BACKOFF_SECONDS[0]
+        )
 
     def _binding_expired(self, session: _Ceremony) -> bool:
         try:

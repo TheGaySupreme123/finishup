@@ -311,16 +311,23 @@ name, a top-level one without an extension included, is also a span behind a lea
 file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`, optionally behind `file://`)
 any directories may come before the name's last component: an absolute path that ends in a withheld
 file's base name counts as that file, which can only withhold more. Unquoted, the prefix's
-directories stop at whitespace and at `,` `;` `:` and brackets, so the next path in a list starts
-afresh. The whole prefixed token is withheld. A path in single quotes, double quotes or backticks
-may run through directories with spaces and the whole quoted token is withheld. An unquoted absolute
-path through a directory with spaces has no token boundary in prose and is not recognised as one
-path. A different relative directory (`../`, `x/`), a longer name, a suffix, a plain word such as
-`Summary` (or a top-level name written without a prefix or quotes), and a different letter case stay
-readable: spellings are compared exactly, because folding case or Unicode would conflate distinct
-files on a case-sensitive filesystem. Every bound in the span pattern is fixed, so a search stays
-linear in the prose it reads. The rule applies to JSON, markdown and text and to every profile,
-`full_local` included: a format or profile is not a disclosure grant.
+directories stop at whitespace, at quotes and backticks, at `<` `>` `|` `,` `;` and brackets, and at
+a `:` that starts another path (`:/`), so the next path in a list starts afresh; a `:` inside a
+directory or a port (`host:8080/`) is kept. The whole prefixed token is withheld. A path in single
+quotes, double quotes or backticks may run through directories with spaces, and the whole quoted
+token is withheld when the name ends the quoted text; a name earlier in the quotes
+(`"/r/x/b.npz /r/y/a.npz"`) is found too, and its own path is withheld. An absolute path through a
+directory with spaces is not recognised as one path when it is unquoted, since prose gives it no
+token boundary, or when anything follows the name inside the quotes (`"/My Docs/a.npz:12"`); nor is
+an unquoted one through a directory holding a stop character (`/r/Bob's/a.npz`). A name glued to
+other characters and then a `/` (`/r/a.npz~/x`) reads as a directory of a longer path and stays
+readable: the prefix never gives a directory back, which keeps each search linear. A different
+relative directory (`../`, `x/`), a longer name, a suffix, a plain word such as `Summary` (or a
+top-level name written without a prefix or quotes), and a different letter case stay readable:
+spellings are compared exactly, because folding case or Unicode would conflate distinct files on a
+case-sensitive filesystem. Every bound in the span pattern is fixed, so a search stays linear in the
+prose it reads. The rule applies to JSON, markdown and text and to every profile, `full_local`
+included: a format or profile is not a disclosure grant.
 
 The token can be longer than the name it replaces. A field that would then pass its wire bound
 (32,768 characters for `human_text`, at least its original length for a document field) or the
@@ -363,16 +370,18 @@ dialog, for example over SSH. A cancelled or failed dialog is `presence_refused`
 one is `presence_timeout` after 60 seconds; neither grants anything, and the next dialog then waits
 (`reauthentication_rate_limited`, 5 seconds rising to 5 minutes). That wait lives in the service
 process and a restart clears it, so it slows repeated dialogs rather than capping them, and an agent
-that causes misses can delay the owner's own dialog by up to 5 minutes. Another open confirmation is
-`ceremony_busy` (`owner_view_busy`, naming this command's code), never a locked vault; a silent one
-holds the slot until its five-minute binding expires or the service restarts. Linux and WSL 2
-compose no provider: there only a vault passphrase the owner types completes the ceremony, and a
-vault without one, or with one kept in the credential store, fails closed with
-`owner_view_unavailable`. A command with no foreground terminal to prompt on (for example a headless
-session) fails with `owner_view_requires_terminal`. Either way it shows nothing and points to the
-next step. Linux and WSL 2 use the same code but were not exercised for this change, and no real
-Touch ID prompt was exercised by automation (ADR-009 round 5). An agent that runs the command can
-make the dialog appear but cannot answer it, so approve it only when you asked for the full receipt
-yourself. A process running as the owner's account that can already read the vault passphrase (for
-example from an auto-unlock keyring entry) is outside this boundary, as for every passphrase
-reauthentication (ADR-008).
+that causes misses can delay the owner's own dialog by up to 5 minutes. Dialogs start at least 5
+seconds apart even when each is cancelled at once. A throttled passphrase (30 seconds after the
+third wrong one, doubling to 5 minutes, kept across a restart) is reported as such, without the
+restart hint. Another open confirmation is `ceremony_busy` (`owner_view_busy`, naming this command's
+code), never a locked vault; a silent one holds the slot until its five-minute binding expires or
+the service restarts. Linux and WSL 2 compose no provider: there only a vault passphrase the owner
+types completes the ceremony, and a vault without one, or with one kept in the credential store,
+fails closed with `owner_view_unavailable`. A command with no foreground terminal to prompt on (for
+example a headless session) fails with `owner_view_requires_terminal`. Either way it shows nothing
+and points to the next step. Linux and WSL 2 use the same code but were not exercised for this
+change, and no real Touch ID prompt was exercised by automation (ADR-009 round 5). An agent that
+runs the command can make the dialog appear but cannot answer it, so approve it only when you asked
+for the full receipt yourself. A process running as the owner's account that can already read the
+vault passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
+every passphrase reauthentication (ADR-008).
