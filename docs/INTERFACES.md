@@ -10091,22 +10091,24 @@ file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`, optional
 any directories may come before the name's last component: an absolute path that ends in a withheld
 file's base name counts as that file, which can only withhold more. Unquoted, the prefix's
 directories stop at whitespace, at quotes and backticks, at `<` `>` `|` `,` `;` and brackets, and at
-a `:` that starts another path (`:/`), so the next path in a list starts afresh; a `:` inside a
-directory or a port (`host:8080/`) is kept. The whole prefixed token is withheld. A path in single
-quotes, double quotes or backticks may run through directories with spaces, and the whole quoted
-token is withheld when the name ends the quoted text; a name earlier in the quotes
-(`"/r/x/b.npz /r/y/a.npz"`) is found too, and its own path is withheld. An absolute path through a
-directory with spaces is not recognised as one path when it is unquoted, since prose gives it no
-token boundary, or when anything follows the name inside the quotes (`"/My Docs/a.npz:12"`); nor is
-an unquoted one through a directory holding a stop character (`/r/Bob's/a.npz`). A name glued to
-other characters and then a `/` (`/r/a.npz~/x`) reads as a directory of a longer path and stays
-readable: the prefix never gives a directory back, which keeps each search linear. A different
-relative directory (`../`, `x/`), a longer name, a suffix, a plain word such as `Summary` (or a
-top-level name written without a prefix or quotes), and a different letter case stay readable:
-spellings are compared exactly, because folding case or Unicode would conflate distinct files on a
-case-sensitive filesystem. Every bound in the span pattern is fixed, so a search stays linear in the
-prose it reads. The rule applies to JSON, markdown and text and to every profile, `full_local`
-included: a format or profile is not a disclosure grant.
+a `:` that starts another path (`:/`, `:~`, `:$`, `:./` or `:../`), so the next path in a list
+starts afresh; a `:` inside a directory or a port (`host:8080/`) is kept. The whole prefixed token
+is withheld. A path in single quotes, double quotes or backticks may run through directories with
+spaces or the other quote characters (`"/r/Bob's/a.npz"`), and the whole quoted token is withheld
+when the name ends the quoted text; a name earlier in the quotes (`"/r/x/b.npz /r/y/a.npz"`) is
+found too, and its own path is withheld. An absolute path through a directory with spaces is not
+recognised as one path when it is unquoted, since prose gives it no token boundary, or when anything
+follows the name inside the quotes (`"/My Docs/a.npz:12"`); nor is an unquoted one through a
+directory holding a stop character (`/r/Bob's/a.npz`), or a quoted one through a directory holding
+its own closing quote. A name glued to other characters and then a `/` (`/r/a.npz~/x`), or followed
+by a `:` and a bare relative path (`/r/a.npz:rel/x`, or grep's `/r/a.npz:12:rel/x`), reads as a
+directory of a longer path and stays readable: the prefix never gives a directory back, which keeps
+each search linear. A different relative directory (`../`, `x/`), a longer name, a suffix, a plain
+word such as `Summary` (or a top-level name written without a prefix or quotes), and a different
+letter case stay readable: spellings are compared exactly, because folding case or Unicode would
+conflate distinct files on a case-sensitive filesystem. Every bound in the span pattern is fixed, so
+a search stays linear in the prose it reads. The rule applies to JSON, markdown and text and to
+every profile, `full_local` included: a format or profile is not a disclosure grant.
 
 The token can be longer than the name it replaces. A field that would then pass its wire bound
 (32,768 characters for `human_text`, at least its original length for a document field) or the

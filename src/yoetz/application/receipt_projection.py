@@ -119,16 +119,17 @@ def _absolute_prefix(segment: str) -> str:
 
 # Unquoted prose has no token bound, so an unquoted segment stops at whitespace, quotes, ``<>|``
 # and the list delimiters ``,`` ``;`` and brackets, and at a ``:`` that starts another path
-# (``:/``); a ``:`` inside a directory or a URL port (``host:8080/``) is kept. An unquoted absolute
-# path through a directory with spaces or those characters is not one token there. Stopping at
-# them keeps the possessive prefix from running past one path into the next (``/r/a.npz,/r/b.npz``,
-# ``/r/a.npz:/r/b``). A name glued to other characters and then a ``/`` (``/r/a.npz~/x``) is read
-# as a directory of a longer path and not recognised.
-_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"(?:[^\s/\"'`<>|,;:()\[\]{}]|:(?!/))")
-# Inside one pair of quotes or backticks a path may contain spaces
-# (``"/Users/u/My Project/a.npz"``); the quotes bound the token, so a segment there may hold any
-# character but a quote, a backtick, a line break or a slash.
-_QUOTED_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"[^\"'`\n/]")
+# (``:/``, ``:~``, ``:$``, ``:./``, ``:../``); a ``:`` inside a directory or a URL port
+# (``host:8080/``) is kept. An unquoted absolute path through a directory with spaces or those
+# characters is not one token there. Stopping at them keeps the possessive prefix from running past
+# one path into the next (``/r/a.npz,/r/b.npz``, ``/r/a.npz:~/b``). A name glued to other
+# characters and then a ``/`` (``/r/a.npz~/x``, or a list entry that is a bare relative path,
+# ``/r/a.npz:rel/x``) is read as a directory of a longer path and not recognised.
+_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"(?:[^\s/\"'`<>|,;:()\[\]{}]|:(?![/~$]|\.{1,2}/))")
+# Inside one pair of quotes or backticks a path may contain spaces and the other quote characters
+# (``"/Users/Bob's Mac/a.npz"``); the closing quote bounds the token, so a segment there may hold
+# any character but that quote, a line break or a slash.
+_QUOTED_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"(?:(?!(?P=quote))[^\n/])")
 _EXTRA_SEPARATORS: Final = re.compile(r"/(?:\.?/)+")
 
 

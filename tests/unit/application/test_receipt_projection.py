@@ -268,6 +268,10 @@ def test_one_search_per_leaf_whatever_the_number_of_names() -> None:
         "`'\"" * 10_000,
         "/" + "a:" * 16_000,
         ("`" + "/x/file_1.npz " * 3 + "/x/file_2.npz`") * 600,
+        # Other quote characters inside quotes, and ``:`` before ``~``, ``$`` and ``./``.
+        '"/' + "'/" * 16_000,
+        '`/"' * 10_000,
+        "/a:~/a:$H/a:./a:../" * 1_800,
     ):
         started = time.perf_counter()
         matcher.paths_in(text)
@@ -310,3 +314,60 @@ def test_colons_inside_a_path_or_a_port_do_not_hide_the_name() -> None:
         ("files=/r/artifacts/a.npz,/r/b.npz", f"files={WITHHELD},/r/b.npz"),
     ):
         assert withheld_text(text, (excerpt,)) == expected, text
+
+
+def test_a_colon_before_a_home_variable_or_relative_path_starts_a_new_path() -> None:
+    """#1073 triage of 5ef26f15c: ``:~/``, ``:$HOME/``, ``:./`` and ``:../`` start the next
+    entry of a path list, so the possessive prefix must not run past them."""
+
+    vocab = _named("tools/vocab_table")
+    app = _named("dist/app.zip")
+    for text, excerpt, expected in (
+        ("PATH=/Users/me/repo/tools/vocab_table:~/bin", vocab, f"PATH={WITHHELD}:~/bin"),
+        ("PATH=/Users/me/repo/tools/vocab_table:~me/bin", vocab, f"PATH={WITHHELD}:~me/bin"),
+        (
+            "PYTHONPATH=/Users/me/repo/dist/app.zip:$HOME/lib",
+            app,
+            f"PYTHONPATH={WITHHELD}:$HOME/lib",
+        ),
+        (
+            "PYTHONPATH=/Users/me/repo/dist/app.zip:${HOME}/lib",
+            app,
+            f"PYTHONPATH={WITHHELD}:${{HOME}}/lib",
+        ),
+        ("PYTHONPATH=/Users/me/repo/dist/app.zip:./src", app, f"PYTHONPATH={WITHHELD}:./src"),
+        ("PYTHONPATH=/Users/me/repo/dist/app.zip:../src", app, f"PYTHONPATH={WITHHELD}:../src"),
+        # Unchanged by the rule: a port, a directory holding ``:``, a line number.
+        ("Fetched http://localhost:8000/r/dist/app.zip.", app, f"Fetched http:{WITHHELD}."),
+        ("Read /r/dir:x/dist/app.zip.", app, f"Read {WITHHELD}."),
+        ("At /r/tools/vocab_table:12 it fails.", vocab, f"At {WITHHELD}:12 it fails."),
+    ):
+        assert withheld_text(text, (excerpt,)) == expected, text
+    # The union search must not let a glued shape hide another name either.
+    from yoetz.application.receipt_projection import (
+        _NameMatcher,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    matcher = _NameMatcher(["data/b.npz", "dist/app.zip"])
+    assert matcher.paths_in("Loads /r/data/b.npz:~/x and /r/dist/app.zip:$HOME/y.") == {
+        "data/b.npz",
+        "dist/app.zip",
+    }
+
+
+def test_a_quoted_path_may_hold_the_other_quote_characters() -> None:
+    """#1073 triage of 5ef26f15c: only the closing quote ends a quoted token, so a directory
+    with an apostrophe or a double quote inside other quotes is still one path."""
+
+    excerpt = _named("artifacts/a.npz")
+    for text in (
+        'Loads "/Users/Bob\'s Mac/artifacts/a.npz" now.',
+        "Loads `/Users/Bob's Mac/artifacts/a.npz` now.",
+        "Loads '/Users/say \"hi\"/artifacts/a.npz' now.",
+        "Loads `/r/it's/a.npz` now.",
+    ):
+        assert withheld_text(text, (excerpt,)) == f"Loads {WITHHELD} now.", text
+    # The closing quote still bounds the token: a later quoted path is its own token.
+    assert withheld_text("Compare '/r/x' with '/r/y/a.npz'.", (excerpt,)) == (
+        f"Compare '/r/x' with {WITHHELD}."
+    )
