@@ -315,7 +315,9 @@ that marks the pending version as unreleased above reverse-chronological release
   reviewer bound, `finishup --privacy` lists the AI-powered review options (Assisted review by
   default, Private with its warning) on a repository's first grant and wherever tasks start local
   under agent opt-in or owner approval, so a ChatGPT subscription owner is no longer granted
-  Private on Enter; a first Private grant records no conversation setting. Abandoning AI-powered review setup in the
+  Private on Enter (on a route without reviewed data-use terms Assisted review is the default but
+  is not marked recommended, and the listing says its draft records no evidence requirement); a
+  first Private grant reads as local only rather than the hybrid an earlier repository chose. Abandoning AI-powered review setup in the
   terminal interface now finishes as local only without re-registering. Installations set up
   earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1073,
   ADR-049).

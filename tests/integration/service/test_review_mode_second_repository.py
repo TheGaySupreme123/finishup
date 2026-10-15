@@ -298,3 +298,126 @@ async def test_an_ungranted_repository_stays_local_after_the_first_hybrid_grant(
         await vault.close()
         memory.close()
         await lifecycle.close()
+
+
+async def test_a_private_first_grant_after_a_hybrid_grant_reads_local_only(
+    tmp_path: Path,
+) -> None:
+    """Verification of round 3 (P3): a Private first grant records local only where it inherits.
+
+    The repository row composes with the installation row, so a row that records no setting would
+    still read the hybrid the first repository's grant gave the installation row. The candidate
+    the terminal and chat paths build records local only there, and the composed policy, status
+    and `finishup privacy conversations status` read local only.
+    """
+
+    from datetime import UTC, datetime
+
+    import finishup.cli.privacy_setup as privacy_setup
+    from finishup.cli.render import conversation_setting_text
+    from finishup.domain.privacy import ProviderBinding
+
+    tmp_path.chmod(0o700)
+    clock = _Clock()
+    memory = LocalSecretMemory()
+    lifecycle = ServiceLifecycle(
+        clock,
+        singleton_lock_path=tmp_path / "lifecycle.lock",
+        generation_store=_GenerationStore(),
+        process_start_identity_commitment="sha256:" + "d" * 64,
+        instance_id=_INSTANCE_ID,
+    )
+    await lifecycle.acquire_singleton()
+    await lifecycle.transition(ServiceState.LOCKED)
+    vault = VaultService(
+        installation_id=_INSTALLATION_ID,
+        service_generation=1,
+        mode=VaultMode.UNINITIALIZED,
+        secret_memory=memory,
+        clock=clock,
+        vault_store_factory=lambda: EncryptedVaultStore(tmp_path / "vault"),
+        pristine_state_digest="sha256:" + "e" * 64,
+    )
+    initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
+    await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
+    provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    config = FinishUpConfig(profile="local-openai", provider=provider)
+    app = None
+    try:
+        factory = build_ready_application_factory(
+            lifecycle=lifecycle,
+            vault=vault,
+            config=config,
+            paths=_Paths(tmp_path),
+            clock=clock,
+            secret_memory=memory,
+            diagnostics=_Diagnostics(),
+        )
+        app = await factory(1, vault.generation)
+        policy_app = app.privacy.policy_application
+        assert policy_app is not None
+        await _grant(app, vault, clock, _REPO_A, ConversationReview.LOCAL_AGENT_OPT_IN)
+        scope_b = AuthorizationScope(
+            AuthorizationScopeKind.WORKSPACE, _INSTALLATION_ID, _REPO_B.commitment
+        )
+        before = await policy_app.policy_store.repository_authority(scope_b)
+        assert before.grant_state == "missing"
+        inherited = before.effective.policy
+        assert inherited.conversation_review is ConversationReview.LOCAL_AGENT_OPT_IN
+
+        external = ProviderBinding(
+            "fireworks",
+            "accounts/fireworks/models/minimax-m3",
+            "fireworks-responses",
+            "1.0.0",
+            "external",
+        )
+        answers = privacy_setup.recipe_answers("private", inherited, external)
+        candidate = privacy_setup.build_candidate_policy(
+            inherited, answers, now=datetime.now(UTC), first_grant=True
+        )
+        proposed = await privacy_propose_policy(
+            policy_app,
+            ProposePrivacyPolicyRequest(
+                before.effective.effective_digest, candidate, before.authority_digest, scope_b
+            ),
+        )
+        if type(proposed) is PolicyDecisionRequired:
+            await decide_privacy_policy(
+                policy_app,
+                DecidePrivacyPolicyRequest(
+                    proposed.prepared,
+                    HumanPolicyDecision(
+                        proposed.prepared.prepared_digest,
+                        True,
+                        clock.now_utc(),
+                        "hmac-sha256:" + "5" * 64,
+                    ),
+                    HumanAuthorityCapability(
+                        "established_passphrase",
+                        canonical_digest({"source": "test"}),
+                        1,
+                        str(getattr(vault.mode, "value", vault.mode)),
+                        vault.generation,
+                        True,
+                    ),
+                ),
+            )
+        after = await policy_app.policy_store.repository_authority(scope_b)
+        assert after.grant_state == "granted"
+        composed = after.effective.policy
+        assert composed.effective_conversation_review is ConversationReview.LOCAL_ONLY
+        line = conversation_setting_text(
+            composed.effective_conversation_review.value,
+            explicit=composed.conversation_review is not None,
+        )
+        assert "an agent may turn on" not in line
+        task = await (_Task(app, _REPO_B)).start("Private repository task")
+        mode = await task.review_mode()
+        assert mode["setting"] == "local_only"
+    finally:
+        if app is not None:
+            await app.close()
+        await vault.close()
+        memory.close()
+        await lifecycle.close()

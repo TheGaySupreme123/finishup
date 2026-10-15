@@ -95,9 +95,13 @@ host already has.
    first grant asks the conversation question whatever the installation row it inherits already
    sends, and the chat grant path, which asks nothing, starts there too (default
    `local_agent_opt_in`, or the installation row's own explicit setting where that is narrower).
-   A first grant that sends nothing for review (Private) records no setting, so it reads as the
-   released `local_only`, never as the inherited hybrid; the terminal and chat paths build the
-   same candidate (review round 3).
+   A first grant that sends nothing for review (Private) reads as local only, never as the
+   inherited hybrid: because the repository row composes with the installation row, it records an
+   explicit `local_only` where the composed policy it starts from carries a setting, and no
+   setting where nothing is inherited (released bytes stay); the terminal and chat paths build the
+   same candidate (review round 3). With a reviewer bound, `finishup --privacy`'s AI-powered
+   review listing words Assisted review for the route: on an unreviewed route it is the default
+   but not recommended, and its draft records no data-use evidence requirement.
 
 4. **Upgrade rule: unset means released.** A policy written before the field existed encodes
    nothing, so its bytes, digest and every meet and receipt digest are unchanged. It reads as the

@@ -2753,6 +2753,13 @@ Codex-specific is involved: no hook, skill or registration field changes.
   (`review.md` says so). The MCP receipt summary's review-mode pointer is JSON-receipt only.
   Same path on Codex; with the ChatGPT subscription reviewer nothing is marked recommended,
   so Assisted review is the default and Assisted or Expanded must be chosen.
+- **Round 3 verification.** A first Private grant in a repository reads as local only (an explicit
+  `local_only` where it inherits an earlier repository's hybrid). `finishup --privacy`'s
+  AI-powered review listing words Assisted review for the route: on a route without reviewed
+  data-use terms it is the default, not recommended, and its draft records no evidence
+  requirement. Where the released carry-forward is pending, status says the installation's earlier
+  permission is carried forward when a task first starts in the repository.
+  Same on Codex.
 
 ## Setup refresh and suggested reviewer model (FinishUP 0.3, #1067)
 

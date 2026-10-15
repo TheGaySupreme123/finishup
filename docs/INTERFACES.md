@@ -1412,7 +1412,8 @@ explicit row value stays; an unset row whose inference channel the proposal turn
 `narrower_conversation_review(candidate.effective_conversation_review, local_agent_opt_in)`; a row
 already sending stays unset. `build_candidate_policy(..., first_grant=True)` (the chat grant path
 passes the snapshot's `grant_state == "missing"`) starts the setting at
-`_first_grant_conversation_default` (a first grant without network egress records none).
+`_first_grant_conversation_default` (a first grant without network egress records an explicit
+`local_only` where the composed policy carries a setting, and none where nothing is inherited).
 `ai_review_available` also requires the repository's own grant
 (`repository_authority(scope).grant_state == "granted"`). `run_privacy_setup(...,
 ai_review_add_on_when_hybrid=True)` (`finishup --privacy`) switches to the add-on listing where
