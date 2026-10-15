@@ -1633,3 +1633,178 @@ def test_a_non_string_isolation_root_value_is_foreign_not_a_crash(
         ).observe_registration(_BINARY)
     )
     assert observed.state is McpRegistrationState.FOREIGN_PRESENT
+
+
+class _KeyedHost:
+    """Both Codex keys with ``add`` and ``remove``, so the adapter both decides and applies."""
+
+    def __init__(self, *, legacy: bytes | None = None, current: bytes | None = None) -> None:
+        self.entries: dict[str, bytes] = {}
+        if current is not None:
+            self.entries["finishup"] = current
+        if legacy is not None:
+            self.entries["yoetz"] = legacy
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, argv: tuple[str, ...]) -> CommandOutput:
+        self.calls.append(argv)
+        verb = argv[2]
+        if verb == "get":
+            raw = self.entries.get(argv[3])
+            return CommandOutput(1, b"") if raw is None else CommandOutput(0, raw)
+        if verb == "list":
+            rows = [
+                {"name": name, "transport": json.loads(raw)} for name, raw in self.entries.items()
+            ]
+            return CommandOutput(0, json.dumps(rows).encode("utf-8"))
+        if verb == "add":
+            command = argv[argv.index("--") + 1 :]
+            self.entries[argv[3]] = json.dumps(
+                {"command": command[0], "args": list(command[1:])}
+            ).encode("utf-8")
+            return CommandOutput(0, b"")
+        if verb == "remove":
+            self.entries.pop(argv[3], None)
+            return CommandOutput(0, b"")
+        raise AssertionError(f"unexpected host command: {argv}")
+
+
+def _home_with_legacy_grant(tmp_path: Path, *, trusted: int = 0) -> tuple[Path, Path]:
+    """A Codex home whose trusted project A keeps Yoetz 0.2's exact approval table."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+
+    home, project = tmp_path / "home", tmp_path / "a"
+    home.mkdir(mode=0o700)
+    (project / ".codex").mkdir(parents=True, mode=0o700)
+    rows = [f'[projects."{project}"]\ntrust_level = "trusted"\n']
+    for index in range(trusted):
+        other = tmp_path / f"other-{index:02d}"
+        other.mkdir(mode=0o700)
+        rows.append(f'[projects."{other}"]\ntrust_level = "trusted"\n')
+    (home / "config.toml").write_text("\n".join(rows), encoding="utf-8")
+    (project / ".codex" / "config.toml").write_text(
+        CODEX_LEGACY_ADMISSION_TABLES[0], encoding="utf-8"
+    )
+    return home, project
+
+
+def test_a_legacy_entry_a_project_still_needs_is_kept_beside_finishup(tmp_path: Path) -> None:
+    """A Yoetz 0.2 ``integrate codex admission grant`` left ``[mcp_servers.yoetz.tools.check]``
+    in A. Migrating the user-level ``yoetz`` entry would leave that table without a transport,
+    and Codex would refuse to load A's configuration. The adapter keeps it beside ``finishup``."""
+
+    home, project = _home_with_legacy_grant(tmp_path)
+    host = _KeyedHost(legacy=_legacy_entry())
+    adapter = CodexMcpAdapter(host, codex_home=home)
+
+    preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
+
+    assert preview.action is McpRegistrationAction.REREGISTER
+    assert preview.legacy_registration == "legacy_only"
+    assert preview.legacy_kept_for == (str(project),)
+    assert preview.legacy_kept_unchecked is False
+    assert "legacy_registration_kept" in preview.warnings
+    anyio.run(
+        lambda: adapter.apply_registration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert _mutations(host.calls) == [
+        ("/opt/harness/bin/codex", "mcp", "add", "finishup", "--", *MCP_SERVE_COMMAND)
+    ]
+    assert set(host.entries) == {"finishup", "yoetz"}
+    # Nothing is left to migrate while A still needs it: connecting again changes nothing.
+    again = anyio.run(lambda: adapter.preview_registration(_BINARY))
+    assert again.action is McpRegistrationAction.NOOP
+    assert again.legacy_registration == "duplicate"
+    assert again.legacy_kept_for == (str(project),)
+
+
+def test_the_kept_legacy_decision_is_bound_in_the_digest(tmp_path: Path) -> None:
+    home, project = _home_with_legacy_grant(tmp_path)
+    host = _KeyedHost(legacy=_legacy_entry())
+    adapter = CodexMcpAdapter(host, codex_home=home)
+    kept = anyio.run(lambda: adapter.preview_registration(_BINARY))
+    assert kept.legacy_kept_for == (str(project),)
+
+    # A's table goes (an admission revoke): the approved "keep" no longer describes the home.
+    (project / ".codex" / "config.toml").write_text("", encoding="utf-8")
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(
+            lambda: adapter.apply_registration(
+                _BINARY, McpRegistrationCommand(kept.preview_digest, True)
+            )
+        )
+    assert caught.value.reason is McpRegistrationReason.PREVIEW_STALE
+    assert _mutations(host.calls) == []
+
+    migrate = anyio.run(lambda: adapter.preview_registration(_BINARY))
+    assert migrate.legacy_kept_for == ()
+    assert "legacy_registration_kept" not in migrate.warnings
+    assert migrate.preview_digest != kept.preview_digest
+    anyio.run(
+        lambda: adapter.apply_registration(
+            _BINARY, McpRegistrationCommand(migrate.preview_digest, True)
+        )
+    )
+    assert _mutations(host.calls) == [
+        ("/opt/harness/bin/codex", "mcp", "add", "finishup", "--", *MCP_SERVE_COMMAND),
+        ("/opt/harness/bin/codex", "mcp", "remove", "yoetz"),
+    ]
+    assert set(host.entries) == {"finishup"}
+
+
+def test_a_kept_entry_on_another_review_mode_is_named(tmp_path: Path) -> None:
+    home, _project = _home_with_legacy_grant(tmp_path)
+    adapter = CodexMcpAdapter(
+        _KeyedHost(legacy=_legacy_entry()), route_profile="strict", codex_home=home
+    )
+
+    preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
+
+    # The kept ``yoetz`` entry would go on serving its own (policy) route beside a strict
+    # ``finishup``: the preview says so, and the front ends stop on it.
+    assert "legacy_registration_route_kept" in preview.warnings
+    assert preview.legacy_route_profile == "policy"
+
+
+def test_an_unchecked_home_keeps_the_legacy_entry(tmp_path: Path) -> None:
+    from finishup.adapters.integrations import codex_mcp
+
+    limit = codex_mcp._LEGACY_SCAN_LIMIT  # pyright: ignore[reportPrivateUsage]
+    home, project = _home_with_legacy_grant(tmp_path, trusted=limit + 1)
+    (project / ".codex" / "config.toml").write_text("", encoding="utf-8")
+    host = _KeyedHost(legacy=_legacy_entry())
+    adapter = CodexMcpAdapter(host, codex_home=home)
+
+    preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
+
+    # Not every project was read: absence from the list is not proof nobody needs it.
+    assert preview.legacy_kept_for == ()
+    assert preview.legacy_kept_unchecked is True
+    anyio.run(
+        lambda: adapter.apply_registration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert set(host.entries) == {"finishup", "yoetz"}
+
+
+def test_no_project_needing_the_legacy_key_leaves_the_migration_unchanged(
+    tmp_path: Path,
+) -> None:
+    home, project = _home_with_legacy_grant(tmp_path)
+    # Only an exact FinishUP table: it needs ``finishup``, which the migration registers.
+    from finishup.adapters.integrations.host_admission import CODEX_EXTERNAL_ADMISSION_TABLE
+
+    (project / ".codex" / "config.toml").write_text(
+        CODEX_EXTERNAL_ADMISSION_TABLE, encoding="utf-8"
+    )
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _KeyedHost(legacy=_legacy_entry()), codex_home=home
+        ).preview_registration(_BINARY)
+    )
+    assert preview.legacy_kept_for == ()
+    assert preview.warnings == ("legacy_registration_owned",)

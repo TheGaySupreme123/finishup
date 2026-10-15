@@ -23,6 +23,8 @@ from finishup.adapters.integrations.codex_marketplace import (
 from finishup.adapters.integrations.codex_mcp import (
     CodexMcpAdapter,
     codex_project_mcp_leftovers,
+    home_project_candidates,
+    legacy_registration_dependents,
     legacy_registration_shaped,
     probe_project_config_load,
     project_transport_dependence,
@@ -139,6 +141,29 @@ def prepare_codex_connection(
         legacy = anyio.run(preview)
         body["codex_plan"] = cast(JsonValue, asdict(legacy))
         body["changes"] = list(legacy.changes)
+        # An owned ``yoetz`` entry that a project's Codex configuration still names without a
+        # transport of its own stays beside ``finishup``: migrating it would stop Codex loading
+        # there (#1073). The adapter decided it and bound it in the preview digest.
+        legacy_kept = bool(legacy.legacy_registration_kept_for) or (
+            legacy.legacy_registration_kept_unchecked
+        )
+        if legacy_kept:
+            kept_status = legacy_kept_disclosure(
+                legacy.legacy_registration_kept_for, legacy.legacy_registration_kept_unchecked
+            )
+            legacy_route = legacy.legacy_registration_route_profile
+            if legacy_route is not None and legacy_route != route:
+                # The kept entry serves every project of the home on its own review mode: a
+                # different one here would leave both running side by side. Nothing changed.
+                raise ConnectionError(
+                    "connection_legacy_registration_route_kept",
+                    status={
+                        "route_profile_before": legacy_route,
+                        "route_profile": route,
+                        **kept_status,
+                    },
+                )
+            admission.disclosure.update(kept_status)
 
         async def observe():
             return await service.observe(binary)
@@ -190,18 +215,23 @@ def prepare_codex_connection(
             and activation.state is ActivationState.ACTIVE
             and legacy.already_registered
             and observed.route_profile == route
-            and not legacy_registration_owned
+            and not (legacy_registration_owned and not legacy_kept)
             and not activation.legacy_activation
             and not legacy_trees
         ):
             body["changes"] = []
-        if legacy_registration_owned:
+        if legacy_registration_owned and not legacy_kept:
             cast(list[JsonValue], body["changes"]).append("migrate_legacy_mcp_registration")
         if activation.legacy_activation:
             cast(list[JsonValue], body["changes"]).append("migrate_legacy_plugin")
         cast(list[JsonValue], body["changes"]).extend(legacy_trees)
+        connect_warnings: list[JsonValue] = []
         if observed.legacy_registration == "foreign":
-            body["warnings"] = ["legacy_registration_foreign"]
+            connect_warnings.append("legacy_registration_foreign")
+        if legacy_kept:
+            connect_warnings.append("legacy_registration_kept")
+        if connect_warnings:
+            body["warnings"] = connect_warnings
 
         def apply() -> None:
             from finishup.cli.setup import apply_codex_integration
@@ -252,6 +282,7 @@ def prepare_codex_connection(
                     project,
                     legacy_registration=registration.legacy_registration,
                 ),
+                **legacy_kept_status(installation.config_root, registration.legacy_registration),
             }
     else:
         removal_report: dict[str, JsonValue] | None = None
@@ -600,6 +631,52 @@ def prepare_codex_connection(
 _OTHER_PROJECTS_LIMIT = 32
 
 
+def legacy_kept_disclosure(roots: tuple[str, ...], unchecked: bool) -> dict[str, JsonValue]:
+    """Who keeps the owned ``yoetz`` entry, and the exact revoke that releases each (#1073).
+
+    An entry names the project and how its ``.codex/config.toml`` depends on the ``yoetz``
+    transport (``depends``, or ``unknown`` when it cannot be read safely). Only a project whose
+    dependence ends once its exact earlier-name approval tables are swept carries the revoke
+    (``integrate codex admission preview --action revoke`` removes exactly those); anything
+    else naming that server is the owner's to edit.
+    """
+
+    entries: list[JsonValue] = []
+    for root in roots:
+        path = Path(root)
+        dependence = project_transport_dependence(
+            path, after_sweep=False, names=(LEGACY_MCP_SERVER_NAME,)
+        )
+        entry: dict[str, JsonValue] = {"project_root": root, "dependence": dependence}
+        if dependence == "depends" and (
+            project_transport_dependence(path, after_sweep=True, names=(LEGACY_MCP_SERVER_NAME,))
+            == "none"
+        ):
+            entry["next_arguments"] = cast(
+                list[JsonValue], admission_revoke_arguments("codex", path)
+            )
+        entries.append(entry)
+    disclosure: dict[str, JsonValue] = {"legacy_registration_kept_for": entries}
+    if unchecked:
+        disclosure["legacy_registration_kept_unchecked"] = True
+    return disclosure
+
+
+def legacy_kept_status(codex_home: Path, legacy_registration: str | None) -> dict[str, JsonValue]:
+    """Status facts for an owned ``yoetz`` entry that stays because projects still need it.
+
+    Read now, so it names who still holds the migration back; empty once nothing does (the next
+    connect then completes the migration, and the last disconnect removes both keys).
+    """
+
+    if legacy_registration not in _OWNED_LEGACY_REGISTRATIONS:
+        return {}
+    roots, unchecked = legacy_registration_dependents(codex_home)
+    if not roots and not unchecked:
+        return {}
+    return legacy_kept_disclosure(roots, unchecked)
+
+
 def _current_route(binary: HarnessBinary, codex_home: Path) -> Literal["policy", "strict"]:
     """The review mode of the home's FinishUP-owned MCP registration; ``strict`` without one."""
 
@@ -630,24 +707,12 @@ def _other_projects_needing_transport(
     read as proof.
     """
 
-    config = read_bounded_toml(codex_home / "config.toml") or {}
-    candidates: set[str] = set()
-    projects = config.get("projects")
-    if isinstance(projects, dict):
-        candidates.update(str(key) for key in cast(dict[str, object], projects))
-    try:
-        candidates.update(connected_projects(codex_home))
-    except IntegrationError:
-        pass
+    candidates, _complete = home_project_candidates(codex_home)
     # Missing directories and other paths to this same project are filtered before the bound,
     # so stale trust entries do not use up the read window.
-    eligible = sorted(
-        candidate
-        for candidate in candidates
-        if Path(candidate).is_absolute()
-        and Path(candidate).is_dir()
-        and not same_directory(Path(candidate), project)
-    )
+    eligible = [
+        candidate for candidate in candidates if not same_directory(Path(candidate), project)
+    ]
     inspected = eligible[:_OTHER_PROJECTS_LIMIT]
     found: list[JsonValue] = []
     for candidate in inspected:

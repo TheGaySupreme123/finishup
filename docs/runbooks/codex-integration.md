@@ -1380,8 +1380,8 @@ adds `legacy_registration`:
 | `legacy_registration` | Meaning | What FinishUP does |
 |---|---|---|
 | `none` | No `yoetz` entry. | Nothing. |
-| `legacy_only` | The only FinishUP-owned entry uses the `yoetz` key: owned but outdated. | Integrate (or the guided connection) migrates it under one preview: it writes `finishup`, re-checks the legacy entry, then removes `yoetz`. Preview warning `legacy_registration_owned`. |
-| `duplicate` | Owned entries under both keys. | Integrate removes the owned `yoetz` entry; remove and disconnect take both. |
+| `legacy_only` | The only FinishUP-owned entry uses the `yoetz` key: owned but outdated. | Integrate (or the guided connection) migrates it under one preview: it writes `finishup`, re-checks the legacy entry, then removes `yoetz`. Preview warning `legacy_registration_owned`. While a project still needs the `yoetz` key (below), it writes `finishup` and keeps `yoetz`. |
+| `duplicate` | Owned entries under both keys. | Integrate removes the owned `yoetz` entry unless a project still needs it (below); remove and disconnect take both once nothing needs either. |
 | `foreign` | A `yoetz` entry FinishUP cannot prove is its own. | Reported (warning `legacy_registration_foreign`) and never touched. |
 
 Remove and disconnect select the owned entries independently: an owned `yoetz` entry can be
@@ -1402,6 +1402,36 @@ FinishUP's. A migration-only re-registration keeps the existing `policy` or `str
 `yoetz.mcp-registration-preview/5` and `yoetz.mcp-unregistration-preview/5`. If the legacy-key
 removal cannot be verified, or the entry changed after preview, the error's safe details carry
 `legacy_state` (`yoetz_owned|foreign_present|absent|unknown`).
+
+**A project that still needs the `yoetz` key (#1073).** Yoetz 0.2's `integrate codex admission
+grant` wrote `[mcp_servers.yoetz.tools.check]` into a project's `.codex/config.toml`. That table has
+no transport of its own; Codex takes it from the user-level `yoetz` entry, and once that entry is
+gone Codex refuses to load the project ("invalid transport in `mcp_servers.yoetz`"). So before it
+migrates an owned `yoetz` entry, the adapter reads the projects this home knows (its trust rows and
+verified members, including the Yoetz-era bound project; at most 32) for a `.codex/config.toml`
+that names `mcp_servers.yoetz` without a transport, or that cannot be read. If one does, or not
+every project could be read, the entry stays beside `finishup`: the preview writes only `finishup`
+(warning `legacy_registration_kept`, `legacy_kept_for`, `legacy_kept_unchecked`, digest tag `/6`
+binding both), apply leaves `yoetz` alone, and a connect that finds `finishup` already current
+changes nothing more. The guided connect plan drops `migrate_legacy_mcp_registration`, warns
+`legacy_registration_kept`, and lists `legacy_registration_kept_for` with each project and, when
+only exact earlier-name approval tables hold it, the revoke that releases it:
+
+```text
+finishup integrate codex admission preview --project-root <project> --action revoke
+```
+
+`setup status --host codex` reports the same list (read now) while the owned `yoetz` entry exists,
+with the same continuation. After the revokes, the next connect migrates as before. Tables you
+edited under `mcp_servers.yoetz` are yours to remove. A disconnect keeps both keys while any project
+needs either (`admission_other_projects`), and the last one, after its own sweep removes the exact
+earlier-name table, removes both. The kept `yoetz` entry serves every project of the home on its
+own review mode, so a connect that would register `finishup` on another one stops before any
+change with `connection_legacy_registration_route_kept` (`route_profile_before` is the kept entry's
+mode), naming the revokes and the same connect with that `--route-profile`; the terminal interface
+blocks before its approval screen, the shared integration step behind the wizard and both applies
+fails with that reason, and `integrate codex mcp install` exits 2 with
+`mcp_registration_legacy_registration_route_kept`.
 
 **Plugin activation.** The project's Yoetz-era activation (the exact legacy
 `.agents/plugins/marketplace.json`, byte-identical `[marketplaces.yoetz]` and

@@ -46,6 +46,8 @@ MCP_LEGACY_SERVE_COMMAND: Final = ("finishup", "mcp", "serve")
 MCP_LEGACY_STRICT_SERVE_COMMAND: Final = (*MCP_LEGACY_SERVE_COMMAND, "--semantic", "off")
 
 _MAX_PATH_CHARS: Final = 4_096
+# The adapter reads at most this many projects for one registration decision.
+_MAX_KEPT_FOR: Final = 32
 _MAX_VERSION_CHARS: Final = 64
 _MAX_WARNINGS: Final = 16
 _TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$", re.ASCII)
@@ -186,6 +188,13 @@ class McpRegistrationPreview:
     # keep the route (a legacy key, launcher, or isolation change), so the action alone does not
     # name it.
     route_profile_before: Literal["policy", "strict"] | None = None
+    # An owned ``yoetz`` entry this apply keeps beside ``finishup`` instead of migrating it,
+    # because these projects' Codex configuration still names that server without a transport
+    # of its own (ADR-048, #1073); ``legacy_kept_unchecked`` when not every project the home
+    # knows was read. ``legacy_route_profile`` is the route that kept entry serves.
+    legacy_kept_for: tuple[str, ...] = ()
+    legacy_kept_unchecked: bool = False
+    legacy_route_profile: Literal["policy", "strict"] | None = None
 
     def __post_init__(self) -> None:
         if type(self.harness_id) is not HarnessId:
@@ -195,6 +204,24 @@ class McpRegistrationPreview:
         if type(self.state_before) is not McpRegistrationState:
             raise _port_error("integration_state_invalid")
         _validate_legacy_registration(self.legacy_registration, self.state_before)
+        if (
+            type(self.legacy_kept_for) is not tuple
+            or len(self.legacy_kept_for) > _MAX_KEPT_FOR
+            or any(
+                type(item) is not str
+                or not 1 <= len(item) <= _MAX_PATH_CHARS
+                or not item.startswith("/")
+                or any(ord(char) < 32 or ord(char) == 127 for char in item)
+                for item in self.legacy_kept_for
+            )
+            or type(self.legacy_kept_unchecked) is not bool
+            or self.legacy_route_profile not in {None, "policy", "strict"}
+            or (
+                (self.legacy_kept_for or self.legacy_kept_unchecked)
+                and self.legacy_registration not in {"legacy_only", "duplicate"}
+            )
+        ):
+            raise _port_error("integration_value_invalid")
         if self.route_profile_before is not None and (
             self.route_profile_before not in {"policy", "strict"}
             or self.state_before is not McpRegistrationState.FINISHUP_OWNED

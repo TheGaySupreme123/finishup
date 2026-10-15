@@ -1190,6 +1190,10 @@ def test_connect_status_reports_the_shared_registration_as_retained_when_not_con
                 already_registered=False,
                 project_root=str(project),
                 managed_paths=(),
+                # No owned ``yoetz`` entry is kept here (#1073).
+                legacy_registration_kept_for=(),
+                legacy_registration_kept_unchecked=False,
+                legacy_registration_route_profile=None,
             )
 
     async def observe(self: object, _binary: object) -> McpRegistrationObservation:

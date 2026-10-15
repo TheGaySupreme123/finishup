@@ -76,6 +76,17 @@ _LEGACY_REGISTRATION_TEXT: Final = {
     "duplicate": "also registered under the earlier name yoetz (connecting removes it)",
     "foreign": "the earlier name yoetz holds an entry FinishUP cannot prove is its own (kept)",
 }
+# An owned ``yoetz`` entry a project's Codex configuration still needs stays beside ``finishup``.
+_KEPT_LEGACY_REGISTRATION_TEXT: Final = {
+    "legacy_only": (
+        "registered under the earlier name yoetz (kept beside finishup: a project's Codex "
+        "configuration still uses it)"
+    ),
+    "duplicate": (
+        "also registered under the earlier name yoetz (kept: a project's Codex configuration "
+        "still uses it)"
+    ),
+}
 # A Cursor project registration whose earlier-name entry lives outside the project's own file,
 # or beside another source: connect refuses rather than migrating it (ADR-048).
 _PROJECT_MCP_REFUSED_STATES: Final = frozenset({"external_source", "multiple_sources"})
@@ -991,7 +1002,12 @@ class FinishUpRuntime:
             root,
             before=route_before,
         )
-        legacy_text = _LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
+        legacy_text = (
+            # Kept beside ``finishup``: a project's Codex configuration still uses it (#1073).
+            _KEPT_LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
+            if mcp_preview.legacy_kept_for or mcp_preview.legacy_kept_unchecked
+            else _LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
+        )
         if legacy_text is not None:
             state_words.append(legacy_text)
         managed_paths = [
@@ -1060,6 +1076,9 @@ class FinishUpRuntime:
             mcp_reregister=reregister,
             route_changes_for=changes_for,
             route_changes_possible_for=changes_possible_for,
+            legacy_registration_kept_for=mcp_preview.legacy_kept_for,
+            legacy_registration_kept_unchecked=mcp_preview.legacy_kept_unchecked,
+            legacy_registration_route_profile=mcp_preview.legacy_route_profile,
         )
 
     async def apply_integration(

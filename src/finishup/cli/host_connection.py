@@ -178,6 +178,7 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
         *removal_warning,
         *_shared_summary(body),
         *_admission_summary(body),
+        *_legacy_kept_lines(body),
     )
 
 
@@ -379,25 +380,43 @@ def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     return tuple(lines)
 
 
+# Status and disclosure lists whose items carry their own structural continuation.
+_PER_PROJECT_CONTINUATIONS = ("admission_other_projects", "legacy_registration_kept_for")
+
+
 def _rendered_disclosure(disclosure: dict[str, JsonValue]) -> dict[str, JsonValue]:
     rendered = dict(disclosure)
-    others = rendered.get("admission_other_projects")
-    if isinstance(others, list):
-        rendered["admission_other_projects"] = [
-            _rendered_status(item) if isinstance(item, dict) else item for item in others
-        ]
+    for key in _PER_PROJECT_CONTINUATIONS:
+        items = rendered.get(key)
+        if isinstance(items, list):
+            rendered[key] = [
+                _rendered_status(item) if isinstance(item, dict) else item for item in items
+            ]
     return rendered
 
 
 def _rendered_status(status: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Render structural ``next_arguments`` through the pinned launcher continuation."""
 
-    arguments = status.get("next_arguments")
+    rendered = dict(status)
+    for key in _PER_PROJECT_CONTINUATIONS:
+        items = rendered.get(key)
+        if isinstance(items, list):
+            rendered[key] = [
+                _rendered_status(item) if isinstance(item, dict) else item for item in items
+            ]
+    arguments = rendered.get("next_arguments")
     if not isinstance(arguments, list):
-        return status
-    rendered = {key: value for key, value in status.items() if key != "next_arguments"}
+        return rendered
+    rendered.pop("next_arguments")
     rendered["next_command"] = continuation([str(item) for item in arguments])
     return rendered
+
+
+def rendered_status(status: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """A status with each structural continuation rendered as the command to run."""
+
+    return _rendered_status(status)
 
 
 def _codex_leftover(config_root: Path | None, project: Path) -> dict[str, JsonValue]:
@@ -441,20 +460,27 @@ def kept_pieces_steps(
     selected: HostInstallation,
     project: Path,
 ) -> tuple[str, ...]:
-    """What a finished disconnect left in place for others, and the way on.
+    """What a finished connect or disconnect left in place for others, and the way on.
 
     A disconnect that kept the shared pieces only for a project whose directory is missing, or
     because FinishUP cannot confirm who uses them (a Yoetz-era Cursor plugin folder found without
-    a record), names the home-wide removal (#1073). Shared with the terminal interface, which
-    shows the same steps.
+    a record), names the home-wide removal; a connect that kept the owned ``yoetz`` registration
+    names the projects that still use it and their revoke (#1073). Shared with the terminal
+    interface, which shows the same steps.
     """
 
-    if action != "disconnect":
-        return ()
-    step = _missing_members_step(status, selected, project) or _membership_status_step(
-        dict(status), selected, project
-    )
-    return () if step is None else (step,)
+    steps: list[str] = []
+    if action == "disconnect":
+        step = _missing_members_step(status, selected, project) or _membership_status_step(
+            dict(status), selected, project
+        )
+        if step is not None:
+            steps.append(step)
+    else:
+        lines = _legacy_kept_lines(status)
+        if lines:
+            steps.append("\n".join(lines))
+    return tuple(steps)
 
 
 def _membership_status_step(
@@ -756,7 +782,54 @@ def _leftover_next_step(status: dict[str, JsonValue]) -> str | None:
     return " ".join(parts)
 
 
-def _refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
+def _legacy_kept_lines(body: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """The owned ``yoetz`` registration kept beside ``finishup``, and how each project releases it.
+
+    It stays while a project's Codex configuration still names that server without a transport
+    of its own (#1073); revoking those exact earlier-name approval tables, then connecting again,
+    finishes moving to FinishUP.
+    """
+
+    kept = body.get("legacy_registration_kept_for")
+    unchecked = body.get("legacy_registration_kept_unchecked") is True
+    if not (isinstance(kept, list) and kept) and not unchecked:
+        return ()
+    lines = [
+        "The MCP registration under the earlier name yoetz stays beside finishup: the Codex "
+        "configuration of these projects still names that server without a transport of its own "
+        "(or could not be read), and removing it could stop Codex loading there:"
+        if isinstance(kept, list) and kept
+        else "The MCP registration under the earlier name yoetz stays beside finishup:"
+    ]
+    for item in kept if isinstance(kept, list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(f"  {item.get('project_root')}")
+        arguments = item.get("next_arguments")
+        command = (
+            continuation([str(a) for a in arguments])
+            if isinstance(arguments, list)
+            else item.get("next_command")
+        )
+        if isinstance(command, str):
+            lines.append(
+                "    to finish moving to FinishUP, revoke its earlier-name approval entry, then "
+                "connect again: " + command
+            )
+        else:
+            lines.append(
+                "    remove the [mcp_servers.yoetz] tables from its .codex/config.toml yourself, "
+                "then connect again"
+            )
+    if unchecked:
+        lines.append(
+            "Not every project this Codex home knows was checked, so the registration under the "
+            "earlier name yoetz stays."
+        )
+    return tuple(lines)
+
+
+def refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
     """Plain-language continuation for a disconnect that stopped before changing anything."""
 
     if reason == "connection_admission_cleanup_failed":
@@ -784,6 +857,22 @@ def _refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
             "MCP registration this disconnect would remove, and Codex would then refuse to load "
             "this project. Remove or move those tables yourself, then rerun this command; or "
             "keep FinishUP connected."
+        )
+    if reason == "connection_legacy_registration_route_kept":
+        modes = {"strict": "local only", "policy": "AI-powered review"}
+        before = str(status.get("route_profile_before"))
+        after = str(status.get("route_profile"))
+        return "\n".join(
+            (
+                "Nothing was changed. The MCP registration under the earlier name yoetz has to "
+                "stay beside finishup for now (see below), and it serves every project of this "
+                f"Codex home with {modes.get(before, before)}; connecting with "
+                f"{modes.get(after, after)} would leave both review modes running side by side.",
+                *_legacy_kept_lines(status),
+                f"Or keep {modes.get(before, before)} for now: rerun the connect with "
+                f"--route-profile {before} (finishup setup run --host codex --route-profile "
+                f"{before}).",
+            )
         )
     if reason == "connection_other_projects_need_registration":
         partial = isinstance(status.get("admission_other_projects_known"), int)
@@ -938,18 +1027,18 @@ def run_host_connection(
         report["plan"] = plan.body
         if status_only:
             report.update({"outcome": "status", "status": _rendered_status(plan.status())})
-            leftover_step = _leftover_next_step(cast(dict[str, JsonValue], report["status"]))
-            if leftover_step is not None:
-                report["next_step"] = leftover_step
-            membership_step = _membership_status_step(
-                cast(dict[str, JsonValue], report["status"]), selected, project
-            )
-            if membership_step is not None:
-                report["next_step"] = (
-                    membership_step
-                    if leftover_step is None
-                    else f"{leftover_step}\n{membership_step}"
+            rendered = cast(dict[str, JsonValue], report["status"])
+            steps = [
+                step
+                for step in (
+                    _leftover_next_step(rendered),
+                    _membership_status_step(rendered, selected, project),
+                    "\n".join(_legacy_kept_lines(rendered)) or None,
                 )
+                if step is not None
+            ]
+            if steps:
+                report["next_step"] = "\n".join(steps)
             typer.echo(
                 json.dumps(report, sort_keys=True)
                 if json_output
@@ -1080,14 +1169,9 @@ def run_host_connection(
             report["next_step"] = text.split(": ", 1)[1].rstrip("\n")
         if isinstance(error, ConnectionError) and error.status is not None:
             rendered_status = _rendered_status(error.status)
-            others = rendered_status.get("admission_other_projects")
-            if isinstance(others, list):
-                rendered_status["admission_other_projects"] = [
-                    _rendered_status(item) if isinstance(item, dict) else item for item in others
-                ]
             report["status"] = rendered_status
             next_command = rendered_status.get("next_command")
-            refusal = _refusal_step(reason, rendered_status) or _leftover_next_step(rendered_status)
+            refusal = refusal_step(reason, rendered_status) or _leftover_next_step(rendered_status)
             if refusal is not None:
                 report["next_step"] = refusal
             elif isinstance(next_command, str):
