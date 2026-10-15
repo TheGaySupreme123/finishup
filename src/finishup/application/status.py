@@ -1422,6 +1422,9 @@ _MAX_AWAITING_RULING_FINDINGS: Final = 8
 _CHECK_ABSENCE_CODES: Final = frozenset(
     {"check_not_recorded", "check_not_applicable", "check_payload_unavailable"}
 )
+# Immediate re-reads after a material append lands between the closure-basis reads. Two, not
+# more: a burst that outruns this bound omits the prediction instead of chasing the head.
+_CLOSURE_BASIS_HEAD_RETRIES: Final = 2
 
 
 def _published_value_names(value: str, path: str) -> bool:
@@ -1512,25 +1515,75 @@ async def published_name_authorship(
     return tuple(attached)
 
 
+def _status_closure_follows_head(*, cursor_bound: bool, at_frontier: object | None) -> bool:
+    """Whether this status read may move onto a newer head.
+
+    A cursor, or ``at_frontier``, asked for one frontier. That read stays there: a material append
+    during the load omits the prediction rather than silently reporting a later one. A current
+    read (neither pin) may re-read at the latest frontier.
+    """
+
+    return not cursor_bound and at_frontier is None
+
+
+def _frontier_race(exc: BaseException) -> bool:
+    """True when the ledger refused the read because the frontier moved under it."""
+
+    if isinstance(exc, ClosureBasisUnavailable):
+        return exc.reason == "frontier_changed"
+    if isinstance(exc, PublicOperationError) and exc.code is PublicErrorCode.FRONTIER_CONFLICT:
+        return exc.safe_details.get("reason_code") == "frontier_changed"
+    return False
+
+
+def _record_prediction_unavailable(exc: BaseException, request_id: str | None) -> None:
+    record_unexpected_exception_without_raising(
+        exc,
+        component="application.status",
+        operation="status_closure_prediction_unavailable",
+        request_id=request_id,
+    )
+
+
 async def _closure_basis_or_none(
-    runtime: TaskRuntime, frontier: Frontier, request_id: str | None
+    runtime: TaskRuntime,
+    frontier: Frontier,
+    request_id: str | None,
+    *,
+    follow_head: bool = False,
 ) -> LoadedClosureBasis | None:
     """The receipt's own context at this frontier, or ``None`` when it cannot be read.
 
     Status stays total: an unreadable case omits the predicted conclusion (never guesses one) and
     leaves a bounded diagnostic. The fallback is visible, not silent.
+
+    ``follow_head`` is only for a current, unpinned read. If a material append lands between the
+    projection read and the case-availability read, the ledger's suffix check still refuses the
+    torn snapshot. This then re-reads the projection, the records and the availability together
+    at the latest frontier, immediately, at most ``_CLOSURE_BASIS_HEAD_RETRIES`` times. A pinned
+    frontier never takes that path, and a same-sequence digest change is not treated as a newer
+    head. An extension the ledger already accepts (an observation, or a second receipt rendering)
+    does not conflict, so the prediction stays on the frontier that was asked for.
     """
 
-    try:
-        return await load_closure_basis(runtime, frontier)
-    except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
-        record_unexpected_exception_without_raising(
-            exc,
-            component="application.status",
-            operation="status_closure_prediction_unavailable",
-            request_id=request_id,
-        )
-        return None
+    target = frontier
+    retries_left = _CLOSURE_BASIS_HEAD_RETRIES if follow_head else 0
+    while True:
+        try:
+            return await load_closure_basis(runtime, target)
+        except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
+            if follow_head and _frontier_race(exc) and retries_left:
+                try:
+                    latest = await runtime.ledger.load_frontier()
+                except (PublicOperationError, TypeError, ValueError) as read_exc:
+                    _record_prediction_unavailable(read_exc, request_id)
+                    return None
+                retries_left -= 1
+                if latest.sequence > target.sequence:
+                    target = latest
+                    continue
+            _record_prediction_unavailable(exc, request_id)
+            return None
 
 
 def _closure_verdict_fields(
@@ -1661,6 +1714,19 @@ def _semantic_review_required(
     return getattr(policy, "semantic", None) == "required"
 
 
+@dataclass(frozen=True, slots=True)
+class _ClosureReadinessRead:
+    """Closure readiness and the frontier its prediction was actually built at."""
+
+    model: StatusClosureReadinessModel
+    frontier: Frontier
+    compact_page: ProjectionPage | None
+
+
+def _closure_readiness_unknown(frontier: Frontier) -> _ClosureReadinessRead:
+    return _ClosureReadinessRead(_readiness_unknown(), frontier, None)
+
+
 async def _closure_readiness(
     runtime: TaskRuntime,
     frontier: Frontier,
@@ -1671,7 +1737,9 @@ async def _closure_readiness(
     semantic_review_required: bool = False,
     check_in_flight: bool = False,
     lineage_self_verified: bool = False,
-) -> StatusClosureReadinessModel:
+    follow_head: bool = False,
+    _preloaded: LoadedClosureBasis | None = None,
+) -> _ClosureReadinessRead:
     """Derive what currently bounds a completion conclusion, from the compact projection.
 
     Computed on every view so an agent never has to switch views — or spend a check and a receipt
@@ -1690,6 +1758,10 @@ async def _closure_readiness(
 
     The checklist split (ADR-032) is derived here, per request, from the page's own gaps and
     readiness facts; nothing about it is cached across frontiers or recorded.
+
+    When ``follow_head`` is set and the basis load moves to a newer frontier, the compact page is
+    read again at that frontier and the model is built from that one snapshot, using the basis
+    already loaded so a second availability read cannot tear it.
     """
 
     if compact_page is not None:
@@ -1710,15 +1782,15 @@ async def _closure_readiness(
         except PublicOperationError:
             # Secondary enrichment only: do not fail a structural status page because the
             # compact projection is lagging, rebuilding, or temporarily unreadable.
-            return _readiness_unknown()
+            return _closure_readiness_unknown(frontier)
     try:
         item = page.items[0] if page.items else None
         if type(item) is not StatusCompactItemModel:
             # Compact omits its singleton when the task title is unreadable. Counting that as
             # zero open obligations would manufacture a clean record out of missing data.
-            return _readiness_unknown()
+            return _closure_readiness_unknown(frontier)
         if item.declared_obligation_count is None or item.open_obligation_count is None:
-            return _readiness_unknown()
+            return _closure_readiness_unknown(frontier)
         declared_obligations = int(item.declared_obligation_count)
         open_obligations = int(item.open_obligation_count)
         # "Is this finding still unanswered" has one source: the compact row's count from
@@ -1731,7 +1803,39 @@ async def _closure_readiness(
         # Recorded gaps (the ones a receipt folds) are classified; live lineage tokens that no
         # recorded evaluation carries yet cannot be promised as receipt disclosures (#913).
         gap_markers = tuple(page.gaps)
-        loaded = await _closure_basis_or_none(runtime, frontier, request_id)
+        preloaded = _preloaded
+        if (
+            preloaded is not None
+            and Frontier(preloaded.projection.frontier, preloaded.projection.head_digest)
+            == frontier
+        ):
+            loaded: LoadedClosureBasis | None = preloaded
+        else:
+            loaded = await _closure_basis_or_none(
+                runtime, frontier, request_id, follow_head=follow_head
+            )
+            if loaded is not None and follow_head:
+                landed = Frontier(loaded.projection.frontier, loaded.projection.head_digest)
+                if landed != frontier:
+                    in_flight = check_in_flight
+                    try:
+                        live = await runtime.ledger.load_frontier()
+                    except PublicOperationError, TypeError, ValueError:
+                        live = landed
+                    else:
+                        in_flight = live == landed and await _check_in_flight(runtime)
+                    return await _closure_readiness(
+                        runtime,
+                        landed,
+                        None,
+                        request_id,
+                        lineage_gaps=lineage_gaps,
+                        semantic_review_required=semantic_review_required,
+                        check_in_flight=in_flight,
+                        lineage_self_verified=lineage_self_verified,
+                        follow_head=False,
+                        _preloaded=loaded,
+                    )
         if loaded is not None:
             # The receipt folds gaps status does not read off the compact row (a retained finding's
             # coverage, case-derived codes): list them too, so a receipt that will bound on one never
@@ -1756,7 +1860,7 @@ async def _closure_readiness(
         if facts is None:
             # Without the per-request facts readiness cannot tell whether a check applies or an
             # item was acknowledged; "done" would be manufactured out of missing data.
-            return _readiness_unknown()
+            return _closure_readiness_unknown(frontier)
     except (AttributeError, IndexError, TypeError, ValueError) as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -1764,7 +1868,7 @@ async def _closure_readiness(
             operation="status_closure_readiness_page_invalid",
             request_id=request_id,
         )
-        return _readiness_unknown()
+        return _closure_readiness_unknown(frontier)
     blocking: list[str] = []
     if open_obligations:
         blocking.append("obligations_open")
@@ -1824,7 +1928,7 @@ async def _closure_readiness(
             check_in_flight=check_in_flight,
         )
     )
-    return StatusClosureReadinessModel(
+    model = StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),
         no_obligations_reason=no_obligations_reason,
         open_obligation_count=str(open_obligations),
@@ -1875,6 +1979,7 @@ async def _closure_readiness(
             tuple(blocking),
         ),
     )
+    return _ClosureReadinessRead(model, frontier, page)
 
 
 async def _check_in_flight(runtime: TaskRuntime) -> bool:
@@ -1971,7 +2076,7 @@ async def current_closure_readiness(
     lineage_gaps, lineage_self_verified = await _lineage_readiness_gaps(
         app, runtime, frontier, request_id
     )
-    readiness = await _closure_readiness(
+    read = await _closure_readiness(
         runtime,
         frontier,
         None,
@@ -1981,8 +2086,9 @@ async def current_closure_readiness(
         semantic_review_required=_semantic_review_required(app, route_profile)
         and not _task_local_by_choice(await _task_review_mode(app, runtime, route_profile)),
         check_in_flight=frontier == head and await _check_in_flight(runtime),
+        follow_head=True,
     )
-    return frontier, readiness
+    return read.frontier, read.model
 
 
 async def execute_status(
@@ -2393,7 +2499,7 @@ async def execute_status(
                 ),
             )
         task_review_mode = await _task_review_mode(app, runtime, route_profile)
-        closure_readiness = await _closure_readiness(
+        read = await _closure_readiness(
             runtime,
             frontier,
             compact_page,
@@ -2403,7 +2509,56 @@ async def execute_status(
             semantic_review_required=_semantic_review_required(app, route_profile)
             and not _task_local_by_choice(task_review_mode),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
+            follow_head=_status_closure_follows_head(
+                cursor_bound=decoded is not None,
+                at_frontier=request.at_frontier,
+            ),
         )
+        closure_readiness = read.model
+        if (
+            request.view == "compact"
+            and read.frontier != frontier
+            and read.compact_page is not None
+        ):
+            raw_page = read.compact_page
+            frontier = read.frontier
+            compact_page = raw_page
+            next_cursor = (
+                None
+                if raw_page.next_position is None
+                else _encode_cursor(
+                    app,
+                    request,
+                    frontier,
+                    raw_page.projection_version,
+                    raw_page.next_position,
+                )
+            )
+            with status_stage(StatusFaultStage.MODEL):
+                page = _page_model(
+                    raw_page, next_cursor, attempt_budget=_finding_attempt_budget(app)
+                )
+            coverage = raw_page.coverage
+            gaps = raw_page.gaps
+            if lineage_gaps:
+                gaps = tuple(sorted(set(gaps) | set(lineage_gaps)))
+                coverage = replace(
+                    coverage,
+                    known_gaps=tuple(sorted(set(coverage.known_gaps) | set(lineage_gaps))),
+                    ledger_freshness=(
+                        LedgerFreshness.PARTIAL
+                        if coverage.ledger_freshness is LedgerFreshness.CURRENT
+                        else coverage.ledger_freshness
+                    ),
+                )
+            head = raw_page.head_frontier
+            effective = raw_page.effective_frontier
+            lag = raw_page.lag
+            projection_version = raw_page.projection_version
+            rebuild_state = raw_page.rebuild_state
+        elif read.frontier.sequence > head.sequence:
+            head = read.frontier
+            lag = head.sequence - frontier.sequence
         leaf_authorship = (
             await _published_name_authorship(runtime, frontier, closure_readiness)
             if frontier == head

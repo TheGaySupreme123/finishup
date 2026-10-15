@@ -7879,7 +7879,12 @@ ledger prefix and never stored. Names:
 - `finishup.kernel.closure_verdict.closure_verdict`: the composition (classes, judged gaps, readiness
   split, prediction, counters, rechecks). `finishup.application.closure_basis.load_closure_basis`
   rebuilds the receipt's context at a frontier for status and the check (memoized per session and
-  frontier, valid only while the adapter's projection object is unchanged).
+  frontier, valid only while the adapter's projection object is unchanged). An unpinned status
+  read that loses that frontier to a material append re-reads the whole basis at the latest
+  frontier, immediately, at most twice (ADR-046 amendment of 2026-10-15). `basis_frontier` is the
+  frontier that read landed on. A status cursor or `at_frontier` is never moved; the prediction
+  is omitted instead. The ledger's suffix check is unchanged: an observation-authored extension
+  or a second receipt rendering still leaves the asked-for frontier valid.
 
 Wire (all optional on the unreleased 1.4.0 results; absent from an earlier 0.3 build and whenever
 the basis could not be read):

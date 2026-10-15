@@ -9,6 +9,8 @@ the receipt is requested is the label the receipt carries.
 ``load_closure_basis`` is the application-layer loader: it reads the records and projection the
 way the receipt does, builds the deterministic case once and returns the context and the basis.
 Status degrades to omitting the prediction (never to guessing one) when the case is unreadable.
+An unpinned status read retries that load at the latest frontier when a material append lands
+between the reads; a caller-pinned frontier is never moved (see ``_closure_basis_or_none``).
 """
 
 from __future__ import annotations
