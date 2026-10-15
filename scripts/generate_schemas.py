@@ -2326,7 +2326,8 @@ def _check_recorded_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _check_recorded_v1_4_schema(entry)
     _admit_deferred_before_first_edit(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
-    document["title"] = f"Yoetz check recorded {entry.schema_version}"
+    # New document (ADR-048): prose title uses FinishUP; the yoetz.dev $id stays frozen.
+    document["title"] = f"FinishUP check recorded {entry.schema_version}"
     return document
 
 
@@ -3917,7 +3918,8 @@ def _check_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _check_result_v1_4_schema(entry)
     _admit_deferred_before_first_edit(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
-    document["title"] = f"Yoetz check result {entry.schema_version}"
+    # New document (ADR-048): prose title uses FinishUP; the yoetz.dev $id stays frozen.
+    document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
 
 

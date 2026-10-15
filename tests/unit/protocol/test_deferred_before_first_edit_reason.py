@@ -108,6 +108,27 @@ def test_check_recorded_1_5_is_the_only_event_schema_that_names_the_reason() -> 
     assert "deferred_before_first_edit" in current_reasons
 
 
+def test_new_check_schema_titles_use_the_product_name() -> None:
+    """ADR-048: a new schema's prose title says FinishUP; released titles and $id stay."""
+
+    result_previous = (
+        Path(__file__).resolve().parents[3] / "schemas/operations/check-result-1.4.0.schema.json"
+    )
+    result_next = (
+        Path(__file__).resolve().parents[3] / "schemas/operations/check-result-1.5.0.schema.json"
+    )
+    recorded = json.loads(_RECORDED.read_text(encoding="utf-8"))
+    recorded_next = json.loads(_RECORDED_NEXT.read_text(encoding="utf-8"))
+    previous = json.loads(result_previous.read_text(encoding="utf-8"))
+    current = json.loads(result_next.read_text(encoding="utf-8"))
+    assert recorded["title"] == "Yoetz check recorded 1.4.0"
+    assert recorded_next["title"] == "FinishUP check recorded 1.5.0"
+    assert previous["title"] == "Yoetz check result 1.4.0"
+    assert current["title"] == "FinishUP check result 1.5.0"
+    assert recorded_next["$id"].startswith("https://schemas.yoetz.dev/0.1/")
+    assert current["$id"].startswith("https://schemas.yoetz.dev/0.1/")
+
+
 def test_status_job_terminal_reason_does_not_admit_the_check_deferral() -> None:
     """The status terminal-reason enum is the durable job code, not the check outcome."""
 
