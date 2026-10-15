@@ -13,8 +13,9 @@ You can connect several projects to the same agent installation one after anothe
 what that project needs, disconnecting one keeps the others working, and `setup status` lists the
 connected projects. Connecting the same folder a second time under another path (a symlink, other
 letter case, or its old location) is refused with the command that resolves it. If FinishUP cannot
-tell which projects use what an agent installation shares (an earlier version set it up, or its
-list of connected projects was lost), a disconnect keeps those shared pieces and says so. For
+tell which projects use what an agent installation shares (an earlier version set it up,
+including Yoetz before the rename, or its list of connected projects was lost), a disconnect keeps
+those shared pieces and says so, and `--remove-shared` removes them. For
 Codex, FinishUP still remembers the projects it connected itself, and a disconnect that would leave
 only projects it cannot verify stops before changing anything and offers two ways on: connect
 again the project you use, or preview removing the shared pieces for every project with

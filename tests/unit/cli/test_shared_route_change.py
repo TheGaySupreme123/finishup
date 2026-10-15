@@ -650,6 +650,48 @@ def test_cursor_plugin_remove_preview_names_the_projects_using_the_plugin(tmp_pa
     assert cursor_cli._plugin_sharing(config, a, plugin_present=False) == {}  # pyright: ignore[reportPrivateUsage]
 
 
+def test_cursor_plugin_remove_preview_calls_a_yoetz_era_tree_shared(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ADR-048 x #1058: Yoetz 0.2 kept no record of the projects that load its user tree, so the
+    low-level removal preview says membership is unknown, as `setup disconnect` does."""
+
+    import json
+
+    from tests.unit.application.test_host_connection_legacy import (
+        _launcher,  # pyright: ignore[reportPrivateUsage]
+        _legacy_tree,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.cli.cursor_integration import run_cursor_plugin_command
+
+    config = tmp_path / "cursor"
+    config.mkdir(mode=0o700)
+    _legacy_tree(config, _launcher(tmp_path))
+    project = tmp_path / "a"
+    project.mkdir(mode=0o700)
+
+    code = run_cursor_plugin_command(
+        "preview",
+        harness="cursor",
+        cursor_config_root=config,
+        project_root=project,
+        format_name="native",
+        ownership_name="external-registration",
+        route_profile=None,
+        requested_action="remove",
+        request_value="req_50000000-0000-4000-8000-000000000031",
+        preview_digest=None,
+        accept=False,
+        json_output=True,
+    )
+
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["membership_unknown"] is True
+    assert body["shared_removed_for_every_project"] is True
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

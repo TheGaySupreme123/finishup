@@ -348,7 +348,10 @@ def run_cursor_plugin_command(
                         _plugin_sharing(
                             cursor_config_root,
                             project,
-                            plugin_present=status.state.value != "absent",
+                            # A Yoetz-era user tree is the shared plugin from before the rename
+                            # (ADR-048): found without a record, membership is unknown.
+                            plugin_present=status.state.value != "absent"
+                            or status.legacy_installation in {"legacy_only", "duplicate"},
                         )
                         if action is PluginArtifactAction.REMOVE
                         else {}

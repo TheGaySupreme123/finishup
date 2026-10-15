@@ -861,3 +861,134 @@ def test_a_member_detach_also_strips_its_own_legacy_tables(tmp_path: Path) -> No
     assert set(cast(dict[str, object], parsed["plugins"])) == {"finishup@finishup"}
     assert _binding(home) == str(root_b)
     assert inspect_activation(target_b, codex_home=home).state is ActivationState.ACTIVE
+
+
+def test_a_yoetz_era_bound_project_is_a_member_of_the_shared_registration(
+    tmp_path: Path,
+) -> None:
+    """ADR-048 x #1058: Yoetz 0.2 bound A with `[marketplaces.yoetz]` and registered the
+    user-level server every project in the home uses, but kept no record. B's connect migrates
+    that registration; A, still holding its own Yoetz-era activation, is recorded with B and
+    keeps using the registration after B's disconnect. A never anchors the FinishUP binding: it
+    does not serve FinishUP's manifest, so B (the anchor) removes the FinishUP plugin pieces
+    nobody else can carry, and A's Yoetz-era activation stays untouched."""
+
+    from tests.unit.adapters.test_codex_marketplace import (
+        _legacy_tables,  # pyright: ignore[reportPrivateUsage]
+        _write_legacy_activation,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.adapters.integrations.codex_marketplace import other_members, serving_projects
+    from finishup.adapters.integrations.host_projects import load_connected_projects
+
+    home = _home(tmp_path)
+    _target_a, root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    legacy_cache = _write_legacy_activation(root_a, home)
+    # Before any record exists, the project the exact legacy binding names is the home's member.
+    assert connected_projects(home) == (str(root_a),)
+    assert serving_projects(home) == (str(root_a),)
+
+    _connect(target_b, home)
+
+    record = load_connected_projects(home)
+    assert record.projects == tuple(sorted((str(root_a), str(root_b))))
+    assert not record.unknown_members
+    assert other_members(home, root_b) == ((str(root_a),), ())
+    assert _binding(home) == str(root_b)
+    preview = preview_removal(target_b, codex_home=home)
+    assert preview.outcome is RemovalOutcome.REMOVE
+    assert preview.rebind_to is None
+    # A serves its own Yoetz-era activation; it is not a member whose plugin files are missing.
+    assert preview.unserved_members == ()
+
+    result = apply_removal(target_b, codex_home=home, approved_digest=preview.preview_digest)
+
+    assert result.outcome is RemovalOutcome.REMOVE
+    assert _binding(home) is None
+    assert _legacy_tables(root_a) in (home / "config.toml").read_text(encoding="utf-8")
+    assert legacy_cache.is_dir()
+    assert (root_a / ".agents/plugins/marketplace.json").is_file()
+    # A still uses the user-level registration, so another disconnect keeps it for A.
+    assert other_members(home, root_b) == ((str(root_a),), ())
+
+
+def test_a_yoetz_era_project_that_lost_its_activation_is_no_member(tmp_path: Path) -> None:
+    """Only a project still holding its exact Yoetz-era activation counts: an edited legacy
+    table, or a project whose legacy marketplace document is gone, does not."""
+
+    from tests.unit.adapters.test_codex_marketplace import (
+        _write_legacy_activation,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    home = _home(tmp_path)
+    _target_a, root_a = _project(tmp_path, "a")
+    _write_legacy_activation(root_a, home, cache=False)
+    assert connected_projects(home) == (str(root_a),)
+
+    (root_a / ".agents/plugins/marketplace.json").unlink()
+    assert connected_projects(home) == ()
+
+    _write_legacy_activation(root_a, home, cache=False)
+    config = home / "config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'source_type = "local"\n', 'source_type = "local"\n# edited\n'
+        ),
+        encoding="utf-8",
+    )
+    assert connected_projects(home) == ()
+
+
+def test_an_upgraded_yoetz_era_home_keeps_a_trusted_checkout_uncertain(tmp_path: Path) -> None:
+    """ADR-012's earlier-release rule for the real earlier release: shared pieces found without a
+    record make membership uncertain, so a trusted checkout serving FinishUP's manifest is a
+    possible user, the migrating connect records `unknown_members`, and A's removal, with no
+    verified member to carry the binding, refuses as `membership_unverified`."""
+
+    from tests.unit.adapters.test_codex_marketplace import (
+        _write_legacy_activation,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.adapters.integrations.host_projects import load_connected_projects
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    _install(target_a)
+    _write_legacy_activation(root_a, home, cache=False)
+    _clone_target, root_c = _clone(tmp_path, "c")
+    _trust(home, (root_c, "trusted"))
+    # Status already says so before anything is recorded.
+    assert possible_projects(home) == (str(root_c),)
+
+    _connect(target_a, home)
+
+    record = load_connected_projects(home)
+    assert record.projects == (str(root_a),)
+    assert record.unknown_members
+    with pytest.raises(IntegrationError) as caught:
+        preview_removal(target_a, codex_home=home)
+    assert caught.value.reason is IntegrationReason.REMOVE_REFUSED
+    assert caught.value.safe_details.get("conflict") == "membership_unverified"
+
+
+def test_an_owned_yoetz_era_registration_without_a_record_is_uncertain(tmp_path: Path) -> None:
+    """A Yoetz 0.2 home with only its user-level `[mcp_servers.yoetz]` registration (every
+    project in the home uses it) is uncertain too, the same as legacy tables."""
+
+    from finishup.adapters.integrations.host_projects import load_connected_projects
+
+    home = _home(tmp_path)
+    target_b, _root_b = _project(tmp_path, "b")
+    (home / "config.toml").write_text(
+        '[mcp_servers.yoetz]\ncommand = "yoetz"\nargs = ["mcp", "serve", "--host", "codex"]\n',
+        encoding="utf-8",
+    )
+    _clone_target, root_c = _clone(tmp_path, "c")
+    _trust(home, (root_c, "trusted"))
+    assert possible_projects(home) == (str(root_c),)
+
+    _connect(target_b, home)
+
+    assert load_connected_projects(home).unknown_members
+

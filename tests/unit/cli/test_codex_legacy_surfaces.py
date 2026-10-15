@@ -396,3 +396,126 @@ def test_menu_summary_names_the_legacy_registration(
     (line,) = anyio.run(menu._harness_summary)  # pyright: ignore[reportPrivateUsage]
     expected = "codex (0.153.4) — MCP registration: yoetz_owned, isolation: ambient"
     assert line == (expected if suffix is None else f"{expected}, {suffix}")
+
+
+def test_disconnecting_beside_a_yoetz_era_project_keeps_the_registration_it_uses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ADR-048 x #1058: Yoetz 0.2 activated A in this home and registered the user-level server;
+    B then connected with FinishUP (migrating that registration). B's disconnect removes B's
+    FinishUP pieces but keeps the registration A uses, names A, and does not report the kept
+    registration as B's configuration."""
+
+    from types import SimpleNamespace
+
+    from tests.unit.adapters.test_codex_marketplace import (
+        _FakeCodex,  # pyright: ignore[reportPrivateUsage]
+        _legacy_tables,  # pyright: ignore[reportPrivateUsage]
+        _write_legacy_activation,  # pyright: ignore[reportPrivateUsage]
+    )
+    from tests.unit.adapters.test_codex_multi_project import (
+        _connect as connect_project,  # pyright: ignore[reportPrivateUsage]
+    )
+    from tests.unit.adapters.test_codex_multi_project import (
+        _home,  # pyright: ignore[reportPrivateUsage]
+        _project,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.adapters.integrations import codex_marketplace
+    from finishup.ports.integrations import IntegrationState, IntegrationTarget
+
+    home = _home(tmp_path)
+    _target_a, root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    _write_legacy_activation(root_a, home)
+    config = home / "config.toml"
+    config.write_text(config.read_text() + f'\n[projects."{root_a}"]\ntrust_level = "trusted"\n')
+    connect_project(target_b, home)
+    entry = b'{"command":"finishup","args":["mcp","serve","--host","codex"]}'
+
+    def runner(argv: tuple[str, ...]) -> CommandOutput:
+        if argv[1:3] == ("mcp", "list"):
+            return CommandOutput(0, b"[]")
+        return CommandOutput(0, entry)
+
+    def adapter(**_kwargs: object) -> CodexMcpAdapter:
+        return CodexMcpAdapter(runner)
+
+    def preview_removal(
+        target: IntegrationTarget,
+        *,
+        executable_path: str,
+        codex_home: Path,
+        remove_shared: bool = False,
+    ) -> object:
+        del executable_path
+        fake = _FakeCodex(target, codex_home)
+        return codex_marketplace.preview_removal(
+            target,
+            executable_path=str(fake.executable),
+            codex_home=codex_home,
+            remove_shared=remove_shared,
+            _run=fake,
+        )
+
+    def apply_removal(
+        target: IntegrationTarget,
+        *,
+        approved_digest: str,
+        executable_path: str,
+        codex_home: Path,
+        remove_shared: bool = False,
+    ) -> object:
+        del executable_path
+        fake = _FakeCodex(target, codex_home)
+        return codex_marketplace.apply_removal(
+            target,
+            approved_digest=approved_digest,
+            executable_path=str(fake.executable),
+            codex_home=codex_home,
+            remove_shared=remove_shared,
+            _run=fake,
+        )
+
+    def loads(*_args: object) -> str:
+        return "loads"
+
+    class Skill:
+        async def preview_skill(self, *_args: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                preview_digest=_DIGEST, state_before=IntegrationState.ABSENT, warnings=()
+            )
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+    monkeypatch.setattr(codex_connection, "CodexMcpAdapter", adapter)
+    monkeypatch.setattr(codex_connection, "CodexSkillIntegration", Skill)
+    monkeypatch.setattr(codex_connection, "preview_removal", preview_removal)
+    monkeypatch.setattr(codex_connection, "apply_removal", apply_removal)
+    monkeypatch.setattr(codex_connection, "probe_project_config_load", loads)
+    installation = HostInstallation("codex", Path("/opt/codex-testing"), "0.153.4", home, "Codex")
+
+    plan = codex_connection.prepare_codex_connection(
+        installation,
+        root_b,
+        action="disconnect",
+        route="policy",
+        request_value="req_52e989dd-b118-4f49-a359-707a6b32bfa4",
+    )
+
+    changes = plan.body["changes"]
+    assert isinstance(changes, list)
+    assert "remove_mcp_registration" not in changes
+    assert plan.body["mcp_preview_digest"] is None
+    assert plan.disclosure["shared_with"] == [str(root_a)]
+    retained = plan.body["retained"]
+    assert isinstance(retained, list)
+    assert "FinishUP MCP registration used by other connected projects" in retained
+
+    plan.apply_reviewed_steps()
+
+    status = plan.status()
+    assert status["configured"] is False
+    assert status["shared_registration_retained"] is True
+    assert status["shared_with"] == [str(root_a)]
+    assert _legacy_tables(root_a) in config.read_text()

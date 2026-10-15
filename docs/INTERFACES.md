@@ -6778,10 +6778,19 @@ names the lock folder). Verified members are the record's projects plus, for Cod
 the `[marketplaces.finishup]` binding names; only they are recorded, anchor the binding, or keep a
 disconnect `detach`; `codex_marketplace.serving_projects(home)` (status `codex_home_projects`,
 `shared_with`, `shared_removed_from`) lists those whose checkout still exists and serves the
-manifest. Possible users (Codex only), each a live checkout serving the exact manifest and a
+manifest. A Codex project a byte-identical `[marketplaces.yoetz]` table names while its checkout
+still serves the exact Yoetz-era marketplace document (`codex_marketplace._legacy_member`, ADR-048)
+is a verified member too: Yoetz bound one project per home and registered the user-level server
+every project uses without a record, so another project's connect records it, `connected_projects`
+and `serving_projects` list it (serving its own legacy activation), `other_members` names it, and a
+disconnect keeps the user-level registration for it; it never anchors the FinishUP binding or makes
+a disconnect `detach` (it does not serve FinishUP's manifest), and it is not `unserved_members`. Possible users (Codex only), each a live checkout serving the exact manifest and a
 marker-valid plugin source and never a verified member under any path spelling: the witness's
-projects, always; and, while the record is missing with shared pieces present or marked
-`unknown_members`, `[projects."<path>"]` rows with `trust_level = "trusted"`;
+projects, always; and, while the record is missing with shared pieces present (including Yoetz-era
+ones: a byte-identical `[marketplaces.yoetz]` or `[plugins."yoetz@yoetz"]` table, or a
+FinishUP-shaped `[mcp_servers.yoetz]` entry) or marked `unknown_members`, `[projects."<path>"]`
+rows with `trust_level = "trusted"`; the same Yoetz-era pieces found without a record make a
+connect record `unknown_members` while such a possible user exists;
 `codex_marketplace.possible_projects(home)` lists them,
 `RemovalPreview.possible_users` carries them (bound into the removal digest with `unknown_after`),
 status adds `codex_home_possible_projects` and `membership_unknown: true`, and the connect and
@@ -6793,7 +6802,10 @@ never anchor: a disconnect that would leave possible users and no verified membe
 `IntegrationReason.REMOVE_REFUSED` with `conflict: membership_unverified`, reported by the CLI as
 reason `membership_unverified` with reconnect and `--remove-shared` continuations. Cursor
 discloses `membership_unknown` and keeps the shared plugin while it is set (status reports it
-before any record exists), and its status adds `connected_projects_observed`; Claude Code's own `plugin list` rows (one
+before any record exists, reading whether shared pieces exist when it is asked); an owned Yoetz-era
+`plugins/local/yoetz` counts as shared pieces present (`SharedProjectsStep(shared_present=...)`,
+ADR-048), as it does for `integrate cursor plugin preview --action remove`; and its status adds
+`connected_projects_observed`; Claude Code's own `plugin list` rows (one
 `projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
 (Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
 forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
