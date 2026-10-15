@@ -1412,8 +1412,14 @@ explicit row value stays; an unset row whose inference channel the proposal turn
 `narrower_conversation_review(candidate.effective_conversation_review, local_agent_opt_in)`; a row
 already sending stays unset. `build_candidate_policy(..., first_grant=True)` (the chat grant path
 passes the snapshot's `grant_state == "missing"`) starts the setting at
-`_first_grant_conversation_default`. `ai_review_available` also requires the repository's own
-grant (`repository_authority(scope).grant_state == "granted"`).
+`_first_grant_conversation_default` (a first grant without network egress records none).
+`ai_review_available` also requires the repository's own grant
+(`repository_authority(scope).grant_state == "granted"`). `run_privacy_setup(...,
+ai_review_add_on_when_hybrid=True)` (`finishup --privacy`) switches to the add-on listing where
+`privacy_setup._agent_opt_in_needs_ai_recipes` holds (reviewer bound; first grant, or effective
+`local_agent_opt_in` / `local_owner_approval`). `run_conversation_review_change` walks
+`run_privacy_setup(conversation_review=..., ai_review_add_on=True)` for any setting but
+`local_only` where the repository has no grant (`local_terminal_required` without a terminal).
 `kernel/review_mode.py` owns `ReviewModeSwitch(event_id, sequence, mode, authority)`,
 `review_mode_switches(projection)` (unredacted, unsuperseded, ledger order),
 `ConversationReviewContext(setting, ai_review_available, setting_explicit)`,

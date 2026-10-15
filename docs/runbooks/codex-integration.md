@@ -2744,3 +2744,12 @@ Codex-specific is involved: no hook, skill or registration field changes.
 - **Agent-driven setup.** Preview with `finishup setup run --host codex --route-profile policy
   --non-interactive --json` for every answer; without `--route-profile policy` a fresh
   non-interactive registration is strict and every task stays local (`route_local_only`).
+- **Round 3.** In a repository without its own grant, `finishup privacy conversations
+  agent-opt-in` (or `owner-approval`) walks that repository's privacy grant with the setting
+  included (a local terminal is required; otherwise `local_terminal_required` and the command
+  names `finishup --privacy`). With a reviewer bound, `finishup --privacy` lists the AI-powered
+  review options (Assisted review by default) on a first grant and under agent opt-in or owner
+  approval. Switching back to local after the closing review costs one more closing review
+  (`review.md` says so). The MCP receipt summary's review-mode pointer is JSON-receipt only.
+  Same path on Codex; with the ChatGPT subscription reviewer nothing is marked recommended,
+  so Assisted review is the default and Assisted or Expanded must be chosen.

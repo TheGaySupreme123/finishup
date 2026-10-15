@@ -84,6 +84,8 @@ def test_the_switch_draft_is_never_reused_verbatim() -> None:
     assert 'publish a new decision (fresh `event_id`) with `review_mode: "local"`' in section
     assert "a `final_review: true` check that omits `mode` runs that review" in section
     assert "mode: semantic_if_configured" not in section
+    # Review round 3: switching back after the closing review makes it stale.
+    assert "switch back to local before the closing review, not after it" in section
 
 
 def test_the_card_points_at_the_section_and_keeps_the_pinned_review_rule() -> None:
