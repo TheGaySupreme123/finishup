@@ -631,3 +631,395 @@ def test_recommend_accept_codex_activation_refuses_a_runtime_that_cannot_serve(
     )
     assert result.exit_code == 20
     assert result.stderr.startswith("release_runtime_not_owned: ")
+
+
+def test_lock_unavailable_says_nothing_changed_and_names_the_lock_folder(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """#1058: a setup lock that cannot be taken is not a partial connection."""
+
+    from finishup.adapters.integrations import host_projects
+    from finishup.application.host_connection import ConnectionError as SetupConnectionError
+
+    def unavailable(*_args: object, **_kwargs: object):
+        raise SetupConnectionError("connection_lock_unavailable")
+
+    monkeypatch.setattr(cli, "apply_selected", unavailable)
+    code = cli.run_host_connection(
+        host="claude",
+        executable=None,
+        config_root=tmp_path / "claude",
+        project=Path("/workspace/example/project"),
+        accept=True,
+        request_value=REQUEST,
+        preview_digest=prepared.digest,
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert report["reason"] == "connection_lock_unavailable"
+    step = report["next_step"]
+    assert step.startswith("Nothing was changed.")
+    assert str(host_projects.lock_path_for(tmp_path / "claude").parent) in step
+    assert "partial connection" not in step
+
+
+def _select(monkeypatch: pytest.MonkeyPatch, host: str, root: Path) -> None:
+    from typing import cast
+
+    from finishup.adapters.integrations.host_discovery import SetupHost
+
+    installation = HostInstallation(cast(SetupHost, host), Path("/opt/host"), "1.0.0", root, "Host")
+
+    def selected(*_args: object) -> HostInstallation:
+        return installation
+
+    def no_leftover(*_args: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(cli, "select_installation", selected)
+    monkeypatch.setattr(cli, "_codex_leftover", no_leftover)
+
+
+def _damaged_record(root: Path) -> Path:
+    from finishup.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    root.mkdir(mode=0o700)
+    record = root / CONNECTED_PROJECTS_FILE
+    record.write_text('{"projects":["/work/a"]}\n')
+    record.chmod(0o644)  # readable by others: refused
+    return record
+
+
+@pytest.mark.parametrize(
+    ("host", "action", "status_only"),
+    [
+        ("codex", "connect", False),
+        ("codex", "connect", True),
+        ("codex", "disconnect", False),
+        ("cursor-ide", "disconnect", False),
+    ],
+)
+def test_a_damaged_record_gets_its_own_continuation_on_every_command(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    host: str,
+    action: str,
+    status_only: bool,
+) -> None:
+    """#1058 review P2-6: `setup run` and `setup status` reach Codex through a wrapper that keeps
+    only `source_invalid`; the record itself is asked, so every command names the file."""
+
+    from typing import Literal, cast
+
+    from finishup.application.host_connection import ConnectionError as SetupConnectionError
+    from finishup.ports.integrations import IntegrationError, IntegrationReason
+    from finishup.tui.runtime import RuntimeError_
+
+    root = tmp_path / "config"
+    record = _damaged_record(root)
+    _select(monkeypatch, host, root)
+
+    def invalid(*_args: object, **_kwargs: object):
+        if host != "codex":
+            raise SetupConnectionError("connection_projects_record_invalid")
+        if action == "disconnect":
+            raise IntegrationError(
+                IntegrationReason.SOURCE_INVALID, {"conflict": "connected_projects"}
+            )
+        # What `setup run|status --host codex` sees: the TUI runtime keeps only the reason.
+        raise RuntimeError_("source_invalid", "the Codex activation could not be previewed")
+
+    monkeypatch.setattr(cli, "prepare_selected", invalid)
+    code = cli.run_host_connection(
+        host=host,
+        executable=None,
+        config_root=root,
+        project=Path("/workspace/example/project"),
+        action=cast(Literal["connect", "disconnect"], action),
+        status_only=status_only,
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert report["reason"] == "connection_projects_record_invalid"
+    step = report["next_step"]
+    assert step.startswith("Nothing was changed.")
+    assert f"chmod 600 {record}" in step
+    if host == "codex":
+        # Codex only detects its own earlier members and trusted checkouts: never "just delete".
+        assert "run setup again for every project" in step
+        assert "membership_unverified" in step
+    else:
+        assert "unknown" in step
+
+
+def test_source_invalid_with_a_valid_record_keeps_the_generic_continuation(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from finishup.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+    from finishup.tui.runtime import RuntimeError_
+
+    root = tmp_path / "config"
+    root.mkdir(mode=0o700)
+    record = root / CONNECTED_PROJECTS_FILE
+    record.write_text('{"projects":["/work/a"]}\n')
+    record.chmod(0o600)
+    _select(monkeypatch, "codex", root)
+
+    def invalid(*_args: object, **_kwargs: object):
+        raise RuntimeError_("source_invalid", "the Codex activation could not be previewed")
+
+    monkeypatch.setattr(cli, "prepare_selected", invalid)
+    cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=root,
+        project=Path("/workspace/example/project"),
+        json_output=True,
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "source_invalid"
+    assert "connected" not in report["next_step"]
+
+
+def test_summary_names_projects_whose_shared_review_mode_changes() -> None:
+    """#1058 review P2-3: connecting on another review mode changes it for other projects."""
+
+    lines = cli._shared_summary(  # pyright: ignore[reportPrivateUsage]
+        {
+            "action": "connect",
+            "route_profile": "policy",
+            "route_profile_before": "strict",
+            "route_changes_for": ["/work/a"],
+            "shared_with": ["/work/a"],
+        }
+    )
+    assert any(
+        "from local only to AI-powered review" in line and "/work/a" in line for line in lines
+    )
+
+
+def test_text_preview_prints_what_the_plan_does_to_other_projects(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from dataclasses import replace
+
+    disclosed = replace(
+        prepared,
+        body={**prepared.body, "route_profile": "policy"},
+        disclosure={
+            "shared_with": ["/work/a"],
+            "route_profile_before": "strict",
+            "route_changes_for": ["/work/a"],
+        },
+    )
+
+    def prepared_plan(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        return disclosed
+
+    monkeypatch.setattr(cli, "prepare_selected", prepared_plan)
+    cli.run_host_connection(
+        host="claude",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/example/project"),
+        route="policy",
+    )
+    out = capsys.readouterr().out
+    assert "claude: preview" in out
+    assert "keep working: /work/a" in out
+    assert "from local only to AI-powered review" in out
+
+
+def test_codex_home_that_does_not_exist_names_the_mkdir(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """#1058 review P3: Codex needs an existing home; say so instead of generic advice."""
+
+    from finishup.tui.runtime import RuntimeError_
+
+    home = tmp_path / "nested" / "codex"
+    _select(monkeypatch, "codex", home)
+
+    def untrusted(*_args: object, **_kwargs: object):
+        raise RuntimeError_("target_untrusted", "the Codex activation could not be previewed")
+
+    monkeypatch.setattr(cli, "prepare_selected", untrusted)
+    cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=home,
+        project=Path("/workspace/example/project"),
+        json_output=True,
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "target_untrusted"
+    assert report["next_step"].startswith("Nothing was changed.")
+    assert f"mkdir -p -m 700 {home}" in report["next_step"]
+
+
+def test_unverified_step_names_the_selected_codex_and_keeps_the_review_mode(
+    tmp_path: Path,
+) -> None:
+    """#1058 review round 2 P3: the continuation works when Codex is not on PATH and the
+    reconnect keeps the home's shared review mode."""
+
+    home = tmp_path / "codex"
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text(
+        '[mcp_servers.finishup]\ncommand = "finishup"\n'
+        'args = ["mcp", "serve", "--host", "codex", "--semantic", "off"]\n'
+    )
+    installation = HostInstallation("codex", Path("/opt/codex/bin/codex"), "0.144.6", home, "Codex")
+    step = cli._codex_unverified_step(  # pyright: ignore[reportPrivateUsage]
+        None, tmp_path / "a", installation
+    )
+    assert step.count("--host-path /opt/codex/bin/codex") == 2
+    assert "--route-profile strict" in step
+
+
+def test_summary_names_unserved_members_rebind_and_possible_route_changes() -> None:
+    lines = cli._shared_summary(  # pyright: ignore[reportPrivateUsage]
+        {
+            "action": "connect",
+            "route_profile": "policy",
+            "route_profile_before": "strict",
+            "route_changes_for": [],
+            "route_changes_possible_for": ["/work/maybe"],
+            "members_not_serving": ["/work/away"],
+            "rebind_to": "/work/next",
+        }
+    )
+    joined = "\n".join(lines)
+    assert "/work/maybe (may use FinishUP)" in joined
+    assert "missing right now" in joined and "/work/away" in joined
+    assert "binding moves to /work/next" in joined
+
+
+def test_an_unchanged_disconnect_names_who_keeps_the_shared_pieces(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A re-run or never-connected disconnect changes nothing; text mode says who keeps them."""
+
+    installation = HostInstallation(
+        "codex", Path("/opt/codex"), "0.162.1", Path("/workspace/home"), "Codex"
+    )
+    plan = ConnectionPlan(
+        {
+            "schema": "yoetz.host-connection-plan/1",
+            "request_id": REQUEST,
+            "host": "codex",
+            "host_version": "0.162.1",
+            "executable": "/opt/codex",
+            "config_root": "/workspace/home",
+            "project_root": "/workspace/b",
+            "action": "disconnect",
+            "route_profile": "strict",
+            "preview_digest": DIGEST,
+            "connection_observed": False,
+            "changes": [],
+        },
+        lambda: {"configured": False, "shared_with": ["/workspace/a"]},
+        lambda: None,
+    )
+
+    def selected(*_args: object) -> HostInstallation:
+        return installation
+
+    def prepared_plan(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        return plan
+
+    monkeypatch.setattr(cli, "select_installation", selected)
+    monkeypatch.setattr(cli, "prepare_selected", prepared_plan)
+    code = cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/b"),
+        action="disconnect",
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "codex: unchanged" in out
+    assert "stay for the other projects using this configuration: /workspace/a" in out
+
+
+def test_shared_pieces_kept_only_for_a_missing_directory_name_the_way_out(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1058 triage: nothing live keeps them, so name the project and the home-wide preview."""
+
+    installation = HostInstallation(
+        "codex", Path("/opt/codex"), "0.162.1", Path("/workspace/home"), "Codex"
+    )
+    plan = ConnectionPlan(
+        {
+            "schema": "yoetz.host-connection-plan/1",
+            "request_id": REQUEST,
+            "host": "codex",
+            "host_version": "0.162.1",
+            "executable": "/opt/codex",
+            "config_root": "/workspace/home",
+            "project_root": "/workspace/c",
+            "action": "disconnect",
+            "route_profile": "strict",
+            "preview_digest": DIGEST,
+            "connection_observed": False,
+            "changes": [],
+        },
+        lambda: {
+            "configured": False,
+            "shared_with": ["/workspace/a"],
+            "members_missing": ["/workspace/a"],
+        },
+        lambda: None,
+    )
+
+    def selected(*_args: object) -> HostInstallation:
+        return installation
+
+    def prepared_plan(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        return plan
+
+    monkeypatch.setattr(cli, "select_installation", selected)
+    monkeypatch.setattr(cli, "prepare_selected", prepared_plan)
+    code = cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/c"),
+        action="disconnect",
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "/workspace/a (directory missing right now)" in out
+    assert "whose directory is missing right now" in out
+    assert "setup disconnect --host codex --host-path /opt/codex" in out
+    assert "--project /workspace/c --remove-shared" in out
+
+    code = cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/c"),
+        action="disconnect",
+        json_output=True,
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert "--remove-shared" in report["next_step"]

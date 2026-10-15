@@ -548,6 +548,9 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         # ``finishup.protocol.recovery`` requires the registry and this set to be equal, which is
         # what keeps a token from ever being admitted onto the wire without a directive behind it.
         "capacity_request_correction",
+        # Another confirmation is open; a throttled confirmation (#1073).
+        "ceremony_in_progress",
+        "ceremony_retry_after_wait",
         "ceremony_refusal_terminal",
         "ceremony_result_invalid",
         "config_correction_required",

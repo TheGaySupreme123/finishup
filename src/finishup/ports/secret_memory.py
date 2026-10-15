@@ -28,7 +28,9 @@ __all__ = [
     "UserPresenceAttestation",
     "UserPresenceCapability",
     "UserPresenceChallenge",
+    "UserPresenceError",
     "UserPresencePort",
+    "presence_confirmation_code",
 ]
 
 _IDENTITY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$", re.ASCII)
@@ -255,6 +257,42 @@ class UserPresenceCapability:
             if type(state) is not str or state not in _USER_PRESENCE_STATES:
                 raise ValueError("user_presence_state_invalid")
         validate_sha256_digest(self.capability_evidence_digest)
+
+
+_USER_PRESENCE_ERROR_REASONS = frozenset({"unavailable", "cancelled", "failed", "timeout"})
+
+
+class UserPresenceError(Exception):
+    """A bounded OS user-presence outcome that is not an attestation.
+
+    ``unavailable``: no OS prompt can be shown for this challenge here (no provider, wrong
+    platform, no desktop session, policy unavailable, or an unreadable helper result).
+    ``cancelled``: the person or the system dismissed the prompt. ``failed``: the OS did not
+    authenticate the person. ``timeout``: nobody answered before the adapter's deadline. No
+    operating-system text is ever carried.
+    """
+
+    __slots__ = ("reason",)
+
+    reason: str
+
+    def __init__(self, reason: str) -> None:
+        if type(reason) is not str or reason not in _USER_PRESENCE_ERROR_REASONS:
+            raise TypeError("user_presence_reason_invalid")
+        self.reason = reason
+        super().__init__(reason)
+
+
+def presence_confirmation_code(target_digest: str) -> str:
+    """The short code an OS prompt and the requesting terminal both show for one target.
+
+    It is derived only from the service-computed target digest (never from user text), so the
+    owner can tell that a system dialog belongs to the command they just ran.
+    """
+
+    validate_sha256_digest(target_digest)
+    value = target_digest.removeprefix("sha256:")
+    return f"{value[:4]}-{value[4:8]}"
 
 
 class UserPresencePort(Protocol):

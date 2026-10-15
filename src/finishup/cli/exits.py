@@ -147,6 +147,16 @@ CEREMONY_REFUSAL_MESSAGES: Final = MappingProxyType(
             "kind_forbidden: that ceremony is not permitted for this target in the current "
             "vault mode"
         ),
+        "ceremony_busy": (
+            "ceremony_busy: another confirmation is already open on this computer, so this one "
+            "did not start. Finish it where it was started, and cancel any system dialog you did "
+            "not start yourself; if nothing is on screen, 'finishup service restart' ends it. Then "
+            "run the command again"
+        ),
+        "reauthentication_rate_limited": (
+            "reauthentication_rate_limited: recent confirmations did not succeed, so FinishUP waits "
+            "before asking again; wait up to five minutes, then run the command again"
+        ),
         "state_forbidden": (
             "state_forbidden: the vault must be unlocked before this ceremony; "
             "run 'finishup service unlock', or 'finishup service recovery status' if ordinary "

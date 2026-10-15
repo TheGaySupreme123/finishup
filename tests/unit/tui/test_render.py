@@ -556,3 +556,44 @@ def test_the_session_header_middle_truncates_a_long_project_path() -> None:
     assert ">_ FinishUP (v0.1.0)" in joined
     assert "…" in joined
     assert "/privacy to change" in joined
+
+
+def test_integration_preview_names_projects_whose_review_mode_changes() -> None:
+    """#1058 review P2-3: the shared registration's review mode changes for every project."""
+
+    friendly = "\n".join(
+        render_integration_preview(
+            build.plan(
+                already_registered=True,
+                mcp_reregister=True,
+                route_profile="policy",
+                route_profile_before="strict",
+                route_changes_for=("/work/a",),
+            ),
+            WIDE,
+        )
+    )
+    assert "verified, not replaced" not in friendly
+    assert "registered again" in friendly
+    assert "from local only to AI-powered review" in friendly
+    assert "/work/a" in friendly
+
+    unchanged = "\n".join(render_integration_preview(build.plan(already_registered=True), WIDE))
+    assert "verified, not replaced" in unchanged
+    assert "review mode from" not in unchanged
+
+
+def test_integration_preview_names_possible_users_whose_review_mode_changes() -> None:
+    friendly = "\n".join(
+        render_integration_preview(
+            build.plan(
+                already_registered=True,
+                mcp_reregister=True,
+                route_profile="policy",
+                route_profile_before="strict",
+                route_changes_possible_for=("/work/maybe",),
+            ),
+            WIDE,
+        )
+    )
+    assert "/work/maybe (may use FinishUP)" in friendly

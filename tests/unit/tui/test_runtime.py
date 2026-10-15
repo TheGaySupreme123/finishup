@@ -116,7 +116,7 @@ async def test_service_client_uses_ui_kind_and_runtime_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     import finishup.cli.app as cli_app
-    from finishup.ports.control import ControlClientKind, WorkspaceLocator
+    from finishup.ports.control import ControlClientKind, ProjectionRenderMode, WorkspaceLocator
 
     observed: list[tuple[ControlClientKind, WorkspaceLocator]] = []
 
@@ -128,8 +128,13 @@ async def test_service_client_uses_ui_kind_and_runtime_cwd(
         client_kind: ControlClientKind,
         *,
         workspace_locator: WorkspaceLocator | None = None,
+        projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
+        output_is_controlling_tty: bool = False,
     ) -> Client:
         assert workspace_locator is not None
+        # Agent-facing by default (ADR-009 round 3): the TUI asserts no terminal authority.
+        assert projection_render_mode is ProjectionRenderMode.MACHINE_READABLE
+        assert not output_is_controlling_tty
         observed.append((client_kind, workspace_locator))
         return Client()
 

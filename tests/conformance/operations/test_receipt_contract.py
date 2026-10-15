@@ -427,7 +427,7 @@ async def test_receipt_request_result_parity() -> None:
     facts = await app.projection_binding_facts(ControlMethod.RECEIPT, receipt_wire, receipt)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False

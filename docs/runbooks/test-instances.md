@@ -233,3 +233,87 @@ attestation or treat the preflight as authority.
 existing protected terminal ceremony. It diagnoses credential-store availability, retains the
 explicit passphrase fallback where needed, and stops before provider selection or privacy grants.
 It requires a local interactive terminal; agents show that continuation without supplying secrets.
+
+## Owner view with Touch ID: manual check on a real Mac (#1073)
+
+Automation cannot answer an Apple LocalAuthentication dialog, so this is the release check for the
+service-side macOS presence provider behind `finishup receipt --owner-view` (ADR-009 round 5,
+ADR-016 decision 4 amendment). Run it on a Mac logged in at the desktop, from Terminal or iTerm,
+against a disposable instance and never the everyday installation. Run it once with Touch ID and
+once using the dialog's password option (or on a Mac without Touch ID). Record the macOS version,
+the chip, and each observed result on the owning issue. Status: this check has not been run, and
+the Codex check the owner asked for has not been run either; an independent Claude review
+(2026-10-14) ran in its place.
+
+1. From a clean checkout at the revision under test, provision and verify an instance:
+
+   ```text
+   uv run python scripts/provision_test_instance.py create --base ~/.yz-instances --tag touchid \
+       --lifecycle disposable --expires-in 4
+   L=~/.yz-instances/touchid/runtime/bin/finishup
+   $L instance status --json        # mode isolated, the exact source_ref
+   ```
+
+2. `$L setup vault` and keep the platform credential store. Expect
+   `Secure vault setup (platform credential store auto-unlock)` and `Vault ready.`. This is the
+   system-keychain shape: a passphrase vault whose generated passphrase you were never shown.
+3. In a scratch Git repository, open a task and record a check from the `start` and `check`
+   templates in `guidance/request-templates.md`, replacing every identifier with the values the
+   `start` result returns. Build one receipt request with `format: markdown`, `include: full` and
+   `redaction_profile: full_local`. `$L receipt --request '<receipt JSON>' --json` is the agents'
+   view: any undeclared repository name the check found reads
+   `(receipt prose withheld: repository_excerpt)`.
+4. Run `$L receipt --owner-view --request '<receipt JSON with a new request_id>'`. Expect
+   `Confirmation code for this request: xxxx-xxxx` first, then the preview (task, format, profile,
+   scope), `Authorization: os_user_presence`, and a line naming Touch ID or your login password
+   with the same code. A system dialog appears that names your full FinishUP receipt and shows that
+   code. Approve it: the full receipt prints with the names spelled out, and the command exits 0.
+Each dialog that does not approve lengthens the wait before the next one: 5, 15, 30, 60, 120,
+then 300 seconds, reset by an approval or by 10 minutes without a miss, and cleared by
+`$L service restart`. A dialog cancelled within 2 seconds does not lengthen the wait, but the next
+one still waits 5 seconds. The steps below approve between misses so each wait stays at 5 seconds.
+
+5. Repeat step 4 and choose Cancel in the dialog. Expect `owner_view_refused: the
+   operating-system confirmation was cancelled or did not confirm it is you`, nothing on stdout,
+   and a nonzero exit. Run step 4 again at once: expect `owner_view_refused: recent
+   confirmations did not succeed`, naming `finishup service restart` and `--use-passphrase`, and no
+   dialog. Wait 5 seconds and run step 4 again: a dialog appears; approve it (this resets the
+   wait).
+6. Repeat step 4 and leave the dialog unanswered. After about a minute it closes by itself;
+   expect `owner_view_refused: ... was not answered within a minute`. Wait 5 seconds, run step 4
+   and approve.
+7. Repeat step 4 and press Ctrl-C in the terminal at least 2 seconds after the dialog appears. The
+   dialog should close at once and nothing is shown. Wait 5 seconds; a new `$L receipt
+   --owner-view` raises a fresh dialog; approve it. Then repeat step 4, press Ctrl-C as soon as
+   the dialog appears, and run step 4 again at once: expect `owner_view_refused: recent
+   confirmations did not succeed` and no dialog. After 5 seconds step 4 raises a dialog again,
+   and the wait has not grown; approve it.
+8. With a dialog from step 4 on screen, run step 4 again in a second terminal. Expect
+   `owner_view_busy` naming that second command's code, which differs from the dialog's, and
+   `finishup service restart` for the case with nothing on screen; no second dialog. Approve the
+   first dialog.
+9. Agent shells, per host, each pointed at this instance's launcher (approve nothing; wait out
+   each backoff between attempts, or run `$L service restart`):
+   - Claude Code: ask the agent to run the step-4 command through its Bash tool. Expect
+     `owner_view_requires_terminal` and no dialog. Then ask it to run the same command wrapped
+     in a pseudo-terminal (`script -q /dev/null $L receipt --owner-view --request ...`): expect
+     a dialog on your screen; cancel it, and the agent gets `owner_view_refused` and no withheld
+     name.
+   - Codex: ask the agent to run it through `exec_command` with a pseudo-terminal. Expect a
+     dialog on your screen; cancel it, and the agent gets `owner_view_refused` and no withheld
+     name. Without a pseudo-terminal, expect `owner_view_requires_terminal`.
+   - Cursor: ask the agent to run it in its terminal. If that terminal is a pseudo-terminal,
+     expect the Codex result; otherwise `owner_view_requires_terminal`. Record which.
+10. Over SSH, to record what happens:
+    - With the service still running from the desktop session, run step 4 from an SSH session to
+      the same Mac. Expect the dialog on the Mac's own screen, not in the SSH terminal; cancel it
+      there. `$L receipt --owner-view --use-passphrase ...` asks for the passphrase instead;
+      this vault's passphrase was generated, so press Ctrl-C at the prompt.
+    - `$L service stop`, then run step 4 from the SSH session, which starts the service there.
+      Expected, unverified: the service cannot show a dialog, and because this vault's
+      passphrase is kept in the credential store the command ends with `owner_view_unavailable`
+      naming `--use-passphrase`, with no passphrase prompt.
+11. `$L service stop` and dispose of the instance
+    (`uv run python scripts/provision_test_instance.py dispose --base ~/.yz-instances --tag
+    touchid`). If Keychain Access still lists that instance's `bundle-…` auto-unlock entry, delete
+    it; it is scoped to the disposed instance's path.

@@ -110,6 +110,72 @@ unreleased above reverse-chronological released versions.
   and one another account can write, with the same reason; disconnect, removal and status still
   work.
 
+- One Codex home, Claude Code configuration or Cursor configuration now serves several projects
+  connected one after another (#1058). `finishup setup run --host codex` for a second project no
+  longer stops with `destination_conflict` and advice to create a new Codex home: it adds only that
+  project's pieces and reuses the home's shared plugin and MCP registration. Disconnecting one
+  project keeps the shared pieces the other connected projects FinishUP knows of use (Codex moves its
+  marketplace binding to one of them; Claude Code no longer runs the marketplace removal that
+  uninstalled every project's copy; Cursor keeps the user plugin). The last project's disconnect
+  removes them, also when another project's folder was deleted in the meantime or a Codex
+  project that held the marketplace binding was deleted or lost its plugin files. `setup status`
+  lists the connected projects. Connecting the same directory again through a symlink, a
+  different letter case or its old path after a move is refused as
+  `project_connected_via_other_path`, with the path already connected and the disconnect that
+  clears it. When the shared pieces predate this release, or FinishUP's record of the connected
+  projects was lost, FinishUP keeps those pieces on an ordinary disconnect and says so in status and
+  the preview. For Codex, the projects this installation of FinishUP connected stay known even if the
+  record is deleted, and a trusted checkout that carries FinishUP's plugin files but never connected
+  through FinishUP only counts as a project that *may* use the shared pieces: they keep those pieces
+  and never take over the home's marketplace binding, and a disconnect that would leave only such
+  projects stops with `membership_unverified` and offers reconnecting the project you use or
+  `--remove-shared`. A project connected only through another FinishUP installation is not detected
+  once the record is lost. Running a Codex disconnect again, or for a project that never
+  connected, no longer removes the MCP registration the other connected projects use, also while
+  another connected project's plugin files or folder are missing for now (a branch switch, `git
+  clean`, an unmounted volume); the disconnect names the project they stay for and, when its
+  folder is missing, the home-wide preview that removes them if it is gone for good. Connecting
+  a project on another review mode (local only or AI-powered review) changes it for every project
+  sharing that Codex home or Claude Code configuration; `setup run`, the terminal interface's
+  first-run preview, `integrate codex mcp preview` and `integrate claude plugin preview` now name
+  those projects and both modes, and an unattended `--accept` that would change them stops and
+  asks for the reviewed preview (Cursor keeps the review mode per project). That also holds when
+  FinishUP cannot read which projects use the home (`membership_unknown`), and a legacy registration
+  that differs only in how it starts FinishUP no longer switches local-only review to AI-powered
+  review. An unattended `finishup setup run|status|disconnect --host codex` without
+  `--route-profile` keeps the home's current review mode (local only for a new home).
+  `setup disconnect --remove-shared` previews and asks for consent naming the projects that stop
+  using FinishUP; the low-level `integrate codex mcp remove` and `integrate cursor plugin remove`
+  stay home-wide but now name them too. Two setups for the same agent configuration at once can no longer lose a project:
+  setup holds a private lock per configuration in FinishUP's own state folder, so a first Claude Code
+  or Cursor setup into a configuration folder that does not exist yet needs no manual `mkdir`
+  (Codex still needs its home to exist and now says so), and a lock that cannot be taken stops
+  with `connection_lock_unavailable` before anything changes. A damaged connected-projects record
+  is reported as `connection_projects_record_invalid` by `setup run`, `setup status` and `setup
+  disconnect`, with the file and the way out (make it owner-only again, or restore it). After
+  disconnecting projects in any order, each can be connected again (Claude Code previously
+  refused the first one with `destination_conflict`).
+  A project still carrying its Yoetz-era activation (ADR-048) loses that activation with its own
+  disconnect also when the other projects keep the shared pieces; a Yoetz-era MCP entry or Cursor
+  plugin folder that other projects may still load stays with the shared pieces until the last
+  disconnect, and the disconnect's approval cleanup removes exact earlier-name approval entries too.
+
+- `finishup setup disconnect` now removes the selected project's FinishUP tool-approval entry (the one
+  `integrate <host> admission grant` writes) as part of the same previewed plan, before the
+  registration itself. Previously a Codex disconnect left `[mcp_servers.finishup.tools.check]` in the
+  project's `.codex/config.toml`; Codex then refused to start in that project
+  ("invalid transport in `mcp_servers.finishup`"), and the disconnect ended `incomplete` with the
+  project skill still installed. Claude Code and Cursor disconnects remove their entries the same
+  way. After a Codex disconnect, FinishUP checks that Codex still loads its configuration in the
+  project. `setup status --host codex` explains such a leftover and prints the exact command
+  that removes it, and FinishUP's own Codex registration commands no longer fail because of it. A
+  disconnect that cannot remove the entry safely (an approval file FinishUP cannot read, such as a
+  symlink, or approval settings you added or edited yourself that still need the FinishUP server)
+  now stops before changing anything and names the file to fix, instead of leaving the project
+  unable to start. A Codex disconnect keeps the FinishUP server registered while another project's
+  configuration uses it, lists those projects, and says when it could not check them all.
+  `setup disconnect --remove-shared` removes the pieces shared by every connected project.
+
 - The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
   in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
   bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer
@@ -594,6 +660,35 @@ unreleased above reverse-chronological released versions.
   `finishup mcp serve` and `finishup upgrade`, on `finishup service status` and other commands that find
   no service, and in `finishup setup`; hooks name the token without local paths and still make no
   decision. `finishup upgrade --accept` and `npx finishup` install under umask `022` (ADR-007).
+
+- A receipt your agent reads no longer shows the names of repository files your privacy policy
+  keeps from agents, even when the agent asks for a full local profile, in JSON, markdown and text.
+  Only the name is replaced with `(receipt prose withheld: repository_excerpt)`, including when it
+  is written as `./path` or as a full path (starting at `/`, `~`, `$HOME` or `file://`, quoted when a
+  folder name has spaces), a top-level file without an extension included; the rest of the receipt stays readable, and a name
+  the agent published itself returns to it. A receipt with many withheld names still renders: past
+  its bound the omitted-field list names the containing sections, and an over-long field ends with
+  a visible truncation note. Older receipts follow the same rule when read again.
+
+- Every result the CLI and the terminal interface show (receipts, status and the rest) now follows
+  the agent's privacy view, as it already did over MCP: a terminal is not proof that you are the one
+  reading, since an agent can run FinishUP in a pseudo-terminal of its own. To see your full receipt,
+  run `finishup receipt --owner-view` or choose *Your full receipt* in the terminal interface, and
+  confirm it is you; the view is for that one receipt, once, on that command's own connection. On a
+  Mac, FinishUP confirms it is you with a system dialog (Touch ID or your login password) that shows
+  the same confirmation code as your terminal, so a system-keychain installation, whose vault
+  passphrase you were never shown, can open its full receipt too. A passphrase you chose still
+  works: FinishUP asks for it when its service cannot show a dialog, or directly with
+  `--use-passphrase` (for example over SSH), but never asks on its own for a passphrase it keeps in
+  the system keychain. Cancelling the dialog or leaving it unanswered for a minute shows nothing,
+  and the next dialog waits a few seconds, longer after repeated misses; too many wrong passphrases
+  say so instead, without suggesting a service restart, which does not clear that wait. If another
+  confirmation is already open, perhaps one an agent started, the command says so and names its own
+  confirmation code instead of reporting a locked vault; every confidential ceremony now reports
+  another open one as `ceremony_busy` and a throttled passphrase as `reauthentication_rate_limited`
+  (wait up to five minutes), where both used to read `state_forbidden`. On Linux and WSL 2 only a
+  vault passphrase you type works for now: a system-keychain installation there, whose generated
+  passphrase you were never shown, reports that the full receipt is unavailable and shows nothing.
 
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `finishup-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so

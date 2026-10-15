@@ -793,6 +793,8 @@ async def _call_workflow(
     *,
     task_statement_file: str | None = None,
     await_observations: bool = False,
+    owner_view: bool = False,
+    use_passphrase: bool = False,
 ) -> int:
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
     check_mode: object = None
@@ -815,8 +817,21 @@ async def _call_workflow(
             request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
         if type(request) is CheckRequest:
             check_mode = request.mode
+        # Every result is the agent-facing projection (ADR-009 round 3): a terminal is not
+        # proof that the owner is reading. ``--owner-view`` asks the service for the full
+        # receipt, which it grants only after the owner reauthenticates for this exact request.
+        if (owner_view or use_passphrase) and type(request) is not ReceiptRequest:
+            raise ProtocolValueError("unsupported_json_type")
+        if use_passphrase and not owner_view:
+            raise ProtocolValueError("unsupported_json_type")
         client = await build_service_client()
         try:
+            if owner_view:
+                refused = await _authorize_owner_receipt_view(
+                    client, cast(ReceiptRequest, request), use_passphrase=use_passphrase
+                )
+                if refused is not None:
+                    return refused
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))
         finally:
@@ -1496,6 +1511,121 @@ def observe_checks_run_cmd(
     _finish(_observe_operation("observe_checks_run")(workspace=workspace, json_output=json_output))
 
 
+_OWNER_VIEW_REFUSALS: Final = MappingProxyType(
+    {
+        "presence_unavailable": (
+            "owner_view_unavailable: FinishUP cannot confirm it is you on this installation. The "
+            "vault has no passphrase, and no operating-system confirmation could be shown: "
+            "Touch ID or your login password needs macOS and a FinishUP service running in your "
+            "desktop session (one started over SSH is expected not to show it), and Linux and "
+            "WSL have none yet. "
+            "The full receipt stays closed and nothing changed. Without --owner-view you get "
+            "the receipt your agents get, with repository names withheld; to see what your "
+            "change created, run 'git status --short' in your repository."
+        ),
+        "passphrase_in_credential_store": (
+            "owner_view_unavailable: no system confirmation dialog can be shown here, and this "
+            "vault's passphrase may be kept in the system credential store, or the store could "
+            "not be read (FinishUP setup's system keychain choice generates one you were never "
+            "shown), so FinishUP does not ask you to type it. Nothing was shown and nothing "
+            "changed. If you chose that passphrase yourself, run the command again with "
+            "--use-passphrase. To see what your change created, run 'git status --short' in "
+            "your repository."
+        ),
+        "passphrase_unavailable": (
+            "owner_view_unavailable: this vault has no passphrase to confirm with, so "
+            "--use-passphrase cannot be used here. Run the command without it. Nothing changed."
+        ),
+        "ceremony_busy": (
+            "owner_view_busy: another confirmation is already open on this computer, perhaps "
+            "one an agent started, so this one did not start. If a system dialog is on screen, "
+            "it is not for this command: cancel it, never approve it. If nothing is on screen, "
+            "'finishup service restart' ends the other confirmation. Then run the command again. "
+            "Nothing was shown and nothing changed."
+        ),
+        "passphrase_rate_limited": (
+            "owner_view_refused: too many wrong passphrases, so FinishUP waits before accepting "
+            "another (30 seconds after the third, growing to five minutes). Restarting the "
+            "service does not clear this wait. Wait, then run the command again. Nothing was "
+            "shown and nothing changed."
+        ),
+        "reauthentication_rate_limited": (
+            "owner_view_refused: recent confirmations did not succeed, so FinishUP waits before "
+            "asking again (5 seconds, growing to five minutes after repeated misses). Another "
+            "program may have caused this; 'finishup service restart' clears the wait, and "
+            "--use-passphrase confirms with a vault passphrase you chose. Nothing was shown and "
+            "nothing changed."
+        ),
+        "presence_refused": (
+            "owner_view_refused: the operating-system confirmation was cancelled or did not "
+            "confirm it is you. Nothing was shown and nothing changed; run the command again "
+            "to retry."
+        ),
+        "presence_timeout": (
+            "owner_view_refused: the operating-system confirmation was not answered within "
+            "a minute, so it closed. Nothing was shown and nothing changed; run the command "
+            "again when you can answer it."
+        ),
+        "state_forbidden": (
+            "owner_view_unavailable: the vault is locked or not set up. Run 'finishup service "
+            "unlock' in your terminal, then ask again. Nothing changed."
+        ),
+        "trusted_console_required": (
+            "owner_view_requires_terminal: the full receipt asks you to confirm it is you (Touch "
+            "ID or your login password on a Mac, otherwise your vault passphrase) from a "
+            "foreground terminal, and this command has none. Run 'finishup receipt --owner-view' "
+            "yourself in your own terminal. Nothing changed."
+        ),
+        "target_invalid": (
+            "owner_view_refused: this command's connection to FinishUP closed before the "
+            "confirmation finished, so nothing can be shown. Run the command again. Nothing "
+            "changed."
+        ),
+        "secret_rejected": (
+            "owner_view_refused: the passphrase did not match. Nothing was shown and nothing "
+            "changed; run the command again to retry."
+        ),
+    }
+)
+
+
+async def _authorize_owner_receipt_view(
+    client: object, request: ReceiptRequest, *, use_passphrase: bool = False
+) -> int | None:
+    """Run the owner-view ceremony for this request on this connection; None when granted."""
+
+    from finishup.cli.unlock import (
+        HumanCeremonyCliError,
+        authorize_owner_receipt_view,
+        owner_view_confirmation_code,
+    )
+    from finishup.service.confidential_client import ConfidentialClientError
+
+    target_for = getattr(client, "owner_receipt_view_target", None)
+    if target_for is None:
+        _stderr(_OWNER_VIEW_REFUSALS["presence_unavailable"])
+        return exit_code_for(PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED)
+    target = target_for(request)
+    try:
+        await authorize_owner_receipt_view(target, use_passphrase=use_passphrase)
+    except (ConfidentialClientError, HumanCeremonyCliError) as error:
+        reason = error.reason
+        key = "presence_unavailable" if reason == "reauthentication_unavailable" else reason
+        line = _OWNER_VIEW_REFUSALS.get(key)
+        if line is not None:
+            _stderr(line)
+            if key == "ceremony_busy":
+                # The code a dialog for this command would show; any other code is not ours.
+                _stderr(
+                    "This command's confirmation code would be "
+                    f"{owner_view_confirmation_code(target)}."
+                )
+            return exit_code_for(PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED)
+        failure = _trusted_exception_failure(error)
+        return failure if failure is not None else _usage_failure()
+    return None
+
+
 def _workflow_command(method: str, request_type: type[BaseModel]) -> Callable[..., None]:
     def command(
         input_path: _INPUT = None,
@@ -1586,7 +1716,53 @@ def check_command(
 
 app.command("respond")(_workflow_command("respond", RespondRequest))
 app.command("status")(_workflow_command("status", StatusRequest))
-app.command("receipt")(_workflow_command("receipt", ReceiptRequest))
+
+
+@app.command("receipt")
+def receipt_command(
+    input_path: _INPUT = None,
+    request: _INLINE = None,
+    json_output: _JSON = False,
+    deadline_ms: _DEADLINE = None,
+    owner_view: Annotated[
+        bool,
+        typer.Option(
+            "--owner-view",
+            help=(
+                "Show the full receipt, including repository names your agents do not see. "
+                "You confirm it is you (on macOS Touch ID or your login password, otherwise "
+                "your vault passphrase) from a foreground terminal, for this one request on "
+                "this command's own connection; nothing else changes."
+            ),
+        ),
+    ] = False,
+    use_passphrase: Annotated[
+        bool,
+        typer.Option(
+            "--use-passphrase",
+            help=(
+                "With --owner-view: confirm with your vault passphrase instead of a system "
+                "dialog, for example when you are connected over SSH and the dialog would appear "
+                "on the Mac's own screen. You type it at a hidden prompt, never on the command "
+                "line."
+            ),
+        ),
+    ] = False,
+) -> None:
+    _finish(
+        run_async(
+            lambda: _call_workflow(
+                "receipt",
+                ReceiptRequest,
+                input_path,
+                request,
+                json_output,
+                deadline_ms,
+                owner_view=owner_view,
+                use_passphrase=use_passphrase,
+            )
+        )
+    )
 
 
 @app.command("closure-prepare")
@@ -3142,6 +3318,18 @@ def setup_disconnect(
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     route_profile: _ROUTE_PROFILE = None,
     json_output: _JSON = False,
+    remove_shared: Annotated[
+        bool,
+        typer.Option(
+            "--remove-shared",
+            help=(
+                "Also remove the FinishUP pieces this agent configuration shares with other "
+                "connected projects (they stop using FinishUP; the preview names them). Without "
+                "it, a disconnect keeps the shared pieces while another project FinishUP knows "
+                "of may still use them."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Preview and remove the selected integration, preserving FinishUP data."""
     from finishup.cli.host_connection import run_host_connection
@@ -3159,14 +3347,14 @@ def setup_disconnect(
             config_root=host_config_root,
             project=(project or Path.cwd()).expanduser().resolve(),
             action="disconnect",
-            route=cast(
-                Literal["strict", "policy"], _validated_route_profile(route_profile) or "strict"
-            ),
+            # Without --route-profile, a Codex home keeps its registered review mode.
+            route=cast(Literal["strict", "policy"] | None, _validated_route_profile(route_profile)),
             accept=accept,
             interactive=not non_interactive and sys.stdin.isatty(),
             request_value=request_value,
             preview_digest=preview_digest,
             json_output=json_output,
+            remove_shared=remove_shared,
         )
     )
 
@@ -3212,10 +3400,11 @@ def setup_status(
                 executable=host_path,
                 config_root=host_config_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
+                # Review needs the AI-powered route; otherwise a Codex home keeps its mode.
                 route=cast(
-                    Literal["strict", "policy"],
+                    Literal["strict", "policy"] | None,
                     _validated_route_profile(route_profile)
-                    or ("policy" if operation == "review" else "strict"),
+                    or ("policy" if operation == "review" else None),
                 ),
                 json_output=json_output,
             )
@@ -3230,8 +3419,9 @@ def setup_status(
                 executable=host_path,
                 config_root=host_config_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
+                # Without --route-profile, a Codex home keeps its registered review mode.
                 route=cast(
-                    Literal["strict", "policy"], _validated_route_profile(route_profile) or "strict"
+                    Literal["strict", "policy"] | None, _validated_route_profile(route_profile)
                 ),
                 json_output=json_output,
                 status_only=True,

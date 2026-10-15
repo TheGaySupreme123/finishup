@@ -830,7 +830,9 @@ async def test_status_is_task_read_only_paginated_and_projection_receipted() -> 
         ),
     )
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -842,7 +844,9 @@ async def test_status_is_task_read_only_paginated_and_projection_receipted() -> 
     # Replaying the exact same logical projection reuses the same durable receipt rather than
     # minting a second one for an unchanged result/policy/sink.
     projected_again = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )

@@ -44,6 +44,8 @@ from finishup.service.confidential_protocol import (
     InstallationRecoveryResult,
     InstallationRecoveryTarget,
     KeyringRetryPreview,
+    OwnerReceiptViewResult,
+    OwnerReceiptViewTarget,
     PortableRecoveryResult,
     PortableRecoveryTarget,
     PrivacyDecisionResult,
@@ -432,6 +434,15 @@ class _Effects:
         now_monotonic: float,
     ) -> IdleRelockPolicyResult:
         del target, now_monotonic
+        raise AssertionError("not used")
+
+    async def authorize_owner_receipt_view(
+        self,
+        target: OwnerReceiptViewTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> OwnerReceiptViewResult:
+        del target, proof, now_monotonic
         raise AssertionError("not used")
 
 

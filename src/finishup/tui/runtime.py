@@ -51,9 +51,10 @@ from finishup.tui.models import (
 
 if TYPE_CHECKING:  # Runtime imports stay lazy; annotations still type-check.
     from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.application.harness_mcp import HarnessMcpService
     from finishup.domain.observation_budget import CapacityRequest
     from finishup.domain.observation_settings import ObservationDetailProfile
-    from finishup.ports.harness_mcp import HarnessBinary
+    from finishup.ports.harness_mcp import HarnessBinary, McpRegistrationPreview
     from finishup.service.confidential_protocol import ProviderCredentialTarget
 
 __all__ = [
@@ -271,6 +272,49 @@ def _task_statement_posture(policy_map: Mapping[str, object]) -> tuple[bool | No
         and policy_map.get("review_context_profile") in {"goal_aware", "assisted", "expanded"},
     )
     return selected and channel_sends, text
+
+
+async def _shared_route_change(
+    service: HarnessMcpService,
+    binary: HarnessBinary,
+    preview: McpRegistrationPreview,
+    route: Literal["policy", "strict"],
+    codex_home: Path,
+    project: Path,
+    *,
+    before: Literal["policy", "strict"] | None = None,
+) -> tuple[Literal["policy", "strict"] | None, tuple[str, ...], tuple[str, ...]]:
+    """The review mode the home's shared registration has now, and who else it changes for.
+
+    The user-level ``[mcp_servers.finishup]`` registration serves every project in the Codex home,
+    so rewriting it on another review mode changes those projects' sessions too (#1058 review
+    P2-3). Returns ``(before, verified others, possible others)``, or ``(None, (), ())`` when
+    the registration is absent, not FinishUP's, already on ``route``, or serves nobody else.
+    ``before`` is the mode the caller already derived for the same preview (the plan's own
+    ``route_profile_before``, ADR-048); without it the registration is observed.
+    """
+
+    from finishup.adapters.integrations.codex_marketplace import other_members
+    from finishup.ports.harness_mcp import McpRegistrationState
+    from finishup.ports.integrations import IntegrationError
+
+    if preview.state_before is not McpRegistrationState.FINISHUP_OWNED:
+        return None, (), ()
+    if before is None:
+        before = (await service.observe(binary)).route_profile
+    if before is None or before == route:
+        return None, (), ()
+    try:
+        others, possible = other_members(codex_home, project)
+    except IntegrationError as error:
+        # Unknown membership is never "nobody else": stop before the shared mode changes
+        # (#1058 review round 3); `setup` names the record and the way out.
+        raise RuntimeError_(
+            "source_invalid", "the projects using this Codex home could not be read"
+        ) from error
+    if not others and not possible:
+        return None, (), ()
+    return before, others, possible
 
 
 class RuntimeError_(Exception):
@@ -856,12 +900,17 @@ class FinishUpRuntime:
             activation_preview = codex_activation_preview(binary, codex_home, root)
         except IntegrationError as error:
             raise RuntimeError_(error.reason.value, "the Codex activation could not be previewed")
+        service = HarnessMcpService(
+            CodexMcpAdapter(route_profile=route, codex_home=activation_preview.codex_home)
+        )
         try:
-            mcp_preview = await HarnessMcpService(
-                CodexMcpAdapter(route_profile=route, codex_home=activation_preview.codex_home)
-            ).preview(binary)
+            mcp_preview = await service.preview(binary)
         except McpRegistrationError as error:
             raise RuntimeError_(error.reason.value, "the Codex registration could not be previewed")
+        reregister = (
+            mcp_preview.state_before is McpRegistrationState.FINISHUP_OWNED
+            and mcp_preview.action is McpRegistrationAction.REREGISTER
+        )
         target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(root))
         skill_preview = await project_skill_preview(root)
         plugin_preview = CodexPluginService().preview(
@@ -877,8 +926,9 @@ class FinishUpRuntime:
         # can keep the route (a legacy key, launcher, or isolation change), so the action alone
         # never names the route before.
         state_words = [str(mcp_preview.state_before.value)]
-        # The same rule ``finishup setup`` applies: prefer the route the adapter observed; only
-        # when it observed none does a re-registration imply the other of the two routes.
+        # Prefer the route the adapter observed in this preview (``finishup setup`` reads the same
+        # registration). When it observed none, a re-registration is shown as a change to the
+        # other route, so a possible review-mode change is never hidden from this approval.
         route_before: Literal["policy", "strict"] | None = None
         if owned:
             if mcp_preview.route_profile_before is not None:
@@ -889,6 +939,17 @@ class FinishUpRuntime:
                 route_before = route
         if route_before is not None and route_before != route:
             state_words.append(f"route {route_before} -> {route}")
+        # The other projects of this Codex home whose sessions that review-mode change reaches
+        # (#1058), judged from the same route before the plan shows.
+        _shared_before, changes_for, changes_possible_for = await _shared_route_change(
+            service,
+            binary,
+            mcp_preview,
+            route,
+            activation_preview.codex_home,
+            root,
+            before=route_before,
+        )
         legacy_text = _LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
         if legacy_text is not None:
             state_words.append(legacy_text)
@@ -955,6 +1016,9 @@ class FinishUpRuntime:
             activation_legacy_plugin_tree_planned=activation_preview.legacy_plugin_tree_planned,
             legacy_skill_tree_planned=legacy_skill_tree_planned,
             policy_ambiguous=policy.get("outcome") == "ambiguous",
+            mcp_reregister=reregister,
+            route_changes_for=changes_for,
+            route_changes_possible_for=changes_possible_for,
         )
 
     async def apply_integration(
@@ -1239,6 +1303,8 @@ class FinishUpRuntime:
         from finishup.cli.app import build_service_client
         from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 
+        # Agent-facing like every client (ADR-009 round 3); the owner's full receipt is the
+        # explicit, reauthenticated ``build_receipt(..., owner_view=True)`` path.
         try:
             client = await build_service_client(
                 ControlClientKind.UI,
@@ -2266,7 +2332,16 @@ class FinishUpRuntime:
         self._pending_checks.pop(title, None)
         return str(success.verdict), tuple(render_human_check(success).splitlines())
 
-    async def build_receipt(self, title: str, output_format: str) -> ReceiptSummary:
+    async def build_receipt(
+        self, title: str, output_format: str, *, owner_view: bool = False
+    ) -> ReceiptSummary:
+        """Build the agent-facing receipt, or with ``owner_view`` the owner's full one.
+
+        The owner view runs the human-control reauthentication ceremony for this exact request
+        on this client's own connection, so the caller must already have handed the terminal
+        over (``hand_over_terminal``); the service, not this process, decides.
+        """
+
         from finishup.cli.render import render_human_receipt
         from finishup.protocol.canonical import canonical_encode
         from finishup.protocol.coverage import CheckType
@@ -2283,11 +2358,13 @@ class FinishUpRuntime:
                 "writer_id": session.writer_id,
                 "expected_frontier": self._frontier(session),
                 "format": output_format,
-                "include": "standard",
-                "redaction_profile": "default_local_export",
+                "include": "full" if owner_view else "standard",
+                "redaction_profile": "full_local" if owner_view else "default_local_export",
             }
         )
         async with self._client() as client:
+            if owner_view:
+                await self._authorize_owner_receipt_view(client, request)
             result = await client.receipt(request)
         success = self._unwrap(result, "the receipt could not be built")
         session.frontier = success.result_frontier
@@ -2310,6 +2387,57 @@ class FinishUpRuntime:
             verified=("local checks recorded in this receipt",),
             not_verified=("external AI-powered review did not contribute to this receipt",),
         )
+
+    async def _authorize_owner_receipt_view(self, client: Any, request: object) -> None:
+        from finishup.cli.unlock import HumanCeremonyCliError, authorize_owner_receipt_view
+        from finishup.service.confidential_client import ConfidentialClientError
+
+        try:
+            await authorize_owner_receipt_view(client.owner_receipt_view_target(request))
+        except (ConfidentialClientError, HumanCeremonyCliError) as error:
+            reason = error.reason
+            if reason in {"presence_unavailable", "reauthentication_unavailable"}:
+                raise RuntimeError_(
+                    "owner_view_unavailable",
+                    "FinishUP cannot confirm it is you on this installation (no vault passphrase, "
+                    "and no Touch ID or login-password dialog could be shown), so the full "
+                    "receipt stays closed; the ordinary receipt is unchanged",
+                ) from error
+            if reason in {"presence_refused", "presence_timeout"}:
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "the system confirmation was cancelled, did not confirm it is you, or was "
+                    "not answered in time; nothing was shown",
+                ) from error
+            if reason == "passphrase_in_credential_store":
+                raise RuntimeError_(
+                    "owner_view_unavailable",
+                    "no system dialog can be shown here and this vault's passphrase may be kept "
+                    "in the system credential store (or the store could not be read), so the "
+                    "full receipt stays closed; if you chose "
+                    "that passphrase yourself, run 'finishup receipt --owner-view --use-passphrase'",
+                ) from error
+            if reason == "ceremony_busy":
+                raise RuntimeError_(
+                    "owner_view_busy",
+                    "another confirmation is already open, perhaps one an agent started; if a "
+                    "system dialog is on screen it is not for this request, so cancel it; if "
+                    "nothing is on screen, 'finishup service restart' ends it; then try again",
+                ) from error
+            if reason == "passphrase_rate_limited":
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "too many wrong passphrases, so FinishUP waits up to five minutes before "
+                    "accepting another; restarting the service does not clear this wait",
+                ) from error
+            if reason == "reauthentication_rate_limited":
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "recent confirmations did not succeed, so FinishUP waits up to five minutes "
+                    "before asking again; another program may have caused this, and 'finishup "
+                    "service restart' clears the wait",
+                ) from error
+            raise RuntimeError_(reason, "the full receipt was not authorized") from error
 
     def _frontier(self, session: _WorkSession) -> object:
         frontier = session.frontier

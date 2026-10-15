@@ -356,7 +356,7 @@ async def test_respond_request_result_parity(disposition: str) -> None:
     facts = await app.projection_binding_facts(ControlMethod.RESPOND, response_wire, responded)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
@@ -406,7 +406,7 @@ async def test_waiver_scope_and_expiry_parity() -> None:
 
     facts = await app.projection_binding_facts(ControlMethod.RESPOND, waive_wire, waived)
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False

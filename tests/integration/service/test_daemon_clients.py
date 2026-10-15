@@ -1720,11 +1720,13 @@ async def test_dispatch_passes_trusted_human_projection_context() -> None:
 @pytest.mark.parametrize(
     ("client_kind", "render_mode", "controlling_tty", "expected_sink"),
     (
+        # ADR-009 round 3: the hello's terminal claim is presentation only, never owner
+        # authority; without a human-control grant the projection is agent context.
         (
             ControlClientKind.CLI,
             ProjectionRenderMode.HUMAN_READABLE,
             True,
-            LocalDisclosureSink.LOCAL_HUMAN_VIEW,
+            LocalDisclosureSink.AGENT_CONTEXT,
         ),
         (
             ControlClientKind.CLI,

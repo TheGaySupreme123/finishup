@@ -63,6 +63,7 @@ __all__ = [
     "CLAUDE_EXTERNAL_CHECK_TOOL_NAME",
     "CLAUDE_PLUGIN_CHECK_TOOL_NAME",
     "CODEX_EXTERNAL_ADMISSION_TABLE",
+    "CODEX_LEGACY_ADMISSION_TABLES",
     "CODEX_LEGACY_PLUGIN_ADMISSION_HEADER",
     "CODEX_PLUGIN_ADMISSION_TABLE",
     "CURSOR_CLI_EXTERNAL_ENTRY",
@@ -154,6 +155,8 @@ _CODEX_LEGACY_TABLES: Final = (
     '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
     '[plugins."yoetz@yoetz".mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
 )
+# The exact legacy tables a revoke or sweep removes, for callers that model the after-sweep file.
+CODEX_LEGACY_ADMISSION_TABLES: Final = _CODEX_LEGACY_TABLES
 # The legacy entry that admits the Yoetz-era plugin's ``check``, as ``legacy_entries`` names it.
 CODEX_LEGACY_PLUGIN_ADMISSION_HEADER: Final = _CODEX_LEGACY_TABLES[1].splitlines()[0]
 _CURSOR_IDE_LEGACY_ENTRIES: Final = frozenset({"yoetz:check"})

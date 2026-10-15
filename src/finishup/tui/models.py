@@ -177,6 +177,16 @@ class IntegrationPlan:
     legacy_skill_tree_planned: bool = False
     # Both ``.finishup/checks.toml`` and ``.yoetz/checks.toml`` exist, so neither is proposed.
     policy_ambiguous: bool = False
+    # The home's FinishUP MCP registration already exists and will be written again (another
+    # launcher, isolation root, review mode, or the earlier ``yoetz`` key). It is shared by every
+    # project in the home.
+    mcp_reregister: bool = False
+    # When that rewrite changes the review mode (``route_profile_before`` differs), the other
+    # connected projects of this Codex home whose sessions change with it (#1058 review P2-3).
+    route_changes_for: tuple[str, ...] = ()
+    # Projects that may use the home's shared pieces (not verified connections) whose sessions
+    # would change too.
+    route_changes_possible_for: tuple[str, ...] = ()
 
     @property
     def changes(self) -> tuple[str, ...]:

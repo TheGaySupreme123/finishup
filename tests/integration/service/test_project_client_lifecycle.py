@@ -567,7 +567,14 @@ async def test_project_lifecycle_uses_real_ready_client_and_exact_grant_retries(
             assert isinstance(advice_first_page, dict)
             advice_first_items = _wire_rows(cast(object, advice_first_page["items"]))
             assert len(advice_first_items) == 1
-            assert advice_first_items[0]["coordination_resource_paths"] == ["src/shared.py"]
+            # ADR-009 round 3: a human-readable render on a controlling terminal is a
+            # presentation fact an agent's pseudo-terminal reproduces, so it no longer selects
+            # the owner's view. Both clients get the agent-facing projection.
+            assert advice_first_items[0]["coordination_resource_paths"] == {
+                "omitted": True,
+                "category": "repository_excerpt",
+                "reason": "local_disclosure_not_authorized",
+            }
             advice_second_body = {
                 **advice_body,
                 "request_id": new_id(IdKind.REQUEST),

@@ -426,7 +426,9 @@ Schema `$id`s can move to a FinishUP host only with a future protocol namespace 
   gating their own terminal protects nobody. `--json`, non-TTY or redirected streams, and every
   `mcp_bridge` client resolve to `agent_context`; the client never selects its own sink. Terminal
   emulation by a same-UID process is the stated threat-model limit already bounding the unlock TTY
-  contract.
+  contract. *Superseded in part by ADR-009 round 3 (2026-10-14):* an agent's pseudo-terminal passes
+  every terminal test, so no presentation fact selects `local_human_view` any more; the owner's
+  full receipt is a reauthenticated one-use `owner_receipt_view` grant.
 - **F-019:** `agent_context` becomes provenance-conditional on a computed, closed
   `DisclosureProvenance`. Material the requesting writer authored at the frozen frontier, and kernel
   prose derived solely from it, project without a category grant, because that content already sits

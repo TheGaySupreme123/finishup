@@ -136,10 +136,12 @@ def test_one_reviewed_connect_migrates_and_one_disconnect_removes(tmp_path: Path
     installation = HostInstallation("cursor-ide", launcher, "3.17.8", config, "Cursor")
 
     plan, status = _connection(installation, project, launcher, "connect", 2)
+    # The connect also records the project for the shared user plugin (#1058).
     assert plan.body["changes"] == [
         "migrate_legacy_plugin",
         "install_plugin",
         "register_project_mcp",
+        "record_connected_project",
     ]
     mcp_preview = cast(dict[str, Any], plan.body["mcp_preview"])
     assert mcp_preview["state_before"] == "yoetz_owned"

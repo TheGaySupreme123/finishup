@@ -21,6 +21,12 @@ def _plugin_removal(digest: str) -> SimpleNamespace:
         outcome=RemovalOutcome.ALREADY_ABSENT,
         legacy_removed_block="",
         legacy_cache_versions=(),
+        possible_users=(),
+        shared_with=(),
+        rebind_to=None,
+        unserved_members=(),
+        keeps_shared=False,
+        missing_members=(),
     )
 
 

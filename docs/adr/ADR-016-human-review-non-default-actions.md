@@ -8,7 +8,8 @@ owned by #150); amended 2026-08-25 to keep Codex marketplace/MCP removal on the 
 digest-bound `--accept` lane rather than `plugin_artifact_apply` (issue #419); amended 2026-08-30
 for exact bounded Codex JSONL import publication (issue #301).
 Amended 2026-09-03 for user-controlled conversational setup and exact expanded-review grants
-(issues #532 and #533).
+(issues #532 and #533). Amended 2026-10-14 for the first service-wide `UserPresencePort`
+adapter, macOS LocalAuthentication scoped to the owner receipt view (issue #1073, PR #1069).
 **Implemented by:** `src/finishup/service/elevated_bootstrap.py`,
 `src/finishup/cli/elevated.py`, `src/finishup/cli/trusted_console.py`,
 `src/finishup/protocol/consent.py`, `src/finishup/protocol/chat_user_authority.py`, and
@@ -64,6 +65,33 @@ documents that FinishUP cannot independently authenticate its chat provenance.
    claims pending state. The current runtime has no production adapter and therefore returns
    `human_authority_unavailable`. Redirected, headless, pseudo-terminal, and same-UID automation
    cannot authorize mutation.
+
+   **Amendment (2026-10-14, issue #1073, owner decision).** The service-wide `UserPresencePort`
+   gains its first production adapter, `MacOSLocalAuthenticationPresence`, and it serves exactly
+   one reauthentication: the owner receipt view (`owner_receipt_view`, ADR-009 decision 3,
+   round 5). The packaged service composes it on macOS only, with a `PresenceScope` naming that
+   purpose; Linux, WSL 2 and every other platform compose none and keep their fail-closed
+   continuation (`owner_view_unavailable`, or `owner_view_requires_terminal` with no foreground
+   terminal). The presence is independent of the requesting terminal, as this decision requires:
+   the service, not the client, starts Apple LocalAuthentication
+   (`LAPolicyDeviceOwnerAuthentication`, reuse disabled) through the SIP-protected
+   `/usr/bin/osascript` with a fixed program, and only that helper's exact `approved` token for
+   the exact bound challenge becomes a one-use attestation the vault consumes. A client names
+   the source it asks for and can assert nothing; a TTY, a pseudo-terminal or same-UID
+   automation that cannot produce the owner's fingerprint or device password still cannot pass.
+   Cancellation or failure is `presence_refused`, no answer within the 60-second dialog
+   deadline is `presence_timeout`, and no dialog (not macOS, no LocalAuthentication, no desktop
+   session, or any unreadable helper result) is `presence_unavailable`; none grants anything.
+   Prompts that do not approve back off (5 seconds rising to 5 minutes,
+   `reauthentication_rate_limited`; one cancelled within 2 seconds does not escalate but still
+   delays the next by 5 seconds), and a ceremony opened while another is active is
+   `ceremony_busy`, so an agent cannot make the owner's command read as a locked vault. The
+   backoff lives in the service process and a restart clears it: it slows repeated dialogs, it
+   does not cap them, and an agent that causes misses can delay the owner's own dialog by up to
+   5 minutes (ADR-009 round 5 lists both lockouts and their ways out).
+   This decision's console review is unchanged: `finishup consent review` does not use this
+   adapter and still returns `human_authority_unavailable`, and the adapter authorizes no vault,
+   credential, privacy-policy, setup, keyring or plugin operation.
 
 5. **Agent-attested current-chat authorize (issue #164).** When the user explicitly asks the agent
    in the current chat for help
@@ -207,7 +235,8 @@ another digest, another installation, or a later session.
 
 Native biometrics, host-verified chat provenance, approved-machine profiles, monthly grants,
 E2EE service authority, and authority-bearing MCP tools (beyond the six ADR-011 tools) require
-separate ADRs and threat reviews.
+separate ADRs and threat reviews. The one scoped exception is the macOS LocalAuthentication owner
+receipt view (decision 4 amendment, ADR-009 round 5), whose threat analysis is recorded there.
 
 ## Alternatives considered
 

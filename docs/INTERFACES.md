@@ -2987,8 +2987,9 @@ output_is_controlling_tty)` produced by the authenticated local client from its 
 path. Omission defaults to machine-readable/non-TTY. The daemon retains these facts on the
 `ControlSession` and constructs the service-internal `ClientProjectionContext` for every connected
 call; request bodies cannot replace them. An interactive CLI privacy flow sends human-readable plus
-its foreground controlling-TTY fact. JSON rendering, pipe/redirection, MCP, or missing/contradictory
-facts remain `agent_context`.
+its foreground controlling-TTY fact. These are presentation facts only: since ADR-009 round 3 none
+of them selects `local_human_view`, and every connected call is `agent_context` unless the daemon
+consumed an `owner_receipt_view` grant for that exact receipt call.
 
 The `privacy_get_setup` version 2 result carries `PrivacySetupSnapshot`: exactly the composed policy,
 bound repository-backed workspace scope, `authority_digest`, `grant_state`, and `migration_state`
@@ -3480,7 +3481,10 @@ human-chosen-passphrase fallback.
 `privacy_authorizer`, or `security_authorizer`. Shared types are
 `SecretMemoryCapability`, `ProviderAttemptAuthBinding`, `ProviderAuthTransportCallback`,
 `ProviderCredentialHandle`, `HumanAuthorizationProof`, `UserPresenceChallenge`,
-`UserPresenceAttestation`, `UserPresenceCapability`, and `UserPresencePort`. Strong OS presence is
+`UserPresenceAttestation`, `UserPresenceCapability`, `UserPresencePort`, and
+`UserPresenceError` (closed reasons `unavailable`, `cancelled`, `failed`, `timeout`; no OS text),
+plus the pure `presence_confirmation_code(target_digest)` (the first eight hex digits of a SHA-256
+target digest as `xxxx-xxxx`). Strong OS presence is
 exact action/generation-bound and capability-tested; TTY/same-UID/unlocked-session booleans are not
 implementations. Buffers are
 bounded mutable allocations with measured page-lock/no-core capability and best-effort overwrite;
@@ -3497,7 +3501,27 @@ latch. The proof is internal and never serialized. `UserPresencePort.consume` va
 invalidates an exact attestation/challenge and returns `None`; it cannot construct or return
 authority. `VaultService.mint_human_authorization` is the sole proof constructor for both a
 consumed exact OS-presence source and an admitted purpose-specific passphrase reauthentication
-source. `UnlockCoordinator` exclusively owns the durable passphrase throttle and calls the vault
+source; any failure of `UserPresencePort.consume` (foreign, replayed, mismatched or stale
+attestation) becomes `VaultError("human_authority_unavailable")` and mints nothing.
+
+The one production `UserPresencePort` is `MacOSLocalAuthenticationPresence`
+(`adapters/keys/macos_user_presence.py`, issue #1073). `select_service_user_presence(platform)`
+returns it for `darwin` and `None` for every other platform; the packaged daemon passes the same
+instance to `VaultService(user_presence_port=...)` and to
+`HumanControlService(user_presence=..., user_presence_scope=PresenceScope(purposes, vault_modes))`
+with `OWNER_VIEW_PRESENCE_PURPOSES = {"owner_receipt_view"}` and
+`OWNER_VIEW_PRESENCE_VAULT_MODES = {"os_keyring", "passphrase"}`. Outside its scope human control
+neither offers nor accepts `os_user_presence`, and keyring retry receives no capability. Its
+`assert_presence` runs `run_presence_helper(("/usr/bin/osascript", "-l", "JavaScript", "-",
+reason), program, {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"}, 75.0)` (no shell, `cwd="/"`,
+killed and reaped on deadline or cancellation); `reason` is fixed per purpose apart
+from the confirmation code. The helper's single stdout token (`approved`, `cancelled`, `failed`,
+`unavailable`, `timeout`, optionally newline-terminated, exit status 0) is parsed exactly; anything
+else is `unavailable`. `approved` yields an opaque, unpicklable attestation bound to the exact
+`UserPresenceChallenge`, consumed once within 30 seconds. Its `UserPresenceCapability` names
+`adapter_id="yoetz.presence.macos-local-authentication"`,
+`profile_id="device-owner-authentication/1"`, `release_cell="unqualified"`, and the helper digest
+as both evidence digests, so it never satisfies a runtime-support `user_presence_cells` row. `UnlockCoordinator` exclusively owns the durable passphrase throttle and calls the vault
 only after admission/reservation; `unlock_rate_limited` is therefore a coordinator outcome and not
 a `VaultError`.
 Every vault-opening completion additionally calls one injected async daemon activation callback
@@ -3575,7 +3599,47 @@ monotonic sample with the same floor rule.
 
 `HumanCeremonyKind` is exactly `vault_initialize`, `vault_passphrase_rotate`, `vault_unlock`, `keyring_retry`,
 `portable_recovery`, `installation_recovery`, `provider_credential_set`, `provider_credential_rotate`,
-`privacy_policy_decision`, `privacy_disclosure_decision`, and `idle_relock_policy_change`.
+`privacy_policy_decision`, `privacy_disclosure_decision`, `idle_relock_policy_change`, and
+`owner_receipt_view`. `owner_receipt_view` opens directly at `AuthorizationRequiredPhase`
+(`privacy_reauthentication` purpose); on success its effect consumes the proof for the target
+digest and returns `OwnerReceiptViewResult(status="authorized", target_digest, grant_seconds=60)`.
+Its `available_sources` are `os_user_presence` when the composed presence provider is in scope and
+available (macOS), then `secret_reauthentication` in passphrase mode. Selecting
+`os_user_presence` starts the provider in the service; the human-control mutex is released while
+the dialog waits, a second action on that ceremony is `phase_invalid`, and `cancel`, `close` or a
+human-control peer that closes or cancels during the wait ends the dialog. The bounded YZH1 server
+error codes add `presence_refused` (cancelled, or the OS did not authenticate the person) and
+`presence_timeout` (no answer before the dialog deadline) beside `presence_unavailable`, plus
+`ceremony_busy` (another ceremony is active; this was `state_forbidden` before #1073) and
+`reauthentication_rate_limited` (a throttled passphrase, also `state_forbidden` before, or the
+presence backoff `PRESENCE_BACKOFF_SECONDS = (5, 15, 30, 60, 120, 300)` seconds per consecutive
+prompt that did not approve: refused, timed out, or cancelled after at least
+`PRESENCE_MIN_SHOWN_SECONDS = 2`; reset by an approval or by `PRESENCE_MISS_DECAY_SECONDS = 600`
+without a miss; a prompt cancelled sooner does not escalate, but the next one still waits the first
+step, so after any prompt that did not approve the helper starts again no sooner than 5 seconds
+later; held in service memory, so a restart clears it). An active ceremony past its
+binding expiry is ended by the next `open_ceremony` instead of answering `ceremony_busy`. The
+confidential client passes all five through to its caller; their local recovery directives are
+`ceremony_in_progress` (approve, cancel or restart nothing; report that a confirmation is already
+open and let the owner decide) for `ceremony_busy` and `ceremony_retry_after_wait` (wait up
+to five minutes, retry once) for `reauthentication_rate_limited`. A client
+cancel frame that arrives while a presence prompt is up is answered with a `cancelled` error
+correlated to that frame, then the close. On the CLI, `finishup receipt --owner-view
+[--use-passphrase]` runs the ceremony through `cli.unlock.authorize_owner_receipt_view(target, *,
+use_passphrase)`; on macOS it first prints `owner_view_confirmation_code(target)`. Without
+`--use-passphrase` it never prompts for a passphrase that
+`vault_passphrase_held_by_credential_store()` reports as possibly held (the installation's
+auto-unlock slot is present, refused, or unreadable; only `auto_unlock_absent` or a platform with
+no approved credential store allows the prompt) and fails with the CLI reason
+`passphrase_in_credential_store`; `--use-passphrase` on a
+vault that offers no passphrase fails with `passphrase_unavailable`. Both CLI reasons render as
+`owner_view_unavailable`, and `ceremony_busy` renders as `owner_view_busy` with this command's
+code. `reauthentication_rate_limited` after the command selected `secret_reauthentication`
+(`--use-passphrase`, the fallback after an unavailable dialog, or Linux and WSL 2) is the durable
+passphrase throttle and becomes the CLI reason `passphrase_rate_limited` (`owner_view_refused`,
+no restart or `--use-passphrase` hint, since a restart does not clear it); after
+`os_user_presence` it stays `reauthentication_rate_limited` and names both. The terminal
+interface's *Your full receipt* maps the same two cases the same way.
 `CEREMONY_EXPIRY_SECONDS = 300` is the one YZH1/YZS1 challenge/binding expiry. It bounds a whole
 human ceremony, including the trip to a provider console to mint an API key, so it is a five-minute
 span rather than a keystroke timeout. While a `SecretRequiredPhase` is live, the human-control
@@ -3775,14 +3839,12 @@ The closed privacy enums are:
   `update_checks`, `capability_testing`;
 - `LocalDisclosureSink`: `local_model`, `agent_context`, `local_human_view`,
   `trusted_human_control`. `agent_context` is an agent-capable host's model context, which the host
-  may forward to its own provider. `local_human_view` is ordinary human-readable CLI/UI output
-  rendered to an attached controlling terminal for the local user who already unlocked this vault;
-  it is not a disclosure to a third party and is not gated by the agent ceiling. Selection is
-  server-side and fail-safe: a client resolves to `local_human_view` only for human-readable
-  rendering with an attached controlling terminal, and `--json`, a piped or redirected stream, a
-  non-TTY invocation, and every `mcp_bridge` client all resolve to `agent_context`. Terminal
-  emulation by a same-UID process is the same stated threat-model limit that already bounds the
-  unlock TTY contract, not a claimed cryptographic exclusion;
+  may forward to its own provider. `local_human_view` is the owner's own view of a vault they
+  already unlocked; it is not a disclosure to a third party and is not gated by the agent ceiling.
+  Selection is server-side and fail-safe: every ordinary client result resolves to `agent_context`,
+  whatever its rendering, terminal or client kind (a pseudo-terminal passes every terminal test),
+  and only a `cli`/`ui` receipt call for which the daemon consumed a reauthenticated one-use
+  `owner_receipt_view` grant resolves to `local_human_view` (ADR-009 round 3);
 - `DataClass`: `public_structural`, `ordinary_user_content`, `sensitive_confidential`,
   `secret_or_cryptographic`;
 - `DataCategory` (owned by `protocol/models.py`, imported and re-exported by
@@ -6569,9 +6631,143 @@ only a grant whose requested mode is already set is `noop`. Revoke needs no rout
 current owner and removes every exact external/plugin form FinishUP can write.
 `sweep_host_admission` is the reverse transition (outcome `removed|absent|retained_foreign|
 unknown|write_failed` per host) used by the privacy ceremony, `integrate <host> plugin remove`,
-strict plugin re-renders, `integrate codex plugin remove`, and `integrate codex mcp
-install|remove --project-root`; each reports it as `admission_cleanup` and its preview discloses
-the same, including when the primary MCP registration action is already a `noop`. CLI:
+strict plugin re-renders, `integrate codex plugin remove`, `integrate codex mcp
+install|remove --project-root`, and `setup disconnect --host <host>` for its `--project`; each
+reports it as `admission_cleanup` and its preview discloses the same, including when the primary
+MCP registration action is already a `noop`. A disconnect plan lists the change token
+`remove_project_admission`; because the released `yoetz.host-connection-plan/1` body is closed,
+the cleanup detail (`admission_cleanup`: per-surface state and file digest, plus `legacy_entries`
+naming exact pre-rename entries the same sweep removes, ADR-048; a surface holding only those still
+plans the sweep) and, for Codex,
+`admission_other_projects` travel in the preview report's `status` and are folded into
+`preview_digest` (a grant or revoke after preview makes the plan stale). Apply sweeps before any
+registration removal; a sweep that ends `unknown|write_failed` stops the disconnect as
+`connection_admission_cleanup_failed` before anything else changes; an `unknown` surface (or an
+unreadable observation) refuses the same way when the plan is prepared and again before the sweep,
+whatever else the surfaces hold, with `status.admission_unreadable_surfaces`. Codex additionally
+projects the project's `.codex/config.toml` after the sweep (`codex_mcp.project_transport_dependence`
+`none|depends|unknown`): when it removes the user-level transport and `depends`, preparation
+refuses `connection_project_mcp_tables_retained` (`status.project_mcp_retained`); when the
+unregistration also removes an owned entry under the earlier `yoetz` key, `mcp_servers.yoetz` tables
+count too (`names`), after the exact legacy tables are swept. Other projects
+whose layer `depends` (or is `unknown`) keep the transport: `status.admission_other_projects`
+entries carry `project_root`, `dependence`, and a revoke `next_command` only when exact FinishUP
+tables alone remain; warning `mcp_registration_kept_for_other_projects`; a bound of 32 inspected
+candidates (after filtering missing and same-directory ones) is reported as
+`admission_other_projects_known|_inspected` with warning `other_projects_partially_checked`, and
+an incomplete read keeps the transport (`--remove-shared` refuses). `setup disconnect --remove-shared` (disclosure
+`remove_shared: true`, carried by the continuation) removes the shared pieces for every project and
+refuses `connection_other_projects_need_registration` while one still depends. Codex reports
+`status.project_config_load: loads|fails|unknown`; `fails` is
+`connection_project_config_unloadable`; `project_mcp_leftover` is `tools_only` (revoke) or
+`retained_tables` (reconnect), and status adds `project_mcp_needs_registration` while it loads. `setup status --host codex` reports a transport-less project
+`mcp_servers.finishup` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
+Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
+`<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, a frozen
+literal that does not follow `MCP_SERVER_NAME`; canonical JSON `{"projects": [<absolute roots>]}`
+plus optional `"unknown_members": true`; refused unless a regular file owned by the invoking
+account with no group or other bits; a compare-then-rename replace through a 0600 temporary
+with a parent-directory fsync) names the projects that connected a Codex home or Cursor config
+root. Each installation also keeps a membership witness, `host_projects.witness_path_for(root)` =
+`<state_dir()>/host-config-locks/<same key>.members` (same canonical JSON and checks as the record,
+0600): every project it recorded for that root minus those it saw disconnect
+(`write_connected_projects(..., departed=..., shared_removed=...)`); `recorded_members(root)`
+reads it (absent or unreadable names none; maintained best effort after each record write and
+deleted when the shared pieces go). The record write re-reads and compares the record with the
+bytes the approved plan read, then publishes through an fsynced 0600 temporary and an atomic
+rename with a parent-directory fsync; between the compare and the rename a writer that holds
+neither lock (another installation) can still change it, so cross-installation updates are
+narrowed, not excluded. `host_projects.host_config_lock(config_root)` is the per-root setup lock `apply_connection`
+holds for every host across refresh, apply and the record update: an exclusive `flock` on
+`host_projects.lock_path_for(config_root)` = `<state_dir()>/host-config-locks/<sha256 of the
+resolved absolute path, NFC, case-folded>.lock`, a 0600 regular file owned by the invoking account
+in a 0700 directory without symlinked components, opened `O_NOFOLLOW`, never deleted; it does not
+serialise another installation's setups (the record's compare-then-rename narrows that race; it does not close it). A lock that cannot be
+created, opened or taken raises `HostProjectsError("lock_unavailable")`, surfaced as the
+`ConnectionError` reason `connection_lock_unavailable` before any change (the CLI `next_step`
+names the lock folder). Verified members are the record's projects plus, for Codex, the project
+the `[marketplaces.finishup]` binding names; only they are recorded, anchor the binding, or keep a
+disconnect `detach`; `codex_marketplace.serving_projects(home)` (status `codex_home_projects`,
+`shared_with`, `shared_removed_from`) lists those whose checkout still exists and serves the
+manifest. Possible users (Codex only), each a live checkout serving the exact manifest and a
+marker-valid plugin source and never a verified member under any path spelling: the witness's
+projects, always; and, while the record is missing with shared pieces present or marked
+`unknown_members`, `[projects."<path>"]` rows with `trust_level = "trusted"`;
+`codex_marketplace.possible_projects(home)` lists them,
+`RemovalPreview.possible_users` carries them (bound into the removal digest with `unknown_after`),
+status adds `codex_home_possible_projects` and `membership_unknown: true`, and the connect and
+disconnect plan disclosure adds `membership_unknown: true` and `possible_users` (bound into
+`preview_digest`; a connect excludes the connecting project), and a Codex `--remove-shared`
+preview adds `shared_removed_from` (the other live verified members), as Claude Code and Cursor
+do. They keep the shared pieces but
+never anchor: a disconnect that would leave possible users and no verified member raises
+`IntegrationReason.REMOVE_REFUSED` with `conflict: membership_unverified`, reported by the CLI as
+reason `membership_unverified` with reconnect and `--remove-shared` continuations. Cursor
+discloses `membership_unknown` and keeps the shared plugin while it is set (status reports it
+before any record exists), and its status adds `connected_projects_observed`; Claude Code's own `plugin list` rows (one
+`projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
+(Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
+forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
+the other projects that keep the shared pieces and is bound into `preview_digest`. Status adds
+`codex_home_projects` and the project's own `activation_state` (Codex; `active` only for a
+connected project) or `connected_projects` (Claude Code, Cursor). A connect through a
+second path to an already connected directory fails as `project_connected_via_other_path`
+(`IntegrationReason.PROJECT_CONNECTED_VIA_OTHER_PATH` for Codex, the same `ConnectionError`
+reason for Claude Code and Cursor) with a `next_step` naming the connected path and the
+disconnect that clears it; a malformed record is `connection_projects_record_invalid` (Cursor;
+the Codex adapters raise `source_invalid` with `conflict: connected_projects`, and the CLI reports
+`connection_projects_record_invalid` for Codex too on `setup run|status|disconnect`, probing the
+record when a wrapper kept only `source_invalid`; Claude Code keeps no record), with a `next_step`
+naming the file: make it owner-only again (`chmod 600`) or restore it; for Codex, if it must be
+removed, connect every project again before disconnecting any (until then the witness and trusted
+checkouts keep the shared pieces and a disconnect stops as `membership_unverified`); for Cursor,
+removing it makes membership unknown. A plan that rewrites a shared FinishUP route on another
+review mode while other projects use it (the Codex user-level registration, the Claude Code
+shared source; Cursor's route is per project) reports `route_profile_before`,
+`route_changes_for` (other serving members) and `route_changes_possible_for` (possible users):
+digest-bound in `setup run --host` plans; in the TUI first-run plan
+(`IntegrationPlan.mcp_reregister|route_profile_before|route_changes_for|
+route_changes_possible_for`); in the historical Codex wizard report, which refuses a bare
+`--accept` as `route_change_affects_other_projects`; in `integrate codex mcp preview`, whose
+`preview_digest` then binds them (`canonical_digest({"mcp_preview_digest", "route_change"})`) and
+whose `install` needs it (exit 2, `mcp_registration_route_change_affects_other_projects`); and in
+`integrate claude plugin preview` (bound by its host-state digest over `installed_plugins.json`).
+`route_profile_before` is read from the registration (`HarnessMcpService.observe`), never
+inferred from a `reregister` action, which may change only the launcher or isolation root. When
+membership cannot be read, the route change also carries `membership_unknown: true` (bound into
+the same digests; the historical wizard and `install` refuse a bare `--accept`; the TUI and
+`setup run --host codex` raise `source_invalid`). The `install` refusal names the exact
+`integrate codex mcp preview --codex-path --codex-home --route-profile <requested>` command.
+Without `--route-profile`, `run_host_connection(route=None)` (non-interactive `setup
+run|status|disconnect --host`, and `setup status --next` outside `--operation review`) lets
+`prepare_codex_connection` use the Codex home's registered FinishUP route (`strict` for a fresh home);
+Claude Code and Cursor use `strict`.
+`integrate codex mcp preview-remove|remove` reports `shared_with`, `possible_users` (plus
+`membership_unknown: true` when membership cannot be read) and warning
+`mcp_registration_shared_with_other_projects` and binds them the same way;
+`integrate cursor plugin preview --action remove` reports `shared_with`, `membership_unknown`,
+`shared_removed_for_every_project`. A Codex `setup disconnect` keeps the user-level registration
+whenever the removal plan keeps the shared pieces (`RemovalPreview.keeps_shared`, also for
+`already_absent`), `codex_marketplace.other_members(home, project)` (serving members, possible
+users) is non-empty, a non-member's disconnect finds another live recorded project (serving the
+manifest or not), or membership is unknown; also for an already detached or never-connected
+project (`retained`, `shared_with` naming those projects, in the plan and the status, plus
+`membership_unknown`; post-apply status `configured: false`, `shared_registration_retained:
+true`). `other_members` returns `((), ())` only for a home that does not exist and raises
+`IntegrationError` when membership cannot be read; callers treat that as unknown. A damaged
+membership witness (`host_projects.recorded_members`) names no one rather than raising. When the
+kept pieces serve the dangling binding's project whose directory is missing right now,
+`RemovalPreview.missing_members` names it (bound into the digest) and the disclosure and status
+add `members_missing`; with no live project among `shared_with`, an `unchanged` disconnect's
+`next_step` also names the exact `setup disconnect ... --remove-shared` preview. The connect-path
+`setup status --host codex` reports `enabled` and `configured` only for a connected project
+(activation `active`), otherwise `shared_registration_retained: true` when a FinishUP registration
+exists, and `membership_unknown: true` when membership cannot be read. The disconnect plan
+disclosure adds `rebind_to` and, when the shared pieces go, `members_not_serving`
+(`RemovalPreview.unserved_members`: live recorded projects, or a dangling anchor, that do not
+serve the manifest). Only a recorded project may move or remove a dangling binding.
+`integrate codex plugin preview` reports `possible_users` (and `membership_unknown`),
+`members_not_serving` and `keeps_shared`. CLI:
 `finishup integrate <host> admission status|preview|grant|revoke --project-root`
 (preview `--action grant|revoke`; Claude `--checkpoint`; the host roots the route observation
 needs; `--accept --preview-digest` for the apply verbs, exit 3 without them, exit 1
@@ -6798,7 +6994,25 @@ presence cell. The ADR-012 setup composition remains its own separately authoriz
 Codex `preview_removal` / `apply_removal` refuse foreign, modified, dual, or otherwise
 conflicting marketplace, config, inventory, or cache surfaces with `remove_refused` and a closed
 `conflict` token (`personal_marketplace|repository_marketplace|config_marketplace|config_plugin|
-inventory|cache`). Cache purge is default-off. The removal digest binds the exact trusted project
+inventory|cache|membership_unverified`). `RemovalOutcome` is `remove|already_absent|detach`:
+`detach` (#1058) means other connected projects that still serve the exact FinishUP manifest keep the
+home's binding, enable table, cache and MCP registration; the preview names them in `shared_with`
+and, when the binding named this project or names a project that is deleted or lost its manifest,
+the project it moves to in `rebind_to`; apply rebinds first, then removes the project's canonical
+`marketplace.json`, then updates the connected-projects record. A detach also deactivates the
+project's own Yoetz-era activation (ADR-048): its exact legacy tables leave in the same config
+write, then its exact legacy `marketplace.json` and marker-validated legacy cache go
+(`legacy_removed_block`, `legacy_cache_versions`, `legacy_marketplace_json_planned`; the preview
+digest binds both the multi-project facts and the legacy suffix), and the result must read
+`legacy_activation: false`. With no verified member left, a
+binding to a deleted or manifest-less project is removed with the shared pieces: its exact
+tables and managed cache trees are removed directly (no `codex plugin` command, which fails
+through such a binding), also under `--remove-shared`. The
+activation side treats a binding to another such project as the shared marketplace
+(`_plugin_inventory` expects that anchor's source), counts a project as activated only when it is
+the anchor or in the record, moves a binding whose project lost its manifest to the connecting
+project, and refuses an alias of the same directory as `project_connected_via_other_path`.
+Cache purge is default-off. The removal digest binds the exact trusted project
 root as well as the selected executable, Codex home, configuration/cache preimages, planned host
 commands, and cache-purge choice. Cache preview and apply share descriptor-relative no-follow
 total-entry, recursion-depth, relative-path, file-count, per-member, and aggregate-byte bounds.
@@ -7282,11 +7496,12 @@ derived default check mode is respectively
 `deterministic_only|semantic_if_configured|semantic_required`.
 
 The same module owns `ProjectionRenderMode(human_readable|machine_readable)`, frozen
-`ClientProjectionContext(client_kind, render_mode, output_is_controlling_tty)`,
+`ClientProjectionContext(client_kind, render_mode, output_is_controlling_tty, owner_view=False)`,
 `resolve_client_disclosure_sink`, and `ProjectedControlBody`. The projected-body type is exactly
 the six operation result types plus `JsonObject` support results. The sink resolver returns
-`local_human_view` only for authenticated `cli` plus human-readable rendering plus an output
-attached to its controlling TTY; all other or contradictory contexts return `agent_context`.
+`local_human_view` only for an authenticated `cli` or `ui` context whose `owner_view` the daemon set
+after consuming an `owner_receipt_view` grant; every other context, including human-readable
+rendering to a controlling TTY, returns `agent_context`.
 The context is service-internal, carries no caller-named sink, must match the authenticated session
 kind, and defaults fail-safe to machine-readable/non-TTY when trusted presentation facts are
 absent. The daemon first obtains catalog-backed `Application.projection_binding_facts(...)`, then
@@ -10228,3 +10443,113 @@ refs to `unavailable` when all of its composed supply refs are privacy-withheld.
 admission cuts remain `pending`. The dispatched `follow_up_round` is retained in either case,
 and no withheld content is credited as supplied. This shared manifest reaches CLI, MCP, TUI
 and all receipt renderings without a host-specific projection.
+
+### Receipt prose and the agent-context ceiling (N5 privacy, 2026-10-14)
+
+Receipt prose is FinishUP-authored and keeps its ordinary category policy in an `agent_context`
+projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
+thing it can carry that the excerpt ceiling covers is a repository file name the check found and no
+participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt spells.
+Each such name span is offered as its own `repository_excerpt` candidate. Unless the policy grants
+repository excerpts, or the requesting writer published that exact name in this session through an
+accepted, unredacted cooperative publication, the whole path token becomes
+`(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
+path the receipt prints, the bare path when it has a directory, or a basename with an extension. Any
+name, a top-level one without an extension included, is also a span behind a leading `./` (also
+`.//` or `././`), quoted or not, and empty or `.` segments inside the name still spell the same
+file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`, optionally behind `file://`)
+any directories may come before the name's last component: an absolute path that ends in a withheld
+file's base name counts as that file, which can only withhold more. Unquoted, the prefix's
+directories stop at whitespace, at quotes and backticks, at `<` `>` `|` `,` `;` and brackets, and at
+a `:` that starts another path (`:/`, `:~`, `:$`, `:./` or `:../`), so the next path in a list
+starts afresh; a `:` inside a directory or a port (`host:8080/`) is kept. The whole prefixed token
+is withheld. A path in single quotes, double quotes or backticks may run through directories with
+spaces or the other quote characters (`"/r/Bob's/a.npz"`), and the whole quoted token is withheld
+when the name ends the quoted text; a name earlier in the quotes (`"/r/x/b.npz /r/y/a.npz"`) is
+found too, and its own path is withheld. An absolute path through a directory with spaces is not
+recognised as one path when it is unquoted, since prose gives it no token boundary, or when anything
+follows the name inside the quotes (`"/My Docs/a.npz:12"`); nor is an unquoted one through a
+directory holding a stop character (`/r/Bob's/a.npz`), or a quoted one through a directory holding
+its own closing quote. A name glued to other characters and then a `/` (`/r/a.npz~/x`), or followed
+by a `:` and a bare relative path (`/r/a.npz:rel/x`, or grep's `/r/a.npz:12:rel/x`), reads as a
+directory of a longer path and stays readable: the prefix never gives a directory back, which keeps
+each search linear. A different relative directory (`../`, `x/`), a longer name, a suffix, a plain
+word such as `Summary` (or a top-level name written without a prefix or quotes), and a different
+letter case stay readable: spellings are compared exactly, because folding case or Unicode would
+conflate distinct files on a case-sensitive filesystem. Every bound in the span pattern is fixed, so
+a search stays linear in the prose it reads. The rule applies to JSON, markdown and text and to
+every profile, `full_local` included: a format or profile is not a disclosure grant.
+
+The token can be longer than the name it replaces. A field that would then pass its wire bound
+(32,768 characters for `human_text`, at least its original length for a document field) or the
+16 KiB per-item privacy bound is cut deterministically at a whole token and ends with a visible
+`[receipt text truncated after withholding: N characters not shown]` marker; only text already
+past the withholding is dropped, and the audit still records every per-name decision.
+`privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
+bound the list coalesces deterministically to containing fields, so a large receipt still renders;
+the local disclosure audit keeps one decision per name and field
+(`<field pointer>/@repository_name/<name index>`). The digest and object ID identify the unchanged
+stored owner receipt. An earlier stored receipt meets the same rule when reread, with name
+provenance read at the current ledger head, so redacting the publication that spelled a name
+withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
+fails closed when that denial would need an object marker inside the receipt document.
+
+Every client result is agent-facing (`agent_context`): the CLI, the terminal interface, MCP tools
+and hooks alike. A terminal, a human-readable rendering, a client kind or the user ID is a
+presentation fact an agent can reproduce (a pseudo-terminal passes every terminal test), so none of
+them selects the owner's view, and the service ignores them as authority. The owner's full receipt
+(`local_human_view`) needs an explicit request, `finishup receipt --owner-view` or *Your full receipt*
+in the terminal interface, and a human-control `owner_receipt_view` ceremony: the owner
+reauthenticates with operating-system presence or the vault passphrase for that exact receipt
+request. The grant belongs to the command's own control connection as the service admitted it: the
+service mints an opaque identity for every admitted connection and never takes one from the client,
+refuses any connection whose hello nonce is already live or was used before, mints the grant only
+for the one live connection the ceremony target names, consumes it only on a receipt call on that
+connection, and revokes it when the connection closes. The grant is one-use and expires after 60
+seconds. There is no standing grant, and the agent-attested consent lane cannot stand in for it.
+Anyone holding the terminal can type into the prompt, a pseudo-terminal included; the boundary is a
+passphrase or presence check the agent cannot pass. On macOS the packaged service composes one
+operating-system presence provider, Apple LocalAuthentication: the service itself raises a system
+dialog (Touch ID or the device password) whose text is fixed apart from a confirmation code the
+owner's own command also prints, and only its exact approval for that exact challenge becomes a
+one-use attestation the vault consumes. A client can name that source but can assert nothing. The
+provider serves only this ceremony, on either vault mode. A passphrase stays offered beside it: when
+the service cannot show a dialog, the command asks for the passphrase once instead, but it never
+asks for a passphrase kept in the platform credential store (setup's system-keychain choice
+generates one its owner never saw) unless the owner passes `--use-passphrase`, which also skips the
+dialog, for example over SSH. A cancelled or failed dialog is `presence_refused` and an unanswered
+one is `presence_timeout` after 60 seconds; neither grants anything, and the next dialog then waits
+(`reauthentication_rate_limited`, 5 seconds rising to 5 minutes). That wait lives in the service
+process and a restart clears it, so it slows repeated dialogs rather than capping them, and an agent
+that causes misses can delay the owner's own dialog by up to 5 minutes. Dialogs start at least 5
+seconds apart even when each is cancelled at once. A throttled passphrase (30 seconds after the
+third wrong one, doubling to 5 minutes, kept across a restart) is reported as such, without the
+restart hint. Another open confirmation is `ceremony_busy` (`owner_view_busy`, naming this command's
+code), never a locked vault; a silent one holds the slot until its five-minute binding expires or
+the service restarts. Linux and WSL 2 compose no provider: there only a vault passphrase the owner
+types completes the ceremony, and a vault without one, or with one kept in the credential store,
+fails closed with `owner_view_unavailable`. A command with no foreground terminal to prompt on (for
+example a headless session) fails with `owner_view_requires_terminal`. Either way it shows nothing
+and points to the next step. Linux and WSL 2 use the same code but were not exercised for this
+change, and no real Touch ID prompt was exercised by automation (ADR-009 round 5). An agent that
+runs the command can make the dialog appear but cannot answer it, so approve it only when you asked
+for the full receipt yourself. A process running as the owner's account that can already read the
+vault passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
+every passphrase reauthentication (ADR-008).
+
+The shared `Application.project_result_for_client` builds the name spans in
+`application/receipt_projection.py`: names come from every check recorded through the receipt's
+subject frontier, and authorship from `published_name_authorship` keyed once per distinct name at
+`/receipt_repository_names/<index>` (at most 128). The ordinary-category candidate for a field
+carries its prose with every name span already withheld and bounded, so a denied name never enters
+the authorized sink payload under another category. `resolve_client_disclosure_sink` returns
+`local_human_view` only for a `ClientProjectionContext(owner_view=True)` on a `cli` or `ui` call;
+only the daemon sets that flag, after `service/owner_view.py` consumed a grant whose target digest
+binds the receipt request's task, session, request ID, format, include and profile to a digest of
+the control connection nonce. `OwnerViewGrants.admit` gives every admitted control connection a
+service-minted admission identity and refuses a nonce that is live or was already admitted;
+`issue` resolves the target's connection digest to that one live admission (no live connection,
+no grant: the ceremony fails `target_invalid`); `consume(admission, target)` succeeds once, on
+that admission only; `release` on disconnect revokes its grants. Other result methods keep their classifications. Codex, Claude Code
+and Cursor share this service boundary; MCP summaries and the Stop gate use projected fields and
+structural counts.

@@ -32,9 +32,62 @@ Agents first request `--non-interactive --json`, present the plan, and repeat it
 and digest with `--accept`. OS-authenticated artifact presence still applies.
 
 `setup status|disconnect --host cursor-ide|cursor-cli` uses the same target options. Disconnect
-removes the owned user plugin and selected project's separately managed MCP entry; it preserves
-other projects, unrelated configuration and FinishUP data. A changed or foreign source is refused.
-A repeated exact connection is a no-op; a partial connection is re-previewed from its actual state.
+removes the selected project's separately managed MCP entry and, when it is the last connected
+project, the owned user plugin; it preserves other projects, unrelated configuration and FinishUP
+data. A changed or foreign source is refused. A repeated exact connection is a no-op; a partial
+connection is re-previewed from its actual state.
+
+**Several projects in one config root (issue #1058).** The user plugin (hooks, skill) serves every
+project under the config root; only the project MCP entry is per project. Cursor does not list
+which projects use the plugin, so setup keeps `<config root>/.yoetz-connected-projects.json` (the
+record shared with Codex's model, ADR-012): connect records the project, a disconnect while
+another live project remains removes only that project's MCP entry (the preview's
+`status.shared_with` names the others), and the last project's disconnect removes the plugin and
+the record. Status reports `connected_projects` (recorded) and `connected_projects_observed`
+(recorded projects whose own project MCP entry is still FinishUP's); a recorded project that is no
+longer observed keeps the plugin until `setup disconnect` runs for it, which forgets it. When the
+plugin is found without a record (it was set up by an earlier release, or the record was lost),
+other projects may use it that no record names: the record and every preview carry
+`membership_unknown`, an ordinary disconnect keeps the plugin, and among the setup commands only
+`setup disconnect --remove-shared` removes it. The low-level `integrate cursor plugin remove`
+removes the user plugin for every project by design; its preview (`--action remove`) names who
+uses it (`shared_with`, `membership_unknown`, `shared_removed_for_every_project`), which the
+artifact digest does not bind, so prefer `setup disconnect` to disconnect one project. `setup status --host cursor-ide|cursor-cli` names unknown membership as soon as the plugin
+is found without a record and gives the exact `--remove-shared` preview command. Cursor has no list of
+trusted projects to inspect, so there are no Codex-style possible users and no
+`membership_unverified` refusal here: unknown membership simply keeps the plugin. Every Cursor
+setup apply for one config root holds FinishUP's per-configuration lock across revalidation, the
+plugin and MCP changes, and the record update, so a concurrent setup is refused as stale and its
+retry joins. The lock is an exclusive `flock` on a 0600 file under FinishUP's own state directory
+(`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded; it touches no
+Cursor directory, so the first setup into a config root that does not exist yet (for example a
+nested `--host-config-root`, or Cursor Agent CLI's `CURSOR_CONFIG_DIR`) creates it without a
+manual `mkdir`. That case is covered by unit
+tests for both Cursor IDE and Cursor Agent CLI, not by a native Cursor run (no Cursor binary was
+available for the 2026-10-14 re-check). A lock that cannot be taken stops as
+`connection_lock_unavailable` before any change, naming the lock folder; it does not serialise
+a setup run by another FinishUP installation, where the record's compare-then-rename is the only
+guard (it narrows that race; it does not close it).
+Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`) or another network or FUSE
+filesystem (ADR-012 amendment item 7). The record keeps the name
+`.yoetz-connected-projects.json` whatever the MCP server key is called; one that is not an
+owner-only regular file with valid content stops `setup run`, `setup status` and `setup
+disconnect` as `connection_projects_record_invalid` with a continuation naming the file (make it
+owner-only again with `chmod 600` or restore it; removing it makes membership unknown, so the
+plugin stays on an ordinary disconnect). Cursor keeps the review mode in each project's own MCP
+entry, not in the shared plugin, so connecting a project on another review mode changes no other
+project (no `route_changes_for` here). `--remove-shared` previews and the interactive consent say
+the disconnect is home-wide and name the projects that stop using FinishUP. The TUI has no
+`--remove-shared` and shows a generic continuation for these refusals; use `finishup setup
+disconnect|status --host cursor-ide|cursor-cli` from a terminal.
+A second path to an already connected directory is
+refused as `project_connected_via_other_path`; disconnecting under the current path clears it. A
+moved project's `.cursor/mcp.json` entry still names its old path and reads as foreign under the
+new one; remove that entry by hand before that disconnect. `setup disconnect --remove-shared` is
+the explicit home-wide disconnect: it removes the user plugin and the record even while other
+projects use them (their project MCP entries stay). A disconnect whose approval file
+(`.cursor/permissions.json` or `.cursor/cli.json`) cannot be read safely, such as a symlink, stops
+before any change as `connection_admission_cleanup_failed`.
 
 macOS uses LocalAuthentication; Linux and Windows through WSL 2 use the trusted PAM console path.
 Windows-side IDE discovery/configuration is not inferred from a Linux executable or directory.
@@ -494,7 +547,10 @@ writer in the final syscall window. If the second surface drifts after the first
 operation reports `write_failed` rather than claiming a transaction-wide rollback.
 
 Reverse: `admission revoke`; `plugin remove` and an install/replace onto the strict route sweep
-the entry when `--project-root` is given and report `admission_cleanup`; a privacy commit that
+the entry when `--project-root` is given and report `admission_cleanup`; `setup disconnect --host
+cursor-ide|cursor-cli` plans `remove_project_admission` for `--project` (both Cursor surfaces),
+sweeps it before the plugin and project MCP removal and reports `status.admission_cleanup`
+(other projects are not enumerated); a privacy commit that
 stops external review sweeps it; `provider status` reports `host_admission_drift`. That report
 walks from the launch directory to the repository root, so a subdirectory cwd does not read as
 `absent`. Cursor publishes no hook for a classifier denial. A held `check` is visible only through
@@ -566,6 +622,14 @@ change `migrate_legacy_plugin`), and keep the startup mode (`optional` or `requi
 installed with. Remove and disconnect also take a legacy-only install (`remove_legacy_plugin`). If a
 lost result has to be reconciled after a migration, the legacy digest is gone and reconciliation
 fails closed with `destination_conflict`; status shows the real state.
+
+With several projects connected to one configuration root (#1058), the legacy user tree is shared
+the same way as `plugins/local/finishup`: a disconnect that keeps the user plugin for other recorded
+projects (`shared_with`, or unknown membership) also keeps an owned `plugins/local/yoetz`, and the
+last disconnect, or `--remove-shared`, removes both. A legacy-only tree with no renamed plugin is
+not counted as shared pieces present, so a single-project disconnect still takes it. Recorded
+members whose project entry is still FinishUP's under the earlier `yoetz` key, proven by a
+marker-recorded launcher, count as observed connected.
 
 **Project MCP migration.** A project entry under `yoetz` that launches this installation (its
 `finishup` script, its `yoetz` alias, or a launcher a FinishUP marker recorded) is owned but
@@ -2271,3 +2335,34 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Cursor transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+### Receipt privacy ceiling (N5)
+
+Shared service projection, no host-specific path. Every receipt an agent can request (the MCP
+`receipt` tool, or `finishup receipt` run by the agent, under a pseudo-terminal or not) is the agent
+projection: normal prose, titles, codes and counts stay; undeclared repository names the policy
+withholds become `(receipt prose withheld: repository_excerpt)`, including `./` and full-path
+spellings (from `/`, `~`, `$VAR` or `file://`; quoted when a directory has spaces) of any name, a
+top-level name without an extension included, and an exact name the requesting writer published itself returns. Large receipts stay
+valid: omission lists coalesce and an over-long field is cut visibly. The owner's full receipt is
+`finishup receipt --owner-view` (or *Your full receipt* in the terminal interface), which needs the
+`owner_receipt_view` reauthentication. Verified by in-process tests on macOS, including a real
+pseudo-terminal; Linux and Windows through WSL 2 run the same service code but were not exercised
+for this change.
+
+Owner-view presence decision for Cursor (#1073): same path as every host, because the owner view is
+a CLI and terminal-interface flow, never an MCP tool or hook. On macOS the service itself raises a
+LocalAuthentication dialog (Touch ID or the login password) showing the confirmation code the
+command prints, on either vault mode, including setup's system-keychain choice. A vault passphrase
+the owner chose is asked for once when the service cannot show a dialog, or directly with
+`--use-passphrase`; a passphrase kept in the system credential store is never prompted for on its
+own. On Linux and WSL 2 there is no presence provider: only a vault passphrase the owner types
+completes it, and a vault without one, or with one kept in the credential store, fails closed with
+`owner_view_unavailable`. When Cursor's agent runs the command in a pseudo-terminal, the dialog
+appears on the owner's screen and the agent cannot answer it; a cancelled dialog is
+`owner_view_refused` and shows nothing, and repeated dialogs back off. Without a terminal the command
+ends with `owner_view_requires_terminal` before any dialog. If an agent's own ceremony is open, the
+owner's command reports `owner_view_busy` with its own code, and any dialog on screen is not the
+owner's. The dialog itself is covered only by stub-helper tests until
+the manual check in [test-instances.md](test-instances.md#owner-view-with-touch-id-manual-check-on-a-real-mac-1073)
+runs on a real Mac.

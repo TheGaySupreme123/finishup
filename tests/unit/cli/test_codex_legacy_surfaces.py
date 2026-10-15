@@ -38,6 +38,10 @@ class _Plan:
     policy_digest: str | None = None
     project_root: str = ""
     managed_paths: tuple[str, ...] = ()
+    # The multi-project route-change disclosure (#1058): no other project here.
+    route_profile_before: str | None = None
+    route_changes_for: tuple[str, ...] = ()
+    route_changes_possible_for: tuple[str, ...] = ()
 
 
 def _observation(legacy: str) -> McpRegistrationObservation:
@@ -184,6 +188,13 @@ class _AbsentActivation:
     outcome: codex_connection.RemovalOutcome = codex_connection.RemovalOutcome.ALREADY_ABSENT
     legacy_removed_block: str = ""
     legacy_cache_versions: tuple[str, ...] = ()
+    # No other project shares this home (#1058).
+    shared_with: tuple[str, ...] = ()
+    rebind_to: str | None = None
+    possible_users: tuple[str, ...] = ()
+    unserved_members: tuple[str, ...] = ()
+    keeps_shared: bool = False
+    missing_members: tuple[str, ...] = ()
 
 
 class _Review:

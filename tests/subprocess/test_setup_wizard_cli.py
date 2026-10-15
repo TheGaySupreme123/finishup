@@ -662,6 +662,7 @@ def test_already_registered_mcp_still_installs_plugin_and_grants_consent(
 ) -> None:
     wizard_env["outputs"] = [
         _finishup_entry(),  # preview get: already finishup-owned
+        _finishup_entry(),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry(),  # status verify after plugin install
     ]
     result = _RUNNER.invoke(cli.app, ["setup", "run", "--non-interactive", "--accept", "--json"])
@@ -703,7 +704,8 @@ async def test_tui_apply_refuses_a_skill_preview_digest_not_shown_to_the_user(
         )
     ).preview(_binary())
     workspace = cast(Path, wizard_env["marker"]).parent
-    wizard_env["outputs"] = [_finishup_entry()]
+    # Preview get, then the observe get that reads the registered route.
+    wizard_env["outputs"] = [_finishup_entry(), _finishup_entry()]
 
     report = await setup_module.apply_codex_integration(
         _binary(),
@@ -1519,7 +1521,8 @@ def test_integrate_mcp_strict_install_noop_still_revokes_host_admission(
         '[mcp_servers.finishup.tools.check]\napproval_mode = "approve"\n',
         encoding="utf-8",
     )
-    wizard_env["outputs"] = [_finishup_entry("strict")]
+    # Preview get, then the observe get that reads the registered route.
+    wizard_env["outputs"] = [_finishup_entry("strict"), _finishup_entry("strict")]
     result = _RUNNER.invoke(
         cli.app,
         [
@@ -1577,6 +1580,7 @@ def test_non_interactive_accept_preserves_existing_policy_route(
 
     wizard_env["outputs"] = [
         _finishup_entry("policy"),  # tentative strict preview get: owned, other route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry("policy"),  # preserved policy re-preview get: noop
         _finishup_entry("policy"),  # status verify after plugin install
     ]
@@ -1599,6 +1603,7 @@ def test_explicit_route_profile_flag_reregisters_and_reports_the_transition(
 
     wizard_env["outputs"] = [
         _finishup_entry("policy"),  # preview get: owned on the policy route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry("policy"),  # adapter apply re-preview get
         CommandOutput(0, b""),  # add
         _finishup_entry("strict"),  # verify get
@@ -1641,6 +1646,7 @@ def test_interactive_preview_surfaces_a_route_profile_transition(
 
     wizard_env["outputs"] = [
         _finishup_entry("policy"),  # preview get: owned on the policy route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry("policy"),  # adapter apply re-preview get
         CommandOutput(0, b""),  # add
         _finishup_entry("strict"),  # verify get
@@ -1726,6 +1732,7 @@ def test_integrate_mcp_install_without_route_input_preserves_owned_policy_route(
 
     wizard_env["outputs"] = [
         _finishup_entry("policy"),  # derived-strict preview get: owned, other route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry("policy"),  # preserved policy re-preview get: noop
     ]
     result = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "install", "--accept", "--json"])
@@ -1742,6 +1749,7 @@ def test_integrate_mcp_preview_names_the_observed_route_before(
 ) -> None:
     wizard_env["outputs"] = [
         _finishup_entry("policy"),
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry("policy"),
     ]
     result = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "preview", "--json"])
@@ -1757,6 +1765,7 @@ def test_integrate_mcp_explicit_route_profile_reregisters(
 ) -> None:
     wizard_env["outputs"] = [
         _finishup_entry("policy"),  # preview get: owned on the policy route
+        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry("policy"),  # adapter apply re-preview get
         CommandOutput(0, b""),  # add
         _finishup_entry("strict"),  # verify get
@@ -1815,6 +1824,9 @@ def test_absolute_mcp_cli_preserves_launcher_and_route(
     # configured default in this fixture is strict.
     wizard_env["outputs"] = [
         _finishup_entry("policy", launcher=launcher),
+        _finishup_entry(
+            "policy", launcher=launcher
+        ),  # observe get: the registered route (#1058 review round 3)
         _finishup_entry("policy", launcher=launcher),
     ]
     noop = _RUNNER.invoke(cli.app, ["integrate", "codex", "mcp", "install", "--accept", "--json"])

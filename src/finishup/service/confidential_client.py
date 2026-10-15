@@ -106,11 +106,15 @@ _SECRET_PURPOSES_BY_KIND: Final[
     HumanCeremonyKind.IDLE_RELOCK_POLICY_CHANGE: frozenset(
         {ConfidentialSecretPurpose.SECURITY_REAUTHENTICATION}
     ),
+    HumanCeremonyKind.OWNER_RECEIPT_VIEW: frozenset(
+        {ConfidentialSecretPurpose.PRIVACY_REAUTHENTICATION}
+    ),
 }
 _ERROR_REASONS: Final = frozenset(
     {
         "ambiguous",
         "cancelled",
+        "ceremony_busy",
         # Structural ceremony refusals. They are deliberately distinct from
         # "service_unavailable": the service answered and declined, and collapsing them told
         # the operator to restart a service that was running fine.
@@ -120,7 +124,12 @@ _ERROR_REASONS: Final = frozenset(
         "peer_untrusted",
         "pending_not_actionable",
         "pending_unavailable",
+        "presence_refused",
+        "presence_timeout",
+        "presence_unavailable",
         "protocol_error",
+        "reauthentication_rate_limited",
+        "reauthentication_unavailable",
         "response_bytes",
         "secret_rejected",
         "service_unavailable",
@@ -128,6 +137,7 @@ _ERROR_REASONS: Final = frozenset(
         "session_closed",
         "stale_generation",
         "state_forbidden",
+        "target_invalid",
         "timeout",
     }
 )
@@ -136,11 +146,23 @@ _ERROR_REASONS: Final = frozenset(
 # intact rather than degrading to a generic transport failure.
 _PASS_THROUGH_SERVER_CODES: Final = frozenset(
     {
+        # Another ceremony is open (perhaps one an agent started): not a locked vault.
+        "ceremony_busy",
         "ceremony_unsupported",
         "kind_forbidden",
         "pending_not_actionable",
         "pending_unavailable",
+        # No way to confirm the owner on this installation (no OS presence, no passphrase
+        # vault): the caller needs the typed reason to say so, not a transport failure.
+        "presence_unavailable",
+        # The OS presence prompt was cancelled, failed, or timed out: a refusal the owner can
+        # retry, not a transport failure.
+        "presence_refused",
+        "presence_timeout",
+        "reauthentication_rate_limited",
+        "reauthentication_unavailable",
         "state_forbidden",
+        "target_invalid",
     }
 )
 

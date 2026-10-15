@@ -427,7 +427,7 @@ async def test_status_request_result_parity() -> None:
     facts = await app.projection_binding_facts(ControlMethod.STATUS, status_wire, status)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
@@ -1149,7 +1149,9 @@ async def test_status_is_task_state_read_only_and_projection_receipted() -> None
     facts = await app.projection_binding_facts(ControlMethod.STATUS, status_wire, status)
     binding = _cli_binding(212, facts)
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -1162,7 +1164,9 @@ async def test_status_is_task_state_read_only_and_projection_receipted() -> None
     # minting a fresh one for an unchanged result/policy/sink pair -- at most one additional
     # candidate is proposed to confirm reuse rather than an unbounded receipt per replay.
     projected_again = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -2038,7 +2042,9 @@ async def test_project_status_pages_and_lineage_fallback_use_the_public_projecti
     assert isinstance(fallback.page, StatusLineagePageModel)
     facts = await app.projection_binding_facts(ControlMethod.STATUS, wire, fallback)
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         _cli_binding(1302, facts),
         fallback,
     )
