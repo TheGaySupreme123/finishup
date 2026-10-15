@@ -83,6 +83,6 @@ edit finding.
 Before replacing evidence or a claim, read `status`, cite IDs from your own publication, and link
 the replacement with the prior effective claim. A claim is an assertion, not a conclusion. Read the
 complete event bodies and field ownership in [`publication-policy.md`](publication-policy.md).
-When schema metadata is missing, read one section of
-[`request-templates.md`](request-templates.md), such as `#publish-work-claim`; the page opens with
-a map from each operation and event family to its section.
+When schema metadata is missing, read
+[`request-templates.md#publish-shapes`](request-templates.md#publish-shapes) for the ordinary path;
+the page opens with a map from each operation and event family to its section.

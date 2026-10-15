@@ -3,7 +3,7 @@
 Read when resuming without the prior workflow in context, before delegating, or when a result,
 error or continuation names this page; the [operating card](agent-instructions.md) is enough for
 ordinary work. Use the current tool schemas; missing schema metadata routes to one section of
-[request templates](request-templates.md).
+[request templates](request-templates.md#publish-shapes).
 
 Read only the section you need, as `finishup://guidance/workflow.md#<anchor>`: a paged read lists
 every section anchor on page 0. Two are not obvious from their names: a failed, pending, or

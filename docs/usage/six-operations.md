@@ -40,9 +40,9 @@ that document (the section heading written another way, an anchor the text place
 words only its anchor contains) reads that section, and the result names its listed link; an
 anchor that could mean several sections is refused with the document's listed anchors.
 
-If an MCP host drops schema examples or renders required fields as unknown, read the topic for
-that operation, such as `finishup://guidance/request-templates.md#publish-work-plan-plus-obligation`.
-It contains a complete request body. Replace every illustrative identifier,
+If an MCP host drops schema examples or renders required fields as unknown, read
+`finishup://guidance/request-templates.md#publish-shapes` for ordinary publish, or the topic for
+that one operation. It contains a complete request body. Replace every illustrative identifier,
 timestamp, frontier, digest, and content string before use; the resource is an authoring fallback,
 not a second wire authority.
 

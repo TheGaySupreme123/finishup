@@ -537,7 +537,9 @@ explicit `<a id>` aliases (#1049): `request-templates.md#publish-work` and
 `#ordinary-publication` read `#publication-templates` (the list of every `publish_work` template's
 exact URI), `request-templates.md#plan-and-obligations` reads
 `#publish-work-plan-plus-obligation`, and `publication-policy.md#plan-and-obligations` reads
-`#obligations-evidence-and-claims`. Any other anchor outside the catalog
+`#obligations-evidence-and-claims`. Ordinary publish is the one topic
+`request-templates.md#publish-shapes` (plan, obligation, action, result, evidence, claim, revised
+plan, and decision). Any other anchor outside the catalog
 on a registered document is
 rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
 document's registered anchors plus the whole-document retry; an unregistered document lists the
@@ -672,8 +674,9 @@ must not present MCP resource-template discovery as a recovery path. The static
 `finishup://guidance/request-templates.md` resource is an ordinary guidance resource: it carries
 complete, schema-valid fallback request bodies for the six operations and all eighteen families
 `publish_work` admits (`ORDINARY_MCP_PUBLISH_EVENT_FAMILIES`: the nine ordinary families, seven
-delegation and work lifecycle families and two coordination families). It does not weaken catalog
-admission or add an MCP resource template.
+delegation and work lifecycle families and two coordination families). The ordinary seven shapes
+are also one topic, `#publish-shapes`, so one `read_guidance` returns that path. It does not weaken
+catalog admission or add an MCP resource template.
 
 MCP `tools/list` uses `ToolDescriptor.advertised_input_schema`, a compact authoring projection
 with a CI-enforced 4,800-byte target per tool (compact ASCII JSON), on both routes and every host
