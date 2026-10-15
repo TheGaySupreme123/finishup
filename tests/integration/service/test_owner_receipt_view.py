@@ -16,7 +16,7 @@ import pytest
 
 from integration.service.test_human_control import _Effects, _Presence, _service
 from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretPurpose
+from yoetz.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
 from yoetz.service.confidential_protocol import (
     AuthorizationRequiredPhase,
     ClientActionEnvelope,
@@ -25,6 +25,7 @@ from yoetz.service.confidential_protocol import (
     HumanCeremonyKind,
     OwnerReceiptViewPreview,
     OwnerReceiptViewResult,
+    OwnerReceiptViewTarget,
     SecretRequiredPhase,
     SelectAuthorizationSourceAction,
     ServerPhaseEnvelope,
@@ -88,9 +89,14 @@ class _OwnerEffects(_Effects):
             return await self.locked.prepare(request)
         return await super().prepare(request)
 
-    async def authorize_owner_receipt_view(self, *args: Any) -> OwnerReceiptViewResult:
+    async def authorize_owner_receipt_view(
+        self,
+        target: OwnerReceiptViewTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> OwnerReceiptViewResult:
         assert self.locked is not None
-        return await self.locked.authorize_owner_receipt_view(*args)
+        return await self.locked.authorize_owner_receipt_view(target, proof, now_monotonic)
 
 
 def _owner_service(
@@ -189,7 +195,7 @@ async def test_a_ceremony_for_a_connection_that_is_gone_mints_nothing(tmp_path: 
     reauth = memory.capture(
         SecretPurpose.PRIVACY_REAUTHENTICATION, bytearray(b"correct horse battery staple")
     )
-    service, grants, admission = _owner_service(tmp_path, "passphrase", [reauth])
+    service, grants, _admission = _owner_service(tmp_path, "passphrase", [reauth])
     grants.clear()  # the command's control connection closed before the owner confirmed
     opened = await service.open_ceremony(
         ClientOpenEnvelope("6" * 64, HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
