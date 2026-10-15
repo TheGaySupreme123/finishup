@@ -442,7 +442,12 @@ def render_human_check(result: CheckSuccessModel) -> str:
         DEFERRED_BEFORE_FIRST_EDIT_TEXT
         if deferred
         else (
-            f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})"
+            COORDINATOR_FAILURE_LIMITATION
+            if result.semantic_reason == "coordinator_failure"
+            else (
+                f"AI-powered review: {_token(result.semantic_status)} "
+                f"({_token(result.semantic_reason)})"
+            )
         )
     )
     if (

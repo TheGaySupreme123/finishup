@@ -2662,7 +2662,9 @@ summary is composed within 4,096 bytes (it was 512, and the closing `check` of 1
 deterministic tb4n3 runs overflowed it). The verdict, the `overall next` instruction, the review
 status/reason and the frontier with its head digest are reserved first, so a closing check always
 reads. The receipt summary reserves the claim-verification pairing (its header and one line per
-flagged obligation) ahead of droppable gap codes, inside the same 4,096-byte cap. A text that cannot be built never fails a committed call: the clause is omitted and named
+flagged obligation) ahead of droppable gap codes, inside the same 4,096-byte cap. When
+AI-powered review failed inside FinishUP, the check and receipt summaries reserve that fault
+sentence too, so a tight summary does not drop it. A text that cannot be built never fails a committed call: the clause is omitted and named
 (`summary_render_failed:<builder>.<clause>`), a service diagnostic records it, and the structured
 result is the call's result. Hook advice over FinishUP's own 2,000-character cap ends with a cut
 marker (no Codex document states a hook limit; the cap is FinishUP's own). No Codex-specific behavior is

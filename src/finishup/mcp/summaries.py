@@ -1708,8 +1708,12 @@ def summary_for_check(envelope: object) -> str:
     parts.extend(
         (
             _req(
-                _deferral_sentence(reason, source)
-                or f"AI-powered review status/reason: {status}/{reason};"
+                COORDINATOR_FAILURE_LIMITATION
+                if reason == "coordinator_failure"
+                else (
+                    _deferral_sentence(reason, source)
+                    or f"AI-powered review status/reason: {status}/{reason};"
+                )
             ),
             _req(f"{_frontier_clause(source)}."),
             _opt(
@@ -2555,7 +2559,8 @@ def summary_for_receipt(envelope: object) -> str:
         typed_document.get("sections")
     ):
         # The gap code stays semantic_relevance_review_not_run. Name the fault (issue #1077).
-        parts.append(_opt(COORDINATOR_FAILURE_LIMITATION, priority=_P_DISCLOSURE))
+        # Required: a tight summary must not drop the fault sentence (issue #1077).
+        parts.append(_req(COORDINATOR_FAILURE_LIMITATION))
     parts.append(
         _opt(
             render.text("review_mode", lambda: _receipt_review_mode_clause(source)),

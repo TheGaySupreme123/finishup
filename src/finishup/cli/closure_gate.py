@@ -93,7 +93,11 @@ from finishup.domain.task_fact_tokens import (
 )
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.protocol.ids import IdKind, new_id
-from finishup.protocol.readiness_text import CODEX_CHECK_CELL_PRAGMA, predicted_receipt_variants
+from finishup.protocol.readiness_text import (
+    CODEX_CHECK_CELL_PRAGMA,
+    coordinator_failure_note,
+    predicted_receipt_variants,
+)
 
 if TYPE_CHECKING:
     from finishup.ports.control import ControlClientKind
@@ -1312,6 +1316,7 @@ def closure_gate_from_readiness(
             if token in present and not (observation_pending and token in _OBSERVATION_DEPENDENT)
         )
         drain_changed_decision = observation_pending and bool(present & _OBSERVATION_DEPENDENT)
+    coord_note = coordinator_failure_note(readiness) or ""
     if not items:
         if not rows and premise is None and not ack_keys and not accept_allowed:
             return None
@@ -1320,6 +1325,10 @@ def closure_gate_from_readiness(
             if rows
             else "FinishUP closure gate (shown once):"
         )
+        # The unchanged coordinator failure is a FinishUP limit. It rides the opener so a
+        # trimmed re-check text still says not to send the same check again.
+        if coord_note:
+            opener = f"{opener} {coord_note}"
         blocker = _blocker_text(rows) if rows else ""
         # The flagged rule does not offer a generic "all met" shortcut (#1079). The legacy
         # unflagged re-read still does, and only where the re-read rides alone.
@@ -1420,6 +1429,8 @@ def closure_gate_from_readiness(
         f"FinishUP closure gate (shown once for ledger frontier {frontier_sequence}): closure still"
         f" requires action before you stop. Remaining: {remaining}."
     )
+    if coord_note:
+        head = f"{head} {coord_note}"
     recheck = _blocker_text(rows, short=offers_blocker) if rows else ""
     unconfirmed_sentence = BLOCKER_UNCONFIRMED_TOKEN in items and not rows and blocker_already_asked
     limitations = _limitation_text(readiness)
