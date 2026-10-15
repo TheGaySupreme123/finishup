@@ -1836,8 +1836,10 @@ claiming completion was never judged for completeness. Decisions:
   amendment of 2026-10-12, #1046), and
   no check since the last material task or verification change is a completed final-phase review.
   That change is an observed edit or shell write, an unclassified observed command or its result,
-  or a cooperative edit or command (`kernel/closing_review_delta`, #1079). Bookkeeping and
-  dispositions do not count, and they do not by themselves ask for another closing review. A review
+  a cooperative edit or command, or a `decision_recorded` whose `review_mode` is set
+  (`kernel/closing_review_delta`, #1079, ADR-049). A decision that leaves `review_mode` unset,
+  and the rest of bookkeeping and dispositions, do not count, and they do not by themselves ask
+  for another closing review. A review
   attempt after that change that was blocked by policy or privacy, not configured,
   classification-uncertain, or denied or expired at human approval satisfies it, because its own
   gaps disclose the limit and a recheck cannot remove it; a timeout or a failed or unavailable

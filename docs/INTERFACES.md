@@ -7804,8 +7804,9 @@ after the check counts; FinishUP's own calls, read-only reads and host bookkeepi
 #976: AI-powered review is required on the route, or completed on the task, or was deferred before
 the first material edit by a check whose route requires it (#1046), and no completed final-phase
 review, or undeliverable review attempt, is current since the last material task or verification
-change — an observed edit or shell write, an unclassified observed command or its result, or a
-cooperative edit or command; bookkeeping and dispositions do not count
+change — an observed edit or shell write, an unclassified observed command or its result, a
+cooperative edit or command, or a `decision_recorded` whose `review_mode` is set (ADR-049); a
+decision that leaves `review_mode` unset, and the rest of bookkeeping and dispositions, do not count
 (`kernel/closing_review_delta`, #1079). An unchanged newest check that failed with
 `coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
 of asking for the same closing review; an actionable

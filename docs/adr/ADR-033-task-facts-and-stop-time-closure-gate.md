@@ -1035,8 +1035,10 @@ Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the ho
 tb4n5 asked for a closing review 5 times across trials where the only later records were
 bookkeeping or dispositions. `closing_review_required` now goes stale only after a material task
 or verification change (`kernel/closing_review_delta`): an observed edit or shell write, an
-unclassified observed command or its result, or a cooperative edit or command. Claims, decisions,
-plans, responses, coordination, assignments, findings, and evidence publication do not. An
+unclassified observed command or its result, a cooperative edit or command, or a
+`decision_recorded` whose `review_mode` is set (ADR-049: switching review mode after the closing
+review makes that review stale). Claims, a decision that leaves `review_mode` unset, plans,
+responses, coordination, assignments, findings, and evidence publication do not. An
 unchanged newest check that failed with reason `coordinator_failure` does not ask for the same
 `final_review` again; readiness adds the standing code `semantic_coordinator_failure` and the
 status, closure-prepare, and receipt text name that FinishUP limit. A material change after the
