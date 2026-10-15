@@ -2442,6 +2442,42 @@ def test_grant_prepare_classifies_provider_binding_only(
             assert "finishup --set" in result.stderr
 
 
+@pytest.mark.parametrize(("grant_state", "first_grant"), [("missing", True), ("granted", False)])
+def test_a_chat_grant_tells_the_candidate_whether_it_is_the_repositorys_first(
+    tmp_path: Path, grant_state: str, first_grant: bool
+) -> None:
+    """ADR-049 review round 2: a first chat grant starts on the first-grant default."""
+
+    async def snapshot() -> SimpleNamespace:
+        return SimpleNamespace(
+            bound_scope={"workspace_ref_commitment": _GRANT_REPOSITORY_COMMITMENT},
+            authority_digest=_GRANT_AUTHORITY_DIGEST,
+            composed_policy=_GRANT_CURRENT,
+            grant_state=grant_state,
+        )
+
+    seen: list[object] = []
+
+    def candidate(*_args: object, **kwargs: object) -> object:
+        seen.append(kwargs.get("first_grant"))
+        raise ValueError("stop after the candidate")
+
+    with (
+        _patch_state(tmp_path),
+        patch("finishup.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
+        patch(
+            "finishup.cli.privacy_setup.configured_bindings",
+            return_value=(_GRANT_EXTERNAL, None),
+        ),
+        patch("finishup.cli.privacy_setup.build_candidate_policy", side_effect=candidate),
+    ):
+        result = CliRunner().invoke(
+            app, ["consent", "prepare", "repository_privacy_grant", "--recipe", "assisted_review"]
+        )
+    assert result.exit_code == 2
+    assert seen == [first_grant]
+
+
 @pytest.mark.parametrize("channel", ["chat", "terminal"])
 def test_expiry_during_preflight_does_not_leave_reusable_approval(
     tmp_path: Path,

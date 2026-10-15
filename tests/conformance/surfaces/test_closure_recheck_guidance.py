@@ -133,7 +133,7 @@ def test_insufficient_packet_goes_to_the_receipt_not_a_deterministic_fallback(na
         for phrase in (
             "deterministic_only` fallback",
             "never use `deterministic_only` merely to shorten closure",
-            "go to the receipt rather than a deterministic fallback",
+            "go to the receipt rather than a local-only fallback",
         )
     )
 

@@ -70,7 +70,7 @@ $ codex
 • Called finishup.check
   └ no_issue_detected
 • Called finishup.receipt
-  └ unresolved_findings_remain · deterministic · coverage-bounded
+  └ unresolved_findings_remain · local · coverage-bounded
 
 Done. The limiter is refactored, and the receipt still carries the two findings I hit on the way.
 ```
@@ -155,7 +155,7 @@ state for future sessions—not that a later session loaded a hook or delivered 
 | **Zero-egress by default** | A fresh installation runs local checks only and is fully useful offline; nothing leaves your machine before first-run setup commits a policy. |
 | **Privacy-gated AI-powered review** | An optional reviewer model reads a bounded, minimized packet built from the ledger — never your repository — behind explicit provider binding and reauthenticated policy authority. |
 | **A full-screen terminal interface** | First run, status, privacy, provider, integration, service, and receipt flows in one interface; no secret ever enters it. |
-| **Recoverable local durability** | Encrypted task bundles, generation-fenced single-writer storage, deterministic replay, backup/restore, and forward-only migrations. |
+| **Recoverable local durability** | Encrypted task bundles, generation-fenced single-writer storage, exact replay, backup/restore, and forward-only migrations. |
 
 See [The six operations](docs/usage/six-operations.md) for the protocol and
 [Receipts and coverage](docs/usage/receipts-and-coverage.md) for what a receipt does and does not
@@ -171,6 +171,11 @@ opt-out). That bounded check carries only the installation's package identity (`
 user content, and it never upgrades the package for you; decline it for a zero-network installation.
 Rerunning setup does not suspend or revoke an existing standing policy: ordinary activity remains
 governed by that policy until the user commits a replacement.
+
+Every task starts with FinishUP's local checks. Setup's recommended answer lets your agent turn on
+AI-powered review for one task when it helps, with a single recorded decision; you can instead keep
+every task local or review every task, and change it later with `finishup privacy conversations`.
+The agent's switch is a request: what may be sent is still decided by your privacy policy.
 
 External AI-powered review is a separate explicit decision. When you choose it, the CLI's
 recommended `assisted-review` recipe shows and confirms a standing policy that sends the reviewer a

@@ -19,6 +19,50 @@ strict route cannot request external AI-powered review even if durable policy is
 is separate from the policy profiles below; see [Auto-approving an MCP
 route](auto-approving-agents.md).
 
+## Which tasks use AI-powered review
+
+Every task starts with FinishUP's local checks unless you chose AI-powered review on every task.
+Within the privacy policy you approved, your setting decides who may turn AI-powered review on for
+one task:
+
+| Setting | What happens | Change it with |
+| --- | --- | --- |
+| Agent opt-in (recommended) | Tasks start local; your agent turns on AI-powered review for a task when it helps, without asking you again. | `finishup privacy conversations agent-opt-in` |
+| Owner approval | Tasks start local; each review an agent turns on waits for your approval, like **Ask every time**. | `finishup privacy conversations owner-approval` |
+| Local only | Agents may not turn on AI-powered review; every task runs local checks only. | `finishup privacy conversations local-only` |
+| Every task | Every task runs with AI-powered review; an agent cannot switch a task out of it. | `finishup privacy conversations ai-powered` |
+
+`finishup privacy conversations status` shows the setting for the current repository; `/privacy`
+in the terminal interface shows it too. Moving toward local checks or your approval applies at
+once. Anything that needs less of you is a widening: it applies only after the trusted local
+approval, like any other widening. Where this repository cannot send anything for review yet, the
+command walks you through the one-time privacy policy that turns AI-powered review on, with your
+setting included. A repository's first privacy policy asks this question too, starting on agent
+opt-in (or the narrower setting an earlier repository's grant chose); choosing a setting for one
+repository never widens what another repository starts with. A repository without a privacy
+policy of its own sends nothing for AI-powered review: `status` and `finishup privacy
+conversations status` say AI-powered review is not set up there, and where tasks start local an
+agent that turns it on for a task there is told to continue locally.
+
+The agent turns AI-powered review on for its task by recording one decision. That decision is a
+request, never a grant: what may be sent is still exactly what this policy allows, the never-send
+set is always withheld, and every disclosure gets a receipt. The task's checks and `status` say
+which mode the task is in and name the decision; the task's receipt lists each switch, the
+identity that recorded it, and the mode its check ran in, and a task that stayed local says so.
+Other tasks are not affected, and a new task starts local again. A task that used AI-powered
+review still gets its closing review before its receipt, even after going back to local checks.
+If the agent turns it on where it cannot run, the task stays local and the check says why and
+what to run: you chose local only, AI-powered review is not set up for the repository yet
+(`finishup --set`, then `finishup --privacy`; `finishup provider status` shows what is missing),
+AI-powered review is turned off in your verification settings, or the agent's connection was
+registered local-only (`finishup setup run --route-profile policy`). When you choose local only,
+no work is sent for AI-powered review from then on, even for a check that was already running.
+
+A policy approved before this setting existed keeps its behaviour: with AI-powered review on, every
+task is reviewed (an agent cannot switch a task out of it); without it, tasks run local checks only,
+and status says AI-powered review is not set up rather than that agents may not use it.
+Background project advice runs only when every task is reviewed.
+
 ## Native work evidence is a separate choice
 
 The default host integration records structural observation. When you explicitly select a host's
@@ -147,7 +191,7 @@ with the agent's work. The setting is part of your privacy policy, so
 ## Commands
 
 ```text
-finishup --privacy                 # recommended policy first; customize only when declined
+finishup --privacy                 # the AI-powered review options or the recommended policy (below)
 finishup privacy setup             # equivalent guided policy review
 finishup privacy show              # current effective policy
 finishup privacy tighten           # tighten (proceeds through gates)
@@ -205,9 +249,20 @@ described in [What AI-powered review actually sends](#what-ai-powered-review-act
 Branches and linked worktrees share authority; independent clones and unrelated repositories do not.
 A task's public `workspace_ref` is not consulted.
 
-The CLI recommends **Assisted review** when the exact configured provider route has a current
-reviewed data-use record stating no default training and retention no longer than 30 days, and
-**Private** otherwise. Assisted review is exact-repository-scoped and problem-local, and does not prompt
+With a reviewer bound, on a repository's first privacy policy or where tasks start local under
+agent opt-in or owner approval, `finishup --privacy` lists the AI-powered review options: Private,
+Metadata only, Assisted review, Expanded review and Custom, with **Assisted review** as the default
+choice. It is marked recommended only when the exact configured provider route has a current
+reviewed data-use record stating no default training and retention no longer than 30 days; on any
+other route (a ChatGPT subscription among them) nothing is marked recommended and the Assisted
+draft records no data-use evidence requirement, which the review screen states. **Private**
+stays selectable and says that every task stays on local checks under it.
+
+Otherwise (no reviewer bound, or an existing policy that is not set to agent opt-in or owner
+approval), the CLI recommends
+**Assisted review** when the exact configured provider route has a current reviewed data-use
+record stating no default training and retention no longer than 30 days, and **Private**
+otherwise. Assisted review is exact-repository-scoped and problem-local, and does not prompt
 before each request once its policy is committed; its tradeoff is that selected ordinary user
 content may be sent. **Metadata only** remains available as the minimal-disclosure option —
 public structural metadata and declared file types, task scope, and a foreground approval before
@@ -442,7 +497,7 @@ follow-up that fails ends
 the check the way a failed review does. Anything else the reviewer names (the task statement, plan
 or claim text, or material only the agent can record) still comes back to the agent as before.
 
-AI-powered output is advisory, provenance-labeled, and deterministically fenced. It never silently
+AI-powered output is advisory, provenance-labeled, and fenced by fixed rules. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.
 
 A reviewer concern is not thrown away because one of its citations or its quote cannot be checked.

@@ -1,8 +1,9 @@
 """Trusted interactive privacy setup used by first run and ``privacy setup``.
 
-One recommendation rule decides the first screen everywhere: **Assisted review** for an exact
-external route with current qualifying data-use evidence, and **Private** otherwise. Accepting the
-recommendation asks nothing further. Declining opens the named recipes, which materialize
+One recommendation rule decides the privacy screen: **Assisted review** for an exact external
+route with current qualifying data-use evidence, and **Private** otherwise. First-run setup asks
+how tasks use AI-powered review before it (ADR-049); a draft that sends work for review also asks
+that conversation question. Accepting the recommendation asks nothing further. Declining opens the named recipes, which materialize
 straight into an exact draft; only ``Custom`` opens field-level configuration, and that is
 five grouped sections rather than a flat questionnaire.
 
@@ -36,6 +37,7 @@ from finishup.adapters.providers.openai_responses_factory import (
 from finishup.domain.privacy import (
     AuthorizationScopeKind,
     ChannelPolicy,
+    ConversationReview,
     CredentialHeuristic,
     DataClass,
     EgressChannel,
@@ -44,6 +46,7 @@ from finishup.domain.privacy import (
     ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    conversation_review_widens,
 )
 from finishup.domain.task_statement import task_statement_disclosure_text
 from finishup.domain.values import JsonObject, validate_sha256_digest
@@ -57,7 +60,11 @@ __all__ = [
     "PrivacySetupReport",
     "PrivacySetupSnapshot",
     "build_candidate_policy",
+    "conversation_review_candidate",
     "credential_heuristic_candidate",
+    "default_conversation_review",
+    "recommended_ai_review_recipe",
+    "run_conversation_review_change",
     "run_credential_heuristic_change",
     "configured_bindings",
     "get_privacy_setup_snapshot",
@@ -158,6 +165,10 @@ class PrivacySetupAnswers:
     # This request is distinct from AI-powered review: it carries only a fixed literal and is
     # available solely while a person is deliberately setting a provider credential.
     credential_probe: bool = False
+    # How conversations start and whether an agent's switch to AI-powered review waits for the
+    # owner (ADR-049). ``None`` keeps the owner's current setting; a first AI-powered review
+    # grant then starts conversations local with the owner approving each review.
+    conversation_review: ConversationReview | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,8 +268,14 @@ def build_candidate_policy(
     answers: PrivacySetupAnswers,
     *,
     now: datetime,
+    first_grant: bool = False,
 ) -> PrivacyPolicy:
-    """Materialize one reviewed questionnaire into the closed policy type."""
+    """Materialize one reviewed questionnaire into the closed policy type.
+
+    ``first_grant`` is a repository's first grant of its own (ADR-049): its conversation setting,
+    when no answer carries one, starts where the conversation question would
+    (``_first_grant_conversation_default``), never on what the installation row inherited.
+    """
 
     if type(current) is not PrivacyPolicy or type(answers) is not PrivacySetupAnswers:
         raise TypeError("privacy_setup_candidate_invalid")
@@ -351,10 +368,45 @@ def build_candidate_policy(
         # A recipe change keeps the owner's credential-heuristic choice (issue #982); only
         # ``finishup privacy credential-heuristic`` moves it.
         current.credential_heuristic,
+        _candidate_conversation_review(current, answers, first_grant=first_grant),
     )
     identity = encode_privacy_policy_json(placeholder)
     identity.pop("policy_digest")
     return replace(placeholder, policy_digest=canonical_digest(cast(JsonValue, identity)))
+
+
+def _candidate_conversation_review(
+    current: PrivacyPolicy, answers: PrivacySetupAnswers, *, first_grant: bool = False
+) -> ConversationReview | None:
+    """The conversation setting a candidate carries (ADR-049).
+
+    An explicit answer wins. Otherwise the owner's explicit setting is kept. A policy without one
+    keeps the released reading, except that a first AI-powered review grant (the inference
+    channel was off and turns on) takes the recommended hybrid: conversations start local and the
+    agent may turn AI-powered review on. Choosing that recipe is the owner's standing
+    pre-authorisation; the new default never turns AI-powered review on for anyone who had not
+    chosen it.
+    """
+
+    if answers.conversation_review is not None:
+        return answers.conversation_review
+    if first_grant:
+        # A repository's first grant (the chat grant path asks no question). One that sends
+        # nothing for review (Private) must read as local only. The repository row composes with
+        # the installation row, so where that row carries a setting (an earlier repository's
+        # hybrid) it records local only explicitly; where nothing is inherited it records none,
+        # so the released bytes stay (review round 3 verification).
+        if answers.network_egress:
+            return _first_grant_conversation_default(current)
+        return ConversationReview.LOCAL_ONLY if current.conversation_review is not None else None
+    if current.conversation_review is not None:
+        return current.conversation_review
+    current_llm = next(
+        item for item in current.channel_policies if item.channel is EgressChannel.LLM_INFERENCE
+    )
+    if answers.network_egress and not current_llm.enabled:
+        return ConversationReview.LOCAL_AGENT_OPT_IN
+    return None
 
 
 _IDENTITY_EXCLUDED_KEYS: Final = frozenset(
@@ -403,6 +455,13 @@ _RECIPE_SUMMARIES: Final[dict[PrivacyRecipe, str]] = {
     "expanded_review": "most reviewer context and detail; allows broader in-scope excerpts",
     "custom": "maximum control; configure each privacy setting yourself",
 }
+# Adding AI-powered review on a route whose provider data-use facts are not reviewed (a ChatGPT
+# subscription among them): Assisted review is the default there but records no evidence
+# requirement, and the review screen says so (ADR-049 review round 3 verification).
+_UNREVIEWED_ASSISTED_SUMMARY: Final = (
+    "better problem-specific feedback from bounded excerpts; this route's provider data-use "
+    "facts are not reviewed, so the draft records no evidence requirement"
+)
 _RECIPE_LABELS: Final[dict[PrivacyRecipe, str]] = {
     "private": "Private",
     "metadata_only": "Metadata only",
@@ -416,8 +475,9 @@ _RECOMMENDATION_TRADEOFF: Final[
     dict[Literal["private", "metadata_only", "assisted_review"], tuple[str, str]]
 ] = {
     "private": (
-        "No eligible exact provider route is configured, so this keeps external review off.",
-        "Trade-off: no external AI-powered review at all; only local checks run.",
+        "FinishUP runs its local checks and sends no work for AI-powered review. You can add "
+        "AI-powered review later, and your agent can then turn it on for a task.",
+        "Trade-off: no AI-powered review until you add it; only local checks run.",
     ),
     "metadata_only": (
         "It enables AI-powered review while disclosing the least that still works, and asks "
@@ -439,33 +499,206 @@ def recommended_privacy_recipe(
     *,
     now: datetime | None = None,
 ) -> Literal["private", "metadata_only", "assisted_review"]:
-    """The one recommendation rule, shared by first run, ``--privacy``, and the TUI.
+    """The one recommendation rule, shared by ``--privacy`` and the TUI ``/privacy``.
 
     Pass ``external`` to avoid re-reading configuration; omit it to load the configured
     binding. Keeping this in one function is why the CLI and the TUI cannot drift into
-    recommending different postures for the same installation.
+    recommending different postures for the same installation. First-run setup asks the review
+    question first (ADR-049): its recommended FinishUP hybrid reaches the AI-powered review
+    recipes through ``recommended_ai_review_recipe``.
+    """
+
+    recommended = recommended_ai_review_recipe(external, now=now)
+    return "private" if recommended is None else recommended
+
+
+def recommended_ai_review_recipe(
+    external: ProviderBinding | None = None,
+    *,
+    now: datetime | None = None,
+) -> Literal["metadata_only", "assisted_review"] | None:
+    """The recipe recommended once the owner has chosen to add AI-powered review.
+
+    **Assisted review** for an exact external route with current reviewed no-training and
+    bounded-retention evidence; no recommendation otherwise, so the owner picks the disclosure
+    knowingly instead of being steered to one.
     """
 
     if external is None:
         external, _local = _configured_bindings()
     if external is None:
-        return "private"
+        return None
     current = datetime.now(UTC) if now is None else now
     return (
         "assisted_review"
         if endpoint_profile_data_use_reviewed(external.endpoint_profile_id, now=current)
-        else "private"
+        else None
     )
 
 
-def _render_recipe_options(*, recommended: PrivacyRecipe | None = None) -> None:
+_CONVERSATION_REVIEW_WORDS: Final[dict[ConversationReview, str]] = {
+    ConversationReview.LOCAL_ONLY: "local checks only; agents may not turn on AI-powered review",
+    ConversationReview.LOCAL_OWNER_APPROVAL: (
+        "tasks start local; each AI-powered review an agent turns on waits for your approval"
+    ),
+    ConversationReview.LOCAL_AGENT_OPT_IN: (
+        "tasks start local; an agent may turn on AI-powered review for a task without asking"
+    ),
+    ConversationReview.AI_POWERED: "AI-powered review on every task",
+}
+_CONVERSATION_REVIEW_CHOICES: Final[tuple[tuple[ConversationReview, str], ...]] = (
+    (
+        ConversationReview.LOCAL_AGENT_OPT_IN,
+        "FinishUP: every task starts with local checks; your agent can turn on AI-powered "
+        "review for a task when it helps",
+    ),
+    (
+        ConversationReview.LOCAL_OWNER_APPROVAL,
+        "Every task starts with local checks; when your agent turns on AI-powered review, you "
+        "approve each review first",
+    ),
+    (
+        ConversationReview.LOCAL_ONLY,
+        "FinishUP, local only: agents may not turn on AI-powered review",
+    ),
+    (
+        ConversationReview.AI_POWERED,
+        "AI-powered review on every task",
+    ),
+)
+
+
+def default_conversation_review(current: PrivacyPolicy) -> ConversationReview:
+    """The answer a conversation question starts on (ADR-049).
+
+    The owner's explicit setting, or the released behaviour of a policy that already sends work
+    for AI-powered review; a first AI-powered review grant takes the recommended hybrid: tasks
+    start local and the agent may turn on AI-powered review when it helps.
+    """
+
+    llm = next(
+        item for item in current.channel_policies if item.channel is EgressChannel.LLM_INFERENCE
+    )
+    if current.conversation_review is None and not llm.enabled:
+        return ConversationReview.LOCAL_AGENT_OPT_IN
+    return current.effective_conversation_review
+
+
+def _conversation_review_prompt(default: ConversationReview) -> ConversationReview:
+    typer.echo("")
+    typer.echo("How should your tasks use AI-powered review?")
+    for number, (value, text) in enumerate(_CONVERSATION_REVIEW_CHOICES, 1):
+        marker = " (recommended)" if value is ConversationReview.LOCAL_AGENT_OPT_IN else ""
+        typer.echo(f"  {number}. {text}{marker}")
+    typer.echo(
+        "FinishUP's local checks run on every task either way. Turning on AI-powered review for "
+        "a task never sends more than the policy you approve here allows."
+    )
+    default_number = next(
+        str(number)
+        for number, (value, _) in enumerate(_CONVERSATION_REVIEW_CHOICES, 1)
+        if value is default
+    )
+    while True:
+        raw = typer.prompt("Tasks", default=default_number).strip()
+        if raw in {"1", "2", "3", "4"}:
+            return _CONVERSATION_REVIEW_CHOICES[int(raw) - 1][0]
+        typer.echo("Please enter 1, 2, 3, or 4.")
+
+
+def _first_grant_conversation_default(current: PrivacyPolicy) -> ConversationReview:
+    """Where a repository's first grant starts the question (ADR-049, review round 1).
+
+    The recommended hybrid, or the installation row's own explicit setting where that is
+    narrower (the owner chose local only, or to approve each review). Whatever the installation
+    row sends, a new repository is asked, never handed another repository's widening.
+    """
+
+    if current.conversation_review in {
+        ConversationReview.LOCAL_ONLY,
+        ConversationReview.LOCAL_OWNER_APPROVAL,
+    }:
+        return cast(ConversationReview, current.conversation_review)
+    return ConversationReview.LOCAL_AGENT_OPT_IN
+
+
+# ADR-049 review round 1: Private stays selectable when the owner adds AI-powered review, but it
+# sends nothing for review, so an agent's opt-in (or "every task") cannot run under it.
+PRIVATE_ADD_ON_WARNING: Final = (
+    "Private sends nothing for AI-powered review: every task stays on local checks, and an "
+    "agent that turns on AI-powered review for a task stays local, until you choose another "
+    "option with 'finishup --privacy'."
+)
+
+_ADD_ON_SETTINGS: Final = frozenset(
+    {
+        ConversationReview.LOCAL_AGENT_OPT_IN,
+        ConversationReview.LOCAL_OWNER_APPROVAL,
+        ConversationReview.AI_POWERED,
+    }
+)
+
+
+def adds_ai_review(conversation_review: ConversationReview | None) -> bool:
+    """Whether a setup answer adds AI-powered review (its privacy step lists the AI recipes)."""
+
+    return conversation_review in _ADD_ON_SETTINGS
+
+
+def _with_conversation_question(
+    current: PrivacyPolicy,
+    answers: PrivacySetupAnswers,
+    explicit: ConversationReview | None = None,
+    *,
+    first_grant: bool = False,
+) -> PrivacySetupAnswers:
+    """Carry the conversation setting into a draft (ADR-049).
+
+    ``explicit`` is an answer the caller already took (first-run setup asks it as its first
+    question): it is used as is and nothing more is asked. Otherwise the question is asked when
+    this draft turns AI-powered review on where it was off, and on a repository's first grant
+    (``first_grant``) whatever the installation row it inherits already sends; re-approving a
+    repository's policy that already sends work keeps the owner's setting, which
+    ``finishup privacy conversations`` changes on its own.
+    """
+
+    if explicit is not None:
+        return replace(answers, conversation_review=explicit)
+    if not answers.network_egress or answers.conversation_review is not None:
+        return answers
+    if first_grant:
+        return replace(
+            answers,
+            conversation_review=_conversation_review_prompt(
+                _first_grant_conversation_default(current)
+            ),
+        )
+    current_llm = next(
+        item for item in current.channel_policies if item.channel is EgressChannel.LLM_INFERENCE
+    )
+    if current_llm.enabled:
+        return answers
+    return replace(
+        answers,
+        conversation_review=_conversation_review_prompt(default_conversation_review(current)),
+    )
+
+
+def _recipe_summary(recipe: PrivacyRecipe, *, unreviewed_route: bool) -> str:
+    if unreviewed_route and recipe == "assisted_review":
+        return _UNREVIEWED_ASSISTED_SUMMARY
+    return _RECIPE_SUMMARIES[recipe]
+
+
+def _render_recipe_options(
+    *, recommended: PrivacyRecipe | None = None, unreviewed_route: bool = False
+) -> None:
     typer.echo("Privacy options:")
     for number, recipe in sorted(_RECIPE_CHOICES.items()):
         marker = " (recommended)" if recipe == recommended else ""
         label = _RECIPE_LABELS[cast(PrivacyRecipe, recipe)]
-        typer.echo(
-            f"  {number}. {label}{marker} — {_RECIPE_SUMMARIES[cast(PrivacyRecipe, recipe)]}"
-        )
+        summary = _recipe_summary(cast(PrivacyRecipe, recipe), unreviewed_route=unreviewed_route)
+        typer.echo(f"  {number}. {label}{marker} — {summary}")
     typer.echo("Credentials, secrets, complete transcripts, and unrelated files are never sent.")
     typer.echo("You can change this any time by running 'finishup --privacy'.")
 
@@ -482,7 +715,12 @@ def _recipe_choice(hint: PrivacyRecipe | None) -> PrivacyRecipe:
         typer.echo("Please enter 1, 2, 3, 4, or 5.")
 
 
-def _recipe_prompt(hint: PrivacyRecipe | None, recommended: PrivacyRecipe | None) -> PrivacyRecipe:
+def _recipe_prompt(
+    hint: PrivacyRecipe | None,
+    recommended: PrivacyRecipe | None,
+    *,
+    unreviewed_route: bool = False,
+) -> PrivacyRecipe:
     """Render the options and take one choice.
 
     The recommendation is passed in rather than derived here. Reading configuration from a
@@ -491,7 +729,10 @@ def _recipe_prompt(hint: PrivacyRecipe | None, recommended: PrivacyRecipe | None
     unhandled traceback, since ``ConfigError`` is not a ``ValueError``.
     """
 
-    _render_recipe_options(recommended=recommended)
+    if unreviewed_route:
+        _render_recipe_options(recommended=recommended, unreviewed_route=True)
+    else:
+        _render_recipe_options(recommended=recommended)
     return _recipe_choice(hint)
 
 
@@ -1085,6 +1326,11 @@ def _render_review(candidate: PrivacyPolicy) -> None:
     typer.echo("  Allowed purposes: " + (", ".join(llm.allowed_purposes) or "none"))
     typer.echo(f"  Authorization ceiling: {llm.scope_ceiling.value}")
     typer.echo(f"  Per-request confirmation: {'yes' if llm.preview_required else 'no'}")
+    if llm.enabled:
+        typer.echo(
+            "  Tasks and AI-powered review: "
+            + _CONVERSATION_REVIEW_WORDS[candidate.effective_conversation_review]
+        )
     typer.echo(
         "  Current provider data-use evidence required: "
         + ("yes" if candidate.require_current_provider_data_use_evidence else "no")
@@ -1244,10 +1490,13 @@ def _confirmed_candidate(
     prompt: str,
     *,
     default: bool,
+    first_grant: bool = False,
 ) -> PrivacyPolicy | None:
     """Render the exact resulting boundary and take one explicit confirmation."""
 
-    candidate = build_candidate_policy(current, answers, now=datetime.now(UTC))
+    candidate = build_candidate_policy(
+        current, answers, now=datetime.now(UTC), first_grant=first_grant
+    )
     _render_review(candidate)
     return candidate if typer.confirm(prompt, default=default) else None
 
@@ -1295,14 +1544,64 @@ def _choose_candidate(
     credential_probe_authorized: bool,
     update_checks_override: bool | None,
     fallback: ProviderBinding | None = None,
+    ai_review_add_on: bool = False,
+    conversation_review: ConversationReview | None = None,
+    first_grant: bool = False,
 ) -> PrivacyPolicy | None:
     """Select the exact candidate policy, or ``None`` when the user declined outright.
 
     Three entry shapes, one exit: the recommendation, a named recipe, or the custom sections.
     Accepting the recommendation is a complete answer and asks nothing further; only ``custom``
-    ever reaches field-level configuration.
+    ever reaches field-level configuration. ``ai_review_add_on`` is the owner adding AI-powered
+    review (ADR-049): the options are listed with the AI-powered review recommendation, if any,
+    and a draft that sends work for review also asks how conversations use it, unless
+    ``conversation_review`` already carries the owner's answer.
     """
 
+    if ai_review_add_on:
+        recommended_ai = recommended_ai_review_recipe(external)
+        typer.echo(
+            "Add AI-powered review: choose what the reviewer may see. FinishUP's local checks "
+            "run either way."
+        )
+        recipe = _recipe_prompt(
+            recommended_ai or "assisted_review",
+            recommended_ai,
+            unreviewed_route=external is not None and recommended_ai is None,
+        )
+        if recipe == "private":
+            typer.echo(PRIVATE_ADD_ON_WARNING)
+        if recipe == "custom":
+            return _confirmed_candidate(
+                current,
+                _with_conversation_question(
+                    current,
+                    replace(
+                        _ask_custom_answers(current, external, local, fallback),
+                        credential_probe=credential_probe_authorized,
+                    ),
+                    conversation_review,
+                    first_grant=first_grant,
+                ),
+                "Use this exact custom privacy policy?",
+                default=False,
+                first_grant=first_grant,
+            )
+        answers = replace(
+            _recipe_answers(recipe, current, external, fallback),
+            credential_probe=credential_probe_authorized,
+        )
+        if update_checks_override is not None:
+            answers = replace(answers, updates=update_checks_override)
+        return _confirmed_candidate(
+            current,
+            _with_conversation_question(
+                current, answers, conversation_review, first_grant=first_grant
+            ),
+            f"Use this exact privacy policy ({_RECIPE_LABELS[recipe]})?",
+            default=True,
+            first_grant=first_grant,
+        )
     if offer_recommended:
         recommended = recommended_privacy_recipe(external)
         _render_recipe_options(recommended=recommended)
@@ -1317,14 +1616,20 @@ def _choose_candidate(
         )
         if update_checks_override is not None:
             answers = replace(answers, updates=update_checks_override)
+        answers = _with_conversation_question(
+            current, answers, conversation_review, first_grant=first_grant
+        )
         candidate = _confirmed_candidate(
             current,
             answers,
             "Use this recommended privacy policy?",
             default=True,
+            first_grant=first_grant,
         )
         if candidate is not None:
             return candidate
+        # A conversation answer already given carries over: the owner is asked it once.
+        conversation_review = answers.conversation_review or conversation_review
         typer.echo("")
         typer.echo("Other privacy options:")
         recipe = _recipe_choice(recommended)
@@ -1335,12 +1640,18 @@ def _choose_candidate(
     if recipe == "custom":
         return _confirmed_candidate(
             current,
-            replace(
-                _ask_custom_answers(current, external, local, fallback),
-                credential_probe=credential_probe_authorized,
+            _with_conversation_question(
+                current,
+                replace(
+                    _ask_custom_answers(current, external, local, fallback),
+                    credential_probe=credential_probe_authorized,
+                ),
+                conversation_review,
+                first_grant=first_grant,
             ),
             "Use this exact custom privacy policy?",
             default=False,
+            first_grant=first_grant,
         )
     answers = replace(
         _recipe_answers(recipe, current, external, fallback),
@@ -1350,9 +1661,34 @@ def _choose_candidate(
         answers = replace(answers, updates=update_checks_override)
     return _confirmed_candidate(
         current,
-        answers,
+        _with_conversation_question(current, answers, conversation_review, first_grant=first_grant),
         f"Create this exact privacy proposal ({_RECIPE_LABELS[recipe]})?",
-        default=False,
+        # ADR-049 review round 1: the owner's explicit "local only" setup answer is a narrowing
+        # they already chose; pressing Enter applies it rather than leaving an existing grant
+        # reviewing tasks the owner just said must stay local.
+        default=recipe == "private" and conversation_review is ConversationReview.LOCAL_ONLY,
+        first_grant=first_grant,
+    )
+
+
+_HYBRID_SETTINGS: Final = frozenset(
+    {ConversationReview.LOCAL_AGENT_OPT_IN, ConversationReview.LOCAL_OWNER_APPROVAL}
+)
+
+
+def _agent_opt_in_needs_ai_recipes(
+    current: PrivacyPolicy, grant_state: str, external: ProviderBinding | None
+) -> bool:
+    """Whether `finishup --privacy` lists the AI-powered review recipes (ADR-049, round 3).
+
+    With a reviewer bound, a repository's first grant or a repository whose tasks start local
+    under agent opt-in or owner approval needs a recipe that reaches that reviewer for an agent's
+    opt-in to run: the released recommendation (Private for a reviewer without reviewed data-use
+    evidence, a ChatGPT subscription among them) would grant nothing on Enter.
+    """
+
+    return external is not None and (
+        grant_state == "missing" or current.effective_conversation_review in _HYBRID_SETTINGS
     )
 
 
@@ -1364,8 +1700,20 @@ async def run_privacy_setup(
     update_checks_override: bool | None = None,
     workspace_locator: Path | None = None,
     credential_heuristic: CredentialHeuristic | None = None,
+    conversation_review: ConversationReview | None = None,
+    ai_review_add_on: bool = False,
+    ai_review_add_on_when_hybrid: bool = False,
 ) -> PrivacySetupReport:
     """Run the trusted questionnaire and apply only an explicitly approved draft.
+
+    ``ai_review_add_on_when_hybrid`` (``finishup --privacy``) lists the AI-powered review recipes
+    instead of the released recommendation where agent opt-in needs one: a reviewer is bound, and
+    this is the repository's first grant or its tasks start local under agent opt-in or owner
+    approval (review round 3). Otherwise the released recommendation stands.
+
+    ``conversation_review`` makes the drafted grant carry that conversation setting (ADR-049),
+    the way ``credential_heuristic`` carries the filter. ``ai_review_add_on`` is the owner adding
+    AI-powered review to FinishUP: it lists the review options with their own recommendation.
 
     ``credential_heuristic`` makes the drafted grant carry that possible-credential filter
     setting (issue #982): ``finishup privacy credential-heuristic disable`` in a repository without a
@@ -1390,11 +1738,16 @@ async def run_privacy_setup(
     current = snapshot.composed_policy
     _render_repository_authority(snapshot)
     external, local = _configured_bindings()
+    if ai_review_add_on_when_hybrid and _agent_opt_in_needs_ai_recipes(
+        current, snapshot.grant_state, external
+    ):
+        ai_review_add_on = True
     try:
+        drafted_from = current
+        if credential_heuristic is not None:
+            drafted_from = replace(drafted_from, credential_heuristic=credential_heuristic)
         candidate = _choose_candidate(
-            current
-            if credential_heuristic is None
-            else replace(current, credential_heuristic=credential_heuristic),
+            drafted_from,
             external,
             local,
             recipe_hint=recipe_hint,
@@ -1402,6 +1755,9 @@ async def run_privacy_setup(
             credential_probe_authorized=credential_probe_authorized,
             update_checks_override=update_checks_override,
             fallback=_configured_fallback_binding(),
+            ai_review_add_on=ai_review_add_on,
+            conversation_review=conversation_review,
+            first_grant=snapshot.grant_state == "missing",
         )
     except ValueError as error:
         return PrivacySetupReport(
@@ -1652,6 +2008,126 @@ async def run_credential_heuristic_change(
     candidate = credential_heuristic_candidate(current, setting, now=datetime.now(UTC))
     if disabling:
         typer.echo(_DISABLE_NOTICE)
+    proposal_id = await _propose(candidate, snapshot.authority_digest, workspace_locator=locator)
+    if proposal_id is None:
+        return PrivacySetupReport(
+            "configured",
+            candidate.profile.value,
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+    return await _decided_report(proposal_id, candidate, current, snapshot)
+
+
+def conversation_review_candidate(
+    current: PrivacyPolicy, setting: ConversationReview, *, now: datetime
+) -> PrivacyPolicy:
+    """The exact successor of ``current`` that changes only the conversation setting (ADR-049).
+
+    Every disclosure dimension is copied unchanged, so the trusted ceremony renders this one line
+    and nothing else.
+    """
+
+    if type(current) is not PrivacyPolicy or type(setting) is not ConversationReview:
+        raise TypeError("privacy_conversation_review_candidate_invalid")
+    now = now.replace(microsecond=(now.microsecond // 1000) * 1000)
+    placeholder = replace(
+        current,
+        version=current.version + 1,
+        policy_digest="sha256:" + "0" * 64,
+        created_at=now,
+        supersedes_policy_digest=current.policy_digest,
+        conversation_review=setting,
+    )
+    identity = encode_privacy_policy_json(placeholder)
+    identity.pop("policy_digest")
+    return replace(placeholder, policy_digest=canonical_digest(cast(JsonValue, identity)))
+
+
+_CONVERSATION_WIDEN_NOTICE: Final = (
+    "This lets AI-powered review run on more tasks with less of your attention. It never sends "
+    "more than this repository's privacy policy already allows."
+)
+
+
+async def run_conversation_review_change(
+    setting: ConversationReview,
+    *,
+    workspace_locator: Path | None = None,
+) -> PrivacySetupReport:
+    """Change how this repository's conversations use AI-powered review (ADR-049).
+
+    The setting belongs to the current repository's grant. Starting conversations with
+    AI-powered review, or letting an agent's switch run without the owner's per-review approval,
+    needs less of the owner: it is proposed for this repository and applies only after the
+    separately reauthenticated trusted-terminal decision. Moving back toward local
+    conversations or owner approval narrows the grant and applies at once. Without a grant no
+    AI-powered review can run here: any setting but local only (inherited from the installation
+    row or not) walks the ordinary one-time grant ceremony with the setting drafted in, never
+    creating a grant on its own, and local only records itself through the Private recipe.
+    """
+
+    if type(setting) is not ConversationReview:
+        raise TypeError("privacy_conversation_review_invalid")
+    locator = Path.cwd() if workspace_locator is None else workspace_locator
+    snapshot = await get_privacy_setup_snapshot(locator)
+    current = snapshot.composed_policy
+    widening = conversation_review_widens(current.effective_conversation_review, setting)
+    current_llm = next(
+        item for item in current.channel_policies if item.channel is EgressChannel.LLM_INFERENCE
+    )
+    # A repository without its own grant inherits the installation row's setting, so choosing a
+    # setting that sends work there is no widening of anything it holds: it needs this
+    # repository's grant (review round 3), walked with the setting drafted in.
+    needs_grant = (
+        snapshot.grant_state != "granted" and setting is not ConversationReview.LOCAL_ONLY
+    ) or (widening and not current_llm.enabled)
+    if (widening or needs_grant) and not _interactive_terminal():
+        return PrivacySetupReport(
+            "failed",
+            "unknown",
+            reason="local_terminal_required",
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+    if needs_grant:
+        # Nothing may be sent for review here yet: the setting rides the one-time policy
+        # ceremony that turns AI-powered review on, never a grant created on its own.
+        typer.echo(
+            "AI-powered review is not set up for this repository yet. Approving the privacy "
+            "policy below is the one-time step; the conversation setting becomes part of it."
+        )
+        return await run_privacy_setup(
+            workspace_locator=locator,
+            conversation_review=setting,
+            ai_review_add_on=True,
+        )
+    if snapshot.grant_state != "granted":
+        if setting is ConversationReview.LOCAL_ONLY and _interactive_terminal():
+            # The owner's explicit "local only" for a repository without its own policy: the
+            # Private recipe carries it, a narrowing that needs no widening ceremony.
+            return await run_privacy_setup(
+                recipe_hint="private",
+                workspace_locator=locator,
+                conversation_review=setting,
+            )
+        return PrivacySetupReport(
+            "unchanged",
+            current.profile.value,
+            reason="repository_privacy_grant_missing",
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+    if current.conversation_review is setting:
+        return PrivacySetupReport(
+            "unchanged",
+            current.profile.value,
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+    candidate = conversation_review_candidate(current, setting, now=datetime.now(UTC))
+    if widening:
+        typer.echo(_CONVERSATION_WIDEN_NOTICE)
     proposal_id = await _propose(candidate, snapshot.authority_digest, workspace_locator=locator)
     if proposal_id is None:
         return PrivacySetupReport(

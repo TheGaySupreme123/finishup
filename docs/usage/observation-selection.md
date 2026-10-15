@@ -10,7 +10,7 @@ native identities and source positions it represents, but it is not per-call con
 verification result. Detailed mode keeps eligible routine calls as individual records and allows
 more bounded optional detail while pressure remains healthy.
 
-The classifier is deterministic and conservative. Failures, denials, cancellations, interrupted,
+The classifier is rule-based, repeatable and conservative. Failures, denials, cancellations, interrupted,
 partial, and unknown outcomes remain individual observations. Edits and side effects, declared tests and
 checks, negative verification, and reads explicitly linked to an obligation, claim, or finding
 remain individual observations in both modes. A read-only command can still be important evidence.

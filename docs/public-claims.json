@@ -195,7 +195,7 @@
     },
     {
       "claim_id": "privacy.assisted_review_user_controlled",
-      "statement": "Every installation seeds zero-egress local_only for external LLM and task-content channels with no human prompt required. The machine policy is an installation ceiling, and ordinary in-policy checks and retries run without a repeated human prompt only after the exact repository has a granted row for the inspectable assisted_review recipe and an exact endpoint with a current data-use record stating training prohibited and retention none or bounded to at most 30 days. Repository identity is derived from the trusted session's canonical Git common root, never public workspace_ref; branches and linked worktrees share it while independent clones do not. Upgrade migration preserves accepted machine-policy bytes and may only narrow them onto bounded pre-upgrade route or one first-repository entitlement without reapproval. Provider human-access and exception facts remain visible, and the data-use record is recommendation evidence, never a technical proof of provider conduct.",
+      "statement": "Every installation seeds zero-egress local_only for external LLM and task-content channels with no human prompt required. The machine policy is an installation ceiling, and ordinary in-policy checks and retries run without a repeated human prompt only after the exact repository has a granted row for the inspectable assisted_review recipe and an exact endpoint with a current data-use record stating training prohibited and retention none or bounded to at most 30 days. Repository identity is derived from the trusted session's canonical Git common root, never public workspace_ref; branches and linked worktrees share it while independent clones do not. Upgrade migration preserves accepted machine-policy bytes and may only narrow them onto bounded pre-upgrade route or one first-repository entitlement without reapproval. Provider human-access and exception facts remain visible, and the data-use record is recommendation evidence, never a technical proof of provider conduct. Within such a grant, the owner's conversation_review setting decides whether each task starts with local checks only and who may turn AI-powered review on for one task; the first-run recommendation (local_agent_opt_in) lets the agent's recorded per-task switch run without a repeated human prompt, owner approval asks for each review, and local_only refuses the switch. A switch is a request that never widens what the grant allows.",
       "scope": {
         "profiles": [
           "local_only",
@@ -556,6 +556,50 @@
       "evidence_kinds": [
         "capability_run",
         "integration_test"
+      ],
+      "release_status": "evidenced"
+    },
+    {
+      "claim_id": "privacy.per_task_review_mode",
+      "statement": "Under the recommended hybrid setting every task starts with local checks only; an agent turns on AI-powered review for its own task with one recorded decision_recorded 1.1.0 switch and can turn it back off. The switch never grants disclosure: what may be sent stays bounded by the owner's repository policy, the never-send set and the privacy gateway, owner approval makes each such review wait for the owner, and an explicit local_only setting, a strict host route, or a repository without AI-powered review set up keeps the task local with a stated reason. Each check records the mode it ran in, status reports the task's current mode, and a receipt names every switch by ledger sequence, event id and authority actor. Widening the setting requires the trusted decision; narrowing applies at once; a policy written before the setting existed keeps its bytes, digest and released check behaviour.",
+      "scope": {
+        "profiles": [
+          "local_only",
+          "confirm_every_request",
+          "minimal_external",
+          "trusted_provider"
+        ],
+        "review_context": [
+          "structural",
+          "assisted",
+          "expanded"
+        ]
+      },
+      "limitations": [
+        "availability_is_structural_not_a_live_provider_probe",
+        "background_advice_only_when_every_task_is_reviewed",
+        "status_reads_the_head_not_at_frontier"
+      ],
+      "surfaces": [
+        "docs/usage/privacy-and-semantic-review.md",
+        "docs/usage/receipts-and-coverage.md",
+        "guidance/review.md"
+      ],
+      "requirements": [
+        "ADR-009",
+        "ADR-049"
+      ],
+      "tests": [
+        "tests/integration/application/test_conversation_review_mode.py",
+        "tests/unit/application/test_check_review_mode.py",
+        "tests/unit/application/test_conversation_review_egress.py",
+        "tests/unit/cli/test_privacy_conversations.py",
+        "tests/unit/kernel/test_review_mode.py",
+        "tests/unit/privacy/test_conversation_review_policy.py"
+      ],
+      "evidence_kinds": [
+        "integration_test",
+        "unit_test"
       ],
       "release_status": "evidenced"
     },

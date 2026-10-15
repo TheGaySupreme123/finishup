@@ -48,6 +48,8 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         # obligation_published 1.1.0 (#1002).
         "acknowledged_not_done_reason",
         "context_digest",
+        # decision_recorded 1.1.0, the conversation review-mode switch (ADR-049).
+        "review_mode",
         "detection_id",
         "membership_generation",
         "recipient_task_id",

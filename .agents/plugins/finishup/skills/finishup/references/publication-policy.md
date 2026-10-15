@@ -239,8 +239,9 @@ operations and does not add a composer or a new protocol field:
    current status frontier. No historical frontier search is needed. A response is a disposition,
    not proof of repair. Observation-authored non-actionable findings need no response.
 4. Run the final check deliberately. Select `semantic_required` when the user, effective policy, or
-   named acceptance criterion requires AI-powered review. If relying on the configured default, omit
-   `mode`; use `semantic_if_configured` only when review is known to be optional. Reserve
+   named acceptance criterion requires AI-powered review. Omit `mode` to run in the task's review
+   mode (`status` `review_mode`); use `semantic_if_configured` only when review is known to be
+   optional. Reserve
    `deterministic_only` for explicitly local/structural work or a deliberate no-egress choice, and
    disclose an unmet required review.
 5. Respond only to findings that check returned that are still unanswered, then read

@@ -573,7 +573,15 @@ case → single-use authorization → bounded gateway → bound sink/provider �
     the optional high-ceremony alternative. A new repository proposal may need both to widen the
     machine ceiling and to insert the first repository row. Those changes are one transition bundle,
     one complete trusted preview, and one authority-digest-bound CAS commit; no intermediate state
-    may authorize every repository.
+    may authorize every repository. **Amendment (ADR-049, issue #1073, 2026-10-14):** the policy
+    also carries the owner's `conversation_review` setting. A first AI-powered review grant made
+    through setup carries `local_agent_opt_in` unless the owner answered otherwise: every task
+    starts with local checks, and within the standing policy an agent's one `decision_recorded`
+    1.1.0 switch turns AI-powered review on for that task without a per-request prompt.
+    `local_owner_approval` restores a per-request decision for every such review, `local_only`
+    refuses agent opt-in, and `ai_powered` is the behaviour above (every task reviewed). The
+    setting never widens what may be sent; widening it is a trusted decision and narrowing it
+    applies at once. A policy without the field keeps its bytes and reads as before.
 15. **Structural subject-state hashing is a local non-disclosure support effect:** ADR-011 permits
     one explicit trusted local CLI command to read bounded Git/worktree bytes only into streaming
     hashers and return a versioned `SubjectStateRef`. It returns no source, diff, filename, path,

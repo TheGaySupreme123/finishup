@@ -20,6 +20,7 @@ from finishup.domain.privacy import (
     AuthorizationScopeKind,
     ChannelPolicy,
     ConsentSource,
+    ConversationReview,
     CredentialHeuristic,
     DataCategory,
     DataClass,
@@ -48,6 +49,7 @@ from finishup.domain.privacy import (
     RequestCommitment,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    policy_field_omitted,
     review_selection_policy_schema_version,
 )
 from finishup.domain.values import (
@@ -152,9 +154,9 @@ def _json(value: object) -> JsonValue:
         return {
             field.name: _json(getattr(value, field.name))
             for field in fields(value)
-            # The credential-heuristic default is never written (issue #982): every policy,
-            # case and receipt from before the field existed keeps its exact canonical bytes.
-            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+            # Defaults that predate their fields are never written (issues #982, ADR-049), so
+            # every policy, case and receipt from before them keeps its exact canonical bytes.
+            if not policy_field_omitted(field.name, getattr(value, field.name))
         }
     if type(value) is dict:
         return {str(key): _json(item) for key, item in cast(dict[object, object], value).items()}
@@ -646,12 +648,25 @@ def _policy_from_domain_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
         _policy_credential_heuristic(source),
+        _policy_conversation_review(source),
     )
 
 
 def _policy_credential_heuristic(source: dict[str, JsonValue]) -> CredentialHeuristic:
     try:
         return _credential_heuristic_from_json(source.get("credential_heuristic"))
+    except ValueError:
+        raise ValueError("privacy_policy_row_corrupt") from None
+
+
+def _policy_conversation_review(source: dict[str, JsonValue]) -> ConversationReview | None:
+    """Absent means unset (the released reading); only the closed values decode (ADR-049)."""
+
+    value = source.get("conversation_review")
+    if value is None:
+        return None
+    try:
+        return ConversationReview(cast(str, value))
     except ValueError:
         raise ValueError("privacy_policy_row_corrupt") from None
 
@@ -669,8 +684,11 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         "fallback_provider_binding" in _mapping(channel) for channel in channels
     ):
         raise ValueError("privacy_policy_row_corrupt")
-    if source.get("schema_version") in {"1.0.0", "1.1.0"} and "credential_heuristic" in source:
-        # The credential-heuristic opt-out exists from wire 1.2.0 on (issue #982).
+    if source.get("schema_version") in {"1.0.0", "1.1.0"} and (
+        "credential_heuristic" in source or "conversation_review" in source
+    ):
+        # The credential-heuristic opt-out (issue #982) and the conversation setting (ADR-049)
+        # exist from wire 1.2.0 on.
         raise ValueError("privacy_policy_row_corrupt")
     review_selection = _review_from_json(source["review_selection"])
     if source.get("schema_version") in {"1.0.0", "1.1.0"} and (
@@ -709,6 +727,7 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
         _policy_credential_heuristic(source),
+        _policy_conversation_review(source),
     )
 
 
@@ -774,6 +793,8 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
         encoded["supersedes_policy_digest"] = policy.supersedes_policy_digest
     if not policy.credential_heuristic_enforced:
         encoded["credential_heuristic"] = policy.credential_heuristic.value
+    if policy.conversation_review is not None:
+        encoded["conversation_review"] = policy.conversation_review.value
     return cast(dict[str, JsonValue], _omit_json_nulls(encoded))
 
 
@@ -785,7 +806,7 @@ def _privacy_policy_wire_version(policy: PrivacyPolicy) -> str:
     """
 
     version = review_selection_policy_schema_version(policy.review_selection)
-    if not policy.credential_heuristic_enforced:
+    if not policy.credential_heuristic_enforced or policy.conversation_review is not None:
         return "1.2.0"
     return version
 

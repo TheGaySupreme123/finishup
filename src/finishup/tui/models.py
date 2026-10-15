@@ -291,7 +291,7 @@ _PRIVACY_LABELS: Final[dict[PrivacyChoice, str]] = {
 }
 
 _PRIVACY_DESCRIPTIONS: Final[dict[PrivacyChoice, str]] = {
-    PrivacyChoice.LOCAL_ONLY: "Nothing leaves this computer. This is the default.",
+    PrivacyChoice.LOCAL_ONLY: "No work is sent for AI-powered review. This is the default.",
     PrivacyChoice.CONFIRM_EVERY_REQUEST: "FinishUP asks before anything is sent, every time.",
     PrivacyChoice.MINIMAL_EXTERNAL: "Structural summaries only; no prose and no excerpts.",
     PrivacyChoice.TRUSTED_PROVIDER: "The widest review this provider binding allows.",
@@ -302,7 +302,7 @@ _PRIVACY_DESCRIPTIONS: Final[dict[PrivacyChoice, str]] = {
 # `finishup privacy setup` must find the same name here; two names for one policy is how people
 # end up believing they configured something they did not.
 PRIVACY_RECIPES: Final[tuple[tuple[str, str, str], ...]] = (
-    ("private", "Private", "Nothing leaves this computer. This is the default."),
+    ("private", "Private", "No work is sent for AI-powered review. This is the default."),
     (
         "metadata_only",
         "Metadata only",
@@ -363,6 +363,28 @@ class PrivacyPosture:
     # ``machine_default``) from the repository setup read, the same derivation status shows
     # (issue #982); ``None`` when it could not be read.
     credential_heuristic: tuple[str, str] | None = None
+    # The owner's conversation setting the composed policy means (ADR-049): the explicit token,
+    # or the released reading of a policy that predates it; ``None`` when unreadable.
+    conversation_review: str | None = None
+    # Whether the owner chose that setting; a released ``local_only`` says nothing is set up.
+    conversation_review_explicit: bool = True
+
+    @property
+    def conversation_review_summary(self) -> str | None:
+        """How tasks use AI-powered review, in the shared wording, with the changing command."""
+
+        from finishup.cli.render import conversation_setting_text
+
+        return (
+            conversation_setting_text(
+                self.conversation_review,
+                explicit=self.conversation_review_explicit,
+                grant_missing=self.repository_grant_state == "missing",
+                migration_pending=self.repository_migration_state
+                in {"legacy_route_available", "first_repository_available"},
+            )
+            or None
+        )
 
     @property
     def credential_heuristic_disabled(self) -> bool:
@@ -514,7 +536,7 @@ _CHECK_DESCRIPTIONS: Final[dict[CheckMode, str]] = {
         "Falls back to local checks and says so when the provider is not ready."
     ),
     CheckMode.SEMANTIC_REQUIRED: "Fails honestly rather than pretending review happened.",
-    CheckMode.DETERMINISTIC_ONLY: "Nothing leaves this computer.",
+    CheckMode.DETERMINISTIC_ONLY: "FinishUP's local checks; sends no work for AI-powered review.",
 }
 
 

@@ -2052,6 +2052,8 @@ async def _run_privacy_setup_command() -> int:
         report = await run_privacy_setup(
             recipe_hint="assisted_review",
             offer_recommended=True,
+            # ADR-049 review round 3: where agent opt-in needs a reviewing recipe, list them.
+            ai_review_add_on_when_hybrid=True,
         )
     except ControlError as error:
         return _control_failure(error)
@@ -2122,6 +2124,161 @@ async def _run_credential_heuristic_command(
         json_output=json_output,
     )
     return 0 if report.outcome in {"configured", "unchanged"} else 20
+
+
+_CONVERSATION_SETTINGS: Final = {
+    "agent-opt-in": "local_agent_opt_in",
+    "owner-approval": "local_owner_approval",
+    "local-only": "local_only",
+    "ai-powered": "ai_powered",
+}
+
+
+async def _run_conversation_review_command(setting_name: str, json_output: bool) -> int:
+    from finishup.cli.privacy_setup import run_conversation_review_change
+    from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.domain.privacy import ConversationReview
+
+    token = _CONVERSATION_SETTINGS.get(setting_name)
+    if token is None:
+        typer.echo(
+            "privacy_conversations_invalid: choose agent-opt-in, owner-approval, local-only, "
+            "or ai-powered",
+            err=True,
+        )
+        return 2
+    setting = ConversationReview(token)
+    try:
+        report = await run_conversation_review_change(setting)
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    except (HumanCeremonyCliError, OSError, ValueError) as error:
+        reason = getattr(error, "reason", None)
+        typer.echo(
+            "privacy_conversations_failed: "
+            f"{reason if type(reason) is str else 'privacy_conversations_failed'}",
+            err=True,
+        )
+        return 20
+    if report.outcome == "failed":
+        typer.echo(f"privacy_conversations_failed: {report.reason or 'invalid'}", err=True)
+        if report.reason == "local_terminal_required":
+            # `finishup --privacy` sets up a grant; name it only where that is what is missing.
+            grant_needed = (
+                report.grant_state != "granted" and setting is not ConversationReview.LOCAL_ONLY
+            )
+            typer.echo(
+                "This needs your approval in a local terminal: run this command there"
+                + (
+                    ", or 'finishup --privacy' to set up this repository's privacy policy."
+                    if grant_needed
+                    else "."
+                ),
+                err=True,
+            )
+        return 20
+    if report.reason == "repository_privacy_grant_missing" and not json_output:
+        typer.echo(
+            "This repository has no privacy policy of its own yet, so no work is sent for "
+            "AI-powered review here. Nothing changed; run this command in a local terminal to "
+            "record the setting.",
+            err=True,
+        )
+    _human_or_json(
+        {
+            "conversation_review": setting.value,
+            "scope": "repository",
+            "outcome": report.outcome,
+            **({"proposal_id": report.proposal_id} if report.proposal_id is not None else {}),
+            **({"reason": report.reason} if report.reason is not None else {}),
+        },
+        json_output=json_output,
+    )
+    return 0 if report.outcome in {"configured", "unchanged"} else 20
+
+
+privacy_conversations_app = typer.Typer(
+    help=(
+        "Choose how this repository's tasks use AI-powered review. Every task starts "
+        "with FinishUP's local checks unless you choose ai-powered. Moving toward local checks "
+        "or your approval applies at once; anything that needs less of you applies only after "
+        "the trusted local approval on this terminal, and never sends more than the "
+        "repository's privacy policy allows."
+    ),
+    no_args_is_help=True,
+)
+privacy_app.add_typer(privacy_conversations_app, name="conversations")
+
+
+@privacy_conversations_app.command("agent-opt-in")
+def privacy_conversations_agent_opt_in(json_output: _JSON = False) -> None:
+    """Recommended: tasks start local; your agent can turn on AI-powered review when it helps."""
+
+    _finish(run_async(lambda: _run_conversation_review_command("agent-opt-in", json_output)))
+
+
+@privacy_conversations_app.command("owner-approval")
+def privacy_conversations_owner_approval(json_output: _JSON = False) -> None:
+    """Tasks start local; each review an agent turns on waits for your approval."""
+
+    _finish(run_async(lambda: _run_conversation_review_command("owner-approval", json_output)))
+
+
+@privacy_conversations_app.command("local-only")
+def privacy_conversations_local_only(json_output: _JSON = False) -> None:
+    """Every task runs local checks only; agents may not turn on AI-powered review."""
+
+    _finish(run_async(lambda: _run_conversation_review_command("local-only", json_output)))
+
+
+@privacy_conversations_app.command("ai-powered")
+def privacy_conversations_ai_powered(json_output: _JSON = False) -> None:
+    """Every task runs with AI-powered review (the behaviour before this setting existed)."""
+
+    _finish(run_async(lambda: _run_conversation_review_command("ai-powered", json_output)))
+
+
+@privacy_conversations_app.command("status")
+def privacy_conversations_status(json_output: _JSON = False) -> None:
+    """Show this repository's setting (read-only)."""
+
+    _finish(run_async(lambda: _run_conversation_review_status(json_output)))
+
+
+async def _run_conversation_review_status(json_output: bool) -> int:
+    from finishup.cli.privacy_setup import get_privacy_setup_snapshot
+    from finishup.cli.render import conversation_setting_text
+
+    try:
+        snapshot = await get_privacy_setup_snapshot(Path.cwd())
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    except OSError, ValueError:
+        typer.echo("privacy_conversations_failed: privacy_setup_unreadable", err=True)
+        return 20
+    policy = snapshot.composed_policy
+    effective = policy.effective_conversation_review.value
+    if not json_output:
+        typer.echo(
+            conversation_setting_text(
+                effective,
+                explicit=policy.conversation_review is not None,
+                grant_missing=snapshot.grant_state == "missing",
+                migration_pending=snapshot.migration_state
+                in {"legacy_route_available", "first_repository_available"},
+            )
+        )
+        return 0
+    _human_or_json(
+        {
+            "conversation_review": effective,
+            "explicit": policy.conversation_review is not None,
+            "scope": "repository",
+            "grant_state": snapshot.grant_state,
+        },
+        json_output=json_output,
+    )
+    return 0
 
 
 privacy_credential_heuristic_app = typer.Typer(
@@ -5574,8 +5731,13 @@ def elevated_prepare(
                 answers = cast(Callable[..., object], getattr(privacy, "recipe_answers"))(
                     cast(str, recipe), current, external
                 )
+                # ADR-049 review round 2: a repository's first grant starts its conversation
+                # setting where the conversation question would, not on the installation row.
                 candidate = cast(Callable[..., object], getattr(privacy, "build_candidate_policy"))(
-                    current, answers, now=datetime.now(UTC)
+                    current,
+                    answers,
+                    now=datetime.now(UTC),
+                    first_grant=getattr(snapshot, "grant_state", None) == "missing",
                 )
                 binding_builder = cast(
                     Callable[..., dict[str, JsonValue]],

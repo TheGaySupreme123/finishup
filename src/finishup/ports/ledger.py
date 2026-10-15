@@ -19,6 +19,7 @@ from finishup.domain.coordination import (
 )
 from finishup.domain.events import (
     CheckChangeShownFiles,
+    CheckReviewMode,
     DeliverableState,
     EventDraft,
     LedgerRecord,
@@ -1048,6 +1049,8 @@ class CheckCommitResult:
     # Issue #986: ``False`` when the check's route did not require AI-powered review; ``None``
     # when it did or the check predates the field (``CheckRecordedPayload``).
     semantic_route_required: bool | None = None
+    # ADR-049: the conversation review mode the check ran in and why (``None`` when unread).
+    review_mode: CheckReviewMode | None = None
     # ADR-045: the deliverable states the check recorded (empty when it read no declared output).
     deliverable_states: tuple[DeliverableState, ...] = ()
     # ADR-045: where each derived task fact this check carries came from; derived by the caller
@@ -1138,7 +1141,7 @@ class CheckCommitResult:
         if (
             self.semantic_route_required is not None
             and type(self.semantic_route_required) is not bool
-        ):
+        ) or (self.review_mode is not None and type(self.review_mode) is not CheckReviewMode):
             raise _invalid()
         try:
             validate_deliverable_states(self.deliverable_states)
@@ -2405,6 +2408,7 @@ class LedgerPort(Protocol):
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
+        review_mode: CheckReviewMode | None = None,
     ) -> CheckCommitResult: ...
 
     async def fail_check_if_current(

@@ -35,6 +35,7 @@ from finishup.domain.observation_settings import (
     ObservationSelection,
     ObservationSelectionSettings,
 )
+from finishup.domain.privacy import ConversationReview
 from finishup.ports.control import ControlClientKind, ControlError
 from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
@@ -408,7 +409,11 @@ def _wire_composed_provider_setup(
         offer_recommended: bool = False,
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
+        conversation_review: ConversationReview | None = None,
+        ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
+        state["conversation_review"] = conversation_review
+        state["ai_review_add_on"] = ai_review_add_on
         cast(list[tuple[str | None, bool, bool, bool | None]], state["privacy_calls"]).append(
             (
                 recipe_hint,
@@ -561,6 +566,8 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
 
     async def privacy_setup(**kwargs: object) -> SimpleNamespace:
         assert kwargs["update_checks_override"] is choice
+        # ADR-049: the local-only answer is recorded as the owner's explicit setting.
+        assert kwargs["conversation_review"] is ConversationReview.LOCAL_ONLY
         return SimpleNamespace(
             outcome=privacy_outcome,
             profile="local_only",
@@ -842,7 +849,8 @@ def test_interactive_wizard_selects_harness_then_installation_and_requires_y_or_
         *_absent_mcp(),  # preview: confirmed absent
         *_absent_mcp(),  # apply re-preview: confirmed absent
         CommandOutput(0, b""),  # add
-        _finishup_entry(),  # verify get
+        # ADR-049: local only registers the policy route too; the privacy policy keeps it local.
+        _finishup_entry("policy"),  # verify get
     ]
 
     import finishup.cli.provider_binding as provider_binding
@@ -853,7 +861,7 @@ def test_interactive_wizard_selects_harness_then_installation_and_requires_y_or_
         provider_binding, "prompt_provider_endpoint_binding", _skip_provider_binding
     )
 
-    # Harness 1, installation 2, local-only, update checks yes, then strict setup confirmation.
+    # Harness 1, installation 2, local-only, update checks yes, then policy setup confirmation.
     result = _RUNNER.invoke(
         cli.app,
         ["setup", "run"],
@@ -870,7 +878,7 @@ def test_interactive_wizard_selects_harness_then_installation_and_requires_y_or_
     assert "Choose how FinishUP should review work:" in result.stdout
     assert "complete FinishUP Codex project integration" in result.stdout
     assert "MCP server name: finishup" in result.stdout
-    assert "Command: finishup mcp serve --host codex --semantic off" in result.stdout
+    assert "Command: finishup mcp serve --host codex\n" in result.stdout
     assert "Codex executable: /b/codex" in result.stdout
     assert "Confirm Codex project setup? [Y/N]" in result.stdout
     assert "Observation consent for this workspace" in result.stdout
@@ -917,7 +925,7 @@ def test_interactive_registration_n_declines_without_mutation(
         assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
-def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
+def test_semantic_first_run_lists_the_ai_review_recipes_for_the_privacy_draft(
     wizard_env: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -931,7 +939,7 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
         CommandOutput(0, b""),  # add
         _finishup_entry("policy"),  # verify get
     ]
-    privacy_calls: list[tuple[str | None, bool, bool, bool | None]] = []
+    privacy_calls: list[tuple[str | None, bool, bool, bool | None, object, bool]] = []
 
     async def ready(*, start_if_absent: bool = False) -> dict[str, object]:
         del start_if_absent
@@ -956,6 +964,8 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
         offer_recommended: bool = False,
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
+        conversation_review: ConversationReview | None = None,
+        ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
         privacy_calls.append(
             (
@@ -963,6 +973,8 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
                 offer_recommended,
                 credential_probe_authorized,
                 update_checks_override,
+                conversation_review,
+                ai_review_add_on,
             )
         )
         return SimpleNamespace(
@@ -990,7 +1002,10 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
     )
 
     assert result.exit_code == 0, (result.output, result.exception)
-    assert privacy_calls == [("assisted_review", True, True, True)]
+    # ADR-049: the recommended first answer drafts the hybrid conversation setting, and its
+    # privacy step lists the AI-powered review recipes (Assisted review by default), never the
+    # released Private recommendation a subscription reviewer gets (review round 1, P2-3).
+    assert privacy_calls == [(None, False, True, True, ConversationReview.LOCAL_AGENT_OPT_IN, True)]
     assert "Privacy: configured (confirm_every_request)" in result.stdout
 
 
@@ -1132,7 +1147,9 @@ def test_composed_wizard_preserves_privacy_when_hidden_credential_input_is_empty
     assert semantic_status["repository_grant_state"] == "granted"
     assert report["marker_written"] is False
     assert state["binding_embedded_flags"] == [False]
-    assert state["privacy_calls"] == [("assisted_review", True, True, True)]
+    # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
+    assert state["privacy_calls"] == [(None, False, True, True)]
+    assert state["ai_review_add_on"] is True
     assert state["status_reads"] == 2
     assert state["restart_calls"] == 1
     assert state["stored"] is False
@@ -1201,7 +1218,9 @@ def test_composed_wizard_reaches_semantic_readiness_after_hidden_credential_stor
     assert report["next_steps"] == []
     assert report["marker_written"] is True
     assert state["binding_embedded_flags"] == [False]
-    assert state["privacy_calls"] == [("assisted_review", True, True, True)]
+    # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
+    assert state["privacy_calls"] == [(None, False, True, True)]
+    assert state["ai_review_add_on"] is True
     assert state["status_reads"] == 2
     assert state["restart_calls"] == 2
     assert state["stored"] is True
@@ -1645,18 +1664,19 @@ def test_interactive_preview_surfaces_a_route_profile_transition(
     import finishup.cli.setup as setup_module
 
     wizard_env["outputs"] = [
-        _finishup_entry("policy"),  # preview get: owned on the policy route
-        _finishup_entry("policy"),  # observe get: the registered route (#1058 review round 3)
-        _finishup_entry("policy"),  # adapter apply re-preview get
+        _finishup_entry("strict"),  # preview get: owned on the strict route (an earlier setup)
+        _finishup_entry("strict"),  # observe get: the registered route (#1058 review round 3)
+        _finishup_entry("strict"),  # adapter apply re-preview get
         CommandOutput(0, b""),  # add
-        _finishup_entry("strict"),  # verify get
+        _finishup_entry("policy"),  # verify get
     ]
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(
         provider_binding, "prompt_provider_endpoint_binding", _skip_provider_binding
     )
 
-    # Installation, home, local-only review (strict), update checks yes, confirm.
+    # Installation, home, local-only review, update checks yes, confirm. ADR-049: every answer
+    # registers the policy route, so an earlier strict registration visibly moves to it.
     result = _RUNNER.invoke(
         cli.app,
         ["setup", "run"],
@@ -1664,8 +1684,8 @@ def test_interactive_preview_surfaces_a_route_profile_transition(
     )
 
     assert result.exit_code == 0, (result.output, result.exception)
-    assert "MCP route profile change: policy -> strict" in result.stdout
-    assert "MCP route profile: strict (changed from policy)" in result.stdout
+    assert "MCP route profile change: strict -> policy" in result.stdout
+    assert "MCP route profile: policy (changed from strict)" in result.stdout
 
 
 def test_failed_activation_preview_reports_bound_home_and_real_reason(
@@ -2800,12 +2820,14 @@ def test_interactive_setup_reconfirms_mcp_entry_exposed_by_plugin_activation(
 ) -> None:
     import finishup.cli.setup as setup_module
 
+    # ADR-049: the local-only answer registers the policy route, so an activation that exposes
+    # a strict entry is the different one the owner must reconfirm.
     wizard_env["outputs"] = [
         *_absent_mcp(),
-        _finishup_entry("policy"),  # Activation exposes the bundled entry after the first preview.
-        _finishup_entry("policy"),  # The replacement preview must describe that actual entry.
+        _finishup_entry("strict"),  # Activation exposes the bundled entry after the first preview.
+        _finishup_entry("strict"),  # The replacement preview must describe that actual entry.
         *(
-            [_finishup_entry("policy"), CommandOutput(0, b""), _finishup_entry("strict")]
+            [_finishup_entry("strict"), CommandOutput(0, b""), _finishup_entry("policy")]
             if approved
             else []
         ),

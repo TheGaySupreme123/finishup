@@ -115,8 +115,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # hand-authored count to review and the owning resource-ripple command can regenerate the rest.
 # 306 + 3: the publish-action-notices canonical vector (was unpackaged), the review-packet-row
 # 2.0.0 provider contract, and its golden-vector case; +1: the advice egress/category-denial
-# canonical vector (#1019).
-REVIEWED_RESOURCE_COUNT: Final = 310
+# canonical vector (#1019). ADR-049: +1 schema decision-recorded 1.1.0, +1 canonical
+# review-mode vectors (CAN-020).
+REVIEWED_RESOURCE_COUNT: Final = 312
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -811,6 +812,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
                 in {
                     "check_recorded",
                     "claim_recorded",
+                    "decision_recorded",
                     "obligation_published",
                     "plan_published",
                     "plan_revised",

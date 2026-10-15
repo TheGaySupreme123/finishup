@@ -59,7 +59,11 @@ __all__ = [
     "ClassifiedContext",
     "ClassifiedContextItem",
     "ConsentSource",
+    "ConversationReview",
     "CredentialHeuristic",
+    "conversation_review_widens",
+    "narrower_conversation_review",
+    "policy_field_omitted",
     "external_review_credential_heuristic",
     "DataCategory",
     "DataClass",
@@ -251,6 +255,61 @@ class CredentialHeuristic(str, Enum):  # noqa: UP042 - durable enum
 
     ENFORCED = "enforced"
     DISABLED = "disabled"
+
+
+class ConversationReview(str, Enum):  # noqa: UP042 - durable enum
+    """How each conversation starts and who may switch it to AI-powered review (ADR-049).
+
+    A conversation is one task. Every value but ``ai_powered`` starts each conversation with
+    local checks only; a conversation switches to AI-powered review through its own
+    ``decision_recorded`` 1.1.0 switch. ``local_agent_opt_in`` is the recommended default: the
+    owner's choice of it is the standing pre-authorisation for an agent to switch a conversation
+    on. Under ``local_owner_approval`` every AI-powered review a switch (or an explicit per-check
+    request) asks for waits for the owner's per-request decision. Under ``local_only`` agents may
+    not opt in: a switch leaves the conversation local. ``ai_powered`` starts every conversation
+    with AI-powered review, the behaviour of every policy written before this field existed. None
+    of them grants disclosure: the channel rows still decide what may leave, to whom, and how much.
+    """
+
+    LOCAL_ONLY = "local_only"
+    LOCAL_OWNER_APPROVAL = "local_owner_approval"
+    LOCAL_AGENT_OPT_IN = "local_agent_opt_in"
+    AI_POWERED = "ai_powered"
+
+
+_CONVERSATION_REVIEW_OPENNESS: Final[dict[ConversationReview, int]] = {
+    ConversationReview.LOCAL_ONLY: 0,
+    ConversationReview.LOCAL_OWNER_APPROVAL: 1,
+    ConversationReview.LOCAL_AGENT_OPT_IN: 2,
+    ConversationReview.AI_POWERED: 3,
+}
+
+
+def policy_field_omitted(name: str, value: object) -> bool:
+    """Whether a policy field is left out of its canonical bytes at this value.
+
+    The credential-heuristic default (issue #982) and an unset conversation setting (ADR-049) are
+    never written, so every policy, case and receipt from before those fields existed keeps its
+    exact canonical bytes and digest.
+    """
+
+    return value is CredentialHeuristic.ENFORCED or (
+        name == "conversation_review" and value is None
+    )
+
+
+def conversation_review_widens(before: ConversationReview, after: ConversationReview) -> bool:
+    """Whether moving from *before* to *after* needs less of the owner (a loosening)."""
+
+    return _CONVERSATION_REVIEW_OPENNESS[after] > _CONVERSATION_REVIEW_OPENNESS[before]
+
+
+def narrower_conversation_review(
+    first: ConversationReview, second: ConversationReview
+) -> ConversationReview:
+    """The setting of the two that needs more of the owner (ADR-049)."""
+
+    return min((first, second), key=lambda item: _CONVERSATION_REVIEW_OPENNESS[item])
 
 
 class EgressChannel(str, Enum):  # noqa: UP042 - durable enum
@@ -991,6 +1050,10 @@ class PrivacyPolicy:
     # Owner opt-out for the low-confidence credential heuristic (issue #982). Encoded only when
     # ``disabled`` so every policy written before the field existed keeps its bytes and digest.
     credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
+    # The owner's conversation default and agent opt-in (ADR-049). ``None`` is every policy
+    # written before the field existed; it is encoded only when set, so those keep their bytes and
+    # digest, and ``effective_conversation_review`` reads it as the released behaviour.
+    conversation_review: ConversationReview | None = None
 
     def __post_init__(self) -> None:
         validate_id(IdKind.PRIVACY_POLICY, self.policy_id)
@@ -1077,10 +1140,31 @@ class PrivacyPolicy:
         if self.supersedes_policy_digest is not None:
             validate_sha256_digest(self.supersedes_policy_digest)
         _enum(self.credential_heuristic, CredentialHeuristic)
+        if self.conversation_review is not None:
+            _enum(self.conversation_review, ConversationReview)
 
     @property
     def credential_heuristic_enforced(self) -> bool:
         return self.credential_heuristic is CredentialHeuristic.ENFORCED
+
+    @property
+    def effective_conversation_review(self) -> ConversationReview:
+        """The conversation setting this policy means, explicit or released (ADR-049).
+
+        An explicit value is the owner's. A policy written before the field existed keeps the
+        released behaviour: AI-powered review in every conversation where its inference channel
+        is enabled, and local checks only where nothing may be sent for review.
+        """
+
+        if self.conversation_review is not None:
+            return self.conversation_review
+        llm = next(
+            (item for item in self.channel_policies if item.channel is EgressChannel.LLM_INFERENCE),
+            None,
+        )
+        if llm is not None and llm.enabled:
+            return ConversationReview.AI_POWERED
+        return ConversationReview.LOCAL_ONLY
 
     def meet(self, other: PrivacyPolicy) -> PrivacyPolicy:
         """Intersect two standing policies (ADR-009 decision 6 / protocol policy resolution).
@@ -1218,6 +1302,7 @@ class PrivacyPolicy:
             identity.created_at,
             None,
             _composed_credential_heuristic(self, other),
+            _composed_conversation_review(self, other),
         )
         meet_identity: dict[str, JsonValue] = {
             "components": cast(JsonValue, sorted((self.policy_digest, other.policy_digest))),
@@ -1232,6 +1317,9 @@ class PrivacyPolicy:
         if not placeholder.credential_heuristic_enforced:
             # Absent when enforced, so every existing composition keeps its digest.
             meet_identity["credential_heuristic"] = placeholder.credential_heuristic.value
+        if placeholder.conversation_review is not None:
+            # Absent when unset, so every existing composition keeps its digest (ADR-049).
+            meet_identity["conversation_review"] = placeholder.conversation_review.value
         return replace(
             placeholder,
             policy_digest=canonical_digest(cast(JsonValue, meet_identity)),
@@ -1293,6 +1381,36 @@ def external_review_credential_heuristic(
     if local_sink is None and binding is not None and binding.transport == "external":
         return policy.credential_heuristic
     return CredentialHeuristic.ENFORCED
+
+
+def _composed_conversation_review(
+    first: PrivacyPolicy, second: PrivacyPolicy
+) -> ConversationReview | None:
+    """Compose the conversation setting of two scopes (ADR-049).
+
+    Like the credential heuristic, the setting belongs to the repository grant: between the
+    installation-wide row and a repository row, the repository row's explicit value decides and
+    the installation value is only the default a repository without one inherits. Any other
+    composition keeps the setting that needs more of the owner. Unset on both sides stays unset,
+    so the released reading applies to the composed policy.
+    """
+
+    kinds = {first.effective_scope.kind, second.effective_scope.kind}
+    if kinds == {AuthorizationScopeKind.MACHINE, AuthorizationScopeKind.WORKSPACE}:
+        repository, machine = (
+            (first, second)
+            if first.effective_scope.kind is AuthorizationScopeKind.WORKSPACE
+            else (second, first)
+        )
+        if repository.conversation_review is not None:
+            return repository.conversation_review
+        return machine.conversation_review
+    explicit = [
+        item.conversation_review for item in (first, second) if item.conversation_review is not None
+    ]
+    if not explicit:
+        return None
+    return min(explicit, key=lambda item: _CONVERSATION_REVIEW_OPENNESS[item])
 
 
 def _composed_credential_heuristic(
@@ -1374,6 +1492,7 @@ PRIVACY_CHANGE_AREAS: Final = frozenset(
 PRIVACY_CHANGE_FIELDS: Final = {
     "global": frozenset(
         {
+            "conversation_review",
             "credential_heuristic",
             "effective_scope",
             "network_egress",
@@ -1545,36 +1664,39 @@ _CHANGE_IMPACT: Final[dict[tuple[str, str], int]] = {
     ("local_model", "enabled"): 4,
     ("local_model", "binding"): 5,
     ("channel", "preview_required"): 6,
-    ("global", "provider_data_use_evidence"): 7,
+    # How conversations start and whether an agent's switch to AI-powered review waits for the
+    # owner (ADR-049): the same question as per-request confirmation, asked per conversation.
+    ("global", "conversation_review"): 7,
+    ("global", "provider_data_use_evidence"): 8,
     # Whether possible-credential values are filtered out of what is disclosed: a disclosure
     # dimension, read before which categories and sensitivity classes may leave (issue #982).
-    ("global", "credential_heuristic"): 8,
-    ("channel", "data_classes"): 9,
-    ("channel", "categories"): 10,
-    ("channel", "purposes"): 11,
-    ("global", "effective_scope"): 12,
-    ("channel", "scope_ceiling"): 13,
-    ("channel", "authorization_ttl_seconds"): 14,
-    ("channel", "max_bytes"): 15,
-    ("channel", "max_tokens"): 16,
-    ("local_model", "data_classes"): 17,
-    ("local_model", "categories"): 18,
-    ("agent_context", "data_classes"): 19,
-    ("agent_context", "categories"): 20,
-    ("human_control", "data_classes"): 21,
-    ("human_control", "categories"): 22,
-    ("review", "include_exact_command_text"): 23,
-    ("review", "include_finding_prose"): 24,
-    ("review", "relevance"): 25,
-    ("review", "excerpt_kinds"): 26,
-    ("review", "sections"): 27,
-    ("review", "max_excerpt_bytes"): 28,
-    ("review", "max_total_excerpt_bytes"): 29,
-    ("review", "max_excerpts"): 30,
-    ("review", "max_change_observations"): 31,
-    ("review", "max_assessments"): 32,
-    ("review", "max_timeline_items"): 33,
-    ("review", "max_omissions"): 34,
+    ("global", "credential_heuristic"): 9,
+    ("channel", "data_classes"): 10,
+    ("channel", "categories"): 11,
+    ("channel", "purposes"): 12,
+    ("global", "effective_scope"): 13,
+    ("channel", "scope_ceiling"): 14,
+    ("channel", "authorization_ttl_seconds"): 15,
+    ("channel", "max_bytes"): 16,
+    ("channel", "max_tokens"): 17,
+    ("local_model", "data_classes"): 18,
+    ("local_model", "categories"): 19,
+    ("agent_context", "data_classes"): 20,
+    ("agent_context", "categories"): 21,
+    ("human_control", "data_classes"): 22,
+    ("human_control", "categories"): 23,
+    ("review", "include_exact_command_text"): 24,
+    ("review", "include_finding_prose"): 25,
+    ("review", "relevance"): 26,
+    ("review", "excerpt_kinds"): 27,
+    ("review", "sections"): 28,
+    ("review", "max_excerpt_bytes"): 29,
+    ("review", "max_total_excerpt_bytes"): 30,
+    ("review", "max_excerpts"): 31,
+    ("review", "max_change_observations"): 32,
+    ("review", "max_assessments"): 33,
+    ("review", "max_timeline_items"): 34,
+    ("review", "max_omissions"): 35,
 }
 
 

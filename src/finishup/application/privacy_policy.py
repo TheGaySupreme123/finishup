@@ -12,6 +12,7 @@ from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
+    ConversationReview,
     CredentialHeuristic,
     EgressChannel,
     PolicyOverlay,
@@ -23,6 +24,9 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    conversation_review_widens,
+    narrower_conversation_review,
+    policy_field_omitted,
     sort_privacy_changes,
     validate_privacy_change_set,
 )
@@ -390,6 +394,36 @@ async def privacy_get_setup(
     return PrivacySetupView(effective, choices, examples, recipes, False, authority)
 
 
+def _llm_inference_enabled(policy: PrivacyPolicy) -> bool:
+    return any(
+        item.channel is EgressChannel.LLM_INFERENCE and item.enabled
+        for item in policy.channel_policies
+    )
+
+
+def _machine_conversation_review(
+    machine: PrivacyPolicy, candidate: PrivacyPolicy
+) -> ConversationReview | None:
+    """The installation row's conversation setting after a repository-bound proposal (ADR-049).
+
+    The installation row is only the default a repository without its own grant inherits, so a
+    repository's proposal never widens it: an explicit setting stays as it is. An unset row whose
+    inference channel this proposal turns on would read as the released "every task" setting in
+    every other repository (review round 2), so it takes the narrower of the repository's answer
+    and the recommended hybrid: an "every task" answer never widens other repositories, and the
+    hybrid default holds for them. A row whose inference channel was already on (an installation
+    that predates the setting) keeps its released reading.
+    """
+
+    if machine.conversation_review is not None:
+        return machine.conversation_review
+    if _llm_inference_enabled(machine) or not _llm_inference_enabled(candidate):
+        return None
+    return narrower_conversation_review(
+        candidate.effective_conversation_review, ConversationReview.LOCAL_AGENT_OPT_IN
+    )
+
+
 async def privacy_propose_policy(
     app: PrivacyPolicyApplication, request: ProposePrivacyPolicyRequest
 ) -> PolicyProposalResult:
@@ -478,8 +512,13 @@ async def privacy_propose_policy(
         compound: list[PolicyTransitionMember] = []
         # The credential-heuristic opt-out belongs to the repository grant (owner decision,
         # 2026-10-07): a repository-bound proposal never moves the installation-wide default.
+        # Nor does the conversation setting (ADR-049): see ``_machine_conversation_review``.
         machine_candidate = _policy_for_scope(
-            replace(candidate, credential_heuristic=machine.policy.credential_heuristic),
+            replace(
+                candidate,
+                credential_heuristic=machine.policy.credential_heuristic,
+                conversation_review=_machine_conversation_review(machine.policy, candidate),
+            ),
             machine_scope,
             policy_id=machine.policy.policy_id,
             version=machine.policy.version + 1,
@@ -975,6 +1014,21 @@ def privacy_policy_changes(
         PrivacyPolicyChangeValue.of_flag(candidate.credential_heuristic_enforced),
         current.credential_heuristic_enforced and not candidate.credential_heuristic_enforced,
     )
+    # Conversations that start with AI-powered review, or an agent's switch that no longer waits
+    # for the owner, need less of the owner: a widening through the trusted decision. Moving back
+    # toward local conversations or owner approval is a tightening that applies directly
+    # (ADR-049). The effective values are compared, so an unset field reads as released.
+    current_conversations = current.effective_conversation_review
+    candidate_conversations = candidate.effective_conversation_review
+    _append(
+        changes,
+        "global",
+        "conversation_review",
+        None,
+        PrivacyPolicyChangeValue.of_labels((current_conversations.value,)),
+        PrivacyPolicyChangeValue.of_labels((candidate_conversations.value,)),
+        conversation_review_widens(current_conversations, candidate_conversations),
+    )
     _review_changes(changes, candidate.review_selection, current.review_selection)
     for new, old in zip(candidate.channel_policies, current.channel_policies, strict=True):
         _channel_changes(changes, new, old)
@@ -1085,8 +1139,9 @@ def _to_json(value: object) -> object:
         return {
             field.name: _to_json(getattr(value, field.name))
             for field in fields(value)
-            # Never written at its default, so every existing policy identity is unchanged.
-            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+            # Defaults that predate their fields are never written (issues #982, ADR-049), so
+            # every policy, case and receipt from before them keeps its exact canonical bytes.
+            if not policy_field_omitted(field.name, getattr(value, field.name))
         }
     if type(value) is tuple:
         return [_to_json(member) for member in cast(tuple[object, ...], value)]

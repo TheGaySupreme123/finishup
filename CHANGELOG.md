@@ -209,6 +209,30 @@ unreleased above reverse-chronological released versions.
   can read an agreeing registration without manual selection; disagreement has an explicit
   continuation and cannot grant admission; the refusal is `host_admission_codex_binary_inconsistent`.
 
+- **Every task starts local, and your agent turns on AI-powered review when it helps.** A task
+  runs FinishUP's local checks until the agent records one `decision_recorded` 1.1.0 switch with
+  `review_mode: "ai_powered"` (and `"local"` to turn it back off); later checks that omit `mode`
+  then run AI-powered review within your privacy policy, and other tasks are unaffected. Your
+  setting decides who may switch: agent opt-in (the new recommended first-run answer), owner
+  approval (each review waits for you), local only (agents may not opt in), or every task.
+  `finishup privacy conversations agent-opt-in|owner-approval|local-only|ai-powered|status` changes
+  and shows it per repository; widening it needs the trusted local approval, narrowing applies at
+  once. `check` and `status` carry `review_mode` (the mode, why, and the switch), the CLI, terminal
+  interface and MCP text say "Review mode: local (FinishUP)" or "Review mode: AI-powered review"
+  with the reason, and a task that asked and still runs local gets the exact command to run (one-time
+  reviewer setup, the owner's local-only choice, or re-registering a local-only host connection).
+  A receipt names each switch by sequence, event id, the actor the ledger recorded (with its
+  assurance) and the declared authority, and says how its check ran ("ran local checks only
+  (FinishUP); AI-powered review was not requested for this task" for a local task). A local
+  task's checks complete at local coverage, and its closure readiness and the Stop gate ask for no
+  AI-powered review it will never run; a task that already used AI-powered review still gets its
+  closing review from the Stop gate's `check` with `final_review: true`, even after it runs local
+  again. Under "every task" (and on installations set up earlier that review every task) an
+  agent's switch to local changes nothing, so it can never drop a required review. The owner's
+  local only is enforced at the privacy gateway as well, including for a check already in flight,
+  and a failed read of the setting runs the check local. A switch is a request, never a grant. Guidance `review.md` says when to turn it on and
+  when to stay local, with the exact draft; the startup card points at it. Same MCP path on Codex,
+  Claude Code and Cursor (#1073, ADR-049).
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
   in FinishUP's own observation), what the host's hooks observed since the last check, and whether each
@@ -486,6 +510,42 @@ unreleased above reverse-chronological released versions.
   warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and an older reviewed
   release is used instead if you have one. Every other warning still stops setup.
   Authenticated live evidence through a capability-admitted release is pending.
+- **Output says "local", not "deterministic".** A clean local check now reads "no issue detected
+  within local coverage" on the CLI, the terminal interface and MCP; human finding lists label
+  their origin "local" or "AI-powered review"; guidance, usage docs and the README follow. The
+  terminal interface no longer says "Nothing leaves this computer" for the Private policy or a
+  local-only check; it says no work is sent for AI-powered review. Wire values keep their
+  spellings (`deterministic_only`, `deterministic_mode`, `no_unresolved_deterministic_findings`).
+- **First-run setup asks three review answers, all on the policy route.** "FinishUP
+  (recommended): local checks; your agent can turn on AI-powered review for a task when it
+  helps", "FinishUP, local only (agents may not opt in)", or "AI-powered review on every task".
+  Every answer registers the policy MCP route, so you can allow agent opt-in later without
+  reconnecting; the privacy policy alone decides what may be sent. The prompt wizard, the
+  host-connection path and the terminal interface's first run ask the same question and set up what
+  it chose, and so does `/connect` for Claude Code and Cursor (Codex `/connect` still inspects or
+  repairs on its configured route); non-interactive setup keeps the strict default for a fresh
+  registration, so an agent driving setup passes `--route-profile policy`. The two answers that add AI-powered review list the privacy options with Assisted
+  review as the default (recommended only for a provider with reviewed data-use terms, so a ChatGPT
+  subscription is your explicit choice); Private stays selectable and says tasks stay local under
+  it. The local-only answer applies on Enter. A repository's first privacy grant asks how its
+  tasks use AI-powered review (a chat grant starts on the same default), and widening one
+  repository never widens the installation-wide default: a fresh install's first grant gives it the
+  hybrid (or the narrower answer), so another project or an independent clone starts local instead
+  of waiting for its own grant on every check. A repository without its own privacy grant says
+  "AI-powered review is not set up for this repository" in status, the terminal interface and
+  `finishup privacy conversations status`, and an agent's opt-in there stays local and says why;
+  status says "not set up" rather than "agents may not" for an installation that never chose.
+  `finishup privacy conversations agent-opt-in` (or `owner-approval`) in such a repository now
+  walks its privacy grant with the setting included instead of reporting no change. With a
+  reviewer bound, `finishup --privacy` lists the AI-powered review options (Assisted review by
+  default, Private with its warning) on a repository's first grant and wherever tasks start local
+  under agent opt-in or owner approval, so a ChatGPT subscription owner is no longer granted
+  Private on Enter (on a route without reviewed data-use terms Assisted review is the default but
+  is not marked recommended, and the listing says its draft records no evidence requirement); a
+  first Private grant reads as local only rather than the hybrid an earlier repository chose. Abandoning AI-powered review setup in the
+  terminal interface now finishes as local only without re-registering. Installations set up
+  earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1073,
+  ADR-049).
 
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent

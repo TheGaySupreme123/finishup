@@ -44,11 +44,15 @@ exactly those contracts and connects the steps without weakening any existing tr
    coverage, and a first-run default that quietly guarantees that outcome under-serves the operator
    who came for review. The same amendment requires that the answer be taken *before* the MCP
    registration it determines, and that the registered route follow from it — registering first and
-   asking after is how an AI-powered review install ends up ceilinged on the strict route. The
+   asking after is how an AI-powered review install ends up ceilinged on the strict route
+   (*superseded by ADR-049: every interactive answer registers the policy route*). The
    latter path registers the policy route, configures the provider and credential, then renders one
    exact recommended `assisted_review` policy only when the exact provider route has current
    reviewed no-training evidence and retention no longer than 30 days; otherwise it recommends
-   `private`. Accepting that exact draft asks nothing further; declining it opens the named recipes,
+   `private` (*superseded by ADR-049 review round 1 for the answers that add AI-powered review:
+   they list the recipes with `assisted_review` as the default choice, marked recommended only on
+   that reviewed route, and Private stays selectable with a warning that tasks stay local under
+   it*). Accepting that exact draft asks nothing further; declining it opens the named recipes,
    which materialize directly into a draft, with only `custom` reaching field-level configuration in
    five grouped sections. Both paths propose the reviewed exact disclosure and hand widening to the
    separately reauthenticated trusted decision ceremony. On a real local TTY it may invoke the
@@ -73,7 +77,18 @@ exactly those contracts and connects the steps without weakening any existing tr
    recommended or named recipe before rendering the exact candidate; it changes no other recipe
    field, creates no authority itself, and never bypasses candidate confirmation or the existing
    trusted service decision ceremony. Declining produces the genuine zero-network `private`
-   candidate rather than silently restoring the recipe default.
+   candidate rather than silently restoring the recipe default. **Amendment (ADR-049, issue #1073,
+   2026-10-14): the review-mode recommendation.** The first-run question now has three answers,
+   and the recommended, pre-selected one is "FinishUP (recommended): local checks; your agent can
+   turn on AI-powered review for a task when it helps", which leads to the reviewer setup and a
+   privacy policy carrying `conversation_review = local_agent_opt_in`; choosing it is the owner's
+   standing permission for an agent to turn AI-powered review on for one task. The other answers
+   are "FinishUP, local only (agents may not opt in)" (the Private recipe with an explicit
+   `local_only`) and "AI-powered review on every task". All three register the `policy` MCP route;
+   the route is no longer derived from the answer, and the earlier "AI-powered review
+   (recommended)" wording and its provider/API-key and update-check text are retired. The terminal
+   interface asks the same three answers. Non-interactive setup is unchanged (decision 10 of
+   ADR-049).
 
    Repository scope comes only from the service's trusted locator path. CLI and TUI supply their
    actual working directory; MCP supplies its configured/session working directory. The service
@@ -226,7 +241,8 @@ exactly those contracts and connects the steps without weakening any existing tr
    exception fallback) applies only to a fresh registration, and non-interactive `--accept` alone
    never changes an existing route (guided `setup run|status|disconnect --host codex` too since
    2026-10-15; see "Several projects in one host configuration", item 5). The interactive wizard still derives the route from the
-   review-mode answer, and any transition of an existing owned route is shown in the confirmed
+   review-mode answer (*superseded by ADR-049: every interactive answer registers the policy
+   route*), and any transition of an existing owned route is shown in the confirmed
    preview and reported as `route_profile_before` → `route_profile`. Separately, when an explicit
    Codex home was supplied, the registration and readiness `plugin_activation` blocks echo the
    bound home/config path and the actual activation failure reason instead of resetting to

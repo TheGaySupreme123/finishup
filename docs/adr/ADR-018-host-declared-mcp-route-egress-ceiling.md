@@ -106,6 +106,14 @@ strict (wizard) or the configuration derivation (`integrate`), and any transitio
 owned route is surfaced (`route_profile_before` → `route_profile`) before the ordinary
 digest-bound re-registration.
 
+**Amended 2026-10-14 — every interactive review answer registers the policy route (ADR-049).**
+Interactive first run no longer maps a local-only answer to the strict route: the owner's privacy
+policy and its `conversation_review` setting decide whether a task's AI-powered review may run,
+so the policy route lets an owner allow agent opt-in later without re-registering. Non-interactive
+setup keeps the fresh-registration strict default above. A task that turns on AI-powered review on
+a strict route runs local with `route_local_only` and the exact re-registration command, rather
+than failing its checks.
+
 **Issue #151 implementation detail.** The portable projection emits one closed stdio server named
 `finishup`. Its executable token is exactly `finishup`; policy args are exactly `mcp serve`, and strict
 args are exactly `mcp serve --semantic off`. Portable routes retain the generic unknown host

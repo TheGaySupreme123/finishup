@@ -312,8 +312,8 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "check",
         None,
-    ): 438,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
-    # #1047 +1 follow_up_round
+    ): 442,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
+    # #1047 +1 follow_up_round; ADR-049 +4 review_mode
     ("publish_work", None): 64,
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
@@ -321,8 +321,8 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "status",
         None,
-    ): 121,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
-    # tb4n4 #1044 +7: closure_readiness.undeclared_references
+    ): 129,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
+    # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
@@ -2571,7 +2571,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1587
+        len(derived_patterns) == 1599
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices
@@ -2584,7 +2584,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1614
+        len(rules) == 1626
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices
@@ -2596,8 +2596,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1587  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
-    # #1048 +38, #1047 +2, tb4n5 +3
+    assert len(registry_patterns) == 1599  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -3227,7 +3227,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 229
+    assert SCHEMA_MEMBER_COUNT == 230
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3312,11 +3312,12 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_806
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_815
     )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
     # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),
-    # tb4n5 +2 (read_guidance page-zero sections: the item and its uri)
+    # tb4n5 +2 (read_guidance page-zero sections: the item and its uri), ADR-049 +9
+    # (decision-recorded 1.1.0 and its draft branch, review_mode)
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:

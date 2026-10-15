@@ -130,6 +130,7 @@ __all__ = [
     "finding_acknowledged_not_done",
     "gap_base_code",
     "live_lineage_blockers",
+    "semantic_review_used",
     "split_gaps",
 ]
 
@@ -576,6 +577,40 @@ def _review_deferred(payload: CheckRecordedPayload) -> bool:
     )
 
 
+def _recorded_checks(records: Iterable[LedgerRecord]) -> tuple[CheckRecordedPayload, ...]:
+    return tuple(
+        record.payload
+        for record in records
+        if record.schema.name == "check_recorded" and type(record.payload) is CheckRecordedPayload
+    )
+
+
+def semantic_review_used(records: Iterable[LedgerRecord]) -> bool:
+    """Whether the task already used AI-powered review (#976, #1046).
+
+    A recorded check whose AI-powered review succeeded, or that deferred before the first edit a
+    review its route requires. Such a task owes its closing review; a ``final_review: true``
+    check that names no mode in a task now running local is that review (ADR-049).
+    """
+
+    return any(
+        payload.semantic_status is SemanticStatus.SUCCEEDED or _review_deferred(payload)
+        for payload in _recorded_checks(records)
+    )
+
+
+def _review_mode_undeliverable(payload: CheckRecordedPayload) -> bool:
+    """Whether this check asked for AI-powered review and its task's setting kept it local.
+
+    The owner chose local checks only, the host connection is on the strict route, review is
+    turned off, or AI-powered review is not set up (ADR-049): no recheck by the agent can
+    supply the review, exactly like an undeliverable review status.
+    """
+
+    review_mode = payload.review_mode
+    return review_mode is not None and review_mode.local_reason is not None
+
+
 def _closing_review_facts(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
@@ -594,15 +629,8 @@ def _closing_review_facts(
     third value says the latest check so deferred: no routine check can supply that review.
     """
 
-    checks = tuple(
-        record.payload
-        for record in records
-        if record.schema.name == "check_recorded" and type(record.payload) is CheckRecordedPayload
-    )
-    used = any(
-        payload.semantic_status is SemanticStatus.SUCCEEDED or _review_deferred(payload)
-        for payload in checks
-    )
+    checks = _recorded_checks(records)
+    used = semantic_review_used(records)
     deferred = bool(checks) and _review_deferred(checks[-1])
     for record in reversed(records):
         payload = record.payload
@@ -620,7 +648,7 @@ def _closing_review_facts(
         ):
             return False, used, deferred
         status = payload.semantic_status
-        if status in _UNDELIVERABLE_SEMANTIC_STATUSES:
+        if status in _UNDELIVERABLE_SEMANTIC_STATUSES or _review_mode_undeliverable(payload):
             return True, used, deferred
         if _review_round_stopped(payload):
             return review_round_stopped(records), used, deferred

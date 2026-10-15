@@ -94,6 +94,12 @@ never stored or shown.
 
 FinishUP does not watch your workspace. What is published is what exists.
 
+To turn on AI-powered review for the current task, publish one `decision_recorded` event at
+version `1.1.0` with `review_mode: "ai_powered"` (and `review_mode: "local"` to turn it back off).
+Its `statement` and `rationale` say why; its `authority` is the agent's own actor id. Later checks
+that omit `mode` then run with AI-powered review, within what your privacy policy allows; other
+tasks are unaffected. Version `1.0.0` refuses the field.
+
 Authoring help for MCP: tool descriptions name `finishup://guidance/publication-policy.md`; invalid
 requests include nested field hints plus `finishup://guidance/request-templates.md`.
 
@@ -103,7 +109,7 @@ coverage vector. `mode` selects how much:
 
 | Mode | Use it when |
 |---|---|
-| Omitted | You intend to use the configured verification default. |
+| Omitted | Run in the task's review mode: local checks only until the task turns on AI-powered review, then AI-powered review. Where the task's mode is not set, the configured verification default. |
 | `semantic_if_configured` | Review is known to be optional. Runs AI-powered review if it is available; degrades honestly if not. |
 | `semantic_required` | The user, effective verification policy, or a named acceptance criterion requires independent AI-powered review. Preserve this choice for subsequent final checks. |
 | `deterministic_only` | Explicitly local or structural checks, or a user-authorized deliberate no-egress choice. Where review is required, the check records `semantic_review_not_requested`: disclose it and the unmet required review. |
@@ -168,7 +174,7 @@ instead. One call answers three questions:
 Omit `scope`, `max_findings`, `policy_packs` and `final_review` (they are refused beside
 `inspect`); `await_observations` works as for any check.
 
-A local-only check can report “no issue detected within deterministic coverage” while preserving
+A local-only check can report “no issue detected within local coverage” while preserving
 the limitation that AI-powered review did not run. Open obligations, missing requested attempts,
 live failures and actionable findings prevent that result. Follow the overall next step: supply
 missing input when it names something you can provide; disclose standing limitations when there is
@@ -260,6 +266,13 @@ existing obligation-text projection policy, and its text states how to resolve a
 publish it again with every field as recorded, `status` `resolved`, and `resolution_evidence_refs`
 naming the evidence or result ids that show the work done. `view=results` resolves `res_` ids to bounded structural
 facts: source event, payload availability, outcome, linked action, and linked evidence ids.
+
+Every view also carries the task's `review_mode` when the service can read your setting: `mode`
+(what the next check that omits `mode` runs in, `local` or `ai_powered`), `requested`, your
+`setting`, whether AI-powered review is set up (`ai_review_available`), the latest switch's event
+id and sequence, and, for a local task, `local_reason` (`conversation_default`,
+`switched_to_local`, `owner_local_only`, `route_local_only`, `ai_review_not_set_up`). It is read at
+the current head, not at `at_frontier`.
 
 Before completion, read `declared_obligation_count`, `no_obligations_reason`, and
 `closure_readiness`. An empty readable plan without a typed reason is blocked by

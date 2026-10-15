@@ -215,6 +215,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "application/json",
         True,
     ),
+    (
+        "fixtures/canonical/review-mode-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
     ("guidance/startup.md", "guidance", "text/markdown", True),
     ("guidance/recovery.md", "guidance", "text/markdown", True),
     ("guidance/publication.md", "guidance", "text/markdown", True),
@@ -750,6 +756,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/events/decision-recorded-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/decision-recorded-1.1.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,

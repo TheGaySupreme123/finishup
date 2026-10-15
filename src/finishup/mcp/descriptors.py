@@ -164,7 +164,8 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
-        # Payload version discrimination remains in the full authoring/admission schemas.
+        # Payload version discrimination remains in the full authoring/admission schemas (the
+        # compact form names no draft version, so decision_recorded 1.1.0, ADR-049, adds none).
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
@@ -878,6 +879,32 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
                 "actor": dict(_EXAMPLE_ACTOR),
                 "client": dict(_EXAMPLE_CLIENT),
             },
+            # ADR-049: turn AI-powered review on for the rest of this task (review_mode local
+            # turns it back off). One decision on decision_recorded 1.1.0; the owner's policy
+            # decides whether and what is sent.
+            {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": _example_id("request", 14),
+                "session_id": _example_id("session", 1),
+                "writer_id": _example_id("writer", 1),
+                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
+                "event_drafts": [
+                    _example_draft(
+                        14,
+                        "decision_recorded",
+                        {
+                            "statement": "Use AI-powered review for the rest of this task.",
+                            "rationale": "Multi-file change that local checks cannot judge.",
+                            "authority": _EXAMPLE_ACTOR["actor_id"],
+                            "review_mode": "ai_powered",
+                        },
+                        version="1.1.0",
+                    ),
+                ],
+                "actor": dict(_EXAMPLE_ACTOR),
+                "client": dict(_EXAMPLE_CLIENT),
+            },
             *(
                 _lifecycle_example(40 + index, family)
                 for index, family in enumerate(
@@ -1398,7 +1425,8 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
         mode = properties.get("mode")
         if isinstance(mode, dict):
             mode["description"] = (
-                "Omit to use the configured default. Select semantic_required for a known "
+                "Omit to run in the task's review mode (status review_mode). Select "
+                "semantic_required for a known "
                 "requirement, including final rechecks; semantic_if_configured only when review "
                 "is known to be optional. inspect is a read: it records nothing, mints no "
                 "findings, runs no review and takes no scope, max_findings, policy_packs or "
@@ -1416,7 +1444,9 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             final_review["description"] = (
                 "Set true for the closing review, the last check before the receipt: the "
                 "reviewer judges each stated requirement and requested output against the task, "
-                "with or without a completion claim. Omit for in-progress checks."
+                "with or without a completion claim. Omit for in-progress checks. Without mode, "
+                "a task that already used AI-powered review runs it here even if it now runs "
+                "local."
             )
         await_observations = properties.get("await_observations")
         if isinstance(await_observations, dict):
@@ -1924,6 +1954,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "ascending ASCII order; rejection names unsorted_set_field. attempted_items belongs only on the "
         "action_recorded payload; copy each requested_items value exactly and never place it on "
         "claim_recorded. decision_recorded.authority is a structural actor id, not approval prose; "
+        "decision_recorded 1.1.0 review_mode ai_powered or local switches this task's review "
+        "(finishup://guidance/review.md); "
         "action_kind is one of command, edit, research, review, or other; command also requires "
         "command. claim_recorded at schema 1.1.0 separates supporting_refs from "
         "limitation_refs and corrections name exact prior effective claims in supersedes_claim_refs. "
@@ -1954,9 +1986,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "is left to close and why, what hooks observed since the last check, and whether each "
         "obligation's evidence links to its declared deliverables or commands; use it instead "
         "of repeated status reads. A no_issue_detected verdict does not mean the work is "
-        "correct. Choose mode "
+        "correct. Omit mode to run in the task's review mode (status review_mode; tasks may start "
+        "local). Choose mode "
         "deliberately: semantic_required when the user, effective policy or acceptance requires "
-        "it, including subsequent final checks. Omit mode to preserve the configured default; "
+        "it, including subsequent final checks; "
         "use semantic_if_configured only when review is known to be optional. Reserve "
         "deterministic_only for explicitly local or structural checks or a user-authorized no-egress "
         "choice, disclose semantic_review_not_requested, and keep any required review unmet. "
@@ -2187,8 +2220,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "policy": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:678c28071085258547d5379188a1e522c38bfd645ba618afa17d0a9e611b9e50",
-                "check": "sha256:dbee5513a344d7661f5866e1f898f585a3cfd0d228878c78e56f4db3dbf1168b",
+                "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
+                "check": "sha256:47cf4c5da38d3fe16b62c4bbd877d673246e1d11507d4b0e5d26473d0dfedaad",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
                 "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2199,8 +2232,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "strict": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:678c28071085258547d5379188a1e522c38bfd645ba618afa17d0a9e611b9e50",
-                "check": "sha256:a846120a701e25cc66f39252287757a844c987795fdfded9f3d0d5d6f6a1a009",
+                "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
+                "check": "sha256:b6693e7110658e03adf10536263950ad4d90d11d5549ef190e4a40cec875fa3d",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
                 "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2212,8 +2245,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:a061a8645d1616c676fb82e3a6fb589f426df662db51f5ff4737b61e2a5453fb",
-        "strict": "sha256:2d9dcaa04e20293068cd0933828e4d656fb62a2474f0a417fe085b9aa85e7609",
+        "policy": "sha256:7c02f2c13206ab2fe6be1ebd311a64dc2d3b7f561c2856a18c06cf0ac6e30973",
+        "strict": "sha256:9759d058cee7128b17c2f207ca63d785a5aa5fc11d7ed1da33ff625e7184caa4",
     }
 )
 

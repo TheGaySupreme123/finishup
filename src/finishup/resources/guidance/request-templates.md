@@ -485,6 +485,36 @@ records it, so never cite it.
 }
 ```
 
+A decision on version `1.1.0` with `review_mode` switches the current task between local checks
+(`local`) and AI-powered review (`ai_powered`); see [`review.md`](review.md) for when. Version
+`1.0.0` refuses `review_mode`, and `1.1.0` requires it. The switch is a request: the owner's
+setting and privacy policy decide whether and what is sent, and `status` `review_mode` shows the
+result.
+
+```json
+{
+  "protocol_version": "0.1", "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000014",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+  "event_drafts": [{
+    "event_id": "evt_00000000-0000-4000-8000-000000000014",
+    "schema": {"name": "decision_recorded", "version": "1.1.0"},
+    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
+    "payload": {
+      "statement": "Turn on AI-powered review for the rest of this task.",
+      "rationale": "Cross-module change that local checks cannot judge.",
+      "authority": "harness:mcp-template",
+      "review_mode": "ai_powered"
+    },
+    "artifact_refs": [], "evidence_refs": []
+  }],
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
+}
+```
+
 ## `publish_work`: action
 
 `action_kind` is a closed enum: `command`, `edit`, `research`, `review`, or `other`. A source or
@@ -809,11 +839,12 @@ and limit. Absence from the latest check's returned findings is not proof of res
 ## `check`: whole case
 
 Omit `scope` for the whole case. Two empty arrays are also whole-case semantics, but omission is
-clearer. When relying on the configured review default, omit `mode`; the runtime applies the
-effective policy. Select `semantic_required` when the user, policy, or named acceptance criterion
-requires AI-powered review. Use `semantic_if_configured` only when review is known to be optional,
-and reserve `deterministic_only` for explicitly local/structural work or a deliberate no-egress
-choice. The examples use the configured default and the accepted bounded finding cap of `10`.
+clearer. Omit `mode` to run in the task's review mode (`status` `review_mode`); the effective
+privacy policy still governs what is sent. Select `semantic_required` when the user, policy, or
+named acceptance criterion requires AI-powered review. Use `semantic_if_configured` only when
+review is known to be optional, and reserve `deterministic_only` for explicitly local/structural
+work or a deliberate no-egress choice. The examples omit `mode` and use the accepted bounded
+finding cap of `10`.
 
 ```json
 {
