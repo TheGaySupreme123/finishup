@@ -3932,6 +3932,40 @@ def _auto_supply_refusal(
     return _output_secret_reason(content)
 
 
+def _observed_command_clip(
+    encoded: bytes, limit: int
+) -> tuple[str, tuple[tuple[int, int], ...]] | None:
+    """Head and tail of ``encoded`` within ``limit``, with a cut-edge label prefixed again.
+
+    ``_head_tail_kept`` fills ``limit``. The elision marker ends on a newline, so the tail
+    (and a head that begins on a label) can start at ``[FinishUP`` even though the bytes were
+    prefixed before the cut. Those two edges are neutralised again. The elision marker stays
+    a FinishUP line. The caller reserves two ``(agent text) `` prefixes so the result still
+    fits the excerpt. Kept intervals index ``encoded``, not the prefixes added here.
+    """
+
+    if limit < 1:
+        return None
+    _clip, kept = _head_tail_kept(encoded, limit)
+    if not kept:
+        return None
+    if len(kept) == 1 and kept[0][0] == 0:
+        head = encoded[: kept[0][1]].decode("utf-8", errors="ignore")
+        return _neutralised_agent_text(head), kept
+    if len(kept) != 2 or kept[0][0] != 0:
+        return None
+    (_head_start, head_end), (tail_start, tail_end) = kept
+    head = encoded[:head_end].decode("utf-8", errors="ignore")
+    tail = encoded[tail_start:tail_end].decode("utf-8", errors="ignore")
+    elided = len(encoded) - head_end - (tail_end - tail_start)
+    body = (
+        _neutralised_agent_text(head)
+        + _elision_marker(elided, len(encoded))
+        + _neutralised_agent_text(tail)
+    )
+    return body, kept
+
+
 def _marked_observed_command_candidate(
     candidate: _ExcerptCandidate,
     content: bytes,
@@ -3950,9 +3984,16 @@ def _marked_observed_command_candidate(
     body = _neutralised_agent_text(content.decode("utf-8", errors="replace"))
     encoded = body.encode("utf-8")
     room = excerpt_limit - marker_bytes
+    # One prefix on the head edge and one on the tail edge, after the cut.
+    prefix_room = 2 * len(_AGENT_TEXT_PREFIX.encode("ascii"))
     clipped = len(encoded) > room
     if clipped:
-        clip, kept = _head_tail_kept(encoded, room)
+        if room <= prefix_room:
+            return None
+        clipped_body = _observed_command_clip(encoded, room - prefix_room)
+        if clipped_body is None:
+            return None
+        clip, kept = clipped_body
     else:
         clip, kept = body, ((0, len(encoded)),) if encoded else ()
     text = marker + clip
