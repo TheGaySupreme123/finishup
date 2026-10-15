@@ -2086,14 +2086,15 @@ applies on macOS, Linux and Windows through WSL 2.
   (local-only, or the provider's disclosure policy) and an API key's repository binding then use
   that folder; otherwise setup stops with `workspace_locator_invalid` and a next step (it used to
   fail as `internal_error` after every answer).
-- **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held
-  credential (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20,
-  shows the bound model and any fallback, asks no API-key verification question, and prints its
-  own layer report (the sign-in stays in the dedicated evaluator home; no live review is
-  demonstrated) instead of the API-key vault report. A declined or failed privacy step is
-  incomplete on every provider path: exit 20, its reason, and a `finishup --privacy` next step,
-  with no setup marker written. A completed step ends with "start a fresh agent session" instead
-  of the former Codex-only "Preview Codex MCP registration again".
+- **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held credential
+  (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20, shows the bound
+  model and any fallback, asks no API-key verification question, and prints its own layer report
+  (the sign-in stays in the dedicated evaluator home; no live review is demonstrated) instead of the
+  API-key vault report. A declined or failed privacy step is incomplete on every provider path
+  (`finishup --set`, the guided connection and the Codex-only wizard): exit 20, its reason, and a
+  `finishup --privacy` next step, plus the credential step when an API key was never stored, with no
+  setup marker written. A completed step ends with "start a fresh agent session" instead of the
+  former Codex-only "Preview Codex MCP registration again".
 - **Ambiguous or missing installation.** Connect and disconnect name the installations to pass
   with `--host-path` (or say none was found) instead of the misleading "trusted local terminal"
   step.

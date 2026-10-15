@@ -224,7 +224,8 @@ which names a next step. Only setup's own suggestion for a new binding can fall 
 `--model` and an existing binding are never substituted. Sign-in and every review still re-prove
 the exact model and efforts against Codex's catalog.
 
-Earlier releases preselected `gpt-6-luna` with final effort `high`; those bindings keep both on
+Released 0.2.x setups preselected `gpt-5.6-luna` with final effort `high` (unreleased 0.3 builds
+briefly `gpt-6-luna` at `high`); those bindings keep both on
 upgrade. When an existing binding is targeted, omitting `--model` preserves its
 exact model, including during `--switch-account`; an explicit `--model` (including `gpt-5.6-sol`
 when the app-server lists it) is required to change it. OpenAI API-key and other provider-preset

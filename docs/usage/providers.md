@@ -52,7 +52,9 @@ New setups suggest `gpt-6.1-sol` with reasoning effort `medium` for final review
 for routine checkpoints. The suggestion is bound only when the Codex that FinishUP runs lists
 `gpt-6.1-sol` with those efforts. An older Codex such as `0.157.1` does not, so setup uses
 `gpt-6-luna` instead and says so before the sign-in. A model you type yourself is never
-substituted, and upgrading never changes the model an existing setup already uses.
+substituted, and upgrading never changes the model an existing setup already uses. The
+suggestion is checked against Codex's model list only; no authenticated AI-powered review with
+`gpt-6.1-sol` has been recorded yet.
 
 A check counts as final when your task has recorded a completion claim; every earlier check is a
 routine checkpoint, which can use a lower effort than final reviews. Use

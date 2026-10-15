@@ -180,13 +180,13 @@ Provider compatibility (for example the OpenAI Responses adapter) names an exact
 adapter/SDK/endpoint/model profile and is optional and advisory; the strict-local base support
 FinishUP ships with is independent of any provider profile. New `codex-chatgpt-subscription@1`
 setups suggest `gpt-6.1-sol` with final and routine reasoning `medium` when the evaluator Codex
-lists it, and otherwise bind `gpt-6-luna` at `medium` with a printed reason (`gpt-6-luna` at `high`
-before 0.3.0). The exact Codex `0.157.1` evaluator cells (#871) list `gpt-6-luna` but not
-`gpt-6.1-sol`, so on them setup binds `gpt-6-luna`; the superseded `0.150.1` cells cannot list
-`gpt-6-luna`. Neither suggestion is a live packaged cell: no authenticated `gpt-6.1-sol` review
-has run, and the suggestion rewrites neither historical Sol exact-cell evidence nor existing
-bindings. Platform support is stated as an exact
-artifact/runtime/SQLite/filesystem/key-backend cell (for example "macOS 11.0+ arm64, APSW
+lists it, and otherwise bind `gpt-6-luna` at `medium` with a printed reason (released 0.2.x setups
+suggested `gpt-5.6-luna` at `high`; unreleased 0.3 builds briefly `gpt-6-luna` at `high`). The exact
+Codex `0.157.1` evaluator cells (#871) list `gpt-6-luna` but not `gpt-6.1-sol`, so on them setup
+binds `gpt-6-luna`; the superseded `0.150.1` cells cannot list `gpt-6-luna`. Neither suggestion is a
+live packaged cell: no authenticated `gpt-6.1-sol` review has run, and the suggestion rewrites
+neither historical Sol exact-cell evidence nor existing bindings. Platform support is stated as an
+exact artifact/runtime/SQLite/filesystem/key-backend cell (for example "macOS 11.0+ arm64, APSW
 `3.53.3.1`, SQLite source ID `2026-06-26 ...`"), never a generic "Python" or "macOS/Linux" claim.
 
 Cursor local compatibility has two current implementation rows and two deferred SDK metadata rows,

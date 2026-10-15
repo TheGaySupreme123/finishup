@@ -296,11 +296,12 @@ that marks the pending version as unreleased above reverse-chronological release
   ADR-049).
 
 - **New Codex-subscription setups suggest `gpt-6.1-sol` at reasoning effort `medium`** for final
-  reviews, and `medium` for routine checkpoints as before. Earlier setups suggested `gpt-6-luna` at
-  `high`. The suggestion is bound only when the Codex that FinishUP runs lists it. The admitted Codex
-  `0.157.1` does not, so setup uses `gpt-6-luna` with the same efforts and says so before sign-in.
-  A model you type yourself is never substituted, and upgrading keeps every existing setup's model
-  and efforts. A sign-in whose Codex does not list the chosen model or effort now names a next step
+  reviews, and `medium` for routine checkpoints as before. Released 0.2.x setups suggested
+  `gpt-5.6-luna` at `high` (unreleased 0.3 builds briefly `gpt-6-luna` at `high`). The suggestion is
+  bound only when the Codex that FinishUP runs lists it. The admitted Codex `0.157.1` does not, so
+  setup uses `gpt-6-luna` with the same efforts and says so before sign-in. A model you type
+  yourself is never substituted, and upgrading keeps every existing setup's model and efforts. A
+  sign-in whose Codex does not list the chosen model or effort now names a next step
   (`codex_model_unavailable`, `codex_reasoning_effort_unavailable`).
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
@@ -400,11 +401,13 @@ that marks the pending version as unreleased above reverse-chronological release
   step; registration, the privacy policy and an API key's repository binding then apply to that
   folder, not the one setup started in. A successful Codex-subscription sign-in in the guided
   connection no longer reports `Credential: unknown` and exits with an error, and a privacy step
-  you decline or that fails after the sign-in is no longer reported as complete: setup exits 20,
-  names the reason and points to `finishup --privacy`. Setup no longer asks to "verify this API
+  you decline or that fails after the provider step is no longer reported as complete, on any
+  setup path: setup exits 20, names the reason and points to `finishup --privacy` (and to storing
+  the API key, when none was stored). Setup no longer asks to "verify this API
   key" for Codex, which has no key, no longer prints the API-key vault report after a Codex
   sign-in, and no longer ends by telling Claude Code and Cursor users to preview a Codex
-  registration. The agent list (shown when more than one kind of agent is installed) and the Codex
+  registration. The agent list (shown in a terminal whenever Claude Code or Cursor is installed;
+  on a machine with only Codex the Codex wizard runs instead) and the Codex wizard's installation
   list both offer the Codex that a plain `codex` command runs and show each path; the agent list
   says that one agent is connected per run. Claude Code and Cursor connection plans describe their
   changes in plain words, as Codex plans already did. When more than one installation of an agent

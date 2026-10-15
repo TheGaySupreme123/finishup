@@ -1740,7 +1740,8 @@ packet only lacked room for.
 ### Suggested Codex model and listed fallback (2026-10-14, FinishUP 0.3 relaunch)
 
 New Codex-subscription bindings are offered `gpt-6.1-sol` with final and routine effort `medium`.
-Earlier releases offered `gpt-6-luna` with final effort `high`. The suggestion does not widen
+Released 0.2.x setups offered `gpt-5.6-luna` with final effort `high` (unreleased 0.3 builds
+briefly `gpt-6-luna` at `high`). The suggestion does not widen
 admission:
 
 1. **Listed or not offered.** Before any sign-in, setup asks the admitted runtime's own
