@@ -51,6 +51,7 @@ from finishup.protocol.readiness_text import (
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    coordinator_failure_note,
     obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
@@ -2294,6 +2295,9 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     announced = recheck_note(readiness, host=_SUMMARY_HOST.get())
     if announced is not None:
         parts.append(Part((announced, _RECHECK_SHORT), priority=_P_BOILERPLATE))
+    failure = coordinator_failure_note(readiness)
+    if failure is not None:
+        parts.append(Part((failure,), priority=_P_BOILERPLATE))
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
     )

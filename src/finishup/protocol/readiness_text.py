@@ -22,8 +22,11 @@ __all__ = [
     "OBLIGATION_RESOLVE_RECIPE_VARIANTS",
     "READINESS_STATES",
     "awaiting_ruling_variants",
+    "COORDINATOR_FAILURE_SENTENCE",
+    "COORDINATOR_FAILURE_TOKEN",
     "check_cause_sentence",
     "closure_counts_variants",
+    "coordinator_failure_note",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
     "readiness_directive",
@@ -63,6 +66,27 @@ def _count(value: object) -> int:
     if type(value) is str and value.isascii() and value.isdigit():
         return int(value)
     raise ValueError("readiness_count_invalid")
+
+
+# Issue #1079 item 3: an unchanged coordinator failure is a FinishUP limit, not another identical
+# closing-review request. The token is a readiness standing code, not a coverage gap.
+COORDINATOR_FAILURE_TOKEN: Final = "semantic_coordinator_failure"
+COORDINATOR_FAILURE_SENTENCE: Final = (
+    "The closing review stopped on an unchanged coordinator failure. That is a FinishUP limit;"
+    " do not send the same check again."
+)
+
+
+def coordinator_failure_note(readiness: object) -> str | None:
+    """The standing sentence when readiness names an unchanged coordinator failure.
+
+    ``None`` when the token is absent, so a checklist without it keeps its exact text.
+    """
+
+    raw = _field(readiness, "standing_limitations")
+    if isinstance(raw, (tuple, list)) and COORDINATOR_FAILURE_TOKEN in raw:
+        return COORDINATOR_FAILURE_SENTENCE
+    return None
 
 
 def readiness_directive(state: str, *, standing: object = 0, acknowledged: object = 0) -> str:

@@ -1028,3 +1028,17 @@ Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the ho
 `tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host),
 `tests/integration/application/test_closure_composer.py` (the `closure_prepare` host) and
 `tests/unit/mcp/test_tb4n3_closure_verdict_text.py` (the MCP summaries per host).
+
+## Amendment (2026-10-15, issue #1079 item 3): a new closing review needs a material delta
+
+tb4n5 asked for a closing review 5 times across trials where the only later records were
+bookkeeping or dispositions. `closing_review_required` now goes stale only after a material task
+or verification change (`kernel/closing_review_delta`): an observed edit or shell write, an
+unclassified observed command or its result, or a cooperative edit or command. Claims, decisions,
+plans, responses, coordination, assignments, findings, and evidence publication do not. An
+unchanged newest check that failed with reason `coordinator_failure` does not ask for the same
+`final_review` again; readiness adds the standing code `semantic_coordinator_failure` and the
+status, closure-prepare, and receipt text name that FinishUP limit. A material change after the
+failure asks again and clears the code. `invalidates_recorded_check` is unchanged, so a real edit
+still makes the check inapplicable and still re-arms the closing review. The code is a readiness
+token, not a coverage gap and not a new wire field.

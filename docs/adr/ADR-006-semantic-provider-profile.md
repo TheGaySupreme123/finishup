@@ -1834,11 +1834,18 @@ claiming completion was never judged for completeness. Decisions:
   `closing_review_required` while AI-powered review is required on the route, has completed on the
   task or was deferred before the first material edit by a check whose route requires it (ADR-040
   amendment of 2026-10-12, #1046), and
-  no check since the last material change is a completed final-phase review. A review
-  attempt after the last material change that was blocked by policy or privacy, not configured,
+  no check since the last material task or verification change is a completed final-phase review.
+  That change is an observed edit or shell write, an unclassified observed command or its result,
+  or a cooperative edit or command (`kernel/closing_review_delta`, #1079). Bookkeeping and
+  dispositions do not count, and they do not by themselves ask for another closing review. A review
+  attempt after that change that was blocked by policy or privacy, not configured,
   classification-uncertain, or denied or expired at human approval satisfies it, because its own
   gaps disclose the limit and a recheck cannot remove it; a timeout or a failed or unavailable
-  provider is transient and leaves the closing review actionable. The Stop-time closure gate reads the same readiness answer.
+  provider is transient and leaves the closing review actionable. An unchanged newest check that
+  failed with `coordinator_failure` satisfies it too and is disclosed as the standing code
+  `semantic_coordinator_failure`; a material change after that failure asks again. The Stop-time
+  closure gate reads the same readiness answer. Check applicability is unchanged: a real edit still
+  makes the check inapplicable.
 - **Dialogue.** (a) A challenge whose cited refs were sent but whose quote is not an exact packet
   substring is kept with the quote removed and disclosed through
   `semantic_review_snippet_invalid`; before, the whole challenge was dropped and a lone challenge

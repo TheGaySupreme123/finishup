@@ -30,6 +30,7 @@ from finishup.protocol.models import (
     public_model_to_wire,
 )
 from finishup.protocol.readiness_text import (
+    coordinator_failure_note,
     predicted_receipt_variants,
     recheck_note,
 )
@@ -220,6 +221,9 @@ async def prepare_closure(
     announced = recheck_note(compact.closure_readiness, host=host)
     if announced is not None:
         cast(list[str], output["notes"]).append(announced)
+    failure = coordinator_failure_note(compact.closure_readiness)
+    if failure is not None:
+        cast(list[str], output["notes"]).append(failure)
     # The same predicted receipt conclusion every surface prints (owner decision Q1), appended
     # after the notes above and never edited into them.
     readiness_state = getattr(compact.closure_readiness, "state", None)

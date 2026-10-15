@@ -7789,7 +7789,12 @@ after the check counts; FinishUP's own calls, read-only reads and host bookkeepi
 `kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
 #976: AI-powered review is required on the route, or completed on the task, or was deferred before
 the first material edit by a check whose route requires it (#1046), and no completed final-phase
-review, or undeliverable review attempt, is current since the last material change; an actionable
+review, or undeliverable review attempt, is current since the last material task or verification
+change — an observed edit or shell write, an unclassified observed command or its result, or a
+cooperative edit or command; bookkeeping and dispositions do not count
+(`kernel/closing_review_delta`, #1079). An unchanged newest check that failed with
+`coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
+of asking for the same closing review; an actionable
 `semantic_review_not_requested` takes its place unless the latest check so deferred the review),
 then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.

@@ -10,6 +10,8 @@ import pytest
 from builders.replay import replay_records
 from finishup.domain.events import (
     AcceptedEvent,
+    ActionKind,
+    ActionRecordedPayload,
     CheckMode,
     CheckRecordedPayload,
     LedgerRecord,
@@ -248,6 +250,36 @@ def _provenance() -> SemanticProvenance:
     )
 
 
+def _retarget_action(
+    source: LedgerRecord, payload: ActionRecordedPayload, sequence: int
+) -> AcceptedEvent:
+    """Copy one action so it follows a check, with a valid entry digest."""
+
+    from dataclasses import fields
+
+    from finishup.domain.events import accepted_record_digest_preimage, compute_entry_digest
+
+    base = cast(AcceptedEvent, source)
+    values: dict[str, object] = {
+        field.name: getattr(base, field.name) for field in fields(AcceptedEvent) if field.init
+    }
+    values.update(
+        ledger=replace(base.ledger, ingestion_sequence=sequence),
+        payload=payload,
+        projection_locator=replace(
+            base.projection_locator,
+            canonical_payload_digest=canonical_digest(encode_payload(payload)),
+        ),
+    )
+    unvalidated = object.__new__(AcceptedEvent)
+    for field in fields(AcceptedEvent):
+        object.__setattr__(
+            unvalidated, field.name, values.get(field.name, getattr(base, field.name))
+        )
+    values["entry_digest"] = compute_entry_digest(accepted_record_digest_preimage(unvalidated))
+    return AcceptedEvent(**values)  # type: ignore[arg-type]
+
+
 def _prefix_through_check() -> tuple[LedgerRecord, ...]:
     records = replay_records("all-event-families")
     index = next(
@@ -447,6 +479,12 @@ def test_a_routine_review_leaves_the_closing_review_actionable() -> None:
 
 
 def test_closing_review_goes_stale_after_a_material_change() -> None:
+    """Bookkeeping that supersedes a check does not by itself demand another closing review.
+
+    A real edit still does. ``invalidates_recorded_check`` is unchanged, so the check itself
+    goes inapplicable; only the closing-review currency uses the narrower delta.
+    """
+
     prefix = _prefix_through_check()
     closing = _reviewed(prefix, "final")
     check = cast(AcceptedEvent, closing[-1])
@@ -454,6 +492,7 @@ def test_closing_review_goes_stale_after_a_material_change() -> None:
     records = tuple(replay_records("all-event-families"))
     later = records[len(prefix) :]
     limitations = observation_limitation_finding_ids(replay(prefix), (*closing, *later))
+    state = replay(prefix)
     material = next(
         position
         for position, record in enumerate(later)
@@ -462,11 +501,86 @@ def test_closing_review_goes_stale_after_a_material_change() -> None:
             check.ledger.ingestion_sequence,
             payload.returned_finding_ids,
             limitation_finding_ids=limitations,
-            projection=replay(prefix),
+            projection=state,
         )
     )
-    stale = (*closing, *later[: material + 1])
-    assert closure_readiness_facts(replay(prefix), stale).closing_review_current is False
+    bookkeeping = (*closing, *later[: material + 1])
+    facts = closure_readiness_facts(state, bookkeeping)
+    assert facts.closing_review_current is True
+    assert facts.check_applicability == "not_applicable"
+    source = next(
+        record
+        for record in prefix
+        if record.schema.name == "action_recorded" and type(record.payload) is ActionRecordedPayload
+    )
+    edited = replace(
+        cast(ActionRecordedPayload, source.payload),
+        action_kind=ActionKind.EDIT,
+    )
+    edit = _retarget_action(source, edited, check.ledger.ingestion_sequence + 1)
+    rearmed = closure_readiness_facts(state, (*closing, edit))
+    assert rearmed.closing_review_current is False
+    assert rearmed.check_applicability == "not_applicable"
+    split = derive_closure_readiness((), (), rearmed, semantic_review_required=True)
+    assert "closing_review_required" in split.agent_actionable
+    assert "semantic_coordinator_failure" not in split.standing_limitations
+
+
+def test_an_unchanged_coordinator_failure_is_a_named_limitation() -> None:
+    """The newest check failed in the coordinator and nothing material followed it.
+
+    That is not another identical closing review. A later edit asks again and drops the limit.
+    """
+
+    prefix = _prefix_through_check()
+    failed = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.FAILED,
+        semantic_reason=SemanticReason.COORDINATOR_FAILURE,
+        semantic_provenance=None,
+    )
+    facts = closure_readiness_facts(replay(failed), failed)
+    assert facts.closing_review_current is True
+    assert facts.coordinator_failure_unchanged is True
+    split = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" not in split.agent_actionable
+    assert "semantic_coordinator_failure" in split.standing_limitations
+
+    check = cast(AcceptedEvent, failed[-1])
+    source = next(
+        record
+        for record in prefix
+        if record.schema.name == "action_recorded" and type(record.payload) is ActionRecordedPayload
+    )
+    edited = replace(cast(ActionRecordedPayload, source.payload), action_kind=ActionKind.EDIT)
+    edit = _retarget_action(source, edited, check.ledger.ingestion_sequence + 1)
+    after = closure_readiness_facts(replay(failed), (*failed, edit))
+    assert after.coordinator_failure_unchanged is False
+    assert after.closing_review_current is False
+    asked = derive_closure_readiness((), (), after, semantic_review_required=True)
+    assert "closing_review_required" in asked.agent_actionable
+    assert "semantic_coordinator_failure" not in asked.standing_limitations
+
+
+def test_a_later_final_review_clears_an_older_coordinator_failure() -> None:
+    prefix = _prefix_through_check()
+    failed = _with_check_payload(
+        prefix,
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.FAILED,
+        semantic_reason=SemanticReason.COORDINATOR_FAILURE,
+        semantic_provenance=None,
+    )
+    # A successful final review recorded on the same check payload position is the current one
+    # when it is the newest check. Build it as a replacement of the failure, which is newest.
+    closing = _reviewed(prefix, "final")
+    facts = closure_readiness_facts(replay(closing), closing)
+    assert facts.coordinator_failure_unchanged is False
+    assert facts.closing_review_current is True
+    # The failed payload alone, with no later success, is the limitation. Sanity: the two
+    # prefixes differ by that check.
+    assert failed[-1].payload != closing[-1].payload
 
 
 def test_an_undeliverable_review_attempt_is_not_asked_for_again() -> None:

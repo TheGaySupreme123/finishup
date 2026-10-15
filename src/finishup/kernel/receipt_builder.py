@@ -112,6 +112,7 @@ from finishup.kernel.claims import (
     effective_claim_items,
     result_is_relevant_to_claim,
 )
+from finishup.kernel.closing_review_delta import closing_review_delta
 from finishup.kernel.closure_class import (
     BOOKKEEPING_KINDS,
     FINDING_BASES,
@@ -176,8 +177,13 @@ from finishup.kernel.task_facts import (
     task_fact_signals,
 )
 from finishup.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
-from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
-from finishup.protocol.readiness_text import reason_phrases
+from finishup.protocol.models import (
+    ReceiptInclude,
+    ReceiptRedactionProfile,
+    SemanticReason,
+    SemanticStatus,
+)
+from finishup.protocol.readiness_text import COORDINATOR_FAILURE_SENTENCE, reason_phrases
 
 __all__ = [
     "CheckSuffixClass",
@@ -2074,6 +2080,34 @@ def _review_mode_sentence(context: ReceiptBuildContext) -> str:
     return f"{sentence} {_applicable_review_mode_sentence(check)}"
 
 
+def _unchanged_coordinator_failure(context: ReceiptBuildContext) -> bool:
+    """Whether the applicable check's coordinator failure is still the terminal review.
+
+    A superseded check, or a material task or verification change after it, is not this limit:
+    the agent still owes a new closing review. Bookkeeping that leaves the check applicable
+    does not clear it.
+    """
+
+    check = context.applicable_check
+    if (
+        check is None
+        or check.semantic_status is not SemanticStatus.FAILED
+        or check.semantic_reason is not SemanticReason.COORDINATOR_FAILURE
+    ):
+        return False
+    standing = context.check_standing
+    if standing is not None and standing.superseded:
+        return False
+    if standing is None or standing.check_record is None:
+        return True
+    sequence = standing.check_record.ledger.ingestion_sequence
+    return not any(
+        record.ledger.ingestion_sequence > sequence
+        and closing_review_delta(record, context.projection)
+        for record in context.records
+    )
+
+
 def _sections(
     *,
     include: ReceiptInclude,
@@ -2115,6 +2149,7 @@ def _sections(
     closure_summary: _ClosureSummary | None = None,
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
     review_mode_sentence: str = "",
+    coordinator_failure_sentence: str = "",
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2432,6 +2467,10 @@ def _sections(
     # receipt of a task without a switch keeps its exact bytes.
     if review_mode_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + review_mode_sentence
+    # Issue #1079 item 3. Worker 1 also names a coordinator failure on the receipt; this sentence
+    # is the closing-review limit (unchanged failure, no later material delta).
+    if coordinator_failure_sentence:
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + coordinator_failure_sentence
 
     policy_rows = "; ".join(
         f"{entry.policy_id} {entry.policy_version}" for entry in versions.policy_versions
@@ -2855,6 +2894,9 @@ def build_receipt(
         omitted_rows_sentence=_omitted_rows_sentence(omitted_rows),
         closure_summary=closure_summary,
         gap_effects=gap_effects,
+        coordinator_failure_sentence=(
+            COORDINATOR_FAILURE_SENTENCE if _unchanged_coordinator_failure(context) else ""
+        ),
     )
     suppressed_count = (
         0 if context.applicable_check is None else context.applicable_check.suppressed_count
