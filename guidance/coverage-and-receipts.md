@@ -681,9 +681,13 @@ what answers each kind (path evidence first for a new, untracked file; never sta
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
 report the named limitation instead. Hook-captured output never counts as supplied. On a
-verification follow-up, FinishUP may include observed output of a command the agent ran, within
-the privacy policy and excerpt limits. Private sends nothing. Output of a command the agent did
-not run is never included, and included output is marked observed. A named
+verification follow-up, FinishUP may include observed output of a test, build, lint, or typecheck
+command the agent ran, and only when a repository excerpt would already be allowed. It withholds
+an environment dump, a credential-named path, a path outside the workspace, or a path the
+check-time change refused, and it drops the whole output when the check-time secret scan hits,
+including a private-key body or its END line. It does not re-check ignore rules for a path the
+change did not list. The omission says which of those applied. Private sends nothing. Output of
+a command the agent did not run is never included, and included output is marked observed. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names
