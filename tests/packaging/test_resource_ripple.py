@@ -331,6 +331,9 @@ def test_resource_scans_reject_symlinked_roots_ancestors_and_extras(
 
 
 @pytest.mark.slow
+# A real checkout copy plus every generator pass: about 190 s on a shared 4-CPU runner, past the
+# job's 180 s default, while still bounded.
+@pytest.mark.timeout(600)
 def test_write_converges_a_reviewed_source_byte_change_in_a_real_checkout(tmp_path: Path) -> None:
     """A guidance byte change ripples through every dependent digest in one command."""
 
