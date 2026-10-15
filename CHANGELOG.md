@@ -549,7 +549,7 @@ that marks the pending version as unreleased above reverse-chronological release
   warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and an older reviewed
   release is used instead if you have one. Every other warning still stops setup.
   Authenticated live evidence through a capability-admitted release is pending.
-- **Output says "local", not "deterministic".** A clean local check now reads "no issue detected
+- **Output says "local".** A clean local check now reads "no issue detected
   within local coverage" on the CLI, the terminal interface and MCP; human finding lists label
   their origin "local" or "AI-powered review"; guidance, usage docs and the README follow. The
   terminal interface no longer says "Nothing leaves this computer" for the Private policy or a
