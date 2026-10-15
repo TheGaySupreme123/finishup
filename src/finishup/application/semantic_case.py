@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import re
+import shlex
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -38,6 +39,7 @@ from finishup.application.missing_for_assessment import (
     supplied_since,
     unsupported_data_type,
 )
+from finishup.domain.command_segments import command_structure, strip_wrappers
 from finishup.domain.events import (
     MAX_PRIOR_FINDING_LISTED_REFS,
     ActionKind,
@@ -63,6 +65,7 @@ from finishup.domain.observation import (
     ObservationSource,
 )
 from finishup.domain.observation_profiles import ORDINARY_CONTENT_CAPTURE_PROFILE_IDS
+from finishup.domain.observation_selection import command_is_verification
 from finishup.domain.privacy import (
     MAX_EGRESS_ENVELOPE_BYTES,
     REVIEW_PACKET_ITEM_ID,
@@ -89,6 +92,7 @@ from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP,
     check_time_change_unavailable_reason_gap,
 )
+from finishup.domain.repository_excerpt import credential_named_path
 from finishup.domain.task_statement import (
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
     TASK_STATEMENT_NOT_SUPPLIED_GAP,
@@ -105,6 +109,9 @@ from finishup.domain.values import (
     task_id,
     validate_commitment,
     validate_sha256_digest,
+)
+from finishup.domain.values import (
+    action_id as validate_action_id,
 )
 from finishup.domain.values import (
     evidence_id as validate_evidence_id,
@@ -151,7 +158,13 @@ from finishup.kernel.task_facts import (
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
 from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
-from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+from finishup.observability.privacy import (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
+    PrivacyFenceError,
+    ScanConfidence,
+    redact_sensitive_content,
+    scan_for_sensitive_content,
+)
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_TASK_INPUT_FILES,
@@ -191,6 +204,7 @@ from finishup.protocol.canonical import (
     strict_json_parse,
 )
 from finishup.protocol.coverage import LedgerFreshness, coverage_to_json
+from finishup.protocol.errors import ProtocolValueError
 from finishup.protocol.models import (
     MAX_REVIEW_OMISSION_TOTAL,
     MAX_REVIEW_OMISSIONS,
@@ -3504,6 +3518,388 @@ def _linked_observed_subjects(
     return tuple(sorted(seen, key=str.encode)[:MAX_SEMANTIC_ITEM_SUBJECT_REFS])
 
 
+# Auto-supply is only for commands ``command_runner_class`` already calls verification.
+# Anything else (a ``cat``, an environment dump wrapped beside pytest) is withheld whole.
+_PROC_ENVIRON: Final = re.compile(r"(?:^|/)proc/(?:self|[0-9]+)/environ\Z")
+_ENV_ASSIGNMENT: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_ENV_OPTIONS_WITH_OPERAND: Final = frozenset(
+    {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
+)
+# The disclosure scan matches a private-key BEGIN banner only. Capture redacts that banner and
+# leaves the body and the END line. Auto-supply drops the item when either remains.
+_PRIVATE_KEY_END: Final = re.compile(
+    rb"-{5}END[ \t]+(?:OPENSSH[ \t]+|RSA[ \t]+|EC[ \t]+|DSA[ \t]+|ENCRYPTED[ \t]+)?"
+    rb"PRIVATE KEY-{5}"
+)
+# Base64 of the OpenSSH private-key body magic (``openssh-key-v1``), not a BEGIN banner.
+_OPENSSH_KEY_BODY: Final = b"b3BlbnNzaC1rZXktdjE"
+_NESTED_NOT_SHOWN: Final = "its own change is not shown"
+
+
+def _argv_is_environment_dump(words: Sequence[str]) -> bool:
+    """Whether these argv words print the environment rather than run a verifier."""
+
+    if not words:
+        return False
+    for word in words:
+        if _PROC_ENVIRON.search(word.replace("\\", "/")) is not None:
+            return True
+    head = words[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if head == "printenv":
+        return True
+    if head in {"export", "declare", "typeset"} and "-p" in words[1:]:
+        return True
+    if head == "set":
+        rest = [word for word in words[1:] if word != "--"]
+        return all(word in {"-o", "+o", "-p"} or word.startswith("-o") for word in rest)
+    if head != "env":
+        return False
+    rest = list(words[1:])
+    while rest:
+        token = rest[0]
+        if _ENV_ASSIGNMENT.match(token) is not None:
+            rest.pop(0)
+            continue
+        if token == "--":
+            rest.pop(0)
+            break
+        if not token.startswith("-"):
+            return False
+        rest.pop(0)
+        bare = token.partition("=")[0]
+        if bare in _ENV_OPTIONS_WITH_OPERAND and "=" not in token and rest:
+            rest.pop(0)
+    return True
+
+
+def _command_words(text: str) -> tuple[str, ...] | None:
+    try:
+        return tuple(shlex.split(text, posix=True))
+    except ValueError:
+        return None
+
+
+def _command_dumps_environment(command: str) -> bool:
+    """Whether any simple command in ``command`` is an environment dump.
+
+    ``env pytest`` runs pytest; a bare ``env``, ``printenv``, ``set``, ``export -p`` or
+    ``/proc/self/environ`` prints the environment. A compound that also runs a verifier
+    (``pytest -q; printenv``) still dumps, so the whole capture is withheld.
+    """
+
+    structure = command_structure(command)
+    if structure is None:
+        words = _command_words(command)
+        return words is None or _argv_is_environment_dump(words)
+    if not structure.commands:
+        return True
+    for simple in structure.commands:
+        if _argv_is_environment_dump(simple.words):
+            return True
+        raw = _command_words(simple.text)
+        if raw is None or _argv_is_environment_dump(raw):
+            return True
+    return False
+
+
+def _header_not_shown_path(line: str) -> str | None:
+    """The repository-relative path on a check-time change header line that says it was not shown."""
+
+    if not line.startswith("  ") or " not shown:" not in line:
+        return None
+    _status, _space, remainder = line[2:].partition(" ")
+    if not remainder:
+        return None
+    path = remainder[: remainder.find(" not shown:")].strip()
+    count = path.rfind(" (+")
+    if count >= 0:
+        path = path[:count].strip()
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        path = path[1:-1]
+    path = path.strip().strip("/")
+    if not path or path.endswith("...") or "\x00" in path:
+        return None
+    return path
+
+
+def _refused_repository_paths(
+    capture: CheckChangeCapture | None,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Paths the frozen check-time change already refused to show, and nested prefixes it omitted.
+
+    Exact paths are header files marked ``not shown`` (credential name, nested repository, nested
+    untracked, and the other content withholdings). Prefixes are nested repositories whose own
+    change was not read. Gitignored paths are absent from that listing; a command that is not a
+    verifier never supplies them, and a verifier that names one of these refused paths is withheld.
+    """
+
+    if capture is None:
+        return frozenset(), frozenset()
+    try:
+        text = capture.text.decode("utf-8")
+    except UnicodeDecodeError:
+        return frozenset(), frozenset()
+    header, separator, _rest = text.partition("\nEnd of header. The unified diff follows.\n")
+    if not separator:
+        header = text
+    exact: set[str] = set()
+    prefixes: set[str] = set()
+    for line in header.splitlines():
+        if line.startswith("Nested repository ") and _NESTED_NOT_SHOWN in line:
+            raw = line.removeprefix("Nested repository ").split(":", 1)[0].strip().strip("/")
+            if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
+                raw = raw[1:-1]
+            if raw and not raw.endswith("..."):
+                prefixes.add(raw)
+            continue
+        path = _header_not_shown_path(line)
+        if path is not None:
+            exact.add(path)
+    return frozenset(exact), frozenset(prefixes)
+
+
+def _operand_pieces(word: str) -> tuple[str, ...]:
+    if word.startswith("-"):
+        if "=" not in word:
+            return ()
+        return (word.split("=", 1)[1],)
+    if "=" in word:
+        value = word.split("=", 1)[1]
+        return (word, value) if value else (word,)
+    return (word,)
+
+
+def _relative_operand(value: str, workspace_root: str | None) -> str | None:
+    """Workspace-relative form of one operand, or ``None`` when it is outside or cannot be proved in."""
+
+    if "\x00" in value:
+        return None
+    if value.startswith("/"):
+        if _outside_workspace(value, workspace_root) is not None or workspace_root is None:
+            return None
+        root = posixpath.normpath(workspace_root).rstrip("/") + "/"
+        path = posixpath.normpath(value)
+        if path == root[:-1]:
+            return ""
+        if not path.startswith(root):
+            return None
+        value = path[len(root) :]
+    parts = [part for part in value.replace("\\", "/").split("/") if part not in {"", "."}]
+    if ".." in parts:
+        return None
+    return "/".join(parts)
+
+
+def _operand_refused(
+    value: str,
+    *,
+    workspace_root: str | None,
+    exact: frozenset[str],
+    prefixes: frozenset[str],
+) -> bool:
+    """Whether a repository excerpt would withhold this command operand."""
+
+    if not value or "\x00" in value:
+        return False
+    folded = value.replace("\\", "/")
+    if credential_named_path(value) or credential_named_path(folded.rsplit("/", 1)[-1]):
+        return True
+    if _PROC_ENVIRON.search(folded) is not None:
+        return True
+    if value.startswith("/") and (
+        workspace_root is None or _outside_workspace(value, workspace_root) is not None
+    ):
+        return True
+    parts = [part for part in folded.split("/") if part not in {"", "."}]
+    if ".." in parts or ".git" in parts:
+        return True
+    relative = _relative_operand(value, workspace_root)
+    if relative is None:
+        return value.startswith("/") or ".." in parts
+    if not relative:
+        return False
+    if relative in exact:
+        return True
+    return any(
+        relative == prefix or relative.startswith(prefix + "/") or prefix.startswith(relative + "/")
+        for prefix in prefixes
+    )
+
+
+# Wrapper and tool options whose operand is a path (``env -C /tmp``, ``uv run --directory x``).
+# The program path itself is not one of these: ``/usr/bin/pytest`` is the tool, not a file the
+# repository excerpt would have shown.
+_PATH_OPTIONS: Final = frozenset({"-C", "--chdir", "--directory", "--project", "--env-file"})
+_REDIRECTION: Final = re.compile(
+    r"^(?:[0-9]+|&)?(?:>>|>\||>&|>|<<<|<<-|<<|<&|<>|<)(.*)$",
+    re.DOTALL,
+)
+
+
+def _program_path_refused(program: str) -> bool:
+    """Credential name, ``.git``, or ``/proc/*/environ`` on the program path itself.
+
+    An absolute tool path (``/usr/bin/pytest``) is outside the workspace and is not a repository
+    excerpt, so it is not refused for that reason.
+    """
+
+    if credential_named_path(program):
+        return True
+    folded = program.replace("\\", "/")
+    if _PROC_ENVIRON.search(folded) is not None:
+        return True
+    parts = [part for part in folded.split("/") if part not in {"", "."}]
+    return ".." in parts or ".git" in parts
+
+
+def _path_bearing_tokens(words: Sequence[str]) -> tuple[str, ...]:
+    """Redirection targets and path-option values, which wrapper stripping would otherwise drop."""
+
+    found: list[str] = []
+    pending_redirect = False
+    pending_option = False
+    for word in words:
+        if pending_redirect or pending_option:
+            if pending_redirect and word != "/dev/null" and not word.startswith("&"):
+                found.append(word)
+            if pending_option:
+                found.append(word)
+            pending_redirect = False
+            pending_option = False
+            continue
+        match = _REDIRECTION.fullmatch(word)
+        if match is not None:
+            target = match.group(1)
+            if target:
+                if target != "/dev/null" and not target.startswith("&"):
+                    found.append(target)
+            else:
+                pending_redirect = True
+            continue
+        name, separator, value = word.partition("=")
+        if name in _PATH_OPTIONS:
+            if separator:
+                found.append(value)
+            else:
+                pending_option = True
+    return tuple(found)
+
+
+def _command_operands(words: Sequence[str]) -> tuple[str, ...]:
+    """Arguments and path operands, not the program path ``strip_wrappers`` leaves at argv[0]."""
+
+    stripped = strip_wrappers(words)
+    program = stripped[0] if stripped else ""
+    arguments = stripped[1:] if program else ()
+    return (*arguments, *_path_bearing_tokens(words))
+
+
+def _command_names_refused_path(
+    command: str,
+    *,
+    workspace_root: str | None,
+    check_time_change: CheckChangeCapture | None,
+) -> bool:
+    exact, prefixes = _refused_repository_paths(check_time_change)
+    programs: list[str] = []
+    operands: list[str] = []
+    structure = command_structure(command)
+    if structure is None:
+        split = _command_words(command)
+        if split is None:
+            return True
+        stripped = strip_wrappers(split)
+        if stripped:
+            programs.append(stripped[0])
+        operands.extend(_command_operands(split))
+    else:
+        if not structure.commands:
+            return True
+        for simple in structure.commands:
+            raw = _command_words(simple.text)
+            if raw is None:
+                return True
+            stripped = strip_wrappers(raw)
+            if stripped:
+                programs.append(stripped[0])
+            operands.extend(_command_operands(raw))
+            # Canonical argv still names the file (``python -m pytest tests/id_rsa``).
+            operands.extend(simple.words[1:])
+    if any(_program_path_refused(program) for program in programs):
+        return True
+    for word in operands:
+        for piece in _operand_pieces(word):
+            if piece and _operand_refused(
+                piece, workspace_root=workspace_root, exact=exact, prefixes=prefixes
+            ):
+                return True
+    return False
+
+
+def _output_secret_reason(content: bytes) -> _OmissionReason | None:
+    """Drop the whole capture when check-time redaction, or a private-key body, would hit.
+
+    ``redact_sensitive_content`` is the disclosure scan the check-time change runs, heuristics
+    included. A hit withholds the item instead of shipping the redacted bytes. A private-key END
+    line or OpenSSH key body is the same decision: capture only replaces the BEGIN banner.
+    """
+
+    key_material = _PRIVATE_KEY_END.search(content) is not None or _OPENSSH_KEY_BODY in content
+    try:
+        findings = scan_for_sensitive_content(content)
+        _replaced, detected = redact_sensitive_content(
+            content, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+        )
+    except PrivacyFenceError, TypeError, ValueError:
+        return "redacted_never_send"
+    high = any(finding.confidence is not ScanConfidence.HEURISTIC for finding in findings)
+    if key_material or high:
+        return "redacted_never_send"
+    if detected or findings:
+        return "never_send_heuristic"
+    return None
+
+
+def _observed_command_text(projection: ProjectionState, action_ref: str | None) -> str | None:
+    if action_ref is None:
+        return None
+    try:
+        key = validate_action_id(action_ref)
+    except ProtocolValueError, ValueError:
+        return None
+    row = projection.actions.get(key)
+    if row is None or row.payload is None or row.redacted:
+        return None
+    return row.payload.command
+
+
+def _auto_supply_refusal(
+    command: str | None,
+    content: bytes,
+    *,
+    workspace_root: str | None,
+    check_time_change: CheckChangeCapture | None,
+) -> _OmissionReason | None:
+    """Why this capture must not be auto-supplied, or ``None`` when it may.
+
+    Layered and fail-closed: the command must already classify as verification; an environment
+    dump, a credential-named path, a path outside the workspace, a path the frozen change refused
+    (nested repository or other not-shown file), or a ``.git`` path withholds the item; the
+    disclosure scan then drops the whole item on any secret hit. A partially redacted capture is
+    not sent.
+    """
+
+    if command is None or not command.strip() or command.lstrip().startswith("omitted:"):
+        return "withheld_by_policy"
+    if not command_is_verification(command):
+        return "withheld_by_policy"
+    if _command_dumps_environment(command) or _command_names_refused_path(
+        command, workspace_root=workspace_root, check_time_change=check_time_change
+    ):
+        return "withheld_by_policy"
+    return _output_secret_reason(content)
+
+
 def _marked_observed_command_candidate(
     candidate: _ExcerptCandidate,
     content: bytes,
@@ -4085,6 +4481,29 @@ def _select_targeted_excerpts(
                     continue
                 group = captured_groups.get(raw.source_ref)
                 assert group is not None
+                refusal = _auto_supply_refusal(
+                    _observed_command_text(projection, raw.verification_action),
+                    group.content,
+                    workspace_root=workspace_root,
+                    check_time_change=check_time_change,
+                )
+                if refusal is not None:
+                    # The raw evidence excerpt stays held back. The omission says why the
+                    # capture was not sent; a secret hit is not reported as a byte-budget miss.
+                    gaps.add(
+                        "content_redacted"
+                        if refusal != "withheld_by_policy"
+                        else "content_unselected"
+                    )
+                    _append_omission(
+                        omissions,
+                        raw.source_ref,
+                        raw.linked,
+                        DataCategory.REPOSITORY_EXCERPT,
+                        "command",
+                        refusal,
+                    )
+                    continue
                 marked = _marked_observed_command_candidate(
                     raw,
                     group.content,

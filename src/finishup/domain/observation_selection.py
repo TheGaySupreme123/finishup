@@ -902,6 +902,18 @@ def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerCla
     return _runner_class_for_argv(argv)
 
 
+def command_is_verification(command: str) -> bool:
+    """Whether ``command_runner_class`` already calls this command a test, build, lint, or typecheck.
+
+    A compound is included when that classifier's strongest class is one of those four
+    (``pytest -q | tail -5``). Information-only runs (``--help``, ``--version``) are not.
+    """
+
+    if type(command) is not str or not command:
+        return False
+    return command_runner_class({"command": command}) in _VERIFYING_CLASSES
+
+
 _SHELL_COMPOSITION_MARKERS: Final = ("\n", "\r", ";", "&", "|", ">", "<", "`", "$(")
 # Strongest first: a compound that runs several verifiers is classed by the first of these.
 _VERIFYING_PRIORITY: Final = ("test", "build", "lint", "typecheck")
