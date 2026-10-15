@@ -524,9 +524,13 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
      reset) falls back to the binding and trusted checkouts only. Cursor has no equivalent list:
      shared pieces found without a record make membership unknown, and that state survives later
      connects. Yoetz-era shared pieces count (Yoetz kept no record and connected several Cursor
-     projects to one configuration root): Cursor's owned `plugins/local/yoetz`, and for Codex a
-     byte-identical `[marketplaces.yoetz]` or `[plugins."yoetz@yoetz"]` table or a FinishUP-shaped
-     `[mcp_servers.yoetz]` entry, also when only one project used them. Status (Codex `codex_home_possible_projects` and `membership_unknown`; Cursor
+     projects to one configuration root): Cursor's owned `plugins/local/yoetz` makes membership
+     unknown, also when only one project used it; for Codex a byte-identical
+     `[marketplaces.yoetz]` or `[plugins."yoetz@yoetz"]` table or a FinishUP-shaped
+     `[mcp_servers.yoetz]` entry plays the part of an earlier release's pieces above (trusted
+     checkouts become possible users), so with neither a member nor such a checkout an ordinary
+     disconnect still removes the registration (2026-10-15 port review, round 2). Status
+     (Codex `codex_home_possible_projects` and `membership_unknown`; Cursor
      `membership_unknown`) and every preview (`membership_unknown`, plus Codex `possible_users`,
      also in `integrate codex plugin preview`) disclose it.
 3. **Reverse path.** Disconnecting a project while another verified live member remains removes

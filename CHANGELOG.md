@@ -159,16 +159,29 @@ unreleased above reverse-chronological released versions.
   disconnect also when the other projects keep the shared pieces; a Yoetz-era MCP entry or Cursor
   plugin folder that other projects may still load stays with the shared pieces until the last
   disconnect, and the disconnect's approval cleanup removes exact earlier-name approval entries too.
-  Yoetz connected several Cursor projects to one configuration and kept no record of any of them,
-  so a Yoetz-era Cursor plugin folder, Codex marketplace or plugin table, or Codex MCP entry found
+  Yoetz kept no record of the projects it connected. For Cursor, a Yoetz-era plugin folder found
   without a record counts as shared pieces whose users FinishUP cannot confirm: an ordinary
-  disconnect keeps them and only `--remove-shared` removes them, also when only one project used
-  them, and a connect that migrates them keeps that uncertainty for later disconnects. A Codex
-  project still carrying its Yoetz-era activation counts as connected: another project's connect
-  records it, and another project's disconnect keeps the MCP registration it uses. After a Codex
-  disconnect that keeps the registration for other projects, also for their own Codex settings or
-  because not every project could be checked, status reports the disconnected project
-  `configured: false` with `shared_registration_retained: true`.
+  disconnect keeps it, also when only one project used it, and only `--remove-shared` removes it;
+  a connect that migrates it keeps that uncertainty for later disconnects, and the disconnect (in
+  the terminal interface too) names the `--remove-shared` command. For Codex, a project's own
+  Yoetz-era activation goes with that project's own disconnect, never with another project's
+  `--remove-shared`. A project still carrying it counts as connected: another project's connect
+  records it, and another project's disconnect keeps the MCP registration it uses. Yoetz-era
+  Codex tables or a Yoetz-era MCP entry found without a record make trusted checkouts that carry
+  FinishUP's plugin files possible users, which keep the MCP registration or stop the disconnect
+  as `membership_unverified`; with neither another project nor such a checkout, an ordinary
+  disconnect removes the registration. A Codex connect no longer moves the MCP registration from
+  the earlier name `yoetz` while a project's Codex settings still need it (such as the approval
+  table Yoetz 0.2's `integrate codex admission grant` wrote): moving it made Codex refuse to load
+  that project. The earlier entry stays beside `finishup`, the plan and `setup status` name the
+  projects and the exact revoke for each, and connecting again after those revokes finishes the
+  move; a connect that would also change the review mode stops first, since the earlier entry
+  serves every project on its own mode. After a Codex disconnect that keeps the registration for
+  other projects, also for their own Codex settings or because not every project could be
+  checked, status reports the disconnected project `configured: false` with
+  `shared_registration_retained: true`. A Codex disconnect that removes the shared plugin while
+  the registration stays for a Yoetz-era project now says so, and names the projects whose
+  plugin files are missing as losing it too.
 
 - `finishup setup disconnect` now removes the selected project's FinishUP tool-approval entry (the one
   `integrate <host> admission grant` writes) as part of the same previewed plan, before the

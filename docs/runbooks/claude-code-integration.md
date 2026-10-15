@@ -483,14 +483,19 @@ its own discovered) plans only `remove_legacy_plugin`: there is no FinishUP inst
 uninstall, and apply skips that uninstall too.
 
 Decisions from the 0.3 port review (2026-10-15), per host: Claude Code lists every project-scope
-install itself (`claude plugin list`), so there is no Yoetz-era membership to infer here; that is
-the Codex and Cursor rule that a Yoetz-era shared piece found without a record makes membership
-unknown (Cursor's `plugins/local/yoetz`; Codex's legacy tables and `yoetz` registration, whose
-bound project counts as a member). The transport-less `mcp_servers.yoetz` leftover diagnosis is
-Codex-only: a stale Claude approval entry does not stop Claude Code from loading its
-configuration. The rule that a disconnect never claims the admission sweep for a surface it does
-not edit (exact legacy entries count only on an otherwise absent surface, never on a foreign one)
-applies to Claude Code's `.claude/settings.local.json` as to every host.
+install itself (`claude plugin list`), so there is no Yoetz-era membership to infer here. The
+other hosts need it: Cursor keeps an owned `plugins/local/yoetz` found without a record until
+`--remove-shared`; Codex counts the project its Yoetz-era marketplace table names as a member,
+and Yoetz-era pieces found without a record only make trusted FinishUP checkouts possible users.
+The transport-less `mcp_servers.yoetz` leftover diagnosis, and keeping an owned `yoetz`
+registration while a project's Codex configuration still needs it (#1073), are Codex-only: a
+stale Claude approval entry does not stop Claude Code from loading its configuration, and Claude
+Code's MCP server comes with the plugin, not a user-level entry FinishUP moves. As on every host,
+a completed or repeated disconnect that keeps shared pieces names the `--remove-shared` preview
+in `next_step`, and the terminal interface shows that command instead of a home-wide option.
+The rule that a disconnect never claims the admission sweep for a surface it does not edit (exact
+legacy entries count only on an otherwise absent surface, never on a foreign one) applies to
+Claude Code's `.claude/settings.local.json` as to every host.
 
 The one exception is an in-place update: `plugin update --marketplace-root <.../yoetz-local>` (the
 upgrade plan's form for an old install) names the old folder itself, which the renamed tree then

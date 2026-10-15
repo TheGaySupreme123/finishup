@@ -13,9 +13,15 @@ You can connect several projects to the same agent installation one after anothe
 what that project needs, disconnecting one keeps the others working, and `setup status` lists the
 connected projects. Connecting the same folder a second time under another path (a symlink, other
 letter case, or its old location) is refused with the command that resolves it. If FinishUP cannot
-tell which projects use what an agent installation shares (an earlier version set it up,
-including Yoetz before the rename, or its list of connected projects was lost), a disconnect keeps
-those shared pieces and says so, and `--remove-shared` removes them. For
+tell which projects use what an agent installation shares (an earlier version set it up, or its
+list of connected projects was lost), a disconnect keeps those shared pieces, says so, and names
+the `--remove-shared` command that removes them. For Cursor that includes a plugin folder Yoetz
+set up before the rename, even when only one project used it. For Codex, a project's own Yoetz-era
+setup goes with its own disconnect; what the projects share stays only while another project, or
+a trusted project carrying FinishUP's plugin files, may still use it. When a project's Codex
+settings still use the MCP entry under the earlier name yoetz (an approval Yoetz 0.2 granted),
+connecting keeps that entry beside the new one and tells you which project and the command that
+releases it; connect again afterwards to finish the move. For
 Codex, FinishUP still remembers the projects it connected itself, and a disconnect that would leave
 only projects it cannot verify stops before changing anything and offers two ways on: connect
 again the project you use, or preview removing the shared pieces for every project with

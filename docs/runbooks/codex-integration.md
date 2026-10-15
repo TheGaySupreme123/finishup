@@ -1473,40 +1473,45 @@ another project's connect records it beside itself, `setup status` lists it in
 `codex_home_projects`, and another project's disconnect keeps the registration for it (`retained`
 "FinishUP MCP registration used by other connected projects", `shared_with` naming it). It never
 becomes the FinishUP binding's anchor, since it does not serve FinishUP's manifest: when the
-disconnecting project anchors the binding and no other project serves that manifest, the
-disconnect removes the FinishUP plugin pieces (`deactivate_plugin`) and keeps only the
-registration: the preview adds `shared_plugin_removed: true`, `shared_with` names only the
-projects the registration stays for, a recorded FinishUP project whose plugin files are missing
-right now is listed in `members_not_serving` (it loses the plugin and connects again later), and
-the summary reads "The shared FinishUP plugin is removed from this home; only the MCP registration
-stays for: <projects>". Yoetz-era shared pieces found without a record (an exact legacy marketplace or
-plugin table, or a FinishUP-shaped `[mcp_servers.yoetz]` entry) also make membership uncertain, as
-an earlier release's pieces do: trusted checkouts that serve FinishUP's manifest are possible
-users, a connect records `unknown_members`, and a disconnect that would leave only them stops as
-`membership_unverified`. A disconnect that only detaches the project (other connected projects
-keep the shared FinishUP
-plugin, cache, binding and registration) still deactivates its own legacy activation in the same
-digest-bound plan: the exact tables leave with the approved `config.toml` write (also when the
-binding moves to another project), then the exact legacy document and the marker-validated legacy
-cache go, and the result must read `legacy_activation: false`. The detach preview reports them in
-`legacy_removed_block`, `legacy_cache_versions` and `legacy_marketplace_json_planned` beside
-`shared_with`. The user-level `yoetz` MCP entry is shared like the `finishup` one: a disconnect that
-keeps the registration for other projects keeps an owned `yoetz` entry too
-(`remove_legacy_mcp_registration` appears only when the unregistration runs), and the last
-disconnect or `--remove-shared` removes both. When it does, the check that no project's
-`.codex/config.toml` still needs the user-level transport covers `mcp_servers.yoetz` tables as
-well, after the admission sweep has removed the exact legacy entries; the sweep runs for a project
-whose only entry is an exact legacy one, and the plan's `admission_cleanup` names it under
-`legacy_entries`. On a foreign approval file (an approval table you edited, or a server-wide
-default) the sweep edits nothing, so exact legacy entries there neither plan
-`remove_project_admission` nor count as removed when the disconnect checks what still needs the
+disconnecting project anchors the binding and no other project serves that manifest, the disconnect
+removes the FinishUP plugin pieces (`deactivate_plugin`) and keeps only the registration: the
+preview adds `shared_plugin_removed: true`, `shared_with` names only the projects the registration
+stays for, a recorded FinishUP project whose plugin files are missing right now is listed in
+`members_not_serving` (it loses the plugin and connects again later), and the summary reads "The
+shared FinishUP plugin is removed from this home; only the MCP registration stays for: <projects>".
+Yoetz-era shared pieces found without a record (an exact legacy marketplace or plugin table, or a
+FinishUP-shaped `[mcp_servers.yoetz]` entry) also make membership uncertain, as an earlier release's
+pieces do: trusted checkouts that serve FinishUP's manifest are possible users, a connect records
+`unknown_members`, and a disconnect that would leave only them stops as `membership_unverified`.
+Without such a checkout or another member, an ordinary disconnect removes the registration, also for
+a single Yoetz-era project (unlike Cursor's `plugins/local/yoetz`). A disconnect that only detaches
+the project (other connected projects keep the shared FinishUP plugin, cache, binding and
+registration) still deactivates its own legacy activation in the same digest-bound plan: the exact
+tables leave with the approved `config.toml` write (also when the binding moves to another project),
+then the exact legacy document and the marker-validated legacy cache go, and the result must read
+`legacy_activation: false`. The detach preview reports them in `legacy_removed_block`,
+`legacy_cache_versions` and `legacy_marketplace_json_planned` beside `shared_with`. The user-level
+`yoetz` MCP entry is shared like the `finishup` one: a disconnect that keeps the registration for
+other projects keeps an owned `yoetz` entry too (`remove_legacy_mcp_registration` appears only when
+the unregistration runs), and the last disconnect or `--remove-shared` removes both. When it does,
+the check that no project's `.codex/config.toml` still needs the user-level transport covers
+`mcp_servers.yoetz` tables as well, after the admission sweep has removed the exact legacy entries;
+the sweep runs for a project whose only entry is an exact legacy one, and the plan's
+`admission_cleanup` names it under `legacy_entries`. On a foreign approval file (an approval table
+you edited, or a server-wide default) the sweep edits nothing, so exact legacy entries there neither
+plan `remove_project_admission` nor count as removed when the disconnect checks what still needs the
 transport.
 
-Decisions from the 0.3 port review (2026-10-15), per host: the Yoetz-era membership rule above is
-Codex's form of the rule Cursor applies to `plugins/local/yoetz` (found without a record:
-membership unknown); Claude Code lists every project's install itself and needs neither. The
-`mcp_servers.yoetz` leftover diagnosis and the post-disconnect `shared_registration_retained`
-status are Codex-only, since only Codex has a user-level transport a project table depends on.
+Decisions from the 0.3 port review (2026-10-15), per host: for Codex, Yoetz-era pieces found
+without a record do not by themselves keep anything. They make trusted checkouts that serve
+FinishUP's manifest possible users (which keep the registration, or stop the disconnect as
+`membership_unverified`), and the bound Yoetz-era project is a member; with neither, an ordinary
+disconnect removes the registration, also with a single project. Cursor's rule for
+`plugins/local/yoetz` is stronger (found without a record, it stays until `--remove-shared`),
+because Cursor has no binding that names a project. Claude Code lists every project's install
+itself and needs neither. The `mcp_servers.yoetz` leftover diagnosis, keeping an owned `yoetz`
+entry a project still needs, and the post-disconnect `shared_registration_retained` status are
+Codex-only, since only Codex has a user-level transport a project table depends on.
 
 **Project skill.** Skill install and remove also take a `.agents/skills/yoetz` tree that matches its
 own install marker (preview warning `legacy_skill_tree_owned`; disconnect removes it too, change

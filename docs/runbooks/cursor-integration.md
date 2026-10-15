@@ -637,19 +637,23 @@ the low-level `integrate cursor plugin preview --action remove` says `membership
 Recorded members whose project entry is still FinishUP's under the earlier `yoetz` key, proven by
 a marker-recorded launcher, count as observed connected.
 
-Decisions from the 0.3 port review (2026-10-15), per host: Cursor's Yoetz-era rule above matches
-Codex, where Yoetz-era tables or an owned `yoetz` registration found without a record make
-membership uncertain and the project the legacy binding names counts as a member; Claude Code
-needs neither, since it lists every project's install itself. The transport-less
-`mcp_servers.yoetz` leftover diagnosis and the post-disconnect `shared_registration_retained`
-status are Codex-only: Cursor has no user-level transport a project table depends on, and its
-`configured` reads the project's own MCP entry. After a completed or repeated (`unchanged`)
-disconnect that keeps the tree, `next_step` adds the exact `setup disconnect --host
-cursor-ide|cursor-cli ... --remove-shared` preview, as `setup status` does. The terminal
-interface's `/disconnect` offers no home-wide removal of its own: when pieces were kept it reads
-"Integration removed from this project; shared pieces kept" and shows that same command to run in
-a terminal, so the separately disclosed home-wide consent stays in one place. A disconnect never
-plans the admission sweep for a surface it does not edit (exact legacy entries count only on an otherwise absent
+Decisions from the 0.3 port review (2026-10-15), per host: Cursor's Yoetz-era rule above is the
+strongest of the three hosts. Cursor has no binding that names a project, so an owned
+`plugins/local/yoetz` found without a record stays until `--remove-shared`, even for one project.
+Codex differs: there the project its Yoetz-era marketplace table names counts as a member, and
+Yoetz-era pieces found without a record only make trusted checkouts serving FinishUP's manifest
+possible users, so with neither an ordinary disconnect removes the registration. Claude Code
+needs neither rule, since it lists every project's install itself. The transport-less
+`mcp_servers.yoetz` leftover diagnosis, keeping an owned `yoetz` registration a project still
+needs, and the post-disconnect `shared_registration_retained` status are Codex-only: Cursor has
+no user-level transport a project table depends on, and its `configured` reads the project's own
+MCP entry. After a completed or repeated (`unchanged`) disconnect that keeps the tree,
+`next_step` adds the exact `setup disconnect --host cursor-ide|cursor-cli ... --remove-shared`
+preview, as `setup status` does. The terminal interface's `/disconnect` offers no home-wide
+removal of its own: when pieces were kept it reads "Integration removed from this project; shared
+pieces kept" and shows that same command to run in a terminal, so the separately disclosed
+home-wide consent stays in one place. A disconnect never plans the admission sweep for a
+surface it does not edit (exact legacy entries count only on an otherwise absent
 `.cursor/permissions.json` or `.cursor/cli.json`, never on a foreign one), as for every host.
 
 **Project MCP migration.** A project entry under `yoetz` that launches this installation (its
