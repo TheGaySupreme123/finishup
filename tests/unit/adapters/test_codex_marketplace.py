@@ -2850,3 +2850,99 @@ def test_removal_retains_the_legacy_plugin_source_tree(tmp_path: Path) -> None:
 
     assert legacy_tree.is_dir()
     assert inspect_activation(target, codex_home=home).legacy_activation is False
+
+
+def test_activation_binds_the_cache_launcher_and_removal_deletes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign ``finishup`` on PATH is never the plugin command Codex launches (#1076).
+
+    A marker-consistent cache that still names the bare command is rewritten on the next
+    activation, a second activation is a no-op, and removal deletes that cache.
+    """
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.adapters.integrations.codex_plugin import (
+        plugin_tree_matches_marker,
+        render_plugin_install_tree,
+    )
+
+    target, project, home = _target(tmp_path)
+    _install(target)
+    pinned = "/opt/pinned/bin/finishup"
+    foreign = "/opt/foreign/bin/finishup"
+    root = Path("/opt/pinned/root")
+
+    def path_which(cmd: str, mode: int = 0, path: str | None = None) -> str:
+        del cmd, mode, path
+        return foreign
+
+    monkeypatch.setattr(codex_mcp, "installed_launcher", lambda: (pinned, "a" * 64))
+    monkeypatch.setattr(codex_mcp, "isolated_root", lambda: root)
+    monkeypatch.setattr(codex_mcp, "invoking_launcher", lambda: foreign)
+    monkeypatch.setattr(shutil, "which", path_which)
+    monkeypatch.setenv("PATH", "/opt/foreign/bin:/usr/bin")
+
+    preview = preview_activation(target, codex_home=home)
+    apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+
+    project_mcp = json.loads(
+        (project / ".agents/plugins/finishup/.mcp.json").read_text(encoding="utf-8")
+    )
+    assert project_mcp["mcpServers"]["finishup"]["command"] == "finishup"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
+    _assert_bound_plugin_mcp(cache, pinned=pinned, root=str(root), foreign=foreign)
+
+    # A prior activation left the portable bare command. Reconnect replaces that cache.
+    shutil.rmtree(cache)
+    cache.mkdir(mode=0o700)
+    for relative_path, payload in render_plugin_install_tree(codex_version=None).items():
+        destination = cache / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+    assert (
+        json.loads((cache / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["finishup"][
+            "command"
+        ]
+        == "finishup"
+    )
+
+    upgrade = preview_activation(target, codex_home=home)
+    assert upgrade.cache_mutation_planned is True
+    apply_activation(target, codex_home=home, approved_digest=upgrade.preview_digest)
+    _assert_bound_plugin_mcp(cache, pinned=pinned, root=str(root), foreign=foreign)
+    assert plugin_tree_matches_marker(
+        {
+            path.relative_to(cache).as_posix(): path.read_bytes()
+            for path in cache.rglob("*")
+            if path.is_file()
+        }
+    )
+
+    again = preview_activation(target, codex_home=home)
+    assert again.cache_mutation_planned is False
+
+    removal = preview_removal(target, codex_home=home)
+    apply_removal(target, codex_home=home, approved_digest=removal.preview_digest)
+    assert not cache.exists()
+    assert (project / ".agents/plugins/finishup/.mcp.json").is_file()
+    assert (
+        json.loads((project / ".agents/plugins/finishup/.mcp.json").read_text(encoding="utf-8"))[
+            "mcpServers"
+        ]["finishup"]["command"]
+        == "finishup"
+    )
+
+
+def _assert_bound_plugin_mcp(cache: Path, *, pinned: str, root: str, foreign: str) -> None:
+    rendered = (cache / ".mcp.json").read_text(encoding="utf-8")
+    bound = json.loads(rendered)
+    server = bound["mcpServers"]["finishup"]
+    assert server["command"] == pinned
+    assert server["args"] == ["mcp", "serve", "--host", "codex"]
+    assert server["env"] == {
+        "FINISHUP_ISOLATED_ROOT": root,
+        "YOETZ_ISOLATED_ROOT": root,
+    }
+    assert foreign not in rendered
+    assert "finishup hooks" in (cache / "hooks/hooks.json").read_text(encoding="utf-8")

@@ -302,7 +302,10 @@ limiting coverage.
 carry, with the reasons (`reasons`, each with a code, a count and at most three ids). Status,
 the check's next step and the receipt use one function, so the label you read here is the label the
 receipt gets. "Nothing further to do" never means the receipt will be clean: read the sentence
-after it ("The receipt will read ...").
+after it ("The receipt will read ..."). `basis_frontier` is the frontier that conclusion was read
+at. A current status read that is interrupted by new work reads the prediction again at the
+newer frontier and names it there. A status read you pinned with `at_frontier`, or continued with
+a cursor, stays on that frontier; if it is no longer a safe basis, the prediction is left out.
 
 `closure_readiness.state` tells you whether anything is left to do. `action_required` lists the
 work in `agent_actionable`: open obligations, unanswered findings, an unresolved finding you can

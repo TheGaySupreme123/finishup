@@ -111,9 +111,13 @@ def _finishup_entry(
     route_profile: Literal["policy", "strict"] = "strict",
     *,
     launcher: str = "finishup",
+    env: dict[str, str] | None = None,
 ) -> CommandOutput:
     command = MCP_STRICT_SERVE_COMMAND if route_profile == "strict" else MCP_SERVE_COMMAND
-    return CommandOutput(0, json.dumps({"command": launcher, "args": list(command[1:])}).encode())
+    body: dict[str, object] = {"command": launcher, "args": list(command[1:])}
+    if env is not None:
+        body["env"] = env
+    return CommandOutput(0, json.dumps(body).encode())
 
 
 def _absent_mcp() -> list[CommandOutput]:
@@ -2860,12 +2864,26 @@ def test_interactive_setup_reconfirms_mcp_entry_exposed_by_plugin_activation(
 
 @pytest.mark.parametrize("expected_transition", [True, False])
 def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
-    wizard_env: dict[str, object], expected_transition: bool
+    wizard_env: dict[str, object],
+    expected_transition: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import finishup.cli.setup as setup_module
+    from finishup.adapters.integrations.codex_plugin import activation_cache_mcp_binding
 
     binary = _binary()
     home = cast(Path, wizard_env["codex_home"])
+    pinned = "/opt/pinned/bin/finishup"
+    root = "/opt/pinned/root"
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.installed_launcher",
+        lambda name="finishup": (pinned, "sha256:" + "cd" * 32),
+    )
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.isolated_root", lambda: Path(root)
+    )
+    approved_command, _environment = activation_cache_mcp_binding()
+    isolation = {"FINISHUP_ISOLATED_ROOT": root, "YOETZ_ISOLATED_ROOT": root}
 
     async def prepare():
         adapter = setup_module._mcp_adapter("strict", codex_home=home)  # pyright: ignore[reportPrivateUsage]
@@ -2874,13 +2892,14 @@ def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
         return preview, skill
 
     preview, skill = asyncio.run(prepare())
-    generated = _finishup_entry("policy")
+    generated = _finishup_entry("policy", launcher=pinned, env=isolation)
+    strict = _finishup_entry("strict", launcher=pinned, env=isolation)
     wizard_env["outputs"] = [
         *_absent_mcp(),
         generated,
-        generated if expected_transition else _finishup_entry("strict"),
+        generated if expected_transition else strict,
         *(
-            [generated, generated, CommandOutput(0, b""), _finishup_entry("strict")]
+            [generated, generated, CommandOutput(0, b""), strict, strict]
             if expected_transition
             else []
         ),
@@ -2894,7 +2913,7 @@ def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
             approved_preview_digest=preview.preview_digest,
             approved_skill_preview_digest=skill.preview_digest,
             approved_activation_digest=cast(str, wizard_env["activation_digest"]),
-            approved_activation_mcp_command=MCP_SERVE_COMMAND,
+            approved_activation_mcp_command=approved_command,
         )
     )
     calls = [

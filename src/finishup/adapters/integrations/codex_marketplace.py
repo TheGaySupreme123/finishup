@@ -33,6 +33,7 @@ from finishup import __version__
 from finishup.adapters.integrations.codex_mcp import legacy_registration_shaped
 from finishup.adapters.integrations.codex_plugin import (
     PluginHookPresence,
+    activation_cache_members,
     inspect_plugin,
     legacy_plugin_tree_digest,
     plugin_tree_matches_marker,
@@ -1362,6 +1363,23 @@ def _read_managed_tree(root: Path) -> dict[str, bytes]:
         os.close(descriptor)
 
 
+def _bound_cache_members(source: Mapping[str, bytes], *, required: bool) -> dict[str, bytes]:
+    """The cache Codex launches: source bytes with the MCP entry bound to this runtime.
+
+    Inspection and removal keep working when the launcher cannot be proved: they compare
+    against the portable source, and a marker-consistent cache (including one already bound)
+    stays recognizable. Activation preview and apply require the proof, so a bare ``PATH``
+    command is never what a new cache launches.
+    """
+
+    try:
+        return activation_cache_members(source)
+    except IntegrationError:
+        if required:
+            raise
+        return dict(source)
+
+
 def _source_cache_members(target: IntegrationTarget, *, codex_version: str) -> dict[str, bytes]:
     project = _validated_project(target)
     source = project / ".agents/plugins/finishup"
@@ -1585,7 +1603,10 @@ def inspect_activation(
         # A missing binding makes Codex fail every plugin command in the home; the inventory
         # cannot be read until activation rebinds it, so the plugin reads as not cached.
         try:
-            cache_members = _source_cache_members(target, codex_version=binary.codex_version)
+            cache_members = _bound_cache_members(
+                _source_cache_members(target, codex_version=binary.codex_version),
+                required=False,
+            )
             local_digest = _installed_cache_digest_anchored(home, __version__, cache_members)
             if _canonical_inventory:
                 inventory_installed, version = _plugin_inventory(
@@ -1798,7 +1819,10 @@ def _activation_plan(
         )
     )
     plugin_source_digest = _plugin_source_digest(codex_version=binary.codex_version)
-    cache_members = _source_cache_members(target, codex_version=binary.codex_version)
+    cache_members = _bound_cache_members(
+        _source_cache_members(target, codex_version=binary.codex_version),
+        required=True,
+    )
     # Migrate a Yoetz-era activation of this project in the same approval (ADR-048): its exact
     # marketplace document is replaced and its exact tables are stripped before the FinishUP
     # blocks are appended.
@@ -2254,7 +2278,8 @@ def _assert_plugin_source(
         raise _error(IntegrationReason.PREVIEW_STALE)
     if not _plugin_source_installed(target, codex_version=codex_version):
         raise _error(IntegrationReason.PARTIAL_INSTALL)
-    if _source_cache_members(target, codex_version=codex_version) != dict(expected_members):
+    source = _source_cache_members(target, codex_version=codex_version)
+    if _bound_cache_members(source, required=True) != dict(expected_members):
         raise _error(IntegrationReason.PREVIEW_STALE)
 
 
@@ -2807,7 +2832,10 @@ def _removal_plan(
         or (anchor_missing and not detach)
         else project
     )
-    cache_members = render_plugin_install_tree(codex_version=binary.codex_version)
+    cache_members = _bound_cache_members(
+        render_plugin_install_tree(codex_version=binary.codex_version),
+        required=False,
+    )
     if detach:
         # The shared plugin, its cache, its enable table, and the user-level MCP registration
         # keep serving the remaining projects; only this project's pieces go.

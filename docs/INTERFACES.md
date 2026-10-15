@@ -6526,7 +6526,20 @@ The managed project-tree source is always the canonical async-free render; the e
 probe version selects only the cache-layer render. Pure-ingress command
 hooks use `"async": true` only from Codex `0.148.0-alpha.6`; older, missing, malformed, or
 oversized versions use the bounded synchronous form because affected Codex hosts otherwise discard
-the handlers. Apply seeds the versioned cache with the exact previewed host-rendered bytes
+the handlers. The cache-layer render also binds `.mcp.json` to the proven absolute launcher of
+this runtime — the same console script the external registration writes; `PATH` is not consulted —
+and, when this process is isolated, sets both `FINISHUP_ISOLATED_ROOT` and `YOETZ_ISOLATED_ROOT`
+to that root (issue #1076, ADR-026, ADR-028). The project source `.mcp.json` and the committed
+repository tree stay the portable bare `finishup` command with no environment. A marker-consistent
+cache whose `.mcp.json` still names a bare `finishup` or a legacy `yoetz` command is a prior
+managed render: the next activation preview plans a whole-directory replacement, and apply writes
+the bound entry. Repeating that activation is a no-op. Removal deletes the cache, including the
+bound entry, and leaves the portable project source in place. Plugin hook commands in the
+cache, the project source, and the committed tree are not bound: they stay the portable
+basename `finishup` with no environment. Codex hook trust hashes that command, and the hook
+schema has no environment field, so activation does not rewrite cache hook commands onto the
+proven launcher. A legacy `yoetz` hook string is replaced only when activation recopies the
+current portable source, which still names `finishup` by basename. Apply seeds the versioned cache with the exact previewed host-rendered bytes
 (`plugin add` copies the canonical source, and apply then replaces that marker-identified copy in
 one atomic whole-directory swap) and verifies the result against the bound install digest. A cache
 tree that carries a valid `yoetz.codex-plugin-install/1` marker and byte-matches that marker's own
@@ -7908,7 +7921,12 @@ ledger prefix and never stored. Names:
 - `finishup.kernel.closure_verdict.closure_verdict`: the composition (classes, judged gaps, readiness
   split, prediction, counters, rechecks). `finishup.application.closure_basis.load_closure_basis`
   rebuilds the receipt's context at a frontier for status and the check (memoized per session and
-  frontier, valid only while the adapter's projection object is unchanged).
+  frontier, valid only while the adapter's projection object is unchanged). An unpinned status
+  read that loses that frontier to a material append re-reads the whole basis at the latest
+  frontier, immediately, at most twice (ADR-046 amendment of 2026-10-15). `basis_frontier` is the
+  frontier that read landed on. A status cursor or `at_frontier` is never moved; the prediction
+  is omitted instead. The ledger's suffix check is unchanged: an observation-authored extension
+  or a second receipt rendering still leaves the asked-for frontier valid.
 
 Wire (all optional on the unreleased 1.4.0 results; absent from an earlier 0.3 build and whenever
 the basis could not be read):

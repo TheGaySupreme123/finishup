@@ -393,6 +393,18 @@ through `PATH`, so that a test runtime earlier on `PATH` cannot become the host'
 `runtime_pin` or `environment_and_pin` for a test instance and `ambient` for the everyday install.
 See [`test-instances.md`](test-instances.md).
 
+Issue #1076 (the Codex plugin cache launching `finishup` through `PATH`) is not this host's
+defect. Claude's plugin `.mcp.json` and hooks already name the exact launcher that rendered them
+(an absolute executable, or `<interpreter> -m finishup`); a bare PATH command is not written
+(ADR-023, 2026-08-27). The plugin MCP entry does not itself stamp `FINISHUP_ISOLATED_ROOT` or
+`YOETZ_ISOLATED_ROOT`: the child isolates only when the launching session already exported the
+root, which is the #561 contract above. A render asked to discover a launcher with no explicit
+path still resolves a name through `PATH` (`resolve_finishup_launcher`); the supported connect
+path passes the invoking launcher and does not take that branch. No Claude carrier change is made
+for #1076. Follow-up, if a later change wants the bridge to isolate without inheriting the
+session environment: stamp both isolation-root spellings into the Claude plugin `.mcp.json` the
+way Cursor already does, and keep a no-launcher render from baking a foreign PATH binary.
+
 ## Upgrading FinishUP under a running service
 
 The local-control handshake pins the exact schema-manifest digest, so after installing a new FinishUP

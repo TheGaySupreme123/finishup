@@ -134,6 +134,21 @@ decision 6, Cursor artifacts and hooks, the detached service and child processes
 exports) writes both names with the same value, so an older launcher found through `PATH` still
 isolates (#604). Readers accept either name alone or both equal.
 
+**Amended 2026-10-15 (issue #1076).** Decision 6's environment exception also covers the Codex
+plugin activation cache. Codex copies the portable project plugin into
+`plugins/cache/finishup/finishup/<version>` and launches that copy. The cache `.mcp.json` uses the
+same proven absolute launcher and, when this process is isolated, the same pair of isolation-root
+spellings as `codex mcp add`. The project source and the committed repository tree stay the
+portable bare command with no environment, so neither carries a machine path. Inspection and
+removal still recognize a marker-consistent cache when the launcher cannot be proved; activation
+preview and apply refuse an unproven launcher rather than writing a command resolved through
+`PATH`. Plugin hook commands are outside this amendment. In the activation cache, the project
+source, and the committed tree they stay the portable basename `finishup`, with no isolation
+environment. Codex records hook trust as a hash of the command; rewriting a cache hook command
+would mark an already-trusted hook modified and leave it inactive until the owner reviews it
+again in `/hooks`. The hook configuration has no environment field, so the isolation pair cannot
+be attached beside the command without changing that hash.
+
 ## Reverse states and rollback
 
 Unsetting `FINISHUP_ISOLATED_ROOT` restores ambient resolution with no residue: every artifact an

@@ -974,6 +974,7 @@ class FinishUpRuntime:
         """
 
         from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
+        from finishup.adapters.integrations.codex_plugin import activation_cache_mcp_binding
         from finishup.application.codex_plugin import CodexPluginService
         from finishup.application.harness_mcp import HarnessMcpService
         from finishup.cli.runtime_refusal import connect_refusal
@@ -984,7 +985,6 @@ class FinishUpRuntime:
             project_skill_preview,
         )
         from finishup.ports.harness_mcp import (
-            MCP_SERVE_COMMAND,
             McpRegistrationAction,
             McpRegistrationError,
             McpRegistrationState,
@@ -1082,6 +1082,12 @@ class FinishUpRuntime:
             managed_paths.append(str(root / ".agents" / "skills" / "yoetz"))
         if activation_preview.legacy_plugin_tree_planned:
             managed_paths.append(str(root / ".agents" / "plugins" / "yoetz"))
+        try:
+            cache_command, _cache_environment = activation_cache_mcp_binding()
+        except IntegrationError as error:
+            raise RuntimeError_(
+                error.reason.value, "the Codex plugin command could not be proved"
+            ) from error
         return IntegrationPlan(
             harness_label=option.label,
             executable_path=option.executable_path,
@@ -1126,7 +1132,7 @@ class FinishUpRuntime:
             activation_marketplace_preimage_digest=(activation_preview.marketplace_preimage_digest),
             activation_config_preimage_digest=activation_preview.config_preimage_digest,
             activation_cache_mutation_planned=activation_preview.cache_mutation_planned,
-            activation_mcp_command=MCP_SERVE_COMMAND,
+            activation_mcp_command=cache_command,
             mcp_isolated_root=mcp_preview.isolated_root,
             route_profile_before=route_before,
             legacy_registration=mcp_preview.legacy_registration,
@@ -1248,12 +1254,14 @@ class FinishUpRuntime:
                 detail=policy_detail,
             ),
         )
+        next_step = report.get("next_step")
         return IntegrationOutcome(
             outcome=outcome,
             reason=str(reason) if isinstance(reason, str) else None,
             layers=layers,
             foreign_entry=reason == "foreign_entry_present",
             existing_entry_detail=str(report.get("state") or ""),
+            next_step=next_step if type(next_step) is str and next_step else None,
         )
 
     async def foreign_entry_detail(self, option: HarnessOption) -> tuple[str, ...]:

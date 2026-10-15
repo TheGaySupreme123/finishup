@@ -42,7 +42,11 @@ from finishup.adapters.integrations.codex_marketplace import (
     resolve_codex_home_for_binary,
 )
 from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
-from finishup.adapters.integrations.codex_plugin import PluginHookPresence, inspect_plugin
+from finishup.adapters.integrations.codex_plugin import (
+    PluginHookPresence,
+    activation_cache_mcp_binding,
+    inspect_plugin,
+)
 from finishup.adapters.integrations.codex_skill import (
     CodexSkillIntegration,
     inspect_destination,
@@ -70,6 +74,7 @@ from finishup.ports.harness_mcp import (
     HarnessBinary,
     McpRegistrationAction,
     McpRegistrationError,
+    McpRegistrationObservation,
     McpRegistrationPreview,
     McpRegistrationReason,
     McpRegistrationState,
@@ -1677,6 +1682,49 @@ def _legacy_route_kept_step(
     )
 
 
+def _plugin_cache_transition(
+    observed: McpRegistrationObservation, approved: tuple[str, ...]
+) -> Literal["accept", "env_dropped", "reject"]:
+    """Whether Codex's re-read is the activation-cache command the caller approved.
+
+    The cache writes one argv. Matching that argv while ``codex mcp get`` omits the
+    isolation environment is not acceptance: registering over that reading would store
+    a different binding than the one the owner approved.
+    """
+
+    try:
+        bound_command, bound_environment = activation_cache_mcp_binding()
+    except IntegrationError:
+        return "reject"
+    if tuple(approved) != bound_command or observed.serve_command != bound_command:
+        return "reject"
+    if observed.state is not McpRegistrationState.FINISHUP_OWNED:
+        return "reject"
+    if bound_environment is None:
+        return "accept" if observed.isolation_binding == "ambient" else "reject"
+    if observed.isolation_binding == "missing":
+        return "env_dropped"
+    if observed.isolation_binding != "isolated_exact":
+        return "reject"
+    return "accept"
+
+
+def _plugin_isolation_unobserved_step(
+    *, executable: str, codex_home: Path | None, project: Path
+) -> str:
+    """Continuation when the plugin entry's command matched but its environment did not."""
+
+    from finishup.cli.setup_readiness import continuation
+
+    arguments = ["setup", "run", "--host", "codex", "--host-path", executable]
+    if codex_home is not None:
+        arguments.extend(["--host-config-root", str(codex_home)])
+    return (
+        "Codex did not report the isolation environment on the plugin MCP entry. "
+        "FinishUP did not register a replacement. " + continuation(arguments, project=project)
+    )
+
+
 async def _codex_integration_step(
     binary: HarnessBinary,
     *,
@@ -2242,7 +2290,26 @@ async def _codex_integration_step(
                     and activation_report.get("outcome") == "active"
                 ):
                     observed = await mcp_service.observe(binary)
-                    if observed.serve_command != approved_activation_mcp_command:
+                    transition = _plugin_cache_transition(observed, approved_activation_mcp_command)
+                    if transition == "env_dropped":
+                        return {
+                            "outcome": "failed",
+                            "reason": "plugin_isolation_unobserved",
+                            "next_step": _plugin_isolation_unobserved_step(
+                                executable=binary.executable_path,
+                                codex_home=bound_home if isinstance(bound_home, Path) else None,
+                                project=Path(project.project_root),
+                            ),
+                            "state": mcp_preview.state_before.value,
+                            "plugin": plugin_report,
+                            "plugin_activation": activation_report,
+                            "skill": skill_report,
+                            "observation_consent": {
+                                "outcome": "absent",
+                                "workspace_commitment": None,
+                            },
+                        }
+                    if transition != "accept":
                         raise
                     refreshed = await mcp_service.preview(binary)
                     if (
