@@ -598,4 +598,4 @@ def test_privacy_posture_names_a_pending_carry_forward() -> None:
         conversation_review_explicit=False,
     )
     summary = pending.conversation_review_summary or ""
-    assert "carried forward to it once" in summary
+    assert "carried forward to it when a task first starts" in summary

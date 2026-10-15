@@ -326,3 +326,26 @@ def test_the_cli_names_finishup_privacy_when_the_terminal_is_needed(
     assert result.exit_code == 20
     assert "local_terminal_required" in result.stderr
     assert "finishup --privacy" in result.stderr
+
+
+def test_a_widening_without_a_terminal_does_not_name_the_grant_setup_where_a_grant_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verification of round 3: `finishup --privacy` is named only where a grant is missing."""
+
+    _install(monkeypatch, _with(ConversationReview.LOCAL_ONLY), grant="granted", interactive=False)
+    result = CliRunner().invoke(app, ["privacy", "conversations", "agent-opt-in"])
+    assert result.exit_code == 20
+    assert "local_terminal_required" in result.stderr
+    assert "run this command there." in result.stderr
+    assert "finishup --privacy" not in result.stderr
+
+
+def test_local_only_without_a_grant_or_terminal_names_this_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(monkeypatch, local_only_policy(), grant="missing", interactive=False)
+    result = CliRunner().invoke(app, ["privacy", "conversations", "local-only"])
+    assert result.exit_code == 0, result.output
+    assert "run this command in a local terminal" in result.stderr
+    assert "finishup --privacy" not in result.stderr

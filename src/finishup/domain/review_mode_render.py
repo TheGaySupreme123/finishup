@@ -67,8 +67,8 @@ NOT_SET_UP_HERE: Final = "AI-powered review is not set up for this repository ye
 # repository (the released migration), say that rather than "not set up" (review round 3).
 MIGRATION_PENDING_WORDS: Final = (
     "this repository has no privacy grant of its own yet; the installation's previously "
-    "accepted permission can be carried forward to it once, without reapproval or broader "
-    "disclosure ('finishup --privacy' shows how)"
+    "accepted permission is carried forward to it when a task first starts in this repository, "
+    "without reapproval or broader disclosure"
 )
 GRANT_MISSING_WORDS: Final = (
     "AI-powered review is not set up for this repository: it has no privacy grant of its own "

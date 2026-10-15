@@ -392,9 +392,13 @@ def _candidate_conversation_review(
         return answers.conversation_review
     if first_grant:
         # A repository's first grant (the chat grant path asks no question). One that sends
-        # nothing for review (Private) records no setting: it reads as the released local only,
-        # never as the installation row's inherited hybrid (review round 3).
-        return _first_grant_conversation_default(current) if answers.network_egress else None
+        # nothing for review (Private) must read as local only. The repository row composes with
+        # the installation row, so where that row carries a setting (an earlier repository's
+        # hybrid) it records local only explicitly; where nothing is inherited it records none,
+        # so the released bytes stay (review round 3 verification).
+        if answers.network_egress:
+            return _first_grant_conversation_default(current)
+        return ConversationReview.LOCAL_ONLY if current.conversation_review is not None else None
     if current.conversation_review is not None:
         return current.conversation_review
     current_llm = next(
@@ -451,6 +455,13 @@ _RECIPE_SUMMARIES: Final[dict[PrivacyRecipe, str]] = {
     "expanded_review": "most reviewer context and detail; allows broader in-scope excerpts",
     "custom": "maximum control; configure each privacy setting yourself",
 }
+# Adding AI-powered review on a route whose provider data-use facts are not reviewed (a ChatGPT
+# subscription among them): Assisted review is the default there but records no evidence
+# requirement, and the review screen says so (ADR-049 review round 3 verification).
+_UNREVIEWED_ASSISTED_SUMMARY: Final = (
+    "better problem-specific feedback from bounded excerpts; this route's provider data-use "
+    "facts are not reviewed, so the draft records no evidence requirement"
+)
 _RECIPE_LABELS: Final[dict[PrivacyRecipe, str]] = {
     "private": "Private",
     "metadata_only": "Metadata only",
@@ -673,14 +684,21 @@ def _with_conversation_question(
     )
 
 
-def _render_recipe_options(*, recommended: PrivacyRecipe | None = None) -> None:
+def _recipe_summary(recipe: PrivacyRecipe, *, unreviewed_route: bool) -> str:
+    if unreviewed_route and recipe == "assisted_review":
+        return _UNREVIEWED_ASSISTED_SUMMARY
+    return _RECIPE_SUMMARIES[recipe]
+
+
+def _render_recipe_options(
+    *, recommended: PrivacyRecipe | None = None, unreviewed_route: bool = False
+) -> None:
     typer.echo("Privacy options:")
     for number, recipe in sorted(_RECIPE_CHOICES.items()):
         marker = " (recommended)" if recipe == recommended else ""
         label = _RECIPE_LABELS[cast(PrivacyRecipe, recipe)]
-        typer.echo(
-            f"  {number}. {label}{marker} — {_RECIPE_SUMMARIES[cast(PrivacyRecipe, recipe)]}"
-        )
+        summary = _recipe_summary(cast(PrivacyRecipe, recipe), unreviewed_route=unreviewed_route)
+        typer.echo(f"  {number}. {label}{marker} — {summary}")
     typer.echo("Credentials, secrets, complete transcripts, and unrelated files are never sent.")
     typer.echo("You can change this any time by running 'finishup --privacy'.")
 
@@ -697,7 +715,12 @@ def _recipe_choice(hint: PrivacyRecipe | None) -> PrivacyRecipe:
         typer.echo("Please enter 1, 2, 3, 4, or 5.")
 
 
-def _recipe_prompt(hint: PrivacyRecipe | None, recommended: PrivacyRecipe | None) -> PrivacyRecipe:
+def _recipe_prompt(
+    hint: PrivacyRecipe | None,
+    recommended: PrivacyRecipe | None,
+    *,
+    unreviewed_route: bool = False,
+) -> PrivacyRecipe:
     """Render the options and take one choice.
 
     The recommendation is passed in rather than derived here. Reading configuration from a
@@ -706,7 +729,10 @@ def _recipe_prompt(hint: PrivacyRecipe | None, recommended: PrivacyRecipe | None
     unhandled traceback, since ``ConfigError`` is not a ``ValueError``.
     """
 
-    _render_recipe_options(recommended=recommended)
+    if unreviewed_route:
+        _render_recipe_options(recommended=recommended, unreviewed_route=True)
+    else:
+        _render_recipe_options(recommended=recommended)
     return _recipe_choice(hint)
 
 
@@ -1538,7 +1564,11 @@ def _choose_candidate(
             "Add AI-powered review: choose what the reviewer may see. FinishUP's local checks "
             "run either way."
         )
-        recipe = _recipe_prompt(recommended_ai or "assisted_review", recommended_ai)
+        recipe = _recipe_prompt(
+            recommended_ai or "assisted_review",
+            recommended_ai,
+            unreviewed_route=external is not None and recommended_ai is None,
+        )
         if recipe == "private":
             typer.echo(PRIVATE_ADD_ON_WARNING)
         if recipe == "custom":
@@ -2053,7 +2083,13 @@ async def run_conversation_review_change(
         snapshot.grant_state != "granted" and setting is not ConversationReview.LOCAL_ONLY
     ) or (widening and not current_llm.enabled)
     if (widening or needs_grant) and not _interactive_terminal():
-        return PrivacySetupReport("failed", "unknown", reason="local_terminal_required")
+        return PrivacySetupReport(
+            "failed",
+            "unknown",
+            reason="local_terminal_required",
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
     if needs_grant:
         # Nothing may be sent for review here yet: the setting rides the one-time policy
         # ceremony that turns AI-powered review on, never a grant created on its own.

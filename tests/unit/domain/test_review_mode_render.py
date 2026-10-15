@@ -295,6 +295,7 @@ def test_a_pending_carry_forward_says_the_earlier_permission_can_apply() -> None
     line = conversation_setting_line(
         "ai_powered", explicit=False, grant_missing=True, migration_pending=True
     )
-    assert "previously accepted permission can be carried forward to it once" in line
+    assert "carried forward to it when a task first starts in this repository" in line
+    assert "finishup --privacy" not in line
     assert "not set up" not in line
     assert "every task runs with AI-powered review" in line

@@ -187,7 +187,7 @@ with the agent's work. The setting is part of your privacy policy, so
 ## Commands
 
 ```text
-finishup --privacy                 # recommended policy first; customize only when declined
+finishup --privacy                 # the AI-powered review options or the recommended policy (below)
 finishup privacy setup             # equivalent guided policy review
 finishup privacy show              # current effective policy
 finishup privacy tighten           # tighten (proceeds through gates)
@@ -245,9 +245,20 @@ described in [What AI-powered review actually sends](#what-ai-powered-review-act
 Branches and linked worktrees share authority; independent clones and unrelated repositories do not.
 A task's public `workspace_ref` is not consulted.
 
-The CLI recommends **Assisted review** when the exact configured provider route has a current
-reviewed data-use record stating no default training and retention no longer than 30 days, and
-**Private** otherwise. Assisted review is exact-repository-scoped and problem-local, and does not prompt
+With a reviewer bound, on a repository's first privacy policy or where tasks start local under
+agent opt-in or owner approval, `finishup --privacy` lists the AI-powered review options: Private,
+Metadata only, Assisted review, Expanded review and Custom, with **Assisted review** as the default
+choice. It is marked recommended only when the exact configured provider route has a current
+reviewed data-use record stating no default training and retention no longer than 30 days; on any
+other route (a ChatGPT subscription among them) nothing is marked recommended and the Assisted
+draft records no data-use evidence requirement, which the review screen states. **Private**
+stays selectable and says that every task stays on local checks under it.
+
+Otherwise (no reviewer bound, or an existing policy that is not set to agent opt-in or owner
+approval), the CLI recommends
+**Assisted review** when the exact configured provider route has a current reviewed data-use
+record stating no default training and retention no longer than 30 days, and **Private**
+otherwise. Assisted review is exact-repository-scoped and problem-local, and does not prompt
 before each request once its policy is committed; its tradeoff is that selected ordinary user
 content may be sent. **Metadata only** remains available as the minimal-disclosure option —
 public structural metadata and declared file types, task scope, and a foreground approval before

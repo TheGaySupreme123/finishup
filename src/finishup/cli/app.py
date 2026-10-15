@@ -1987,17 +1987,25 @@ async def _run_conversation_review_command(setting_name: str, json_output: bool)
     if report.outcome == "failed":
         typer.echo(f"privacy_conversations_failed: {report.reason or 'invalid'}", err=True)
         if report.reason == "local_terminal_required":
+            # `finishup --privacy` sets up a grant; name it only where that is what is missing.
+            grant_needed = (
+                report.grant_state != "granted" and setting is not ConversationReview.LOCAL_ONLY
+            )
             typer.echo(
-                "This needs your approval in a local terminal: run this command there, or "
-                "'finishup --privacy' to set up this repository's privacy policy.",
+                "This needs your approval in a local terminal: run this command there"
+                + (
+                    ", or 'finishup --privacy' to set up this repository's privacy policy."
+                    if grant_needed
+                    else "."
+                ),
                 err=True,
             )
         return 20
     if report.reason == "repository_privacy_grant_missing" and not json_output:
         typer.echo(
             "This repository has no privacy policy of its own yet, so no work is sent for "
-            "AI-powered review here. Nothing changed; in a local terminal, this command or "
-            "'finishup --privacy' records the setting.",
+            "AI-powered review here. Nothing changed; run this command in a local terminal to "
+            "record the setting.",
             err=True,
         )
     _human_or_json(

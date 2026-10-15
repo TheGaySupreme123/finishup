@@ -352,7 +352,7 @@ def test_the_privacy_command_asks_for_the_ai_listing_where_it_applies(
 
 
 def test_a_first_private_grant_inherits_no_hybrid() -> None:
-    """Review round 3 (P3): a grant that sends nothing records no setting on a first grant."""
+    """A Private first grant reads local only: explicit where a setting is inherited."""
 
     from dataclasses import replace
     from datetime import UTC, datetime
@@ -364,8 +364,16 @@ def test_a_first_private_grant_inherits_no_hybrid() -> None:
     candidate = module.build_candidate_policy(
         inherited, answers, now=datetime(2026, 10, 15, tzinfo=UTC), first_grant=True
     )
-    assert candidate.conversation_review is None
-    assert candidate.effective_conversation_review is ConversationReview.LOCAL_ONLY
+    # Recorded explicitly: the repository row composes with the inherited installation row.
+    assert candidate.conversation_review is ConversationReview.LOCAL_ONLY
+    # Nothing inherited: no setting, so the released bytes stay.
+    bare = module.build_candidate_policy(
+        local_only_policy(),
+        module.recipe_answers("private", local_only_policy(), _external()),
+        now=datetime(2026, 10, 15, tzinfo=UTC),
+        first_grant=True,
+    )
+    assert bare.conversation_review is None
 
 
 @pytest.mark.anyio
@@ -388,4 +396,4 @@ async def test_the_terminal_path_tells_the_candidate_it_is_a_first_grant(
     )
     proposed = _capture(monkeypatch)
     await module.run_privacy_setup(recipe_hint="private")
-    assert [policy.conversation_review for policy in proposed] == [None]
+    assert [policy.conversation_review for policy in proposed] == [ConversationReview.LOCAL_ONLY]
