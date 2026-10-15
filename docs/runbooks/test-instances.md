@@ -113,8 +113,11 @@ or when a labeled marker sits in ambient state (`instance_lifecycle_requires_iso
 
 Host integration against a snapshot follows the host runbooks; register the snapshot's absolute
 launcher (never a bare `finishup`) and, for Codex external registration and Cursor native artifacts,
-the root binding those hosts already carry. The everyday install keeps its own registrations
-untouched.
+the root binding those hosts already carry. The Codex plugin activation cache is bound the same
+way: its `.mcp.json` names that snapshot's proven absolute launcher and, when the snapshot is
+isolated, both isolation-root spellings. A foreign `finishup` earlier on `PATH` is not the plugin
+command (issue #1076). The project plugin source stays the portable bare command. The everyday
+install keeps its own registrations untouched.
 
 For Codex external registration, run `integrate codex mcp preview|install|status|preview-remove|remove`
 through that snapshot's own absolute launcher and the explicitly selected testing Codex home.

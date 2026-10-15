@@ -580,3 +580,112 @@ def test_install_never_removes_a_modified_legacy_tree(
     assert after.presence is PluginHookPresence.INSTALLED
     assert (legacy / "hooks/hooks.json").read_bytes().endswith(b"# owner edit\n")
     assert "legacy_plugin_tree_retained" in after.notes
+
+
+def test_portable_plugin_mcp_stays_a_bare_command_when_a_launcher_is_proven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repository generation must not bake a machine path into the committed plugin."""
+
+    from finishup.adapters.integrations import codex_mcp
+
+    monkeypatch.setattr(
+        codex_mcp,
+        "installed_launcher",
+        lambda name="finishup": ("/opt/pinned/bin/finishup", "sha256:" + "ab" * 32),
+    )
+    tree = render_plugin_tree(resource_source=_resources())
+    entry = json_mcp(tree[".mcp.json"])
+    assert entry["command"] == "finishup"
+    assert entry["args"] == ["mcp", "serve", "--host", "codex"]
+    assert "env" not in entry
+    assert "/opt/pinned/bin/finishup" not in tree[".mcp.json"].decode("utf-8")
+
+
+def test_activation_cache_mcp_uses_the_pinned_launcher_not_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A foreign ``finishup`` earlier on PATH is not the plugin command Codex launches."""
+
+    import shutil
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.adapters.integrations.codex_plugin import (
+        activation_cache_members,
+        plugin_tree_matches_marker,
+    )
+
+    foreign = "/opt/foreign/bin/finishup"
+    pinned = "/opt/pinned/bin/finishup"
+    root = "/opt/pinned/root"
+
+    def path_which(cmd: str, mode: int = 0, path: str | None = None) -> str:
+        del cmd, mode, path
+        return foreign
+
+    monkeypatch.setenv("PATH", "/opt/foreign/bin:/usr/bin")
+    monkeypatch.setattr(shutil, "which", path_which)
+    monkeypatch.setattr(
+        codex_mcp,
+        "installed_launcher",
+        lambda name="finishup": (pinned, "sha256:" + "cd" * 32),
+    )
+    monkeypatch.setattr(codex_mcp, "invoking_launcher", lambda: foreign)
+    monkeypatch.setattr(codex_mcp, "isolated_root", lambda: Path(root))
+    legacy = {
+        ".mcp.json": (
+            b'{"mcpServers":{"yoetz":{"args":["mcp","serve","--host","codex"],'
+            b'"command":"yoetz"}}}\n'
+        ),
+        "hooks/hooks.json": b'{"hooks":{"Stop":[]}}\n',
+    }
+
+    bound = activation_cache_members(legacy)
+    again = activation_cache_members(bound)
+
+    assert again == bound
+    assert plugin_tree_matches_marker(bound)
+    entry = json_mcp(bound[".mcp.json"])
+    assert entry["command"] == pinned
+    assert entry["args"] == ["mcp", "serve", "--host", "codex"]
+    assert entry["env"] == {
+        "FINISHUP_ISOLATED_ROOT": root,
+        "YOETZ_ISOLATED_ROOT": root,
+    }
+    rendered = bound[".mcp.json"].decode("utf-8")
+    assert foreign not in rendered
+    assert '"yoetz"' not in rendered
+    assert bound["hooks/hooks.json"] == legacy["hooks/hooks.json"]
+
+
+def test_an_unproven_launcher_is_not_replaced_from_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.adapters.integrations.codex_plugin import activation_cache_members
+
+    foreign = "/opt/foreign/bin/finishup"
+
+    def path_which(cmd: str, mode: int = 0, path: str | None = None) -> str:
+        del cmd, mode, path
+        return foreign
+
+    monkeypatch.setattr(codex_mcp, "installed_launcher", lambda name="finishup": None)
+    monkeypatch.setattr(codex_mcp, "invoking_launcher", lambda: foreign)
+    monkeypatch.setattr(shutil, "which", path_which)
+
+    with pytest.raises(IntegrationError) as caught:
+        activation_cache_members({".mcp.json": b"{}\n"})
+
+    assert caught.value.reason is IntegrationReason.SOURCE_INVALID
+    assert caught.value.safe_details.get("detail") == "launcher_unproven"
+
+
+def json_mcp(raw: bytes) -> dict[str, object]:
+    import json
+    from typing import cast
+
+    parsed = cast("dict[str, dict[str, dict[str, object]]]", json.loads(raw))
+    servers = parsed["mcpServers"]
+    assert list(servers) == ["finishup"]
+    return servers["finishup"]

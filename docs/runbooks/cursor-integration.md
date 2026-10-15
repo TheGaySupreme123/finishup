@@ -426,7 +426,10 @@ entry also carries exactly `env: {FINISHUP_ISOLATED_ROOT: <validated-root>}`; ar
 keys remain foreign. Cursor's MCP reference resolves a
 bare `command` through the desktop app's sanitized PATH, which in the 2026-08-29 dogfood launched
 an older ambient runtime (control schema 2.1.0) behind a marker-valid then-current plugin (2.3.0); the
-bound entry removes PATH from the runtime choice (issue #468). That profile retains
+bound entry removes PATH from the runtime choice (issue #468). Issue #1076 does not change
+Cursor. The native plugin `mcp.json` already names that absolute launcher and, when the artifact
+is isolated, writes both `FINISHUP_ISOLATED_ROOT` and `YOETZ_ISOLATED_ROOT` (ADR-048). A bare PATH
+command is not what that entry launches. That profile retains
 `structuredContent` and also repeats the exact canonical JSON body in text `content`, because
 pinned Cursor `3.17.x` can otherwise hide structured results from the model. It adds no
 environment or secret beyond the exact isolated-root binding and does not widen the service

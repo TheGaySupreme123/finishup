@@ -2173,6 +2173,18 @@ and a test runtime earlier on `PATH` then reaches the everyday endpoint, answers
 `service_incompatible`, and its `finishup service restart` advice supersedes the everyday service —
 the failure recorded on issue #604. See [`test-instances.md`](test-instances.md).
 
+The plugin activation cache is the other place Codex launches FinishUP (issue #1076). `plugin add`
+copies the portable project source, whose `.mcp.json` stays a bare `finishup` with no environment,
+so the project tree and the committed repository render carry no machine path. Apply then replaces
+that cache copy. The replacement `.mcp.json` uses the same proven absolute launcher and, when this
+process is isolated, the same `FINISHUP_ISOLATED_ROOT` and `YOETZ_ISOLATED_ROOT` pair as the
+external registration. `PATH` is not consulted. Reconnecting rewrites a marker-consistent cache
+that still names a bare `finishup` or a legacy `yoetz` command; repeating that activation changes
+nothing. Disconnect removes the cache, including the bound entry, and leaves the portable project
+source in place. Plugin hook commands in the cache still name `finishup` by basename; this repair
+covers the MCP entry the plugin starts. If the installed CLI cannot prove its console script,
+activation preview refuses rather than writing a command resolved through `PATH`.
+
 Absolute external launchers are managed by the same preview/install/status/remove flow (#654).
 Run that flow from the installation you intend Codex to use. Preview selects its console script
 from that interpreter's scripts directory and verifies its bytes against the installed FinishUP

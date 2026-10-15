@@ -6508,7 +6508,16 @@ The managed project-tree source is always the canonical async-free render; the e
 probe version selects only the cache-layer render. Pure-ingress command
 hooks use `"async": true` only from Codex `0.148.0-alpha.6`; older, missing, malformed, or
 oversized versions use the bounded synchronous form because affected Codex hosts otherwise discard
-the handlers. Apply seeds the versioned cache with the exact previewed host-rendered bytes
+the handlers. The cache-layer render also binds `.mcp.json` to the proven absolute launcher of
+this runtime — the same console script the external registration writes; `PATH` is not consulted —
+and, when this process is isolated, sets both `FINISHUP_ISOLATED_ROOT` and `YOETZ_ISOLATED_ROOT`
+to that root (issue #1076, ADR-026, ADR-028). The project source `.mcp.json` and the committed
+repository tree stay the portable bare `finishup` command with no environment. A marker-consistent
+cache whose `.mcp.json` still names a bare `finishup` or a legacy `yoetz` command is a prior
+managed render: the next activation preview plans a whole-directory replacement, and apply writes
+the bound entry. Repeating that activation is a no-op. Removal deletes the cache, including the
+bound entry, and leaves the portable project source in place. Plugin hook commands in the cache
+still name `finishup` by basename. Apply seeds the versioned cache with the exact previewed host-rendered bytes
 (`plugin add` copies the canonical source, and apply then replaces that marker-identified copy in
 one atomic whole-directory swap) and verifies the result against the bound install digest. A cache
 tree that carries a valid `yoetz.codex-plugin-install/1` marker and byte-matches that marker's own
