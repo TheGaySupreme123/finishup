@@ -28,6 +28,10 @@ from typing import Final
 import pytest
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
+# The installed client's own wait for a service it starts (service/client.py
+# _SERVICE_START_TIMEOUT_SECONDS). A first start also builds the retained release-runtime snapshot,
+# bytecode included, so it is slower than a warm start.
+_SERVICE_START_WAIT_SECONDS: Final = 30.0
 
 
 def _is_advertised_host() -> bool:
@@ -202,7 +206,7 @@ def test_isolated_service_singleton_cannot_be_reached_ambiently_and_leaves_no_tr
             start_new_session=True,
         )
         try:
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + _SERVICE_START_WAIT_SECONDS
             reachable = False
             while time.monotonic() < deadline:
                 if service.poll() is not None:
