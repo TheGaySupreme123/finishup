@@ -142,6 +142,9 @@ def _progress_lines(lines: Sequence[str]) -> tuple[str, ...]:
 _MIN_QUEUE_ROWS: Final = MIN_CUSTOM_QUEUE_COUNT
 _MAX_QUEUE_ROWS: Final = LARGEST_SUPPORTED_QUEUE_COUNT
 _CAPACITY_UNCHANGED: Final = "Capacity was left unchanged."
+# First-run conversation answers that add AI-powered review (ADR-049): their privacy step lists
+# the AI-powered review recipes with their own recommendation.
+_ADD_ON_ANSWERS: Final = frozenset({"local_agent_opt_in", "local_owner_approval", "ai_powered"})
 _CAPACITY_LABELS: Final = frozenset({"standard", "larger", "largest", "custom"})
 _DETAILS: Final = frozenset({"focused", "detailed"})
 _LIMITING_DIMENSIONS: Final = frozenset({"count", "bytes", "oldest_age", "capture_backlog"})
@@ -1554,9 +1557,10 @@ class FinishUpTui(App[int]):
             return
         if option.host != "codex":
             review = await self._ask_review_mode()
-            if review is not None:
-                # ADR-049: every answer registers the policy route.
-                await self._connect_selected_host(option, route="policy")
+            # ADR-049: every answer registers the policy route; the answer then sets up what it
+            # chose, exactly as first-run setup does (review round 1: it was asked and dropped).
+            if review is not None and await self._connect_selected_host(option, route="policy"):
+                await self._run_initial_review(review, connected=True)
             return
         if not await self._offer_package_upgrade_if_newer():
             return
@@ -1889,7 +1893,9 @@ class FinishUpTui(App[int]):
             (f"Reason: {getattr(report, 'reason', 'privacy_setup_failed')}",),
         )
 
-    async def _command_codex_subscription(self, *, switch_account: bool = False) -> None:
+    async def _command_codex_subscription(
+        self, *, switch_account: bool = False, conversation_review: str | None = None
+    ) -> None:
         executable_default, home_default, model_default, effort_default = (
             self.runtime.codex_subscription_defaults()
         )
@@ -2053,8 +2059,17 @@ class FinishUpTui(App[int]):
             ),
         )
         try:
+            # ADR-049 review round 1: a first-run answer that adds AI-powered review lists the
+            # AI recipes (Assisted review by default), never the Private recommendation a
+            # subscription reviewer gets on its own.
             report = await self.hand_over_terminal(
-                lambda: self.runtime.run_privacy_setup("assisted_review", offer_recommended=True)
+                lambda: (
+                    self.runtime.run_privacy_setup(
+                        None, conversation_review=conversation_review, ai_review_add_on=True
+                    )
+                    if conversation_review in _ADD_ON_ANSWERS
+                    else self.runtime.run_privacy_setup("assisted_review", offer_recommended=True)
+                )
             )
         except (SuspendNotSupported, RuntimeError_) as error:
             if isinstance(error, RuntimeError_):
@@ -2306,7 +2321,7 @@ class FinishUpTui(App[int]):
             self.say(Level.OPTIONAL, "No provider was configured.")
             return
         if chosen == "codex_subscription":
-            await self._command_codex_subscription()
+            await self._command_codex_subscription(conversation_review=conversation_review)
             return
         if chosen == "codex_status":
             await self._command_codex_subscription_status()
@@ -2371,7 +2386,10 @@ class FinishUpTui(App[int]):
             # Authorize the exact provider channel before any credential-bearing probe can run.
             report = await self.hand_over_terminal(
                 lambda: self.runtime.run_privacy_setup(
-                    None, offer_recommended=True, conversation_review=conversation_review
+                    None,
+                    offer_recommended=conversation_review not in _ADD_ON_ANSWERS,
+                    conversation_review=conversation_review,
+                    ai_review_add_on=conversation_review in _ADD_ON_ANSWERS,
                 )
             )
         except SuspendNotSupported:

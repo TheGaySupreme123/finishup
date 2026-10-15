@@ -410,8 +410,10 @@ def _wire_composed_provider_setup(
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
         conversation_review: ConversationReview | None = None,
+        ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
         state["conversation_review"] = conversation_review
+        state["ai_review_add_on"] = ai_review_add_on
         cast(list[tuple[str | None, bool, bool, bool | None]], state["privacy_calls"]).append(
             (
                 recipe_hint,
@@ -921,7 +923,7 @@ def test_interactive_registration_n_declines_without_mutation(
         assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
-def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
+def test_semantic_first_run_lists_the_ai_review_recipes_for_the_privacy_draft(
     wizard_env: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -935,7 +937,7 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
         CommandOutput(0, b""),  # add
         _finishup_entry("policy"),  # verify get
     ]
-    privacy_calls: list[tuple[str | None, bool, bool, bool | None, object]] = []
+    privacy_calls: list[tuple[str | None, bool, bool, bool | None, object, bool]] = []
 
     async def ready(*, start_if_absent: bool = False) -> dict[str, object]:
         del start_if_absent
@@ -961,6 +963,7 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
         conversation_review: ConversationReview | None = None,
+        ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
         privacy_calls.append(
             (
@@ -969,6 +972,7 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
                 credential_probe_authorized,
                 update_checks_override,
                 conversation_review,
+                ai_review_add_on,
             )
         )
         return SimpleNamespace(
@@ -996,10 +1000,10 @@ def test_semantic_first_run_suggests_and_selects_assisted_privacy_draft(
     )
 
     assert result.exit_code == 0, (result.output, result.exception)
-    # ADR-049: the recommended first answer drafts the hybrid conversation setting.
-    assert privacy_calls == [
-        ("assisted_review", True, True, True, ConversationReview.LOCAL_AGENT_OPT_IN)
-    ]
+    # ADR-049: the recommended first answer drafts the hybrid conversation setting, and its
+    # privacy step lists the AI-powered review recipes (Assisted review by default), never the
+    # released Private recommendation a subscription reviewer gets (review round 1, P2-3).
+    assert privacy_calls == [(None, False, True, True, ConversationReview.LOCAL_AGENT_OPT_IN, True)]
     assert "Privacy: configured (confirm_every_request)" in result.stdout
 
 
@@ -1141,7 +1145,9 @@ def test_composed_wizard_preserves_privacy_when_hidden_credential_input_is_empty
     assert semantic_status["repository_grant_state"] == "granted"
     assert report["marker_written"] is False
     assert state["binding_embedded_flags"] == [False]
-    assert state["privacy_calls"] == [("assisted_review", True, True, True)]
+    # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
+    assert state["privacy_calls"] == [(None, False, True, True)]
+    assert state["ai_review_add_on"] is True
     assert state["status_reads"] == 2
     assert state["restart_calls"] == 1
     assert state["stored"] is False
@@ -1210,7 +1216,9 @@ def test_composed_wizard_reaches_semantic_readiness_after_hidden_credential_stor
     assert report["next_steps"] == []
     assert report["marker_written"] is True
     assert state["binding_embedded_flags"] == [False]
-    assert state["privacy_calls"] == [("assisted_review", True, True, True)]
+    # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
+    assert state["privacy_calls"] == [(None, False, True, True)]
+    assert state["ai_review_add_on"] is True
     assert state["status_reads"] == 2
     assert state["restart_calls"] == 2
     assert state["stored"] is True

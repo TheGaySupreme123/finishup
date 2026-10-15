@@ -2653,19 +2653,23 @@ async def run_provider_setup(
 
     async def authorize_provider_channel() -> str | None:
         nonlocal privacy_result
-        from finishup.cli.privacy_setup import run_privacy_setup
+        from finishup.cli.privacy_setup import adds_ai_review, run_privacy_setup
         from finishup.cli.unlock import HumanCeremonyCliError
         from finishup.ports.control import ControlError
 
         typer.echo("")
         typer.echo("Choose the exact disclosure policy before the API key can be tested.")
         credential_probe_authorized = _prompt_credential_probe_authorization()
+        # ADR-049 review round 1: an answer that adds AI-powered review lists the AI recipes
+        # with their own recommendation, never the released Private recommendation.
+        add_on = adds_ai_review(conversation_review)
         try:
             privacy_result = await run_privacy_setup(
-                recipe_hint="assisted_review",
-                offer_recommended=True,
+                recipe_hint=None if add_on else "assisted_review",
+                offer_recommended=not add_on,
                 credential_probe_authorized=credential_probe_authorized,
                 conversation_review=conversation_review,
+                ai_review_add_on=add_on,
             )
         except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
             typer.echo(f"privacy_setup_failed: {type(error).__name__}", err=True)
@@ -3012,10 +3016,11 @@ async def run_setup_wizard(
             credential_probe_authorized = (
                 False if external_runtime_configured else _prompt_credential_probe_authorization()
             )
+            # ADR-049 review round 1: both answers that set up AI-powered review list the AI
+            # recipes with their own recommendation (Assisted review by default), never the
+            # released Private recommendation a subscription reviewer would otherwise get.
             try:
                 privacy_result = await run_privacy_setup(
-                    recipe_hint="assisted_review",
-                    offer_recommended=True,
                     credential_probe_authorized=credential_probe_authorized,
                     update_checks_override=update_checks_choice,
                     conversation_review=(
@@ -3023,6 +3028,7 @@ async def run_setup_wizard(
                         if review_choice is None
                         else review_choice_conversation_setting(review_choice)
                     ),
+                    ai_review_add_on=True,
                 )
             except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
                 reason = getattr(error, "reason", None)

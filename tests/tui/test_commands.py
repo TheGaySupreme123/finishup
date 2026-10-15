@@ -850,6 +850,54 @@ async def test_connect_offers_inspection_before_any_mutation(make_app: MakeApp) 
         assert runtime.applied == []
 
 
+@pytest.mark.parametrize("connected", [True, False])
+async def test_connect_for_claude_code_or_cursor_sets_up_the_review_answer(
+    make_app: MakeApp, connected: bool
+) -> None:
+    """ADR-049 review round 1 (P2-5): /connect asked the three answers, then dropped them.
+
+    After a successful policy-route connection the answer runs exactly as first-run setup runs
+    it; a connection that did not complete sets nothing up.
+    """
+
+    from finishup.tui.models import HarnessOption
+
+    claude = HarnessOption(
+        executable_path="/usr/local/bin/claude",
+        reported_version="2.0",
+        label="Claude Code 2.0",
+        description="Command-line installation",
+        host="claude",
+    )
+    app = make_app(runtime=FakeRuntime(harnesses=(claude,)))
+    calls: list[tuple[object, ...]] = []
+
+    async def choose(_harnesses: object) -> HarnessOption:
+        return claude
+
+    async def ask_review() -> str:
+        return "agent_opt_in"
+
+    async def connect(option: HarnessOption, *, route: str = "strict", **_: object) -> bool:
+        calls.append(("connect", option.host, route))
+        return connected
+
+    async def initial(choice: str, *, connected: bool, **_: object) -> None:
+        calls.append(("review", choice, connected))
+
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        setattr(app, "_choose_harness", choose)
+        setattr(app, "_ask_review_mode", ask_review)
+        setattr(app, "_connect_selected_host", connect)
+        setattr(app, "_run_initial_review", initial)
+        await app.command_connect()
+    expected: list[tuple[object, ...]] = [("connect", "claude", "policy")]
+    if connected:
+        expected.append(("review", "agent_opt_in", True))
+    assert calls == expected
+
+
 async def test_connect_without_a_harness_points_at_local_verification(
     make_app: MakeApp,
 ) -> None:

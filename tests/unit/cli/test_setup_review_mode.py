@@ -138,3 +138,55 @@ def test_choosing_ai_review_configures_nothing_by_itself(
 
     assert _choose() == "agent_opt_in"
     assert calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("answer", "add_on"),
+    [
+        (ConversationReview.LOCAL_AGENT_OPT_IN, True),
+        (ConversationReview.AI_POWERED, True),
+        (None, False),
+    ],
+)
+async def test_the_host_path_lists_the_ai_review_recipes_for_an_add_on_answer(
+    monkeypatch: pytest.MonkeyPatch, answer: ConversationReview | None, add_on: bool
+) -> None:
+    """Review round 1 (P2-3): Claude Code and Cursor reach the same AI recipe list as Codex.
+
+    An answer that adds AI-powered review never meets the released Private recommendation a
+    subscription reviewer (or any reviewer without reviewed data-use evidence) would get; a
+    plain ``finishup --set`` keeps its released recommendation.
+    """
+
+    import finishup.cli.privacy_setup as privacy_setup_module
+
+    calls: list[dict[str, object]] = []
+
+    async def reachable(*, start_if_absent: bool = False) -> dict[str, object]:
+        del start_if_absent
+        return {"reachable": True, "state": "ready"}
+
+    async def privacy_setup(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return type("Report", (), {"outcome": "configured", "reason": None})()
+
+    async def provider_setup(
+        service: dict[str, object], *, before_credential: object = None, **_: object
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        assert callable(before_credential)
+        assert await before_credential() is None  # type: ignore[misc]
+        return service, {"binding": "skipped", "credential": "skipped"}
+
+    monkeypatch.setattr(cli_setup, "_is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(cli_setup, "_service_reachability", reachable)
+    monkeypatch.setattr(cli_setup, "_prompt_credential_probe_authorization", lambda: False)
+    monkeypatch.setattr(cli_setup, "_interactive_provider_setup", provider_setup)
+    monkeypatch.setattr(privacy_setup_module, "run_privacy_setup", privacy_setup)
+
+    await cli_setup.run_provider_setup(conversation_review=answer)
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["ai_review_add_on"] is add_on
+    assert call["offer_recommended"] is (not add_on)
+    assert call["conversation_review"] is answer
