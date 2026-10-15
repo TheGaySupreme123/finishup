@@ -44,4 +44,4 @@ Before delegating, read the multi-agent sections of `finishup://guidance/workflo
 
 # Read more
 
-This card is `finishup://guidance/agent-instructions.md`; on demand only: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; request bodies, setup: one section of `finishup://guidance/request-templates.md`.
+This card is `finishup://guidance/agent-instructions.md`; on demand only: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; publish `#publish-shapes`; setup `finishup://guidance/request-templates.md`.

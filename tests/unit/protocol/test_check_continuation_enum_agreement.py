@@ -27,7 +27,7 @@ _SCHEMA = (
     Path(__file__).resolve().parents[3]
     / "schemas"
     / "operations"
-    / "check-result-1.4.0.schema.json"
+    / "check-result-1.5.0.schema.json"
 )
 _REF = "fnd_59000000-0000-4000-8000-000000000001"
 

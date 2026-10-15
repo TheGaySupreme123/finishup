@@ -9,9 +9,11 @@ from typing import Final, cast
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.findings import SELF_VERIFIED_GUIDANCE
 from finishup.domain.receipts import (
+    DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    review_deferred_before_first_edit,
     semantic_redacted_value_text,
 )
 from finishup.domain.review_input_render import (
@@ -419,10 +421,11 @@ def render_human_check(result: CheckSuccessModel) -> str:
 
     if type(result) is not CheckSuccessModel:
         raise TypeError("check_result_invalid")
+    deferred = review_deferred_before_first_edit(result.semantic_reason, result.coverage.known_gaps)
     scoped_local_verdict = (
         result.verdict == "no_issue_detected"
         and result.semantic_status == "not_requested"
-        and result.semantic_reason == "deterministic_mode"
+        and (result.semantic_reason == "deterministic_mode" or deferred)
     )
     verdict_line = (
         "Verdict: no issue detected within local coverage"
@@ -430,9 +433,17 @@ def render_human_check(result: CheckSuccessModel) -> str:
         else f"Verdict: {result.verdict}"
     )
     review_line = (
-        f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})"
+        DEFERRED_BEFORE_FIRST_EDIT_TEXT
+        if deferred
+        else (
+            f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})"
+        )
     )
-    if result.semantic_status == "not_requested" and result.semantic_route_required is False:
+    if (
+        not deferred
+        and result.semantic_status == "not_requested"
+        and result.semantic_route_required is False
+    ):
         # Issue #986 (owner decision E2): disclosed, never a receipt blocker on such a route.
         review_line += "; the route did not require it, so it does not block a clean receipt"
     lines = [
@@ -530,13 +541,6 @@ def render_human_check(result: CheckSuccessModel) -> str:
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
     lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
-    if "semantic_review_deferred_before_first_edit" in tuple(result.coverage.known_gaps):
-        # Issue #1046: a pre-work check runs the local plan checks only.
-        lines.append(
-            "AI-powered review deferred: no material edit is recorded yet, so this check ran the "
-            "local plan checks only and sent nothing. The next check after your first edit "
-            "reviews as configured; the closing review is never deferred."
-        )
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
@@ -960,6 +964,8 @@ def render_human_status(result: StatusSuccessModel) -> str:
         if recipe:
             lines.append(recipe[0])
     gaps = tuple(result.gaps) + tuple(result.coverage.known_gaps)
+    if review_deferred_before_first_edit(None, gaps):
+        lines.append(DEFERRED_BEFORE_FIRST_EDIT_TEXT)
     lines.append("Gaps: " + (", ".join(dict.fromkeys(gaps)) if gaps else "none"))
     lines.extend(_check_time_change_sentences(tuple(dict.fromkeys(gaps))))
     return "\n".join(lines)

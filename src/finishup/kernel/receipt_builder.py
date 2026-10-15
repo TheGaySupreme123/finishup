@@ -41,6 +41,7 @@ from finishup.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
+    DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
@@ -2321,12 +2322,9 @@ def _sections(
                 f"Coverage is limited by: {limited_by}."
             )
         elif not_requested and SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in gap_codes:
-            # Issue #1046: the applicable check ran before any material edit.
-            gap_body = (
-                "AI-powered review was deferred: the applicable check recorded no material edit "
-                "yet, so it ran the local plan checks only; the review runs after the first edit. "
-                f"Coverage is limited by: {limited_by}."
-            )
+            # Issue #1046: the applicable check ran before any material edit. JSON, markdown,
+            # and text all carry this section body.
+            gap_body = f"{DEFERRED_BEFORE_FIRST_EDIT_TEXT} Coverage is limited by: {limited_by}."
         elif not_requested:
             gap_body = (
                 "AI-powered review was not requested (local-only check). "

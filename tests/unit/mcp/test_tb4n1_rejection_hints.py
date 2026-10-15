@@ -44,7 +44,13 @@ _SECRET = "caller-prose-must-not-echo"
 _UUID = "00000000-0000-4000-8000-00000000000"
 
 
-def _publish(name: str, version: str, payload: dict[str, object]) -> str:
+def _publish(
+    name: str,
+    version: str,
+    payload: dict[str, object],
+    *,
+    evidence_refs: list[str] | None = None,
+) -> str:
     draft: dict[str, object] = {
         "event_id": "evt_00000000-0000-4000-8000-000000000001",
         "schema": {"name": name, "version": version},
@@ -52,7 +58,7 @@ def _publish(name: str, version: str, payload: dict[str, object]) -> str:
         "causal_parents": [],
         "payload": payload,
         "artifact_refs": [],
-        "evidence_refs": [],
+        "evidence_refs": [] if evidence_refs is None else evidence_refs,
     }
     request = {
         **_IDENTITY,
@@ -87,9 +93,13 @@ def _claim(limitation_refs: list[str]) -> dict[str, object]:
 def test_evidence_id_in_limitation_refs_names_result_ids_and_where_evidence_goes() -> None:
     """formal-crypto__4QnC4wS: an evd_ id in claim limitation_refs got only the template URI."""
 
-    message = _publish("claim_recorded", "1.1.0", _claim([f"evd_{_UUID}1"]))
+    sent = f"evd_{_UUID}9"
+    message = _publish("claim_recorded", "1.1.0", _claim([sent]))
     assert "limitation_refs names only non-success result ids (res_)" in message
     assert "supporting_refs" in message
+    assert "field `limitation_refs` expects a `res_` id; got `evd_`" in message
+    assert "example: `res_00000000-0000-4000-8000-000000000001`" in message
+    assert sent not in message
     assert "each limitation_refs entry admits values matching ^res_" in message
 
 
@@ -112,6 +122,9 @@ def test_result_id_in_result_evidence_refs_names_the_selected_family_shape() -> 
         },
     )
     assert "a result's evidence_refs names only evidence ids (evd_)" in message
+    assert "field `evidence_refs` expects an `evd_` id; got `res_`" in message
+    assert "example: `evd_00000000-0000-4000-8000-000000000001`" in message
+    assert f"{_UUID}2" not in message
     assert "each evidence_refs entry admits values matching ^evd_" in message
 
 
@@ -212,6 +225,70 @@ def test_digest_binding_subject_names_the_members_its_evidence_kind_admits() -> 
     assert "file_bytes" not in message
 
 
+def test_status_cursor_pattern_names_the_previous_page_and_echoes_nothing() -> None:
+    """A cursor with a space fails the wire pattern before kernel decode."""
+
+    secret = "not a cursor " + _SECRET
+    locations, message = _status({"view": "results", "limit": "20", "cursor": secret})
+    assert locations[0]["field"] == "/cursor"
+    assert "received_prefix" not in locations[0]
+    assert "field `cursor` expects the opaque next_cursor" in message
+    assert "example: repeat that next_cursor unchanged" in message
+    assert _SECRET not in message
+    assert secret not in message
+
+
+def test_status_cursor_hint_matches_the_kernel_message() -> None:
+    from finishup.application.status import (
+        _STATUS_CURSOR_INVALID,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.mcp.errors import (
+        _CORRECTIVE_HINTS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    hint, _fields = _CORRECTIVE_HINTS[("status", "/cursor", "invalid_type_or_value")]
+    assert hint == _STATUS_CURSOR_INVALID
+
+
+def test_object_id_in_envelope_evidence_refs_names_evidence() -> None:
+    """An envelope evidence_refs member that is another closed kind names evd_ and that kind."""
+
+    message = _publish(
+        "result_recorded",
+        "1.0.0",
+        {
+            "result_id": f"res_{_UUID}1",
+            "action_id": f"act_{_UUID}1",
+            "outcome": "success",
+            "summary": "checked summary",
+            "evidence_refs": [],
+        },
+        evidence_refs=[f"obj_{_UUID}9"],
+    )
+    assert "field `evidence_refs` expects an `evd_` id; got `obj_`" in message
+    assert "example: `evd_00000000-0000-4000-8000-000000000001`" in message
+    assert f"{_UUID}9" not in message
+
+
+def test_unprefixed_reference_omits_got_and_still_names_the_example() -> None:
+    """A value with no closed id prefix must not be quoted back."""
+
+    message = _publish(
+        "result_recorded",
+        "1.0.0",
+        {
+            "result_id": f"res_{_UUID}1",
+            "action_id": f"act_{_UUID}1",
+            "outcome": "success",
+            "summary": _SECRET,
+            "evidence_refs": [_SECRET],
+        },
+    )
+    assert "field `evidence_refs` expects an `evd_` id; example:" in message
+    assert "got `" not in message
+    assert _SECRET not in message
+
+
 def test_status_limit_over_one_hundred_says_the_range() -> None:
     """rs-archive-clone__TBksTFP and five others: status limit "200"."""
 
@@ -264,6 +341,7 @@ def test_already_resolved_obligation_says_drop_the_draft() -> None:
     )
     assert "already resolved in the ledger" in error.message
     assert "Remove this obligation_published draft" in error.message
+    assert "example: omit this draft, or republish status open" in error.message
     assert cast(dict[str, str], error.safe_details)["field"] == "/event_drafts/3/payload"
 
 

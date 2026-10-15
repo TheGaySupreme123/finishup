@@ -16,6 +16,7 @@ change; the product words are their human names.
 | local check / local finding / local-check case | `FindingOrigin.deterministic`, `CheckType` `deterministic`, `CheckMode` `deterministic_only`, `SemanticReason` `deterministic_mode`, gap `no_unresolved_deterministic_findings`, `DeterministicCase`, `DETERMINISTIC_RESULT`, `kernel/deterministic_checks.py` |
 | AI-powered review / AI-powered finding / AI-powered review case | `FindingOrigin.semantic_model_derived`, `CheckMode` `semantic_if_configured` / `semantic_required`, `semantic_status` / `semantic_reason`, `semantic_provenance`, `semantic_attempts`, `semantic_job`, `yoetz.semantic-case/2`, `ports/semantic.py`, `--semantic off` |
 | local-only check (no AI-powered review) | `deterministic_only`, gap `semantic_review_not_requested` (recorded only where the route required review, #1041) |
+| AI-powered review on, waiting for the first edit | `SemanticReason` `deferred_before_first_edit` (check-result / check-recorded 1.5.0), gap `semantic_review_deferred_before_first_edit`. Prose: "AI-powered review is on; it starts after your first edit." |
 
 "Deterministic" elsewhere in this registry keeps its ordinary meaning — reproducible ordering,
 replay, digests, and equality — and is not a check kind.
@@ -323,7 +324,10 @@ continuation travels rather than the wrong one.
 A body the schema validator rejected before any write is a **correction, not a retry**. The MCP
 bridge's argument validator is the only producer of location-shaped `safe_details` (`fields` and
 `reasons` lists), and it attaches `input_correction_new_identity` to every such rejection: the
-field pointer and authoring hint say what to fix, and the directive says the corrected body is
+field pointer and authoring hint say what to fix. An id-kind hint names the field, the closed
+prefix it expects, the sent prefix when that prefix is one of the closed id kinds, and a
+checked-in example id; the rest of the sent value is not copied into the hint, `safe_details`, or
+logs. The directive says the corrected body is
 submitted once under a new `request_id` rather than resent or treated as an ambiguous write. The
 `publish_work` draft validator attaches the same token to every non-retryable `EVENT_INVALID`
 whose reason has no directive of its own; it is classified at that producer rather than mapped
@@ -536,7 +540,9 @@ explicit `<a id>` aliases (#1049): `request-templates.md#publish-work` and
 `#ordinary-publication` read `#publication-templates` (the list of every `publish_work` template's
 exact URI), `request-templates.md#plan-and-obligations` reads
 `#publish-work-plan-plus-obligation`, and `publication-policy.md#plan-and-obligations` reads
-`#obligations-evidence-and-claims`. Any other anchor outside the catalog
+`#obligations-evidence-and-claims`. Ordinary publish is the one topic
+`request-templates.md#publish-shapes` (plan, obligation, action, result, evidence, claim, revised
+plan, and decision). Any other anchor outside the catalog
 on a registered document is
 rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
 document's registered anchors plus the whole-document retry; an unregistered document lists the
@@ -671,8 +677,9 @@ must not present MCP resource-template discovery as a recovery path. The static
 `finishup://guidance/request-templates.md` resource is an ordinary guidance resource: it carries
 complete, schema-valid fallback request bodies for the six operations and all eighteen families
 `publish_work` admits (`ORDINARY_MCP_PUBLISH_EVENT_FAMILIES`: the nine ordinary families, seven
-delegation and work lifecycle families and two coordination families). It does not weaken catalog
-admission or add an MCP resource template.
+delegation and work lifecycle families and two coordination families). The ordinary seven shapes
+are also one topic, `#publish-shapes`, so one `read_guidance` returns that path. It does not weaken
+catalog admission or add an MCP resource template.
 
 MCP `tools/list` uses `ToolDescriptor.advertised_input_schema`, a compact authoring projection
 with a CI-enforced 4,800-byte target per tool (compact ASCII JSON), on both routes and every host
@@ -1164,7 +1171,8 @@ request and must never create a replacement check. Chat confirmation is never au
 expiry, cancellation, stale authority, or incomplete local review remains pre-dispatch.
 
 Every status is paired with one required closed `SemanticReason`, never prose or a renderer guess:
-`deterministic_mode`, `no_material_semantic_case`, `provider_not_configured`,
+`deterministic_mode`, `deferred_before_first_edit`, `no_material_semantic_case`,
+`provider_not_configured`,
 `local_model_not_configured`, `network_egress_denied`, `channel_disabled`,
 `provider_binding_not_authorized`, `scope_not_authorized`,
 `content_category_not_authorized`, `policy_generation_revoked`, `never_send_detected`,
@@ -4685,8 +4693,10 @@ material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or s
 counts under ADR-042/045, whether or not its result arrived, so a Codex shell `apply_patch <<EOF`
 counts by the files its patch names, or an agent-published `edit` action) while the check-time
 capture observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
-`semantic_reason` `deterministic_mode`, and the standing gap
+`semantic_reason` `deferred_before_first_edit` (1.5.0; a 1.4.0 record may still say
+`deterministic_mode` with the same gap), and the standing gap
 `semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
+User-facing text says "AI-powered review is on; it starts after your first edit."
 Nothing is composed or sent. `semantic_required` included: the deferral is not a failed review, so
 the verdict reads from the local checks, never `incomplete_check`. The gap follows the route the
 check recorded, like the `semantic_review_not_requested` it rides with (rule G1): disclosed when the

@@ -40,9 +40,9 @@ that document (the section heading written another way, an anchor the text place
 words only its anchor contains) reads that section, and the result names its listed link; an
 anchor that could mean several sections is refused with the document's listed anchors.
 
-If an MCP host drops schema examples or renders required fields as unknown, read the topic for
-that operation, such as `finishup://guidance/request-templates.md#publish-work-plan-plus-obligation`.
-It contains a complete request body. Replace every illustrative identifier,
+If an MCP host drops schema examples or renders required fields as unknown, read
+`finishup://guidance/request-templates.md#publish-shapes` for ordinary publish, or the topic for
+that one operation. It contains a complete request body. Replace every illustrative identifier,
 timestamp, frontier, digest, and content string before use; the resource is an authoring fallback,
 not a second wire authority.
 
@@ -69,9 +69,12 @@ obligation refs. A revision restates the declaration, so omission clears an earl
 Reading `status` or previewing before a publish is optional: a publish that fails validation
 appends nothing and names what stopped it, not every error (for events, the first rejected event
 and its field), so fix that and send it again; one that succeeds returns the new frontier and the
-accepted ids. Before resolving an obligation, account for every requested item that has no attempt
-yet. When unsure about a batch, set `dry_run: true` to validate it and preview what would be
-accepted without appending. The preview is not evidential and is not citable as a check,
+accepted ids. When an id is the wrong kind, the message names the field, the kind it expects, the
+kind that was sent when that kind is one FinishUP already uses, and a shape-valid example. The
+rest of the sent value is not repeated. Before resolving an obligation, account for every
+requested item that has no attempt yet. When unsure about a batch, set `dry_run: true` to
+validate it and preview what would be accepted without appending. The preview is not evidential
+and is not citable as a check,
 publication, or coverage source. Reuse the same `request_id` for the real publish after the
 preview succeeds.
 

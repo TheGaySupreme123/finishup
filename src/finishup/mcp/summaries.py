@@ -20,8 +20,10 @@ from finishup.domain.bounded_text import (
 from finishup.domain.closure import PREPARATION_REMEDIATIONS
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from finishup.domain.receipts import (
+    DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
 )
@@ -861,6 +863,18 @@ def _safe_status_gap_codes(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     )
 
 
+def _deferral_sentence(reason: object, source: Mapping[str, JsonValue]) -> str:
+    """The pre-edit deferral sentence, including older records that still name the other reason."""
+
+    if (
+        reason == "deferred_before_first_edit"
+        or SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in _safe_gap_codes(source)
+        or SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in _safe_status_gap_codes(source)
+    ):
+        return DEFERRED_BEFORE_FIRST_EDIT_TEXT
+    return ""
+
+
 def _semantic_withheld_item_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """Return only validated opaque identities and the fixed omission reason."""
 
@@ -1427,17 +1441,14 @@ def _check_lead_variants(
         and status == "not_requested"
         and reason == "deterministic_mode"
     )
-    if status == "not_requested" and (
-        "semantic_review_deferred_before_first_edit" in _safe_gap_codes(source)
-    ):
+    if _deferral_sentence(reason, source):
         # Issue #1046: a pre-work check ran the local plan checks only; nothing was sent.
+        # Every length keeps the exact sentence so a budget clip cannot restore the old wording.
+        sentence = DEFERRED_BEFORE_FIRST_EDIT_TEXT
         return (
-            "AI-powered review deferred until the first material edit (no edit is recorded "
-            "yet; the next check after one reviews, and the closing review is never deferred); "
-            f"local plan check verdict: {verdict}; {counts}",
-            "AI-powered review deferred until the first edit; local plan check verdict: "
-            f"{verdict}; {counts}",
-            f"AI-powered review deferred; local check verdict: {verdict};",
+            f"{sentence} local plan check verdict: {verdict}; {counts}",
+            f"{sentence} local plan check verdict: {verdict};",
+            f"{sentence}",
         )
     if status == "not_requested" and (
         "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
@@ -1677,7 +1688,10 @@ def summary_for_check(envelope: object) -> str:
     )
     parts.extend(
         (
-            _req(f"AI-powered review status/reason: {status}/{reason};"),
+            _req(
+                _deferral_sentence(reason, source)
+                or f"AI-powered review status/reason: {status}/{reason};"
+            ),
             _req(f"{_frontier_clause(source)}."),
             _opt(
                 *render.variants(
@@ -2043,6 +2057,9 @@ def summary_for_status(envelope: object) -> str:
         if recipe:
             parts.append(_opt(*recipe, priority=_P_STATE))
     parts.append(_req(f"unanswered findings: {unanswered}; reported gaps: {gaps}."))
+    deferral = _deferral_sentence(source.get("semantic_reason"), source)
+    if deferral:
+        parts.append(_req(deferral))
     parts.extend(_closure_section(render, source))
     page = source.get("page")
     if isinstance(page, Mapping):
@@ -2910,10 +2927,13 @@ def _minimal_summary(envelope: object, builder: str) -> str:
             retry = "yes" if error.get("retryable") is True else "no"
             return f"Error {code}; retryable: {retry};"
         if builder == "check":
+            reason = _safe_token(source.get("semantic_reason"))
+            deferral = _deferral_sentence(reason, source)
+            if deferral:
+                return f"Check verdict: {_safe_token(source.get('verdict'))}; {deferral}"
             return (
                 f"Check verdict: {_safe_token(source.get('verdict'))}; AI-powered review "
-                f"status/reason: {_safe_token(source.get('semantic_status'))}/"
-                f"{_safe_token(source.get('semantic_reason'))};"
+                f"status/reason: {_safe_token(source.get('semantic_status'))}/{reason};"
             )
         if builder == "status":
             return f"Status view: {_safe_token(source.get('view'))};"

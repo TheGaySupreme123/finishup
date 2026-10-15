@@ -1569,7 +1569,7 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
             f"{name}-2.9.0.schema.json"
         ).read_bytes()
         # 2.9.0 (unreleased) also moves to the respond 1.1.0 pair (issue #905), to the
-        # check-result 1.4.0 review output (issue #961) and to the publish-work 1.1.0 result
+        # check-result 1.5.0 review output (issue #961, deferral reason on 1.5.0) and to the publish-work 1.1.0 result
         # that names the current policy-pack versions; undo those retargets before comparing,
         # so every other byte must still match frozen 2.8.
         v29 = cast(
@@ -1580,7 +1580,7 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
                     .read_bytes()
                     .replace(b"respond-request-1.1.0", b"respond-request-1.0.0")
                     .replace(b"respond-result-1.1.0", b"respond-result-1.0.0")
-                    .replace(b"check-result-1.4.0", b"check-result-1.3.0")
+                    .replace(b"check-result-1.5.0", b"check-result-1.3.0")
                     .replace(b"publish-work-result-1.1.0", b"publish-work-result-1.0.0")
                 )
             ),

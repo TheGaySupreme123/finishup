@@ -36,7 +36,8 @@ review status as reported, not as proof that the underlying code is correct. Det
 limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mode-and-ai-powered-review-coverage).
 
 A check before your first material edit runs the local plan checks only and sends nothing
-(`semantic_review_deferred_before_first_edit`); the next check after an edit reviews as configured.
+(`semantic_review_deferred_before_first_edit`). AI-powered review is on; it starts after your first edit.
+The next check after an edit reviews as configured.
 If the work needs no edit and review is required, readiness asks for the closing review instead.
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
 back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion

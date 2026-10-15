@@ -116,8 +116,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # 306 + 3: the publish-action-notices canonical vector (was unpackaged), the review-packet-row
 # 2.0.0 provider contract, and its golden-vector case; +1: the advice egress/category-denial
 # canonical vector (#1019). ADR-049: +1 schema decision-recorded 1.1.0, +1 canonical
-# review-mode vectors (CAN-020).
-REVIEWED_RESOURCE_COUNT: Final = 312
+# review-mode vectors (CAN-020). n6 item 4: +2 schemas (check-result 1.5.0,
+# check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021).
+REVIEWED_RESOURCE_COUNT: Final = 315
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -135,7 +136,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("catalog", "7.0.0"),
     ("chat-user-attestation", "1.0.0"),
     ("check-request", "1.1.0"),
-    ("check-result", "1.4.0"),
+    ("check-result", "1.5.0"),
     ("closure-prepare-request", "1.0.0"),
     ("closure-prepare-result", "1.0.0"),
     ("client-info", "1.0.0"),
@@ -803,14 +804,15 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
         event_schema_versions=tuple(
             (
                 name,
-                "1.4.0"
-                if name in {"finding_recorded", "check_recorded"}
+                "1.5.0"
+                if name == "check_recorded"
+                else "1.4.0"
+                if name == "finding_recorded"
                 else "1.2.0"
                 if name in {"evidence_recorded", "session_opened", "session_resumed"}
                 else "1.1.0"
                 if name
                 in {
-                    "check_recorded",
                     "claim_recorded",
                     "decision_recorded",
                     "obligation_published",

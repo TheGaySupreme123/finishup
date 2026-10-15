@@ -224,7 +224,9 @@ the current frontier").
   the `respond` description, `workflow.md` and the respond template, which now also cites the
   post-finding `evd_`/`res_` an acknowledgement needs. `request-templates.md#publish-work` and
   `#ordinary-publication` are explicit aliases of `#publication-templates`, and both documents
-  alias `#plan-and-obligations`. The request-templates resource description counts the eighteen
+  alias `#plan-and-obligations`. Ordinary publish is one read of
+`request-templates.md#publish-shapes` (the seven ordinary shapes); each family section remains.
+The request-templates resource description counts the eighteen
   families `publish_work` admits (nine ordinary, seven lifecycle, two coordination) instead of
   "nine ordinary publication families"; the policy's sixteen are the core families and it says
   so. A digest subject refused by its `evidence_kind` branch is hinted with that branch's subset
