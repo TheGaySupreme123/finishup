@@ -214,9 +214,13 @@ tested profile; unknown lines are quarantined as an explicit import gap, never s
 Provider compatibility (for example the OpenAI Responses adapter) names an exact
 adapter/SDK/endpoint/model profile and is optional and advisory; the strict-local base support
 FinishUP ships with is independent of any provider profile. New `codex-chatgpt-subscription@1`
-setups recommend `gpt-6-luna` with independent default reasoning `high`; that recommendation
-is not a live packaged Luna cell and does not rewrite historical Sol exact-cell evidence or
-existing bindings. The subscription evaluator is not an exact-cell claim: it admits any stable
+setups suggest `gpt-6.1-sol` with final and routine reasoning `medium` when the adopted Codex
+lists it (Codex `0.162.1` does, checked 2026-10-14), and otherwise bind `gpt-6-luna` at `medium`
+with a printed reason (released 0.2.x setups suggested `gpt-5.6-luna` at `high`; unreleased 0.3
+builds briefly `gpt-6-luna` at `high`); the `0.157.1` floor lists
+`gpt-6-luna` but not `gpt-6.1-sol`. Neither suggestion is a live packaged cell: no authenticated
+`gpt-6.1-sol` review has run, and the suggestion rewrites neither historical Sol exact-cell
+evidence nor existing bindings. The subscription evaluator is not an exact-cell claim: it admits any stable
 Codex release at or above `0.157.1` whose retained bytes pass the capability check (reviewed
 app-server subset, zero-inference isolation probe, model listed for the dedicated home), newest
 first, and records the release, executable digest and capability-record digest as provenance

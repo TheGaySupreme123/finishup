@@ -40,7 +40,7 @@ from finishup.domain.observation_capacity_policy import (
     canonical_safe_command,
     render_capacity_disclosure_lines,
 )
-from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME, RENAME_NOTE
 from finishup.tui.commands import SLASH_COMMANDS, command_named
 from finishup.tui.events import HistoryEvent, Transcript
 from finishup.tui.models import (
@@ -1259,6 +1259,7 @@ class FinishUpTui(App[int]):
         lines = ["What you can do here:", ""]
         width = max(len(item.token) for item in SLASH_COMMANDS)
         lines.extend(f"{item.token.ljust(width)}  {item.summary}" for item in SLASH_COMMANDS)
+        lines.extend(("", f"{RENAME_NOTE} Docs: https://finishup.dev"))
         self.say(Level.ACTIVE, "", lines)
 
     async def command_quit(self) -> None:
@@ -1931,6 +1932,10 @@ class FinishUpTui(App[int]):
         executable_default, home_default, model_default, effort_default = (
             self.runtime.codex_subscription_defaults()
         )
+        # Only a new binding's suggested model can fall back; an existing binding keeps its model.
+        suggested = (
+            self.runtime.codex_subscription_model_is_suggested() and model_default == "gpt-6.1-sol"
+        )
         if not executable_default:
             self.say(
                 Level.OPTIONAL,
@@ -1961,9 +1966,14 @@ class FinishUpTui(App[int]):
             TextEntryView(
                 name="codex-subscription-model",
                 title="Exact evaluator selection",
-                label="Model identifier",
+                label=(
+                    "Model identifier (gpt-6.1-sol is suggested; setup uses gpt-6-luna and says "
+                    "so if this Codex does not list it)"
+                    if suggested
+                    else "Model identifier"
+                ),
                 initial=model_default,
-                placeholder="gpt-6-luna",
+                placeholder="gpt-6.1-sol",
             ),
         )
         values: list[str] = []
@@ -2022,7 +2032,12 @@ class FinishUpTui(App[int]):
             f"Capability profile: {preview.get('capability_profile')}",
             f"Evidence expires: {preview.get('capability_evidence_expires_at')}",
             f"Dedicated CODEX_HOME: {preview.get('codex_home')}",
-            f"Model: {model}",
+            f"Model: {model}"
+            + (
+                " (suggested; gpt-6-luna if this Codex does not list it)"
+                if suggested and model == model_default
+                else ""
+            ),
             f"Reasoning: final {effort} / routine {routine_effort}",
             "Destination: OpenAI through Codex-managed ChatGPT authentication.",
             "Data-use posture: unknown; your ChatGPT plan and terms apply.",
@@ -2062,6 +2077,7 @@ class FinishUpTui(App[int]):
                     effort,
                     switch_account=switch_account,
                     routine_reasoning_effort=routine_effort,
+                    model_is_suggestion=suggested and model == model_default,
                 )
             )
         except SuspendNotSupported:
@@ -2087,6 +2103,12 @@ class FinishUpTui(App[int]):
             "Codex subscription binding is ready",
             (
                 f"Sign-in: {sign_in}",
+                f"Model: {status.get('model') or model}"
+                + (
+                    f" (suggested {status.get('model_fallback_from')} is not listed by this Codex)"
+                    if isinstance(status.get("model_fallback_from"), str)
+                    else ""
+                ),
                 f"Auth mode: {status.get('auth_mode')}",
                 f"Plan: {status.get('plan_type') or 'not reported'}",
                 f"Model available: {status.get('model_available')}",

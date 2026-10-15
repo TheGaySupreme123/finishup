@@ -8,7 +8,7 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 import typer
 
@@ -151,6 +151,32 @@ def select_installation(
     )
 
 
+# Plain wording for the change tokens Claude Code and Cursor plans carry. The tokens stay in the
+# plan body (and its digest); only the human summary is reworded, matching Codex's sentences.
+_CHANGE_WORDING: Final[Mapping[str, str]] = {
+    "install_plugin": "Install the FinishUP plugin",
+    "enable_plugin": "Enable the FinishUP plugin",
+    "plugin_mcp": "Register FinishUP's MCP server through the plugin",
+    "register_project_mcp": "Register FinishUP's MCP server for this project",
+    "migrate_legacy_plugin": "Replace the plugin installed under the earlier Yoetz name",
+    "remove_legacy_plugin": "Remove the plugin installed under the earlier Yoetz name",
+    "uninstall_plugin": "Uninstall the FinishUP plugin",
+    "remove_plugin": "Remove the FinishUP plugin",
+    "remove_marketplace": "Remove FinishUP's local plugin marketplace",
+    "remove_plugin_mcp": "Remove the plugin's MCP server registration",
+    "remove_project_mcp": "Remove FinishUP's MCP server from this project",
+    # Several projects per configuration (#1058) and the disconnect's approval cleanup.
+    "record_connected_project": "Record this project as connected to this configuration",
+    "forget_connected_project": "Forget this project in this configuration's connected projects",
+    "remove_project_admission": "Remove this project's FinishUP tool-approval entry",
+}
+
+
+def _change_wording(item: object) -> str:
+    text = str(item)
+    return _CHANGE_WORDING.get(text, text.replace("_", " "))
+
+
 def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
     body = {**plan.body, **plan.disclosure}
     warnings = body.get("warnings")
@@ -172,7 +198,7 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
             else "AI-powered review using your configured privacy policy"
         ),
         "Changes: "
-        + ", ".join(str(item).replace("_", " ") for item in cast(list[JsonValue], body["changes"])),
+        + ", ".join(_change_wording(item) for item in cast(list[JsonValue], body["changes"])),
         "Your host must open a fresh session to observe the connection.",
         "Observation and provider permissions are separate.",
         *removal_warning,
@@ -960,6 +986,16 @@ def run_host_connection(
                 "next_step": "Run the same setup command in a trusted local terminal; inspect status before retrying a partial connection.",
             }
         )
+        if reason == "connection_executable_required":
+            found = [str(item.executable) for item in discover_hosts() if item.host == host]
+            report["next_step"] = (
+                f"No {host} installation was found; rerun with --host-path <executable>."
+                if not found
+                else "Several installations were found; rerun with --host-path naming the one "
+                "to use: " + ", ".join(found)
+            )
+        elif reason == "choose_cursor_ide_or_cursor_cli":
+            report["next_step"] = "Rerun with --host cursor-ide or --host cursor-cli."
         if host == "codex" and reason in {"destination_conflict", "foreign_entry_present"}:
             # Another FinishUP-connected project in the same home is not a conflict (#1058): this
             # is FinishUP-named configuration that FinishUP did not write or that was edited since.

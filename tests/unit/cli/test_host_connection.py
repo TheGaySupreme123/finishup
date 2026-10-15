@@ -199,6 +199,39 @@ def test_setup_keeps_os_password_ceremony_on_main_thread(
     assert anyio.run(run) == 0
 
 
+def test_claude_and_cursor_plans_describe_changes_in_plain_words(
+    prepared: ConnectionPlan,
+) -> None:
+    lines = cli.connection_summary(prepared)
+
+    changes = next(line for line in lines if line.startswith("Changes: "))
+    assert changes == "Changes: Install the FinishUP plugin, Enable the FinishUP plugin"
+    assert prepared.body["changes"] == ["install_plugin", "enable_plugin"]
+
+
+def test_an_ambiguous_installation_names_the_paths_to_choose_from(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    older = HostInstallation("codex", Path("/opt/a/codex"), "0.153.4", tmp_path, "Codex")
+    newer = HostInstallation("codex", Path("/opt/b/codex"), "0.162.1", tmp_path, "Codex")
+
+    def discovered() -> tuple[HostInstallation, ...]:
+        return (older, newer)
+
+    monkeypatch.setattr(cli, "discover_hosts", discovered)
+
+    code = cli.run_host_connection(
+        host="codex", executable=None, config_root=None, project=tmp_path, action="disconnect"
+    )
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "connection_executable_required" in out
+    assert "--host-path" in out
+    assert "/opt/a/codex, /opt/b/codex" in out
+    assert "trusted local terminal" not in out
+
+
 @pytest.mark.parametrize("host", ["codex", "claude", "cursor-cli"])
 def test_failed_connection_names_a_runtime_another_account_can_write(
     prepared: ConnectionPlan,

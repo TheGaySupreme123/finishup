@@ -274,8 +274,12 @@ are release gates tracked on #1056: registering `finishup.dev` and proving its m
 `yoetz.dev` (and `https://schemas.yoetz.dev/0.1/`) registered and serving permanently; renaming the
 repository to `TheGaySupreme123/finishup` and never recreating one named `yoetz`; claiming the
 `finishup` PyPI and npm names; Trusted Publishing for both `finishup` and the existing `yoetz`
-PyPI project and npm package; a release-workflow dry run of the transitional jobs; and a live
-upgrade of a real 0.2.5 installation with each host's reconnect and disconnect. Removing the
+PyPI project and npm package; a release-workflow dry run of the transitional jobs; a live
+upgrade of a real 0.2.5 installation with each host's reconnect and disconnect; and confirming
+that the README logo URL
+(`https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/assets/finishup-logo.png`)
+resolves before publishing, which needs the rename and the logo on `main`, because PyPI renders
+that README, with that absolute URL, as the package description. Removing the
 `yoetz` alias is a later-release decision gated on status reporting no legacy launcher bindings.
 Schema `$id`s can move to a FinishUP host only with a future protocol namespace bump.
 

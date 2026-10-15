@@ -2066,3 +2066,25 @@ Round 3: a late policy or authority switch refused inside the egress pipeline cl
 `authorization_missing` without provider identity, mapped from the typed refusal (ADR-009); only
 `outcome_unknown` is recorded as a possibly provider-reaching failure. A candidate built for a
 review-context profile no longer in force is refused and rebuilt on the next admission.
+
+### Suggested Codex model and listed fallback (2026-10-14, FinishUP 0.3 relaunch)
+
+New Codex-subscription bindings are offered `gpt-6.1-sol` with final and routine effort `medium`.
+Released 0.2.x setups offered `gpt-5.6-luna` with final effort `high` (unreleased 0.3 builds
+briefly `gpt-6-luna` at `high`). The suggestion does not widen
+admission:
+
+1. **Listed or not offered.** Runtime adoption is unchanged: candidates are capability-checked
+   newest first. Before any sign-in, setup asks the adopted runtime's own `model/list` whether it
+   offers the suggested model with the selected efforts. This needs no `account/read` and sends no
+   task content. Codex `0.162.1` lists `gpt-6.1-sol`, so a Codex at that release binds it
+   directly. The catalog of the `0.157.1` floor does not, so when that is the newest runtime that
+   passes the check, setup binds `gpt-6-luna` with the same efforts, says so, and reports
+   `model_fallback_from`. When the dedicated home is already signed in and no admitted runtime
+   lists the suggestion for that account (`codex_model_unavailable`), adoption is retried once for
+   `gpt-6-luna` and the sign-in is reused. If the fallback is not listed either, nothing is
+   substituted, and sign-in admission refuses.
+2. **Only the suggestion falls back.** An explicit `--model` and an existing binding's model are
+   bound exactly or refused. Upgrades keep every existing binding's model and efforts.
+3. **Admission is unchanged.** Sign-in, status and every review still prove the exact model and
+   efforts against Codex's catalog.

@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Final
 
+from finishup.legacy_names import RENAME_NOTE
 from finishup.tui.models import (
     Detection,
     DoctorReport,
@@ -156,6 +157,8 @@ def render_welcome(width: int) -> tuple[str, ...]:
             max(width - 2, 24),
         )
     )
+    lines.append("")
+    lines.extend(wrap(RENAME_NOTE, body))
     return tuple(lines)
 
 

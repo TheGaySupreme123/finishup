@@ -249,8 +249,8 @@ Schema review, 0.150.1 to 0.157.1 v2, limited to what the evaluator reads:
   `external-runtimes/codex-evaluator/openai-codex-npm-<platform>-0.157.1/codex`.
 - It keeps the sign-in, model, efforts, budgets and dedicated home when Codex's own probe reports
   the home signed in with the exact model. 0.157.1 still lists `gpt-5.6-luna` and `gpt-5.6-sol`,
-  so those bindings keep their model. Pass `--model gpt-6-luna` to setup to move to the new
-  default.
+  so those bindings keep their model. Pass `--model <id>` to setup to move to a different
+  model that the runtime lists.
 - The superseded copy under `openai-codex-npm-<platform>-0.150.1/` is no longer used, and nothing
   removes it automatically: `runtime remove` addressed only the admitted cell (since 2026-10-13 it
   deletes every retained release the binding does not use). That follow-up is
@@ -342,9 +342,25 @@ A later native error supplies the terminal stage and failure class. Login and pr
 validation still reject malformed shapes. The 0.157.1 `normalModelSlug` field is handled the same
 way. No method or tool allowlist has changed.
 
-New Codex-subscription setups recommend and preselect `gpt-6-luna`. The final-review reasoning
-effort stays independently `high`, and routine checkpoint reviews default to `medium` (see *Routine
-and final review budgets* below). When an existing binding is targeted, omitting `--model` preserves its
+New Codex-subscription setups suggest `gpt-6.1-sol` with final-review reasoning effort `medium`;
+routine checkpoint reviews also default to `medium` (see *Routine and final review budgets*
+below). Before any sign-in, setup asks the adopted runtime's own `model/list` (no `account/read`,
+no task content) whether it offers the suggested model with the selected efforts. Codex `0.162.1`
+lists `gpt-6.1-sol` at `medium` (unauthenticated `model/list` on a fresh dedicated home, macOS
+arm64 and Linux x86_64, 2026-10-14), so setup binds it directly there. The catalog of the
+`0.157.1` floor does not list it; when that is the newest runtime that passes the capability
+check, setup binds `gpt-6-luna` with the same efforts, prints that it did, and reports
+`model_fallback_from: gpt-6.1-sol`. A dedicated home Codex already reports signed in is covered
+too: when no admitted runtime lists the suggestion for that account, adoption is retried once for
+`gpt-6-luna` and the sign-in is reused. If the fallback is not listed either, nothing is
+substituted and sign-in admission refuses (`codex_model_unavailable` or
+`codex_subscription_readiness_unproven`). Only setup's own suggestion for a new binding can fall back. An explicit
+`--model` and an existing binding are never substituted. Sign-in and every review still re-prove
+the exact model and efforts against Codex's catalog.
+
+Released 0.2.x setups preselected `gpt-5.6-luna` with final effort `high` (unreleased 0.3 builds
+briefly `gpt-6-luna` at `high`); those bindings keep both on
+upgrade. When an existing binding is targeted, omitting `--model` preserves its
 exact model, including during `--switch-account`; an explicit `--model` (including `gpt-5.6-sol`
 when the app-server lists it) is required to change it. OpenAI API-key and other provider-preset
 catalogs stay Sol-first. Historical packaged live evidence that names `gpt-5.6-sol` remains Sol
@@ -389,12 +405,12 @@ terminated.
 ## Setup and reverse operations
 
 Use a dedicated home; never point this route at a normal Codex home or copy authentication from
-one.
+one. Omit `--model` to take the suggested model and its listed fallback; an explicit `--model` is
+bound exactly or refused.
 
 ```text
 finishup provider codex-subscription setup \
-  --model gpt-6-luna \
-  --reasoning-effort high \
+  --reasoning-effort medium \
   --routine-reasoning-effort medium
 
 finishup provider codex-subscription status --json
@@ -788,7 +804,7 @@ same effort and output limit.
 
 | Profile | Effort key | Output limit key | New-binding default |
 | --- | --- | --- | --- |
-| `final` | `reasoning_effort` | `final_output_limit` | `high`, 8192 tokens |
+| `final` | `reasoning_effort` | `final_output_limit` | `medium`, 8192 tokens (`high` before 0.3.0) |
 | `routine` | `routine_reasoning_effort` | `routine_output_limit` | `medium`, 4096 tokens |
 
 - **Legacy bindings.** A binding written before this change has no `routine_reasoning_effort`,

@@ -1,7 +1,7 @@
 {
   "name": "finishup",
   "version": "0.3.0",
-  "description": "Delegation launcher for the Python finishup distribution via uv. Installs nothing itself.",
+  "description": "Delegation launcher for the Python finishup distribution via uv. Installs nothing itself. FinishUP was previously called Yoetz.",
   "private": false,
   "license": "Apache-2.0",
   "author": "Shay Ben Shabtay",

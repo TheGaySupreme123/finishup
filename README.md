@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://finishup.dev"><img src="https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/landing/public/assets/finishup-lockup.png" alt="FinishUP" width="320"></a>
+  <a href="https://finishup.dev"><img src="https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/assets/finishup-logo.png" alt="FinishUP" width="360"></a>
 </p>
 
 <h1 align="center">Agents claim they're done.<br>FinishUP checks if they actually did.</h1>
@@ -22,8 +22,8 @@
 </p>
 
 > [!NOTE]
-> **FinishUP was formerly named Yoetz.** Existing Yoetz installations keep their data, settings and
-> connected agents; see [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
+> **FinishUP was previously called Yoetz.** Existing Yoetz installations keep their data, settings
+> and connected agents; see [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
 
 FinishUP is a local-first, open-source system for recording structured work evidence, checking it
 with local checks, and producing **honest receipts about what was and was not verified**.
@@ -175,7 +175,11 @@ governed by that policy until the user commits a replacement.
 Every task starts with FinishUP's local checks. Setup's recommended answer lets your agent turn on
 AI-powered review for one task when it helps, with a single recorded decision; you can instead keep
 every task local or review every task, and change it later with `finishup privacy conversations`.
-The agent's switch is a request: what may be sent is still decided by your privacy policy.
+The agent's switch is a request: what may be sent is still decided by your privacy policy. The
+policy you approve during setup is the privacy grant for the project folder setup connected; each
+other repository needs its own grant (run `finishup --privacy` from it) before its tasks can use
+AI-powered review, and until then its tasks run local checks only (an installation that already
+sent work before 0.3 may carry its earlier permission forward when a task first starts there).
 
 External AI-powered review is a separate explicit decision. When you choose it, the CLI's
 recommended `assisted-review` recipe shows and confirms a standing policy that sends the reviewer a
@@ -191,6 +195,10 @@ Provider setup distinguishes **OpenAI API / compatible API** from **Codex with C
 subscription**. The subscription route binds one exact Codex app-server and dedicated home; Codex
 owns ChatGPT login and the upstream OpenAI request, while FinishUP receives no OAuth credential. It
 still sends only the privacy-approved packet and records the weaker observable boundary explicitly.
+A new subscription setup suggests `gpt-6.1-sol` at reasoning effort `medium`; when the Codex
+FinishUP runs does not list it, setup uses `gpt-6-luna` and says so. A model you type is never
+substituted, and an existing setup keeps its model. The suggestion is checked against Codex's model
+list only; no authenticated AI-powered review with `gpt-6.1-sol` has been recorded yet.
 
 Review then runs direct-to-agent: the reviewer returns a bounded challenge, the agent acts, supplies
 evidence, revises, disputes, or states a limitation, and rechecks. No human prompt for routine
@@ -240,8 +248,8 @@ does not claim" section, and the full changelog — and live versioned in
 
 FinishUP **0.3.0** is the next public-alpha release candidate. It lets several agents work in
 independent tasks within one repository, adds a backup-first upgrade path for 0.2 task data,
-and carries every 0.2.2 install fix. **0.2.2** remains the published release until the release
-gates pass; see the [0.3.0 notes](docs/releases/v0.3.0.md) for changes and validation limits.
+and carries every 0.2.x repair through 0.2.5. **0.2.5** remains the published release until the
+release gates pass; see the [0.3.0 notes](docs/releases/v0.3.0.md) for changes and validation limits.
 Every public claim in
 [`docs/public-claims.json`](docs/public-claims.json) is bound to real checked-in evidence: a claim flagged `evidenced` has concrete test or fixture coverage, with its non-live
 suites exercised in per-PR CI; a claim whose own wording names still-missing capability or drill

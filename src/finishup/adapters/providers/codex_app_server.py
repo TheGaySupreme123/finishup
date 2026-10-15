@@ -111,6 +111,7 @@ __all__ = [
     "CodexReviewBudget",
     "CodexRuntimeStatus",
     "codex_account_status",
+    "codex_model_listed",
     "codex_binding_from_config",
     "codex_capability_probe",
     "codex_code_mode_host_path",
@@ -1237,6 +1238,37 @@ async def _cleanup_or_unconfirmed(runtime: _CodexProcess | None, failure: Except
 
     if await _cleanup_guaranteed(runtime) == "failed":
         raise ValueError(CODEX_PROBE_CLEANUP_UNCONFIRMED) from failure
+
+
+async def codex_model_listed(profile: CodexAppServerProfile) -> bool:
+    """Report whether this runtime's own ``model/list`` offers the exact model and efforts.
+
+    Setup uses it before any sign-in to decide whether its suggested model can be bound on the
+    runtime it adopted. It reads no account state and sends no task content: the answer is only
+    what the checked Codex lists for this dedicated home (its bundled catalog until the home is
+    signed in). Admission is still re-proven at sign-in and before every review.
+    """
+
+    runtime: _CodexProcess | None = None
+    try:
+        profile.verify_capability_evidence(datetime.now(UTC))
+        runtime = await _launch(profile)
+        await _initialize(runtime, profile)
+        try:
+            await _require_model(runtime, profile, 10.0)
+        except ValueError:
+            listed = False
+        else:
+            listed = True
+    except Exception as error:
+        await _cleanup_or_unconfirmed(runtime, error)
+        raise
+    except BaseException:
+        await _cleanup_guaranteed(runtime)
+        raise
+    if await _cleanup_guaranteed(runtime) == "failed":
+        raise ValueError("codex_subscription_readiness_unproven")
+    return listed
 
 
 def _login_challenge(result: Mapping[str, object]) -> CodexLoginChallenge:

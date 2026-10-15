@@ -1506,7 +1506,7 @@ class FinishUpRuntime:
                 provider_id="openai-codex",
                 host="openai.com",
                 base_path_prefix=" through Codex-managed login",
-                default_model="gpt-6-luna",
+                default_model="gpt-6.1-sol",
                 api_style="Codex app-server v2 (stdio)",
                 endpoint_profile_id="codex-chatgpt-subscription",
                 endpoint_profile_version="1.0.0",
@@ -1539,6 +1539,13 @@ class FinishUpRuntime:
             default_codex_subscription_model(),
             default_codex_subscription_reasoning_effort(),
         )
+
+    def codex_subscription_model_is_suggested(self) -> bool:
+        """True when no binding exists, so the offered model is setup's own suggestion."""
+
+        from finishup.cli.codex_subscription import codex_subscription_model_is_suggested
+
+        return codex_subscription_model_is_suggested()
 
     def codex_subscription_routine_default(self) -> str | None:
         """Routine effort setup applies by default; ``None`` keeps a legacy single effort."""
@@ -1581,6 +1588,7 @@ class FinishUpRuntime:
         *,
         switch_account: bool = False,
         routine_reasoning_effort: str | None = None,
+        model_is_suggestion: bool = False,
     ) -> Mapping[str, object]:
         """Run Codex-owned login, then recompose the service around the exact binding."""
 
@@ -1602,6 +1610,7 @@ class FinishUpRuntime:
                 login_mode="browser",
                 open_browser=True,
                 switch_account=switch_account,
+                model_is_suggestion=model_is_suggestion,
             )
             await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
