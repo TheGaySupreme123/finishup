@@ -519,3 +519,144 @@ def test_disconnecting_beside_a_yoetz_era_project_keeps_the_registration_it_uses
     assert status["shared_registration_retained"] is True
     assert status["shared_with"] == [str(root_a)]
     assert _legacy_tables(root_a) in config.read_text()
+
+
+def _wire_disconnect(monkeypatch: pytest.MonkeyPatch, home: Path) -> HostInstallation:
+    """A disconnect whose plugin removal is the real adapter's over a fake Codex."""
+
+    from types import SimpleNamespace
+
+    from tests.unit.adapters.test_codex_marketplace import (
+        _FakeCodex,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.adapters.integrations import codex_marketplace
+    from finishup.ports.integrations import IntegrationState, IntegrationTarget
+
+    entry = b'{"command":"finishup","args":["mcp","serve","--host","codex"]}'
+    registered = {"finishup": True}
+
+    def runner(argv: tuple[str, ...]) -> CommandOutput:
+        if argv[1:3] == ("mcp", "remove"):
+            registered["finishup"] = False
+            return CommandOutput(0, b"")
+        if argv[1:3] == ("mcp", "list"):
+            return CommandOutput(0, b"[]")
+        return CommandOutput(0, entry) if registered["finishup"] else CommandOutput(1, b"")
+
+    def adapter(**_kwargs: object) -> CodexMcpAdapter:
+        return CodexMcpAdapter(runner)
+
+    def preview_removal(
+        target: IntegrationTarget,
+        *,
+        executable_path: str,
+        codex_home: Path,
+        remove_shared: bool = False,
+    ) -> object:
+        del executable_path
+        fake = _FakeCodex(target, codex_home)
+        return codex_marketplace.preview_removal(
+            target,
+            executable_path=str(fake.executable),
+            codex_home=codex_home,
+            remove_shared=remove_shared,
+            _run=fake,
+        )
+
+    def apply_removal(
+        target: IntegrationTarget,
+        *,
+        approved_digest: str,
+        executable_path: str,
+        codex_home: Path,
+        remove_shared: bool = False,
+    ) -> object:
+        del executable_path
+        fake = _FakeCodex(target, codex_home)
+        return codex_marketplace.apply_removal(
+            target,
+            approved_digest=approved_digest,
+            executable_path=str(fake.executable),
+            codex_home=codex_home,
+            remove_shared=remove_shared,
+            _run=fake,
+        )
+
+    def loads(*_args: object) -> str:
+        return "loads"
+
+    class Skill:
+        async def preview_skill(self, *_args: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                preview_digest=_DIGEST, state_before=IntegrationState.ABSENT, warnings=()
+            )
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+    monkeypatch.setattr(codex_connection, "CodexMcpAdapter", adapter)
+    monkeypatch.setattr(codex_connection, "CodexSkillIntegration", Skill)
+    monkeypatch.setattr(codex_connection, "preview_removal", preview_removal)
+    monkeypatch.setattr(codex_connection, "apply_removal", apply_removal)
+    monkeypatch.setattr(codex_connection, "probe_project_config_load", loads)
+    monkeypatch.setattr("finishup.application.applied_mcp_route.state_dir", lambda: home.parent)
+    return HostInstallation("codex", Path("/opt/codex-testing"), "0.153.4", home, "Codex")
+
+
+def test_a_removed_plugin_beside_a_yoetz_era_member_names_who_loses_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A is Yoetz-era (it uses the MCP registration), B anchors the FinishUP binding, and C is a
+    FinishUP member whose plugin files are missing right now. No project can carry the binding,
+    so B's disconnect removes the shared plugin: C loses it, and only the registration stays for
+    A. The preview must say so instead of "only this project's pieces are removed" (#1073)."""
+
+    from tests.unit.adapters.test_codex_marketplace import (
+        _write_legacy_activation,  # pyright: ignore[reportPrivateUsage]
+    )
+    from tests.unit.adapters.test_codex_multi_project import (
+        _connect as connect_project,  # pyright: ignore[reportPrivateUsage]
+    )
+    from tests.unit.adapters.test_codex_multi_project import (
+        _home,  # pyright: ignore[reportPrivateUsage]
+        _project,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.cli.host_connection import connection_summary
+
+    home = _home(tmp_path)
+    _target_a, root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    target_c, root_c = _project(tmp_path, "c")
+    _write_legacy_activation(root_a, home)
+    config = home / "config.toml"
+    config.write_text(config.read_text() + f'\n[projects."{root_a}"]\ntrust_level = "trusted"\n')
+    connect_project(target_b, home)
+    connect_project(target_c, home)
+    (root_c / ".agents" / "plugins" / "marketplace.json").unlink()  # a branch switch
+    installation = _wire_disconnect(monkeypatch, home)
+
+    plan = codex_connection.prepare_codex_connection(
+        installation,
+        root_b,
+        action="disconnect",
+        route="policy",
+        request_value="req_52e989dd-b118-4f49-a359-707a6b32bfa4",
+    )
+
+    assert plan.body["changes"] == ["deactivate_plugin"]
+    assert plan.disclosure["members_not_serving"] == [str(root_c)]
+    assert plan.disclosure["shared_with"] == [str(root_a)]
+    assert plan.disclosure["shared_plugin_removed"] is True
+    summary = "\n".join(connection_summary(plan))
+    assert (
+        "The shared FinishUP plugin is removed from this home; only the MCP registration stays "
+        f"for: {root_a}"
+    ) in summary
+    assert "only this project's pieces are removed" not in summary
+
+    plan.apply_reviewed_steps()
+
+    assert "[marketplaces.finishup]" not in config.read_text()
+    status = plan.status()
+    assert status["shared_with"] == [str(root_a)]

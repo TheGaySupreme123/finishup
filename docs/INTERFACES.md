@@ -6875,6 +6875,10 @@ exists, and `membership_unknown: true` when membership cannot be read. The disco
 disclosure adds `rebind_to` and, when the shared pieces go, `members_not_serving`
 (`RemovalPreview.unserved_members`: live recorded projects, or a dangling anchor, that do not
 serve the manifest). Only a recorded project may move or remove a dangling binding.
+`members_not_serving` is disclosed also when the removal takes the shared plugin while the
+user-level registration stays for other projects (a Yoetz-era bound project): the disclosure adds
+`shared_plugin_removed: true`, `shared_with` names only the projects the registration stays for,
+and the summary says the plugin is removed and only the registration stays (#1073).
 `integrate codex plugin preview` reports `possible_users` (and `membership_unknown`),
 `members_not_serving` and `keeps_shared`. CLI:
 `finishup integrate <host> admission status|preview|grant|revoke --project-root`

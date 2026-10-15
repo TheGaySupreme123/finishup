@@ -301,15 +301,22 @@ def prepare_codex_connection(
             or bool(recorded_others)
             or membership_unknown
         )
+        # The plan removes the shared plugin (no project can carry the binding) while the
+        # user-level registration stays for the projects that still use it, such as a Yoetz-era
+        # bound project: members whose plugin files are absent right now lose the plugin (#1073).
+        plugin_removed = (
+            shared_kept and removal.outcome is RemovalOutcome.REMOVE and not removal.keeps_shared
+        )
         # Who the kept pieces are for: serving members, and recorded projects whose plugin
-        # files are absent right now (they use them again once the files return).
+        # files are absent right now (they use them again once the files return) unless the
+        # plugin itself goes.
         kept_for: tuple[str, ...] = (
             tuple(
                 sorted(
                     {
                         *removal.shared_with,
                         *serving_others,
-                        *removal.unserved_members,
+                        *(() if plugin_removed else removal.unserved_members),
                         *recorded_others,
                         *removal.missing_members,
                     }
@@ -422,12 +429,15 @@ def prepare_codex_connection(
         )
         if removal.rebind_to is not None:
             admission.disclosure["rebind_to"] = removal.rebind_to
-        if removal.unserved_members and not shared_kept:
+        if removal.unserved_members and (not shared_kept or plugin_removed):
             # Connected projects whose plugin files are absent right now lose the shared pieces
-            # with this removal too (#1058 review round 2).
+            # with this removal too (#1058 review round 2), also when only the registration
+            # stays for others (#1073).
             admission.disclosure["members_not_serving"] = cast(
                 list[JsonValue], list(removal.unserved_members)
             )
+        if plugin_removed:
+            admission.disclosure["shared_plugin_removed"] = True
         if remove_shared:
             admission.disclosure["remove_shared"] = True
             if removal.outcome is not RemovalOutcome.ALREADY_ABSENT:

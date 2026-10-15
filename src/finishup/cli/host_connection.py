@@ -235,8 +235,13 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
         names = _kept_for_names(body)
         lines.append(
             (
-                "The shared FinishUP pieces stay for a connected project whose directory is missing "
-                f"right now, so only this project's pieces are removed: {names}"
+                # No project can carry the shared plugin, so it goes; only the user-level
+                # registration stays for the projects that still use it (#1073).
+                "The shared FinishUP plugin is removed from this home; only the MCP registration "
+                f"stays for: {names}"
+                if body.get("shared_plugin_removed") is True
+                else "The shared FinishUP pieces stay for a connected project whose directory is "
+                f"missing right now, so only this project's pieces are removed: {names}"
                 if _kept_only_for_missing(body)
                 else "Other connected projects keep using the shared FinishUP pieces, so only this "
                 f"project's pieces are removed: {names}"

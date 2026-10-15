@@ -1445,7 +1445,11 @@ another project's connect records it beside itself, `setup status` lists it in
 becomes the FinishUP binding's anchor, since it does not serve FinishUP's manifest: when the
 disconnecting project anchors the binding and no other project serves that manifest, the
 disconnect removes the FinishUP plugin pieces (`deactivate_plugin`) and keeps only the
-registration. Yoetz-era shared pieces found without a record (an exact legacy marketplace or
+registration: the preview adds `shared_plugin_removed: true`, `shared_with` names only the
+projects the registration stays for, a recorded FinishUP project whose plugin files are missing
+right now is listed in `members_not_serving` (it loses the plugin and connects again later), and
+the summary reads "The shared FinishUP plugin is removed from this home; only the MCP registration
+stays for: <projects>". Yoetz-era shared pieces found without a record (an exact legacy marketplace or
 plugin table, or a FinishUP-shaped `[mcp_servers.yoetz]` entry) also make membership uncertain, as
 an earlier release's pieces do: trusted checkouts that serve FinishUP's manifest are possible
 users, a connect records `unknown_members`, and a disconnect that would leave only them stops as

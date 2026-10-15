@@ -1025,6 +1025,29 @@ def test_shared_pieces_kept_only_for_a_missing_directory_name_the_way_out(
     assert "--remove-shared" in report["next_step"]
 
 
+def test_a_removed_plugin_with_only_the_registration_kept_says_so() -> None:
+    """A+B+C: A is Yoetz-era (keeps the MCP registration), B anchors the binding, C is a FinishUP
+    member whose plugin files are missing. B's disconnect removes the shared plugin, so C loses
+    it and only the registration stays for A (#1073)."""
+
+    lines = cli._shared_summary(  # pyright: ignore[reportPrivateUsage]
+        {
+            "action": "disconnect",
+            "shared_with": ["/w/a"],
+            "shared_plugin_removed": True,
+            "members_not_serving": ["/w/c"],
+        }
+    )
+    text = "\n".join(lines)
+    assert (
+        "The shared FinishUP plugin is removed from this home; only the MCP registration stays "
+        "for: /w/a"
+    ) in text
+    assert "Connected projects whose FinishUP plugin files are missing right now" in text
+    assert "/w/c" in text
+    assert "Other connected projects keep using the shared FinishUP pieces" not in text
+
+
 def test_a_mixed_leftover_names_each_key_and_keeps_the_revoke(tmp_path: Path) -> None:
     """An exact FinishUP approval table beside an edited Yoetz-era one: the step names which is
     which, and the revoke that removes the exact one (#1073)."""
