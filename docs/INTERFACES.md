@@ -4700,6 +4700,10 @@ capture observed no workspace change, runs the local checks only: `semantic_stat
 `semantic_reason` `deferred_before_first_edit` (1.5.0; a 1.4.0 record may still say
 `deterministic_mode` with the same gap), and the standing gap
 `semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
+There is no supported downgrade over a ledger that holds a projected check-recorded 1.5.0 row.
+An older build raises `unknown_event_schema` while opening that row, and the open fails as
+`STORAGE_CORRUPT`; it does not skip the row. Unknown schemas stay in the ledger only when they
+were written `unknown_unprojected`.
 User-facing text says "AI-powered review is on; it starts after your first edit."
 Nothing is composed or sent. `semantic_required` included: the deferral is not a failed review, so
 the verdict reads from the local checks, never `incomplete_check`. The gap follows the route the
@@ -7777,7 +7781,10 @@ project views keep their own documented coverage.
 
 `closure_readiness` is also a checklist (ADR-032, issue #913). This build emits it on every
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
-as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
+as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null).
+`closure_readiness.admissible_verification` is also optional on that unreleased 1.4.0 result
+(absent when no flagged obligation has a recorded link; absence never means a cited id is linked).
+Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
 `gap_classification_version` (`"8"` since `deliverable_references_undeclared_file` became an
 agent-actionable task fact (#1044, ADR-035 amendment); `"7"` when the table became a view of
@@ -7927,7 +7934,8 @@ the basis could not be read):
   directive's re-check note names the flagged set and, since #1079, the linked
   `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` line or a
   `finishup-verification-limit:<obligation id>` line that answers it. The linked id counts only
-  when `admissible_verification` on this object names it for that obligation (a recorded row
+  when `admissible_verification` (optional on the unreleased status-result 1.4.0) on this object
+  names it for that obligation (a recorded row
   linked to the obligation, its target, or the task, at or before the frontier). A bare `:met`
   and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
   with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
