@@ -5367,11 +5367,14 @@ class StatusUndeclaredReferenceModel(_ClosedModel):
 
 
 class StatusAdmissibleVerificationModel(_ClosedModel):
-    """Recorded evidence or result ids linked to one flagged obligation (#1079).
+    """Observed evidence or result ids linked to one flagged obligation (#1079).
 
-    Service-minted ids only. The Stop gate accepts a
+    Service-minted ids only. An id is here only when it is an observed verification (hook-captured
+    or observation-captured evidence, or a result of an observed command) linked to that
+    obligation. The Stop gate accepts a
     ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line only when the cited id
-    is in this list for that obligation. Absence never means a well-formed id is linked.
+    is in this list for that obligation. An agent-asserted id is absent. Absence never means a
+    well-formed id is linked.
     """
 
     obligation_id: ObligationIdWire

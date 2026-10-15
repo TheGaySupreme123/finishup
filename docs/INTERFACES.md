@@ -7928,14 +7928,17 @@ the basis could not be read):
   directive's re-check note names the flagged set and, since #1079, the linked
   `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` line or a
   `finishup-verification-limit:<obligation id>` line that answers it. The linked id counts only
-  when `admissible_verification` on this object names it for that obligation (a recorded row
-  linked to the obligation, its target, or the task, at or before the frontier). A bare `:met`
+  when `admissible_verification` on this object names it for that obligation (an observed
+  verification row — hook-captured or observation-captured evidence, or a result of an observed
+  command — linked to the obligation, its target, or the task, at or before the frontier; an
+  agent-asserted id is unattested). A bare `:met`
   and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
   with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
   still lists it.
   `kernel.claim_verification.claim_verification_lines` renders that pairing in the receipt evidence
   section (JSON, markdown and text): one header and one line per flagged obligation,
-  `<obligation id> <comma-joined reasons> verification_limit|no_verification_limit`. A final-message
+  `<obligation id> <comma-joined reasons> verification_limit|verification_limit linked <ids>|linked <ids>|no_verification_limit`.
+  `<ids>` are the admissible observed `evd_` or `res_` ids. A final-message
   line does not create the ledger link that line reports. `recheck_note(readiness, *, host=None)`
   is host-aware (#1050 follow-up, #1079): `None`, `codex` and `claude` name the linked line;
   `cursor` (no final message at Stop) never names `finishup-acceptance` and names a recorded limit
@@ -10622,7 +10625,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `admissible` for that obligation, or `finishup-verification-limit:<obligation id>`, counts
   (legacy `yoetz-` spellings too). `admissible` is
   `closure_readiness.admissible_verification`; a missing argument or a missing row does not
-  treat a well-formed id as linked. A bare `:met` and prose that every criterion is met do not.
+  treat a well-formed id as linked. The list holds only an observed verification (hook-captured
+  or observation-captured evidence, or a result of an observed command) linked to that
+  obligation, its target, or the task. An agent-asserted id is unattested. A bare `:met` and
+  prose that every criterion is met do not.
   The read is the first 65,536 characters. A cited id that is not admissible adds one sentence,
   `` `<id>` is not linked to obligation `<obligation id>`. ``, up to three, and copies no other
   message text. `unattested_acceptance(recheck, final_message, *, admissible=None, host=None) ->

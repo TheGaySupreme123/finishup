@@ -1812,8 +1812,8 @@ async def _closure_readiness(
         )
     if facts.admissible_verification:
         # #1079: the Stop gate accepts a cited evd_ or res_ id only when it is in this list.
-        # Omitted when empty, so an older client and a task with no recorded link keep the
-        # same bytes. The gate treats absence as "not linked".
+        # The list is observed verification only. Omitted when empty, so an older client and a
+        # task with no observed link keep the same bytes. The gate treats absence as "not linked".
         optional_fields["admissible_verification"] = tuple(
             StatusAdmissibleVerificationModel(obligation_id=obligation, refs=refs)
             for obligation, refs in facts.admissible_verification

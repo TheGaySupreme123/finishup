@@ -13,6 +13,7 @@ coverage stay bounded by them.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Final, Literal, cast
 
@@ -26,6 +27,7 @@ __all__ = [
     "COORDINATOR_FAILURE_TOKEN",
     "check_cause_sentence",
     "closure_counts_variants",
+    "admissible_verification_sentence",
     "coordinator_failure_note",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
@@ -76,6 +78,44 @@ COORDINATOR_FAILURE_SENTENCE: Final = (
     "The closing review stopped on an unchanged coordinator failure. That is a FinishUP limit;"
     " do not send the same check again."
 )
+
+
+_OBLIGATION_ID: Final = re.compile(
+    r"obl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+_VERIFICATION_ID: Final = re.compile(
+    r"(?:evd_|res_)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+
+
+def admissible_verification_sentence(readiness: object) -> str:
+    """One sentence naming admissible observed ids, or empty when none are listed.
+
+    Only obligation ids and ``evd_`` / ``res_`` ids are copied. A missing list, or a row that
+    is not those ids, adds nothing.
+    """
+
+    raw = _field(readiness, "admissible_verification")
+    if not isinstance(raw, (tuple, list)):
+        return ""
+    pieces: list[str] = []
+    for item in tuple(raw)[:8]:
+        obligation = _field(item, "obligation_id")
+        refs = _field(item, "refs")
+        if type(obligation) is not str or _OBLIGATION_ID.fullmatch(obligation) is None:
+            continue
+        if not isinstance(refs, (tuple, list)):
+            continue
+        shown = [
+            ref
+            for ref in tuple(refs)[:8]
+            if type(ref) is str and _VERIFICATION_ID.fullmatch(ref) is not None
+        ]
+        if shown:
+            pieces.append(f"{obligation} linked {','.join(shown)}")
+    if not pieces:
+        return ""
+    return "Admissible verification: " + "; ".join(pieces) + "."
 
 
 def coordinator_failure_note(readiness: object) -> str | None:

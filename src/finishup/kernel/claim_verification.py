@@ -17,6 +17,7 @@ from finishup.kernel.closure_class import obligation_closures
 from finishup.kernel.plan_scope import current_plan_scope
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.task_facts import disclosure_declarations
+from finishup.kernel.verification_link import admissible_verification_refs
 
 __all__ = [
     "CLAIM_VERIFICATION_HEADER",
@@ -38,10 +39,12 @@ def claim_verification_lines(
 ) -> tuple[str, ...]:
     """One header and one line per flagged resolved obligation, or nothing.
 
-    Each line is ``<obligation id> <comma-joined reason tokens> verification_limit`` or
-    ``no_verification_limit``. No user prose. Empty records, or no flagged obligation, leave
-    the receipt body unchanged. A hole omits that obligation here; ``claim_verification_report``
-    carries the limitation sentence.
+    Each line is ``<obligation id> <comma-joined reason tokens> <flag>``. ``<flag>`` is
+    ``verification_limit``, ``verification_limit linked <ids>``, ``linked <ids>``, or
+    ``no_verification_limit``. ``<ids>`` are the comma-joined admissible observed ``evd_`` or
+    ``res_`` ids. No user prose. Empty records, or no flagged obligation, leave the receipt
+    body unchanged. A hole omits that obligation here; ``claim_verification_report`` carries
+    the limitation sentence.
     """
 
     lines, _limitation = claim_verification_report(projection, records)
@@ -109,8 +112,27 @@ def _pairing_lines(
         for item in disclosure_declarations(projection)
         if item.kind == "verification_limit"
     }
+    linked = dict(
+        admissible_verification_refs(
+            projection, records, (obligation for obligation, _reasons in flagged)
+        )
+    )
     lines = [CLAIM_VERIFICATION_HEADER]
     for obligation, reasons in flagged:
-        flag = "verification_limit" if obligation in limited else "no_verification_limit"
-        lines.append(f"{obligation} {','.join(reasons)} {flag}")
+        lines.append(
+            f"{obligation} {','.join(reasons)} {_pairing_flag(obligation in limited, linked.get(obligation, ()))}"
+        )
     return tuple(lines)
+
+
+def _pairing_flag(limited: bool, refs: tuple[str, ...]) -> str:
+    """The receipt flag: a recorded limit, admissible observed ids, or neither."""
+
+    cited = f"linked {','.join(refs)}" if refs else ""
+    if limited and cited:
+        return f"verification_limit {cited}"
+    if limited:
+        return "verification_limit"
+    if cited:
+        return cited
+    return "no_verification_limit"

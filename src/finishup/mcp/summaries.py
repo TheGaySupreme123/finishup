@@ -53,6 +53,7 @@ from finishup.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.readiness_text import (
     READINESS_STATES,
+    admissible_verification_sentence,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
@@ -2324,6 +2325,10 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     failure = coordinator_failure_note(readiness)
     if failure is not None:
         parts.append(Part((failure,), priority=_P_BOILERPLATE))
+    admissible = admissible_verification_sentence(readiness)
+    if admissible:
+        # Ids only, and optional: a long checklist keeps the closure state ahead of this list.
+        parts.append(Part((admissible,), priority=_P_STATE))
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
     )

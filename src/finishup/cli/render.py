@@ -63,6 +63,7 @@ from finishup.protocol.models import (
     StatusSuccessModel,
 )
 from finishup.protocol.readiness_text import (
+    admissible_verification_sentence,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
@@ -668,6 +669,9 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         failure = coordinator_failure_note(readiness)
         if failure is not None:
             lines.append(failure)
+        admissible = admissible_verification_sentence(readiness)
+        if admissible:
+            lines.append(admissible)
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
     if readiness.check_cause is not None and readiness.state != "unknown":

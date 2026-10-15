@@ -394,9 +394,10 @@ class ClosureReadinessFacts:
     # closing review again. A hand-built fact set defaults to false.
     coordinator_failure_unchanged: bool = False
     # #1079: recorded ``evd_`` / ``res_`` ids that are admissible verification for a flagged
-    # obligation (a real row linked to that obligation, its target, or the task, at or before
-    # this frontier). ``None`` is a hand-built fact set: the Stop gate then does not treat a
-    # well-formed id as linked. An empty tuple was computed and found no such id.
+    # obligation (an observed verification row linked to that obligation, its target, or the
+    # task, at or before this frontier). An agent-asserted id is omitted. ``None`` is a
+    # hand-built fact set: the Stop gate then does not treat a well-formed id as linked. An
+    # empty tuple was computed and found no such id.
     admissible_verification: tuple[tuple[ObligationId, tuple[str, ...]], ...] | None = None
 
     def __post_init__(self) -> None:

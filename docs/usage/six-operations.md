@@ -321,8 +321,10 @@ flags because a requested item was never attempted or their evidence is unlinked
 assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
 them. When a flagged obligation's criteria are met, answer with
 `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
-is already a recorded link for that obligation, or with `finishup-verification-limit:<obligation id>`,
-in your final answer in Codex and Claude Code. A well-formed id that is not that link does not
+is already an observed verification for that obligation (hook-captured or observation-captured
+evidence, or a result of an observed command), or with `finishup-verification-limit:<obligation id>`,
+in your final answer in Codex and Claude Code. A well-formed id that is not that observed link,
+including one you only asserted, does not
 answer it. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
 FinishUP, so there publish a decision `finishup-verification-limit:<obligation id>` or link the
 observed evidence or result id in a record. The re-read is asked once for that set.

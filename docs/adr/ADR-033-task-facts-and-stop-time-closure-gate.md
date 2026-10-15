@@ -1077,23 +1077,30 @@ recheck; the receipt still lists it.
 
 `kernel.claim_verification.claim_verification_lines` appends that pairing to the receipt evidence
 section in JSON, markdown and text: a header that a generic all-met claim does not stand in, then
-one line per flagged obligation with its reason tokens and `verification_limit` or
-`no_verification_limit`. A final-message line does not create the ledger link the receipt
+one line per flagged obligation with its reason tokens and `verification_limit`,
+`verification_limit linked <ids>`, `linked <ids>`, or `no_verification_limit`. `<ids>` are the
+admissible observed `evd_` or `res_` ids. A final-message line does not create the ledger link the receipt
 reports. Compact receipt wording is unchanged. A projection hole does not fail the receipt: the
 pairing for that obligation is omitted and the limitations section says the pairing could not
 be read, naming only the obligation id when the scope can still be read.
 
-## Amendment (2026-10-15, issue #1079 item 7): the cited id must be a recorded link
+## Amendment (2026-10-15, issue #1079 item 7): the cited id must be an observed verification
 
 `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` does not pass because the id is
 well-formed. Status carries `closure_readiness.admissible_verification` for a flagged
 obligation when `kernel.verification_link` finds a readable `evd_` or `res_` row at or before
 the closing frontier that the obligation cites, that `source_actions` ties to the obligation or
 to one of its requested items, or that an effective claim's `supporting_refs` names for that
-obligation or for the whole task. The gate accepts the line only when the cited id is in that
-list. A missing id, or one linked only to another obligation, is unattested, and the re-read
-says `` `<id>` is not linked to obligation `<obligation id>`. `` The
+obligation or for the whole task, and that row is an observed verification or is linked to one.
+Observed means hook-captured or observation-captured evidence, or a result of an observed
+command. An id the agent only asserted is unattested, including a self-asserted id named in
+`supporting_refs`. The gate accepts the line only when the cited id is in that list. A missing
+id, or one linked only to another obligation, is unattested, and the re-read says
+`` `<id>` is not linked to obligation `<obligation id>`. `` The
 `finishup-verification-limit:<obligation id>` line remains the honest alternative and does not
-need a row. There is still no truth grade and no publish-time rejection. Cursor still has no
-final message: a published verification-limit decision leaves the recheck, and a nonempty
-admissible list for an obligation is the record link that answers it. An absent list does not.
+need a row. There is still no truth grade and no publish-time rejection. The receipt line names
+each admissible id (`linked evd_…` or `linked res_…`) beside `verification_limit` when a
+disclosure is also recorded, and in place of `no_verification_limit` when the ids are the only
+pairing. Cursor still has no final message: a published verification-limit decision leaves the
+recheck, and a nonempty admissible list for an obligation is the observed link that answers it.
+An absent list does not.
