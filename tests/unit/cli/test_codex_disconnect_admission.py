@@ -120,6 +120,7 @@ def _wire(
             rebind_to=None,
             unserved_members=(),
             keeps_shared=False,
+            missing_members=(),
         )
 
     class Skill:
@@ -650,6 +651,7 @@ def test_detaching_disconnect_keeps_the_shared_mcp_registration(
             rebind_to=None,
             unserved_members=(),
             keeps_shared=True,
+            missing_members=(),
         )
 
     monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
@@ -696,6 +698,7 @@ def test_disconnect_preview_names_projects_that_may_use_the_shared_pieces(
             rebind_to=None,
             unserved_members=(),
             keeps_shared=True,
+            missing_members=(),
         )
 
     monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
@@ -919,6 +922,7 @@ def test_connect_status_reports_the_shared_registration_as_retained_when_not_con
         return {}
 
     monkeypatch.setattr(codex_connection, "YoetzRuntime", Runtime)
+
     def no_plan(_plan: object) -> dict[str, object]:
         return {}
 
@@ -937,3 +941,38 @@ def test_connect_status_reports_the_shared_registration_as_retained_when_not_con
     assert status["configured"] is connected
     assert status["enabled"] is connected
     assert status.get("shared_registration_retained", False) is (not connected)
+
+
+def test_a_missing_dangling_member_is_named_and_not_called_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1058 triage: the plan keeps the pieces only for a project whose directory is missing."""
+
+    home, project, installation = _layout(tmp_path)
+    fake, cleanup = FakeCodex(home, project), list[str]()
+    _wire(monkeypatch, fake, cleanup)
+    missing = str(tmp_path / "a")
+
+    def dangling(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            preview_digest=DIGEST,
+            outcome=RemovalOutcome.ALREADY_ABSENT,
+            possible_users=(),
+            shared_with=(),
+            rebind_to=None,
+            unserved_members=(),
+            keeps_shared=True,
+            missing_members=(missing,),
+        )
+
+    monkeypatch.setattr(codex_connection, "preview_removal", dangling)
+    plan = _plan(installation, project)
+
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    assert plan.disclosure["shared_with"] == [missing]
+    assert plan.disclosure["members_missing"] == [missing]
+    retained = _items(plan.body["retained"])
+    assert any("directory is missing right now" in str(item) for item in retained)
+    assert not any("used by other connected projects" in str(item) for item in retained)
+    status = plan.status()
+    assert status["members_missing"] == [missing]

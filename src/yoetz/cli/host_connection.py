@@ -232,10 +232,15 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
         lines.append(f"The shared Codex marketplace binding moves to {rebind}.")
     others = body.get("shared_with")
     if isinstance(others, list) and others:
-        names = ", ".join(str(item) for item in others)
+        names = _kept_for_names(body)
         lines.append(
-            "Other connected projects keep using the shared Yoetz pieces, so only this "
-            f"project's pieces are removed: {names}"
+            (
+                "The shared Yoetz pieces stay for a connected project whose directory is missing "
+                f"right now, so only this project's pieces are removed: {names}"
+                if _kept_only_for_missing(body)
+                else "Other connected projects keep using the shared Yoetz pieces, so only this "
+                f"project's pieces are removed: {names}"
+            )
             if body.get("action") == "disconnect"
             else "This configuration already serves other connected projects, which keep "
             f"working: {names}"
@@ -244,6 +249,66 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     if route_line is not None:
         lines.append(route_line)
     return tuple(lines)
+
+
+def _kept_for_names(body: Mapping[str, JsonValue]) -> str:
+    """The projects the shared pieces stay for, marking those whose directory is missing."""
+
+    others = body.get("shared_with")
+    missing = body.get("members_missing")
+    absent = {str(item) for item in missing} if isinstance(missing, list) else set[str]()
+    return ", ".join(
+        f"{item} (directory missing right now)" if str(item) in absent else str(item)
+        for item in (others if isinstance(others, list) else [])
+    )
+
+
+def _kept_only_for_missing(body: Mapping[str, JsonValue]) -> bool:
+    """Whether every project the shared pieces stay for has its directory missing right now."""
+
+    others = body.get("shared_with")
+    missing = body.get("members_missing")
+    return (
+        isinstance(others, list)
+        and bool(others)
+        and isinstance(missing, list)
+        and {str(item) for item in others} <= {str(item) for item in missing}
+    )
+
+
+def _missing_members_step(
+    status: Mapping[str, JsonValue], selected: HostInstallation, project: Path
+) -> str | None:
+    """The way out when the shared pieces stay only for projects whose directory is missing.
+
+    Such a project cannot disconnect itself while its directory is gone; it may come back (an
+    unmounted volume, a moved checkout), so only an explicit home-wide disconnect removes them.
+    """
+
+    if not _kept_only_for_missing(status):
+        return None
+    command = continuation(
+        [
+            "setup",
+            "disconnect",
+            "--host",
+            selected.host,
+            "--host-path",
+            str(selected.executable),
+            "--host-config-root",
+            str(selected.config_root),
+            "--project",
+            str(project),
+            "--remove-shared",
+        ]
+    )
+    return (
+        "Yoetz keeps the shared pieces in this configuration for "
+        + ", ".join(str(item) for item in cast(list[JsonValue], status["shared_with"]))
+        + ", a connected project whose directory is missing right now (an unmounted volume or "
+        "a moved checkout); they serve it again once it is back. If it is gone for good, preview "
+        f"removing them for every project: {command}"
+    )
 
 
 def _route_change_line(body: dict[str, JsonValue]) -> str | None:
@@ -839,6 +904,15 @@ def run_host_connection(
                 if action == "connect"
                 else "Restart the selected host. Yoetz data was retained."
             )
+            final_status = report.get("status")
+            missing_step = (
+                _missing_members_step(final_status, selected, project)
+                if action == "disconnect" and isinstance(final_status, dict)
+                else None
+            )
+            if missing_step is not None:
+                # Nothing names a live project the pieces stay for: give the way out (triage).
+                report["next_step"] = f"{report['next_step']}\n{missing_step}"
     except CONNECTION_ERRORS as error:
         from yoetz.adapters.integrations.cursor_project_mcp import CursorProjectMcpError
 
@@ -973,7 +1047,7 @@ def run_host_connection(
                 # A re-run or a never-connected project changed nothing; say who keeps them.
                 typer.echo(
                     "The shared Yoetz pieces stay for the other projects using this "
-                    "configuration: " + ", ".join(str(item) for item in kept)
+                    "configuration: " + _kept_for_names(status)
                 )
         if "reason" in report:
             typer.echo(str(report["reason"]))

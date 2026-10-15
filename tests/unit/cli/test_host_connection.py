@@ -584,3 +584,68 @@ def test_an_unchanged_disconnect_names_who_keeps_the_shared_pieces(
     out = capsys.readouterr().out
     assert "codex: unchanged" in out
     assert "stay for the other projects using this configuration: /workspace/a" in out
+
+
+def test_shared_pieces_kept_only_for_a_missing_directory_name_the_way_out(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1058 triage: nothing live keeps them, so name the project and the home-wide preview."""
+
+    installation = HostInstallation(
+        "codex", Path("/opt/codex"), "0.162.1", Path("/workspace/home"), "Codex"
+    )
+    plan = ConnectionPlan(
+        {
+            "schema": "yoetz.host-connection-plan/1",
+            "request_id": REQUEST,
+            "host": "codex",
+            "host_version": "0.162.1",
+            "executable": "/opt/codex",
+            "config_root": "/workspace/home",
+            "project_root": "/workspace/c",
+            "action": "disconnect",
+            "route_profile": "strict",
+            "preview_digest": DIGEST,
+            "connection_observed": False,
+            "changes": [],
+        },
+        lambda: {
+            "configured": False,
+            "shared_with": ["/workspace/a"],
+            "members_missing": ["/workspace/a"],
+        },
+        lambda: None,
+    )
+
+    def selected(*_args: object) -> HostInstallation:
+        return installation
+
+    def prepared_plan(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        return plan
+
+    monkeypatch.setattr(cli, "select_installation", selected)
+    monkeypatch.setattr(cli, "prepare_selected", prepared_plan)
+    code = cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/c"),
+        action="disconnect",
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "/workspace/a (directory missing right now)" in out
+    assert "whose directory is missing right now" in out
+    assert "setup disconnect --host codex --host-path /opt/codex" in out
+    assert "--project /workspace/c --remove-shared" in out
+
+    code = cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/c"),
+        action="disconnect",
+        json_output=True,
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert "--remove-shared" in report["next_step"]

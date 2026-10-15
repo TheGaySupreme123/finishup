@@ -762,3 +762,29 @@ def test_without_a_binding_a_member_detaches_and_keeps_the_others_pieces(
     assert '[plugins."yoetz@yoetz"]' in config.read_text(encoding="utf-8")
     assert _cache(home).exists()
     assert connected_projects(home) == (str(root_a),)
+
+
+def test_a_never_connected_disconnect_names_a_member_whose_directory_is_missing(
+    tmp_path: Path,
+) -> None:
+    """#1058 triage: only A connected and its directory moved away (an unmounted volume).
+
+    C's disconnect keeps the shared pieces for A's dangling binding; the plan names A as a
+    project whose directory is missing right now, so the kept pieces have an owner.
+    """
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    _connect(target_a, home)
+    root_a.rename(tmp_path / "a-away")
+    target_c, _root_c = _clone(tmp_path, "c")
+    config_before = (home / "config.toml").read_bytes()
+
+    preview = preview_removal(target_c, codex_home=home)
+
+    assert preview.keeps_shared is True
+    assert preview.missing_members == (str(root_a),)
+    assert preview.unserved_members == ()
+    _disconnect(target_c, home)
+    assert (home / "config.toml").read_bytes() == config_before
+    assert _cache(home).exists()

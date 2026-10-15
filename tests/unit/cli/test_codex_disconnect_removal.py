@@ -50,6 +50,7 @@ def test_disconnect_keeps_removal_outcome(
             rebind_to=None,
             unserved_members=(),
             keeps_shared=False,
+            missing_members=(),
         )
 
     class Skill:

@@ -208,6 +208,10 @@ class RemovalPreview:
     # This plan keeps the home's shared pieces (plugin table, cache, binding, user-level MCP
     # registration) for other projects, whatever its outcome (also ``already_absent``).
     keeps_shared: bool = False
+    # Projects the shared pieces are kept for whose directory is missing right now: the
+    # dangling binding's project, when a project that is not a member leaves it alone (an
+    # unmounted volume or moved checkout may come back). Named so the kept pieces have an owner.
+    missing_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2436,6 +2440,16 @@ def _removal_plan(
         for candidate in live_recorded
         if _anchor_manifest_state(Path(candidate)) != "serves"
     )
+    # The dangling binding's project whose directory is missing right now: the reason a
+    # non-member's disconnect keeps the shared pieces when no recorded project is live.
+    missing_members: tuple[str, ...] = (
+        (source,)
+        if dangling_other
+        and anchor_missing
+        and source != str(project)
+        and source not in live_recorded
+        else ()
+    )
     cache_versions = tuple(version for version, _digest in cache_digests)
     inspection = inspect_activation(
         target,
@@ -2523,6 +2537,7 @@ def _removal_plan(
                 "unknown_after": unknown_after,
                 "anchor_missing": anchor_missing,
                 "unserved_members": list(unserved),
+                "missing_members": list(missing_members),
             }
         )
     )
@@ -2557,6 +2572,7 @@ def _removal_plan(
         unserved,
         # A detach, and a non-member's removal of only its own pieces, keep the shared ones.
         detach,
+        missing_members,
     )
     return _RemovalPlan(
         preview,

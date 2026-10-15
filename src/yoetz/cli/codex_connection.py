@@ -262,6 +262,7 @@ def prepare_codex_connection(
                         *serving_others,
                         *removal.unserved_members,
                         *recorded_others,
+                        *removal.missing_members,
                     }
                 )
             )
@@ -315,15 +316,24 @@ def prepare_codex_connection(
         warnings: list[JsonValue] = list(registration.warnings) if unregister_planned else []
         body["warnings"] = warnings
         body["retained"] = ["Yoetz data", "inactive project plugin sources"]
+        # Kept-for projects whose directory is missing right now (the dangling binding's).
+        missing_kept = tuple(item for item in kept_for if item in removal.missing_members)
         if shared_kept:
             cast(list[JsonValue], body["retained"]).append(
-                "shared Codex plugin and MCP registration used by other connected projects"
+                # Only projects whose directory is missing right now: say so, not "other
+                # connected projects" that are not there (#1058 triage).
+                "shared Codex plugin and MCP registration, kept for a connected project whose "
+                "directory is missing right now"
+                if kept_for and len(missing_kept) == len(kept_for)
+                else "shared Codex plugin and MCP registration used by other connected projects"
                 if removal.keeps_shared or removal.outcome is not RemovalOutcome.REMOVE
                 # The plan removes the shared plugin (no project can carry it); only the
                 # user-level registration stays for the projects that still use it.
                 else "Yoetz MCP registration used by other connected projects"
             )
             admission.disclosure["shared_with"] = cast(list[JsonValue], list(kept_for))
+            if missing_kept:
+                admission.disclosure["members_missing"] = cast(list[JsonValue], list(missing_kept))
         if membership_unknown:
             # Unreadable membership: an ordinary disconnect keeps the shared pieces, and a
             # home-wide one says it cannot name everyone it removes them from.
@@ -479,6 +489,11 @@ def prepare_codex_connection(
                 ),
                 # Kept for these projects (also when this disconnect changed nothing).
                 **({"shared_with": cast(list[JsonValue], list(kept_for))} if kept_for else {}),
+                **(
+                    {"members_missing": cast(list[JsonValue], list(missing_kept))}
+                    if shared_kept and missing_kept
+                    else {}
+                ),
                 "connection_observed": False,
                 "reload_required": True,
                 "retained": body["retained"],
