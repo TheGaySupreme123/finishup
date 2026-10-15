@@ -991,8 +991,12 @@ def test_a_declaration_changed_during_migration_is_left_alone(tmp_path: Path) ->
 def test_a_symlinked_project_claude_directory_reads_foreign_and_uninstalls_nothing(
     tmp_path: Path,
 ) -> None:
-    # The migration's settings edit refuses a symlinked ``.claude``; the preview must not promise
-    # it, or every connect would uninstall the legacy plugin and then stop.
+    # FinishUP never edits settings through a symlinked ``.claude``: status reads the legacy
+    # install as foreign, and the preview refuses the directory before any command runs (the
+    # project-settings ownership rule, ADR-007), so no connect uninstalls the legacy plugin.
+    from finishup.adapters.integrations.claude_code_integration import ClaudeCodeIntegrationError
+    from finishup.ports.plugin_artifacts import PluginArtifactReason
+
     target, artifact, claude = _legacy_install(tmp_path)
     claude_dir = Path(target.project_root) / ".claude"
     shared = tmp_path / "shared-claude"
@@ -1001,19 +1005,16 @@ def test_a_symlinked_project_claude_directory_reads_foreign_and_uninstalls_nothi
 
     status = status_claude_code_plugin(target, artifact, commands=claude)
     assert status.legacy_installation == "foreign"
-    preview = preview_claude_code_plugin(
-        _request(60), target, ClaudeCodePluginAction.CONNECT, artifact, commands=claude
-    )
-    assert preview.legacy_installation == "foreign"
-    assert "legacy_installation_foreign" in preview.warnings
-    assert "legacy_installation_owned" not in preview.warnings
-    assert "legacy_project_registration_removed" not in preview.warnings
+    settings_before = (shared / "settings.json").read_bytes()
     claude.calls.clear()
-    _apply(target, ClaudeCodePluginAction.CONNECT, artifact, claude, 61)
-    assert not any(_OLD[1] in call or _OLD[0] in call for call in claude.calls)
+    with pytest.raises(ClaudeCodeIntegrationError) as raised:
+        preview_claude_code_plugin(
+            _request(60), target, ClaudeCodePluginAction.CONNECT, artifact, commands=claude
+        )
+    assert raised.value.reason is PluginArtifactReason.TARGET_UNSAFE
+    assert [call for call in claude.calls if call != ("plugin", "list", "--json")] == []
     assert claude.installed[_OLD[1]] is True
-    assert _OLD[0] in json.loads((shared / "settings.json").read_bytes())["extraKnownMarketplaces"]
-    assert json.loads((shared / "settings.json").read_bytes())["enabledPlugins"][_OLD[1]] is True
+    assert (shared / "settings.json").read_bytes() == settings_before
     assert _legacy_root(target).is_dir()
 
 

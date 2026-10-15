@@ -438,10 +438,12 @@ reports `legacy_registration` for the `yoetz` key:
 A legacy install is this project's and FinishUP's only when the project's settings register
 `yoetz-local` or Claude lists `yoetz@yoetz-local` for this project, and the marketplace tree at the
 accepted location (beside the managed root) carries a valid marker naming `yoetz-local`. The preview
-binds that tree's digest. When the project's `.claude` directory is a symlink, the legacy install
-reads `foreign` (preview warning `legacy_installation_foreign`) and is never uninstalled or edited,
-because FinishUP does not rewrite settings through a symlinked `.claude`. Before the rename is migrated, setup's activation cues read the plugin in
-`yoetz-local`.
+binds that tree's digest. When the project's `.claude` directory is a symlink, status reads the
+legacy install as `foreign` and it is never uninstalled or edited, because FinishUP does not rewrite
+settings through a symlinked `.claude`: a plugin preview (and so connect, update or remove) refuses
+that `.claude` as `target_unsafe` before any command runs, the same project-settings ownership rule
+that refuses a `.claude` another account made or others can write. Before the rename is migrated,
+setup's activation cues read the plugin in `yoetz-local`.
 
 **Migration.** The guided connection (`finishup setup run --host claude`) and `finishup integrate
 claude plugin install|update|remove` (and disconnect) migrate an owned legacy install in the same
