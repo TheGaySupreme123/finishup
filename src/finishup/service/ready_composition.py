@@ -82,6 +82,7 @@ from finishup.adapters.task_input_read import read_outside_inputs
 from finishup.application.check import SEMANTIC_EVALUATION_GAPS, FinalSemanticEvaluation
 from finishup.application.check_change import (
     CheckChangeOutcome,
+    OutsideInputReader,
     capture_check_time_change,
     check_change_shown_files,
     check_time_change_selected,
@@ -298,7 +299,11 @@ from finishup.observability.semantic_context import (
     semantic_check_request,
     semantic_progress_sink,
 )
-from finishup.ports.change_capture import ChangeCapturePort, current_check_workspace_source
+from finishup.ports.change_capture import (
+    ChangeCapturePort,
+    TaskInputFile,
+    current_check_workspace_source,
+)
 from finishup.ports.clock import ClockPort
 from finishup.ports.control import ControlError, ControlMethod
 from finishup.ports.diagnostics import (
@@ -2627,6 +2632,15 @@ def _bootstrap_seed_digest(installation_id: str, *, revision: str | None) -> str
     if revision is not None:
         payload["default_revision"] = revision
     return canonical_digest(payload)
+
+
+def _outside_input_reader(roots: tuple[str, ...]) -> OutsideInputReader:
+    """The check-time reader of task inputs beneath the admitted outside roots (issue #1082)."""
+
+    def read(values: tuple[str, ...], room: int) -> tuple[TaskInputFile, ...]:
+        return read_outside_inputs(roots, values, limit=room)
+
+    return read
 
 
 def _semantic_prepared_byte_ceiling(policy: PrivacyPolicy) -> int | None:
@@ -5128,7 +5142,7 @@ def _privacy_gated_semantic_evaluator(
                             # Issue #1082: only roots the owner admitted in this repository's
                             # grant, and only where the recipe carries task inputs at all.
                             outside_reader=(
-                                partial(read_outside_inputs, policy.admitted_input_roots)
+                                _outside_input_reader(policy.admitted_input_roots)
                                 if policy.admitted_input_roots
                                 and carries_task_inputs(review_selection)
                                 else None

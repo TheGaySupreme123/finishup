@@ -910,3 +910,65 @@ async def test_a_redacted_task_input_is_disclosed_even_when_the_change_is_clean(
     # request stays the agent's to answer.
     assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
     assert not _packet_limits(waiting, ())["change_clipped"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("admitted", (True, False), ids=("admitted", "not-admitted"))
+async def test_a_task_input_beneath_an_admitted_outside_root_reaches_the_packet(
+    tmp_path: Path, admitted: bool
+) -> None:
+    """Issue #1082 (vba-userform-port shape): the legacy source lives outside the workspace.
+
+    It reaches the packet only when the repository grant admits its folder, labelled as read
+    outside the workspace and redacted like any task input; without the root nothing is read.
+    """
+
+    from builders.policy_cases import evt
+    from finishup.domain.task_statement import RecordedTaskStatement
+
+    repository = _repository(tmp_path)
+    shared = (tmp_path / "shared").resolve()
+    (shared / "legacy_app").mkdir(parents=True)
+    (shared / "legacy_app" / "Form1.frm").write_text(
+        f"LEGACY_FORM_MARKER\ndeploy_token = '{_SECRET}'\n", encoding="utf-8"
+    )
+    frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
+    _python_rewrite(repository, "String(key)", "`${typeof key}:${String(key)}`")
+    frozen = FrozenCase(
+        replace(
+            frozen.case,
+            task_statement=RecordedTaskStatement(
+                text=f"Port the legacy form in {shared}/legacy_app/ to the selectors module.",
+                source_event_id=evt(1),
+                source_family="session_opened",
+                ingestion_sequence=1,
+            ),
+        ),
+        frozen.lease,
+    )
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+    if admitted:
+        store = privacy.policy_application.policy_store
+        effective = cast(EffectivePrivacyPolicy, getattr(store, "_effective"))
+        setattr(
+            store,
+            "_effective",
+            replace(
+                effective,
+                policy=replace(effective.policy, admitted_input_roots=(os.fspath(shared),)),
+            ),
+        )
+
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    candidate = privacy.candidates[0]
+    inputs = [item for item in candidate.items if item.item_id.startswith("task-input-")]
+    if not admitted:
+        assert all(b"LEGACY_FORM_MARKER" not in item.plaintext for item in candidate.items)
+        return
+    (legacy,) = inputs
+    assert legacy.category is DataCategory.REPOSITORY_EXCERPT
+    assert b"LEGACY_FORM_MARKER" in legacy.plaintext
+    assert b"outside the workspace beneath a root the owner admitted" in legacy.plaintext
+    assert _SECRET.encode() not in legacy.plaintext

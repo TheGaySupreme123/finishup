@@ -1311,3 +1311,81 @@ the existing per-excerpt and total limits. It is an evidence excerpt, the catego
 summary already uses. It does not widen consent, add a category, or raise a ceiling. A summary
 that does not fit is omitted and the omission is reported. Private sends nothing. Output the
 request does not name is not added.
+
+## Reviewer packets carry the specification, the oracle and admitted outside inputs (2026-10-16, issue #1082)
+
+Maintainer approved 2026-10-16: rewrite reviewer instructions (pstack style) and make reviewer
+packets sufficient, including outside-workspace inputs within existing privacy policy. The N6
+D-lane audit found 99 of 196 reviews ended `insufficient_packet`, and reviewers kept asking for
+the same three things: the controlling specification, each obligation's deliverables, and the
+latest real verification with its assertions.
+
+Every change below stays inside the owner's existing ceilings. No category is added, no
+selection or channel ceiling is raised, the round cap is unchanged, and Private sends nothing.
+
+- **Specification first.** Read-only task inputs (ADR-031) rank ahead of the check-time change,
+  within a quarter of the packet's excerpt budget. An input too large for that share is skipped
+  rather than stopping smaller ones; it still backfills after every other excerpt.
+- **The oracle.** A file a recorded verification command names (a test, a fixture, a harness
+  script) is a candidate task input. The same repository rule decides whether it is read: inside
+  the repository, unchanged since the task started, not ignored, not credential-named. A test the
+  agent wrote or changed is therefore never read this way; it is in the change. The command text is
+  the agent's record, so it only selects candidates and never authenticates output.
+- **Deliverables named in prose.** A requested `change` item that names files in its text orders
+  those files after every literal declaration. This orders the check-time change only.
+- **Summaries, never bytes, of binary inputs.** A binary, image or data input that was skipped
+  before becomes FinishUP's own bounded summary (format, size, digest, dimensions, page estimate,
+  workbook sheet names and first rows, archive member names, array dtype and shape), at most
+  16 KiB, labelled as FinishUP's description and never as the file. An untracked text input too
+  large to read whole keeps its head and its last 8 KiB. Summaries and ends take the same redaction
+  as any task input.
+- **Admitted outside-workspace inputs.** The never-send set excludes files outside the selected
+  scope. A repository's grant can now widen that scope by naming directories:
+  `PrivacyPolicy.admitted_input_roots`, at most eight absolute, normalized paths with no hidden
+  component, never `/` and never beneath `/boot`, `/dev`, `/etc`, `/proc`, `/run`, `/sys`,
+  `/var/run` or their `/private` forms. The field is written only when set, so every earlier
+  policy keeps its bytes and digest (privacy-policy 1.2.0 gains the optional property).
+  - The way in is `finishup privacy input-roots add <dir>`. The directory must exist and be named
+    by its real path. Adding a root is a widening: it needs an existing grant, an interactive
+    terminal and the separately reauthenticated trusted decision, whose screen lists the
+    directories under "Information disclosed". No agent can admit a root.
+  - The way out is `finishup privacy input-roots remove <dir>`, a tightening that applies at once.
+    `finishup privacy input-roots status`, `finishup privacy show` and the terminal interface show
+    the admitted roots.
+  - Composition: the repository grant decides between the installation row and a repository row;
+    the installation row cannot admit a root for every repository. Any other composition keeps
+    only the roots both sides admit.
+  - The read happens only when the recipe already carries task inputs (the change, the statement
+    and the `repository` excerpt kind). Only an absolute path the task statement or a `role: input`
+    item names, lexically beneath an admitted root and outside the workspace, is read. A named
+    directory offers its visible files, two levels deep, in name order. The root is opened without
+    following a link and must still be its own real path; each component is opened without
+    following a link; hidden and credential-named files are refused; only singly linked regular
+    files owned by the service user or by root, that no other user may write, are read; at most
+    four inputs in all, sixteen candidates and five seconds per check.
+  - The bytes take the same redaction as every task input, leave as `repository_excerpt` items
+    labelled "outside the workspace beneath a root the owner admitted", and pass the gateway and
+    never-send scan. A channel that withholds `repository_excerpt` drops them.
+- **Captured bytes behind a digest-only row.** When an agent records a run's output as a
+  digest-only evidence row and a hook already captured bytes with that exact SHA-256, the capture's
+  excerpt also answers to the agent's row. Nothing new is read or sent; a withheld row never
+  matches.
+- **Redundant captured edits yield.** A captured edit of only files the admitted check-time
+  change parts show whole is ranked as an older edit superseded by `check-time-change`, so the
+  latest verification output takes that room first. The edit is still offered after it.
+- **Supplied summaries.** The reviewer is told that an `excerpt-supplied-` item is the agent's
+  account of a run, not its output, so a verification-output request it answers stays unmet until
+  the output is carried. The #1079 published-answers behaviour is otherwise unchanged.
+- **Extra room, bounded.** Decisive material gets room by rank and by reclaiming duplicate edit
+  bytes, never by exceeding the recipe's excerpt total (at most 128 KiB), the channel's prepared
+  ceiling (at most 256 KiB) or the follow-up share (half the excerpt total across all rounds). A
+  complementary second packet is not added: one would repeat roughly the 109k-token native review
+  footprint and about 26 s of provider time per review (N6 medians), and it needs its own design.
+- **Not done here: a local copy of each outbound packet.** Every dispatch already binds its exact
+  request body: the privacy receipt's `request_commitment` is a keyed MAC over it and the attempt
+  binding carries its SHA-256. A consent-gated encrypted copy, or a service-side rebuild verified
+  against those values, needs an audit-store record and a read operation; it is tracked in #1085
+  rather than written to logs, which this ADR forbids.
+
+The behaviour is service-side and identical for Codex, Claude Code and Cursor on macOS, Linux and
+Windows through WSL 2.

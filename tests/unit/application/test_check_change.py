@@ -223,8 +223,8 @@ def _verification_case(*commands: tuple[str, str]) -> object:
         ResultRecordedPayload,
     )
 
-    actions = {}
-    results = {}
+    actions: dict[Any, Any] = {}
+    results: dict[Any, Any] = {}
     for index, (command, outcome) in enumerate(commands, start=1):
         actions[act(index)] = record(
             ActionRecordedPayload(act(index), ActionKind.COMMAND, "verify", command=command),

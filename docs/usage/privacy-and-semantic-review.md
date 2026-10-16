@@ -188,6 +188,32 @@ made under it records it, and every check whose external AI-powered review ran u
 with the agent's work. The setting is part of your privacy policy, so
 `finishup privacy export-desired` and `apply-desired` carry it too, through the same approval.
 
+### Letting review read files outside the workspace
+
+Some tasks keep their specification, data or the code being ported outside the repository, in a
+shared folder such as `/shared/legacy_app`. FinishUP never reads outside your repository unless
+you admit the folder for this repository:
+
+```text
+finishup privacy input-roots add /shared/legacy_app   # admit a folder (asks for your approval)
+finishup privacy input-roots remove /shared/legacy_app  # stop admitting it (applies at once)
+finishup privacy input-roots status                   # list the admitted folders
+```
+
+Name an existing folder by its full path, with no link on the way. The filesystem root, hidden
+folders and system folders such as `/etc`, `/proc` and `/dev` are refused, and up to eight folders
+can be admitted. Admitting a folder lets more leave your machine, so it applies only after you
+approve it in the trusted approval on this terminal, which lists the folders under "Information
+disclosed". It needs this repository's privacy grant; no agent can admit a folder for you.
+
+After that, when the task statement names a file inside an admitted folder, or names the folder
+itself, the reviewer can receive up to four such files, each read the way task inputs are: never a
+hidden or credential-named file, never through a link, never a file another user can write, and
+always through the same redaction and never-send checks. A file inside your repository is never
+read this way. Nothing is read unless your review policy already sends repository excerpts, so
+Private and Metadata only send nothing from these folders. `finishup privacy show`, `/privacy`
+and the status command above show what is admitted.
+
 ## Commands
 
 ```text
@@ -200,6 +226,7 @@ finishup privacy decide-policy     # approve or deny one exact pending policy pr
 finishup privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
 finishup privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
 finishup privacy credential-heuristic disable|enable  # external reviewer's possible-credential filter, per repository
+finishup privacy input-roots add|remove|status        # folders outside the workspace review may read, per repository
 finishup privacy pending           # list disclosure decisions waiting for you
 finishup privacy decide-disclosure # decide one exact pending disclosure by id (see below)
 finishup privacy receipts          # inspect bounded structural egress receipts
@@ -368,8 +395,14 @@ travel too, each up to 16 KiB, but only when the file is in your repository, has
 the task started, is not ignored by Git and is not named like a credential. A file Git tracks
 travels only when the task's starting commit was kept, Git compares it normally (a file marked
 skip-worktree or assume-unchanged never travels) and its content still matches that commit
-exactly. Task inputs are labelled as task inputs, not as your agent's work, and pass the same
-redaction and never-send checks. The reviewer also gets one short
+exactly. A test or fixture file a recorded verification command ran is offered the same way, so the
+reviewer can read the assertions behind a passing run; a test your agent wrote or changed is
+already in the change. Task inputs travel ahead of the change, within a quarter of the room for
+excerpts. A binary, image or data input is never sent: FinishUP sends its own short description
+instead (format, size, image dimensions, an estimated page count, a spreadsheet's sheet names and
+first rows, an archive's file names, an array's shape), labelled as FinishUP's description. A large
+untracked data file sends its first and last lines. Task inputs are labelled as task inputs, not as
+your agent's work, and pass the same redaction and never-send checks. The reviewer also gets one short
 list of the deliverables you declared, whether the change touches each one, and FinishUP's own facts
 about them (for example that a deliverable refers to a file you created but did not declare). Git hooks, helpers, filters and network
 access are off while it is read, credential-like text is redacted, and each part still passes the

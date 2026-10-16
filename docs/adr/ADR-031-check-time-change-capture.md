@@ -603,3 +603,37 @@ command/output binding remains required. A captured object already represented b
 is reused, so another delivery does not make its object-to-evidence association ambiguous. New
 image source identities remain distinct; enrichment operation/claim roles bind the appended event
 IDs. Existing schemas and frozen vectors retain their bytes.
+
+## Amendment (2026-10-16, issue #1082): task inputs first, the oracle, summaries, outside roots
+
+Maintainer approved 2026-10-16 (recorded on #1082). The read and the packet change as follows; the
+ADR-009 amendment of the same date holds the consent and egress terms.
+
+1. **Candidates.** `review_input_paths` returns the statement's path-shaped words, the
+   `role: input` requested files, then absolute directories the statement names (ending in `/`),
+   at most 16. The newest test, fixture or harness path a recorded verification command names
+   (`verification_input_paths`: commands `command_is_verification` classes, split like a shell,
+   pytest node ids reduced to their file, at most four) takes the fourth place, so a statement
+   that names many files cannot crowd out every oracle. Only an input no task source named is
+   labelled as the verification's (`TaskInputFile.origin = "verification"`).
+2. **Binary and large inputs.** A candidate whose first 8000 bytes hold a NUL becomes FinishUP's
+   own bounded summary (`TaskInputFile.summary`, at most 16 KiB; `finishup.adapters.input_summary`)
+   instead of being skipped. An untracked candidate larger than 1 MiB is read from its two ends
+   (the first 1 MiB and the last 8 KiB) without following a link and summarized or cut to head and
+   tail; a tracked one still needs a whole read to prove it unchanged and is skipped.
+3. **Outside roots.** After the repository read, an absolute candidate outside the workspace and
+   beneath a root the repository grant admits (`PrivacyPolicy.admitted_input_roots`) is read by
+   the service's outside reader (`finishup.adapters.task_input_read.read_outside_inputs`) into the
+   room the four-input bound leaves, with `origin = "outside_workspace"` and its absolute path.
+   A path inside the workspace is never read this way, even beneath an admitted root: only the
+   repository read can prove a file unchanged since the task started.
+4. **Storage.** `origin` and `summary` are optional keys of each stored input, written only when
+   not the default, so every earlier check-change object keeps its bytes. All inputs take the same
+   redaction as before and are frozen with the job.
+5. **Packet.** Task inputs are admitted first, ahead of the change's reserved share, within a
+   quarter of the packet's excerpt budget (the planned budget when the channel ceiling narrowed
+   it); one that does not fit is skipped, not a stop, and backfills after every other excerpt.
+   Each origin has its own label (`named by a recorded verification command`, `outside the
+   workspace beneath a root the owner admitted`) and a summary reads `[FinishUP summary of task
+   input file ...]`. A captured edit of only files whose every section the admitted change parts
+   carry is ranked as an older edit with `superseded_by: ["check-time-change"]`.

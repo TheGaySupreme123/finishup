@@ -946,6 +946,35 @@ def _check_time_change_sections(
     return by_path
 
 
+def _wholly_shown_change_paths(
+    capture: CheckChangeCapture, part_keys: Sequence[tuple[str, str]]
+) -> frozenset[str]:
+    """Paths every section of which the admitted check-time change parts carry (issue #1082)."""
+
+    intervals = sorted(
+        (span[1], span[2])
+        for item_id, key in part_keys
+        if item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+        and (span := excerpt_span(key)) is not None
+        and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF
+    )
+    merged: list[tuple[int, int]] = []
+    for low, high in intervals:
+        if merged and low <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+        else:
+            merged.append((low, high))
+
+    def covered(start: int, end: int) -> bool:
+        return any(low <= start and end <= high for low, high in merged)
+
+    return frozenset(
+        path
+        for path, sections in _check_time_change_sections(capture).items()
+        if sections and all(covered(start, end) for start, end, _ in sections)
+    )
+
+
 def current_section_parts(
     capture: CheckChangeCapture | None,
     edit_paths: Mapping[str, frozenset[str]] | None,
@@ -4406,6 +4435,7 @@ def _select_targeted_excerpts(
     follow_up: ReviewFollowUp | None = None,
     check_time_change: CheckChangeCapture | None = None,
     supplied_refs: frozenset[str] = frozenset(),
+    change_shown_paths: frozenset[str] = frozenset(),
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -4429,6 +4459,12 @@ def _select_targeted_excerpts(
     recorded excerpts, inside the existing count and byte budgets. A result summary is added
     only when this selection already allows an evidence or test excerpt and no excerpt of
     that result exists yet. Nothing here widens the selection or the ceilings.
+
+    ``change_shown_paths`` (issue #1082) are the repository-relative paths whose every section
+    the check-time change parts already admitted carry whole. A captured edit of only such paths
+    is the same code again, older or equal: it is ranked as an older edit superseded by the
+    check-time change, so the room it held goes to the latest verification and other decisive
+    material first. The edit is still offered after them; nothing is withheld.
 
     ``follow_up`` (issue #1047) is the reviewer's own in-check request: the excerpts of its
     requested rows rank ahead of every other recorded excerpt, item by item in request order and
@@ -4692,6 +4728,15 @@ def _select_targeted_excerpts(
                 newest_for_path[path] = index
     for index, candidate in enumerate(candidates):
         if candidate.edit_paths is None:
+            continue
+        relative = _relative_edit_paths(candidate.edit_paths, workspace_root)
+        if (
+            relative
+            and len(relative) == len(candidate.edit_paths)
+            and change_shown_paths >= set(relative)
+        ):
+            # Issue #1082: the check-time change already carries these files whole.
+            superseded_by[index] = (_CHECK_TIME_CHANGE_SOURCE_REF,)
             continue
         newer = {newest_for_path[path] for path in candidate.edit_paths} - {index}
         if not candidate.edit_paths or len(newer) < len(
@@ -6878,6 +6923,11 @@ def _build_semantic_case_once(
         # Recorded excerpts then fill what the change left, most valuable first (#907). The
         # change's remaining parts take the room the reserved classes leave, ahead of older edit
         # hunks and general output (#983), so a planned case narrows those first.
+        change_shown_paths: frozenset[str] = (
+            _wholly_shown_change_paths(check_time_change.capture, excerpt_part_keys)
+            if check_time_change is not None and check_change_admitted
+            else frozenset()
+        )
         excerpts = _select_targeted_excerpts(
             projection=projection,
             allowed=allowed,
@@ -6901,6 +6951,7 @@ def _build_semantic_case_once(
             workspace_root=workspace_root,
             follow_up=follow_up,
             supplied_refs=supplied_answer_refs,
+            change_shown_paths=change_shown_paths,
             # A follow-up may answer from the frozen change, only when this recipe carries it.
             check_time_change=(
                 check_time_change.capture

@@ -2105,3 +2105,45 @@ when the reviewer asks for verification output, the follow-up packet may include
 hook-captured output of a command that request names, under ADR-009: the repository-excerpt gate,
 the existing excerpt limits, Private sends nothing, labelled observed rather than agent-published.
 A command with no run key (`omitted:structural`) is not included.
+
+### The reviewer instruction as a procedure with named lenses (2026-10-16, issue #1082)
+
+Maintainer approved 2026-10-16: rewrite reviewer instructions (pstack style) and make reviewer
+packets sufficient. In nine of the ten N6 reviewer misses the investigators traced, the packet held
+the decisive material; the reviewer checked arithmetic inside the agent's premise, method or
+self-written validator, and treated a pass count or a disclosed caveat as support. The tenth needed
+a hidden grader's mapping.
+
+`SEMANTIC_REVIEW_INSTRUCTION` is now short headed sections in the order a reviewer works, adapting
+the prompt-structure advice of backnotprop/pstack: role first, one rule per sentence, procedure
+before reference material, and an example of the failure each judgment rule catches. The sections
+are: read the task first (the #908 rule, plus how to read task-input and summary labels); review
+phase; how to review (five numbered steps, including "check what the agent asked to have checked");
+lenses; ground every conclusion; missing content; challenges and remedies; earlier findings; and
+reading the packet (labels, markers, order and the gap glossaries). Every earlier rule keeps its
+sentence; the tests that pin them moved with the text.
+
+- **Lenses** (`REVIEWER_LENSES`): premise, boundaries, the agent's own checks, method and
+  assumptions, delivery environment, numbers, infeasibility and blockers. Each is a question the
+  reviewer answers from the packet, with a generic failure example; none names a task.
+- **Grounding** (`REVIEWER_GROUNDING_RULES`): support needs a witness the reviewer read and can
+  cite; a supported row is scoped to the check actually performed and never implies agreement with
+  a hidden grader; the summary says what was not checked; a requirement the reviewer cannot judge
+  is `not_assessable`, never a guessed verdict. FinishUP's deterministic results stand, but a
+  validator, test or audit the agent wrote is the agent's evidence, which the reviewer judges.
+- **Visible defects outrank missing content.** `insufficient_packet` still carries no challenges
+  (the provider-judgment contract is unchanged), so a concrete problem the readable material shows
+  is returned as `challenges_returned`, with what the packet cannot settle marked `not_assessable`
+  and the decisive missing artifact named in the challenge's uncertainty.
+- **Closing questions.** The final-phase question asks the reviewer to name the assumption, method
+  or check each result rests on; the general question asks how each result was checked and what
+  was not. An agent's blocker or acknowledgement is its claim, not evidence of missing authority.
+
+The ten investigated misses and the hidden-verifier case are an offline evaluation set
+(`tests/fixtures/reviewer_accuracy/n6_cases.json`, synthetic paraphrases only). A test binds each
+case to the lens or section that targets its miss and to the exact directive sentences, and checks
+that the instruction names no evaluation case. It proves that the directives are present, not that
+a model follows them; [the evaluation runbook](../runbooks/reviewer-instruction-evaluation.md) is
+the procedure for a live replay. The instruction grew from 22.5 KB to about 29.8 KB, about 1.8k
+more input tokens per review under the bytes/4 estimate, against a median native review footprint
+of about 110k tokens.

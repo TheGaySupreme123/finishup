@@ -179,3 +179,16 @@ def test_links_and_unsafe_roots_admit_nothing(shared: Path, tmp_path: Path) -> N
     assert read_outside_inputs((os.fspath(alias),), (f"{alias}/spec.md",)) == ()
     assert read_outside_inputs(("/etc",), ("/etc/hosts",)) == ()
     assert read_outside_inputs((), (f"{root}/spec.md",)) == ()
+
+
+def test_the_service_reader_binds_only_the_admitted_roots_and_the_room(shared: Path) -> None:
+    """The reader the service hands the capture takes ``(values, room)`` positionally."""
+
+    from finishup.service import ready_composition
+
+    reader = ready_composition._outside_input_reader(  # pyright: ignore[reportPrivateUsage]
+        (os.fspath(shared),)
+    )
+    values = (f"{shared}/spec.md", f"{shared}/legacy_app/")
+    assert [item.path for item in reader(values, 1)] == [f"{shared}/spec.md"]
+    assert len(reader(values, 3)) == 3
