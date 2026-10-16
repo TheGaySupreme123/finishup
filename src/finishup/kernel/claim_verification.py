@@ -12,6 +12,7 @@ and a plain limitation sentence names that obligation id, or says the pairing co
 from __future__ import annotations
 
 from finishup.domain.events import LedgerRecord
+from finishup.domain.values import ObligationId
 from finishup.kernel.acceptance_risk import acceptance_risk
 from finishup.kernel.closure_class import obligation_closures
 from finishup.kernel.plan_scope import current_plan_scope
@@ -24,6 +25,8 @@ __all__ = [
     "CLAIM_VERIFICATION_UNREADABLE",
     "claim_verification_lines",
     "claim_verification_report",
+    "unresolved_verification_obligations",
+    "UNRESOLVED_VERIFICATION_GAP",
 ]
 
 CLAIM_VERIFICATION_HEADER: str = (
@@ -32,6 +35,35 @@ CLAIM_VERIFICATION_HEADER: str = (
 )
 CLAIM_VERIFICATION_UNREADABLE: str = "The claim-verification pairing could not be read."
 _MAX_NAMED_HOLES: int = 8
+UNRESOLVED_VERIFICATION_GAP = "unresolved_verification_limitation"
+
+
+def unresolved_verification_obligations(
+    projection: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> tuple[ObligationId, ...]:
+    """Risky resolved obligations with neither admissible verification nor a recorded limit.
+
+    Invitation delivery is deliberately irrelevant. This is recomputed from the ledger,
+    so a bounded Stop can proceed without turning an unanswered invitation into coverage.
+    """
+    if not records:
+        return ()
+    closures = obligation_closures(projection, records=records)
+    resolved = (item.obligation_id for item in closures.values() if item.basis == "resolved")
+    flagged = acceptance_risk(projection, records, resolved)
+    limited = {
+        item.obligation_id
+        for item in disclosure_declarations(projection)
+        if item.kind == "verification_limit"
+    }
+    linked = dict(
+        admissible_verification_refs(projection, records, (obligation for obligation, _ in flagged))
+    )
+    return tuple(
+        obligation
+        for obligation, _ in flagged
+        if obligation not in limited and not linked.get(obligation)
+    )
 
 
 def claim_verification_lines(
@@ -68,6 +100,15 @@ def claim_verification_report(
         limitation = _pairing_limitation(projection)
         if not records:
             return (), limitation
+        unresolved = unresolved_verification_obligations(projection, records)
+        if unresolved:
+            named = ", ".join(str(ref) for ref in unresolved)
+            sentence = (
+                f"Unresolved verification limitation for {named}: no admissible observed "
+                "verification link or recorded verification limit; an unanswered acceptance "
+                "invitation does not establish coverage."
+            )
+            limitation = " ".join(part for part in (limitation, sentence) if part)
         return _pairing_lines(projection, records), limitation
     except AssertionError, KeyError, TypeError, ValueError:
         return (), CLAIM_VERIFICATION_UNREADABLE

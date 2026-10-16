@@ -113,9 +113,32 @@ def admissible_verification_sentence(readiness: object) -> str:
         ]
         if shown:
             pieces.append(f"{obligation} linked {','.join(shown)}")
-    if not pieces:
-        return ""
-    return "Admissible verification: " + "; ".join(pieces) + "."
+    unresolved: list[str] = []
+    rechecks = _field(readiness, "rechecks")
+    linked = {piece.split(" ", 1)[0] for piece in pieces}
+    if isinstance(rechecks, (tuple, list)):
+        for entry in rechecks:
+            if (
+                _field(entry, "kind") != "acceptance"
+                or _field(entry, "rule") != _ACCEPTANCE_RISK_RULE
+            ):
+                continue
+            subjects = _field(entry, "subjects")
+            if isinstance(subjects, (tuple, list)):
+                unresolved.extend(
+                    ref
+                    for ref in subjects
+                    if type(ref) is str and _OBLIGATION_ID.fullmatch(ref) and ref not in linked
+                )
+    sentences = ["Admissible verification: " + "; ".join(pieces) + "."] if pieces else []
+    if unresolved:
+        sentences.append(
+            "Unresolved verification limitation for "
+            + ", ".join(sorted(set(unresolved)))
+            + ": no admissible observed verification link or recorded verification limit; "
+            "an unanswered acceptance invitation does not establish coverage."
+        )
+    return " ".join(sentences)
 
 
 def coordinator_failure_note(readiness: object) -> str | None:

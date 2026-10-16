@@ -10878,3 +10878,10 @@ existing capture consent and byte budget; the input is never sent to the reviewe
 The same verification classification, environment/path refusal and whole-item secret
 gates apply. Absent, partial, redacted or differently bound context withholds the output.
 Private and repository-excerpt denial still send no auto-supplied output.
+
+Unanswered acceptance invitations (issue #1079, F2) do not establish coverage.
+Delivery memory bounds Stop prompting only. Risky resolved obligations without an
+admissible observed verification link or recorded verification-limit decision retain
+the derived `unresolved_verification_limitation` check/readiness gap. The receipt and
+MCP summary explicitly name the affected obligations and the unresolved verification
+limitation. The receipt remains coverage-bounded after Stop is allowed.

@@ -2340,7 +2340,7 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     admissible = admissible_verification_sentence(readiness)
     if admissible:
         # Ids only, and optional: a long checklist keeps the closure state ahead of this list.
-        parts.append(Part((admissible,), priority=_P_STATE))
+        parts.append(_req(admissible))
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
     )
@@ -2497,6 +2497,19 @@ def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]
     tail = body[header_at + len(CLAIM_VERIFICATION_HEADER) :]
     parts = [_req(CLAIM_VERIFICATION_HEADER)]
     parts.extend(_req(match.group(0)) for match in _PAIRING_LINE.finditer(tail))
+    unresolved = [
+        match.group(0).split(" ", 1)[0]
+        for match in _PAIRING_LINE.finditer(tail)
+        if match.group(0).endswith("no_verification_limit")
+    ]
+    if unresolved:
+        parts.append(
+            _req(
+                "Unresolved verification limitation for "
+                + ", ".join(unresolved)
+                + ": no admissible observed verification link or recorded verification limit."
+            )
+        )
     return parts
 
 

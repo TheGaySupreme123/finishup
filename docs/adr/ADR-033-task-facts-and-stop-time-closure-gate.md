@@ -1133,3 +1133,14 @@ including `"0"`.
 
 The acknowledgement re-check still reads the invite frontier as the decimal before `@m`, so an
 acknowledgement published after the invite is not challenged.
+
+### Bounded unanswered acceptance invitations (issue #1079, F2)
+
+Delivery memory suppresses repeated Stop invitations at an unchanged material frontier;
+it never supplies verification. A risky resolved obligation with neither an admissible
+observed verification link nor a recorded verification-limit decision carries
+`unresolved_verification_limitation`, with the obligation named in the check basis,
+status rechecks, receipt limitation and MCP summary. It bounds the receipt as insufficient
+coverage even after the second Stop is allowed. A recorded link or limit removes this
+derived limitation; a generic all-met claim does not. Final-message attestations are not
+ledger evidence. No invitation loop or new blocking Stop is introduced.

@@ -1146,6 +1146,18 @@ def derive_closure_readiness(
         if item not in actionable:
             actionable.append(item)
     standing.update(split.standing_limitations)
+    if facts is not None and facts.acceptance_risk_obligation_ids:
+        linked = dict(facts.admissible_verification or ())
+        limited = {
+            obligation
+            for obligation, kind, _event in facts.disclosed_obligations
+            if kind == "verification_limit"
+        }
+        if any(
+            obligation not in limited and not linked.get(obligation)
+            for obligation in facts.acceptance_risk_obligation_ids
+        ):
+            standing.add("unresolved_verification_limitation")
     if facts is not None and facts.finding_closures is not None:
         bases = {closure.basis for closure in facts.finding_closures}
         # A settled finding nobody owes a move on is still disclosed, never silently dropped.

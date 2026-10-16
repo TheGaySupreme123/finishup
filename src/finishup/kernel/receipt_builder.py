@@ -109,7 +109,11 @@ from finishup.domain.values import (
     finding_id,
 )
 from finishup.kernel.check_standing import CheckStanding, LaterRecord
-from finishup.kernel.claim_verification import claim_verification_report
+from finishup.kernel.claim_verification import (
+    UNRESOLVED_VERIFICATION_GAP,
+    claim_verification_report,
+    unresolved_verification_obligations,
+)
 from finishup.kernel.claims import (
     claim_discloses_result,
     effective_claim_items,
@@ -1427,7 +1431,10 @@ def closure_basis_from_context(
         if terminal_sections
         else frozenset[str]()
     )
-    live_codes = tuple(sorted(set(context.coverage.known_gaps) - historical, key=_ascii_key))
+    live = set(context.coverage.known_gaps) - historical
+    if unresolved_verification_obligations(context.projection, context.records):
+        live.add(UNRESOLVED_VERIFICATION_GAP)
+    live_codes = tuple(sorted(live, key=_ascii_key))
     gap_context = _gap_context(context, historical)
     gaps = judge_gaps(live_codes, gap_context)
     if context.applicable_check is None:

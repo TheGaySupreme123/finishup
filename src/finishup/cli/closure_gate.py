@@ -1251,6 +1251,8 @@ def closure_gate_from_readiness(
     # a service older than the gate sends no list).
     blocker_already_asked = False
     for recheck in _announced_rechecks(readiness):
+        # Delivery bounds prompting only. Ledger-derived unresolved verification
+        # limitations remain in check/status/receipt even when this invite is skipped.
         if _asked(recheck, reasked_blockers, material=material):
             blocker_already_asked = blocker_already_asked or recheck.kind == "blocker"
             continue

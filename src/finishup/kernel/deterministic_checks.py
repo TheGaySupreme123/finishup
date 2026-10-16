@@ -2054,8 +2054,19 @@ def build_deterministic_case(
     missing_sources: set[EventId] = set()
     unknown_events: set[EventId] = set()
     gaps: dict[str, CaseGap] = {}
+    from finishup.kernel.claim_verification import (
+        UNRESOLVED_VERIFICATION_GAP,
+        unresolved_verification_obligations,
+    )
     from finishup.kernel.command_attempts import closure_command_gaps
 
+    for obligation_ref in unresolved_verification_obligations(projection, accepted_prefix):
+        _add_gap(
+            gaps,
+            f"{UNRESOLVED_VERIFICATION_GAP}:{obligation_ref}",
+            UNRESOLVED_VERIFICATION_GAP,
+            (obligation_ref,),
+        )
     for obligation_ref, code in closure_command_gaps(projection, accepted_prefix):
         _add_gap(gaps, f"{code}:{obligation_ref}", code, (obligation_ref,))
     for marker in projection.coverage_gaps:
