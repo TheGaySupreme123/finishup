@@ -572,6 +572,8 @@ Shown-file accounting unions the original intervals that the provider actually r
 Contiguous leading views keep their existing bytes. Interior or disjoint views use the local
 `yoetz/check-change-interval-view/v1` domain followed by each interval's original relative
 start/end and length-prefixed structural view. Only the keyed view commitment is recorded.
+The structural view also binds the preceding original hunk header repeated in the excerpt's
+context label, including its original offset, even when it lies outside the selected interval.
 Such a file is partial, `section_admitted=false`, with `clean_bytes=0` and `shown_bytes`
 equal to the union's byte count. An identical view or a whole-file review can cover it;
 a different partial view cannot. No wire field or schema changes.

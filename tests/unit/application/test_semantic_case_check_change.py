@@ -1060,6 +1060,16 @@ def test_a_tight_single_file_selects_the_decision_interval(
         _change(text).capture, 0, ((served[0][0] - 1, served[0][1]),)
     )
     assert other[0].view != shown.view
+    # Copied context is part of the shown view too, even outside the selected interval.
+    old_header, new_header = (
+        (b"@@ -600,2 +1000,3 @@", b"@@ -601,2 +1001,3 @@")
+        if separate_hunk
+        else (b"@@ -1 +1 @@", b"@@ -2 +2 @@")
+    )
+    relabeled, _ = check_time_change_shown_record(
+        _change(text.replace(old_header, new_header)).capture, leading, served
+    )
+    assert relabeled[0].view != shown.view
     assert (
         check_time_change_sections_carried(semantic, withheld_categories=("repository_excerpt",))
         == ()

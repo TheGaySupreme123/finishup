@@ -10269,7 +10269,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   spans, excluding those synthetic labels, drive the shown record. Interior/disjoint views
   use `yoetz/check-change-interval-view/v1`, relative interval endpoints and length-prefixed
   structural views; only their keyed commitment is durable. Their `shown_bytes` counts the
-  union, `clean_bytes=0`, and `section_admitted=false`; an identical view or a whole-file
+  union, and the view also binds any preceding original hunk header repeated as context.
+  These views have `clean_bytes=0` and `section_admitted=false`; an identical view or a whole-file
   review covers them. Leading views retain their historical representation (ADR-031, F3).
 - **Consent.** `ReviewSelectionPolicy.carries_check_time_change` (targeted excerpts, a positive
   excerpt count and the `diff` kind) is the one predicate for whether a recipe carries the change,

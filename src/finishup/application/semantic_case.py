@@ -1556,7 +1556,8 @@ def check_time_change_shown_record(
                 for part in (
                     _check_time_change_view(
                         text, low, high, [m for m in markers if low <= m < high], False
-                    ),
+                    )
+                    + _interval_hunk_context(text, start, low, end),
                 )
             )
             files.append(
@@ -1588,6 +1589,28 @@ def check_time_change_shown_record(
             )
         )
     return tuple(files), representable
+
+
+def _interval_hunk_context(text: bytes, start: int, low: int, end: int) -> bytes:
+    """Bind the original hunk header repeated as context outside an interior byte interval."""
+
+    hunk = next(
+        (
+            match
+            for match in reversed(list(_CHECK_TIME_CHANGE_HUNK.finditer(text, start, end)))
+            if match.start() <= low
+        ),
+        None,
+    )
+    if hunk is None:
+        return b"\x00"
+    header = hunk.group()
+    return (
+        b"\x01"
+        + (hunk.start() - start).to_bytes(4, "big")
+        + len(header).to_bytes(4, "big")
+        + header
+    )
 
 
 def _check_time_change_links(
