@@ -384,3 +384,49 @@ async def test_tui_skill_conflict_carries_an_actionable_continuation(
     result = await runtime.apply_integration(option, plan)
     assert result.reason == "skill_install_failed"
     assert result.next_step == step
+
+
+async def test_current_plugin_does_not_hide_an_outdated_project_skill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import anyio
+
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.cli import codex_connection
+
+    project, home = tmp_path / "project", tmp_path / "home"
+    project.mkdir(mode=0o700)
+    home.mkdir(mode=0o700)
+    launcher, isolation = _bind(monkeypatch, tmp_path)
+    _install_fakes(
+        monkeypatch,
+        home=home,
+        outputs=[
+            _entry("policy", launcher, env=isolation),
+            _entry("policy", launcher, env=isolation),
+        ],
+        state_dir=tmp_path / "state",
+    )
+
+    def active(*_args: object, **_kwargs: object) -> ActivationInspection:
+        return ActivationInspection(True, True, ActivationState.ACTIVE, True, True)
+
+    def outdated(_target: object) -> str:
+        return "modified"
+
+    monkeypatch.setattr(codex_connection, "inspect_activation", active)
+    monkeypatch.setattr(codex_connection, "skill_tree_state", outdated)
+    installation = HostInstallation("codex", tmp_path / "codex", "0.150.1", home, "Codex")
+
+    def prepare():
+        return codex_connection.prepare_codex_connection(
+            installation,
+            project,
+            action="connect",
+            route="policy",
+            request_value="req_00000000-0000-4000-8000-0000000000c2",
+        )
+
+    # The synchronous connection composer owns its anyio.run boundary.
+    plan = await anyio.to_thread.run_sync(prepare)
+    assert not plan.unchanged

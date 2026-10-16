@@ -329,7 +329,8 @@ against the new release alone. Status still reports `modified` when the installe
 from the current release; a valid recorded inventory distinguishes an owned update from user
 edits. The skill preview names `owned_skill_update` for that case, and its digest binds every
 installed member, including obsolete references and the marker. The approved replacement removes
-obsolete references and installs the current set. Repeating reconnect changes nothing.
+obsolete references and installs the current set. A current plugin/cache alone does not make
+reconnect a no-op: the project skill must also be current. Repeating reconnect changes nothing.
 
 Edited files, missing recorded members, extra files, invalid markers and linked paths are not
 pristine upgrades. Connect preserves them. Move the affected `.agents/skills/finishup` directory

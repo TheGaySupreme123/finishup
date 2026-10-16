@@ -20,6 +20,7 @@ from finishup.adapters.integrations.codex_marketplace import (
     possible_projects,
     preview_removal,
     serving_projects,
+    skill_tree_state,
 )
 from finishup.adapters.integrations.codex_mcp import (
     CodexMcpAdapter,
@@ -228,6 +229,10 @@ def prepare_codex_connection(
             # itself connected (anchor or recorded) is unchanged (#1058).
             and activation.state is ActivationState.ACTIVE
             and legacy.already_registered
+            # Plugin activation and project-skill installation are independent. A
+            # current cache must not hide a pristine older (or user-edited) skill.
+            and skill_tree_state(IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project)))
+            == IntegrationState.INSTALLED_EXACT.value
             and observed.route_profile == route
             and not (legacy_registration_owned and not legacy_kept)
             and not activation.legacy_activation
