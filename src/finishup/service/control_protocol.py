@@ -51,6 +51,7 @@ from finishup.protocol.models import (
     StatusResult,
 )
 from finishup.protocol.schemas import (
+    prepare_schemas,
     schema_document_for,
     schema_manifest_digest,
     validate_schema_instance,
@@ -879,6 +880,16 @@ async def client_handshake(
         "output_is_controlling_tty": output_is_controlling_tty,
     }
     try:
+        # Every frame of the session is validated against one of these envelopes. A process
+        # without the full catalog parses their schemas here, before the hello, where the hello
+        # used to build the whole catalog, so no schema work lands in a caller's later delivery
+        # budget (#1083).
+        prepare_schemas(
+            ("control-hello", _CONTROL_SCHEMA_VERSION),
+            ("control-hello-result", _CONTROL_SCHEMA_VERSION),
+            ("control-request", _CONTROL_REQUEST_SCHEMA_VERSION),
+            ("control-result", _CONTROL_RESULT_SCHEMA_VERSION),
+        )
         await write_control_frame(stream, hello)
         # A service that rejects this hello (schema-manifest or protocol mismatch, or a hello
         # shape its decoder does not know) closes without answering. Name that outcome so the
