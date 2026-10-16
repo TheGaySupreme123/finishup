@@ -163,7 +163,20 @@ def test_real_codex_connect_upgrade_disconnect() -> None:
                         check=False,
                     )
                     assert result.returncode == 0, result.stderr.decode()
+                cache = next((home / "plugins/cache/finishup/finishup").glob("*/.mcp.json"))
+                portable = project / ".agents/plugins/finishup"
+                # Earlier activation copied the portable bare-command cache and its marker.
+                # Pair that state with the earlier pristine project skill, so the upgrade
+                # must reach the cache repair through the ordinary reconnect path.
+                for name in (".mcp.json", ".yoetz-plugin-install.json"):
+                    shutil.copyfile(portable / name, cache.parent / name)
                 apply("run")
+                rebound = json.loads(cache.read_bytes())["mcpServers"]["finishup"]
+                assert rebound["command"] == launcher
+                assert rebound["env"] == {
+                    "FINISHUP_ISOLATED_ROOT": instance["isolated_root"],
+                    "YOETZ_ISOLATED_ROOT": instance["isolated_root"],
+                }
                 assert (skill / "references/workflow.md").read_bytes() == before
                 assert apply("run")["outcome"] == "unchanged"
             apply("disconnect")
