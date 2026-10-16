@@ -386,11 +386,9 @@ async def test_tui_skill_conflict_carries_an_actionable_continuation(
     assert result.next_step == step
 
 
-async def test_current_plugin_does_not_hide_an_outdated_project_skill(
+def test_current_plugin_does_not_hide_an_outdated_project_skill(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import anyio
-
     from finishup.adapters.integrations.host_discovery import HostInstallation
     from finishup.cli import codex_connection
 
@@ -427,6 +425,5 @@ async def test_current_plugin_does_not_hide_an_outdated_project_skill(
             request_value="req_00000000-0000-4000-8000-0000000000c2",
         )
 
-    # The synchronous connection composer owns its anyio.run boundary.
-    plan = await anyio.to_thread.run_sync(prepare)
+    plan = prepare()
     assert not plan.unchanged
