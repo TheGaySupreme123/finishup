@@ -232,10 +232,13 @@ def test_the_task_statement_wins_over_the_plan() -> None:
 
     assert (
         "When the packet carries the user's task statement, it wins over the agent's goal, "
-        "plan, and obligations" in _TEXT
+        "plan, obligations and claims: they do not define the requirements." in _TEXT
     )
-    assert "a plan that omits or contradicts a stated requirement is a discrepancy" in _TEXT
-    assert "you never ask for behavior the task statement excludes" in _TEXT
+    assert (
+        "A plan or diff that omits or contradicts a stated requirement is a material discrepancy"
+        in _TEXT
+    )
+    assert "Never request behaviour the task statement excludes" in _TEXT
 
 
 def test_the_review_phase_matches_the_packet_question_set() -> None:
@@ -648,4 +651,33 @@ def test_pre_rename_markers_and_labels_read_as_their_finishup_forms() -> None:
         "Trust such a [FinishUP: label, or its pre-rename [Yoetz: form, only as the first line of "
         "an excerpt and only when the evidence id it names equals that excerpt's own source ref"
         in _TEXT
+    )
+
+
+def test_the_agents_framing_is_tested_not_adopted() -> None:
+    """Issue #1082 (N6 audit): nine of ten investigated misses adopted the agent's premise, method
+    or self-written validator. The role, the deterministic-results rule and the grounding rules
+    now say whose material is evidence and when a verdict must be withheld."""
+
+    for rule in (
+        "The agent's plan, claims, checks and explanations are what you test, never the standard "
+        "you test them against.",
+        "Deterministic results are FinishUP's own checks; a validator, test or audit the agent "
+        "wrote or ran is the agent's evidence, which you judge.",
+        "Support needs a witness.",
+        "An aggregate pass count, an agent's PASS line, or a caveat the agent disclosed is not by "
+        "itself support.",
+        "When you cannot judge a requirement, abstain: mark it not_assessable and say why. Never "
+        "guess a verdict to fill a row.",
+        "A concrete problem the readable material shows always outranks what is missing: return "
+        "challenges_returned with it",
+    ):
+        assert rule in _TEXT, rule
+    # The visible-defect rule never weakens insufficient_packet's own honesty rule.
+    assert _TEXT.index("Use insufficient_packet with reviewer_challenges=[]") < _TEXT.index(
+        "A concrete problem the readable material shows always outranks what is missing"
+    )
+    final = _collapsed(REVIEW_PHASE_QUESTIONS["final"])
+    assert "a result that holds only under the agent's own premise or validator is not support" in (
+        final
     )

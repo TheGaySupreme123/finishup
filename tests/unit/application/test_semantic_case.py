@@ -1893,9 +1893,11 @@ def test_no_review_question_presupposes_a_defect_or_hands_back_the_next_step() -
         assert "smallest next step" not in joined
         assert "next step" not in joined
         assert "If so" not in joined
-        assert "What did you verify against the task and the change, and with what result?" in (
-            questions
-        )
+        # Issue #1082: the question asks how each result was checked and what was not.
+        assert (
+            "What did you verify against the task and the change, how (the code path, output or "
+            "recorded check you read), and with what result? What could you not check?"
+        ) in questions
         assert any("if any" in question for question in questions)
     with pytest.raises(ValueError, match="semantic_budget_profile_invalid"):
         review_question_set(cast(SemanticBudgetProfile, "completion"))

@@ -355,12 +355,16 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
             "and requested output (path), say whether the change and its recorded verification "
             "deliver it, and challenge each one they do not. A requirement only a hidden "
             "evaluator or an artifact the agent cannot obtain can establish is a not_assessable "
-            "row, not a challenge, once the packet shows the agent disclosed it."
+            "row, not a challenge, once the packet shows the agent disclosed it. For each "
+            "requirement, name the assumption, method or check its result rests on and judge that "
+            "against the task: a result that holds only under the agent's own premise or "
+            "validator is not support (issue #1082)."
         ),
     }
 )
 _REVIEW_QUESTIONS: Final = (
-    "What did you verify against the task and the change, and with what result?",
+    "What did you verify against the task and the change, how (the code path, output or recorded "
+    "check you read), and with what result? What could you not check?",
     "Which distinct material problems, if any, does the readable material show, and which "
     "case-bound refs support each?",
     "For anything you could not assess, which exact artifact is missing?",
@@ -412,7 +416,9 @@ _MAX_BLOCKER_LISTING_BYTES: Final = 1_536
 # privacy-gated packet item (``obligation-<id>``); this fixed text never carries agent or user
 # content.
 BLOCKER_REVIEW_INSTRUCTION: Final = (
-    "For each blocker, first quote the blocked obligation's own description and evidence"
+    "A blocker's kind and the agent's account of it are its claim, not evidence that an authority,"
+    " a dependency or data is missing (issue #1082)."
+    " For each blocker, first quote the blocked obligation's own description and evidence"
     " expectation from its packet item obligation-<obligation id> (say so if the packet does not"
     " carry it), then verify the blocker once against the task statement and the work. You must"
     " challenge it (one finding citing whichever of its decision and obligation ids citable_refs"
@@ -442,7 +448,8 @@ def acknowledged_obligation_rows(projection: ProjectionState) -> tuple[str, ...]
 
 # Fixed text appended when the agent acknowledged obligations as not done (#997).
 ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
-    "For each obligation acknowledged as not done, quote its own description from its packet"
+    "An acknowledgement is the agent's claim, not evidence that the work cannot be done."
+    " For each obligation acknowledged as not done, quote its own description from its packet"
     " item obligation-<obligation id>, then verify the acknowledgement against the task statement"
     " and the work: challenge it (one finding citing the obligation id, naming the work the agent"
     " can still do) when the task statement requires that work and the readable material shows"
