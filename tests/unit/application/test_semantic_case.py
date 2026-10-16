@@ -81,7 +81,7 @@ from finishup.kernel.deterministic_checks import (
     DeterministicCase,
     build_deterministic_case,
 )
-from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.kernel.projections import EvidenceProjectionRecord, ProjectionRecord
 from finishup.kernel.reducers import replay
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
 from finishup.ports.semantic import ExcerptDigestProvenance, SemanticCase
@@ -1742,8 +1742,10 @@ def test_reused_native_evidence_survives_mixed_digest_and_item_limits(profile: s
 
 def test_a_digest_only_row_of_captured_bytes_reaches_those_bytes() -> None:
     """Issue #1082: an agent recorded a run's output as a digest-only row while a hook captured
-    the same bytes; the capture's excerpt now answers to the agent's row, and a row whose digest
-    matches nothing captured is left exactly as it was."""
+    the same bytes of the same run; the capture's excerpt now answers to the agent's row. PR #1086
+    review R1-01: a digest proves byte equality, never which command produced the bytes, so a row
+    bound to no run, to another command or to another run of the same command is not aliased,
+    and a row whose digest matches nothing captured is left exactly as it was."""
 
     case, captured, scope = _captured_case_values(b"synthetic matching native evidence")
     native = case.projection.evidence[evd(1)].payload
@@ -1777,17 +1779,55 @@ def test_a_digest_only_row_of_captured_bytes_reaches_those_bytes() -> None:
         if same_bytes.digest_binding is not None
         else None,
     )
+    unbound = replace(same_bytes, evidence_id=evd(5), description="Agent digest, no run")
+    other_command = replace(same_bytes, evidence_id=evd(6), description="Agent says: ruff output")
+    other_run = replace(same_bytes, evidence_id=evd(7), description="Agent says: later pytest run")
+
+    def command(number: int, text: str) -> ProjectionRecord[ActionRecordedPayload]:
+        return record(
+            ActionRecordedPayload(act(number), ActionKind.COMMAND, "ran", command=text), 8
+        )
+
+    def result(number: int, *refs: EvidenceId) -> ProjectionRecord[ResultRecordedPayload]:
+        return record(
+            ResultRecordedPayload(
+                res(number), act(number), ResultOutcome.SUCCESS, 0, evidence_refs=tuple(refs)
+            ),
+            9 + number,
+        )
+
     mixed = make_case(
         plans=case.projection.plans,
         obligations=case.projection.obligations,
         claims=case.projection.claims,
+        # One pytest run records the capture and the agent's digest of it; a ruff run and a
+        # second pytest run each claim the same digest.
+        actions={
+            act(1): command(1, "pytest -q"),
+            act(2): command(2, "ruff check"),
+            act(3): command(3, "pytest -q"),
+        },
+        results={
+            res(1): result(1, evd(1), evd(2)),
+            res(2): result(2, evd(6)),
+            res(3): result(3, evd(7)),
+        },
         evidence={
             evd(1): case.projection.evidence[evd(1)],
             evd(2): evidence_record(same_bytes, 5),
             evd(3): evidence_record(other_bytes, 6),
             evd(4): evidence_record(withheld, 7),
+            evd(5): evidence_record(unbound, 7),
+            evd(6): evidence_record(other_command, 7),
+            evd(7): evidence_record(other_run, 7),
         },
-        extra_refs=(clm(1), obl(1), evd(1), evd(2), evd(3), evd(4)),
+        extra_refs=(
+            clm(1),
+            obl(1),
+            *(evd(number) for number in range(1, 8)),
+            *(act(number) for number in range(1, 4)),
+            *(res(number) for number in range(1, 4)),
+        ),
     )
     semantic = build_semantic_case(
         case_id="cas_10000000-0000-4000-8000-000000000001",
@@ -1805,10 +1845,10 @@ def test_a_digest_only_row_of_captured_bytes_reaches_those_bytes() -> None:
     native_excerpt = next(item for item in semantic.items if item.item_id == f"excerpt-{evd(1)}")
     assert native_excerpt.content == captured.content
     assert str(evd(2)) in native_excerpt.linked_subject_refs
-    assert str(evd(3)) not in native_excerpt.linked_subject_refs
-    assert str(evd(4)) not in native_excerpt.linked_subject_refs
+    for ref in (evd(3), evd(4), evd(5), evd(6), evd(7)):
+        assert str(ref) not in native_excerpt.linked_subject_refs, ref
     # Each agent row keeps its own description excerpt.
-    for ref in (evd(2), evd(3), evd(4)):
+    for ref in (evd(2), evd(3), evd(4), evd(5), evd(6), evd(7)):
         assert any(item.item_id == f"excerpt-{ref}" for item in semantic.items), ref
 
 

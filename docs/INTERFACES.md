@@ -1474,8 +1474,15 @@ tightens. `finishup privacy input-roots add|remove|status` (`privacy_setup.run_i
 `input_root_invalid`, `input_roots_limit`, `local_terminal_required` and, without a grant,
 reports `repository_privacy_grant_missing`. The terminal interface shows
 `PrivacyPosture.admitted_input_roots_summary`. The service passes
-`partial(read_outside_inputs, policy.admitted_input_roots)` to `capture_check_time_change` as
-`outside_reader` only when a root is admitted and `carries_task_inputs` holds.
+`_outside_input_reader(policy.admitted_input_roots, (bundle, state))` to
+`capture_check_time_change` as `outside_reader` (`OutsideInputReader`, called as
+`(values, room, workspace)`) only when a root is admitted and `carries_task_inputs` holds; it reads
+with `read_outside_inputs(roots, values, limit=room, excluded=(workspace, bundle, state))`.
+`_with_outside_inputs` offers it only task-declared candidates (never `verification_paths`) and
+rechecks every returned path against the workspace, case-folded. The reader opens each root one
+component at a time from `/`, trusts a directory or file only when the service user or root owns
+it and `writable_by_others` is false (a sticky directory excepted), and refuses the excluded
+directories by device and inode at every level (PR #1086 review R1-02, R1-03, R1-05, R1-07).
 
 **Per-task review mode (ADR-049).** A task (a "conversation" in the code: one task and its
 sessions) switches between local checks only and AI-powered review with one
@@ -9151,17 +9158,23 @@ of it is marked `superseded_by` the newer result and ranked with superseded runs
 evidence rows naming the same plain path are one output, and the older is marked `superseded_by` the
 newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045
 and #1082 amendments) are admitted first, ahead of the check-time change, within a quarter of the
-packet's excerpt budget; one that does not fit is skipped and backfills last. `TaskInputFile.origin`
+packet's excerpt budget and within `_first_task_input_slots` (the recipe's count less the change's
+reservation, at most one per part, and two slots per decisive verification run: the latest, or
+each run a follow-up asked for); one that does not fit is skipped and backfills last. `TaskInputFile.origin`
 (`task`, `verification`, `outside_workspace`) and `TaskInputFile.summary` choose the label; both are
 optional stored keys written only when not the default. Candidates come from `review_input_paths`
 (statement words, `role: input` files, then named absolute directories) with the newest
-verification oracle (`verification_input_paths`) in fourth place; a binary input becomes
-`summarize_binary_input` text and a large untracked one keeps its two ends
+verification oracle (`verification_input_paths`) in fourth place; a binary input (a signature
+`declared_binary_format` recognizes, or a NUL in its first 8000 bytes) becomes
+`summarize_task_input` text, stored `redacted` when it quoted a scanned value only as a marker,
+and a large untracked one keeps its two ends, each cut moved clear of a recognized credential
 (`finishup.adapters.task_input_read`). A captured edit of only files whose every
 section the admitted change parts carry is marked `superseded_by: ["check-time-change"]` and ranked
 as an older hunk (#1082). An agent's digest-only evidence row whose SHA-256 equals an admitted
-capture's content digest adds its ref and links to that capture's excerpt
-(`_alias_digest_only_rows`); the row keeps its own excerpt. A resolved obligation's item also carries `resolved_basis`: `claimed_result_refs`,
+capture's content digest, and that records the same verification run (equal
+`verification_identity` and `verification_run`), adds its ref and links to that capture's excerpt
+(`_alias_digest_only_rows`); a row bound to no run or to another run is never aliased (PR #1086
+review R1-01), and the row keeps its own excerpt. A resolved obligation's item also carries `resolved_basis`: `claimed_result_refs`,
 `latest_observed_verification_refs` (the newest hook-captured verification of those results,
 at most four) and `missing_input` (`claimed_result` and/or `verification_output` when that
 piece is not readable). The criterion is the obligation text itself. The basis adds no command

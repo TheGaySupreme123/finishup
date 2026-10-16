@@ -795,6 +795,10 @@ _CHECK_TIME_CHANGE_SOURCE_REF: Final = CHECK_TIME_CHANGE_SOURCE_REF
 TASK_INPUT_ITEM_PREFIX: Final = "task-input-"
 _TASK_INPUT_SOURCE_REF: Final = "task-input"
 _TASK_INPUT_SHARE_DIVISOR: Final = 4
+# Excerpt slots the first task-input offer leaves per decisive verification run: its output and
+# the failure summary or command that travels beside it. One run when no follow-up is open (the
+# latest), else one per item the reviewer asked for (PR #1086 review R1-06).
+_DECISIVE_RUN_SLOTS: Final = 2
 _TASK_INPUT_LABEL: Final = (
     "[FinishUP task input file {path} ({size} bytes{cut}): named by the task, unchanged since the "
     "task started, read by the FinishUP service when this check ran; not the agent's work]\n"
@@ -835,6 +839,24 @@ def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
         cut=", head and tail shown" if cut else "",
     )
     return head + _neutralised_agent_text(item.text.decode("utf-8")), cut
+
+
+def _first_task_input_slots(
+    selection: ReviewSelectionPolicy, change_parts: int, follow_up_items: int
+) -> int:
+    """Excerpt slots the first task-input offer may take (PR #1086 review R1-06).
+
+    The offer is bounded in count as well as in bytes. It leaves the check-time change the slots
+    its reservation would use (``_check_time_change_reservation``, at most one per part it has)
+    and leaves the decisive verification two slots per run (the latest run, or each run a
+    follow-up asked for: its output and its failure summary or command), so small inputs can
+    never take the room of the change and the run that decides it. What the offer cannot take
+    backfills after every other excerpt; the recipe's own count and bytes are never exceeded.
+    """
+
+    change = min(_check_time_change_reservation(selection, 0)[0], change_parts)
+    decisive = _DECISIVE_RUN_SLOTS * max(1, follow_up_items)
+    return max(0, min(MAX_TASK_INPUT_FILES, selection.max_excerpts - change - decisive))
 
 
 def carries_task_inputs(selection: ReviewSelectionPolicy) -> bool:
@@ -3815,18 +3837,33 @@ def _alias_digest_only_rows(
 
     An agent often records a run's output as a digest-only evidence row while a host hook already
     captured those exact bytes under the owner's capture consent. When the asserted SHA-256 equals
-    an admitted capture's content digest, the row names the same bytes: the capture's excerpt
-    also answers to the row's ref and links, so a claim or a reviewer request citing the row
-    reaches the bytes and lends them its rank. The row keeps its own excerpt (the agent's
-    description of those bytes). Nothing new is read or sent; a withheld row, or a digest no
-    capture matches, stays exactly as before.
+    an admitted capture's content digest and both rows record the same verification run (one
+    result of one command identity: the result that cites the row is the run the capture is bound
+    to), the capture's excerpt also answers to the row's ref and links, so a claim or a reviewer
+    request citing the row reaches the bytes and lends them its rank. The row keeps its own
+    excerpt (the agent's description of those bytes). Nothing new is read or sent; a withheld row,
+    or a digest no capture matches, stays exactly as before.
+
+    A digest proves byte equality, never who ran which command (PR #1086 review R1-01). A row
+    bound to no run, to another command, or to another run of the same command is not aliased,
+    so a caller's assertion can never make a capture answer for a run it did not record, nor
+    lend it that run's freshness or a request's completion.
     """
 
     merged: dict[int, int] = {}
     for index, digest in digest_only:
         target = captured.get(digest)
-        if target is not None and target != index:
-            merged[index] = target
+        if target is None or target == index:
+            continue
+        row, lead = candidates[index], candidates[target]
+        if (
+            row.verification_identity is None
+            or row.verification_run is None
+            or (row.verification_identity, row.verification_run)
+            != (lead.verification_identity, lead.verification_run)
+        ):
+            continue
+        merged[index] = target
     if not merged:
         return candidates
     updated = list(candidates)
@@ -6903,10 +6940,15 @@ def _build_semantic_case_once(
     if "targeted_excerpts" in sections and selection.max_excerpts > 0:
         # Issue #1082: the controlling inputs the task names (a specification, a dataset, a test
         # the verification runs) rank first, within a quarter of this packet's excerpt budget, so
-        # a large change can no longer push the specification out. What does not fit backfills
-        # after every other excerpt, as before.
+        # a large change can no longer push the specification out. Their slots are bounded too,
+        # so the change and the decisive verification output always keep room (PR #1086 review
+        # R1-06). What does not fit backfills after every other excerpt, as before.
         input_items, input_refs = task_input_excerpts(
-            min(selection.max_excerpts, MAX_TASK_INPUT_FILES),
+            _first_task_input_slots(
+                selection,
+                len(check_change_parts),
+                0 if follow_up is None else len(follow_up.items),
+            ),
             total_excerpt_budget // _TASK_INPUT_SHARE_DIVISOR,
         )
         items.extend(input_items)

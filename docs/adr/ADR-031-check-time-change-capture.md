@@ -616,23 +616,34 @@ ADR-009 amendment of the same date holds the consent and egress terms.
    pytest node ids reduced to their file, at most four) takes the fourth place, so a statement
    that names many files cannot crowd out every oracle. Only an input no task source named is
    labelled as the verification's (`TaskInputFile.origin = "verification"`).
-2. **Binary and large inputs.** A candidate whose first 8000 bytes hold a NUL becomes FinishUP's
-   own bounded summary (`TaskInputFile.summary`, at most 16 KiB; `finishup.adapters.input_summary`)
-   instead of being skipped. An untracked candidate larger than 1 MiB is read from its two ends
-   (the first 1 MiB and the last 8 KiB) without following a link and summarized or cut to head and
-   tail; a tracked one still needs a whole read to prove it unchanged and is skipped.
-3. **Outside roots.** After the repository read, an absolute candidate outside the workspace and
-   beneath a root the repository grant admits (`PrivacyPolicy.admitted_input_roots`) is read by
-   the service's outside reader (`finishup.adapters.task_input_read.read_outside_inputs`) into the
-   room the four-input bound leaves, with `origin = "outside_workspace"` and its absolute path.
-   A path inside the workspace is never read this way, even beneath an admitted root: only the
-   repository read can prove a file unchanged since the task started.
+2. **Binary and large inputs.** A candidate whose leading bytes carry a signature the summarizer
+   recognizes (`declared_binary_format`: an all-ASCII PDF has no NUL), or whose first 8000 bytes
+   hold a NUL, becomes FinishUP's own bounded summary (`TaskInputFile.summary`, at most 16 KiB;
+   `finishup.adapters.input_summary`) instead of being skipped. Each value a summary quotes is
+   scanned whole before it is capped and quoted only as a redaction marker when flagged; such a
+   summary is stored `redacted`. An untracked candidate larger than 1 MiB is read from its two
+   ends (the first 1 MiB and the last 12 KiB, of which the cut keeps about the last 8 KiB) without
+   following a link and summarized or cut to head and tail; each cut moves clear of a recognized
+   credential first. A tracked one still needs a whole read to prove it unchanged and is skipped.
+3. **Outside roots.** After the repository read, an absolute candidate the task itself names (never
+   one only a verification command named), outside the workspace and beneath a root the
+   repository grant admits (`PrivacyPolicy.admitted_input_roots`), is read by the service's outside
+   reader (`finishup.adapters.task_input_read.read_outside_inputs`, called as
+   `(values, room, workspace)`) into the room the four-input bound leaves, with
+   `origin = "outside_workspace"` and its absolute path. A path inside the workspace is never read
+   this way, even beneath an admitted root: only the repository read can prove a file unchanged
+   since the task started and not ignored. The reader refuses the workspace and the service's own
+   bundle and state directories by case-folded path and by device and inode at every level of its
+   walks, opens the root one component at a time from `/`, and trusts only directories and files
+   the ADR-009 amendment of the same date describes; the capture checks every returned path again.
 4. **Storage.** `origin` and `summary` are optional keys of each stored input, written only when
    not the default, so every earlier check-change object keeps its bytes. All inputs take the same
    redaction as before and are frozen with the job.
 5. **Packet.** Task inputs are admitted first, ahead of the change's reserved share, within a
    quarter of the packet's excerpt budget (the planned budget when the channel ceiling narrowed
-   it); one that does not fit is skipped, not a stop, and backfills after every other excerpt.
+   it) and within the slots left after the change's reservation (at most one per part) and two
+   slots per decisive verification run (the latest, or each run a follow-up asked for); one that
+   does not fit is skipped, not a stop, and backfills after every other excerpt.
    Each origin has its own label (`named by a recorded verification command`, `outside the
    workspace beneath a root the owner admitted`) and a summary reads `[FinishUP summary of task
    input file ...]`. A captured edit of only files whose every section the admitted change parts

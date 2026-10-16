@@ -22,24 +22,43 @@ Every input is untrusted, so the summarizer:
   control and invisible formatting characters, collapsing whitespace, and capping its length;
   quoted rows, paragraphs, and member names are indented two spaces, and every other line starts
   with a ``key:`` FinishUP wrote;
+- scans each quoted value whole, before it is normalized or cut, with the shared credential
+  scanner, and quotes a flagged value only as ``[REDACTED]`` (a recognized credential) or
+  ``[withheld-by-yoetz:possible-credential]`` (one that only looks like a credential): a cut
+  value could otherwise keep a fragment too short for any later scan to recognize (PR #1086
+  review R1-04; ``summarize_task_input`` reports that a value was withheld);
 - caps the facts at ``MAX_INPUT_SUMMARY_BYTES`` and the quoted listing at
-  ``MAX_INPUT_SUMMARY_TABLE_BYTES``, ending a cut part with ``... (summary cut)``.
+  ``MAX_INPUT_SUMMARY_TABLE_BYTES``, keeping whole lines only and ending a cut part with
+  ``... (summary cut)``.
+
+``declared_binary_format`` tells the task-input reader which signatures it summarizes even when
+their bytes hold no NUL (an all-ASCII PDF), so the summary path is chosen the same way everywhere.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import itertools
 import re
 import zipfile
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from typing import Final, Literal
 from xml.etree import ElementTree
+
+from finishup.observability.privacy import (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
+    scan_finding_is_heuristic,
+    scan_for_sensitive_content,
+)
 
 __all__ = [
     "MAX_INPUT_SUMMARY_BYTES",
     "MAX_INPUT_SUMMARY_TABLE_BYTES",
+    "declared_binary_format",
     "summarize_binary_input",
+    "summarize_task_input",
 ]
 
 # The facts part (format, size, digest, header facts) and the quoted listing (rows, paragraphs,
@@ -49,6 +68,14 @@ MAX_INPUT_SUMMARY_TABLE_BYTES: Final = 12_288
 
 _CUT_LINE: Final = "... (summary cut)"
 _QUOTE: Final = "  "
+# The markers the check-time change and task inputs already use (``_redacted_text``), so the
+# reviewer reads a withheld summary value exactly like a redacted line of an input.
+_REDACTED_VALUE: Final = "[REDACTED]"
+_POSSIBLE_CREDENTIAL_VALUE: Final = EGRESS_CREDENTIAL_PLACEHOLDER.decode("ascii")
+# Set by ``summarize_task_input`` for one call: a value was withheld as a possible credential.
+_withheld: ContextVar[list[bool] | None] = ContextVar(
+    "finishup_input_summary_withheld", default=None
+)
 
 _MAX_MEMBER_BYTES: Final = 2 * 1024 * 1024
 _MAX_MEMBER_RATIO: Final = 100
@@ -142,10 +169,49 @@ _NPY_FORTRAN: Final = re.compile(r"""['"]fortran_order['"]\s*:\s*(True|False)"""
 _NPY_SHAPE: Final = re.compile(r"""['"]shape['"]\s*:\s*\(([^()]*)\)""")
 _NPY_DIMENSION: Final = re.compile(r"([0-9]{1,20})L?")
 _CELL_REFERENCE: Final = re.compile(r"([A-Za-z]{1,3})[0-9]*")
+# PDF object structure: a ``%PDF-`` header after other bytes counts as a PDF for dispatch only
+# beside it, so a text file that merely mentions ``%PDF-`` stays text.
+_PDF_OBJECT: Final = re.compile(rb"[0-9]+\s+[0-9]+\s+obj\b")
 
 type _Element = ElementTree.Element
 type _Description = tuple[str, list[str], list[str]]
 type _Describer = Callable[[bytes, str], _Description]
+
+
+def summarize_task_input(name: str, content: bytes, size: int) -> tuple[str, bool]:
+    """``summarize_binary_input`` and whether it withheld a quoted value as a possible credential.
+
+    The task-input reader marks such a summary ``redacted``, so the review discloses it like any
+    redacted input (PR #1086 review R1-04).
+    """
+
+    withheld: list[bool] = []
+    token = _withheld.set(withheld)
+    try:
+        text = summarize_binary_input(name, content, size)
+    finally:
+        _withheld.reset(token)
+    return text, bool(withheld)
+
+
+def declared_binary_format(content: bytes) -> bool:
+    """Whether ``content`` starts with a signature this module summarizes (PR #1086 review R1-08).
+
+    The NUL sniff alone misses a binary or document format whose bytes hold no NUL, such as an
+    all-ASCII PDF. Every signature ``_detect`` knows counts at the start of the file; a ``%PDF-``
+    header later in the first KiB counts only beside PDF object structure. Never raises.
+    """
+
+    try:
+        data = bytes(content)
+        format_name, _ = _detect(data)
+    except Exception:
+        return False
+    if format_name == _BINARY:
+        return False
+    if format_name == _PDF and not data.startswith(b"%PDF-"):
+        return b"endobj" in data and _PDF_OBJECT.search(data) is not None
+    return True
 
 
 def summarize_binary_input(name: str, content: bytes, size: int) -> str:
@@ -539,11 +605,13 @@ def _rich_text(item: _Element) -> str:
 
 
 class _SharedStrings:
-    """The workbook's shared strings, read on first use and kept cleaned and capped."""
+    """The workbook's shared strings, read on first use; each is cleaned and capped (and scanned
+    whole) only when a quoted cell uses it."""
 
     def __init__(self, reader: _MemberReader) -> None:
         self._reader = reader
         self._strings: list[str] | None = None
+        self._cleaned: dict[int, str] = {}
 
     def get(self, index: str) -> str:
         if self._strings is None:
@@ -551,17 +619,17 @@ class _SharedStrings:
             self._strings = (
                 []
                 if root is None
-                else [
-                    _clean(_rich_text(item), _MAX_CELL_CHARS)
-                    for item in root
-                    if _local(item.tag) == "si"
-                ]
+                else [_rich_text(item) for item in root if _local(item.tag) == "si"]
             )
         try:
             position = int(index)
         except ValueError:
             return ""
-        return self._strings[position] if 0 <= position < len(self._strings) else ""
+        if not 0 <= position < len(self._strings):
+            return ""
+        if position not in self._cleaned:
+            self._cleaned[position] = _clean(self._strings[position], _MAX_CELL_CHARS)
+        return self._cleaned[position]
 
 
 def _docx(reader: _MemberReader) -> _Description:
@@ -594,7 +662,7 @@ def _paragraphs(document: _Element) -> list[str]:
             texts[paragraph].append(" ")
         stack += [(child, paragraph) for child in reversed(list(element))]
     cleaned = (_clean("".join(parts), _MAX_PARAGRAPH_CHARS) for parts in texts)
-    return [text for text in cleaned if text][:_MAX_PARAGRAPHS]
+    return list(itertools.islice((text for text in cleaned if text), _MAX_PARAGRAPHS))
 
 
 def _npy(data: bytes, _extension: str) -> _Description:
@@ -719,17 +787,48 @@ def _local(tag: str) -> str:
 def _clean(text: str, limit: int) -> str:
     """Text from the file made safe to quote on one line: control, invisible formatting, and
     surrogate characters become spaces, whitespace runs collapse to one space, and text over
-    ``limit`` characters is cut to fit with ``...``."""
+    ``limit`` characters is cut to fit with ``...``.
+
+    The whole value is scanned first, as read and as normalized, before anything is cut: a value
+    the shared credential scanner flags is quoted only as a marker (R1-04).
+    """
 
     collapsed = " ".join(_UNSAFE_CHARACTERS.sub(" ", text).split())
+    marker = _credential_marker(text, collapsed)
+    if marker is not None:
+        return marker
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 3].rstrip() + "..."
 
 
+def _credential_marker(*values: str) -> str | None:
+    """The marker that replaces a value whose complete text the scanner flags, else ``None``.
+
+    ``[REDACTED]`` for a recognized credential, ``[withheld-by-yoetz:possible-credential]`` for
+    a value only the assignment heuristic flags. The owner's possible-credential opt-out does not
+    apply here: the summary is FinishUP's own text, and the egress scan still decides what leaves.
+    """
+
+    high = heuristic = False
+    for value in dict.fromkeys(values):
+        for finding in scan_for_sensitive_content(value.encode("utf-8", errors="replace")):
+            if scan_finding_is_heuristic(finding):
+                heuristic = True
+            else:
+                high = True
+    if not (high or heuristic):
+        return None
+    sink = _withheld.get()
+    if sink is not None:
+        sink.append(True)
+    return _REDACTED_VALUE if high else _POSSIBLE_CREDENTIAL_VALUE
+
+
 def _bounded(lines: list[str], limit: int) -> tuple[list[str], bool]:
-    """``lines`` if they fit in ``limit`` bytes (each with its newline), else the leading lines
-    that fit, the overflowing line cut on a UTF-8 boundary, and ``_CUT_LINE``; and whether cut."""
+    """``lines`` if they fit in ``limit`` bytes (each with its newline), else the leading whole
+    lines that fit and ``_CUT_LINE``; and whether cut. A line is never cut part way: it may quote
+    values from the file, and a part of one could hold an unrecognizable credential fragment."""
 
     encoded = [line.encode("utf-8", errors="replace") for line in lines]
     if sum(len(item) + 1 for item in encoded) <= limit:
@@ -737,14 +836,10 @@ def _bounded(lines: list[str], limit: int) -> tuple[list[str], bool]:
     room = limit - len(_CUT_LINE) - 1
     kept: list[str] = []
     for item in encoded:
-        if len(item) + 1 <= room:
-            kept.append(item.decode("utf-8"))
-            room -= len(item) + 1
-            continue
-        partial = item[: max(room - 1, 0)].decode("utf-8", errors="ignore")
-        if partial:
-            kept.append(partial)
-        break
+        if len(item) + 1 > room:
+            break
+        kept.append(item.decode("utf-8"))
+        room -= len(item) + 1
     kept.append(_CUT_LINE)
     return kept, True
 

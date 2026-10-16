@@ -1324,8 +1324,11 @@ Every change below stays inside the owner's existing ceilings. No category is ad
 selection or channel ceiling is raised, the round cap is unchanged, and Private sends nothing.
 
 - **Specification first.** Read-only task inputs (ADR-031) rank ahead of the check-time change,
-  within a quarter of the packet's excerpt budget. An input too large for that share is skipped
-  rather than stopping smaller ones; it still backfills after every other excerpt.
+  within a quarter of the packet's excerpt budget. The first offer is bounded in slots too: it
+  leaves the change the slots its reservation would use and two slots per decisive verification
+  run (the latest run, or each run a follow-up asked for), so small inputs never take the room of
+  the change and the run that decides it. An input that does not fit is skipped rather than
+  stopping smaller ones; it still backfills after every other excerpt.
 - **The oracle.** A file a recorded verification command names (a test, a fixture, a harness
   script) is a candidate task input. The same repository rule decides whether it is read: inside
   the repository, unchanged since the task started, not ignored, not credential-named. A test the
@@ -1336,9 +1339,20 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
 - **Summaries, never bytes, of binary inputs.** A binary, image or data input that was skipped
   before becomes FinishUP's own bounded summary (format, size, digest, dimensions, page estimate,
   workbook sheet names and first rows, archive member names, array dtype and shape), at most
-  16 KiB, labelled as FinishUP's description and never as the file. An untracked text input too
-  large to read whole keeps its head and its last 8 KiB. Summaries and ends take the same redaction
-  as any task input.
+  16 KiB, labelled as FinishUP's description and never as the file. A file whose leading bytes
+  carry a signature the summarizer recognizes is summarized whether or not it holds a NUL byte (an
+  all-ASCII PDF holds none); a `%PDF-` header after other bytes counts only beside PDF object
+  structure. An untracked text input too large to read whole keeps its head and its last 8 KiB.
+  Summaries and ends take the same redaction as any task input.
+- **No cut before the scan.** A cut can leave a fragment of a credential too short for any later
+  scan to recognize, so nothing is cut before the shared scanner has seen it whole. Each value a
+  summary quotes (a cell, a shared string, a sheet or member name, a paragraph) is scanned whole,
+  as read and as normalized, before it is capped; a flagged value is quoted only as `[REDACTED]`
+  or `[withheld-by-yoetz:possible-credential]`, whatever the owner's possible-credential opt-out
+  says, and the input is marked redacted so the review discloses it. The summary's byte caps drop
+  whole lines, never part of one. The head and tail cuts of a long text move clear of any
+  recognized credential before the text is cut, and the tail is read with 4 KiB more before it
+  for that purpose. The final redaction pass and the egress scan still run on everything.
 - **Admitted outside-workspace inputs.** The never-send set excludes files outside the selected
   scope. A repository's grant can now widen that scope by naming directories:
   `PrivacyPolicy.admitted_input_roots`, at most eight absolute, normalized paths with no hidden
@@ -1357,19 +1371,37 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
     only the roots both sides admit.
   - The read happens only when the recipe already carries task inputs (the change, the statement
     and the `repository` excerpt kind). Only an absolute path the task statement or a `role: input`
-    item names, lexically beneath an admitted root and outside the workspace, is read. A named
-    directory offers its visible files, two levels deep, in name order. The root is opened without
-    following a link and must still be its own real path; each component is opened without
-    following a link; hidden and credential-named files are refused; only singly linked regular
-    files owned by the service user or by root, that no other user may write, are read; at most
-    four inputs in all, sixteen candidates and five seconds per check.
+    item names, lexically beneath an admitted root and outside the workspace, is read. A path only
+    an agent-recorded verification command names is never read outside the workspace: an admitted
+    directory is not consent to read every file an agent mentions. A named directory offers its
+    visible files, two levels deep, in name order.
+  - The root must still be its own real path, and it is opened one component at a time from `/`,
+    each from the previous descriptor without following a link, so no ancestor can be swapped for
+    a link between a check and the open; the path must still name the directory opened. Every
+    directory on the way, the root's ancestors included, and every directory beneath it that is
+    entered must be owned by the service user or by root and writable by no other account, unless
+    it is sticky (`/tmp`). Group write counts as another account's unless the group is the
+    owner's user-private group (`writable_by_others`, the rule used everywhere else).
+  - The workspace and the service's own bundle and state directories are never read this way,
+    even beneath an admitted root that contains them: they are refused by case-folded path and by
+    device and inode at every level of every walk, so neither an enumeration of a containing
+    directory nor a differently spelled path (a case alias on a case-insensitive file system, a
+    bind mount) re-enters them, and every file the reader returns is checked again. Only the
+    repository read can prove a workspace file unchanged since the task started and not ignored.
+  - Hidden and credential-named files are refused; only singly linked regular files owned by the
+    service user or by root that no other account may write are read; at most four inputs in all,
+    sixteen candidates and five seconds per check.
   - The bytes take the same redaction as every task input, leave as `repository_excerpt` items
     labelled "outside the workspace beneath a root the owner admitted", and pass the gateway and
     never-send scan. A channel that withholds `repository_excerpt` drops them.
 - **Captured bytes behind a digest-only row.** When an agent records a run's output as a
-  digest-only evidence row and a hook already captured bytes with that exact SHA-256, the capture's
-  excerpt also answers to the agent's row. Nothing new is read or sent; a withheld row never
-  matches.
+  digest-only evidence row, a hook already captured bytes with that exact SHA-256, and both rows
+  record the same verification run (the same result of the same command identity), the capture's
+  excerpt also answers to the agent's row. A digest proves byte equality, never who ran which
+  command: a row bound to no run, to another command or to another run of the same command is not
+  aliased, so a caller's assertion never makes a capture answer for a run it did not record, nor
+  lends it that run's freshness or a request's completion. Nothing new is read or sent; a withheld
+  row never matches.
 - **Redundant captured edits yield.** A captured edit of only files the admitted check-time
   change parts show whole is ranked as an older edit superseded by `check-time-change`, so the
   latest verification output takes that room first. The edit is still offered after it.

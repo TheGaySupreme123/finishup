@@ -586,3 +586,125 @@ def test_summary_is_deterministic_and_never_echoes_the_path() -> None:
         assert first == summarize_binary_input(path, data, len(data) + 10)
         assert "private-owner" not in first
         assert "secret-project" not in first
+
+
+# --- PR #1086 review R1-04: every quoted value is scanned whole before it is cut -----------------
+
+_TOKEN = "ghp_" + "B7" * 20
+_LEAD = "x" * 44
+
+
+def _withheld(text: str) -> None:
+    """No part of the synthetic credential survives, and the egress scan finds nothing."""
+
+    from finishup.adapters.privacy.local_enforcer import scan_exact_bytes
+
+    assert "ghp_" not in text and "B7B7B7" not in text, text
+    assert not scan_exact_bytes(text.encode("utf-8"))
+
+
+def test_a_credential_cut_short_by_a_cell_cap_is_withheld_whole() -> None:
+    """R1-04 probe: a 64-character cell cap kept ``ghp_`` plus 12 characters, which no scan
+    recognizes; the complete cell is now scanned first and quoted only as ``[REDACTED]``."""
+
+    from finishup.adapters.input_summary import summarize_task_input
+    from finishup.observability.privacy import scan_for_sensitive_content
+
+    cell = f"{_LEAD} {_TOKEN}"
+    assert scan_for_sensitive_content(_TOKEN.encode())
+    book = _archive(
+        {
+            "xl/workbook.xml": _workbook_xml(["data"]),
+            "xl/worksheets/sheet1.xml": _sheet_xml(
+                '<row r="1">' + _inline("A1", cell) + _inline("B1", "kept") + "</row>"
+            ),
+        }
+    )
+
+    text, withheld = summarize_task_input("data.xlsx", book, len(book))
+
+    assert withheld
+    _withheld(text)
+    assert "  [REDACTED] | kept" in text.splitlines()
+
+
+def test_shared_strings_sheet_names_paragraphs_and_members_are_scanned_whole() -> None:
+    """R1-04: the same rule for every quoted unit: a shared string, a sheet name, a paragraph,
+    an archive member name; a value the assignment heuristic flags reads the possible-credential
+    marker; and a summary that withheld nothing says so."""
+
+    from finishup.adapters.input_summary import summarize_task_input
+
+    secret_name = f"{_LEAD}{'y' * 20} {_TOKEN}"
+    book = _archive(
+        {
+            "xl/workbook.xml": _workbook_xml([secret_name[:31], "plain"]),
+            "xl/sharedStrings.xml": (
+                f'<sst xmlns="{_MAIN}"><si><r><t>{_LEAD} </t></r><r><t>{_TOKEN}</t></r></si>'
+                '<si><t>password = "a8F3kL9qZx7Pw2Rt"</t></si></sst>'
+            ),
+            "xl/worksheets/sheet1.xml": _sheet_xml(
+                '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>'
+            ),
+        }
+    )
+    text, withheld = summarize_task_input("book.xlsx", book, len(book))
+    assert withheld
+    _withheld(text)
+    assert "  [REDACTED] | [withheld-by-yoetz:possible-credential]" in text.splitlines()
+    assert "a8F3kL9qZx7Pw2Rt" not in text
+
+    paragraph = "word " * 39 + _TOKEN
+    letter = _archive(
+        {"word/document.xml": _document_xml(f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>")}
+    )
+    text, withheld = summarize_task_input("letter.docx", letter, len(letter))
+    assert withheld and "  [REDACTED]" in text.splitlines()
+    _withheld(text)
+
+    member = "m" * 100 + " " + _TOKEN + ".txt"
+    bundle = _archive({member: "a", "plain.txt": "b"})
+    text, withheld = summarize_task_input("bundle.zip", bundle, len(bundle))
+    assert withheld and "  [REDACTED]" in text.splitlines() and "  plain.txt" in text
+    _withheld(text)
+
+    plain, withheld = summarize_task_input("book.xlsx", _xlsx(), len(_xlsx()))
+    assert not withheld and plain == summarize_binary_input("book.xlsx", _xlsx(), len(_xlsx()))
+
+
+def test_a_summary_cut_drops_whole_lines_and_never_splits_a_quoted_value() -> None:
+    """R1-04: the listing's byte cap drops the line that does not fit instead of cutting it."""
+
+    rows = "".join(
+        f'<row r="{row}">'
+        + "".join(
+            _inline(f"{_column(column)}{row}", f"r{row}c{column}-" + "v" * 50)
+            for column in range(20)
+        )
+        + "</row>"
+        for row in range(1, 21)
+    )
+    sheets = {f"xl/worksheets/sheet{index}.xml": _sheet_xml(rows) for index in range(1, 5)}
+    book = _archive({"xl/workbook.xml": _workbook_xml(["a", "b", "c", "d"]), **sheets})
+    text = summarize_binary_input("book.xlsx", book, len(book))
+    assert text.endswith("\n... (summary cut)\n")
+    quoted = [line for line in text.splitlines() if line.startswith("  ")]
+    assert quoted
+    # Every quoted row kept is whole: twenty complete cells.
+    for line in quoted:
+        cells = line[2:].split(" | ")
+        assert len(cells) == 20 and all(cell.endswith("v" * 50) for cell in cells), line
+
+
+def test_a_signature_declares_a_summarized_format_without_a_nul() -> None:
+    """R1-08: the task-input reader asks this module which signatures it summarizes."""
+
+    from finishup.adapters.input_summary import declared_binary_format
+
+    assert declared_binary_format(_pdf())
+    assert declared_binary_format(_gif()) and declared_binary_format(_png())
+    assert declared_binary_format(b"junk\n" + _pdf())
+    assert not declared_binary_format(b"Uploads must start with %PDF-1.7; see 1 0 obj docs.\n")
+    assert not declared_binary_format(b"id,value\n1,2\n")
+    assert not declared_binary_format(b">seq1\nACGT\n")
+    assert not declared_binary_format(random.Random(7).randbytes(64).replace(b"%", b"_"))

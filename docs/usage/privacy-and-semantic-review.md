@@ -208,9 +208,10 @@ disclosed". It needs this repository's privacy grant; no agent can admit a folde
 
 After that, when the task statement names a file inside an admitted folder, or names the folder
 itself, the reviewer can receive up to four such files, each read the way task inputs are: never a
-hidden or credential-named file, never through a link, never a file another user can write, and
-always through the same redaction and never-send checks. A file inside your repository is never
-read this way. Nothing is read unless your review policy already sends repository excerpts, so
+hidden or credential-named file, never through a link, never a file or folder another user can
+write, and always through the same redaction and never-send checks. A file inside your repository
+is never read this way, even when the folder you admitted contains your repository, and neither
+is a file only a test command your agent ran mentions. Nothing is read unless your review policy already sends repository excerpts, so
 Private and Metadata only send nothing from these folders. `finishup privacy show`, `/privacy`
 and the status command above show what is admitted.
 
@@ -398,10 +399,11 @@ skip-worktree or assume-unchanged never travels) and its content still matches t
 exactly. A test or fixture file a recorded verification command ran is offered the same way, so the
 reviewer can read the assertions behind a passing run; a test your agent wrote or changed is
 already in the change. Task inputs travel ahead of the change, within a quarter of the room for
-excerpts. A binary, image or data input is never sent: FinishUP sends its own short description
-instead (format, size, image dimensions, an estimated page count, a spreadsheet's sheet names and
-first rows, an archive's file names, an array's shape), labelled as FinishUP's description. A large
-untracked data file sends its first and last lines. Task inputs are labelled as task inputs, not as
+excerpts and never in the places the change and the latest test run need. A binary, image or data
+input (a PDF included) is never sent: FinishUP sends its own short description instead (format, size, image dimensions, an estimated page count, a spreadsheet's sheet names and
+first rows, an archive's file names, an array's shape), labelled as FinishUP's description; a value
+in it that looks like a credential is replaced by a marker before anything is shortened. A large
+untracked data file sends its first and last lines, never cutting through a credential. Task inputs are labelled as task inputs, not as
 your agent's work, and pass the same redaction and never-send checks. The reviewer also gets one short
 list of the deliverables you declared, whether the change touches each one, and FinishUP's own facts
 about them (for example that a deliverable refers to a file you created but did not declare). Git hooks, helpers, filters and network

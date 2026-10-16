@@ -313,7 +313,7 @@ def test_outside_inputs_join_the_capture_in_the_room_left_and_are_redacted() -> 
     from finishup.ports.change_capture import TaskInputFile
 
     _capture_redacted = getattr(check_change_module, "_capture_redacted")
-    asked: list[tuple[tuple[str, ...], int]] = []
+    asked: list[tuple[tuple[str, ...], int, str]] = []
 
     class InputPort:
         def capture(
@@ -338,19 +338,27 @@ def test_outside_inputs_join_the_capture_in_the_room_left_and_are_redacted() -> 
 
     secret = b'password = "a8F3kL9qZx7Pw2Rt"\n'
 
-    def reader(values: tuple[str, ...], room: int) -> tuple[TaskInputFile, ...]:
-        asked.append((values, room))
+    def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+        asked.append((values, room, workspace))
         return (
+            # A reader that returns a workspace file, in any spelling, is not trusted with it.
+            TaskInputFile("/REPO/inside/notes.md", b"inside\n", 7, origin="outside_workspace"),
             TaskInputFile("/shared/spec.md", b"spec\n" + secret, 30, origin="outside_workspace"),
             TaskInputFile("/shared/more.md", b"more\n", 5, origin="outside_workspace"),
             # A reader that returns anything else is not trusted with it.
             TaskInputFile("inside.md", b"inside\n", 7),
         )
 
-    paths = ("a.md", "/shared/spec.md", "/repo/inside/notes.md", "/shared/legacy/")
+    paths = (
+        "a.md",
+        "/shared/spec.md",
+        "/repo/inside/notes.md",
+        "/Repo/inside/other.md",
+        "/shared/legacy/",
+    )
     capture = _capture_redacted(InputPort(), "/repo", None, (), paths, frozenset(), reader)
 
-    assert asked == [(("/shared/spec.md", "/shared/legacy/"), 1)]
+    assert asked == [(("/shared/spec.md", "/shared/legacy/"), 1, "/repo")]
     assert [item.path for item in capture.inputs][-1] == "/shared/spec.md"
     assert len(capture.inputs) == 4
     outside = capture.inputs[-1]
@@ -360,6 +368,101 @@ def test_outside_inputs_join_the_capture_in_the_room_left_and_are_redacted() -> 
     # Without a reader, nothing outside the repository is read.
     plain = _capture_redacted(InputPort(), "/repo", None, (), paths, frozenset(), None)
     assert all(item.origin == "task" for item in plain.inputs)
+
+
+def test_an_outside_path_only_a_verification_command_names_is_never_read() -> None:
+    """PR #1086 review R1-05 probe: with ``/shared`` admitted, a task naming only ``form.py``
+    and ``DESIGN.md`` and an agent-recorded ``pytest /shared/unrelated_test.py`` run must not
+    read that file; outside reads are for paths the task itself names."""
+
+    from builders.policy_cases import act, make_case, record, res
+    from finishup.application.check_change import review_input_paths
+    from finishup.domain.events import (
+        ActionKind,
+        ActionRecordedPayload,
+        ResultOutcome,
+        ResultRecordedPayload,
+    )
+    from finishup.ports.change_capture import TaskInputFile
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    oracle_path = "/shared/unrelated_test.py"
+    case = make_case(
+        actions={
+            act(20): record(
+                ActionRecordedPayload(
+                    act(20), ActionKind.COMMAND, "Run tests", command=f"pytest {oracle_path}"
+                ),
+                20,
+            )
+        },
+        results={
+            res(20): record(
+                ResultRecordedPayload(res(20), act(20), ResultOutcome.SUCCESS, summary="passed"),
+                21,
+            )
+        },
+    )
+    statement = "Implement form.py following DESIGN.md and /shared/spec.md."
+    paths, oracle = review_input_paths(case.projection, statement)
+    assert oracle_path in oracle and oracle_path in paths and "/shared/spec.md" in paths
+    asked: list[tuple[str, ...]] = []
+
+    class EmptyPort:
+        def capture(
+            self,
+            workspace: str,
+            base: object,
+            *,
+            priority_paths: tuple[str, ...] = (),
+            input_paths: tuple[str, ...] = (),
+        ) -> CheckChangeCapture:
+            return CheckChangeCapture(
+                base="task_start",
+                text=b"diff --git a/form.py b/form.py\n+x\n",
+                tracked_files=1,
+                untracked_files=0,
+                omitted_files=0,
+                truncated=False,
+            )
+
+    def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+        asked.append(values)
+        return tuple(
+            TaskInputFile(value, b"OUTSIDE\n", 8, origin="outside_workspace") for value in values
+        )
+
+    capture = _capture_redacted(EmptyPort(), "/app", None, (), paths, oracle, reader)
+
+    assert asked == [("/shared/spec.md",)]
+    assert [item.path for item in capture.inputs] == ["/shared/spec.md"]
+
+
+def test_an_input_the_reader_already_redacted_marks_the_capture_redacted() -> None:
+    """PR #1086 review R1-04: a summary that withheld a value arrives ``redacted``; the capture
+    discloses it even though this pass found nothing left to redact."""
+
+    from dataclasses import replace
+
+    from finishup.ports.change_capture import TaskInputFile
+
+    redacted = getattr(check_change_module, "_redacted")
+    capture = CheckChangeCapture(
+        base="task_start",
+        text=b"diff --git a/a.py b/a.py\n+x\n",
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
+        inputs=(
+            TaskInputFile(
+                "book.xlsx", b"format: XLSX workbook\n  [REDACTED]\n", 900, True, summary=True
+            ),
+        ),
+    )
+    assert redacted(capture).redacted
+    clean = replace(capture, inputs=(replace(capture.inputs[0], redacted=False),))
+    assert not redacted(clean).redacted
 
 
 def test_task_input_files_are_redacted_one_by_one_and_dropped_when_they_cannot_be() -> None:

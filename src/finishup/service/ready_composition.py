@@ -2634,11 +2634,18 @@ def _bootstrap_seed_digest(installation_id: str, *, revision: str | None) -> str
     return canonical_digest(payload)
 
 
-def _outside_input_reader(roots: tuple[str, ...]) -> OutsideInputReader:
-    """The check-time reader of task inputs beneath the admitted outside roots (issue #1082)."""
+def _outside_input_reader(
+    roots: tuple[str, ...], protected: tuple[str, ...] = ()
+) -> OutsideInputReader:
+    """The check-time reader of task inputs beneath the admitted outside roots (issue #1082).
 
-    def read(values: tuple[str, ...], room: int) -> tuple[TaskInputFile, ...]:
-        return read_outside_inputs(roots, values, limit=room)
+    It never reads from the check's workspace or from ``protected`` (this service's own bundle
+    and state directories), by path or by device and inode, even when an admitted root contains
+    them (PR #1086 review R1-02).
+    """
+
+    def read(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+        return read_outside_inputs(roots, values, limit=room, excluded=(workspace, *protected))
 
     return read
 
@@ -4710,6 +4717,7 @@ def _privacy_gated_semantic_evaluator(
     local_observation: object | None = None,
     attention: SemanticAttentionTracker | None = None,
     change_capture: ChangeCapturePort | None = None,
+    protected_directories: tuple[str, ...] = (),
 ):
     total_timeout = float(max(1, min(int(timeout_seconds), 3600)))
     # The fallback endpoint owns its own deadline share (#582): a primary that spends its whole
@@ -5142,7 +5150,9 @@ def _privacy_gated_semantic_evaluator(
                             # Issue #1082: only roots the owner admitted in this repository's
                             # grant, and only where the recipe carries task inputs at all.
                             outside_reader=(
-                                _outside_input_reader(policy.admitted_input_roots)
+                                _outside_input_reader(
+                                    policy.admitted_input_roots, protected_directories
+                                )
                                 if policy.admitted_input_roots
                                 and carries_task_inputs(review_selection)
                                 else None
@@ -6719,6 +6729,8 @@ async def provide_service_ready_context(
             local_observation=local_observation,
             attention=semantic_attention,
             change_capture=change_capture,
+            # The service's own data is never an outside-workspace task input (#1086 R1-02).
+            protected_directories=(str(paths.bundle), str(paths.state)),
         )
 
     # attempt_id -> (physical request identity, provider identity) of the single in-flight

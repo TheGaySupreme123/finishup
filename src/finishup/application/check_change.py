@@ -373,7 +373,9 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
     """
 
     inputs = _redacted_inputs(capture.inputs)
-    if inputs != capture.inputs:
+    if inputs != capture.inputs or any(item.redacted for item in inputs):
+        # An input the reader already redacted (a summary that withheld a value, PR #1086 review
+        # R1-04) is disclosed like one this pass redacted.
         capture = replace(capture, inputs=inputs, redacted=True)
     text, redacted = _redacted_text(capture.text)
     if not redacted:
@@ -412,9 +414,23 @@ def _with_input_origins(
     return capture if inputs == capture.inputs else replace(capture, inputs=inputs)
 
 
-# Reads the candidate paths beneath the owner's admitted outside-workspace roots (issue #1082);
-# bound by the service to the effective policy's roots, so this layer never sees a root itself.
-type OutsideInputReader = Callable[[tuple[str, ...], int], tuple[TaskInputFile, ...]]
+# Reads the candidate paths beneath the owner's admitted outside-workspace roots (issue #1082):
+# ``(values, room, workspace)``. Bound by the service to the effective policy's roots, so this
+# layer never sees a root itself; the workspace is never read from, by path or by identity.
+type OutsideInputReader = Callable[[tuple[str, ...], int, str], tuple[TaskInputFile, ...]]
+
+
+def _within(path: str, workspace: str) -> bool:
+    """Whether ``path`` is the workspace or beneath it, compared case-folded (PR #1086 R1-02).
+
+    Case-folding errs toward refusing: on a case-insensitive file system ``/shared/caserepo``
+    is the workspace ``/shared/CaseRepo``, and on a case-sensitive one a differently cased
+    sibling is merely not read from outside.
+    """
+
+    folded = os.path.normpath(path).casefold()
+    root = os.path.normpath(workspace).casefold().rstrip("/")
+    return folded == root or folded.startswith(root + "/")
 
 
 def _with_outside_inputs(
@@ -422,27 +438,44 @@ def _with_outside_inputs(
     input_paths: tuple[str, ...],
     reader: OutsideInputReader | None,
     workspace: str,
+    *,
+    verification_paths: frozenset[str],
 ) -> CheckChangeCapture:
     """Add inputs the task names beneath an admitted outside root, in the room left (#1082).
 
+    Only paths the task itself names (its statement or a ``role: input`` item) may be read
+    outside the workspace (ADR-009): ``verification_paths``, the candidates only an agent-recorded
+    verification command named, are oracle candidates for the repository read alone and are
+    never offered to the reader (PR #1086 review R1-05).
+
     A path inside the workspace is never offered here, even beneath an admitted root: the
     repository read alone decides those, because only it can prove a file unchanged since the
-    task started (the agent may have written it).
+    task started (the agent may have written it) and not ignored. The reader refuses the
+    workspace by device and inode at every level of its walk, so an admitted directory that
+    contains the workspace, or a differently spelled path to it, cannot enumerate its files
+    (PR #1086 review R1-02); every file the reader returns is checked here again.
     """
 
     room = MAX_TASK_INPUT_FILES - len(capture.inputs)
-    root = os.path.normpath(workspace).rstrip("/") + "/"
     outside = tuple(
         value
         for value in input_paths
-        if value.startswith("/") and not (os.path.normpath(value) + "/").startswith(root)
+        if value.startswith("/")
+        and value not in verification_paths
+        and not _within(value, workspace)
     )
     if reader is None or room < 1 or not outside:
         return capture
     present = {item.path for item in capture.inputs}
     added: list[TaskInputFile] = []
-    for item in reader(outside, room):
-        if item.origin != "outside_workspace" or item.path in present or len(added) >= room:
+    for item in reader(outside, room, workspace):
+        if (
+            item.origin != "outside_workspace"
+            or not item.path.startswith("/")
+            or _within(item.path, workspace)
+            or item.path in present
+            or len(added) >= room
+        ):
             continue
         present.add(item.path)
         added.append(item)
@@ -472,7 +505,15 @@ def _capture_redacted(
         raise TypeError("check_change_capture_invalid")
     capture = _with_input_origins(capture, verification_paths, workspace)
     # Every input, inside the repository or beneath an admitted root, takes the same redaction.
-    return _redacted(_with_outside_inputs(capture, input_paths, outside_reader, workspace))
+    return _redacted(
+        _with_outside_inputs(
+            capture,
+            input_paths,
+            outside_reader,
+            workspace,
+            verification_paths=verification_paths,
+        )
+    )
 
 
 async def capture_check_time_change(
@@ -493,10 +534,10 @@ async def capture_check_time_change(
     ``priority_paths`` are the declared deliverables (``declared_output_paths``), rendered first.
     ``input_paths`` are candidate task input files (``review_input_paths``, issues #1045 and
     #1082); ``verification_paths`` are those only a recorded verification command named, whose
-    inputs are labelled as the verification's oracle. ``outside_reader`` reads the candidates
-    beneath the outside-workspace roots the owner admitted in the repository grant (#1082); the
-    service passes it only when the effective policy admits a root and the recipe carries task
-    inputs.
+    inputs are labelled as the verification's oracle and are never read outside the workspace.
+    ``outside_reader`` reads the task's own candidates beneath the outside-workspace roots the
+    owner admitted in the repository grant (#1082); the service passes it only when the effective
+    policy admits a root and the recipe carries task inputs.
     """
 
     if type(source) is not CheckWorkspaceSource:

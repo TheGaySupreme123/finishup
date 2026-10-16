@@ -741,3 +741,108 @@ def test_a_declared_build_output_still_takes_the_change_share_first(tmp_path: Pa
     first = next(item for item in semantic.items if item.item_id == "change-check-time-001")
     assert f"b/{_BUNDLE}".encode() in first.content
     assert b"generated, build or minified" not in change.capture.text
+
+
+# --- PR #1086 review R1-06: task inputs never take every excerpt slot -----------------------------
+
+
+def _tiny_inputs(count: int = 4) -> tuple[TaskInputFile, ...]:
+    return tuple(TaskInputFile(f"spec{index}.txt", b"RULE", 4) for index in range(count))
+
+
+def _excerpt_ids(semantic: SemanticCase) -> list[str]:
+    return [ref.excerpt_item_id for ref in semantic.packet.targeted_excerpts]
+
+
+def test_four_small_inputs_leave_the_change_and_the_latest_run_a_slot() -> None:
+    """R1-06 probe: a valid Custom recipe with four excerpt slots and four tiny inputs used to
+    spend every slot on the inputs before the change and the latest verification were offered.
+    The first offer is now bounded in slots as well as bytes, for every small slot budget."""
+
+    expanded = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    change = _change(inputs=_tiny_inputs())
+    probe = _build(
+        _statement_case(),
+        change=change,
+        profile=ReviewContextProfile.CUSTOM,
+        selection=replace(expanded, max_excerpts=4),
+    )
+    assert any(ref.startswith("change-check-time-") for ref in _excerpt_ids(probe))
+
+    for slots in (1, 2, 3, 4):
+        semantic = _build(
+            _react_case(),
+            change=change,
+            profile=ReviewContextProfile.CUSTOM,
+            selection=replace(expanded, max_excerpts=slots),
+        )
+        ids = _excerpt_ids(semantic)
+        assert len(ids) <= slots
+        assert ids[0].startswith("change-check-time-") or ids[0].startswith(
+            TASK_INPUT_ITEM_PREFIX
+        ), ids
+        assert any(ref.startswith("change-check-time-") for ref in ids), (slots, ids)
+        if slots >= 2:
+            assert f"excerpt-{evd(2)}" in ids, (slots, ids)
+        if slots == 4:
+            # One input still ranks first: a specification is never pushed out by the change.
+            assert ids[0] == f"{TASK_INPUT_ITEM_PREFIX}01", (slots, ids)
+
+
+def test_a_verification_output_follow_up_keeps_its_slots_beside_small_inputs() -> None:
+    """R1-06: in a follow-up round the inputs leave two slots per requested run, so a run the
+    reviewer asked for arrives with the change in a small recipe exactly as it would with no
+    inputs at all; the inputs only take what is left."""
+
+    from finishup.application.missing_for_assessment import plan_review_follow_up
+    from finishup.domain.events import MissingForAssessmentItem
+
+    case = _react_case()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED), max_excerpts=4
+    )
+
+    def build(targets: tuple[str, ...], inputs: tuple[TaskInputFile, ...]) -> list[str]:
+        follow_up = plan_review_follow_up(
+            case.projection,
+            allowed,
+            tuple(
+                MissingForAssessmentItem(
+                    kind="verification_output",
+                    target_refs=(target,),
+                    availability="agent_suppliable",
+                )
+                for target in targets
+            ),
+            previous=None,
+            shown_refs=frozenset(),
+        )
+        assert follow_up is not None
+        return _excerpt_ids(
+            build_semantic_case(
+                case_id="cas_10000000-0000-4000-8000-000000000001",
+                frozen_case=case,
+                dependency_digest="sha256:" + "b" * 64,
+                findings=(),
+                review_context_profile=ReviewContextProfile.CUSTOM,
+                review_selection=selection,
+                policy_id="pvy_10000000-0000-4000-8000-000000000001",
+                policy_version="1",
+                check_time_change=_change(inputs=inputs),
+                workspace_root="/app",
+                follow_up=follow_up,
+            )
+        )
+
+    for targets in ((str(res(2)),), (str(res(1)), str(res(2)))):
+        with_inputs = build(targets, _tiny_inputs())
+        without = build(targets, ())
+        assert len(with_inputs) <= 4
+        assert any(ref.startswith("change-check-time-") for ref in with_inputs), with_inputs
+        # The first requested run's output always arrives.
+        first = f"excerpt-{evd(1 if targets[0] == str(res(1)) else 2)}"
+        assert first in with_inputs, with_inputs
+        # Every requested output the packet carries without inputs, it carries with them.
+        requested = {f"excerpt-{evd(1 if target == str(res(1)) else 2)}" for target in targets}
+        assert requested & set(without) <= set(with_inputs), (with_inputs, without)

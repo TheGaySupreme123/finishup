@@ -2657,3 +2657,80 @@ def test_late_observed_evidence_links_only_to_its_original_run() -> None:
         },
     )
     assert observed_command_output_refs(redacted, (str(res(22)),), allowed) == frozenset()
+
+
+def test_a_digest_alias_never_answers_for_another_commands_run() -> None:
+    """PR #1086 review R1-01 probe: an agent row claiming to be ``pytest tests/private_case.py``
+    output, carrying the digest of the authentic ``ruff check`` capture, must not make that
+    capture the observed output of the pytest run. A digest proves byte equality, not who ran
+    which command."""
+
+    case, captured, scope = _capture_scene()
+    native = case.projection.evidence[evd(32)].payload  # the authentic ruff output
+    assert native is not None and native.digest_binding is not None
+    alias = replace(
+        native,
+        evidence_id=evd(99),
+        captured_object_id=None,
+        strength=EvidenceImmutability.CONTENT_DIGEST,
+        description="Agent says these bytes are the private pytest output",
+        digest_binding=replace(
+            native.digest_binding,
+            content_availability=EvidenceContentAvailability.DIGEST_ONLY,
+            provenance=EvidenceDigestProvenance.CALLER_ASSERTED,
+        ),
+    )
+    actions = {
+        **case.projection.actions,
+        act(99): record(
+            ActionRecordedPayload(
+                act(99), ActionKind.COMMAND, "run pytest", command="pytest tests/private_case.py"
+            ),
+            90,
+        ),
+    }
+    results = {
+        **case.projection.results,
+        res(99): record(
+            ResultRecordedPayload(
+                res(99), act(99), ResultOutcome.SUCCESS, summary="passed", evidence_refs=(evd(99),)
+            ),
+            91,
+        ),
+    }
+    mixed = make_case(
+        plans=case.projection.plans,
+        obligations=case.projection.obligations,
+        claims=case.projection.claims,
+        actions=actions,
+        results=results,
+        evidence={**case.projection.evidence, evd(99): evidence_record(alias, 92)},
+        extra_refs=(*case.allowed_ids, evd(99), act(99), res(99)),
+    )
+    follow_up = plan_review_follow_up(
+        mixed.projection,
+        frozenset(str(ref) for ref in mixed.allowed_ids),
+        (_requested("verification_output", str(res(99)), availability="agent_suppliable"),),
+        previous=None,
+        shown_refs=frozenset(),
+    )
+    assert follow_up is not None
+
+    semantic = _build(
+        mixed,
+        follow_up=follow_up,
+        captured_content=captured,
+        captured_content_scope=scope,
+        workspace_root="/app",
+    )
+
+    observed = [item for item in semantic.items if item.item_id.startswith("observed-output-")]
+    assert observed == [], [(item.item_id, item.content) for item in observed]
+    # The ruff capture keeps its own identity: it never links the caller's pytest row or run.
+    for item in semantic.items:
+        if _RUFF_OUTPUT in item.content:
+            assert str(evd(99)) not in item.linked_subject_refs
+            assert str(res(99)) not in item.linked_subject_refs
+            assert item.latest_for != "command" or str(evd(32)) in item.linked_subject_refs
+    # The agent's own row is still carried as its own account.
+    assert any(item.item_id == f"excerpt-{evd(99)}" for item in semantic.items)
