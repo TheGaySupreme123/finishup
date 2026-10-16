@@ -23,18 +23,20 @@ from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _REPO = Path(__file__).resolve().parents[2]
 _CODEX = shutil.which("codex")
+_BASE = Path.home() / ".yz-clife"
 
 
 def _run(argv: list[str], *, env: dict[str, str], cwd: Path, timeout: int = 120) -> dict[str, Any]:
     result = subprocess.run(
         argv, env=env, cwd=cwd, capture_output=True, timeout=timeout, check=False
     )
-    assert result.returncode == 0, (
-        argv,
-        result.returncode,
-        result.stdout.decode(),
-        result.stderr.decode(),
-    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"{argv[1:3]} exited {result.returncode}\n"
+            + result.stderr.decode(errors="replace")
+            + result.stdout.decode(errors="replace"),
+            pytrace=False,
+        )
     return json.loads(result.stdout)
 
 
@@ -55,8 +57,10 @@ def _earlier_inventory(destination: Path) -> None:
 @pytest.mark.skipif(_CODEX is None, reason="requires the real Codex CLI, with empty isolated homes")
 def test_real_codex_connect_upgrade_disconnect() -> None:
     assert _CODEX is not None
-    # The subprocess suite's hermetic HOME is private, outside the checkout and live host homes.
-    work = Path.home() / ("codexlife-" + secrets.token_hex(3))
+    # Capture the base before the subprocess fixture rebases HOME. A short independent
+    # root keeps instance socket paths within macOS's sun_path bound (ADR-028).
+    _BASE.mkdir(mode=0o700, exist_ok=True)
+    work = _BASE / secrets.token_hex(3)
     work.mkdir(mode=0o700)
     base = work / "instances"
     provision = [sys.executable, str(_REPO / "scripts/provision_test_instance.py")]
