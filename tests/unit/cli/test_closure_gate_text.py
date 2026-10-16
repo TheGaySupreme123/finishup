@@ -72,10 +72,11 @@ _WITH_OBLIGATIONS = (
 
 def _current_remaining(remaining: str) -> str:
     # Keep the archived rollout strings verbatim; the current gate distinguishes an
-    # observed change from an unknown command whose harmlessness is not established.
+    # observed change from a command whose workspace effect FinishUP could not establish.
     return remaining.replace(
         "since your last change",
-        "for the latest material input (a change, verification, or command FinishUP could not establish was read-only)",
+        "for the latest material input (an edit, a verification, or a command FinishUP could"
+        " not establish left the workspace unchanged)",
     )
 
 

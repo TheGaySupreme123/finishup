@@ -67,6 +67,10 @@ from finishup.domain.values import (
     object_id,
     result_id,
 )
+from finishup.domain.workspace_effect import (
+    WORKSPACE_EFFECT_KEY,
+    result_summary_with_workspace_effect,
+)
 from finishup.domain.write_scope import WRITE_SCOPES
 from finishup.kernel.later_material import (
     COMPLETION_SIGNAL_PREFIX,
@@ -1425,7 +1429,12 @@ def materialize_observation_envelope(
                     action_id(action),
                     outcome,
                     exit_status=exit_status,
-                    summary=f"Observed result status={outcome.value}",
+                    # The hook's before/after workspace fingerprint (PR #1080): a closed suffix the
+                    # kernel reads back only from service-stamped observation results.
+                    summary=result_summary_with_workspace_effect(
+                        f"Observed result status={outcome.value}",
+                        structural.get(WORKSPACE_EFFECT_KEY),
+                    ),
                     evidence_refs=tuple(evidence_id(value) for value in captured_refs),
                 ),
                 parents=tuple(

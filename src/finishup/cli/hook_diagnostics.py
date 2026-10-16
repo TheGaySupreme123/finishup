@@ -210,6 +210,18 @@ _REASONS: Final = frozenset(
         # enforcement point. Aborting mid-hook would drop ingest.
         "hook_budget_exceeded",
         "hook_followup_deferred",
+        # PR #1080: why a call's before/after workspace fingerprint could not be established (the
+        # call then stays material for the closing review): a workspace beyond the walk bound or
+        # time, an unreadable directory, an unusable root, or an unusable snapshot store. Each is
+        # named once per underlying failure; a missing pre-call snapshot or a call still running
+        # is a per-call fact on the result instead (the first two are kept readable).
+        "workspace_fingerprint_no_pre_snapshot",
+        "workspace_fingerprint_call_incomplete",
+        "workspace_fingerprint_too_large",
+        "workspace_fingerprint_timeout",
+        "workspace_fingerprint_unreadable",
+        "workspace_fingerprint_root_unusable",
+        "workspace_fingerprint_store_unusable",
         # The Stop-time closure gate (#977): it continued the agent once, closure needed no
         # action, it already fired at this frontier, a Stop the gate had already continued this
         # turn ended with nothing more to say (the normal end of a continued turn, renamed from
@@ -293,6 +305,9 @@ _STAGES: Final = frozenset(
         "store_lock_wait",
         "store_write",
         "total",
+        # PR #1080: the before/after workspace fingerprint, a sub-stage of 'resolve' (it runs
+        # before the store window opens).
+        "fingerprint",
     }
 )
 _MAX_STAGE_MS: Final = 3_600_000

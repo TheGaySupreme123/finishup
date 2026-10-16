@@ -640,7 +640,13 @@ tokens.
 - **The closing review.** The receipt is the last step, so the last review before it is a final
   review. When a task uses AI-powered review (or a check deferred a required review before your
   first edit), its closure checklist lists `closing_review_required` until a final review is current
-  after the last change; the check result names the review phase.
+  after the last change; the check result names the review phase. A change here is an edit, a
+  verification run, a switch of review mode, or a command that changed the project's files.
+  FinishUP compares the project's files before and after each command your agent runs, so a
+  command that only reads (a timestamp, a search, a status check) does not ask for another closing
+  review. A command whose effect FinishUP could not establish (one still running in the
+  background, a project too large to compare quickly) does, and the reminder says so. Effects
+  outside the project folder, such as a database or another directory, are not compared.
 
 ### Cancelled background review
 

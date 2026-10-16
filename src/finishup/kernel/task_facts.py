@@ -263,6 +263,7 @@ __all__ = [
     "requested_command_identity",
     "requested_planned_command",
     "requested_output_facts",
+    "requested_verification_run_events",
     "superseded_unnamed_outputs",
     "task_fact_signals",
     "non_counting_edits_exempt",
@@ -1142,6 +1143,56 @@ def agent_linked_run_events(
                 for run in linked.get((obligation, item.value), ())
                 if run.action_event is not None
             )
+    return frozenset(events)
+
+
+def requested_verification_run_events(
+    projection: ProjectionState, records: Iterable[LedgerRecord]
+) -> frozenset[EventId] | None:
+    """The observed command actions that ran a command an effective obligation requests.
+
+    A run of the task's own requested verification command (ADR-045 matching, or the agent's
+    explicit link) is a verification run whatever its runner class, so the closing review keeps
+    treating it as new input even when the workspace stayed the same (PR #1080). ``None`` means
+    the task requests a command but no installation key is registered to match runs against it:
+    the caller cannot tell which runs verify and must treat every run as possibly verifying.
+    ``records`` must be the accepted prefix that produced ``projection``.
+    """
+
+    values: list[tuple[ObligationId, str]] = []
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        values.extend(
+            (obligation, item.value)
+            for item in payload.requested_items
+            if item.item_kind is RequestedItemKind.COMMAND
+        )
+    if not values:
+        return frozenset()
+    if not command_identity_key_registered():
+        return None
+    prefix = tuple(records)
+    observed = observed_event_ids_from_records(prefix)
+    state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
+    keyed = [run for run in state.runs if run.identity is not None and run.action_event]
+    linked = _agent_linked_runs(projection, prefix, state, observed)
+    events: set[EventId] = set()
+    for obligation, value in values:
+        events.update(
+            run.action_event for run in linked.get((obligation, value), ()) if run.action_event
+        )
+        if requested_command_shape(value) != "command":
+            continue
+        planned = requested_planned_command(value)
+        if planned is None:
+            continue
+        events.update(
+            run.action_event
+            for run in keyed
+            if run.action_event is not None and planned_match(run, planned) is not None
+        )
     return frozenset(events)
 
 
