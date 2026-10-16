@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from finishup.adapters.integrations.codex_plugin import plugin_tree_matches_marker
 from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -168,8 +169,15 @@ def test_real_codex_connect_upgrade_disconnect() -> None:
                 # Earlier activation copied the portable bare-command cache and its marker.
                 # Pair that state with the earlier pristine project skill, so the upgrade
                 # must reach the cache repair through the ordinary reconnect path.
-                for name in (".mcp.json", ".yoetz-plugin-install.json"):
-                    shutil.copyfile(portable / name, cache.parent / name)
+                shutil.rmtree(cache.parent)
+                shutil.copytree(portable, cache.parent)
+                assert plugin_tree_matches_marker(
+                    {
+                        path.relative_to(cache.parent).as_posix(): path.read_bytes()
+                        for path in cache.parent.rglob("*")
+                        if path.is_file()
+                    }
+                )
                 apply("run")
                 rebound = json.loads(cache.read_bytes())["mcpServers"]["finishup"]
                 assert rebound["command"] == launcher
