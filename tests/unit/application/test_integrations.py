@@ -211,3 +211,50 @@ async def test_remove_preserves_nonexact_copy_without_port_mutation() -> None:
         )
     assert refused.value.reason is IntegrationReason.REMOVE_REFUSED
     assert port.calls == ["preview"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", [IntegrationAction.INSTALL, IntegrationAction.REMOVE])
+async def test_pristine_prior_skill_keeps_exact_consent_without_overwrite_flag(
+    action: IntegrationAction,
+) -> None:
+    import dataclasses
+
+    port = _Port()
+    port.preview = dataclasses.replace(
+        _preview(IntegrationState.MODIFIED, action=action), warnings=("owned_skill_update",)
+    )
+    service = _service(port, _Diagnostics())
+    execute = service.remove_skill if action is IntegrationAction.REMOVE else service.install_skill
+    for confirmation, reason in (
+        (
+            IntegrationConfirmation(_DIGEST_B, False, "interactive"),
+            IntegrationReason.CONFIRMATION_REQUIRED,
+        ),
+        (IntegrationConfirmation(_DIGEST_A, True, "interactive"), IntegrationReason.PREVIEW_STALE),
+    ):
+        with pytest.raises(IntegrationError) as caught:
+            await execute(_request(action), confirmation)
+        assert caught.value.reason is reason
+        assert port.calls[-1] == "preview"
+    port.calls.clear()
+    await execute(_request(action), IntegrationConfirmation(_DIGEST_B, True, "interactive"))
+    assert port.calls == ["preview", "remove" if action is IntegrationAction.REMOVE else "install"]
+
+
+@pytest.mark.anyio
+async def test_owned_update_warning_does_not_bypass_harness_compatibility() -> None:
+    import dataclasses
+
+    port = _Port()
+    port.preview = dataclasses.replace(
+        _preview(IntegrationState.MODIFIED, action=IntegrationAction.INSTALL),
+        warnings=("owned_skill_update",),
+        compatibility="unsupported",
+    )
+    with pytest.raises(IntegrationError) as caught:
+        await _service(port, _Diagnostics()).install_skill(
+            _request(), IntegrationConfirmation(_DIGEST_B, True, "interactive")
+        )
+    assert caught.value.reason is IntegrationReason.VERSION_INCOMPATIBLE
+    assert port.calls == ["preview"]

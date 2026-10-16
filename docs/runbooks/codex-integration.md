@@ -331,6 +331,8 @@ edits. The skill preview names `owned_skill_update` for that case, and its diges
 installed member, including obsolete references and the marker. The approved replacement removes
 obsolete references and installs the current set. A current plugin/cache alone does not make
 reconnect a no-op: the project skill must also be current. Repeating reconnect changes nothing.
+The standalone skill service uses the same owned-update distinction while retaining its existing
+harness compatibility, exact-preview and explicit-consent requirements.
 
 Edited files, missing recorded members, extra files, invalid markers and linked paths are not
 pristine upgrades. Connect preserves them. Move the affected `.agents/skills/finishup` directory

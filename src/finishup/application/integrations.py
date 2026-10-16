@@ -299,7 +299,11 @@ class IntegrationService:
             raise IntegrationError(IntegrationReason.PREVIEW_STALE, {})
         if preview.compatibility == "unsupported":
             raise IntegrationError(IntegrationReason.VERSION_INCOMPATIBLE, {})
-        if preview.state_before is IntegrationState.MODIFIED and not request.replace_modified:
+        if (
+            preview.state_before is IntegrationState.MODIFIED
+            and not request.replace_modified
+            and "owned_skill_update" not in preview.warnings
+        ):
             raise IntegrationError(IntegrationReason.MODIFIED_COPY, {})
         if preview.state_before is IntegrationState.PARTIAL and not request.replace_modified:
             raise IntegrationError(IntegrationReason.PARTIAL_INSTALL, {})
@@ -359,7 +363,10 @@ class IntegrationService:
             raise _invalid("integration_action_invalid")
         preview = await self.preview_skill(request)
         try:
-            if preview.state_before is not IntegrationState.INSTALLED_EXACT:
+            if preview.state_before is not IntegrationState.INSTALLED_EXACT and not (
+                preview.state_before is IntegrationState.MODIFIED
+                and "owned_skill_update" in preview.warnings
+            ):
                 raise IntegrationError(IntegrationReason.REMOVE_REFUSED, {})
             command = self._confirmed_apply(request, confirmation, preview)
             result = await self._integrations.remove_skill(request.harness, command)
