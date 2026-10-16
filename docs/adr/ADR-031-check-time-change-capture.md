@@ -581,8 +581,11 @@ a different partial view cannot. No wire field or schema changes.
 ## Amendment (2026-10-16, PR #1080): late captured evidence enriches replay
 
 A hook and a Codex session-stream completion can describe one call with different captured-content
-roles. After the committed core is validated, observation ingest appends only the missing captured
-input/output or digest-only image evidence (#1078 class). It does not rewrite the original result
+roles. The original call's agreeing action must already be committed. An intersection on evidence
+alone cannot create a different call's core; an existing pre-action for that different call does
+not permit borrowing the original evidence. Reused evidence is checked against its immutable
+causal action and result association. After the committed core is validated, observation ingest
+appends only the missing captured input/output or digest-only image evidence (#1078 class). It does not rewrite the original result
 or its evidence-reference list; new evidence retains its causal action lineage. The existing
 append-only outcome correction still supplies an explicit native outcome or discloses a conflict.
 
@@ -600,9 +603,3 @@ command/output binding remains required. A captured object already represented b
 is reused, so another delivery does not make its object-to-evidence association ambiguous. New
 image source identities remain distinct; enrichment operation/claim roles bind the appended event
 IDs. Existing schemas and frozen vectors retain their bytes.
-
-Enrichment requires the same call (round-4 review of this PR). The call's own action must already
-be committed, and every existing evidence row the delivery intersects or reuses must have been
-recorded under that action. Evidence that a reused source identity shares with another call is a
-conflict, not an enrichment: matching digest-only image bytes do not show that a second call
-observed them.

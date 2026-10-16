@@ -39,14 +39,6 @@ for delivery are reduced here to closed tokens and nothing else crosses into the
 * ``effective_user`` — ``root`` or ``non_root``: the effective user this hook process (spawned by
   the host beside the agent's commands) runs as. It says nothing about the delivery environment.
 
-``git_status_execution_free`` answers one more closed question for the runner class: whether a
-closed ``git status`` call can run anything but Git itself (PR #1080 round 4). Git runs a
-configured ``core.fsmonitor`` hook, a ``post-index-change`` hook, clean filters, a status pager
-and trace targets while it reports status, so the argv alone never proves a read. The hook reads
-the repository's effective configuration with ``git rev-parse`` and ``git config --list`` (neither
-reads the index or runs those programs) in the call's own working directory and answers ``True``
-only when none is configured; any doubt answers ``False`` and the call stays ``vcs``.
-
 No path, command text or environment value is returned, stored or logged.
 """
 
@@ -57,12 +49,10 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
-from finishup.domain.observation_selection import git_status_read_operands
 from finishup.domain.shell_writes import bound_command, shell_write_scope
 from finishup.domain.write_scope import classify_write_path, edit_write_scope
 from finishup.protocol.canonical import JsonValue
@@ -70,7 +60,6 @@ from finishup.protocol.canonical import JsonValue
 __all__ = [
     "INSTALL_TARGET_VALUES",
     "SHELL_APPLY_PATCH",
-    "git_status_execution_free",
     "install_target_class",
     "runtime_structural_facts",
     "shell_apply_patch_paths",
@@ -472,145 +461,3 @@ def runtime_structural_facts(
     if callable(geteuid):
         facts["effective_user"] = "root" if geteuid() == 0 else "non_root"
     return facts
-
-
-# --- git status execution proof (PR #1080 round 4) -------------------------------------------
-
-_GIT_PROBE_TIMEOUT_S: Final = 2.0
-_GIT_PROBE_MAX_BYTES: Final = 1_048_576
-_GIT_FALSE: Final = frozenset({"", "0", "false", "no", "off"})
-# The values ``git lfs install`` writes. Git LFS stores objects under ``.git/lfs``; any other clean
-# or process filter is a program Git would run on a changed file during status.
-_GIT_LFS_FILTERS: Final[Mapping[str, str]] = {
-    "filter.lfs.clean": "git-lfs clean -- %f",
-    "filter.lfs.process": "git-lfs filter-process",
-}
-
-
-def _git_output(
-    git: str, directory: str, arguments: tuple[str, ...], environ: Mapping[str, str]
-) -> str | None:
-    try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            (git, "-C", directory, *arguments),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            env=dict(environ),
-            timeout=_GIT_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except OSError, subprocess.SubprocessError, ValueError:
-        return None
-    if completed.returncode != 0 or len(completed.stdout) > _GIT_PROBE_MAX_BYTES:
-        return None
-    try:
-        return completed.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-
-
-def _git_config_entries(listing: str) -> dict[str, str | None] | None:
-    """``git config --list -z`` as key -> last value (``None``: a valueless boolean true)."""
-
-    entries: dict[str, str | None] = {}
-    for item in listing.split("\0"):
-        if not item:
-            continue
-        key, newline, value = item.partition("\n")
-        if not key:
-            return None
-        entries[key.casefold()] = value if newline else None
-    return entries
-
-
-def _git_true(value: str | None) -> bool:
-    return value is None or value.strip().casefold() not in _GIT_FALSE
-
-
-def _status_working_directory(
-    payload: Mapping[str, JsonValue], tool_input: Mapping[str, JsonValue]
-) -> str | None:
-    for source, key in ((tool_input, "workdir"), (tool_input, "cwd"), (payload, "cwd")):
-        value = source.get(key)
-        if type(value) is str and value.startswith("/") and "\x00" not in value:
-            return value
-    return None
-
-
-def git_status_execution_free(
-    payload: Mapping[str, JsonValue],
-    *,
-    environ: Mapping[str, str] | None = None,
-) -> bool:
-    """Whether one closed ``git status`` call can run nothing but Git (PR #1080 round 4).
-
-    ``True`` only when the command is ``domain.observation_selection.git_status_read_operands``'s
-    closed shape, its working directory is named by the host payload, and the repository it
-    reports on configures no fsmonitor, no ``post-index-change`` hook, no clean or process filter
-    other than Git LFS's, no status pager, no trace2 target and no submodules, with no
-    ``GIT_TRACE*`` target in this hook's environment. The host spawns the hook with the agent's
-    environment, so this is the configuration the agent's own ``git`` reads; a shell that changes
-    it first (an exported variable, ``cd``) is outside what the payload names.
-    """
-
-    nested = payload.get("tool_input")
-    tool_input = cast(Mapping[str, JsonValue], nested) if isinstance(nested, Mapping) else payload
-    command = _raw_command(tool_input)
-    directories = None if command is None else git_status_read_operands(command)
-    base = _status_working_directory(payload, tool_input)
-    if directories is None or base is None:
-        return False
-    directory = base
-    for operand in directories:
-        directory = os.path.join(directory, os.path.expanduser(operand))
-    if not os.path.isdir(directory):
-        return False
-    env = dict(os.environ if environ is None else environ)
-    if any(
-        name.startswith("GIT_TRACE") and value.strip().casefold() not in _GIT_FALSE
-        for name, value in env.items()
-    ):
-        return False
-    git = shutil.which("git", path=env.get("PATH"))
-    if git is None:
-        return False
-    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-    located = _git_output(
-        git,
-        directory,
-        ("rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"),
-        env,
-    )
-    listing = _git_output(git, directory, ("config", "--list", "-z"), env)
-    entries = None if listing is None else _git_config_entries(listing)
-    lines = () if located is None else tuple(located.splitlines())
-    if entries is None or len(lines) != 2 or not all(line.startswith("/") for line in lines):
-        return False
-    toplevel, common = lines
-    if "core.fsmonitor" in entries and _git_true(entries["core.fsmonitor"]):
-        return False
-    if "core.usebuiltinfsmonitor" in entries and _git_true(entries["core.usebuiltinfsmonitor"]):
-        return False
-    if "pager.status" in entries and _git_true(entries["pager.status"]):
-        return False
-    for key, value in entries.items():
-        if key.startswith("trace2."):
-            return False
-        if (
-            key.startswith("filter.")
-            and key.endswith((".clean", ".process"))
-            and _GIT_LFS_FILTERS.get(key) != value
-        ):
-            return False
-    if "core.hookspath" in entries:
-        # A relative hooks path is taken relative to the top of the work tree, where hooks run.
-        configured = entries["core.hookspath"]
-        if configured is None:
-            return False
-        hooks = os.path.join(toplevel, os.path.expanduser(configured))
-    else:
-        hooks = os.path.join(common, "hooks")
-    return not (
-        os.path.lexists(os.path.join(hooks, "post-index-change"))
-        or os.path.lexists(os.path.join(toplevel, ".gitmodules"))
-    )

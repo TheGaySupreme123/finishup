@@ -5766,11 +5766,7 @@ and its contentless stream copy resolve the same committed operation across a `c
 reused by another call, so a collision there still fails closed as `ledger_rejected` (#560).
 For call-keyed partial overlaps, the coordinator validates the committed core action/result and
 existing evidence against the current projection, then appends only missing drafts (#1078,
-PR #1080). A partial intersection is that call's replay only when the call's own action is already
-committed and every committed evidence row it touches, including the row that already holds a
-repeated captured object, was recorded under that action (its causal parent). An intersection on
-source-identity-keyed evidence of another call is a conflict: nothing is appended, so no new action
-or result can cite the first call's observed evidence. Delivery times, rendering and evidence-reference sets may differ; command identity,
+PR #1080). Delivery times, rendering and evidence-reference sets may differ; command identity,
 action identity and existing evidence content must agree. Stream outcome differences retain the
 append-only correction and its conflict disclosure. A smaller committed role set cannot swallow
 new captured input, output or digest-only image evidence. New evidence's existing `reference`
@@ -7858,27 +7854,22 @@ change — an observed edit or shell write, an unclassified observed command or 
 cooperative edit or command, or a `decision_recorded` whose `review_mode` is set (ADR-049); a
 decision that leaves `review_mode` unset, and the rest of bookkeeping and dispositions, do not count
 (`kernel/closing_review_delta`, #1079). Closed host-derived read shapes (non-setting `date -u`,
-`rg` without a preprocessor, bounded `sed -n` print ranges, and FinishUP workflow CLI calls with
-only their non-writing options) are exploration; read-only compositions carry that class only when
-every command is proven read-only and none redirects output or substitutes a command. An
-exploration verdict also needs a program the host resolved: a bare name or an operating-system
-program directory (`/bin`, `/usr/bin`, `/sbin`, `/usr/sbin`), reached only through inert
-locale/time-zone/display assignments and transparent wrappers (`nice`, `ionice`, `timeout`,
-`nohup`, `stdbuf`, `time`, `setsid`, `command`, `exec`, `builtin`). `PATH=`, `LD_PRELOAD`, `env` options, an agent-placed
-program such as `./date` or `/app/shadow/bin/date`, `sudo` and `xargs` keep the command
-conservative. `closure-prepare --output`, and any FinishUP CLI option or operand outside the closed
-non-writing table, is material. `git status` is `vcs` by argv; the hook records it as exploration
-only after reading the repository's effective configuration in the call's working directory and
-finding no fsmonitor, `post-index-change` hook, clean or process filter other than Git LFS's,
-status pager, trace2 target or submodules (PR #1080 round 4). Workspace write facts still win.
-Receipt, work-close and lifecycle events do not re-arm the review. Unknown commands stay
+`rg` without a preprocessor, bounded `sed -n` print ranges, and FinishUP workflow
+CLI calls with known non-writing verbs/options) are exploration; output-path and unknown options
+remain material. Executable resolution is checked before wrappers and paths can be erased, including
+every original compound segment. Arbitrary `bin` paths, environment overrides and unresolved
+wrappers remain material; so does `nohup`, which can create `nohup.out`.
+Observed `git status` stays material without execution-time proof; a later config check or disabling
+only fsmonitor/hooks cannot rule out configured filters and other execution.
+Read-only compositions carry the exploration class only when every command is
+proven read-only and none redirects output or substitutes a command. Workspace write facts still
+win. Receipt, work-close and lifecycle events do not re-arm the review. Unknown commands stay
 conservative: the Stop explanation names that FinishUP could not establish they were read-only.
-Native Codex completed-command argv is normalized before runner classification, and a completed
-command the agent later retrieves through `write_stdin` keeps its own identity. A script's name
-alone does not make it verification beyond the earlier closed shapes (`test*`, `check`, `verify`,
-`validate`, `evaluate`): a finalizer or `*_regression` script counts only as a declared requested
-command (planned verification), so a generator never clears `edited_after_last_verification`.
-Masked shell compositions retain their unknown-part-outcome gap.
+Native Codex runner classification unwraps one ordinary host shell, retaining nested executable
+paths separately from keyed identity normalization. Generic finalizer and
+regression names grant no verification credit. Explicitly requested verification commands use
+the existing ADR-045 matching and completed-result ordering, including a completed command the
+agent later retrieves through `write_stdin`. Masked shell compositions retain their unknown-part-outcome gap.
 An unchanged newest check that failed with
 `coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
 of asking for the same closing review; an actionable
@@ -10614,7 +10605,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `canonical_command_commitments(key, argv) -> (full, prefixes, flags)`,
   `canonical_commitment(key, kind, payload)` (`full|prefix|flag`, domain-separated from segment
   commitments), `command_structure(normalized) -> CommandStructure(commands, composition,
-  compound)`, `planned_segments(key, normalized)`, `strip_wrappers(argv)`;
+  compound)`, `planned_segments(key, normalized)`, `strip_wrappers(argv)` and the single-layer
+  `strip_one_wrapper(argv)` step. Each simple command also retains its original `sources` and
+  whether it is `nested`, solely for executable-resolution checks; these are never recorded or
+  added to canonical verification commitments.
   `command_segment_commitments` now also carries up to `MAX_CANONICAL_COMMITMENTS` (48) canonical
   commitments, `MAX_COMMAND_COMMITMENTS` (80) in all (the observed action `command` field, the hook
   structural list, the control-request 2.9.0 `maxItems` and `observed_failures` share that bound;
@@ -10641,7 +10635,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Runner class.** `domain/observation_selection.command_runner_class` classifies
   `python -m <module>` by module (pytest/unittest/nose2/tox/nox/doctest `test`, mypy/pyright
   `typecheck`, ruff/flake8/pylint/pyflakes/pycodestyle `lint`, build/compileall `build`) and never
-  counts an interpreter-run script as `build` by its name (ADR-042). `RecordedPolicyVersionWire`,
+  counts an interpreter-run script as `build` by its name (ADR-042).
+  `native_command_runner_class(argv)` unwraps at most one ordinary native host-shell layer for
+  runner classification; nested executable spelling remains visible. Generic `finalize` and
+  `*_regression` names grant no verification credit. Exploration additionally requires established
+  executable resolution and closed non-writing arguments, independent of canonical verification
+  matching. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
   `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
   `work-integrity/0.2.0` generation.

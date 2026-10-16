@@ -2451,24 +2451,20 @@ native Windows is not claimed.
 ### Closing currency and observation replay (PR #1080)
 
 The shared host classifier recognizes non-setting `date -u`, ordinary `rg`, bounded numeric
-`sed -n` print ranges, and FinishUP workflow CLI calls with only their non-writing options as
-read-only closure traffic. The program must resolve through the host: a bare name or a system
-program directory, behind only inert locale/time-zone assignments and transparent wrappers such as
-`timeout` or `nice`. `PATH=` or other assignments, `env` options, `./date`-style or agent-owned
-`bin/` programs, `sudo`, `xargs` and `closure-prepare --output` stay material.
+`sed -n` print ranges, and FinishUP workflow CLI calls with known non-writing verbs/options as
+read-only closure traffic. Output-path and unknown options stay material. Original executable
+spelling survives wrapper/compound parsing; arbitrary `bin` paths and environment overrides do not
+inherit a trusted utility identity. `nohup` stays material because it can create `nohup.out`.
+Observed `git status` stays material: later config inspection cannot establish its execution-time
+state, and disabling only fsmonitor/hooks still permits configured clean filters. Safely exempting
+ordinary status requires execution-time evidence beyond this change.
 A runtime workspace write still re-arms closing review, as do real edits and review-mode switches.
 Unknown commands remain material, with an explicit explanation that FinishUP could not establish
 that they were read-only. Receipt, work-close and lifecycle records do not re-arm review.
-A finalizer or `*_regression` script is verification only as a declared requested command.
 
-`git status` is read-only traffic only after the hook proves it. Claude Code's hook payload names
-the call's `cwd`. The hook reads that repository's effective Git configuration and records the call
-as exploration only when Git would run no fsmonitor, `post-index-change` hook, clean or process
-filter (other than Git LFS's), status pager, trace2 target or submodule. Otherwise, and whenever
-the payload names no working directory, the call stays material (`vcs`).
-
-Call-keyed hook/stream overlap is reconciled against immutable core facts, and missing captured
-evidence is appended. The call's own action must already be recorded, and existing evidence must
-belong to it; evidence another call shares through a reused source identity is a conflict. Conflicts
-still reject. Capture consent, authenticated command/output
-binding, privacy policy and provider limits remain required for verification-output auto-supply.
+Call-keyed hook/stream overlap requires an agreeing committed action core and checks reused
+evidence against its original causal action/result association. An evidence-only collision cannot
+create a different call or lend evidence to its pre-action. Missing captured evidence is appended;
+conflicts still reject. Generic `finalize` and `*_regression` names grant no verification credit;
+task-specific verifiers can use explicitly requested command matching under ADR-045. Capture consent,
+authenticated command/output binding, privacy policy and provider limits remain required for verification-output auto-supply.

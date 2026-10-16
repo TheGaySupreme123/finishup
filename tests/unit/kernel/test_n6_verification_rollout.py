@@ -14,19 +14,9 @@ from finishup.adapters.integrations.codex_session_stream import SessionStreamRea
 from finishup.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
 from finishup.application.observation_materialize import materialize_observation_envelope
 from finishup.cli.observe_hooks import map_hook_payload_to_envelope
-from finishup.domain.events import (
-    EventPayload,
-    EventSchema,
-    ObligationPublishedPayload,
-    ObligationStatus,
-    PlanPublishedPayload,
-    RequestedItem,
-    RequestedItemKind,
-    ResultOutcome,
-    ResultRecordedPayload,
-)
+from finishup.domain.events import EventPayload, ResultOutcome, ResultRecordedPayload
 from finishup.domain.observation import ObservationCursor
-from finishup.domain.values import JsonObject, obligation_id
+from finishup.domain.values import JsonObject
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import (
     EDITED_AFTER_LAST_VERIFICATION_GAP,
@@ -34,8 +24,7 @@ from finishup.kernel.task_facts import (
     task_fact_signals,
 )
 from fixture_loader import load_fixture_json
-
-_OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000001081")
+from unit.kernel.test_n6_closing_review_delta import declare_verifier
 
 
 @pytest.fixture(autouse=True)
@@ -45,17 +34,43 @@ def installation_key() -> Iterator[None]:
     register_command_identity_key(None)
 
 
-@pytest.mark.parametrize("declared", [True, False])
+@pytest.mark.parametrize(
+    "command,exploration",
+    [
+        (["/bin/bash", "-lc", "date -u"], True),
+        (["/shadow/bin/bash", "-lc", "date -u; date -u"], False),
+        (["/bin/bash", "-lc", "/shadow/bin/bash -c 'date -u; date -u'"], False),
+        (["/bin/bash", "-lc", "env PATH=/shadow date -u"], False),
+    ],
+)
+def test_native_read_identity_keeps_executable_paths(
+    tmp_path: Path, command: list[str], exploration: bool
+) -> None:
+    fixture = cast(
+        dict[str, object],
+        load_fixture_json("observations/codex-post-tool-outcomes-0.157.1.case.json"),
+    )
+    rollout = cast(dict[str, object], cast(dict[str, object], fixture["input"])["rollout"])
+    lines = json.loads(json.dumps(rollout["lines"]))
+    lines[2]["payload"]["item"].update(command=command, id="call-read-provenance")
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("".join(json.dumps(line) + "\n" for line in [lines[0], lines[2]]))
+    reader = SessionStreamReader(
+        session_commitment="hmac-sha256:" + "1" * 64,
+        profile=None,
+        cursor=ObservationCursor(1, 0, 0, "hmac-sha256:" + "0" * 64, STREAM_MAPPING_VERSION),
+        key_material=INSTALLATION_KEY,
+    )
+    observed = next(
+        row for row in reader.advance(path).envelopes if row.event_kind == "item_completed"
+    )
+    assert (observed.structural_payload["runner_class"] == "exploration") is exploration
+
+
+@pytest.mark.parametrize("declared", [False, True])
 def test_write_stdin_completed_regression_verification_is_after_edit(
     tmp_path: Path, declared: bool
 ) -> None:
-    """The audited vLLM verifier counts after the edit when the agent declared it (round 4).
-
-    ``*_regression.py`` is not verification by name (it can name a model-fitting generator), so
-    the same completion leaves the stale-verification gap when no requested command names it.
-    The native argv normalization and the write_stdin poll are unchanged.
-    """
-
     # Bounded reduction of the vLLM audited command: verifier scripts, heredoc, log and date.
     command = """set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -97,26 +112,7 @@ date -u
     assert observed.structural_payload["runner_class"] == "compound"
     ledger = ObservedLedger()
     if declared:
-        ledger.append(
-            EventSchema("obligation_published", "1.0.0"),
-            ObligationPublishedPayload(
-                obligation_id=_OBLIGATION,
-                description="Streaming parser verified by its regression harness",
-                evidence_expectation="Observed harness run",
-                status=ObligationStatus.OPEN,
-                requested_items=(
-                    RequestedItem(
-                        RequestedItemKind.COMMAND, "python -B /tmp/deepseek_stream_regression.py"
-                    ),
-                ),
-            ),
-            observed=False,
-        )
-        ledger.append(
-            EventSchema("plan_published", "1.0.0"),
-            PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
-            observed=False,
-        )
+        declare_verifier(ledger, "python -B /tmp/deepseek_stream_regression.py")
     ledger.passes("npm run build")
     ledger.edit()
     batch = materialize_observation_envelope(observed, task_id=str(ledger.records[0].task_id))

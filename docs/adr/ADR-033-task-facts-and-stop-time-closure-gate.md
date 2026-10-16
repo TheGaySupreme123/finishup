@@ -1152,56 +1152,41 @@ Check text uses a fixed limitation sentence; status and receipt pairings name ob
 ## Amendment (2026-10-16, PR #1080): read-only closure traffic and native verification
 
 Closing-review currency uses host-derived command facts. Non-setting `date -u`, ordinary `rg`,
-`sed -n` with a closed numeric print range, and FinishUP workflow CLI calls are exploration. A
-composed read is exploration only if every command is recognized, with no output redirection,
-command substitution, heredoc or background execution. Runtime workspace-write facts still
-override exploration.
-
-Decision (round-4 review of this PR): FinishUP calls a command read-only only when it can
-establish that; otherwise the command is material, because a rare extra closing review costs less
-than a hidden change.
-
-- *Program resolution.* An exploration verdict needs a program the host resolved: a bare name or an
-  operating-system program directory (`/bin`, `/usr/bin`, `/sbin`, `/usr/sbin`). The only layers
-  allowed before it are inert locale, time-zone and display assignments (`TZ`, `LANG`, `LC_*`,
-  `NO_COLOR`, `CLICOLOR`, `COLUMNS`, `LINES`) and transparent wrappers (`nice`, `ionice`,
-  `timeout`, `nohup`, `stdbuf`, `time`, `setsid`, `command`, `exec`, `builtin`). Any other
-  assignment (`PATH`, `LD_PRELOAD`, `DYLD_*`, `BASH_ENV`, `RIPGREP_CONFIG_PATH`, `GIT_CONFIG_*`), an
-  `env` option, an agent-placed program (`./date`, `/app/shadow/bin/date`), `sudo` and `xargs` keep
-  it material. Each segment of a composition is rechecked as written, because canonical words drop
-  these layers.
-- *FinishUP's own CLI.* Only `status`, `start`, `check`, `receipt`, `publish-work`, `respond` and
-  `closure-prepare` are exempt, and only with their non-writing options. `closure-prepare --output`
-  replaces a file and stays material, as do any other option and any operand.
-- *`git status`.* Git can run a configured fsmonitor, a `post-index-change` hook, clean or process
-  filters, a status pager and trace2 targets while it reports status, so its argv is `vcs`. It is no
-  longer a routine read either. A hook records it as exploration only after it reads the
-  repository's effective configuration (`git rev-parse` and `git config --list`, which run none of
-  those) in the call's own working directory and finds none of them, no submodules, and no
-  `GIT_TRACE*` target. Git LFS's installed filter values are the one exception. The Codex session
-  stream knows no working directory, so a stream-recorded `git status` stays `vcs`.
-- *Verifier names.* The interpreter-run `finalize` and `*_regression` names are not added. Those
-  names describe generators (output finalizers, regression-model fits) as often as checks, and a
-  generator credited as verification erased a real `edited_after_last_verification` gap even
-  beside its own workspace-write fact. The audited HOF and vLLM verifiers count when the agent
-  declares them as requested commands: planned verification (ADR-045) credits the declared command,
-  keeping its command/result identity and ordering, including inside the command that made the last
-  edit and when its result is retrieved through `write_stdin`. An undeclared generator stays `other`. Receipt, work-close and lifecycle records remain bookkeeping. Real
+`sed -n` with a closed numeric print range, and FinishUP workflow CLI calls with known non-writing
+verbs/options are exploration. Output-path options (including `closure-prepare --output`) and
+unknown options remain material. A composed read is exploration only if every command is recognized,
+with no output redirection, command substitution, heredoc or background execution. Runtime workspace-write facts
+still override exploration. Receipt, work-close and lifecycle records remain bookkeeping. Real
 edits, workspace-writing commands, fresh verification runs and review-mode switches retain the
 #1079 material-delta rule. Unknown commands remain material; the Stop text says that FinishUP
 could not establish they were read-only, without claiming an edit was observed.
 
-The native Codex `CommandExecution.command` argv is normalized before runner classification,
-just as it is for keyed command identity. A verifier after an edit in one command counts at
-that completed command's result frontier. A native completed command also counts when the agent
-later retrieves its result through `write_stdin`; a poll does not replace the original command's
+Native Codex `CommandExecution.command` runner classification unwraps only one ordinary host
+shell, preserving any nested executable paths. Keyed identity retains its existing normalization.
+`finalize` and `*_regression` names alone do not establish verification: they can generate output without checking it. The task's explicitly requested
+verification command can credit such an observed run through the existing ADR-045 matching and
+ordering rules. An undeclared generator retains a real stale-verification gap. A verifier after
+an edit in one command counts at that completed command's result frontier. A native completed
+command also counts when the agent later retrieves its result through `write_stdin`; a poll does not replace the original command's
 identity. Shell compositions that can mask individual outcomes still disclose that uncertainty.
 Runner classification establishes an observed run, never that its assertions are correct.
+
+Read exemptions preserve the original executable spelling through every supported wrapper and
+compound segment. Arbitrary directories named `bin`, resolution-changing environments and
+unresolved wrappers remain material. `nohup` remains material because it can create `nohup.out`.
+Bare commands retain the host's ordinary executable resolution; this does not authenticate an
+arbitrary executable path or an explicit PATH override.
+
+Unguarded `git status` remains material, including in an ordinary repository: its argv cannot
+establish execution-time configuration. A later hook-side config check cannot supply that proof.
+Even `-c core.fsmonitor= -c core.hooksPath=/dev/null` leaves clean filters and other configured
+execution possible, so those flags alone grant no exemption. FinishUP's own hardened Git adapter
+has separate environment/configuration safeguards; they are not inferred for observed agent
+commands. Safely exempting ordinary status needs execution-time evidence beyond this change.
 
 Current inspection/change-capture snapshots do not establish a per-command before/after workspace
 pair. They cannot make arbitrary commands harmless; agent text cannot supply that proof. Returning
 a server timestamp is deferred to a versioned workflow-result change; ordinary `date -u` is safe
-closure traffic in this revision. Codex uses the native argv normalization; Claude Code and Cursor
-use the shared classifier through their hook normalizers. All three hooks apply the same `git status`
-configuration proof to the working directory their payload names. The CLI, MCP/status, TUI and receipt
+closure traffic in this revision. Codex preserves native argv resolution separately from keyed
+identity normalization; Claude Code and Cursor use the shared classifier through their hook normalizers. The CLI, MCP/status, TUI and receipt
 currency all derive from the same observed classification and kernel predicates.

@@ -56,8 +56,8 @@ from finishup.domain.observation_selection import (
     ObservationClassification,
     ObservationContentRole,
     classify_observation,
-    command_runner_class,
     compound_verification_gap_required,
+    native_command_runner_class,
 )
 from finishup.domain.shell_writes import shell_write_scope
 from finishup.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
@@ -1242,15 +1242,9 @@ def structural_from_stream_record(
                     fields["command_segment_commitments"] = segments[0]
                     fields["command_composition"] = segments[1]
         if item_type == "CommandExecution":
-            command_payload = JsonObject(
-                {
-                    "tool_name": tool or "shell",
-                    # Native CommandExecution uses argv, unlike hook tool_input.cmd.
-                    # Classify the same unwrapped command whose keyed identity we record.
-                    "command": normalize_observed_command(body.get("command")),
-                }
-            )
-            runner = command_runner_class(command_payload)
+            # Identity normalization may recursively erase shell executable paths. Read-only
+            # classification retains them beyond the one ordinary native host-shell layer.
+            runner = native_command_runner_class(body.get("command"))
             if runner is not None:
                 fields["runner_class"] = runner
             raw_command = body.get("command")
@@ -1264,7 +1258,7 @@ def structural_from_stream_record(
                     # The closed token as the hook would send it (workspace, or the non-counting
                     # notes / finishup_owned scope a declared output of that kind overrides).
                     fields["write_scope"] = scope
-                if compound_verification_gap_required(command_payload):
+                if compound_verification_gap_required({"command": raw_command}):
                     # Preserve the host's outer result. The bounded gap records that a
                     # masking-capable composition does not expose each nested outcome (#968).
                     gaps.add(ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value)

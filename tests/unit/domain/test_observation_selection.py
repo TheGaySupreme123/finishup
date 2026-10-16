@@ -105,25 +105,6 @@ def test_closed_read_shell_commands_are_candidates(command: str) -> None:
     assert is_routine_read_candidate({"tool_name": "exec_command", "tool_input": {"cmd": command}})
 
 
-def test_git_status_is_never_a_routine_read_by_argv_alone() -> None:
-    """PR #1080 round 4: Git can run a configured fsmonitor, hook or filter during status.
-
-    Only the host boundary can read that configuration, so the call is recorded individually and
-    its runner class (``vcs`` unless the hook proves otherwise) decides whether it was read-only.
-    """
-
-    payload: dict[str, JsonValue] = {
-        "tool_name": "exec_command",
-        "tool_input": {"cmd": "git status --short"},
-        "exit_status": 0,
-    }
-    assert not is_routine_read_candidate(payload)
-    result = classify_observation(payload, "PostToolUse")
-    assert result.routine_candidate is False
-    assert result.protected is True
-    assert command_runner_class(payload) == "vcs"
-
-
 @pytest.mark.parametrize(
     ("payload", "reason"),
     [

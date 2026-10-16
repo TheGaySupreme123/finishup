@@ -20,14 +20,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
-from finishup.domain.command_segments import (
-    SimpleCommand,
-    command_structure,
-    strip_one_wrapper,
-    strip_wrappers,
-)
-from finishup.domain.observation import normalize_observed_command
-from finishup.legacy_names import LAUNCHER_NAMES
+from finishup.domain.command_segments import command_structure, strip_one_wrapper, strip_wrappers
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import strict_json_parse
 from finishup.protocol.errors import ProtocolValueError
@@ -508,11 +501,11 @@ def _routine_shell_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineF
         ):
             return _RoutineFacts(False, "unsafe_shell")
     subcommand = argv[1]
-    # ``git status`` is absent on purpose: it can run a configured fsmonitor, a
-    # ``post-index-change`` hook or a clean filter. Only the host boundary can establish that the
-    # repository configures none (PR #1080 round 4), so its call is recorded individually and the
-    # runner class decides whether it was read-only.
-    if subcommand not in {"diff", "log", "rev-parse", "show"}:
+    if subcommand == "status":
+        # A successful status can still have run fsmonitor, post-index-change or clean filters.
+        # It must remain individually observed, rather than disappearing as a routine read.
+        return _RoutineFacts(False, "unsafe_shell")
+    if subcommand not in {"diff", "log", "rev-parse", "show", "status"}:
         return _RoutineFacts(False, _routine_shell_reason(command, argv))
     if subcommand == "diff" and "--check" in argv[2:]:
         return _RoutineFacts(False, "verification")
@@ -540,120 +533,81 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
 
 
 # A directory that holds installed tools: a program run from there is that tool, not the agent's
-# own script (``/usr/bin/g++``, ``.venv/bin/pytest``, ``/tmp/venv/bin/python``). This names a
-# verifier's program; it never proves a read (see ``_host_resolved_argv``).
+# own script (``/usr/bin/g++``, ``.venv/bin/pytest``, ``/tmp/venv/bin/python``).
 _TOOL_DIRECTORY_RE: Final = re.compile(r"(?:^|/)s?bin/[^/]+$", re.ASCII)
 
-# Executable resolution behind an ``exploration`` verdict (PR #1080 round 4). That verdict names a
-# trusted read-only tool, so every layer before it must leave program resolution to the host: a
-# bare name the host's ``PATH`` resolves, or an operating-system program directory. A program the
-# agent placed (``./date``, ``/app/shadow/bin/date``) is not the tool its basename names, and an
-# assignment can change what runs or what it loads (``PATH``, ``LD_PRELOAD``, ``DYLD_*``,
-# ``BASH_ENV``, ``RIPGREP_CONFIG_PATH``, ``GIT_CONFIG_*``). Only the closed locale, time-zone and
-# display names below are inert; any other assignment keeps the command conservative.
-_SYSTEM_PROGRAM_RE: Final = re.compile(r"^/(?:usr/)?s?bin/[^/]+$", re.ASCII)
-_ASSIGNMENT_NAME_RE: Final = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=", re.ASCII)
-_INERT_ENVIRONMENT: Final = frozenset(
-    {
-        "CLICOLOR",
-        "COLUMNS",
-        "LANG",
-        "LANGUAGE",
-        "LC_ALL",
-        "LC_COLLATE",
-        "LC_CTYPE",
-        "LC_MESSAGES",
-        "LC_MONETARY",
-        "LC_NUMERIC",
-        "LC_TIME",
-        "LINES",
-        "NO_COLOR",
-        "TZ",
-    }
+
+_SYSTEM_EXECUTABLE_RE: Final = re.compile(r"^/(?:usr/)?s?bin/[^/]+$", re.ASCII)
+_READ_WRAPPERS: Final = frozenset(
+    {"command", "exec", "nice", "timeout", "ionice", "setsid", "stdbuf", "time"}
 )
-# Wrappers whose own options never choose another program. ``env`` is handled apart (its options
-# can clear the environment, change directory or name a search path); ``sudo``, ``xargs`` and the
-# package-manager launchers are not wrappers here, so what they run stays unresolved.
-_TRANSPARENT_WRAPPERS: Final = frozenset(
-    {"builtin", "command", "exec", "ionice", "nice", "nohup", "setsid", "stdbuf", "time", "timeout"}
-)
-_MAX_RESOLUTION_LAYERS: Final = 8
+_INERT_ASSIGNMENTS: Final = frozenset({"TZ", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR"})
 
 
-def _host_resolved_program(word: str) -> bool:
-    if not word or "\\" in word:
-        return False
-    return "/" not in word or _SYSTEM_PROGRAM_RE.fullmatch(word) is not None
+def _read_executable_resolved(argv: list[str]) -> bool:
+    """Keep every original executable layer and resolution-changing environment visible.
 
-
-def _host_resolved_argv(argv: list[str]) -> list[str] | None:
-    """*argv* without its inert assignments and transparent wrappers, or ``None``.
-
-    ``None`` when any layer could make something other than the named tool run: an assignment
-    outside ``_INERT_ENVIRONMENT``, an ``env`` option, a program path outside the operating-system
-    program directories, or more layers than this bound reads.
+    Canonical verification matching deliberately drops wrappers and paths. A read exemption
+    cannot use that identity: arbitrary bin directories, PATH/loader/config overrides and
+    unresolved wrappers stay material. nohup itself may create nohup.out. Shell initializers
+    and privileged/package launchers are not transparent reads either.
     """
 
-    rest = [word for word in argv if type(word) is str]
-    for _ in range(_MAX_RESOLUTION_LAYERS):
+    rest = list(argv)
+    for _ in range(8):
         if not rest:
-            return None
-        assignment = _ASSIGNMENT_NAME_RE.match(rest[0])
-        if assignment is not None:
-            if assignment.group(1) not in _INERT_ENVIRONMENT:
-                return None
+            return False
+        name, equals, _value = rest[0].partition("=")
+        if equals:
+            if name not in _INERT_ASSIGNMENTS:
+                return False
             rest.pop(0)
             continue
-        if not _host_resolved_program(rest[0]):
-            return None
-        name = rest[0].rsplit("/", 1)[-1]
+        word = rest[0]
+        if "\\" in word or ("/" in word and _SYSTEM_EXECUTABLE_RE.fullmatch(word) is None):
+            return False
+        name = word.rsplit("/", 1)[-1]
         if name == "env":
             rest.pop(0)
             if rest and rest[0].startswith("-"):
-                return None
+                return False
             continue
-        if name in _TRANSPARENT_WRAPPERS:
+        if name in _READ_WRAPPERS:
             if not strip_one_wrapper(rest, launchers=False):
-                return None
+                return False
             continue
-        return rest
-    return None
+        return name not in _SHELL_WRAPPERS | {"nohup", "sudo", "builtin"}
+    return False
 
 
-# FinishUP's own workflow verbs and the options each accepts without writing a file (``True``: the
-# option takes a value). Their task effects are the cooperative records the service writes, a
-# review-mode switch included. ``closure-prepare --output`` replaces a file, so it is absent: an
-# option outside this table, or any operand, keeps the call conservative (PR #1080 round 4).
-_FINISHUP_COMMON_OPTIONS: Final[Mapping[str, bool]] = MappingProxyType(
-    {"--deadline-ms": True, "--help": False, "--input": True, "--json": False, "--request": True}
+_WORKFLOW_OPTIONS: Final[Mapping[str, bool]] = MappingProxyType(
+    {"--input": True, "--request": True, "--deadline-ms": True, "--json": False, "--help": False}
 )
-_FINISHUP_READ_VERBS: Final[Mapping[str, Mapping[str, bool]]] = MappingProxyType(
+_READ_WORKFLOW_VERBS: Final[Mapping[str, Mapping[str, bool]]] = MappingProxyType(
     {
-        "check": MappingProxyType({**_FINISHUP_COMMON_OPTIONS, "--await-observations": False}),
-        "closure-prepare": MappingProxyType(
-            {"--help": False, "--input": True, "--session-id": True, "--writer-id": True}
-        ),
-        "publish-work": _FINISHUP_COMMON_OPTIONS,
+        "status": _WORKFLOW_OPTIONS,
+        "publish-work": _WORKFLOW_OPTIONS,
+        "respond": _WORKFLOW_OPTIONS,
+        "check": MappingProxyType({**_WORKFLOW_OPTIONS, "--await-observations": False}),
         "receipt": MappingProxyType(
-            {**_FINISHUP_COMMON_OPTIONS, "--owner-view": False, "--use-passphrase": False}
+            {**_WORKFLOW_OPTIONS, "--owner-view": False, "--use-passphrase": False}
         ),
-        "respond": _FINISHUP_COMMON_OPTIONS,
-        "start": MappingProxyType({**_FINISHUP_COMMON_OPTIONS, "--task-statement-file": True}),
-        "status": _FINISHUP_COMMON_OPTIONS,
+        "start": MappingProxyType({**_WORKFLOW_OPTIONS, "--task-statement-file": True}),
+        "closure-prepare": MappingProxyType(
+            {"--session-id": True, "--writer-id": True, "--input": True, "--help": False}
+        ),
     }
 )
 
 
-def _finishup_workflow_call(argv: list[str]) -> bool:
-    """Whether *argv* is one FinishUP workflow verb with only its non-writing options."""
-
-    options = _FINISHUP_READ_VERBS.get(argv[1]) if len(argv) > 1 else None
+def _read_workflow_call(argv: list[str]) -> bool:
+    options = _READ_WORKFLOW_VERBS.get(argv[1]) if len(argv) > 1 else None
     if options is None:
         return False
     index = 2
     while index < len(argv):
-        name, equals, _value = argv[index].partition("=")
-        takes_value = options.get(name)
+        option, equals, _value = argv[index].partition("=")
+        takes_value = options.get(option)
         if takes_value is None or (equals and not takes_value):
             return False
         index += 1 if equals or not takes_value else 2
@@ -661,14 +615,11 @@ def _finishup_workflow_call(argv: list[str]) -> bool:
 
 
 def _classify_argv(argv: list[str]) -> RunnerClass | None:
-    runner = _classify_argv_unresolved(argv)
-    if runner == "exploration" and _host_resolved_argv(argv) is None:
-        # A read-only verdict for a program the host did not resolve is not established.
-        return "other"
-    return runner
+    result = _classify_resolved_argv(argv)
+    return "other" if result == "exploration" and not _read_executable_resolved(argv) else result
 
 
-def _classify_argv_unresolved(argv: list[str]) -> RunnerClass | None:
+def _classify_resolved_argv(argv: list[str]) -> RunnerClass | None:
     if not argv:
         return None
     # Wrappers (``timeout 600``, ``nice``, ``env FOO=1``, ``nohup``, ``stdbuf``) and leading
@@ -689,7 +640,7 @@ def _classify_argv_unresolved(argv: list[str]) -> RunnerClass | None:
         for argument in argv[1:]
     ):
         return "exploration"
-    if command in LAUNCHER_NAMES and _finishup_workflow_call(argv):
+    if command in {"finishup", "yoetz"} and _read_workflow_call(argv):
         # Its task effects are the cooperative records, including review-mode switches.
         # Shell writes/redirections are still classified separately at the host boundary.
         return "exploration"
@@ -1054,84 +1005,6 @@ def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerCla
     return _runner_class_for_argv(argv)
 
 
-# ``git status`` options that only choose what is shown. ``-v`` (a diff that can run diff drivers),
-# ``-c``/``--config-env`` and every global option except ``-C`` are absent: such a call is not
-# this closed read.
-_GIT_STATUS_OPTIONS: Final = frozenset(
-    {
-        "--ahead-behind",
-        "--branch",
-        "--column",
-        "--ignore-submodules",
-        "--ignore-submodules=all",
-        "--ignored",
-        "--ignored=matching",
-        "--ignored=no",
-        "--ignored=traditional",
-        "--long",
-        "--no-ahead-behind",
-        "--no-column",
-        "--no-renames",
-        "--null",
-        "--porcelain",
-        "--porcelain=v1",
-        "--porcelain=v2",
-        "--renames",
-        "--short",
-        "--show-stash",
-        "--untracked-files",
-        "--untracked-files=all",
-        "--untracked-files=no",
-        "--untracked-files=normal",
-    }
-)
-_GIT_STATUS_SHORT_RE: Final = re.compile(r"^-(?:[sbz]+|u(?:no|normal|all)?)$", re.ASCII)
-
-
-def git_status_read_operands(command: str) -> tuple[str, ...] | None:
-    """The ``-C`` directories of one closed ``git status`` call, or ``None`` for any other command.
-
-    Git can run configured programs while it reports status (``core.fsmonitor``, a
-    ``post-index-change`` hook, a clean filter, a status pager, a trace target), so this argv shape
-    alone never proves a read: ``command_runner_class`` keeps it ``vcs``. Only the host boundary,
-    which can read the repository's configuration, may record it as exploration
-    (``cli.runtime_facts.git_status_execution_free``, PR #1080 round 4). The program must resolve
-    through the host (``_host_resolved_argv``) and the call must be one simple command.
-    """
-
-    if (
-        type(command) is not str
-        or not command
-        or len(command) > _MAX_COMMAND_CHARS
-        or "\x00" in command
-        or _is_shell_compound(command)
-    ):
-        return None
-    try:
-        argv = shlex.split(command, posix=True)
-    except ValueError:
-        return None
-    resolved = _host_resolved_argv(argv)
-    if resolved is None or resolved[0].rsplit("/", 1)[-1] != "git":
-        return None
-    operands = resolved[1:]
-    directories: list[str] = []
-    while len(operands) >= 2 and operands[0] == "-C":
-        directories.append(operands[1])
-        operands = operands[2:]
-    if not operands or operands[0] != "status":
-        return None
-    pathspecs = False
-    for word in operands[1:]:
-        if pathspecs or not word.startswith("-"):
-            continue
-        if word == "--":
-            pathspecs = True
-        elif word not in _GIT_STATUS_OPTIONS and _GIT_STATUS_SHORT_RE.fullmatch(word) is None:
-            return None
-    return tuple(directories)
-
-
 def command_is_verification(command: str) -> bool:
     """Whether ``command_runner_class`` already calls this command a test, build, lint, or typecheck.
 
@@ -1142,6 +1015,28 @@ def command_is_verification(command: str) -> bool:
     if type(command) is not str or not command:
         return False
     return command_runner_class({"command": command}) in _VERIFYING_CLASSES
+
+
+def native_command_runner_class(value: CanonicalJsonValue) -> RunnerClass | None:
+    """Classify native argv while retaining executable provenance beyond one host shell.
+
+    The host's exact argv may name its ordinary system shell. Only that one outer layer can
+    be unwrapped for classification; recursive identity normalization could erase a nested
+    agent-owned shell executable. Keyed identity normalization remains separate.
+    """
+
+    if isinstance(value, (list, tuple)) and value and all(type(word) is str for word in value):
+        argv = cast(list[str], list(value))
+        shell = argv[0].rsplit("/", 1)[-1]
+        if (
+            len(argv) == 3
+            and shell in _SHELL_WRAPPERS
+            and ("/" not in argv[0] or _SYSTEM_EXECUTABLE_RE.fullmatch(argv[0]) is not None)
+            and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]) is not None
+        ):
+            return command_runner_class({"command": argv[2]})
+        return command_runner_class({"command": shlex.join(argv)})
+    return command_runner_class({"command": value})
 
 
 _SHELL_COMPOSITION_MARKERS: Final = ("\n", "\r", ";", "&", "|", ">", "<", "`", "$(")
@@ -1165,8 +1060,9 @@ def _compound_runner_class(raw: str) -> RunnerClass:
     separately by ``compound_verification_gap_required``.
     """
 
-    normalized = normalize_observed_command(raw)
-    structure = None if normalized is None else command_structure(normalized)
+    # Segmentation itself normalizes each leaf. Keep the outer spelling so a shell wrapper's
+    # executable cannot be erased before the read-only provenance check sees it.
+    structure = command_structure(raw)
     if structure is None or not structure.commands:
         return "compound"
     classes: set[RunnerClass] = set()
@@ -1180,35 +1076,24 @@ def _compound_runner_class(raw: str) -> RunnerClass:
     for verifying in _VERIFYING_PRIORITY:
         if verifying in classes:
             return cast(RunnerClass, verifying)
-    if (
-        classes == {"exploration"}
-        and not any(marker in raw for marker in ("$(", "`", "<<", "&"))
-        and all(_compound_read_segment(command) for command in structure.commands)
-    ):
-        return "exploration"
-    return "compound"
-
-
-def _compound_read_segment(command: SimpleCommand) -> bool:
-    """Whether one simple command of a composition is a read whose program the host resolved.
-
-    Canonical words drop assignments, ``env`` and wrappers and reduce the program to its basename,
-    so each segment is rechecked as written: an agent-owned ``./date``, a ``PATH=...`` or
-    ``env PATH=...`` prefix, or a program path outside the system directories cannot acquire a
-    harmless tool's identity. A segment inside a shell wrapper or heredoc is not established.
-    """
-
-    if command.writes or command.nested or not command.sources or not command.words:
-        return False
-    for source in command.sources:
+    if classes == {"exploration"} and not any(marker in raw for marker in ("$(", "`", "<<", "&")):
         try:
-            words = shlex.split(source, posix=True)
+            # Canonical words erase executable paths. Recheck the original argv so an
+            # agent-owned ./date or ./finishup cannot acquire a harmless tool's identity.
+            if all(
+                not command.writes
+                and not command.nested
+                and bool(command.sources)
+                and all(
+                    _runner_class_for_argv(shlex.split(source, posix=True)) == "exploration"
+                    for source in command.sources
+                )
+                for command in structure.commands
+            ):
+                return "exploration"
         except ValueError:
-            return False
-        resolved = _host_resolved_argv(words)
-        if resolved is None or resolved[0].rsplit("/", 1)[-1] != command.words[0]:
-            return False
-    return _runner_class_for_argv(list(command.words)) == "exploration"
+            pass
+    return "compound"
 
 
 def compound_verification_gap_required(payload: Mapping[str, CanonicalJsonValue]) -> bool:
@@ -1385,8 +1270,8 @@ __all__ = [
     "classify_observation",
     "compound_verification_gap_required",
     "command_runner_class",
+    "native_command_runner_class",
     "envelope_outcome_state",
-    "git_status_read_operands",
     "is_edit_tool_name",
     "is_routine_read_candidate",
 ]

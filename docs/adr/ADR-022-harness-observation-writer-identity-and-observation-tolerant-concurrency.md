@@ -310,21 +310,18 @@ unsupported claims and unbounded duplicate findings.
     reaches the recorded action through the same append-only correction; an append the ledger
     refuses as `EVENT_INVALID` is re-read the same way before it can quarantine. Amendment
     (PR #1080, #1078 class): a call-keyed partial overlap is reconciled against the
-    current readable projection. Matching core facts are replayed; only missing evidence/events
-    are appended under their own role-set operation. Existing events remain immutable. Different
+    current readable projection. The call must already have an agreeing committed action core;
+    an evidence-only intersection cannot authorize a new core. Every reused evidence row must
+    retain its original causal action and result association with this call, even when a different
+    call has its own committed pre-action. Matching core facts are replayed; only missing
+    evidence/events are appended under their own role-set operation. Existing events remain immutable. Different
     delivery times, rendering and evidence-reference sets do not change the core. A conflicting
     action/command or existing evidence payload still rejects; stream outcome differences keep
     their append-only conflict correction. A smaller committed operation cannot discard new
     captured evidence. One immediate reconciliation also handles an overlap that races append;
     further agreeing races remain retryable rather than quarantined.
-    A collision on source-identity-keyed ids (#560) remains a content refusal. A partial
-    intersection is that call's replay only when the call's own action is already committed and
-    every committed evidence row it touches (an overlapping event, or the row that already holds a
-    repeated captured object) names that action event as its causal parent. Evidence of another
-    call that a reused source identity intersects is such a collision: the delivery appends nothing,
-    so no new action or result can cite it, whether or not the second call's pre-event recorded its
-    action first (round-4 review). This changes no capture consent, content authentication, byte
-    budget or provider eligibility rule.
+    A collision on source-identity-keyed ids (#560) remains a content refusal. This changes no
+    capture consent, content authentication, byte budget or provider eligibility rule.
     Late evidence uses the existing optional `evidence_recorded.reference` to name its original action
     event after core and causal-parent validation. Selection follows that link only for service-stamped
     observation-captured provenance and retains the original execution frontier. F1 authenticated

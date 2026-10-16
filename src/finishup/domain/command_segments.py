@@ -432,16 +432,14 @@ class SimpleCommand:
     ``words`` is ``canonical_words`` of the segment (wrappers and assignments dropped, argv[0]
     reduced to its basename, ``python3`` to ``python``), ``text`` the normalized segment text
     exactly as ``command_segments`` lists it, and ``writes`` whether the segment sends its output
-    into a file. ``sources`` holds every segment exactly as written, before its leading
-    assignments, ``env`` and keywords were dropped (distinct segments can share one ``text``), and
-    ``nested`` whether any of them came from a shell wrapper's argument or a heredoc, so a
-    classifier can still see what resolves the program. Exists only to be committed or classified;
-    never stored, displayed or sent.
+    into a file. Exists only to be committed or classified; never stored, displayed or sent.
     """
 
     text: str
     words: tuple[str, ...]
     writes: bool = False
+    # Preserve executable/environment spelling for read-only classification. Canonical argv
+    # intentionally erases it for verification matching; that is not execution provenance.
     sources: tuple[str, ...] = ()
     nested: bool = False
 
@@ -728,12 +726,7 @@ def _strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
 
 
 def strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
-    """Drop one leading assignment or wrapper (with its own options) from *words* in place.
-
-    The single-layer step of ``strip_wrappers``, for a caller that must inspect every layer it
-    removes (``domain.observation_selection`` refuses a layer that can change which program
-    runs). ``True`` when a layer was dropped.
-    """
+    """Remove one canonical wrapper, allowing callers to inspect each original layer first."""
 
     return _strip_one_wrapper(words, launchers=launchers)
 
