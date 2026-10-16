@@ -2236,6 +2236,14 @@ def _visible_content_chunks(
                 payload.get("visible_content") or payload.get("message"),
             )
 
+    # Authenticated post-tool command context stays local, never a provider excerpt.
+    if (
+        event_name == "PostToolUse"
+        and _is_command_tool(payload.get("tool_name"))
+        and command_runner_class(payload) in {"test", "build", "lint", "typecheck"}
+    ):
+        add(ObservationContentKind.TOOL_INPUT, "tool-input", payload.get("tool_input"))
+
     for key, kind, label in (
         ("diff", ObservationContentKind.WORKSPACE_DIFF, "diff"),
         ("patch", ObservationContentKind.WORKSPACE_DIFF, "patch"),

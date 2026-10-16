@@ -1235,7 +1235,13 @@ packet may include hook-captured output of a command the named targets ran. The 
 newest readable run of that command. A readable command action that no readable result cites
 occupies the command, so a tombstoned newest result does not fall back to an older capture. A
 tombstoned action has no command text left and cannot occupy a key. A command with no run key
-(`omitted:structural`), and any command recorded as `omitted:`, is not auto-supplied.
+(`omitted:structural`) is not auto-supplied. Native keyed `omitted:` actions qualify only
+when the service authenticates complete, unredacted post-tool input and output from the same
+capture phase, binds the envelope's keyed command identity to the action, and runs all gates
+below on that input. Native hooks retain this input locally under the existing capture consent
+and aggregate byte budget; it is eligibility context and never a provider excerpt. Missing,
+truncated, redacted, pre-tool, or differently bound input fails closed. Older captures without
+this context remain withheld; no agent assertion can substitute for it.
 
 The item is sent only when every gate below passes. It is one repository excerpt, inside the
 existing per-excerpt and total excerpt limits. This does not widen consent or add authority.

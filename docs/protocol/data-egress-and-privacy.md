@@ -420,3 +420,11 @@ runs the command can make the dialog appear but cannot answer it, so approve it 
 for the full receipt yourself. A process running as the owner's account that can already read the
 vault passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
 every passphrase reauthentication (ADR-008).
+
+Native verification-output follow-ups (issue #1079, F1): keyed `omitted:` command
+actions use service-authenticated post-tool command input bound to the output's exact
+capture phase and keyed action identity. Hooks retain this context locally under the
+existing capture consent and byte budget; the input is never sent to the reviewer.
+The same verification classification, environment/path refusal and whole-item secret
+gates apply. Absent, partial, redacted or differently bound context withholds the output.
+Private and repository-excerpt denial still send no auto-supplied output.

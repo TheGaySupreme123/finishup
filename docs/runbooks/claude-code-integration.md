@@ -2438,3 +2438,12 @@ replace those bytes with the current renderer even when guidance changed. Actual
 the marker and preserve the source as a destination conflict. The Codex `owned_skill_update`
 warning is specific to Codex; Claude Code keeps its existing managed-source update behavior.
 This is adapter coverage, not a new claim about a native host/OS lifecycle cell.
+
+## Observed verification-output follow-ups
+
+Verification-output follow-ups retain complete post-tool verifier input locally beside its
+output, under the existing scoped content-capture consent and byte limits. The shared resolver
+uses the authenticated same-phase input only for eligibility; it never sends that input as an
+excerpt. Older captures without this context remain withheld. Private and repository-excerpt
+denial withhold the auto-supplied output. This shared path applies on macOS, Linux and WSL 2;
+native Windows is not claimed.

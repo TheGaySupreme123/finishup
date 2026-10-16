@@ -16,6 +16,7 @@ import re
 import shlex
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple, cast
 
@@ -671,6 +672,9 @@ class CapturedSemanticContent:
     phase_identity: str
     capture_profile: str
     capture_gaps: tuple[str, ...] = ()
+    # Same-phase authenticated post-tool input, supplied by the resolver; never sent.
+    observed_command: str | None = dataclass_field(default=None, repr=False)
+    observed_command_identity: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -744,6 +748,8 @@ class _CapturedGroup:
     source_kind: _ExcerptKind
     digest_provenance: ExcerptDigestProvenance
     capture_gaps: tuple[str, ...]
+    observed_command: str | None = dataclass_field(default=None, repr=False)
+    observed_command_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2613,6 +2619,15 @@ def _captured_content_groups(
                 provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
             )
         group = _CapturedGroup(
+            observed_command=first_item.observed_command
+            if all(item.observed_command == first_item.observed_command for _ref, item in rows)
+            else None,
+            observed_command_identity=first_item.observed_command_identity
+            if all(
+                item.observed_command_identity == first_item.observed_command_identity
+                for _ref, item in rows
+            )
+            else None,
             evidence_refs=tuple(ref for ref, _item in rows),
             content=combined,
             source_kind=source_kind,
@@ -3935,6 +3950,8 @@ def _auto_supply_refusal(
     *,
     workspace_root: str | None,
     check_time_change: CheckChangeCapture | None,
+    captured_command: str | None = None,
+    captured_identity: str | None = None,
 ) -> _OmissionReason | None:
     """Why this capture must not be auto-supplied, or ``None`` when it may.
 
@@ -3945,6 +3962,10 @@ def _auto_supply_refusal(
     not sent.
     """
 
+    if command is not None and command.startswith("omitted:"):
+        if captured_identity != command or captured_command is None:
+            return "withheld_by_policy"
+        command = captured_command
     if command is None or not command.strip() or command.lstrip().startswith("omitted:"):
         return "withheld_by_policy"
     if not command_is_verification(command):
@@ -4161,6 +4182,8 @@ def _select_targeted_excerpts(
         newest_runs,
         redacted_command_runs,
     ) = _verification_identities(projection)
+    if follow_up is not None:
+        linked_subjects.update(follow_up.source_refs)
     candidates = _evidence_candidates(
         projection=projection,
         allowed=allowed,
@@ -4598,6 +4621,8 @@ def _select_targeted_excerpts(
                 refusal = _auto_supply_refusal(
                     _observed_command_text(projection, raw.verification_action),
                     group.content,
+                    captured_command=group.observed_command,
+                    captured_identity=group.observed_command_identity,
                     workspace_root=workspace_root,
                     check_time_change=check_time_change,
                 )

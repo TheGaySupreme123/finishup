@@ -3452,3 +3452,10 @@ Verification: `tests/unit/cli/test_setup_wizard_smoothness.py`,
 `tests/unit/cli/test_host_connection.py` and `tests/unit/cli/test_codex_subscription.py`. The vault
 and provider steps of `finishup setup run` were not walked end to end for this change (the
 sandbox walk had no macOS keychain), and no native Codex session was recorded for it.
+
+Verification-output follow-ups retain complete post-tool verifier input locally beside its
+output, under the existing scoped content-capture consent and byte limits. The shared resolver
+uses the authenticated same-phase input only for eligibility; it never sends that input as an
+excerpt. Older captures without this context remain withheld. Private and repository-excerpt
+denial withhold the auto-supplied output. This shared path applies on macOS, Linux and WSL 2;
+native Windows is not claimed.

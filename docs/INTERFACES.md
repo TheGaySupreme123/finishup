@@ -10870,3 +10870,11 @@ no grant: the ceremony fails `target_invalid`); `consume(admission, target)` suc
 that admission only; `release` on disconnect revokes its grants. Other result methods keep their classifications. Codex, Claude Code
 and Cursor share this service boundary; MCP summaries and the Stop gate use projected fields and
 structural counts.
+
+Native verification-output follow-ups (issue #1079, F1): keyed `omitted:` command
+actions use service-authenticated post-tool command input bound to the output's exact
+capture phase and keyed action identity. Hooks retain this context locally under the
+existing capture consent and byte budget; the input is never sent to the reviewer.
+The same verification classification, environment/path refusal and whole-item secret
+gates apply. Absent, partial, redacted or differently bound context withholds the output.
+Private and repository-excerpt denial still send no auto-supplied output.

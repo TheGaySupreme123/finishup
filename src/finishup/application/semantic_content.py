@@ -52,6 +52,7 @@ from finishup.domain.observation_profiles import (
 )
 from finishup.domain.values import validate_sha256_digest
 from finishup.kernel.claims import effective_claim_items
+from finishup.kernel.observed_failures import observed_command_field
 from finishup.kernel.projections import EvidenceProjectionRecord, ProjectionState
 from finishup.ports.ledger import FrozenCase
 from finishup.ports.objects import ObjectKind, ObjectRef
@@ -502,6 +503,7 @@ def _correlation_matches(
     suffix = correlation[len(prefix) :]
     allowed_suffixes = {
         ObservationContentKind.TOOL_OUTPUT: frozenset({"tool-output"}),
+        ObservationContentKind.TOOL_INPUT: frozenset({"tool-input"}),
         ObservationContentKind.CHANGED_FILE: frozenset({"changed-file"}),
         ObservationContentKind.WORKSPACE_DIFF: frozenset({"diff", "patch"}),
     }
@@ -1021,6 +1023,11 @@ async def resolve_captured_semantic_content(
                 raise ValueError("content_capture_unavailable")
             if type(binding) is not EvidenceDigestBinding:
                 raise ValueError("content_capture_unavailable")
+            if (
+                loaded.content_kind is ObservationContentKind.TOOL_INPUT
+                and type(envelope.structural_payload.get("command_commitment")) is not str
+            ):
+                raise ValueError("content_unselected")
             envelope_digest = loaded.envelope_digest
             content_bytes = loaded.content_bytes
             if (
@@ -1032,6 +1039,7 @@ async def resolve_captured_semantic_content(
                 or loaded.content_kind
                 not in {
                     ObservationContentKind.TOOL_OUTPUT,
+                    ObservationContentKind.TOOL_INPUT,
                     ObservationContentKind.CHANGED_FILE,
                     ObservationContentKind.WORKSPACE_DIFF,
                 }
@@ -1126,6 +1134,7 @@ async def resolve_captured_semantic_content(
         bounded_groups.append(rows)
 
     parts: list[CapturedSemanticContent] = []
+    command_context: dict[str, tuple[str, str]] = {}
     admitted_phase_bindings: dict[str, str] = {}
 
     def _open_fence_current() -> bool:
@@ -1138,6 +1147,9 @@ async def resolve_captured_semantic_content(
             )
         )
 
+    bounded_groups.sort(
+        key=lambda rows: rows[0][-1].content_kind is not ObservationContentKind.TOOL_INPUT
+    )
     for rows in bounded_groups:
         opened: list[CapturedSemanticContent] = []
         failed = False
@@ -1184,6 +1196,36 @@ async def resolve_captured_semantic_content(
                 )
                 if parsed != loaded:
                     raise ValueError("content_capture_unavailable")
+                if parsed.content_kind is ObservationContentKind.TOOL_INPUT:
+                    # Complete unredacted same-phase input only. A truncated command
+                    # must not become safer after losing its tail. Pre-tool input
+                    # has a different phase and cannot authorize a completed run.
+                    if len(rows) == 1 and not parsed.redacted and not envelope.gap_codes:
+                        value = strict_json_parse(content_bytes)
+                        commitment = envelope.structural_payload.get("command_commitment")
+                        if isinstance(value, Mapping) and type(commitment) is str:
+                            command = next(
+                                (
+                                    value.get(key)
+                                    for key in ("cmd", "command", "argv")
+                                    if type(value.get(key)) is str
+                                ),
+                                None,
+                            )
+                            segments = envelope.structural_payload.get(
+                                "command_segment_commitments"
+                            )
+                            composition = envelope.structural_payload.get("command_composition")
+                            identity = observed_command_field(
+                                commitment,
+                                cast(tuple[str, ...], segments)
+                                if type(segments) is tuple
+                                else None,
+                                composition if type(composition) is str else None,
+                            )
+                            if type(command) is str:
+                                command_context[phase_identity] = (command, identity)
+                    continue
                 opened.append(
                     CapturedSemanticContent(
                         object_ref=resolved,
@@ -1194,6 +1236,10 @@ async def resolve_captured_semantic_content(
                         workspace_commitment=workspace_commitment,
                         phase_identity=phase_identity,
                         capture_profile=profile,
+                        observed_command=command_context.get(phase_identity, (None, None))[0],
+                        observed_command_identity=command_context.get(phase_identity, (None, None))[
+                            1
+                        ],
                         capture_gaps=tuple(
                             sorted(
                                 set(envelope.gap_codes) & _CONTENT_GAPS,

@@ -2527,3 +2527,12 @@ one can report managed drift (`modified` with a valid marker). The connection pe
 accepts these owned older trees and installs the current artifact. User edits invalidate the marker
 and remain protected. No Codex-specific warning or overwrite flag is needed on Cursor.
 This is adapter coverage, not a new claim about a native host/OS lifecycle cell.
+
+## Observed verification-output follow-ups
+
+Verification-output follow-ups retain complete post-tool verifier input locally beside its
+output, under the existing scoped content-capture consent and byte limits. The shared resolver
+uses the authenticated same-phase input only for eligibility; it never sends that input as an
+excerpt. Older captures without this context remain withheld. Private and repository-excerpt
+denial withhold the auto-supplied output. This shared path applies on macOS, Linux and WSL 2;
+native Windows is not claimed.

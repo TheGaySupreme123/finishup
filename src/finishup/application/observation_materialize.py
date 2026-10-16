@@ -191,6 +191,7 @@ STREAM_COMPLETED_EVENT_KINDS: Final = frozenset(
 _CAPTURED_EVIDENCE_KINDS: Final = frozenset(
     {
         ObservationContentKind.TOOL_OUTPUT,
+        ObservationContentKind.TOOL_INPUT,
         ObservationContentKind.CHANGED_FILE,
         ObservationContentKind.WORKSPACE_DIFF,
     }
