@@ -215,13 +215,25 @@ How the replay runs:
   the OS keychain. The vault is initialized and the Private privacy recipe chosen through
   `scripts/dogfood_ci/ceremony.py`, with a passphrase generated for the run and never written down.
 - **Modes.** `pinned` runs each callback through the retained interpreter with the hook budgets in
-  `PINNED_HOOK_BUDGETS` raised equally for both builds. A build that is merely slower then takes
-  the same branch as a faster one, which makes `pinned` the equivalence check. `shipped` runs the
-  launcher untouched and gives the latency figures.
+  `PINNED_HOOK_BUDGETS` raised equally for both builds. Its service runs with the background
+  observation sweep, lineage recovery and coordination retry paused, so every row reaches the
+  ledger through the callback itself or the `observe drain` that follows it, in replay order. A
+  build that is merely slower then takes the same branch as a faster one, which makes `pinned` the
+  equivalence check. `shipped` runs the launcher and service untouched and gives the latency
+  figures. Its outputs can still differ where a slower build misses a budget the faster one meets.
 - **Comparison.** `compare` renames only values that one run produced and the other never saw:
-  identifiers, timestamps, installation-keyed commitments, and digests over them. A value present
-  in both runs is compared verbatim.
+  identifiers, installation-keyed commitments, and digests over them become `<kind#n>`,
+  consistently in order of first appearance. Wall-clock times become a bare `<time>`, because
+  which events share a millisecond depends on machine speed. A value present in both runs is
+  compared verbatim.
 - **Cleanup.** The replay stops only the service it started, then disposes the snapshot.
+
+A difference in `pinned` is a finding only if it does not also appear when the same build is
+replayed against itself. To check, run `replay` twice for one revision with a different `--tag`,
+and compare those two records. In the #1083 replay, whether a Codex PostToolUse delivered a
+second `resolve_failed_command` advice varied between two replays of the same build, for both
+builds. Every other compared part was identical in every run. `--delay-ms` holds each pinned
+callback back by a fixed time, to test whether a difference follows build speed.
 
 ## Recovering a workstation whose everyday service was replaced
 

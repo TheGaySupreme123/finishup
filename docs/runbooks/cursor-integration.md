@@ -2243,6 +2243,22 @@ with byte-identical pages and receipts. This host uses that path unchanged. Its 
 timing on macOS, Linux and WSL 2 is not yet measured; issue #916 owns it. See
 [status render performance](status-render-performance.md).
 
+## Hook schema loading (issue #1083)
+
+A Cursor hook process no longer builds the full schema catalog before its first control frame.
+It parses only the control envelopes' schemas and their `$ref` closures, 92 of 232 documents,
+with the same verdicts and errors ([interfaces](../INTERFACES.md)). Unchanged on this host:
+
+- `hooks cursor-observe` and `hooks startup-context --host cursor`;
+- hook registration, payloads, outputs, recorded events, ordering and timeouts.
+
+Host decision: supported, same code path.
+
+The #1083 replay drove 4 preToolUse and 3 postToolUse ordinary-profile callbacks from the repository's recorded shapes. The median preToolUse fell from 1,926 to 1,284 ms and postToolUse from 2,002 to 1,388 ms, through the build before and after the change on macOS arm64
+(single idle machine, shipped launcher). Both builds produced identical exit codes, stdout, stderr
+and ledger history under pinned budgets. Linux and WSL 2 timings are not yet measured;
+issue #1083 owns them. See [test instances](test-instances.md).
+
 ## Expanded excerpt count (issue #907 Phase 1b)
 
 Decision for Cursor: nothing is host-specific, and the behaviour is identical on every host and OS.

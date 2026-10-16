@@ -3198,6 +3198,22 @@ with byte-identical pages and receipts. This host uses that path unchanged. Its 
 timing on macOS, Linux and WSL 2 is not yet measured; issue #916 owns it. See
 [status render performance](status-render-performance.md).
 
+## Hook schema loading (issue #1083)
+
+A Codex hook process no longer builds the full schema catalog before its first control frame.
+It parses only the control envelopes' schemas and their `$ref` closures, 92 of 232 documents,
+with the same verdicts and errors ([interfaces](../INTERFACES.md)). Unchanged on this host:
+
+- `hooks observe`, `hooks user-prompt-submit` and `hooks post-tool-use`;
+- hook registration, payloads, outputs, recorded events, ordering and timeouts.
+
+Host decision: supported, same code path.
+
+The #1083 replay drove 48 PreToolUse and 48 PostToolUse callbacks rebuilt from two recorded TB4 D-lane rollouts. The median PreToolUse fell from 1,891 to 1,259 ms and PostToolUse from 1,921 to 1,261 ms (p90 2,173 to 1,527 ms and 2,141 to 1,564 ms), through the build before and after the change on macOS arm64
+(single idle machine, shipped launcher). Both builds produced identical exit codes, stdout, stderr
+and ledger history under pinned budgets. Whether a PostToolUse delivers a second `resolve_failed_command` advice varied between two replays of the same build, for both builds, so the replay counts it as noise and not as a change. Linux and WSL 2 timings are not yet measured;
+issue #1083 owns them. See [test instances](test-instances.md).
+
 ## Expanded excerpt count (issue #907 Phase 1b)
 
 Decision for Codex: nothing is host-specific, and the behaviour is identical on every host and OS.
