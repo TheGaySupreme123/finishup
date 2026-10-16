@@ -207,3 +207,136 @@ def test_a_retained_legacy_skill_tree_is_never_removed_on_disconnect(
     assert plan.body["changes"] == []
     plan.apply_reviewed_steps()
     assert cleanup == []
+
+
+@pytest.mark.parametrize("shape", ["policy-only", "strict-direct", "legacy-both", "foreign-race"])
+def test_disconnect_plugin_carried_registration_in_one_apply(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shape: str
+) -> None:
+    from typing import cast
+
+    import anyio
+
+    from finishup.adapters.integrations.codex_skill import CodexSkillIntegration
+    from finishup.application.host_connection import apply_connection
+    from finishup.domain.values import request_id
+    from finishup.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
+    from finishup.ports.integrations import (
+        HarnessId,
+        IntegrationAction,
+        IntegrationScope,
+        IntegrationTarget,
+        SkillApplyCommand,
+        SkillPreviewCommand,
+    )
+    from finishup.ports.plugin_artifacts import PluginMutationReviewPort
+
+    plugin = shape != "strict-direct"
+    direct = shape in {"strict-direct", "legacy-both"}
+    foreign = False
+    host_calls: list[tuple[str, ...]] = []
+    route = "strict" if shape == "strict-direct" else "policy"
+    project, home = tmp_path / "project", tmp_path / "home"
+    project.mkdir(mode=0o700)
+    home.mkdir(mode=0o700)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project))
+    operation = request_id("req_00000000-0000-4000-8000-000000000180")
+    skill = CodexSkillIntegration(allow_untested=True)
+
+    async def install() -> None:
+        preview = await skill.preview_skill(
+            HarnessId.CODEX,
+            SkillPreviewCommand(operation, target, IntegrationAction.INSTALL, False),
+        )
+        await skill.install_skill(
+            HarnessId.CODEX,
+            SkillApplyCommand(
+                operation, target, IntegrationAction.INSTALL, preview.preview_digest, True, False
+            ),
+        )
+
+    anyio.run(install)
+
+    def runner(argv: tuple[str, ...]) -> CommandOutput:
+        nonlocal direct
+        host_calls.append(argv)
+        if argv[1:3] == ("mcp", "remove"):
+            assert direct and not foreign
+            direct = False
+        if argv[1:3] == ("mcp", "list"):
+            return CommandOutput(0, b"[]")
+        if foreign:
+            return CommandOutput(0, b'{"command":"someone-else","args":[]}')
+        if direct or plugin:
+            args = b',"--semantic","off"' if route == "strict" else b""
+            return CommandOutput(
+                0, b'{"command":"finishup","args":["mcp","serve","--host","codex"' + args + b"]}"
+            )
+        return CommandOutput(1, b"")
+
+    def plugin_preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        preview = _plugin_removal("sha256:" + "c" * 64)
+        preview.outcome = RemovalOutcome.REMOVE if plugin else RemovalOutcome.ALREADY_ABSENT
+        return preview
+
+    def remove_plugin(*_args: object, **_kwargs: object) -> None:
+        nonlocal plugin, foreign
+        plugin = False
+        foreign = shape == "foreign-race"
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+
+    def adapter(**_kwargs: object) -> CodexMcpAdapter:
+        return CodexMcpAdapter(runner)
+
+    def no_members(*_args: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return (), ()
+
+    def no_projects(*_args: object) -> tuple[str, ...]:
+        return ()
+
+    def config_loads(*_args: object) -> str:
+        return "loads"
+
+    monkeypatch.setattr(codex_connection, "CodexMcpAdapter", adapter)
+    monkeypatch.setattr(codex_connection, "preview_removal", plugin_preview)
+    monkeypatch.setattr(codex_connection, "apply_removal", remove_plugin)
+    monkeypatch.setattr(codex_connection, "other_members", no_members)
+    monkeypatch.setattr(codex_connection, "connected_projects", no_projects)
+    monkeypatch.setattr(codex_connection, "probe_project_config_load", config_loads)
+    installation = HostInstallation("codex", Path("/opt/codex"), "0.162.1", home, "Codex")
+
+    def prepare():
+        return codex_connection.prepare_codex_connection(
+            installation, project, action="disconnect", route="strict", request_value=str(operation)
+        )
+
+    plan = prepare()
+    assert plan.body["route_profile"] == route
+    # The complete composition and its real generator-based lock must preserve typed errors.
+    if shape == "foreign-race":
+        with pytest.raises(McpRegistrationError) as caught:
+            apply_connection(
+                plan,
+                accepted_digest=plan.digest,
+                refresh=prepare,
+                authority=None,
+                review=cast(PluginMutationReviewPort, None),
+            )
+        assert caught.value.reason is McpRegistrationReason.PREVIEW_STALE
+        assert (project / ".agents/skills/finishup").exists()
+    else:
+        result = apply_connection(
+            plan,
+            accepted_digest=plan.digest,
+            refresh=prepare,
+            authority=None,
+            review=cast(PluginMutationReviewPort, None),
+        )
+        assert result["configured"] is False
+        assert not (project / ".agents/skills/finishup").exists()
+        assert not plugin and not direct
+        assert sum(argv[1:3] == ("mcp", "remove") for argv in host_calls) == (
+            shape in {"strict-direct", "legacy-both"}
+        )

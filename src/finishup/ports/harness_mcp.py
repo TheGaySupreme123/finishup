@@ -347,7 +347,7 @@ class McpRegistrationResult:
 
 
 @dataclass(frozen=True, slots=True)
-class McpRegistrationError(Exception):
+class _McpRegistrationErrorFields(Exception):
     reason: McpRegistrationReason
     safe_details: Mapping[str, JsonValue]
 
@@ -366,6 +366,16 @@ class McpRegistrationError(Exception):
             raise _port_error("integration_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class McpRegistrationError(_McpRegistrationErrorFields):
+    """Frozen port fields with assignable interpreter-owned exception state.
+
+    As with IntegrationError, the thin subclass lets contextlib assign __traceback__
+    without masking the typed failure as FrozenInstanceError.
+    """
+
+    __slots__ = ()
 
 
 class HarnessMcpPort(Protocol):

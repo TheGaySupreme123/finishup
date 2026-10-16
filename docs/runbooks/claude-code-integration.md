@@ -2428,3 +2428,13 @@ Verification: `tests/unit/cli/test_setup_wizard_smoothness.py`,
 `tests/unit/cli/test_host_connection.py` and `tests/unit/cli/test_codex_subscription.py`. The vault
 and provider steps of `finishup setup run` were not walked end to end for this change (the
 sandbox walk had no macOS keychain), and no native Claude Code session was recorded for it.
+
+## Pristine skill upgrades across releases
+
+Claude Code delivers its skill inside its managed plugin marketplace, independently of the Codex
+project-skill installer. Its source inspection validates the complete installed inventory against
+the source's own marker, then classifies intact earlier sources as `native_managed`. Connect can
+replace those bytes with the current renderer even when guidance changed. Actual edits invalidate
+the marker and preserve the source as a destination conflict. The Codex `owned_skill_update`
+warning is specific to Codex; Claude Code keeps its existing managed-source update behavior.
+This is adapter coverage, not a new claim about a native host/OS lifecycle cell.

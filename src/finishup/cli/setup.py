@@ -84,6 +84,7 @@ from finishup.ports.integrations import (
     IntegrationAction,
     IntegrationError,
     IntegrationPreview,
+    IntegrationReason,
     IntegrationScope,
     IntegrationTarget,
     SkillApplyCommand,
@@ -1325,11 +1326,19 @@ async def _install_project_skill(
             ),
         )
     except IntegrationError as error:
+        from finishup.adapters.integrations.codex_skill import skill_conflict_continuation
+
         return {
             "compatibility": "unsupported",
             "outcome": "failed",
             "presence": None,
             "reason": error.reason.value,
+            **(
+                {"next_step": skill_conflict_continuation(Path(target.project_root))}
+                if error.reason
+                in {IntegrationReason.MODIFIED_COPY, IntegrationReason.PARTIAL_INSTALL}
+                else {}
+            ),
         }
     return {
         "compatibility": accepted_preview.compatibility,
@@ -2129,6 +2138,7 @@ async def _codex_integration_step(
         return {
             "outcome": "failed",
             "reason": "skill_install_failed",
+            **({"next_step": skill_report["next_step"]} if "next_step" in skill_report else {}),
             "state": mcp_preview.state_before.value,
             "plugin": {"outcome": "skipped", "presence": plugin_preview.presence_before.value},
             "plugin_activation": {

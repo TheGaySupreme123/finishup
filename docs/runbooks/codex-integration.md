@@ -321,6 +321,38 @@ canonical `mcp__server__tool` names. Codex keeps its existing result unwrapping 
 locking; Cursor-only response fields and server identities are normalized only in Cursor's
 adapter. The Codex lifecycle and observation regression tests remain the compatibility check.
 
+### Reconnect after an upgrade and disconnect
+
+Reconnect previews and replaces a pristine earlier FinishUP skill automatically. Ownership is
+checked against the complete size/digest inventory in its own `.yoetz-install.json`, rather than
+against the new release alone. Status still reports `modified` when the installed bytes differ
+from the current release; a valid recorded inventory distinguishes an owned update from user
+edits. The skill preview names `owned_skill_update` for that case, and its digest binds every
+installed member, including obsolete references and the marker. The approved replacement removes
+obsolete references and installs the current set. Repeating reconnect changes nothing.
+
+Edited files, missing recorded members, extra files, invalid markers and linked paths are not
+pristine upgrades. Connect preserves them. Move the affected `.agents/skills/finishup` directory
+outside `.agents/skills` to keep your changes, then rerun the connection for the same project and
+Codex home. A rerun with the conflicting directory still in place refuses again. An approved
+disconnect can also remove an intact earlier skill without requiring an upgrade first.
+
+A fresh **policy** connection uses the plugin activation cache's pinned `.mcp.json` registration
+alone; it creates no direct `[mcp_servers.finishup]` table. A **strict** connection keeps a direct
+registration with `--semantic off`, which shadows the plugin's policy entry. Older 0.3 homes may
+have both a direct table and the plugin cache; reconnect preserves the owned direct transport and
+updates pristine skill/cache copies through the same approved connection.
+
+Disconnect removes the activation cache first, then reconciles MCP removal. If the plugin was the
+only registration, Codex's positive absence observation completes that removal without a second
+host mutation. A direct registration is removed explicitly, including on older homes with both
+forms. Changed or foreign registrations still refuse removal. The same apply removes the project
+skill; no retry is needed merely because plugin removal also removed its MCP entry. The preview's
+continuation names the route observed on the registration being disconnected. Shared-project
+retention and user-edited-file protections still apply, and portable inactive project plugin
+sources remain. A fresh Codex process is required to observe removal; a running bridge is not
+proof of persistent configuration.
+
 This runbook guides you through previewing, installing, checking, replacing, and removing the
 canonical FinishUP Codex skill in one explicitly trusted project, while preserving any files you have
 modified. It also separates four facts that are easy to conflate: skill/source installation, Codex

@@ -34,7 +34,7 @@ from finishup.application.host_connection import (
 from finishup.cli.setup_readiness import continuation
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, isolated_root
 from finishup.domain.values import request_id
-from finishup.ports.harness_mcp import MCP_LEGACY_SERVER_NAME, MCP_SERVER_NAME
+from finishup.ports.harness_mcp import MCP_LEGACY_SERVER_NAME, MCP_SERVER_NAME, McpRegistrationError
 from finishup.ports.integrations import IntegrationError, IntegrationReason
 from finishup.ports.plugin_artifacts import ArtifactAuthority, PluginArtifactError
 from finishup.protocol.canonical import JsonValue
@@ -47,6 +47,7 @@ CONNECTION_ERRORS = (
     ClaudeCodeIntegrationError,
     CursorIntegrationError,
     IntegrationError,
+    McpRegistrationError,
     ConnectionError,
     ElevatedBootstrapError,
     RuntimeError_,
@@ -1214,6 +1215,7 @@ def run_host_connection(
                     ClaudeCodeIntegrationError,
                     CursorIntegrationError,
                     IntegrationError,
+                    McpRegistrationError,
                 ),
             )
             else error.reason
@@ -1304,6 +1306,15 @@ def run_host_connection(
             report["status"] = rendered_status
             next_command = rendered_status.get("next_command")
             refusal = refusal_step(reason, rendered_status) or _leftover_next_step(rendered_status)
+            skill_report = rendered_status.get("skill")
+            if (
+                host == "codex"
+                and isinstance(skill_report, dict)
+                and skill_report.get("reason") in {"modified_copy", "partial_install"}
+            ):
+                from finishup.adapters.integrations.codex_skill import skill_conflict_continuation
+
+                report["next_step"] = skill_conflict_continuation(project)
             if refusal is not None:
                 report["next_step"] = refusal
             elif isinstance(next_command, str):

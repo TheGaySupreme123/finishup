@@ -631,7 +631,7 @@ def prepare_connection(
             "registered-project" if installation.host == "cursor-cli" else "mcp-roots",
         )
         observed = cursor.status_cursor_plugin(cursor_target, cursor_artifact, project_root=project)
-        if observed.state is PluginArtifactState.MODIFIED:
+        if observed.state is PluginArtifactState.MODIFIED and not observed.marker_valid:
             raise ConnectionError("connection_modified_plugin")
         # The user plugin (hooks, skill) serves every project under this config root; only the
         # project MCP entry is per project. The record names who still needs the plugin (#1058).

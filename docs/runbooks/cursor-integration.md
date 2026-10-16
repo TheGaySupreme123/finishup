@@ -2517,3 +2517,13 @@ Verification: `tests/unit/cli/test_setup_wizard_smoothness.py`,
 and provider steps of `finishup setup run` were not walked end to end for this change (the
 sandbox walk had no macOS keychain), and no native Cursor IDE or Agent CLI session was recorded
 for it.
+
+## Pristine skill and rule upgrades across releases
+
+Cursor delivers skills and rules as members of its managed plugin artifact rather than through the
+Codex project-skill installer. Both portable and native projections validate the complete tree
+against its own installed marker. An intact earlier portable tree is `portable_managed`; a native
+one can report managed drift (`modified` with a valid marker). The connection permits marker-valid drift through its conflict check, and its reviewed replace
+accepts these owned older trees and installs the current artifact. User edits invalidate the marker
+and remain protected. No Codex-specific warning or overwrite flag is needed on Cursor.
+This is adapter coverage, not a new claim about a native host/OS lifecycle cell.

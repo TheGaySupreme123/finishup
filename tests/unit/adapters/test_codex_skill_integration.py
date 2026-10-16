@@ -544,3 +544,121 @@ async def test_a_legacy_tree_changed_after_preview_is_stale(tmp_path: Path) -> N
         )
     assert caught.value.reason is IntegrationReason.REMOVE_REFUSED
     assert legacy.is_dir()
+
+
+async def _prior_skill(adapter: CodexSkillIntegration, target: IntegrationTarget) -> Path:
+    """Model an earlier install whose recorded inventory differs from this release."""
+    import json
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "70")
+    destination = Path(target.project_root) / ".agents/skills/finishup"
+    (destination / "references/workflow.md").write_bytes(b"# Earlier shipped workflow\n")
+    (destination / "references/obsolete.md").write_bytes(b"# Earlier reference\n")
+    # Earlier releases need not have every member the new release introduces.
+    (destination / "references/startup.md").unlink()
+    marker_path = destination / ".yoetz-install.json"
+    marker = json.loads(marker_path.read_bytes())
+    marker["managed_files"] = [
+        {
+            "relative_path": path.relative_to(destination).as_posix(),
+            "sha256": _digest(path.read_bytes()),
+            "size": path.stat().st_size,
+        }
+        for path in sorted(destination.rglob("*"))
+        if path.is_file() and path != marker_path
+    ]
+    marker.pop("marker_digest")
+    marker["marker_digest"] = canonical_digest(marker)
+    marker_path.write_bytes(canonical_encode(marker) + b"\n")
+    return destination
+
+
+@pytest.mark.anyio
+async def test_pristine_prior_skill_upgrades_and_disconnects(tmp_path: Path) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX,
+        SkillPreviewCommand(
+            request_id("req_00000000-0000-4000-8000-000000000171"),
+            target,
+            IntegrationAction.INSTALL,
+            False,
+        ),
+    )
+    assert preview.state_before is IntegrationState.MODIFIED
+    assert "owned_skill_update" in preview.warnings
+    assert any(
+        row["relative_path"] == "references/obsolete.md" and row["action"] == "remove"
+        for row in preview.file_changes
+    )
+    await _apply(adapter, target, IntegrationAction.INSTALL, "72")
+    assert not (destination / "references/obsolete.md").exists()
+    assert (destination / "references/startup.md").exists()
+    before = {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+    await _apply(adapter, target, IntegrationAction.INSTALL, "73")
+    assert before == {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+    await _apply(adapter, target, IntegrationAction.REMOVE, "74")
+    assert not destination.exists()
+
+
+@pytest.mark.anyio
+async def test_pristine_prior_skill_can_disconnect_without_upgrading(tmp_path: Path) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    await _apply(adapter, target, IntegrationAction.REMOVE, "75")
+    assert not destination.exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("damage", ["edit", "extra", "missing", "marker"])
+async def test_prior_skill_user_changes_are_preserved(tmp_path: Path, damage: str) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    if damage == "edit":
+        (destination / "references/workflow.md").write_bytes(b"My workflow\n")
+    elif damage == "extra":
+        (destination / "personal.md").write_bytes(b"My notes\n")
+    elif damage == "missing":
+        (destination / "SKILL.md").unlink()
+    else:
+        (destination / ".yoetz-install.json").write_bytes(b"{}\n")
+    before = {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+    with pytest.raises(IntegrationError) as caught:
+        await _apply(adapter, target, IntegrationAction.INSTALL, "76")
+    assert caught.value.reason in {
+        IntegrationReason.MODIFIED_COPY,
+        IntegrationReason.PARTIAL_INSTALL,
+    }
+    assert before == {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+
+
+@pytest.mark.anyio
+async def test_upgrade_preview_binds_obsolete_members_and_marker(tmp_path: Path) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    operation = request_id("req_00000000-0000-4000-8000-000000000177")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(operation, target, IntegrationAction.INSTALL, False)
+    )
+    (destination / "references/obsolete.md").write_bytes(b"My changed old reference\n")
+    with pytest.raises(IntegrationError) as caught:
+        await adapter.install_skill(
+            HarnessId.CODEX,
+            SkillApplyCommand(
+                operation, target, IntegrationAction.INSTALL, preview.preview_digest, True, False
+            ),
+        )
+    assert caught.value.reason is IntegrationReason.PREVIEW_STALE

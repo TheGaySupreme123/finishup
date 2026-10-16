@@ -148,6 +148,18 @@ class DestinationInspection:
         raise TypeError("destination_inspection_not_serializable")
 
 
+def skill_conflict_continuation(project: Path) -> str:
+    """One recovery for preserved skill edits, shared by CLI and terminal setup."""
+
+    return (
+        "FinishUP preserved the edited or incomplete project skill at "
+        + str(project / ".agents" / "skills" / "finishup")
+        + ". Move that directory outside .agents/skills to keep your changes, "
+        "then rerun setup for this project and selected Codex home. "
+        "Rerunning without moving it will refuse again."
+    )
+
+
 def _error(reason: IntegrationReason) -> IntegrationError:
     return IntegrationError(reason, {})
 
@@ -528,7 +540,12 @@ def _marker_consistent(members: Mapping[str, bytes]) -> bool:
     if not isinstance(parsed, Mapping):
         return False
     marker = cast(Mapping[str, JsonValue], parsed)
-    if marker.get("schema") != _MARKER_SCHEMA:
+    if (
+        marker.get("schema") != _MARKER_SCHEMA
+        or marker.get("harness_id") != HarnessId.CODEX.value
+        or marker.get("scope") != IntegrationScope.TRUSTED_PROJECT.value
+        or marker.get("adapter_version") != _ADAPTER_VERSION
+    ):
         return False
     body = {name: value for name, value in marker.items() if name != "marker_digest"}
     if marker.get("marker_digest") != canonical_digest(body):
@@ -611,37 +628,71 @@ def inspect_destination(target: IntegrationTarget, source: SkillSource) -> Desti
 
     rows = tuple(_file_state(destination / item.relative_path, item) for item in source.files)
     expected_paths = {item.relative_path for item in source.files} | {_MARKER_NAME}
-    actual_paths: set[str] = set()
+    members: dict[str, bytes] = {}
     if destination.is_dir():
         for path in destination.rglob("*"):
             if path.is_symlink():
                 raise _error(IntegrationReason.TARGET_UNSAFE)
-            if path.is_file():
-                actual_paths.add(path.relative_to(destination).as_posix())
-    marker = destination / _MARKER_NAME
-    marker_valid = False
-    if marker.is_file() and not marker.is_symlink():
-        marker_data = marker.read_bytes()
-        marker_valid = marker_data == build_managed_marker(source, target.scope)
+            if path.is_dir():
+                continue
+            facts = path.lstat()
+            if (
+                not stat.S_ISREG(facts.st_mode)
+                or facts.st_nlink != 1
+                or facts.st_size > _SOURCE_FILE_LIMIT
+                or len(members) >= _MAX_LEGACY_MEMBERS
+            ):
+                raise _error(IntegrationReason.TARGET_UNSAFE)
+            members[path.relative_to(destination).as_posix()] = path.read_bytes()
+    # Ownership uses the installed inventory, independently of this release's bytes.
+    # A pristine earlier release can be upgraded; edits stay protected.
+    marker_valid = _marker_consistent(members)
     exact_count = sum(row["state"] == "exact" for row in rows)
     if destination.exists():
-        if exact_count < len(rows) and any(row["state"] == "absent" for row in rows):
-            state = IntegrationState.PARTIAL
-        elif exact_count == len(rows) and marker_valid and actual_paths == expected_paths:
+        if (
+            exact_count == len(rows)
+            and members.get(_MARKER_NAME) == build_managed_marker(source, target.scope)
+            and set(members) == expected_paths
+        ):
             state = IntegrationState.INSTALLED_EXACT
+        elif marker_valid:
+            state = IntegrationState.MODIFIED
+        elif any(row["state"] == "absent" for row in rows):
+            state = IntegrationState.PARTIAL
         else:
             state = IntegrationState.MODIFIED
-    installed_digest = None
-    if actual_paths:
-        installed_digest = canonical_digest(
+    installed_digest = (
+        canonical_digest(
             {
                 "files": [
-                    {"path": row["relative_path"], "digest": row.get("digest")}
-                    for row in rows
-                    if row["state"] != "absent"
-                ],
-                "marker_valid": marker_valid,
+                    {"path": path, "digest": _sha(data)} for path, data in sorted(members.items())
+                ]
             }
+        )
+        if members
+        else None
+    )
+    if marker_valid:
+        # Obsolete owned members are also disclosed as removals in an upgrade preview.
+        rows = tuple(
+            sorted(
+                (
+                    *rows,
+                    *(
+                        JsonObject(
+                            {
+                                "relative_path": path,
+                                "state": "modified",
+                                "digest": _sha(data),
+                                "size": len(data),
+                            }
+                        )
+                        for path, data in members.items()
+                        if path not in expected_paths
+                    ),
+                ),
+                key=lambda row: cast(str, row["relative_path"]),
+            )
         )
     legacy_tree, legacy_digest = _legacy_tree(parent)
     return DestinationInspection(
@@ -697,7 +748,21 @@ def _changes(
             value["before_digest"] = before_digest
             value["before_size"] = cast(int, before_size)
         changes.append(JsonObject(value))
-    return tuple(changes)
+    if inspection.managed_marker_valid:
+        current_paths = {file.relative_path for file in source.files}
+        for path, row in rows.items():
+            if path not in current_paths:
+                changes.append(
+                    JsonObject(
+                        {
+                            "action": "remove",
+                            "before_digest": row["digest"],
+                            "before_size": row["size"],
+                            "relative_path": path,
+                        }
+                    )
+                )
+    return tuple(sorted(changes, key=lambda row: cast(str, row["relative_path"])))
 
 
 def _preview(
@@ -711,6 +776,8 @@ def _preview(
         # ``legacy_skill_tree_owned``: this approval also removes the Yoetz-era tree;
         # ``legacy_skill_tree_retained``: it is not provably FinishUP's and stays (ADR-048).
         warnings = tuple(sorted((*warnings, f"legacy_skill_tree_{inspection.legacy_tree}")))
+    if inspection.state is IntegrationState.MODIFIED and inspection.managed_marker_valid:
+        warnings = tuple(sorted((*warnings, "owned_skill_update")))
     changes = _changes(inspection, source, command.requested_action)
     digest_input: dict[str, JsonValue] = {
         "action": command.requested_action.value,
@@ -1058,8 +1125,12 @@ class CodexSkillIntegration(IntegrationsPort):
                 current.preview_digest,
             )
         replacing = inspection.state in {IntegrationState.MODIFIED, IntegrationState.PARTIAL}
-        if replacing and not (
-            command.requested_action is IntegrationAction.REPLACE and command.replace_modified
+        if (
+            replacing
+            and not inspection.managed_marker_valid
+            and not (
+                command.requested_action is IntegrationAction.REPLACE and command.replace_modified
+            )
         ):
             reason = (
                 IntegrationReason.MODIFIED_COPY
@@ -1148,7 +1219,7 @@ class CodexSkillIntegration(IntegrationsPort):
             not command.explicitly_accepted
             or command.preview_digest != current.preview_digest
             or not (
-                inspection.state is IntegrationState.INSTALLED_EXACT
+                inspection.managed_marker_valid
                 # A Yoetz-era tree alone is removable too (ADR-048).
                 or (inspection.state is IntegrationState.ABSENT and legacy_owned)
             )
@@ -1166,7 +1237,7 @@ class CodexSkillIntegration(IntegrationsPort):
         # Frozen legacy identifier (ADR-048): crash-residue prefix shared with older runtimes.
         staging_name = f".yoetz.remove-{command.request_id}"
         try:
-            if inspection.state is IntegrationState.INSTALLED_EXACT:
+            if inspection.managed_marker_valid:
                 if staging_name in os.listdir(parent_fd):
                     raise _error(IntegrationReason.PREVIEW_STALE)
                 os.rename(

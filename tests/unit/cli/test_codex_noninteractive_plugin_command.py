@@ -354,3 +354,33 @@ def test_finishup_connect_approves_the_same_cache_command(
     plan.apply_reviewed_steps()
 
     assert any(call[1:3] == ("mcp", "add") for call in _flat(calls))
+
+
+async def test_tui_skill_conflict_carries_an_actionable_continuation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from finishup.adapters.integrations.codex_skill import skill_conflict_continuation
+    from finishup.cli import setup
+    from finishup.protocol.canonical import JsonValue
+    from finishup.tui.models import HarnessOption
+    from finishup.tui.runtime import FinishUpRuntime
+
+    project, home = tmp_path / "project", tmp_path / "home"
+    project.mkdir(mode=0o700)
+    home.mkdir(mode=0o700)
+    _bind(monkeypatch, tmp_path)
+    _install_fakes(
+        monkeypatch, home=home, outputs=[*_absent(), *_absent()], state_dir=tmp_path / "state"
+    )
+    step = skill_conflict_continuation(project)
+
+    async def conflict(*_args: object, **_kwargs: object) -> dict[str, JsonValue]:
+        return {"outcome": "failed", "reason": "modified_copy", "next_step": step}
+
+    monkeypatch.setattr(setup, "_install_project_skill", conflict)
+    option = HarnessOption(str(tmp_path / "codex"), "0.150.1", "Codex", "")
+    runtime = FinishUpRuntime(cwd=project)
+    plan = await runtime.integration_plan(option, home, "policy")
+    result = await runtime.apply_integration(option, plan)
+    assert result.reason == "skill_install_failed"
+    assert result.next_step == step

@@ -319,6 +319,8 @@ def prepare_codex_connection(
             return await service.preview_unregistration(binary)
 
         registration = anyio.run(preview_mcp)
+        # Disconnect preserves the observed mode in its continuation.
+        body["route_profile"] = registration.route_profile
         # Other connected projects keep the home's shared plugin and user-level MCP
         # registration; this disconnect removes only this project's pieces (#1058).
         detach = removal.outcome is RemovalOutcome.DETACH
@@ -435,7 +437,8 @@ def prepare_codex_connection(
             return await skill.preview_skill(HarnessId.CODEX, skill_command)
 
         skill_preview = anyio.run(preview_skill)
-        if skill_preview.state_before not in {
+        skill_owned_update = "owned_skill_update" in skill_preview.warnings
+        if not skill_owned_update and skill_preview.state_before not in {
             IntegrationState.INSTALLED_EXACT,
             IntegrationState.ABSENT,
         }:
@@ -444,7 +447,9 @@ def prepare_codex_connection(
         # removal, including when it is the only skill tree left (ADR-048).
         legacy_skill_owned = "legacy_skill_tree_owned" in skill_preview.warnings
         skill_remove_planned = (
-            skill_preview.state_before is IntegrationState.INSTALLED_EXACT or legacy_skill_owned
+            skill_preview.state_before is IntegrationState.INSTALLED_EXACT
+            or skill_owned_update
+            or legacy_skill_owned
         )
         body["skill_preview_digest"] = skill_preview.preview_digest
         body["plugin_preview_digest"] = removal.preview_digest
@@ -534,7 +539,7 @@ def prepare_codex_connection(
             cast(list[JsonValue], body["changes"]).append("remove_legacy_mcp_registration")
         if removal.legacy_removed_block or removal.legacy_cache_versions:
             cast(list[JsonValue], body["changes"]).append("deactivate_legacy_plugin")
-        if skill_preview.state_before is IntegrationState.INSTALLED_EXACT:
+        if skill_preview.state_before is IntegrationState.INSTALLED_EXACT or skill_owned_update:
             cast(list[JsonValue], body["changes"]).append("remove_project_skill")
         if legacy_skill_owned:
             cast(list[JsonValue], body["changes"]).append("remove_legacy_project_skill")
@@ -555,12 +560,31 @@ def prepare_codex_connection(
             )
 
             async def unregister():
-                return await service.unregister(
-                    binary,
-                    McpRegistrationConfirmation(
-                        registration.preview_digest, True, "noninteractive_flag"
-                    ),
+                confirmation = McpRegistrationConfirmation(
+                    registration.preview_digest, True, "noninteractive_flag"
                 )
+                try:
+                    return await service.unregister(binary, confirmation)
+                except McpRegistrationError as error:
+                    if (
+                        error.reason is not McpRegistrationReason.PREVIEW_STALE
+                        or removal.outcome is not RemovalOutcome.REMOVE
+                        or removal.keeps_shared
+                    ):
+                        raise
+                    # Policy may be supplied solely by the activation cache. Removing
+                    # that plugin already removed the approved registration. Only
+                    # positive absence of BOTH names permits this no-op; a changed,
+                    # foreign or present entry still fails closed as stale.
+                    after_plugin = await service.preview_unregistration(binary)
+                    if after_plugin.state_before is not McpRegistrationState.ABSENT:
+                        raise error
+                    return await service.unregister(
+                        binary,
+                        McpRegistrationConfirmation(
+                            after_plugin.preview_digest, True, "noninteractive_flag"
+                        ),
+                    )
 
             try:
                 if unregister_planned:

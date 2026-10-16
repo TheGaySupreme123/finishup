@@ -6427,6 +6427,15 @@ Shared types are `HarnessId`, `HarnessProfile`, `HarnessHookProfile`, `Integrati
 `IntegrationFile`, `SkillPreviewCommand`, `SkillApplyCommand`, `SkillStatusCommand`,
 `IntegrationPreview`, `IntegrationStatus`, `IntegrationResult`, and `IntegrationError`.
 
+For the Codex skill, `managed_marker_valid` means the complete installed tree matches its own
+recorded inventory; it does not mean the tree matches the currently shipped skill. An intact
+older tree stays `modified` against the current source and carries preview warning
+`owned_skill_update`. Ordinary reviewed install and remove may replace/remove that owned tree;
+unrecorded edits still require the existing explicit replacement authority. The preview digest
+binds all installed files and the marker, including members no longer shipped by the current
+source. No wire enum or marker schema changes. Claude Code and Cursor retain their independent
+marker-consistent plugin update paths.
+
 `HarnessId` is a closed enum whose membership is exactly `claude|codex|cursor`. `HarnessProfile` is the
 frozen per-harness descriptor: `harness_id`, `skill_root` (the exact relative install directory),
 `frontmatter_profile` (the harness's required skill-header shape), `capability_profile_ids`,
