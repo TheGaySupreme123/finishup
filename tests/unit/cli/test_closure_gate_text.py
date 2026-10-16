@@ -70,6 +70,15 @@ _WITH_OBLIGATIONS = (
 )
 
 
+def _current_remaining(remaining: str) -> str:
+    # Keep the archived rollout strings verbatim; the current gate distinguishes an
+    # observed change from an unknown command whose harmlessness is not established.
+    return remaining.replace(
+        "since your last change",
+        "for the latest material input (a change, verification, or command FinishUP could not establish was read-only)",
+    )
+
+
 def _readiness_from_remaining(remaining: str) -> Any:
     """Rebuild the readiness that produced one received "Remaining:" line."""
 
@@ -117,7 +126,7 @@ def test_findings_only_gate_pushes_repair_and_self_verification(
     trial: str, frontier: str, remaining: str
 ) -> None:
     text = _text(frontier, remaining)
-    assert f"Remaining: {remaining}." in text, trial
+    assert f"Remaining: {_current_remaining(remaining)}." in text, trial
     # No blocker invitation: a FinishUP limit is never a blocker and findings are not obligations.
     assert "finishup-blocker:<" not in text
     assert "publish decision_recorded" not in text
@@ -139,7 +148,7 @@ def test_open_obligations_keep_the_blocker_sentence_but_never_the_confirmation(
     trial: str, frontier: str, remaining: str
 ) -> None:
     text = _text(frontier, remaining)
-    assert f"Remaining: {remaining}." in text, trial
+    assert f"Remaining: {_current_remaining(remaining)}." in text, trial
     assert "finishup-blocker:<authority|consent|credential|dependency_unavailable>" in text
     assert "Data the task says is recoverable is not such a blocker." in text
     assert "FinishUP will ask you about it once." in text

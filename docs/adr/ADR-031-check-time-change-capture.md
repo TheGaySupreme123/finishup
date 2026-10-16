@@ -577,3 +577,26 @@ context label, including its original offset, even when it lies outside the sele
 Such a file is partial, `section_admitted=false`, with `clean_bytes=0` and `shown_bytes`
 equal to the union's byte count. An identical view or a whole-file review can cover it;
 a different partial view cannot. No wire field or schema changes.
+
+## Amendment (2026-10-16, PR #1080): late captured evidence enriches replay
+
+A hook and a Codex session-stream completion can describe one call with different captured-content
+roles. After the committed core is validated, observation ingest appends only the missing captured
+input/output or digest-only image evidence (#1078 class). It does not rewrite the original result
+or its evidence-reference list; new evidence retains its causal action lineage. The existing
+append-only outcome correction still supplies an explicit native outcome or discloses a conflict.
+
+This reconciliation does not create eligibility for AI-powered review. Auto-supplied verification
+output still needs the service-authenticated post-tool input/output phase binding, matching keyed
+command identity, repository-excerpt permission, secret/path/environment screening and the existing
+packet limits. Command input is local eligibility context and is never a provider excerpt. Missing
+or mismatched binding still withholds output. Check-time diffs and current inspection snapshots
+are not a per-command before/after comparison and cannot certify an arbitrary shell command harmless.
+
+Late evidence uses the existing optional `evidence_recorded.reference` to name its original action
+event after core and causal-parent validation. Selection follows that link only for service-stamped
+observation-captured provenance and retains the original execution frontier. F1 authenticated
+command/output binding remains required. A captured object already represented by agreeing evidence
+is reused, so another delivery does not make its object-to-evidence association ambiguous. New
+image source identities remain distinct; enrichment operation/claim roles bind the appended event
+IDs. Existing schemas and frozen vectors retain their bytes.

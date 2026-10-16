@@ -55,6 +55,7 @@ from finishup.application.observation_check_policy import (
 )
 from finishup.application.observation_committed import (
     action_event_committed,
+    committed_event_ids,
     observation_already_committed,
 )
 from finishup.application.observation_drain import ObservationCaptureRecoveryOutcome
@@ -64,6 +65,7 @@ from finishup.application.observation_materialize import (
     PAIRED_ACTION_ROLE,
     SESSION_BOUND_MAPPING_VERSIONS,
     MaterializedObservationBatch,
+    MaterializedObservationDraft,
     PairedActionLink,
     approved_check_author,
     canonical_logical_identity,
@@ -3336,6 +3338,9 @@ class ObservationCoordinator:
                         current_draft_roles = tuple(item.role for item in batch.drafts)
                         if not action_plan.same_content_roles(
                             resolved_draft_roles, current_draft_roles
+                        ) and not await observation_already_committed(
+                            getattr(runtime, "ledger", None),
+                            tuple(str(item.draft.event_id) for item in batch.drafts),
                         ):
                             await self._local(
                                 partial(
@@ -4215,10 +4220,10 @@ class ObservationCoordinator:
     ) -> None:
         """Apply a stream completion's explicit outcome to the call's recorded UNKNOWN one.
 
-        Runs when the completion's own batch was already recorded: as a replay of the
-        committed operation, or (#1027) because every event of the batch is already in the
-        ledger under another delivery shape. A freshly appended batch carries its explicit
-        outcome itself. Historical action/result rows are never rewritten: the correction is a
+        Reconcile the completion's core result after both full and partial replay. New evidence
+        can append while that core result remains the hook's UNKNOWN outcome. A fresh core
+        already carries the stated outcome and needs no correction. Historical rows are never
+        rewritten: the correction is a
         second, source-independent result linked to the same action, so retries are idempotent.
         """
 
@@ -4228,8 +4233,9 @@ class ObservationCoordinator:
         )
         if correction.skip_reason is not None or not correction.drafts:
             return
-        if not already_committed and (append_result is None or append_result.outcome != "replayed"):
-            return
+        # A partial replay can append new evidence while its core result was committed by
+        # the hook. Inspect that result even after an append, so UNKNOWN still gets the
+        # stream's explicit outcome (and a disagreement still gets its conflict correction).
         projection = await runtime.ledger.load_projection(
             runtime.session_id,
             ProjectionView.CANDIDATE_FINDINGS,
@@ -4538,6 +4544,36 @@ class ObservationCoordinator:
             return _ActionLinkPlan(link, batch, False, variants)
         if not await action_event_committed(ledger, link.action_id, link.action_event_id):
             return _ActionLinkPlan(link, batch, False, variants)
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if projection is not None and type(projection.state) is ProjectionState:
+            prior = projection.state.actions.get(action_id(link.action_id))
+            incoming = next(
+                (
+                    item.draft.payload
+                    for item in batch.drafts
+                    if type(item.draft.payload) is ActionRecordedPayload
+                ),
+                None,
+            )
+            if (
+                prior is not None
+                and prior.payload is not None
+                and type(incoming) is ActionRecordedPayload
+            ):
+                before = (prior.payload.command or "").split(" ", 1)[0]
+                after = (incoming.command or "").split(" ", 1)[0]
+                if prior.payload.action_kind is not incoming.action_kind or (
+                    before.startswith("omitted:hmac-sha256:")
+                    and after.startswith("omitted:hmac-sha256:")
+                    and before != after
+                ):
+                    raise PublicOperationError(
+                        PublicErrorCode.EVENT_INVALID,
+                        "Observation replay conflicts with committed command identity.",
+                        retryable=False,
+                    )
         return _ActionLinkPlan(link, link.linked, not link.linked.drafts, variants)
 
     async def _append_materialized(
@@ -4553,12 +4589,14 @@ class ObservationCoordinator:
         replay_required: bool = False,
         replay_claims: tuple[tuple[ObservationLogicalIdentityClaim, tuple[str, ...]], ...] = (),
         replay_draft_role_sets: tuple[tuple[str, ...], ...] = (),
+        _overlap_retries: int = 1,
     ) -> tuple[str, str, AppendResult | None, str, tuple[str, ...]] | _AlreadyCommitted | None:
         writer_id = runtime.writer_id
         if writer_id is None:
             return None
         logical_identity = canonical_logical_identity(envelope)
         draft_roles = tuple(item.role for item in batch.drafts)
+        wanted_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
         candidate_role_sets = tuple(dict.fromkeys((draft_roles, *replay_draft_role_sets)))
         writer_routes = [(runtime.session_id, writer_id)]
         for route in legacy_writer_routes:
@@ -4595,6 +4633,12 @@ class ObservationCoordinator:
                     "Observation logical identity claim does not match its operation.",
                     retryable=False,
                 )
+            if (
+                claim_mapping_version == MATERIALIZATION_MAPPING_VERSION
+                and callable(getattr(runtime.ledger, "committed_event_ids", None))
+                and not await observation_already_committed(runtime.ledger, wanted_ids)
+            ):
+                continue
             return (
                 claim_operation_id,
                 claim_digest,
@@ -4631,6 +4675,12 @@ class ObservationCoordinator:
                     "Observation operation identity is already committed with other content.",
                     retryable=False,
                 )
+            if callable(
+                getattr(runtime.ledger, "committed_event_ids", None)
+            ) and not await observation_already_committed(runtime.ledger, wanted_ids):
+                # A smaller committed shape proves its core, not the later evidence. Let
+                # the overlap reconciliation below append that evidence instead of losing it.
+                continue
             return (
                 candidate_operation_id,
                 candidate_digest,
@@ -4708,8 +4758,44 @@ class ObservationCoordinator:
         # EVENT_INVALID and quarantined as a content refusal, losing the explicit outcome a
         # stream copy carries (#1027). An id derived from a source identity alone can be reused
         # by another call, so that collision stays a conflict and fails closed (#560).
-        draft_event_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
+        draft_event_ids = wanted_ids
         duplicate_by_events = observation_event_ids_call_keyed(envelope)
+        if duplicate_by_events:
+            overlap = await committed_event_ids(runtime.ledger, draft_event_ids)
+            if overlap and len(overlap) < len(draft_event_ids):
+                action_events, repeated_content = await self._validate_observation_overlap(
+                    runtime, envelope, batch, overlap
+                )
+                batch = replace(
+                    batch,
+                    drafts=tuple(
+                        item
+                        for item in batch.drafts
+                        if str(item.draft.event_id) not in overlap | repeated_content
+                    ),
+                )
+                if not batch.drafts:
+                    return _AlreadyCommitted(overlap)
+                enriched: list[MaterializedObservationDraft] = []
+                for item in batch.drafts:
+                    payload = item.draft.payload
+                    parents = set(map(str, item.draft.causal_parents)) & action_events
+                    if type(payload) is EvidenceRecordedPayload and len(parents) == 1:
+                        # Link only this new evidence, without rewriting a result or recording
+                        # a second execution. Provenance and F1 binding remain selection gates.
+                        payload = replace(payload, reference=next(iter(parents)))
+                        item = replace(
+                            item,
+                            draft=replace(item.draft, payload=payload),
+                            payload_bytes=canonical_encode(encode_payload(payload)),
+                        )
+                    enriched.append(item)
+                batch = replace(batch, drafts=tuple(enriched))
+                # Evidence roles alone do not distinguish different later source identities
+                # (two image enrichments both have observed_image_0). Bind the enrichment
+                # operation and its claim to the immutable event ids actually being appended.
+                draft_roles = tuple(f"{item.role}:{item.draft.event_id}" for item in batch.drafts)
+                draft_event_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
         if (
             duplicate_by_events
             and await observation_already_committed(runtime.ledger, draft_event_ids)
@@ -4842,10 +4928,40 @@ class ObservationCoordinator:
             )
             raise
         except PublicOperationError as exc:
+            if duplicate_by_events and exc.code is PublicErrorCode.EVENT_INVALID:
+                raced = await committed_event_ids(runtime.ledger, draft_event_ids)
+                if raced and len(raced) < len(draft_event_ids):
+                    await self._validate_observation_overlap(runtime, envelope, batch, raced)
+                    await abandon_preappend_objects(
+                        runtime.objects,
+                        tuple(staged_objects),
+                        component="application.observation_coordinator",
+                        operation="observation_object_abandon_failed",
+                        request_id=operation_id,
+                    )
+                    if not _overlap_retries:
+                        raise PublicOperationError(
+                            PublicErrorCode.SERVICE_UNAVAILABLE,
+                            "Observation replay changed during reconciliation; retry delivery.",
+                            retryable=True,
+                        ) from exc
+                    return await self._append_materialized(
+                        runtime,
+                        envelope,
+                        batch,
+                        captured_content=captured_content,
+                        legacy_session_id=legacy_session_id,
+                        legacy_writer_id=legacy_writer_id,
+                        legacy_writer_routes=legacy_writer_routes,
+                        replay_required=replay_required,
+                        replay_claims=replay_claims,
+                        replay_draft_role_sets=replay_draft_role_sets,
+                        _overlap_retries=0,
+                    )
             # The ledger refused the batch for an event id it already holds. If every event of
             # the batch is committed (a delivery that committed between the check above and this
             # append), that refusal classifies the batch as a duplicate, never a content refusal
-            # to quarantine (#1027). Any other refusal, including a partial overlap, stands.
+            # to quarantine (#1027). A partial overlap is reconciled once above; other refusals stand.
             if (
                 not duplicate_by_events
                 or exc.code is not PublicErrorCode.EVENT_INVALID
@@ -4868,6 +4984,120 @@ class ObservationCoordinator:
             MATERIALIZATION_MAPPING_VERSION,
             draft_roles,
         )
+
+    async def _validate_observation_overlap(
+        self,
+        runtime: TaskRuntime,
+        envelope: ObservationEnvelope,
+        batch: MaterializedObservationBatch,
+        overlap: frozenset[str],
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """Validate immutable call facts before appending a later delivery's new evidence.
+
+        Delivery times, rendering and captured-evidence refs may differ. They cannot change
+        the action/command identity or an existing evidence object's digest. Stream outcome
+        differences use the existing append-only correction, including dedup_conflict.
+        """
+
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            raise PublicOperationError(
+                PublicErrorCode.SERVICE_UNAVAILABLE,
+                "Observation replay projection is unavailable.",
+                retryable=True,
+            )
+        state = projection.state
+        action_ids = {
+            payload.action_id
+            for item in batch.drafts
+            if isinstance(
+                payload := item.draft.payload, (ActionRecordedPayload, ResultRecordedPayload)
+            )
+        }
+        action_events = frozenset(
+            str(row.source_event_id)
+            for action in action_ids
+            if (row := state.actions.get(action)) is not None and row.payload is not None
+        )
+        recorded = {
+            str(record.source_event_id): record.payload
+            for family in (state.actions, state.results, state.evidence)
+            for record in family.values()
+        }
+        captured = {
+            payload.captured_object_id: payload
+            for row in state.evidence.values()
+            if (payload := row.payload) is not None and payload.captured_object_id is not None
+        }
+        repeated_content: set[str] = set()
+        for item in batch.drafts:
+            incoming = item.draft.payload
+            if str(item.draft.event_id) not in overlap:
+                if (
+                    type(incoming) is EvidenceRecordedPayload
+                    and incoming.captured_object_id is not None
+                ):
+                    prior_content = captured.get(incoming.captured_object_id)
+                    if prior_content is not None:
+                        if (
+                            incoming.content_digest != prior_content.content_digest
+                            or incoming.digest_binding != prior_content.digest_binding
+                            or incoming.strength is not prior_content.strength
+                            or incoming.evidence_kind is not prior_content.evidence_kind
+                        ):
+                            raise PublicOperationError(
+                                PublicErrorCode.EVENT_INVALID,
+                                "Observation replay conflicts with committed content.",
+                                retryable=False,
+                            )
+                        # One captured object has one evidence association. Reusing it under
+                        # another delivery id would make authenticated resolution ambiguous.
+                        repeated_content.add(str(item.draft.event_id))
+                continue
+            prior = recorded.get(str(item.draft.event_id))
+            agrees = False
+            if type(incoming) is ActionRecordedPayload and type(prior) is ActionRecordedPayload:
+                agrees = (
+                    incoming.action_id == prior.action_id
+                    and incoming.action_kind is prior.action_kind
+                    and incoming.command == prior.command
+                    and incoming.subject_state == prior.subject_state
+                )
+            elif type(incoming) is ResultRecordedPayload and type(prior) is ResultRecordedPayload:
+                agrees = (
+                    incoming.result_id == prior.result_id
+                    and incoming.action_id == prior.action_id
+                    and incoming.subject_state == prior.subject_state
+                    and (
+                        (incoming.outcome, incoming.exit_status)
+                        == (prior.outcome, prior.exit_status)
+                        or incoming.outcome is ResultOutcome.UNKNOWN
+                        or envelope.source is ObservationSource.CODEX_SESSION_STREAM
+                    )
+                )
+            elif (
+                type(incoming) is EvidenceRecordedPayload and type(prior) is EvidenceRecordedPayload
+            ):
+                reference = incoming.reference
+                if reference is None and prior.reference in action_events:
+                    reference = prior.reference
+                agrees = (
+                    replace(incoming, observed_at=prior.observed_at, reference=reference) == prior
+                )
+            if not agrees:
+                raise PublicOperationError(
+                    PublicErrorCode.EVENT_INVALID,
+                    "Observation replay conflicts with committed facts.",
+                    retryable=False,
+                )
+        return action_events, frozenset(repeated_content)
 
     async def _append_inspection_snapshot(
         self,

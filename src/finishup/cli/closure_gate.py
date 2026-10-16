@@ -213,7 +213,8 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
         " `final_review: true` so the reviewer rules; do not acknowledge a finding you dispute"
     ),
     "closing_review_required": (
-        "the closing review has not run since your last change: run `check` with"
+        "the closing review has not run for the latest material input (a change, verification,"
+        " or command FinishUP could not establish was read-only): run `check` with"
         " `final_review: true` (a recorded blocker does not waive it)"
     ),
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP: (

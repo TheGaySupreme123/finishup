@@ -1148,3 +1148,29 @@ The owning gap-effect table classifies this code under G13 as a standing limitat
 bounding on both local and AI-powered receipt routes. It adds one recorded code to the
 unreleased classification version `8` (222 total rows including readiness-only tokens).
 Check text uses a fixed limitation sentence; status and receipt pairings name obligation ids.
+
+## Amendment (2026-10-16, PR #1080): read-only closure traffic and native verification
+
+Closing-review currency uses host-derived command facts. Non-setting `date -u`, ordinary `rg`,
+`sed -n` with a closed numeric print range, `git status`, and FinishUP workflow CLI calls are
+exploration. A composed read is exploration only if every command is recognized, with no output
+redirection, command substitution, heredoc or background execution. Runtime workspace-write facts
+still override exploration. Receipt, work-close and lifecycle records remain bookkeeping. Real
+edits, workspace-writing commands, fresh verification runs and review-mode switches retain the
+#1079 material-delta rule. Unknown commands remain material; the Stop text says that FinishUP
+could not establish they were read-only, without claiming an edit was observed.
+
+The native Codex `CommandExecution.command` argv is normalized before runner classification,
+just as it is for keyed command identity. Interpreter-run `finalize` and `*_regression` scripts
+join the closed verification naming shapes. A verifier after an edit in one command counts at
+that completed command's result frontier. A native completed command also counts when the agent
+later retrieves its result through `write_stdin`; a poll does not replace the original command's
+identity. Shell compositions that can mask individual outcomes still disclose that uncertainty.
+Runner classification establishes an observed run, never that its assertions are correct.
+
+Current inspection/change-capture snapshots do not establish a per-command before/after workspace
+pair. They cannot make arbitrary commands harmless; agent text cannot supply that proof. Returning
+a server timestamp is deferred to a versioned workflow-result change; ordinary `date -u` is safe
+closure traffic in this revision. Codex uses the native argv normalization; Claude Code and Cursor
+use the shared classifier through their hook normalizers. The CLI, MCP/status, TUI and receipt
+currency all derive from the same observed classification and kernel predicates.

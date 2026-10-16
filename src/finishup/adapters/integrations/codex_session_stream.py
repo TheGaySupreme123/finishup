@@ -1245,7 +1245,9 @@ def structural_from_stream_record(
             command_payload = JsonObject(
                 {
                     "tool_name": tool or "shell",
-                    "command": body.get("command"),
+                    # Native CommandExecution uses argv, unlike hook tool_input.cmd.
+                    # Classify the same unwrapped command whose keyed identity we record.
+                    "command": normalize_observed_command(body.get("command")),
                 }
             )
             runner = command_runner_class(command_payload)

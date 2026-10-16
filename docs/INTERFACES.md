@@ -5471,7 +5471,9 @@ For `codex_hook`, only explicitly linked tool output, selected changed-file/code
 workspace-diff bytes are eligible for AI-powered review selection. Session-stream records remain
 outside this native handoff and are excluded from AI-powered review selection. Tool input and
 path/locator content are excluded from AI-powered review selection too. The Codex hook extractor
-omits raw `TOOL_INPUT` bytes while retaining structural tool identity and correlation. It keeps the
+retains complete post-tool command input locally only as authenticated
+eligibility context for verification-output follow-ups (#1079 F1); other raw `TOOL_INPUT` stays
+omitted. Command input is excluded from provider excerpts and structural records. It keeps the
 encrypted `WORKSPACE_LOCATOR` from SessionStart because the local inspection and verification
 scheduler opens that locator to resolve the workspace and its approved-check policy. Removing it
 would break a supported local consumer. Neither kind becomes AI-powered review content; ordinary
@@ -5761,8 +5763,21 @@ way before it can quarantine (issue #1027, tb4n3 N3-7). A Codex stream completio
 call's generation before its captured-content manifests are looked up, so a content-bearing hook post
 and its contentless stream copy resolve the same committed operation across a `compact`, `resume` or
 `clear` generation bump. Event ids derived from a source identity alone (unpaired evidence) can be
-reused by another call, so a collision there, and any partial overlap, still fails closed as
-`ledger_rejected` (#560). The correction is part of ingest acceptance: an unavailable, lagging, rebuilding, missing-result, or redacted-result
+reused by another call, so a collision there still fails closed as `ledger_rejected` (#560).
+For call-keyed partial overlaps, the coordinator validates the committed core action/result and
+existing evidence against the current projection, then appends only missing drafts (#1078,
+PR #1080). Delivery times, rendering and evidence-reference sets may differ; command identity,
+action identity and existing evidence content must agree. Stream outcome differences retain the
+append-only correction and its conflict disclosure. A smaller committed role set cannot swallow
+new captured input, output or digest-only image evidence. New evidence's existing `reference`
+field names the original action event when validated causal parents establish that link; only
+observation-captured provenance can supply this link to review selection. Its run frontier stays
+the original result frontier, and F1 authentication is still required. An already-recorded captured
+object is reused rather than assigned a second evidence identity, preserving unique authenticated
+object association. Distinct image source identities retain distinct digest-only evidence.
+Enrichment operation/claim roles include their appended event IDs, so different enrichments do not
+collide. One immediate reconciliation handles a racing partial append; further agreeing races stay
+retryable rather than quarantined. Real conflicts still reject atomically. The correction is part of ingest acceptance: an unavailable, lagging, rebuilding, missing-result, or redacted-result
 candidate-findings projection returns retryable `service_unavailable` and leaves the outbox row
 pending until the projection can prove and complete the correction. Duplicates retry incomplete
 content/store/ledger/verification/advice work idempotently. Stream cursor advancement occurs only
@@ -7838,7 +7853,16 @@ review, or undeliverable review attempt, is current since the last material task
 change — an observed edit or shell write, an unclassified observed command or its result, a
 cooperative edit or command, or a `decision_recorded` whose `review_mode` is set (ADR-049); a
 decision that leaves `review_mode` unset, and the rest of bookkeeping and dispositions, do not count
-(`kernel/closing_review_delta`, #1079). An unchanged newest check that failed with
+(`kernel/closing_review_delta`, #1079). Closed host-derived read shapes (non-setting `date -u`,
+`rg` without a preprocessor, bounded `sed -n` print ranges, `git status`, and FinishUP workflow
+CLI calls) are exploration; read-only compositions carry that class only when every command is
+proven read-only and none redirects output or substitutes a command. Workspace write facts still
+win. Receipt, work-close and lifecycle events do not re-arm the review. Unknown commands stay
+conservative: the Stop explanation names that FinishUP could not establish they were read-only.
+Native Codex completed-command argv is normalized before runner classification; finalizer and
+regression scripts count as observed verification, including a completed command the agent later
+retrieves through `write_stdin`. Masked shell compositions retain their unknown-part-outcome gap.
+An unchanged newest check that failed with
 `coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
 of asking for the same closing review; an actionable
 `semantic_review_not_requested` takes its place unless the latest check so deferred the review),

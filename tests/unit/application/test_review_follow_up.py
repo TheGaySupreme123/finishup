@@ -2624,3 +2624,36 @@ def test_a_published_summary_that_does_not_fit_is_omitted_inside_the_existing_bu
     )
     excerpt_bytes = sum(len(item.content) for item in semantic.items if item.section == "excerpt")
     assert excerpt_bytes <= 32
+
+
+def test_late_observed_evidence_links_only_to_its_original_run() -> None:
+    case = _command_projection()
+    projection = case.projection
+    action = projection.actions[act(21)]
+    late = _hook_evidence(82, 83)
+    assert late.payload is not None
+    linked = evidence_record(replace(late.payload, reference=str(action.source_event_id)), 83)
+    enriched = replace(projection, evidence={**projection.evidence, evd(82): linked})
+    allowed = frozenset(str(ref) for ref in case.allowed_ids) | {str(evd(82))}
+    assert observed_command_output_refs(enriched, (str(res(22)),), allowed) == {
+        str(evd(22)),
+        str(evd(82)),
+    }
+    # An asserted reference or a reference to the previous run cannot lend this output.
+    assert linked.payload is not None
+    for payload in (
+        replace(linked.payload, digest_binding=None),
+        replace(linked.payload, reference=str(projection.actions[act(11)].source_event_id)),
+    ):
+        refused = replace(
+            enriched, evidence={**enriched.evidence, evd(82): evidence_record(payload, 83)}
+        )
+        assert observed_command_output_refs(refused, (str(res(22)),), allowed) == {str(evd(22))}
+    redacted = replace(
+        enriched,
+        results={
+            **enriched.results,
+            res(22): replace(enriched.results[res(22)], payload=None, redacted=True),
+        },
+    )
+    assert observed_command_output_refs(redacted, (str(res(22)),), allowed) == frozenset()

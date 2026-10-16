@@ -549,6 +549,46 @@ def _classify_argv(argv: list[str]) -> RunnerClass | None:
         # script by its own name, otherwise unclassified.
         return "test" if _test_script(argv[0]) else "other"
     command = argv[0].rsplit("/", 1)[-1].casefold()
+    # Closed, non-setting date invocations (the timestamp FinishUP publications use).
+    if command == "date" and all(
+        argument in {"-u", "--utc", "--universal"} or argument.startswith("+")
+        for argument in argv[1:]
+    ):
+        return "exploration"
+    if (
+        command in {"finishup", "yoetz"}
+        and len(argv) > 1
+        and argv[1]
+        in {
+            "status",
+            "read-guidance",
+            "check",
+            "receipt",
+            "publish-work",
+            "respond",
+            "start",
+            "closure-prepare",
+            "check-wait",
+            "work-close",
+        }
+    ):
+        # Its task effects are the cooperative records, including review-mode switches.
+        # Shell writes/redirections are still classified separately at the host boundary.
+        return "exploration"
+    if (
+        command == "sed"
+        and len(argv) >= 3
+        and argv[1] == "-n"
+        and re.fullmatch(r"(?:[0-9]+|\$)(?:,(?:[0-9]+|\$))?p", argv[2], re.ASCII)
+        and all(not argument.startswith("-") for argument in argv[3:])
+    ):
+        return "exploration"
+    if command == "git":
+        operands = argv[1:]
+        while len(operands) >= 2 and operands[0] == "-C":
+            operands = operands[2:]
+        if operands and operands[0] == "status":
+            return "exploration"
     if command in _SHELL_WRAPPERS and len(argv) >= 3 and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]):
         return command_runner_class({"command": argv[2]})
     wrapped = _run_wrapper_target(command, argv)
@@ -688,8 +728,8 @@ _SCRIPT_RUNNERS: Final = frozenset({"sh", "bash", "zsh", "dash", "ksh"}) | _INTE
 # A script the agent runs to check its work: ``run_tests.sh``, ``test_solver.py``, ``tests/x.py``,
 # ``verify.sh``. The match is on the script's own name or directory, never on arguments.
 _TEST_SCRIPT_NAME_RE: Final = re.compile(
-    r"^(?:tests?|run[-_]?tests?|check|verify|validate|evaluate|selftest)(?:[-_.][a-z0-9_.-]*)?$"
-    r"|^(?:test[-_][a-z0-9_.-]+|[a-z0-9_.-]+[-_]tests?)\.[a-z0-9]+$",
+    r"^(?:tests?|run[-_]?tests?|check|verify|validate|evaluate|selftest|finalize)(?:[-_.][a-z0-9_.-]*)?$"
+    r"|^(?:test[-_][a-z0-9_.-]+|[a-z0-9_.-]+[-_](?:tests?|regression))\.[a-z0-9]+$",
     re.IGNORECASE | re.ASCII,
 )
 
@@ -929,10 +969,10 @@ def _compound_runner_class(raw: str) -> RunnerClass:
     ``cd /app && pytest -q 2>&1 | tail -5`` runs a test: classing it ``compound`` (which
     ``edited_after_last_verification`` ignores) left that fact dormant in about 70% of real runs.
     Each simple command is classified on its canonical argv (wrappers dropped); a command that
-    redirects into a file is not exploration (``cat > f`` writes). A composition with no
-    verifying command stays ``compound``: an outer exit status does not establish each nested
-    command's outcome (#968), and that gap is raised separately by
-    ``compound_verification_gap_required``.
+    redirects into a file is not exploration (``cat > f`` writes). A composition without a
+    verifier stays ``compound`` unless every component is proven read-only. An outer exit
+    status does not establish each nested command's outcome (#968), and that gap is raised
+    separately by ``compound_verification_gap_required``.
     """
 
     normalized = normalize_observed_command(raw)
@@ -950,6 +990,18 @@ def _compound_runner_class(raw: str) -> RunnerClass:
     for verifying in _VERIFYING_PRIORITY:
         if verifying in classes:
             return cast(RunnerClass, verifying)
+    if classes == {"exploration"} and not any(marker in raw for marker in ("$(", "`", "<<", "&")):
+        try:
+            # Canonical words erase executable paths. Recheck the original argv so an
+            # agent-owned ./date or ./finishup cannot acquire a harmless tool's identity.
+            if all(
+                not command.writes
+                and _runner_class_for_argv(shlex.split(command.text, posix=True)) == "exploration"
+                for command in structure.commands
+            ):
+                return "exploration"
+        except ValueError:
+            pass
     return "compound"
 
 

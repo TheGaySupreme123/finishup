@@ -81,6 +81,7 @@ __all__ = [
     "excerpt_span_whole",
     "OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX",
     "observed_command_output_refs",
+    "observed_enrichment_refs",
     "observed_image_evidence",
     "plan_review_follow_up",
     "review_missing_for_assessment",
@@ -627,6 +628,7 @@ def _recorded_sources(
     """
 
     refs = set(targets)
+    enrichments = observed_enrichment_refs(projection)
     for family in (projection.actions, projection.results, projection.evidence):
         for key, row in family.items():
             if str(row.source_event_id) in refs:
@@ -637,9 +639,12 @@ def _recorded_sources(
         if payload is None or row.redacted:
             continue
         if str(key) in named or str(payload.action_id) in named:
+            action = projection.actions.get(payload.action_id)
             refs.update(
                 (str(key), str(payload.action_id), *(str(ref) for ref in payload.evidence_refs))
             )
+            if action is not None:
+                refs.update(enrichments.get(str(action.source_event_id), ()))
     rows = {
         str(key)
         for family in (projection.actions, projection.results, projection.evidence)
@@ -670,6 +675,7 @@ def observed_command_output_refs(
     evidence_events = {
         str(ref): str(row.source_event_id) for ref, row in projection.evidence.items()
     }
+    enrichments = observed_enrichment_refs(projection)
     claim_supports: list[frozenset[str]] = []
     for claim_ref, row in projection.claims.items():
         payload = row.payload
@@ -700,7 +706,15 @@ def observed_command_output_refs(
             continue
         action = action_row.payload
         key = _run_key(action)
-        evidence_refs = tuple(str(ref) for ref in payload.evidence_refs)
+        evidence_refs = tuple(
+            sorted(
+                {
+                    *(str(ref) for ref in payload.evidence_refs),
+                    *enrichments.get(str(action_row.source_event_id), ()),
+                },
+                key=str.encode,
+            )
+        )
         tokens = {
             str(result_ref),
             str(row.source_event_id),
@@ -781,6 +795,22 @@ def observed_command_output_refs(
             continue
         kept.add(ref)
     return frozenset(kept)
+
+
+def observed_enrichment_refs(projection: ProjectionState) -> dict[str, tuple[str, ...]]:
+    """Late evidence linked by the observation writer to its immutable original action.
+
+    Only service-stamped captured provenance qualifies. The link does not advance the run's
+    frontier, bypass a redacted result, or replace authenticated command/output binding.
+    """
+
+    linked: dict[str, list[str]] = {}
+    for ref, row in projection.evidence.items():
+        payload = row.payload
+        if payload is not None and not row.redacted and _hook_observed(payload):
+            if payload.reference is not None:
+                linked.setdefault(payload.reference, []).append(str(ref))
+    return {key: tuple(values) for key, values in linked.items()}
 
 
 def unsuppliable_missing_kinds(

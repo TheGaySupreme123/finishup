@@ -308,8 +308,24 @@ unsupported claims and unbounded duplicate findings.
     (event ids derived from the host call, never from a source identity alone) is already recorded,
     the delivery is a duplicate. Nothing is appended and the stream's explicit outcome still
     reaches the recorded action through the same append-only correction; an append the ledger
-    refuses as `EVENT_INVALID` is re-read the same way before it can quarantine. A partial overlap,
-    and a collision on source-identity-keyed ids (#560), stay content refusals.
+    refuses as `EVENT_INVALID` is re-read the same way before it can quarantine. Amendment
+    (PR #1080, #1078 class): a call-keyed partial overlap is reconciled against the
+    current readable projection. Matching core facts are replayed; only missing evidence/events
+    are appended under their own role-set operation. Existing events remain immutable. Different
+    delivery times, rendering and evidence-reference sets do not change the core. A conflicting
+    action/command or existing evidence payload still rejects; stream outcome differences keep
+    their append-only conflict correction. A smaller committed operation cannot discard new
+    captured evidence. One immediate reconciliation also handles an overlap that races append;
+    further agreeing races remain retryable rather than quarantined.
+    A collision on source-identity-keyed ids (#560) remains a content refusal. This changes no
+    capture consent, content authentication, byte budget or provider eligibility rule.
+    Late evidence uses the existing optional `evidence_recorded.reference` to name its original action
+    event after core and causal-parent validation. Selection follows that link only for service-stamped
+    observation-captured provenance and retains the original execution frontier. F1 authenticated
+    command/output binding remains required. A captured object already represented by agreeing evidence
+    is reused, so another delivery does not make its object-to-evidence association ambiguous. New
+    image source identities remain distinct; enrichment operation/claim roles bind the appended event
+    IDs. Existing schemas and frozen vectors retain their bytes.
     Amendment (issue #1019, tb4n2 N-4): a retired native content handoff is disclosed on its own
     task. Each retirement appends one marker, keyed by the ticket identity, to the ticket's task
     ledger with the standing gap `capture_handoff_retired`; it never reaches another task and

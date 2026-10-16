@@ -3459,3 +3459,17 @@ uses the authenticated same-phase input only for eligibility; it never sends tha
 excerpt. Older captures without this context remain withheld. Private and repository-excerpt
 denial withhold the auto-supplied output. This shared path applies on macOS, Linux and WSL 2;
 native Windows is not claimed.
+
+### Closing currency and observation replay (PR #1080)
+
+The shared host classifier recognizes non-setting `date -u`, ordinary `rg`, bounded numeric
+`sed -n` print ranges, `git status`, and FinishUP workflow CLI calls as read-only closure traffic.
+A runtime workspace write still re-arms closing review, as do real edits and review-mode switches.
+Unknown commands remain material, with an explicit explanation that FinishUP could not establish
+that they were read-only. Receipt, work-close and lifecycle records do not re-arm review.
+
+Call-keyed hook/stream overlap is reconciled against immutable core facts, and missing captured
+evidence is appended. Conflicts still reject. Capture consent, authenticated command/output
+binding, privacy policy and provider limits remain required for verification-output auto-supply.
+Native completed-command argv is normalized before runner classification. The original completed
+verification remains authoritative when its output is later retrieved through `write_stdin`.

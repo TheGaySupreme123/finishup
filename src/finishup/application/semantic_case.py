@@ -37,6 +37,7 @@ from finishup.application.missing_for_assessment import (
     excerpt_span_covered,
     excerpt_span_key,
     excerpt_span_whole,
+    observed_enrichment_refs,
     observed_image_evidence,
     supplied_since,
     unsupported_data_type,
@@ -3214,6 +3215,7 @@ def _verification_identities(
     """
 
     by_evidence: dict[str, _VerificationRun] = {}
+    enrichments = observed_enrichment_refs(projection)
     by_result: dict[str, _VerificationRun] = {}
     newest: dict[str, tuple[int, str]] = {}
     cited_actions: set[object] = set()
@@ -3242,6 +3244,8 @@ def _verification_identities(
         newest[identity] = (row.source_frontier, str(result_ref))
         for evidence_ref in payload.evidence_refs:
             by_evidence[str(evidence_ref)] = run
+        for evidence_ref in enrichments.get(str(action.source_event_id), ()):
+            by_evidence[evidence_ref] = run
     # A tombstoned result cannot cite its action. The action still names the command, and its
     # frontier is the newest run when no readable result of that command is later.
     redacted_newest: set[str] = set()

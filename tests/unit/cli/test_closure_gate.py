@@ -359,6 +359,7 @@ def test_closing_review_requirement_continues_with_the_final_review_repair() -> 
     assert gate is not None
     assert gate.items == ("closing_review_required",)
     assert "`final_review: true`" in gate.text
+    assert "could not establish was read-only" in gate.text
 
 
 # --- blocker re-check (#977 follow-up) -------------------------------------------------------
