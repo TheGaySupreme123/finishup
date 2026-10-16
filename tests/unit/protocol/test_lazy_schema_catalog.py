@@ -312,6 +312,8 @@ def lazy_process(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[], None]
         schemas._load_catalog_state.cache_clear()
         monkeypatch.setattr(schemas, "_lazy_catalog_slot", [])
         monkeypatch.setattr(schemas, "_validity_checker_slot", [])
+        # A test that ran the service in this process left the service's preference behind.
+        monkeypatch.setattr(schemas, "_full_catalog_preferred", [False])
 
     reset()
     yield reset

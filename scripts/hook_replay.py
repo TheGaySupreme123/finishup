@@ -924,11 +924,50 @@ PINNED_HOOK_BUDGETS: Final[Mapping[str, float | int]] = {
 # The release-runtime bootstrap (``adapters/release_runtime.py``) plus the pins above.
 _PINNED_BOOTSTRAP: Final = (
     "import json, os, sys\n"
+    "trace = os.environ.get('HOOK_REPLAY_CATALOG_TRACE')\n"
+    "if trace:\n"
+    "    import atexit\n"
+    "    def _catalog_trace():\n"
+    "        schemas = sys.modules.get('finishup.protocol.schemas')\n"
+    "        if schemas is None:\n"
+    "            row = {'full_catalog_built': False, 'lazy_documents': None}\n"
+    "        else:\n"
+    "            slot = getattr(schemas, '_lazy_catalog_slot', None) or [(None, None)]\n"
+    "            lazy = slot[0][1]\n"
+    "            built = schemas._load_catalog_state.cache_info().currsize > 0\n"
+    "            count = None if lazy is None else len(lazy._plain)\n"
+    "            row = {'full_catalog_built': built, 'lazy_documents': count}\n"
+    "        with open(trace, 'a') as handle:\n"
+    "            handle.write(json.dumps(row) + '\\n')\n"
+    "    atexit.register(_catalog_trace)\n"
     "from finishup.cli import observe_hooks\n"
     "for name, value in json.loads(os.environ['HOOK_REPLAY_PINS']).items():\n"
     "    if not hasattr(observe_hooks, name):\n"
     "        raise SystemExit('hook_replay_pin_unknown:' + name)\n"
     "    setattr(observe_hooks, name, value)\n"
+    "delay = float(os.environ.get('HOOK_REPLAY_DELAY_SECONDS') or 0)\n"
+    "if delay > 0:\n"
+    "    import time\n"
+    "    time.sleep(delay)\n"
+    "sys.argv = sys.argv[1:]\n"
+    "from finishup.cli.entry import main\n"
+    "main()\n"
+)
+# Pinned mode only, identically for every build: the service's background observation sweep,
+# lineage recovery and coordination retry run on their own timers and race each callback's own
+# delivery, so the order in which hook and session-stream rows reach the ledger (and the advice
+# that follows from it) would depend on scheduling. Paused, every row is delivered by the
+# callback itself or by the ``observe drain`` that follows it, in replay order.
+_SERVICE_BOOTSTRAP: Final = (
+    "import sys\n"
+    "from finishup.service import daemon\n"
+    "async def _paused(self, *args, **kwargs):\n"
+    "    return None\n"
+    "for name in ('_bounded_observation_sweep', '_bounded_lineage_recovery',\n"
+    "             '_bounded_coordination_sweep'):\n"
+    "    if not hasattr(daemon.ServiceDaemon, name):\n"
+    "        raise SystemExit('hook_replay_service_hook_unknown:' + name)\n"
+    "    setattr(daemon.ServiceDaemon, name, _paused)\n"
     "sys.argv = sys.argv[1:]\n"
     "from finishup.cli.entry import main\n"
     "main()\n"
@@ -1058,6 +1097,7 @@ class Replayer:
         self.home = work_root / "home"
         self.log = log
         self.service: subprocess.Popen[bytes] | None = None
+        self.delay_seconds = 0.0
         self._ceremony = _load_by_path("hook_replay_ceremony", _HERE / "dogfood_ci" / "ceremony.py")
         self._lane = _load_by_path("hook_replay_lane", _HERE / "dogfood_ci" / "lane.py")
 
@@ -1083,13 +1123,10 @@ class Replayer:
             check=False,
         )
 
-    def start(self) -> dict[str, Any]:
-        if self.home.exists():
-            shutil.rmtree(self.home)
-        (self.home / ".codex").mkdir(parents=True, mode=0o700)
-        log_path = self.work_root / f"service-{self.instance.tag}.log"
+    def _spawn_service(self, command: list[str], log_name: str) -> None:
+        log_path = self.work_root / log_name
         self.service = subprocess.Popen(  # noqa: S603 - fixed instance launcher argv
-            [str(self.instance.launcher), "service", "run"],
+            command,
             cwd=self.home,
             env=self.env(),
             stdin=subprocess.DEVNULL,
@@ -1097,7 +1134,24 @@ class Replayer:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+
+    def start(self, *, pause_background: bool) -> dict[str, Any]:
+        if self.home.exists():
+            shutil.rmtree(self.home)
+        (self.home / ".codex").mkdir(parents=True, mode=0o700)
+        launcher = str(self.instance.launcher)
+        self._spawn_service([launcher, "service", "run"], f"service-{self.instance.tag}.log")
         status = self._wait_status(lambda s: True)
+        if pause_background:
+            # The first launch made the retained runtime; serve again from it with the
+            # background passes paused (see ``_SERVICE_BOOTSTRAP``).
+            self.stop()
+            retained = str(self.instance.retained_python())
+            self._spawn_service(
+                [retained, "-I", "-c", _SERVICE_BOOTSTRAP, launcher, "service", "run"],
+                f"service-{self.instance.tag}-paused.log",
+            )
+            status = self._wait_status(lambda s: True)
         if status.get("vault_mode") != "uninitialized":
             raise SystemExit(f"vault not fresh: {status.get('vault_mode')}")
         passphrase = secrets.token_urlsafe(24)
@@ -1201,6 +1255,7 @@ class Replayer:
         claude_transcript.parent.mkdir(parents=True, exist_ok=True)
         claude_transcript.touch()
         retained = self.instance.retained_python()
+        trace_path = mode_root / "catalog-trace.jsonl"
         records: list[dict[str, Any]] = []
         for number, item in enumerate(items, start=1):
             workspace = mode_root / cast(str, item["workspace"])
@@ -1229,10 +1284,18 @@ class Replayer:
             elif mode == "pinned":
                 command = [str(retained), "-I", "-c", _PINNED_BOOTSTRAP]
                 command += [str(self.instance.launcher), *argv]
-                extra = {**host_env, "HOOK_REPLAY_PINS": json.dumps(dict(PINNED_HOOK_BUDGETS))}
+                extra = {
+                    **host_env,
+                    "HOOK_REPLAY_PINS": json.dumps(dict(PINNED_HOOK_BUDGETS)),
+                    # A side file only: never stdout or stderr, which are compared.
+                    "HOOK_REPLAY_CATALOG_TRACE": str(trace_path),
+                    # An experiment knob: hold a build's callbacks back to another build's pace.
+                    "HOOK_REPLAY_DELAY_SECONDS": str(self.delay_seconds),
+                }
             else:
                 command = [str(self.instance.launcher), *argv]
                 extra = host_env
+            traced = trace_path.read_text().splitlines() if trace_path.exists() else []
             started = time.monotonic()
             done = subprocess.run(
                 command,
@@ -1254,6 +1317,9 @@ class Replayer:
                 "stderr": done.stderr.decode("utf-8", errors="replace"),
                 "elapsed_ms": round(elapsed_ms, 3),
             }
+            if trace_path.exists():
+                fresh = trace_path.read_text().splitlines()[len(traced) :]
+                record["catalog_trace"] = [json.loads(line) for line in fresh]
             if item["workspace"] != "cli":
                 drained = self.finishup(
                     ["observe", "drain", "--workspace", str(workspace), "--json"], cwd=workspace
@@ -1356,7 +1422,8 @@ _TOKEN_PATTERNS: Final = (
             r"(?<![_0-9a-f-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
         ),
     ),
-    ("hex64", re.compile(r"(?<![:0-9a-f])[0-9a-f]{64}(?![0-9a-f])")),
+    # Bare keyed digests and commitments (``hook:<48 hex>`` source identities, 64-hex keys).
+    ("hex", re.compile(r"(?<![0-9a-f])[0-9a-f]{32,64}(?![0-9a-f])")),
     ("time", re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})")),
 )
 
@@ -1375,6 +1442,9 @@ class Renamer:
     verbatim and compared exactly; a value present in only one run was generated by that run
     (a fresh identifier, a wall-clock time, an installation-keyed commitment) and is replaced by
     ``<kind#n>``. Two runs that differ only in such values normalize to identical text.
+
+    A wall-clock time becomes a bare ``<time>``: whether two events share a millisecond depends on
+    how fast the machine ran, so the pattern of equal times is not compared, only their places.
     """
 
     run_only: frozenset[str]
@@ -1397,7 +1467,9 @@ class Renamer:
                     continue
                 if any(start < match.end() and match.start() < end for start, end, _ in spans):
                     continue
-                if value not in self.names:
+                if kind == "time":
+                    self.names.setdefault(value, "<time>")
+                elif value not in self.names:
                     self.counters[kind] = self.counters.get(kind, 0) + 1
                     self.names[value] = f"<{kind}#{self.counters[kind]}>"
                 self.renamed_kinds[kind] = self.renamed_kinds.get(kind, 0) + 1
@@ -1591,10 +1663,11 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             for key in ("source_ref", "source_state", "package_version", "package_digest")
         }
         replayer = Replayer(instance, work_root, log)
-        entry: dict[str, Any] = {"tag": tag}
+        replayer.delay_seconds = args.delay_ms / 1000.0
+        entry: dict[str, Any] = {"tag": tag, "delay_ms": args.delay_ms}
         record["instances"][mode] = entry
         try:
-            entry["setup"] = replayer.start()
+            entry["setup"] = replayer.start(pause_background=mode == "pinned")
             record["runs"][mode] = replayer.replay(corpus, mode)
         finally:
             entry["stop"] = replayer.stop()
@@ -1633,6 +1706,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     replay.add_argument("--work-root", required=True)
     replay.add_argument("--mode", action="append", choices=("pinned", "shipped"), required=True)
     replay.add_argument("--out", required=True)
+    replay.add_argument(
+        "--delay-ms",
+        type=float,
+        default=0.0,
+        help="Pinned mode: hold each callback back this long before it starts (experiments).",
+    )
     replay.set_defaults(handler=_cmd_replay)
     compare = commands.add_parser("compare", help="Compare two replay records.")
     compare.add_argument("old")

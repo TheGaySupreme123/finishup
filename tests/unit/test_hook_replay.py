@@ -337,3 +337,23 @@ def test_a_probe_prints_every_error_field_from_a_fresh_process() -> None:
         "outcome": "ProtocolValueError",
         "reason_code": "float_forbidden",
     }
+
+
+def test_which_events_share_a_millisecond_is_not_compared() -> None:
+    first = _run(["at 2026-10-16T10:00:00.001Z", "at 2026-10-16T10:00:00.001Z"], [])
+    second = _run(["at 2026-10-16T11:00:00.001Z", "at 2026-10-16T11:00:00.002Z"], [])
+    assert _MODULE.compare_runs(first, second)["identical"]
+
+
+def test_the_paused_background_passes_exist_on_the_service() -> None:
+    from finishup.service.daemon import ServiceDaemon
+
+    for name in (
+        "_bounded_observation_sweep",
+        "_bounded_lineage_recovery",
+        "_bounded_coordination_sweep",
+    ):
+        assert name in _MODULE._SERVICE_BOOTSTRAP
+        assert callable(getattr(ServiceDaemon, name))
+    compile(_MODULE._SERVICE_BOOTSTRAP, "service-bootstrap", "exec")
+    compile(_MODULE._PINNED_BOOTSTRAP, "pinned-bootstrap", "exec")
