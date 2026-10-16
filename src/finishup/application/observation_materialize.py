@@ -554,7 +554,13 @@ def _eligible_captured_content(
         if manifest is None:
             gaps.add(ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value)
             continue
-        if manifest.content_kind not in _CAPTURED_EVIDENCE_KINDS:
+        if manifest.content_kind not in _CAPTURED_EVIDENCE_KINDS or (
+            manifest.content_kind is ObservationContentKind.TOOL_INPUT
+            and (
+                envelope.event_kind != "PostToolUse"
+                or type(envelope.structural_payload.get("command_commitment")) is not str
+            )
+        ):
             gaps.add(ObservationGapCode.CONTENT_UNSELECTED.value)
             continue
         if manifest.content_digest is None or manifest.content_bytes is None:

@@ -124,6 +124,8 @@ _CHANGED = frozenset(
         "semantic_review_deferred_before_first_edit",
         # tb4n5 (#1044 follow-up): a new disclosure, counted on the receipt, never agent work.
         "deliverable_references_ambiguous_name",
+        # #1079 F2: an unanswered acceptance invite bounds coverage without blocking Stop.
+        "unresolved_verification_limitation",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -134,8 +136,8 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # The 218 recorded codes (#1040 follow-up added check_time_change_unavailable_git_version_
     # unsupported beside its G7 siblings; the #1044 follow-up added
     # deliverable_references_ambiguous_name; #1019 r2 added advice_semantic_preview_required)
-    # + 3 readiness-only finding tokens.
-    assert len(GAP_EFFECT_TABLE) == 221
+    # + the #1079 unresolved verification limit + 3 readiness-only finding tokens.
+    assert len(GAP_EFFECT_TABLE) == 222
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -144,7 +146,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 40
+    assert len(changed) == 41
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])

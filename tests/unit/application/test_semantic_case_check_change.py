@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -1009,6 +1010,87 @@ def test_a_change_that_fits_keeps_its_leading_prefix() -> None:
     body = first.content.split(b"\n", 1)[1]
     assert text.startswith(body)
     assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in semantic.packet.coverage.known_gaps
+
+
+@pytest.mark.parametrize(
+    "prefix", (b"+import module\n", b"+# generated boilerplate\n", b"+// license notice\n")
+)
+@pytest.mark.parametrize("path", ("src/rule.py", "src/règle.py"))
+@pytest.mark.parametrize("separate_hunk", (False, True))
+def test_a_tight_single_file_selects_the_decision_interval(
+    prefix: bytes, path: str, separate_hunk: bool
+) -> None:
+    text = b"FinishUP check-time change: header\nEnd of header.\n" + _diff_file(
+        path,
+        (prefix,) * 400
+        + ((b"@@ -600,2 +1000,3 @@\n",) if separate_hunk else ())
+        + (b"+# reject non-positive values\n", b"+if value > 0:\n", b"+    return value\n"),
+    )
+    semantic = _build(
+        _case_with_material(),
+        ReviewContextProfile.CUSTOM,
+        change=_change(text),
+        selection=_tight_decision_selection(700),
+    )
+    parts = [
+        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    ]
+    body = b"".join(item.content for item in parts)
+    assert b"if value > 0:" in body and b"return value" in body
+    assert b"reject non-positive values" in body
+    assert f"diff --git a/{path} b/{path}".encode() in body
+    assert b"[FinishUP hunk: @@" in body
+    assert b"skipped file intervals" in body
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
+    assert sum(item.content_bytes for item in semantic.packet.targeted_excerpts) <= 700
+    leading = check_time_change_bytes_carried(semantic)
+    served = check_time_change_sections_carried(semantic)
+    assert leading == 0 and served
+    decision_at = text.index(b"+if value > 0:")
+    assert any(low <= decision_at < high for low, high in served)
+    files, representable = check_time_change_shown_record(_change(text).capture, leading, served)
+    assert representable and len(files) == 1
+    shown = files[0]
+    assert not shown.whole and not shown.section_admitted
+    assert shown.clean_bytes == 0
+    assert shown.shown_bytes == sum(high - low for low, high in served)
+    assert shown.view.startswith(b"yoetz/check-change-interval-view/v1\x00")
+    # A different interval cannot authorize the same repair view.
+    other, _ = check_time_change_shown_record(
+        _change(text).capture, 0, ((served[0][0] - 1, served[0][1]),)
+    )
+    assert other[0].view != shown.view
+    assert (
+        check_time_change_sections_carried(semantic, withheld_categories=("repository_excerpt",))
+        == ()
+    )
+
+
+def test_cut_interior_hunk_header_counts_only_the_bytes_that_reached_the_packet() -> None:
+    from finishup.application.semantic_case import (
+        _check_time_change_cut_part,  # pyright: ignore[reportPrivateUsage]
+        _check_time_change_label_body,  # pyright: ignore[reportPrivateUsage]
+        _check_time_change_offer,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    text = _diff_file(
+        "src/règle.py",
+        (b"+import module\n",) * 400
+        + (b"+if value > 0:\n", b"+    return value\n")
+        + (b"+detail = '" + b"x" * 150 + b"'\n",) * 5,
+    )
+    parts, offsets = _check_time_change_offer(text, _tight_decision_selection(1800))
+    result = _check_time_change_cut_part(parts[0], 1, len(parts), 700)
+    assert result is not None and result[1]
+    part = result[0].encode()
+    assert b"cut to the packet's room" in part
+    assert b"if value > 0:" in part and b"return value" in part
+    match = re.search(rb"selected original bytes (\d+):(\d+)", part)
+    assert match is not None
+    _labels, body = _check_time_change_label_body(result[0])
+    assert int(match[1]) == offsets[0]
+    assert text[int(match[1]) : int(match[2])] == body.encode()
+    assert len(part) <= 700
 
 
 def test_other_code_ranks_after_a_decision_and_ahead_of_a_license() -> None:

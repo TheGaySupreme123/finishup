@@ -12,6 +12,8 @@ from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    UNRESOLVED_VERIFICATION_GAP,
+    UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
     limitations_name_coordinator_failure,
@@ -562,6 +564,8 @@ def render_human_check(result: CheckSuccessModel) -> str:
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
         lines.extend(_check_time_change_sentences(result.coverage.known_gaps))
+        if UNRESOLVED_VERIFICATION_GAP in result.coverage.known_gaps:
+            lines.append(UNRESOLVED_VERIFICATION_LIMITATION)
         lines.extend(lineage_lines(result.fact_lineage))
         # The strict ceiling blocked this process while the last install applied the policy
         # route (issue #537). A ceiling with no applied-policy record keeps today's terminal

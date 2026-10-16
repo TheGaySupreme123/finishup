@@ -11,6 +11,7 @@ service-authenticated values; missing material becomes an omission.
 from __future__ import annotations
 
 import hashlib
+import json
 import posixpath
 import re
 import shlex
@@ -748,6 +749,7 @@ class _CapturedGroup:
     source_kind: _ExcerptKind
     digest_provenance: ExcerptDigestProvenance
     capture_gaps: tuple[str, ...]
+    redacted: bool = False
     observed_command: str | None = dataclass_field(default=None, repr=False)
     observed_command_identity: str | None = None
 
@@ -1044,19 +1046,35 @@ def _check_time_change_cut_part(
 
     labels, body = _check_time_change_label_body(part)
     raw = body.encode("utf-8")
-    note = ""
-    for line in labels.split("\n"):
-        if line.startswith("[FinishUP:"):
-            note = line + "\n"
-            break
+    note = "".join(line + "\n" for line in labels.split("\n")[1:] if line)
     cut_marker = _CHECK_TIME_CHANGE_CUT_MARKER.format(index=index, count=count)
     prefix = cut_marker + note
-    chunk_limit = room - len(prefix.encode("ascii"))
+    chunk_limit = room - len(prefix.encode("utf-8"))
     if chunk_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
         return None
     if len(raw) <= chunk_limit:
         return part, False
-    return prefix + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
+    # A cut also narrows the interval advertised by the synthetic hunk header.
+    # Recompute room after updating decimal offsets; no header may claim an unseen tail.
+    interval = re.search(
+        r"selected original bytes (\d+):(\d+); skipped file intervals (\d+):\d+ and \d+:(\d+)", note
+    )
+    for _ in range(4):
+        cut = _check_time_change_cut(raw, chunk_limit)
+        if interval is not None:
+            low = int(interval[1])
+            high = low + cut
+            updated = (
+                note[: interval.start()]
+                + f"selected original bytes {low}:{high}; skipped file intervals {interval[3]}:{low} and {high}:{interval[4]}"
+                + note[interval.end() :]
+            )
+            prefix = cut_marker + updated
+        next_limit = room - len(prefix.encode("utf-8"))
+        if cut <= next_limit:
+            return prefix + raw[:cut].decode("utf-8"), True
+        chunk_limit = next_limit
+    return None
 
 
 def _check_time_change_part_chunk_bytes(content: bytes) -> int:
@@ -1199,21 +1217,101 @@ def _decisive_section_ranges(text: bytes) -> tuple[tuple[int, int], ...]:
     return tuple(ranges)
 
 
+def _decisive_intervals(text: bytes) -> tuple[tuple[int, int], ...]:
+    """Rank bounded line intervals inside hunks, preserving original byte coordinates.
+
+    Each decision gets three lines of context and its following rule. Splitting a huge hunk
+    keeps imports, comments and generated prefixes from consuming a tight packet. Unselected
+    intervals remain in the offer after the decisive intervals, with no duplicated bytes.
+    """
+
+    preferred: list[tuple[int, int]] = []
+    for start, end in _file_section_bounds(text):
+        first_decision = next(
+            (
+                match.start() + start
+                for match in re.finditer(rb"^[+-](.*)$", text[start:end], re.MULTILINE)
+                if (body := _changed_code_body(match.group())) is not None
+                and _DECISION_LINE.search(body) is not None
+            ),
+            None,
+        )
+        if first_decision is not None and first_decision - start <= 512:
+            preferred.append((start, end))
+            continue
+        hunks = list(_CHECK_TIME_CHANGE_HUNK.finditer(text, start, end))
+        for index, hunk in enumerate(hunks):
+            body_start = text.find(b"\n", hunk.start(), end) + 1
+            body_end = hunks[index + 1].start() if index + 1 < len(hunks) else end
+            if body_start <= hunk.start():
+                continue
+            lines = text[body_start:body_end].splitlines(keepends=True)
+            offsets = [body_start]
+            for line in lines:
+                offsets.append(offsets[-1] + len(line))
+            for line_index, line in enumerate(lines):
+                body = _changed_code_body(line)
+                if body is None or _DECISION_LINE.search(body) is None:
+                    continue
+                low, high = max(0, line_index - 3), min(len(lines), line_index + 5)
+                interval = (offsets[low], offsets[high])
+                if preferred and preferred[-1][1] >= interval[0] and preferred[-1][0] >= start:
+                    preferred[-1] = (preferred[-1][0], max(preferred[-1][1], interval[1]))
+                else:
+                    preferred.append(interval)
+    if not preferred:
+        return _decisive_section_ranges(text)
+    remainder: list[tuple[int, int]] = []
+    for low, high in _decisive_section_ranges(text):
+        cursor = low
+        for start, end in preferred:
+            if end <= low or start >= high:
+                continue
+            if cursor < start:
+                remainder.append((cursor, start))
+            cursor = max(cursor, end)
+        if cursor < high:
+            remainder.append((cursor, high))
+    return (*preferred, *remainder)
+
+
+def _interval_label(text: bytes, start: int, end: int) -> str:
+    """Self-describing context without pretending synthetic headers are captured bytes."""
+
+    section = next(
+        ((low, high) for low, high in _file_section_bounds(text) if low <= start < high), None
+    )
+    if section is None or start == section[0]:
+        return ""
+    low, high = section
+    file_line = text[low : text.find(b"\n", low, high)].decode("utf-8")
+    hunk = next(reversed(list(_CHECK_TIME_CHANGE_HUNK.finditer(text, low, start + 1))), None)
+    hunk_line = "" if hunk is None else hunk.group().decode("utf-8")
+    return (
+        f"[FinishUP file: {file_line}]\n"
+        f"[FinishUP hunk: {hunk_line}; selected original bytes {start}:{end}; "
+        f"skipped file intervals {low}:{start} and {end}:{high} in this excerpt]\n"
+    )
+
+
 def _prefer_decisive_sections(
     text: bytes, linear_parts: Sequence[str], selection: ReviewSelectionPolicy
 ) -> bool:
     """Whether admitting the linear prefix would drop a decision behind boilerplate.
 
-    One file stays a leading prefix: the shown-file record can describe a file only as a run
-    from that file's start, and a single section has nothing to reorder. Sections of equal
-    rank stay in capture order. A change that fits the recipe's excerpt count and byte budget
-    is left in order so a packet that carries every byte stays byte-identical.
+    A change that fits is left byte-identical. Otherwise decisions can move ahead of
+    boilerplate within one file as well as across files.
     """
 
     sections = _file_section_bounds(text)
-    if len(sections) < 2 or not linear_parts:
+    if not sections or not linear_parts:
         return False
-    if len({_section_rank(text[start:end]) for start, end in sections}) < 2:
+    intervals = _decisive_intervals(text)
+    within_file = (
+        any(low < intervals[0][0] < high for low, high in sections) if intervals else False
+    )
+    cross_file = len({_section_rank(text[start:end]) for start, end in sections}) > 1
+    if not within_file and not cross_file:
         return False
     part_bytes = sum(len(part.encode("utf-8")) for part in linear_parts)
     return (
@@ -1268,12 +1366,18 @@ def _check_time_change_offer(
     use_note = body_limit - note_room >= _CHECK_TIME_CHANGE_MIN_CHUNK
     first_limit = body_limit - note_room if use_note else body_limit
     pieces: list[tuple[int, bytes]] = []
-    for index, (start, end) in enumerate(_decisive_section_ranges(text)):
+    for index, (start, end) in enumerate(_decisive_intervals(text)):
         blob = text[start:end]
+        # Small file sections keep their original headers and historical representation.
+        if start != 0 and _interval_label(text, start, end):
+            label = _interval_label(text, start, end)
+        else:
+            label = ""
+        room = body_limit - len(label.encode("utf-8"))
         ranged = (
-            _chunks_with_first_limit(blob, first_limit, body_limit)
+            _chunks_with_first_limit(blob, first_limit - len(label.encode("utf-8")), room)
             if index == 0 and use_note
-            else _line_chunks(blob, body_limit)
+            else _line_chunks(blob, room)
         )
         offset = start
         for chunk in ranged:
@@ -1285,7 +1389,11 @@ def _check_time_change_offer(
     parts: list[str] = []
     for index, (_offset, chunk) in enumerate(pieces):
         marker = _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=total)
-        prefix = marker + (note if index == 0 and use_note else "")
+        prefix = (
+            marker
+            + (note if index == 0 and use_note else "")
+            + _interval_label(text, _offset, _offset + len(chunk))
+        )
         parts.append(prefix + chunk.decode("utf-8"))
     return tuple(parts), tuple(offset for offset, _chunk in pieces)
 
@@ -1385,12 +1493,9 @@ def check_time_change_shown_record(
 ) -> tuple[tuple[CheckTimeChangeShownFile, ...], bool]:
     """``check_time_change_shown_files`` and whether every shown file could be recorded truly.
 
-    A file's view is the run of its section from the section's start that reached the packet:
-    the leading ``shown_bytes`` and the ``served`` intervals together. A file the packet carried
-    other than as one such run (a gap inside what it showed, or a run not starting at the
-    section's start) has no truthful view in that representation: it is left out and the answer
-    is ``False``, so the caller records the inventory incomplete and the raising review's
-    coverage stays unknown rather than understated (tb4n5).
+    Leading views retain their original representation. Disjoint or interior views commit to
+    every original interval in a separate domain and never claim whole-file coverage. Their
+    clean-prefix count is zero, so they cannot stand in for a longer leading view.
     """
 
     if (
@@ -1418,15 +1523,12 @@ def check_time_change_shown_record(
         )
         if not reached:
             continue
-        run_end = start
+        merged: list[tuple[int, int]] = []
         for low, high in reached:
-            if low > run_end:
-                break
-            run_end = max(run_end, high)
-        if reached[0][0] != start or any(low > run_end for low, _high in reached):
-            # Shown, but not as one run from the section's start: no truthful view exists.
-            representable = False
-            continue
+            if merged and low <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+            else:
+                merged.append((low, high))
         line_end = text.find(b"\n", start, end)
         identity = text[start : end if line_end < 0 else line_end]
         section = text[start:end]
@@ -1434,6 +1536,42 @@ def check_time_change_shown_record(
             identity += b"\x00binary"
         if _CHECK_TIME_CHANGE_DELETED.search(section) is not None:
             identity += b"\x00deleted"
+        if len(merged) != 1 or merged[0][0] != start:
+            markers = [
+                max(low, offset)
+                for low, high in merged
+                for offset in _redaction_marker_offsets(text, start, high, end)
+                if offset >= low
+                or any(
+                    text.startswith(marker, offset) and offset + len(marker) > low
+                    for marker in _REDACTION_MARKERS
+                )
+            ]
+            view = b"yoetz/check-change-interval-view/v1\x00" + b"".join(
+                (low - start).to_bytes(4, "big")
+                + (high - start).to_bytes(4, "big")
+                + len(part).to_bytes(4, "big")
+                + part
+                for low, high in merged
+                for part in (
+                    _check_time_change_view(
+                        text, low, high, [m for m in markers if low <= m < high], False
+                    ),
+                )
+            )
+            files.append(
+                CheckTimeChangeShownFile(
+                    identity=identity,
+                    whole=False,
+                    shown_bytes=sum(high - low for low, high in merged),
+                    redactions=len(set(markers)),
+                    section_admitted=False,
+                    clean_bytes=0,
+                    view=view,
+                )
+            )
+            continue
+        run_end = merged[0][1]
         visible_end = run_end
         markers = _redaction_marker_offsets(text, start, visible_end, end)
         section_admitted = visible_end >= end
@@ -2619,6 +2757,7 @@ def _captured_content_groups(
                 provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
             )
         group = _CapturedGroup(
+            redacted=any(item.manifest.redacted for _ref, item in rows),
             observed_command=first_item.observed_command
             if all(item.observed_command == first_item.observed_command for _ref, item in rows)
             else None,
@@ -3915,19 +4054,48 @@ def _output_secret_reason(content: bytes) -> _OmissionReason | None:
     line or OpenSSH key body is the same decision: capture only replaces the BEGIN banner.
     """
 
-    key_material = _PRIVATE_KEY_END.search(content) is not None or _OPENSSH_KEY_BODY in content
-    try:
-        findings = scan_for_sensitive_content(content)
-        _replaced, detected = redact_sensitive_content(
-            content, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
-        )
-    except PrivacyFenceError, TypeError, ValueError:
-        return "redacted_never_send"
-    high = any(finding.confidence is not ScanConfidence.HEURISTIC for finding in findings)
-    if key_material or high:
-        return "redacted_never_send"
-    if detected or findings:
-        return "never_send_heuristic"
+    # Native tool results may themselves be serialized JSON. Scan their decoded string
+    # values too: an escaped newline must not hide a secret assignment from the scanner.
+    pending: list[tuple[bytes, int]] = [(content, 0)]
+    inspected = 0
+    while pending:
+        view, depth = pending.pop()
+        inspected += 1
+        if inspected > 4096:
+            return "redacted_never_send"
+        key_material = _PRIVATE_KEY_END.search(view) is not None or _OPENSSH_KEY_BODY in view
+        try:
+            findings = scan_for_sensitive_content(view)
+            _replaced, detected = redact_sensitive_content(
+                view, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+            )
+        except PrivacyFenceError, TypeError, ValueError:
+            return "redacted_never_send"
+        high = any(finding.confidence is not ScanConfidence.HEURISTIC for finding in findings)
+        if key_material or high:
+            return "redacted_never_send"
+        if detected or findings:
+            return "never_send_heuristic"
+        try:
+            # This is host output, not protocol JSON: native exec results include floats.
+            parsed: object = json.loads(view)
+        except RecursionError:
+            return "redacted_never_send"
+        except TypeError, ValueError:
+            continue
+        if depth >= 4:
+            # Deeper structured encodings are not needed by supported native hook shapes.
+            return "redacted_never_send"
+        values: list[object] = [parsed]
+        while values:
+            value = values.pop()
+            if type(value) is str:
+                pending.append((value.encode("utf-8"), depth + 1))
+            elif isinstance(value, Mapping):
+                values.extend(cast(Mapping[object, object], value).keys())
+                values.extend(cast(Mapping[object, object], value).values())
+            elif isinstance(value, (list, tuple)):
+                values.extend(cast(Sequence[object], value))
     return None
 
 
@@ -3952,6 +4120,7 @@ def _auto_supply_refusal(
     check_time_change: CheckChangeCapture | None,
     captured_command: str | None = None,
     captured_identity: str | None = None,
+    capture_redacted: bool = False,
 ) -> _OmissionReason | None:
     """Why this capture must not be auto-supplied, or ``None`` when it may.
 
@@ -3962,11 +4131,19 @@ def _auto_supply_refusal(
     not sent.
     """
 
-    if command is not None and command.startswith("omitted:"):
-        if captured_identity != command or captured_command is None:
-            return "withheld_by_policy"
-        command = captured_command
-    if command is None or not command.strip() or command.lstrip().startswith("omitted:"):
+    if capture_redacted:
+        return "redacted_never_send"
+    # The action's text is caller writable. Only a keyed identity matching the
+    # service-resolved command context may authorize automatic disclosure.
+    if (
+        command is None
+        or not command.startswith("omitted:hmac-sha256:")
+        or captured_identity != command
+        or captured_command is None
+    ):
+        return "withheld_by_policy"
+    command = captured_command
+    if not command.strip() or command.lstrip().startswith("omitted:"):
         return "withheld_by_policy"
     if not command_is_verification(command):
         return "withheld_by_policy"
@@ -4623,6 +4800,7 @@ def _select_targeted_excerpts(
                     group.content,
                     captured_command=group.observed_command,
                     captured_identity=group.observed_command_identity,
+                    capture_redacted=group.redacted,
                     workspace_root=workspace_root,
                     check_time_change=check_time_change,
                 )
@@ -7473,7 +7651,17 @@ def _manifest_section(
     selected = tuple(sorted(items, key=lambda item: item.item_id.encode("ascii")))
     refs = tuple(sorted(set(source_refs), key=str.encode))[:16]
     omitted = tuple(sorted(set(omitted_refs), key=str.encode))[:16]
-    reasons = tuple(sorted(set(omission_reasons), key=str.encode))
+    # Packet omissions distinguish heuristic hits; section manifests use their existing
+    # closed redaction reason, as the post-egress manifest does. Withholding must not crash.
+    reasons = tuple(
+        sorted(
+            {
+                "redacted_never_send" if reason == "never_send_heuristic" else reason
+                for reason in omission_reasons
+            },
+            key=str.encode,
+        )
+    )
     return ReviewInputSection(
         name=name,
         status=status,

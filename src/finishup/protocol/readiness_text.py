@@ -97,9 +97,10 @@ def admissible_verification_sentence(readiness: object) -> str:
 
     raw = _field(readiness, "admissible_verification")
     if not isinstance(raw, (tuple, list)):
-        return ""
+        raw = ()
     pieces: list[str] = []
-    for item in tuple(cast("tuple[object, ...] | list[object]", raw))[:8]:
+    linked: set[str] = set()
+    for item in cast("tuple[object, ...] | list[object]", raw):
         obligation = _field(item, "obligation_id")
         refs = _field(item, "refs")
         if type(obligation) is not str or _OBLIGATION_ID.fullmatch(obligation) is None:
@@ -112,12 +113,13 @@ def admissible_verification_sentence(readiness: object) -> str:
             if type(ref) is str and _VERIFICATION_ID.fullmatch(ref) is not None
         ]
         if shown:
-            pieces.append(f"{obligation} linked {','.join(shown)}")
+            linked.add(obligation)
+            if len(pieces) < 8:
+                pieces.append(f"{obligation} linked {','.join(shown)}")
     unresolved: list[str] = []
     rechecks = _field(readiness, "rechecks")
-    linked = {piece.split(" ", 1)[0] for piece in pieces}
     if isinstance(rechecks, (tuple, list)):
-        for entry in rechecks:
+        for entry in cast("tuple[object, ...] | list[object]", rechecks):
             if (
                 _field(entry, "kind") != "acceptance"
                 or _field(entry, "rule") != _ACCEPTANCE_RISK_RULE
@@ -127,14 +129,18 @@ def admissible_verification_sentence(readiness: object) -> str:
             if isinstance(subjects, (tuple, list)):
                 unresolved.extend(
                     ref
-                    for ref in subjects
+                    for ref in cast("tuple[object, ...] | list[object]", subjects)
                     if type(ref) is str and _OBLIGATION_ID.fullmatch(ref) and ref not in linked
                 )
     sentences = ["Admissible verification: " + "; ".join(pieces) + "."] if pieces else []
     if unresolved:
+        named = sorted(set(unresolved))
+        names = ", ".join(named[:8])
+        if len(named) > 8:
+            names += f" and {len(named) - 8} more"
         sentences.append(
             "Unresolved verification limitation for "
-            + ", ".join(sorted(set(unresolved)))
+            + names
             + ": no admissible observed verification link or recorded verification limit; "
             "an unanswered acceptance invitation does not establish coverage."
         )

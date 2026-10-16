@@ -25,6 +25,8 @@ from finishup.domain.receipts import (
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+    UNRESOLVED_VERIFICATION_GAP,
+    UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
     limitations_name_coordinator_failure,
@@ -1660,6 +1662,8 @@ def summary_for_check(envelope: object) -> str:
                 priority=_P_ACTION,
             )
         )
+    if UNRESOLVED_VERIFICATION_GAP in _safe_gap_codes(source):
+        parts.append(_req(UNRESOLVED_VERIFICATION_LIMITATION))
     checklist = source.get("finding_checklist")
     at_budget = isinstance(checklist, Mapping) and (
         cast(Mapping[str, JsonValue], checklist).get("next") == "decide_at_budget"
@@ -2339,8 +2343,12 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
         parts.append(Part((failure,), priority=_P_BOILERPLATE))
     admissible = admissible_verification_sentence(readiness)
     if admissible:
-        # Ids only, and optional: a long checklist keeps the closure state ahead of this list.
-        parts.append(_req(admissible))
+        # Keep the limitation explicit even when the id pairing cannot fit the summary.
+        parts.append(
+            Part((admissible, UNRESOLVED_VERIFICATION_LIMITATION), required=True, priority=_P_STATE)
+            if "Unresolved verification limitation" in admissible
+            else Part((admissible,), priority=_P_STATE)
+        )
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
     )
@@ -2504,10 +2512,15 @@ def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]
     ]
     if unresolved:
         parts.append(
-            _req(
-                "Unresolved verification limitation for "
-                + ", ".join(unresolved)
-                + ": no admissible observed verification link or recorded verification limit."
+            Part(
+                (
+                    "Unresolved verification limitation for "
+                    + ", ".join(unresolved)
+                    + ": no admissible observed verification link or recorded verification limit.",
+                    UNRESOLVED_VERIFICATION_LIMITATION,
+                ),
+                required=True,
+                priority=_P_STATE,
             )
         )
     return parts

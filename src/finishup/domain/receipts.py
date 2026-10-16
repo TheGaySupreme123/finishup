@@ -242,6 +242,12 @@ COORDINATOR_FAILURE_LIMITATION: Final = (
     "AI-powered review failed inside FinishUP (coordinator_failure). "
     "This is a fault in FinishUP, not in the work under review or the provider."
 )
+UNRESOLVED_VERIFICATION_GAP: Final = "unresolved_verification_limitation"
+UNRESOLVED_VERIFICATION_LIMITATION: Final = (
+    "Unresolved verification limitation: a risky resolved requirement has no admissible "
+    "observed verification link or recorded verification limit; an unanswered acceptance "
+    "invitation does not establish coverage."
+)
 # The review ran, but the inference channel withheld categories the review profile
 # selected, so it judged the work without material it was configured to receive.
 SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP: Final = "semantic_review_context_withheld"

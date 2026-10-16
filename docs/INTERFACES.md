@@ -10264,6 +10264,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `yoetz.check-change/1` carry `base_commit`. The composition passes it to
   `FinalSemanticEvaluation.check_change_files`, and `commit_check_if_current(...,
   check_change_files=)` records it only beside a conclusion.
+  Tight selections may serve interior decision-bearing hunk intervals ahead of a file's
+  boilerplate, with original file/hunk headers and skipped byte intervals labeled. Original
+  spans, excluding those synthetic labels, drive the shown record. Interior/disjoint views
+  use `yoetz/check-change-interval-view/v1`, relative interval endpoints and length-prefixed
+  structural views; only their keyed commitment is durable. Their `shown_bytes` counts the
+  union, `clean_bytes=0`, and `section_admitted=false`; an identical view or a whole-file
+  review covers them. Leading views retain their historical representation (ADR-031, F3).
 - **Consent.** `ReviewSelectionPolicy.carries_check_time_change` (targeted excerpts, a positive
   excerpt count and the `diff` kind) is the one predicate for whether a recipe carries the change,
   and `required_categories()` then includes `repository_excerpt`. An inference channel without that
@@ -10878,6 +10885,10 @@ existing capture consent and byte budget; the input is never sent to the reviewe
 The same verification classification, environment/path refusal and whole-item secret
 gates apply. Absent, partial, redacted or differently bound context withholds the output.
 Private and repository-excerpt denial still send no auto-supplied output.
+Plaintext actions cannot authorize auto-supply. The ledger contains keyed command
+identities, closed outcome metadata, object/evidence references, digests and byte/part
+counts; post-tool command input remains encrypted local capture material and is never
+included in the provider excerpt.
 
 Unanswered acceptance invitations (issue #1079, F2) do not establish coverage.
 Delivery memory bounds Stop prompting only. Risky resolved obligations without an

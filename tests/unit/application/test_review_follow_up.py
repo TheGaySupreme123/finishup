@@ -73,7 +73,7 @@ from finishup.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from finishup.domain.observation import ObservationContentKind
+from finishup.domain.observation import ObservationContentKind, observed_command_commitment
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.review_input_render import (
     render_review_input_manifest_compact,
@@ -1523,10 +1523,12 @@ def test_a_served_current_section_is_part_of_the_raising_inventory() -> None:
     (lead,) = (file for file in files if file.identity == lead_identity)
     assert lead.whole and lead.section_admitted and lead.shown_bytes == len(text) - start
     assert [file for file in files if file.identity != lead_identity] == list(leading_only)
-    # A gap inside what a file showed has no truthful view: left out, record incomplete.
+    # An interior view is recorded exactly, without claiming its unshown prefix.
     gapped = ((start + 200, len(text)),)
     holes, ok = check_time_change_shown_record(change.capture, carried, gapped)
-    assert not ok and lead_identity not in {file.identity for file in holes}
+    assert ok
+    (interior,) = (file for file in holes if file.identity == lead_identity)
+    assert not interior.whole and interior.clean_bytes == 0
 
 
 @pytest.mark.anyio
@@ -1558,8 +1560,9 @@ async def test_a_repair_that_never_showed_the_served_file_does_not_cover_the_rai
     assert raised.complete and repair.complete
     assert not repair.covers(raised)  # the repair never showed leadStore.ts
     assert whole.covers(raised)
-    # Unrepresentable: incomplete, so no repair can claim to cover what that review saw.
-    assert not gapped.complete and not whole.covers(gapped)
+    assert gapped.complete and whole.covers(gapped)
+    assert not repair.covers(gapped)
+    assert gapped.covers(gapped)
 
 
 def test_a_request_naming_only_rows_finishup_does_not_hold_plans_no_round() -> None:
@@ -2120,6 +2123,12 @@ def _capture_scene(
                 ),
                 content=content,
                 phase_identity=phase,
+                observed_command=command,
+                observed_command_identity=(
+                    "omitted:" + observed_command_commitment(b"k" * 32, command)
+                )
+                if command
+                else None,
             )
         )
         bindings.append((str(evd(number)), phase))
@@ -2128,7 +2137,9 @@ def _capture_scene(
                 act(action_number),
                 kind,
                 "ran",
-                command=command,
+                command=("omitted:" + observed_command_commitment(b"k" * 32, command))
+                if command
+                else None,
                 obligation_refs=(obl(1),) if command == "pytest -q" else (),
             ),
             action_number,
@@ -2402,12 +2413,23 @@ def _privacy_scene() -> tuple[
                 ),
                 content=content,
                 phase_identity=phase,
+                observed_command=command,
+                observed_command_identity=(
+                    "omitted:" + observed_command_commitment(b"k" * 32, command)
+                )
+                if command
+                else None,
             )
         )
         bindings.append((str(evd(number)), phase))
         action_number = number - 1
         actions[act(action_number)] = record(
-            ActionRecordedPayload(act(action_number), ActionKind.COMMAND, "ran", command=command),
+            ActionRecordedPayload(
+                act(action_number),
+                ActionKind.COMMAND,
+                "ran",
+                command="omitted:" + observed_command_commitment(b"k" * 32, command),
+            ),
             action_number,
         )
         results[res(number)] = record(

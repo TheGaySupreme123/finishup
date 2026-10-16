@@ -12,6 +12,7 @@ and a plain limitation sentence names that obligation id, or says the pairing co
 from __future__ import annotations
 
 from finishup.domain.events import LedgerRecord
+from finishup.domain.receipts import UNRESOLVED_VERIFICATION_GAP
 from finishup.domain.values import ObligationId
 from finishup.kernel.acceptance_risk import acceptance_risk
 from finishup.kernel.closure_class import obligation_closures
@@ -35,7 +36,6 @@ CLAIM_VERIFICATION_HEADER: str = (
 )
 CLAIM_VERIFICATION_UNREADABLE: str = "The claim-verification pairing could not be read."
 _MAX_NAMED_HOLES: int = 8
-UNRESOLVED_VERIFICATION_GAP = "unresolved_verification_limitation"
 
 
 def unresolved_verification_obligations(

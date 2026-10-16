@@ -154,8 +154,8 @@ async def check_change_shown_files(
     says it is incomplete. A recovered job derives the same commitments from its stored object.
     ``served`` are the change intervals the current-file sections an in-check follow-up served
     carried (tb4n5): a file they show is recorded like one the leading bytes show, and a file
-    shown other than as one run from its section's start makes the record incomplete, so the
-    raising review's coverage is unknown rather than understated.
+    shown through interior or disjoint intervals uses an exact partial interval view, with
+    no clean-prefix or whole-file claim (issue #1079, F3).
     """
 
     files, representable = check_time_change_shown_record(change.capture, shown_bytes, served)

@@ -1242,6 +1242,16 @@ below on that input. Native hooks retain this input locally under the existing c
 and aggregate byte budget; it is eligibility context and never a provider excerpt. Missing,
 truncated, redacted, pre-tool, or differently bound input fails closed. Older captures without
 this context remain withheld; no agent assertion can substitute for it.
+Plaintext action commands also remain ineligible for auto-supply: their text is
+agent-writable and cannot authenticate the command that produced a captured output.
+The task ledger stores only the keyed command identity, closed outcome metadata,
+object/evidence references, content digests and byte/part counts. The new post-tool
+input is encrypted local capture material, not raw command text in the ledger;
+it uses the same capture consent, redaction and retention limits as other native input.
+Capture-redacted output is withheld as a whole. The disclosure scan also examines decoded
+string values inside native JSON results (including exec envelopes with numeric timing fields),
+so JSON escaping cannot hide a secret hit. Unsupported encoding depth or scan capacity fails
+closed; this changes no provider byte budget.
 
 The item is sent only when every gate below passes. It is one repository excerpt, inside the
 existing per-excerpt and total excerpt limits. This does not widen consent or add authority.

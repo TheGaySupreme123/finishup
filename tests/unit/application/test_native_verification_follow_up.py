@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -37,6 +38,7 @@ from finishup.ports.ledger import FrozenCase
 from finishup.ports.objects import ObjectRef, ObjectStorePort
 from finishup.ports.observation import TaskObservationPort
 from finishup.protocol.canonical import canonical_encode
+from fixture_loader import load_fixture_json
 from unit.application.test_review_follow_up import (
     _OBSERVED_MARKER,
     _build,
@@ -67,21 +69,26 @@ from unit.application.test_semantic_content import (
         ("pytest tests/id_rsa", b"native-output", False),
         ("pytest ../outside.py", b"native-output", False),
         ("pytest -q", b"native-output\n-----END OPENSSH PRIVATE KEY-----", False),
+        ("pytest -q", b"native-output\npassword=hunter2", False),
+        ("pytest -q", b"native-output\n-----BEGIN OPENSSH PRIVATE KEY-----", False),
     ),
 )
 async def test_native_capture_follow_up(
     tmp_path: Path, profile: ReviewContextProfile, command: str, output: bytes, expected: bool
 ) -> None:
     frozen, runtime, base_objects, _observation, _envelope = _fixture()
-    payload = JsonObject(
-        {
-            "tool_name": "exec_command",
-            "tool_input": {"cmd": command},
-            "tool_response": output.decode(),
-            "tool_call_id": "native-call",
-            "exit_status": 0,
-        }
-    )
+    fixture = load_fixture_json("observations/codex-post-tool-outcomes-0.157.1.case.json")
+    hook = cast(dict[str, object], cast(dict[str, object], fixture)["input"])["hook"]
+    shape = cast(dict[str, object], hook)["code_mode_exec_command_exit_0"]
+    raw_payload = cast(dict[str, object], shape)["payload"]
+    # Substitute only task content in the recorded-rollout-derived native shape.
+    payload_value = cast(dict[str, object], json.loads(json.dumps(raw_payload)))
+    payload_value["tool_input"] = {"command": command}
+    response = json.loads(cast(str, payload_value["tool_response"]))
+    response["output"] = output.decode()
+    payload_value["tool_response"] = json.dumps(response)
+    payload = JsonObject(payload_value)  # pyright: ignore[reportArgumentType]
+    assert "exit_status" not in payload
     envelope = map_hook_payload_to_envelope(
         "PostToolUse",
         payload,
@@ -140,6 +147,10 @@ async def test_native_capture_follow_up(
     batch = materialize_observation_envelope(
         envelope, task_id=_TASK, captured_content=tuple(manifests.values())
     )
+    ledger_bytes = b"\n".join(item.payload_bytes for item in batch.drafts)
+    assert command.encode() not in ledger_bytes
+    assert b"native-output" not in ledger_bytes
+    assert b'"tool_input"' not in ledger_bytes
     actions: dict[ActionId, ProjectionRecord[ActionRecordedPayload]] = {}
     results: dict[ResultId, ProjectionRecord[ResultRecordedPayload]] = {}
     evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
@@ -203,6 +214,26 @@ async def test_native_capture_follow_up(
     included = expected and profile is not ReviewContextProfile.STRUCTURAL
     assert (b"native-output" in prepared) is included
     assert (_OBSERVED_MARKER.encode() in prepared) is included
+    # An agent cannot replace the keyed observed identity with plaintext to authorize output.
+    plaintext_actions = {
+        ref: record(replace(row.payload, command=command), row.source_frontier)
+        for ref, row in actions.items()
+        if row.payload is not None
+    }
+    plaintext = replace(case, projection=replace(case.projection, actions=plaintext_actions))
+    forged = _build(
+        plaintext,
+        follow_up=follow_up,
+        selection=ReviewSelectionPolicy.for_profile(profile),
+        captured_content=tuple(
+            replace(item, observed_command=None, observed_command_identity=None)
+            for item in resolved.content
+        ),
+        captured_content_scope=resolved.scope,
+        workspace_root="/app",
+    )
+    assert _OBSERVED_MARKER.encode() not in _provider_contents(_send(forged))
+    assert b"native-output" not in _provider_contents(_send(forged))
     denied = replace(
         ReviewSelectionPolicy.for_profile(profile),
         excerpt_kinds=tuple(

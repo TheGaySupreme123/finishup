@@ -428,6 +428,11 @@ existing capture consent and byte budget; the input is never sent to the reviewe
 The same verification classification, environment/path refusal and whole-item secret
 gates apply. Absent, partial, redacted or differently bound context withholds the output.
 Private and repository-excerpt denial still send no auto-supplied output.
+Plaintext action commands cannot authorize it. The ledger retains keyed identities,
+closed outcome metadata, object/evidence references, digests and byte/part counts;
+command input stays in encrypted local capture objects under existing consent,
+redaction and retention limits, and is used only as local eligibility context.
+Capture-redacted output and secret hits in decoded native JSON strings drop the whole item.
 
 Unanswered acceptance invitations (issue #1079, F2) do not establish coverage.
 Delivery memory bounds Stop prompting only. Risky resolved obligations without an

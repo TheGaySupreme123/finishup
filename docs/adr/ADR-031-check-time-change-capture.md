@@ -305,8 +305,8 @@ content-returning read needed its own decision. This is that decision, for exact
    when the channel withholds `repository_excerpt`); a file is recorded through the run of its
    section, from its start, that the two together reached, with the same view commitment a
    leading-run view of those bytes would have. A file shown other than as one run from its
-   section's start has no truthful view: it is left out and the record says it is incomplete, so
-   a finding raised by that review never tolerates a check-time limit. No wire field changes. Replay folds, onto the finding's projection row, the record of every completed review
+   section's start uses the interval-view representation below (issue #1079, F3).
+   No wire field changes. Replay folds, onto the finding's projection row, the record of every completed review
    that raised or re-raised an AI-powered finding (R): whole files are united, a file any of them
    saw whole must be seen whole, a file they saw in part through one view keeps that view, and a
    file they saw in part through two different views must be seen whole. At most 64 contributing
@@ -557,3 +557,21 @@ row and no `coordinator_failure`. Subject validation is not relaxed, and nothing
 A follow-up whose packet adds no part the earlier packets lacked is not dispatched. The check keeps
 the completed `insufficient_packet` review. A real `coordinator_failure` still fails the check; the
 receipt limitations section names that fault inside FinishUP in a fixed sentence on every rendering.
+
+## Amendment (issue #1079, F3): decisive intervals within one file
+
+When a change does not fit, selection may place a decision-bearing interval inside a large
+file ahead of its leading imports, comments, notices or generated boilerplate. The interval
+includes nearby context and following rule lines. Small sections and changes that fit retain
+their original representation. No excerpt, aggregate packet or policy ceiling increases.
+Each interior excerpt labels the original file, original hunk header and byte interval, and
+names the file intervals skipped in that excerpt. A cut narrows that label too. Truncation
+remains an explicit coverage gap; selection is a heuristic, not a completeness judgment.
+
+Shown-file accounting unions the original intervals that the provider actually received.
+Contiguous leading views keep their existing bytes. Interior or disjoint views use the local
+`yoetz/check-change-interval-view/v1` domain followed by each interval's original relative
+start/end and length-prefixed structural view. Only the keyed view commitment is recorded.
+Such a file is partial, `section_admitted=false`, with `clean_bytes=0` and `shown_bytes`
+equal to the union's byte count. An identical view or a whole-file review can cover it;
+a different partial view cannot. No wire field or schema changes.

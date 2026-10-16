@@ -1144,3 +1144,7 @@ status rechecks, receipt limitation and MCP summary. It bounds the receipt as in
 coverage even after the second Stop is allowed. A recorded link or limit removes this
 derived limitation; a generic all-met claim does not. Final-message attestations are not
 ledger evidence. No invitation loop or new blocking Stop is introduced.
+The owning gap-effect table classifies this code under G13 as a standing limitation,
+bounding on both local and AI-powered receipt routes. It adds one recorded code to the
+unreleased classification version `8` (222 total rows including readiness-only tokens).
+Check text uses a fixed limitation sentence; status and receipt pairings name obligation ids.
