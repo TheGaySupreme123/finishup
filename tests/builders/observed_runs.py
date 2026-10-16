@@ -65,6 +65,7 @@ from finishup.domain.values import (
     timestamp_from_string,
     writer_id,
 )
+from finishup.domain.workspace_effect import result_summary_with_workspace_effect
 from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     CaseGap,
@@ -277,8 +278,13 @@ class ObservedLedger:
         effective_user: str | None = None,
         runner: str | None = None,
         write_scope: str | None = None,
+        workspace_effect: str | None = None,
     ) -> ResultId:
-        """Record one tool call as the coordinator materializes it: action, then result."""
+        """Record one tool call as the coordinator materializes it: action, then result.
+
+        ``workspace_effect`` is the hook's before/after fingerprint token (PR #1080) the result
+        summary carries; ``None`` records no fact, as every result before the fact existed.
+        """
 
         self.runs += 1
         number = self.runs
@@ -332,7 +338,9 @@ class ObservedLedger:
                 action,
                 outcome,
                 exit_status=exit_status,
-                summary=f"Observed result status={outcome.value}",
+                summary=result_summary_with_workspace_effect(
+                    f"Observed result status={outcome.value}", workspace_effect
+                ),
                 subject_state=subject_state,
             ),
             observed=observed,
@@ -379,8 +387,10 @@ class ObservedLedger:
     def fail(self, command: str | None, *, exit_status: int = 1) -> ResultId:
         return self.run(command, ResultOutcome.FAILURE, exit_status=exit_status)
 
-    def passes(self, command: str | None) -> ResultId:
-        return self.run(command, ResultOutcome.SUCCESS, exit_status=0)
+    def passes(self, command: str | None, *, workspace_effect: str | None = None) -> ResultId:
+        return self.run(
+            command, ResultOutcome.SUCCESS, exit_status=0, workspace_effect=workspace_effect
+        )
 
     def edit(
         self,

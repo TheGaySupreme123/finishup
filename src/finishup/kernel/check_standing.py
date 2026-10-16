@@ -31,6 +31,7 @@ from finishup.kernel.later_material import (
     classify_later_material,
     observed_actions_by_event,
     supersession_exempt,
+    workspace_effects,
 )
 from finishup.kernel.projections import (
     LatestTestedState,
@@ -145,6 +146,7 @@ def check_standing(projection: ProjectionState, records: tuple[LedgerRecord, ...
     limitations = observation_limitation_finding_ids(projection, records)
     exempt = supersession_exempt(projection)
     actions = observed_actions_by_event(records)
+    effects = workspace_effects(records, projection)
     superseded: LaterRecord | None = None
     counted: list[LedgerRecord] = []
     counted_first: LaterRecord | None = None
@@ -163,13 +165,13 @@ def check_standing(projection: ProjectionState, records: tuple[LedgerRecord, ...
             superseded = _later(
                 record,
                 classify_later_material(
-                    record, projection, exempt=exempt, actions_by_event=actions
+                    record, projection, exempt=exempt, actions_by_event=actions, effects=effects
                 ),
             )
         if not is_material_event_family(record.schema.name):
             continue
         material = classify_later_material(
-            record, projection, exempt=exempt, actions_by_event=actions
+            record, projection, exempt=exempt, actions_by_event=actions, effects=effects
         )
         if material.ignored:
             ignored[material.material_class] += 1
