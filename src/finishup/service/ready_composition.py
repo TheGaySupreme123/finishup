@@ -78,6 +78,7 @@ from finishup.adapters.sqlite.migrations import (
 from finishup.adapters.sqlite.project_operations import SqliteProjectOperationJournal
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.adapters.task_input_read import read_outside_inputs
 from finishup.application.check import SEMANTIC_EVALUATION_GAPS, FinalSemanticEvaluation
 from finishup.application.check_change import (
     CheckChangeOutcome,
@@ -86,7 +87,7 @@ from finishup.application.check_change import (
     check_time_change_selected,
     declared_output_paths,
     recover_check_time_change,
-    task_input_paths,
+    review_input_paths,
 )
 from finishup.application.coordination import (
     EncryptedCoordinationDetailStore,
@@ -5099,6 +5100,16 @@ def _privacy_gated_semantic_evaluator(
                         )
                 else:
                     workspace_source = current_check_workspace_source()
+                    review_inputs: tuple[tuple[str, ...], frozenset[str]] = (
+                        review_input_paths(
+                            frozen.case.projection,
+                            None
+                            if frozen.case.task_statement is None
+                            else frozen.case.task_statement.text,
+                        )
+                        if carries_task_inputs(review_selection)
+                        else ((), frozenset())
+                    )
                     if workspace_source is not None and change_capture is not None:
                         check_change = await capture_check_time_change(
                             runtime=runtime,
@@ -5109,17 +5120,18 @@ def _privacy_gated_semantic_evaluator(
                             request_id=frozen.lease.operation_id,
                             # Declared deliverables first, so a clipped packet keeps them.
                             priority_paths=declared_output_paths(frozen.case.projection),
-                            # Read-only task inputs the statement names (#1045), only where the
-                            # recipe carries both the statement and repository excerpts.
-                            input_paths=(
-                                task_input_paths(
-                                    frozen.case.projection,
-                                    None
-                                    if frozen.case.task_statement is None
-                                    else frozen.case.task_statement.text,
-                                )
-                                if carries_task_inputs(review_selection)
-                                else ()
+                            # Read-only task inputs the statement names (#1045) and the test
+                            # files a recorded verification ran (#1082), only where the recipe
+                            # carries both the statement and repository excerpts.
+                            input_paths=review_inputs[0],
+                            verification_paths=review_inputs[1],
+                            # Issue #1082: only roots the owner admitted in this repository's
+                            # grant, and only where the recipe carries task inputs at all.
+                            outside_reader=(
+                                partial(read_outside_inputs, policy.admitted_input_roots)
+                                if policy.admitted_input_roots
+                                and carries_task_inputs(review_selection)
+                                else None
                             ),
                         )
             test_edit_gaps = (

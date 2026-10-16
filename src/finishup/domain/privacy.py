@@ -64,6 +64,9 @@ __all__ = [
     "conversation_review_widens",
     "narrower_conversation_review",
     "policy_field_omitted",
+    "MAX_ADMITTED_INPUT_ROOTS",
+    "admitted_input_root_valid",
+    "validate_admitted_input_roots",
     "external_review_credential_heuristic",
     "DataCategory",
     "DataClass",
@@ -285,6 +288,54 @@ _CONVERSATION_REVIEW_OPENNESS: Final[dict[ConversationReview, int]] = {
 }
 
 
+# Issue #1082: directories outside the workspace whose files the task names may be read into the
+# review packet as read-only task inputs, only beneath a root the owner admitted in the repository
+# grant. A root is an absolute, normalized, plain path; never the filesystem root, a hidden
+# directory, or a system tree that holds device, process or host configuration state.
+MAX_ADMITTED_INPUT_ROOTS: Final = 8
+_ADMITTED_INPUT_ROOT: Final = re.compile(r"\A(?:/[A-Za-z0-9_+@-][A-Za-z0-9._+@-]{0,127}){1,16}\Z")
+_FORBIDDEN_INPUT_ROOT_PREFIXES: Final = (
+    "/boot",
+    "/dev",
+    "/etc",
+    "/private/etc",
+    "/private/var/run",
+    "/proc",
+    "/run",
+    "/sys",
+    "/var/run",
+)
+
+
+def admitted_input_root_valid(value: object) -> bool:
+    """Whether ``value`` may be an admitted outside-workspace input root (issue #1082)."""
+
+    if type(value) is not str or len(value) > 190 or _ADMITTED_INPUT_ROOT.fullmatch(value) is None:
+        return False
+    if any(part.startswith(".") or part == ".." for part in value.split("/")[1:]):
+        return False
+    return not any(
+        value == prefix or value.startswith(prefix + "/")
+        for prefix in _FORBIDDEN_INPUT_ROOT_PREFIXES
+    )
+
+
+def validate_admitted_input_roots(values: object) -> tuple[str, ...]:
+    """The roots sorted and unique, or ``privacy_value_invalid``; at most eight."""
+
+    if type(values) is not tuple:
+        raise _invalid()
+    roots = cast(tuple[object, ...], values)
+    if len(roots) > MAX_ADMITTED_INPUT_ROOTS or not all(
+        admitted_input_root_valid(root) for root in roots
+    ):
+        raise _invalid()
+    ordered = tuple(sorted(set(cast(tuple[str, ...], roots)), key=str.encode))
+    if len(ordered) != len(roots):
+        raise _invalid()
+    return ordered
+
+
 def policy_field_omitted(name: str, value: object) -> bool:
     """Whether a policy field is left out of its canonical bytes at this value.
 
@@ -293,8 +344,10 @@ def policy_field_omitted(name: str, value: object) -> bool:
     exact canonical bytes and digest.
     """
 
-    return value is CredentialHeuristic.ENFORCED or (
-        name == "conversation_review" and value is None
+    return (
+        value is CredentialHeuristic.ENFORCED
+        or (name == "conversation_review" and value is None)
+        or (name == "admitted_input_roots" and value == ())
     )
 
 
@@ -1054,6 +1107,11 @@ class PrivacyPolicy:
     # written before the field existed; it is encoded only when set, so those keep their bytes and
     # digest, and ``effective_conversation_review`` reads it as the released behaviour.
     conversation_review: ConversationReview | None = None
+    # Directories outside the workspace the owner admitted for read-only task inputs (issue
+    # #1082). Empty is every policy written before the field existed; it is encoded only when
+    # set, so those keep their bytes and digest. Adding a root widens disclosure and needs the
+    # trusted decision; removing one applies at once.
+    admitted_input_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         validate_id(IdKind.PRIVACY_POLICY, self.policy_id)
@@ -1142,6 +1200,9 @@ class PrivacyPolicy:
         _enum(self.credential_heuristic, CredentialHeuristic)
         if self.conversation_review is not None:
             _enum(self.conversation_review, ConversationReview)
+        object.__setattr__(
+            self, "admitted_input_roots", validate_admitted_input_roots(self.admitted_input_roots)
+        )
 
     @property
     def credential_heuristic_enforced(self) -> bool:
@@ -1303,6 +1364,7 @@ class PrivacyPolicy:
             None,
             _composed_credential_heuristic(self, other),
             _composed_conversation_review(self, other),
+            _composed_input_roots(self, other),
         )
         meet_identity: dict[str, JsonValue] = {
             "components": cast(JsonValue, sorted((self.policy_digest, other.policy_digest))),
@@ -1320,6 +1382,11 @@ class PrivacyPolicy:
         if placeholder.conversation_review is not None:
             # Absent when unset, so every existing composition keeps its digest (ADR-049).
             meet_identity["conversation_review"] = placeholder.conversation_review.value
+        if placeholder.admitted_input_roots:
+            # Absent when empty, so every existing composition keeps its digest (issue #1082).
+            meet_identity["admitted_input_roots"] = cast(
+                JsonValue, list(placeholder.admitted_input_roots)
+            )
         return replace(
             placeholder,
             policy_digest=canonical_digest(cast(JsonValue, meet_identity)),
@@ -1413,6 +1480,25 @@ def _composed_conversation_review(
     return min(explicit, key=lambda item: _CONVERSATION_REVIEW_OPENNESS[item])
 
 
+def _composed_input_roots(first: PrivacyPolicy, second: PrivacyPolicy) -> tuple[str, ...]:
+    """Compose the admitted outside-workspace input roots of two scopes (issue #1082).
+
+    The roots belong to the repository grant: between the installation-wide row and a repository
+    row, the repository row decides, and the installation row cannot admit a root for every
+    repository. Any other composition keeps only the roots both sides admit.
+    """
+
+    kinds = {first.effective_scope.kind, second.effective_scope.kind}
+    if kinds == {AuthorizationScopeKind.MACHINE, AuthorizationScopeKind.WORKSPACE}:
+        repository = (
+            first if first.effective_scope.kind is AuthorizationScopeKind.WORKSPACE else second
+        )
+        return repository.admitted_input_roots
+    return tuple(
+        sorted(set(first.admitted_input_roots) & set(second.admitted_input_roots), key=str.encode)
+    )
+
+
 def _composed_credential_heuristic(
     first: PrivacyPolicy, second: PrivacyPolicy
 ) -> CredentialHeuristic:
@@ -1492,6 +1578,7 @@ PRIVACY_CHANGE_AREAS: Final = frozenset(
 PRIVACY_CHANGE_FIELDS: Final = {
     "global": frozenset(
         {
+            "admitted_input_roots",
             "conversation_review",
             "credential_heuristic",
             "effective_scope",
@@ -1671,32 +1758,35 @@ _CHANGE_IMPACT: Final[dict[tuple[str, str], int]] = {
     # Whether possible-credential values are filtered out of what is disclosed: a disclosure
     # dimension, read before which categories and sensitivity classes may leave (issue #982).
     ("global", "credential_heuristic"): 9,
-    ("channel", "data_classes"): 10,
-    ("channel", "categories"): 11,
-    ("channel", "purposes"): 12,
-    ("global", "effective_scope"): 13,
-    ("channel", "scope_ceiling"): 14,
-    ("channel", "authorization_ttl_seconds"): 15,
-    ("channel", "max_bytes"): 16,
-    ("channel", "max_tokens"): 17,
-    ("local_model", "data_classes"): 18,
-    ("local_model", "categories"): 19,
-    ("agent_context", "data_classes"): 20,
-    ("agent_context", "categories"): 21,
-    ("human_control", "data_classes"): 22,
-    ("human_control", "categories"): 23,
-    ("review", "include_exact_command_text"): 24,
-    ("review", "include_finding_prose"): 25,
-    ("review", "relevance"): 26,
-    ("review", "excerpt_kinds"): 27,
-    ("review", "sections"): 28,
-    ("review", "max_excerpt_bytes"): 29,
-    ("review", "max_total_excerpt_bytes"): 30,
-    ("review", "max_excerpts"): 31,
-    ("review", "max_change_observations"): 32,
-    ("review", "max_assessments"): 33,
-    ("review", "max_timeline_items"): 34,
-    ("review", "max_omissions"): 35,
+    # Which files outside the workspace may be read as task inputs (issue #1082): also what is
+    # disclosed, read with the credential filter before categories and classes.
+    ("global", "admitted_input_roots"): 10,
+    ("channel", "data_classes"): 11,
+    ("channel", "categories"): 12,
+    ("channel", "purposes"): 13,
+    ("global", "effective_scope"): 14,
+    ("channel", "scope_ceiling"): 15,
+    ("channel", "authorization_ttl_seconds"): 16,
+    ("channel", "max_bytes"): 17,
+    ("channel", "max_tokens"): 18,
+    ("local_model", "data_classes"): 19,
+    ("local_model", "categories"): 20,
+    ("agent_context", "data_classes"): 21,
+    ("agent_context", "categories"): 22,
+    ("human_control", "data_classes"): 23,
+    ("human_control", "categories"): 24,
+    ("review", "include_exact_command_text"): 25,
+    ("review", "include_finding_prose"): 26,
+    ("review", "relevance"): 27,
+    ("review", "excerpt_kinds"): 28,
+    ("review", "sections"): 29,
+    ("review", "max_excerpt_bytes"): 30,
+    ("review", "max_total_excerpt_bytes"): 31,
+    ("review", "max_excerpts"): 32,
+    ("review", "max_change_observations"): 33,
+    ("review", "max_assessments"): 34,
+    ("review", "max_timeline_items"): 35,
+    ("review", "max_omissions"): 36,
 }
 
 

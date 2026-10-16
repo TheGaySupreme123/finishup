@@ -409,6 +409,21 @@ class PrivacyPosture:
     conversation_review: str | None = None
     # Whether the owner chose that setting; a released ``local_only`` says nothing is set up.
     conversation_review_explicit: bool = True
+    # Directories outside the workspace this repository admits for read-only task inputs
+    # (issue #1082); empty when none is admitted or the policy is unreadable.
+    admitted_input_roots: tuple[str, ...] = ()
+
+    @property
+    def admitted_input_roots_summary(self) -> str | None:
+        """One line naming the admitted outside-workspace input roots, or ``None``."""
+
+        if not self.admitted_input_roots:
+            return None
+        return (
+            "Outside-workspace task inputs: "
+            + ", ".join(self.admitted_input_roots)
+            + " (change with `finishup privacy input-roots`)"
+        )
 
     @property
     def conversation_review_summary(self) -> str | None:

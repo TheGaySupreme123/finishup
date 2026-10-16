@@ -431,6 +431,21 @@ def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "enum": ["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"],
         "type": "string",
     }
+    # Directories outside the workspace the owner admitted for read-only task inputs (issue
+    # #1082). Optional and written only when non-empty, so every policy without it keeps its
+    # bytes and digest. Older wire versions cannot carry it. The runtime additionally refuses
+    # hidden components and system trees such as /etc, /proc and /dev.
+    properties["admitted_input_roots"] = {
+        "items": {
+            "maxLength": 190,
+            "pattern": "^(/[A-Za-z0-9_+@-][A-Za-z0-9._+@-]{0,127}){1,16}$",
+            "type": "string",
+        },
+        "maxItems": 8,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
     return document
 
 

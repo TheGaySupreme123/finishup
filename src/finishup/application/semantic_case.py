@@ -172,6 +172,7 @@ from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_TASK_INPUT_FILES,
     CheckChangeCapture,
+    TaskInputFile,
 )
 from finishup.ports.objects import ObjectKind, ObjectRef
 from finishup.ports.semantic import (
@@ -788,9 +789,9 @@ class CheckTimeChange:
 # Item ids sort ahead of every other case item, so the provider document lists the change first.
 CHECK_TIME_CHANGE_ITEM_PREFIX: Final = "change-check-time-"
 _CHECK_TIME_CHANGE_SOURCE_REF: Final = CHECK_TIME_CHANGE_SOURCE_REF
-# Read-only task input files the same service read carried (issue #1045): one excerpt each, ranked
-# with the change's leftover parts ahead of older edits and general output, within at most a
-# quarter of the recipe's excerpt bytes on that first offer.
+# Read-only task input files the same service read carried (issue #1045): one excerpt each. Issue
+# #1082: they rank first, ahead of the check-time change, within a quarter of the packet's excerpt
+# budget; what does not fit backfills after every other excerpt.
 TASK_INPUT_ITEM_PREFIX: Final = "task-input-"
 _TASK_INPUT_SOURCE_REF: Final = "task-input"
 _TASK_INPUT_SHARE_DIVISOR: Final = 4
@@ -798,6 +799,42 @@ _TASK_INPUT_LABEL: Final = (
     "[FinishUP task input file {path} ({size} bytes{cut}): named by the task, unchanged since the "
     "task started, read by the FinishUP service when this check ran; not the agent's work]\n"
 )
+# Issue #1082: who named the input, or where it was read, changes only the label's middle clause.
+_TASK_INPUT_VERIFICATION_LABEL: Final = (
+    "[FinishUP task input file {path} ({size} bytes{cut}): named by a recorded verification "
+    "command, unchanged since the task started, read by the FinishUP service when this check ran; "
+    "not the agent's work]\n"
+)
+_TASK_INPUT_OUTSIDE_LABEL: Final = (
+    "[FinishUP task input file {path} ({size} bytes{cut}): named by the task, outside the "
+    "workspace beneath a root the owner admitted, read by the FinishUP service when this check "
+    "ran; not the agent's work]\n"
+)
+_TASK_INPUT_SUMMARY_LABEL: Final = (
+    "[FinishUP summary of task input file {path} ({size} bytes): FinishUP's own bounded "
+    "description of a binary or data file it did not send whole; not the file itself and not the "
+    "agent's work]\n"
+)
+
+
+def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
+    """The labelled excerpt text of one task input, and whether it is a partial view."""
+
+    cut = len(item.text) < item.size and not item.summary
+    if item.summary:
+        label = _TASK_INPUT_SUMMARY_LABEL
+    elif item.origin == "verification":
+        label = _TASK_INPUT_VERIFICATION_LABEL
+    elif item.origin == "outside_workspace":
+        label = _TASK_INPUT_OUTSIDE_LABEL
+    else:
+        label = _TASK_INPUT_LABEL
+    head = label.format(
+        path=_marker_path(item.path),
+        size=item.size,
+        cut=", head and tail shown" if cut else "",
+    )
+    return head + _neutralised_agent_text(item.text.decode("utf-8")), cut
 
 
 def carries_task_inputs(selection: ReviewSelectionPolicy) -> bool:
@@ -3454,6 +3491,8 @@ def _evidence_candidates(
     candidates: list[_ExcerptCandidate] = []
     # Each admitted capture's bytes digest, mapped to its candidate's index.
     admitted_capture_digests: dict[bytes, int] = {}
+    # Issue #1082: agent-published digest-only rows, by candidate index and asserted digest.
+    digest_only_rows: list[tuple[int, bytes]] = []
     for evidence_id, record in sorted(
         projection.evidence.items(),
         key=lambda pair: (pair[1].source_frontier, str(pair[0]).encode("ascii")),
@@ -3692,6 +3731,16 @@ def _evidence_candidates(
         verification = verification_by_evidence.get(ref)
         if capture_digest is not None:
             admitted_capture_digests[capture_digest] = len(candidates)
+        elif (
+            payload.content_digest is not None
+            and payload.digest_binding is not None
+            and payload.digest_binding.content_availability
+            is EvidenceContentAvailability.DIGEST_ONLY
+            and payload.content_digest.startswith("sha256:")
+        ):
+            digest_only_rows.append(
+                (len(candidates), bytes.fromhex(payload.content_digest.removeprefix("sha256:")))
+            )
         candidates.append(
             _ExcerptCandidate(
                 source_ref=ref,
@@ -3725,7 +3774,43 @@ def _evidence_candidates(
                 part_keys=part_keys,
             )
         )
-    return candidates
+    return _alias_digest_only_rows(candidates, admitted_capture_digests, digest_only_rows)
+
+
+def _alias_digest_only_rows(
+    candidates: list[_ExcerptCandidate],
+    captured: Mapping[bytes, int],
+    digest_only: Sequence[tuple[int, bytes]],
+) -> list[_ExcerptCandidate]:
+    """Carry captured bytes for an agent row that published only their digest (issue #1082).
+
+    An agent often records a run's output as a digest-only evidence row while a host hook already
+    captured those exact bytes under the owner's capture consent. When the asserted SHA-256 equals
+    an admitted capture's content digest, the row names the same bytes: the capture's excerpt
+    also answers to the row's ref and links, so a claim or a reviewer request citing the row
+    reaches the bytes and lends them its rank. The row keeps its own excerpt (the agent's
+    description of those bytes). Nothing new is read or sent; a withheld row, or a digest no
+    capture matches, stays exactly as before.
+    """
+
+    merged: dict[int, int] = {}
+    for index, digest in digest_only:
+        target = captured.get(digest)
+        if target is not None and target != index:
+            merged[index] = target
+    if not merged:
+        return candidates
+    updated = list(candidates)
+    for index, target in merged.items():
+        row = candidates[index]
+        lead = updated[target]
+        members = sorted(lead.linked, key=str.encode)
+        extra = sorted(set(row.linked) - set(members), key=str.encode)
+        linked = tuple(sorted([*members, *extra][:MAX_SEMANTIC_ITEM_SUBJECT_REFS], key=str.encode))
+        updated[target] = replace(
+            lead, identity_refs=lead.identity_refs | row.identity_refs, linked=linked
+        )
+    return updated
 
 
 def _observed_span_refs(keys: Iterable[str]) -> frozenset[str]:
@@ -6611,7 +6696,7 @@ def _build_semantic_case_once(
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_links: tuple[str, ...] = ()
-    task_inputs_admitted = 0
+    task_inputs_admitted: set[int] = set()
     if check_time_change is not None and carries_task_inputs(selection):
         statement_links: set[str] = (
             {str(recorded_statement.source_event_id)} & allowed
@@ -6622,36 +6707,31 @@ def _build_semantic_case_once(
             :MAX_SEMANTIC_ITEM_SUBJECT_REFS
         ]
         if task_input_links:
-            task_inputs = tuple(
-                (
-                    _TASK_INPUT_LABEL.format(
-                        path=_marker_path(item.path),
-                        size=item.size,
-                        cut="" if len(item.text) >= item.size else ", head and tail shown",
-                    )
-                    + _neutralised_agent_text(item.text.decode("utf-8")),
-                    len(item.text) < item.size,
-                )
-                for item in check_time_change.capture.inputs
-            )
+            task_inputs = tuple(_task_input_text(item) for item in check_time_change.capture.inputs)
 
     def task_input_excerpts(
         slot_limit: int, byte_limit: int
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
-        """The next task input files that fit, one excerpt each (issue #1045)."""
+        """The task input files not yet admitted that fit, one excerpt each (issue #1045).
 
-        nonlocal task_inputs_admitted
+        Issue #1082: an input too large for this offer is skipped, not a stop, so a smaller
+        input the task names later still ranks first; the skipped one waits for the backfill.
+        """
+
         admitted_items: list[SemanticCaseItem] = []
         admitted_refs: list[TargetedExcerptRef] = []
         bytes_used = 0
         limit = min(selection.max_excerpt_bytes, MAX_SEMANTIC_ITEM_BYTES)
-        while task_inputs_admitted < len(task_inputs) and len(admitted_refs) < slot_limit:
-            text, cut = task_inputs[task_inputs_admitted]
+        for index, (text, cut) in enumerate(task_inputs):
+            if len(admitted_refs) >= slot_limit:
+                break
+            if index in task_inputs_admitted:
+                continue
             size = min(len(text.encode("utf-8")), limit)
             if bytes_used + size > byte_limit:
-                break
+                continue
             item = _content_item(
-                item_id=f"{TASK_INPUT_ITEM_PREFIX}{task_inputs_admitted + 1:02d}",
+                item_id=f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}",
                 section="excerpt",
                 category=DataCategory.REPOSITORY_EXCERPT,
                 source_kind="repository",
@@ -6676,26 +6756,16 @@ def _build_semantic_case_once(
                 )
             )
             bytes_used += item.content_bytes
-            task_inputs_admitted += 1
+            task_inputs_admitted.add(index)
         return tuple(admitted_items), tuple(admitted_refs)
 
     def lower_rank_room(
         slot_limit: int, byte_limit: int
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
-        """Room the reserved excerpt classes leave: task inputs (within their share), then the
-        change's remaining parts, all ahead of older edits and general output (#983, #1045)."""
+        """Room the reserved excerpt classes leave: the change's remaining parts, ahead of older
+        edits and general output (#983). Task inputs took their share first (issue #1082)."""
 
-        input_items, input_refs = task_input_excerpts(
-            min(slot_limit, MAX_TASK_INPUT_FILES),
-            min(byte_limit, selection.max_total_excerpt_bytes // _TASK_INPUT_SHARE_DIVISOR),
-        )
-        used = sum(ref.content_bytes for ref in input_refs)
-        if not check_change_parts:
-            return input_items, input_refs
-        change_items, change_refs = check_time_change_parts(
-            max(0, slot_limit - len(input_refs)), max(0, byte_limit - used)
-        )
-        return (*input_items, *change_items), (*input_refs, *change_refs)
+        return check_time_change_parts(slot_limit, byte_limit)
 
     def check_time_change_parts(
         slot_limit: int, byte_limit: int
@@ -6786,7 +6856,18 @@ def _build_semantic_case_once(
         excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
 
     if "targeted_excerpts" in sections and selection.max_excerpts > 0:
-        # The service-captured change takes its reserved share first; see
+        # Issue #1082: the controlling inputs the task names (a specification, a dataset, a test
+        # the verification runs) rank first, within a quarter of this packet's excerpt budget, so
+        # a large change can no longer push the specification out. What does not fit backfills
+        # after every other excerpt, as before.
+        input_items, input_refs = task_input_excerpts(
+            min(selection.max_excerpts, MAX_TASK_INPUT_FILES),
+            total_excerpt_budget // _TASK_INPUT_SHARE_DIVISOR,
+        )
+        items.extend(input_items)
+        targeted.extend(input_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in input_refs)
+        # The service-captured change takes its reserved share next; see
         # ``_check_time_change_reservation`` for how the rest of the budget is shared.
         admit_check_time_change(
             *_check_time_change_reservation(
@@ -6807,7 +6888,7 @@ def _build_semantic_case_once(
             captured_group_leader=captured_group_leader,
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
-            before_lower_ranks=lower_rank_room if check_change_parts or task_inputs else None,
+            before_lower_ranks=lower_rank_room if check_change_parts else None,
             declared_output_refs=declared_output_capture_order(projection, allowed, workspace_root),
             # A suffix-less binary the change marked (a compiled ``solver``) gets the same
             # "not sent" notice as a named binary type (tb4n2 P1-12).

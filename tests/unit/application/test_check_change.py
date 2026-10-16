@@ -205,8 +205,161 @@ def test_task_input_paths_are_the_files_the_statement_names_then_declared_inputs
         "spec/rules.txt",
         "main.c",
         "rules/RULEBOOK.txt",
+        # Issue #1082: an absolute directory the statement names comes last; only an admitted
+        # outside-workspace root ever lists one, and the repository read never opens it.
+        "/app/out/",
     )
     assert task_input_paths(case.projection, None) == ("rules/RULEBOOK.txt",)
+
+
+def _verification_case(*commands: tuple[str, str]) -> object:
+    """A case whose recorded command runs are ``(command, outcome)`` pairs, oldest first."""
+
+    from builders.policy_cases import act, make_case, record, res
+    from finishup.domain.events import (
+        ActionKind,
+        ActionRecordedPayload,
+        ResultOutcome,
+        ResultRecordedPayload,
+    )
+
+    actions = {}
+    results = {}
+    for index, (command, outcome) in enumerate(commands, start=1):
+        actions[act(index)] = record(
+            ActionRecordedPayload(act(index), ActionKind.COMMAND, "verify", command=command),
+            2 * index,
+        )
+        results[res(index)] = record(
+            ResultRecordedPayload(res(index), act(index), ResultOutcome(outcome)),
+            2 * index + 1,
+        )
+    return make_case(actions=actions, results=results)
+
+
+def test_verification_commands_name_their_test_files_newest_first() -> None:
+    """Issue #1082: the test a verification ran is the oracle the reviewer needs."""
+
+    from finishup.application.check_change import review_input_paths, verification_input_paths
+
+    case = _verification_case(
+        ("pytest -q tests/test_old.py", "failure"),
+        ("cat notes/answer.txt", "success"),
+        ("python -m pytest tests/test_parser.py::TestBurst::test_order -x", "success"),
+        ("node --test ./test/stream.test.mjs", "success"),
+        ("pytest 'tests/broken.py", "success"),
+    )
+    projection = cast(Any, case).projection
+
+    assert verification_input_paths(projection) == (
+        "test/stream.test.mjs",
+        "tests/test_parser.py",
+        "tests/test_old.py",
+    )
+    statement = "Fix the parser in a.py, b.py, c.py, d.py and e.py."
+    ordered, oracle = review_input_paths(projection, statement)
+    # Three task files, then the newest oracle, then the rest.
+    assert ordered[:5] == ("a.py", "b.py", "c.py", "test/stream.test.mjs", "d.py")
+    assert oracle == frozenset(
+        {"test/stream.test.mjs", "tests/test_parser.py", "tests/test_old.py"}
+    )
+
+
+def test_an_input_only_a_verification_named_is_labelled_as_its_oracle() -> None:
+    from finishup.ports.change_capture import TaskInputFile
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+
+    class InputPort:
+        def capture(
+            self,
+            workspace: str,
+            base: object,
+            *,
+            priority_paths: tuple[str, ...] = (),
+            input_paths: tuple[str, ...] = (),
+        ) -> CheckChangeCapture:
+            return CheckChangeCapture(
+                base="task_start",
+                text=b"diff --git a/a.py b/a.py\n+print('kept')\n",
+                tracked_files=1,
+                untracked_files=0,
+                omitted_files=0,
+                truncated=False,
+                inputs=(
+                    TaskInputFile("DESIGN.md", b"# Design\n", 9),
+                    TaskInputFile("tests/test_parser.py", b"def test_x(): pass\n", 19),
+                ),
+            )
+
+    capture = _capture_redacted(
+        InputPort(),
+        "/repo",
+        None,
+        (),
+        ("DESIGN.md", "/repo/tests/test_parser.py"),
+        frozenset({"/repo/tests/test_parser.py"}),
+    )
+
+    design, oracle = capture.inputs
+    assert design.origin == "task"
+    assert oracle.origin == "verification"
+
+
+def test_outside_inputs_join_the_capture_in_the_room_left_and_are_redacted() -> None:
+    """Issue #1082: inputs beneath an admitted root take the same redaction as repository ones,
+    fill only the four-input room the repository read left, and need a reader at all."""
+
+    from finishup.ports.change_capture import TaskInputFile
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    asked: list[tuple[tuple[str, ...], int]] = []
+
+    class InputPort:
+        def capture(
+            self,
+            workspace: str,
+            base: object,
+            *,
+            priority_paths: tuple[str, ...] = (),
+            input_paths: tuple[str, ...] = (),
+        ) -> CheckChangeCapture:
+            return CheckChangeCapture(
+                base="task_start",
+                text=b"diff --git a/a.py b/a.py\n+print('kept')\n",
+                tracked_files=1,
+                untracked_files=0,
+                omitted_files=0,
+                truncated=False,
+                inputs=tuple(
+                    TaskInputFile(name, b"# Design\n", 9) for name in ("a.md", "b.md", "c.md")
+                ),
+            )
+
+    secret = b'password = "a8F3kL9qZx7Pw2Rt"\n'
+
+    def reader(values: tuple[str, ...], room: int) -> tuple[TaskInputFile, ...]:
+        asked.append((values, room))
+        return (
+            TaskInputFile("/shared/spec.md", b"spec\n" + secret, 30, origin="outside_workspace"),
+            TaskInputFile("/shared/more.md", b"more\n", 5, origin="outside_workspace"),
+            # A reader that returns anything else is not trusted with it.
+            TaskInputFile("inside.md", b"inside\n", 7),
+        )
+
+    paths = ("a.md", "/shared/spec.md", "/repo/inside/notes.md", "/shared/legacy/")
+    capture = _capture_redacted(InputPort(), "/repo", None, (), paths, frozenset(), reader)
+
+    assert asked == [(("/shared/spec.md", "/shared/legacy/"), 1)]
+    assert [item.path for item in capture.inputs][-1] == "/shared/spec.md"
+    assert len(capture.inputs) == 4
+    outside = capture.inputs[-1]
+    assert outside.origin == "outside_workspace" and outside.redacted
+    assert b"a8F3kL9qZx7Pw2Rt" not in outside.text
+    assert capture.redacted
+    # Without a reader, nothing outside the repository is read.
+    plain = _capture_redacted(InputPort(), "/repo", None, (), paths, frozenset(), None)
+    assert all(item.origin == "task" for item in plain.inputs)
 
 
 def test_task_input_files_are_redacted_one_by_one_and_dropped_when_they_cannot_be() -> None:

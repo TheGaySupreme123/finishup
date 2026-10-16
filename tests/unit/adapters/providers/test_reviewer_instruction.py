@@ -681,3 +681,15 @@ def test_the_agents_framing_is_tested_not_adopted() -> None:
     assert "a result that holds only under the agent's own premise or validator is not support" in (
         final
     )
+
+
+def test_a_supplied_summary_is_the_agents_account_not_the_output() -> None:
+    """Issue #1082 (packet investigation): a published result summary answered a
+    verification_output request as if it were the run's output."""
+
+    assert (
+        "An excerpt whose item_id begins excerpt-supplied- is a result summary the agent "
+        "published to answer a request: it is the agent's account of the run, not the run's "
+        "output, so a verification_output item it answers stays unmet until the output itself is "
+        "carried." in _TEXT
+    )

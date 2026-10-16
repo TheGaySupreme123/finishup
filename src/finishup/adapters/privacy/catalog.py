@@ -51,6 +51,7 @@ from finishup.domain.privacy import (
     ReviewSelectionPolicy,
     policy_field_omitted,
     review_selection_policy_schema_version,
+    validate_admitted_input_roots,
 )
 from finishup.domain.values import (
     format_rfc3339_millis,
@@ -649,6 +650,7 @@ def _policy_from_domain_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         cast(str | None, source.get("supersedes_policy_digest")),
         _policy_credential_heuristic(source),
         _policy_conversation_review(source),
+        _policy_admitted_input_roots(source),
     )
 
 
@@ -671,6 +673,20 @@ def _policy_conversation_review(source: dict[str, JsonValue]) -> ConversationRev
         raise ValueError("privacy_policy_row_corrupt") from None
 
 
+def _policy_admitted_input_roots(source: dict[str, JsonValue]) -> tuple[str, ...]:
+    """Absent means none; a present value is a non-empty list of valid roots (issue #1082)."""
+
+    value = source.get("admitted_input_roots")
+    if value is None:
+        return ()
+    if type(value) is not list or not value:
+        raise ValueError("privacy_policy_row_corrupt")
+    try:
+        return validate_admitted_input_roots(tuple(_strings(value)))
+    except ValueError:
+        raise ValueError("privacy_policy_row_corrupt") from None
+
+
 def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
     # The frozen schema makes both of these required, and never_send is a const deny list.
     # Treating either as optional would decode an incomplete or future document as a valid
@@ -685,7 +701,9 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
     ):
         raise ValueError("privacy_policy_row_corrupt")
     if source.get("schema_version") in {"1.0.0", "1.1.0"} and (
-        "credential_heuristic" in source or "conversation_review" in source
+        "credential_heuristic" in source
+        or "conversation_review" in source
+        or "admitted_input_roots" in source
     ):
         # The credential-heuristic opt-out (issue #982) and the conversation setting (ADR-049)
         # exist from wire 1.2.0 on.
@@ -728,6 +746,7 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         cast(str | None, source.get("supersedes_policy_digest")),
         _policy_credential_heuristic(source),
         _policy_conversation_review(source),
+        _policy_admitted_input_roots(source),
     )
 
 
@@ -795,6 +814,8 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
         encoded["credential_heuristic"] = policy.credential_heuristic.value
     if policy.conversation_review is not None:
         encoded["conversation_review"] = policy.conversation_review.value
+    if policy.admitted_input_roots:
+        encoded["admitted_input_roots"] = _string_values(policy.admitted_input_roots)
     return cast(dict[str, JsonValue], _omit_json_nulls(encoded))
 
 
@@ -806,7 +827,11 @@ def _privacy_policy_wire_version(policy: PrivacyPolicy) -> str:
     """
 
     version = review_selection_policy_schema_version(policy.review_selection)
-    if not policy.credential_heuristic_enforced or policy.conversation_review is not None:
+    if (
+        not policy.credential_heuristic_enforced
+        or policy.conversation_review is not None
+        or policy.admitted_input_roots
+    ):
         return "1.2.0"
     return version
 
