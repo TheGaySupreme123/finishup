@@ -600,3 +600,9 @@ command/output binding remains required. A captured object already represented b
 is reused, so another delivery does not make its object-to-evidence association ambiguous. New
 image source identities remain distinct; enrichment operation/claim roles bind the appended event
 IDs. Existing schemas and frozen vectors retain their bytes.
+
+Enrichment requires the same call (round-4 review of this PR). The call's own action must already
+be committed, and every existing evidence row the delivery intersects or reuses must have been
+recorded under that action. Evidence that a reused source identity shares with another call is a
+conflict, not an enrichment: matching digest-only image bytes do not show that a second call
+observed them.

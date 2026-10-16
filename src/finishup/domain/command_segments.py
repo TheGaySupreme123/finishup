@@ -79,6 +79,7 @@ __all__ = [
     "command_structure",
     "planned_segments",
     "requested_command_shape",
+    "strip_one_wrapper",
     "strip_wrappers",
     "wrapped_shell_argument",
 ]
@@ -431,12 +432,18 @@ class SimpleCommand:
     ``words`` is ``canonical_words`` of the segment (wrappers and assignments dropped, argv[0]
     reduced to its basename, ``python3`` to ``python``), ``text`` the normalized segment text
     exactly as ``command_segments`` lists it, and ``writes`` whether the segment sends its output
-    into a file. Exists only to be committed or classified; never stored, displayed or sent.
+    into a file. ``sources`` holds every segment exactly as written, before its leading
+    assignments, ``env`` and keywords were dropped (distinct segments can share one ``text``), and
+    ``nested`` whether any of them came from a shell wrapper's argument or a heredoc, so a
+    classifier can still see what resolves the program. Exists only to be committed or classified;
+    never stored, displayed or sent.
     """
 
     text: str
     words: tuple[str, ...]
     writes: bool = False
+    sources: tuple[str, ...] = ()
+    nested: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,7 +489,11 @@ def _collect(
             if commands is not None and inner is None:
                 commands.append(
                     SimpleCommand(
-                        normalized, canonical_words(_split_words(normalized)), cleaned.writes
+                        normalized,
+                        canonical_words(_split_words(normalized)),
+                        cleaned.writes,
+                        (segment,),
+                        depth > 0,
                     )
                 )
             if inner is not None and depth < _MAX_DEPTH:
@@ -546,7 +557,13 @@ def command_structure(normalized: str) -> CommandStructure | None:
             distinct[item.text] = (
                 item
                 if previous is None
-                else SimpleCommand(item.text, item.words, previous.writes or item.writes)
+                else SimpleCommand(
+                    item.text,
+                    item.words,
+                    previous.writes or item.writes,
+                    (*previous.sources, *item.sources),
+                    previous.nested or item.nested,
+                )
             )
     composition = "masked" if masked else "and_chain" if chained else "single"
     compound = masked or chained or len(distinct) > 1
@@ -708,6 +725,17 @@ def _strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
                 words.pop(0)
         return True
     return False
+
+
+def strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
+    """Drop one leading assignment or wrapper (with its own options) from *words* in place.
+
+    The single-layer step of ``strip_wrappers``, for a caller that must inspect every layer it
+    removes (``domain.observation_selection`` refuses a layer that can change which program
+    runs). ``True`` when a layer was dropped.
+    """
+
+    return _strip_one_wrapper(words, launchers=launchers)
 
 
 def strip_wrappers(words: Sequence[str], *, launchers: bool = True) -> list[str]:

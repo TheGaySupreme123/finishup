@@ -380,3 +380,127 @@ async def test_replayed_call_cannot_replace_its_keyed_command(tmp_path: Path) ->
     assert result.disposition is ObservationIngestDisposition.REJECTED
     assert result.reason == "ledger_rejected"
     assert _schema_rows(cell, "result_recorded") == []
+
+
+_IMAGE = {"content_digest": "sha256:" + "a" * 64, "byte_count": 128, "media_type": "image/png"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("call_b_pre_recorded", [False, True])
+async def test_evidence_only_overlap_cannot_lend_evidence_to_another_call(
+    tmp_path: Path, call_b_pre_recorded: bool
+) -> None:
+    """PR #1080 round-3 finding 1: a source-identity collision is not a replay of call B.
+
+    Call A records digest-only image evidence whose id derives from its source identity. A
+    delivery for call B that reuses that source identity intersects the ledger only on A's
+    evidence. Whether or not B's own pre-event recorded B's action first, it appends nothing:
+    neither a new action/result for B nor a result citing A's evidence.
+    """
+
+    from finishup.domain.values import JsonObject
+    from unit.application.test_observation_coordinator import (
+        _envelope,
+        _reattach_fixture,
+        _schema_rows,
+    )
+
+    cell = _reattach_fixture(tmp_path, "cross-call-evidence")
+    first = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="source:fixed",
+        corr="call-A",
+        tool="view_image",
+        exit_status=0,
+    )
+    first = replace(
+        first,
+        structural_payload=JsonObject({**first.structural_payload, "observed_images": [_IMAGE]}),
+    )
+    assert (await cell.ingest(first)).disposition is ObservationIngestDisposition.ACCEPTED
+    if call_b_pre_recorded:
+        pre = _envelope(
+            session=cell.session,
+            kind="PreToolUse",
+            identity="source:pre-B",
+            corr="call-B",
+            tool="view_image",
+        )
+        assert (await cell.ingest(pre)).disposition is ObservationIngestDisposition.ACCEPTED
+    results_before = len(_schema_rows(cell, "result_recorded"))
+    actions_before = len(_schema_rows(cell, "action_recorded"))
+    before = cell.record_count()
+    other_call = replace(
+        first,
+        structural_payload=JsonObject(
+            {**first.structural_payload, "tool_call_id": "call-B", "correlation_id": "call-B"}
+        ),
+    )
+    result = await cell.ingest(other_call)
+    assert result.disposition is ObservationIngestDisposition.REJECTED, result.reason
+    assert result.reason == "ledger_rejected"
+    assert cell.record_count() == before
+    assert len(_schema_rows(cell, "result_recorded")) == results_before
+    assert len(_schema_rows(cell, "action_recorded")) == actions_before
+    evidence = _schema_rows(cell, "evidence_recorded")
+    assert len(evidence) == 1
+    cited = [
+        row
+        for row in _schema_rows(cell, "result_recorded")
+        if type(row.payload) is ResultRecordedPayload
+        and type(evidence[0].payload) is EvidenceRecordedPayload
+        and evidence[0].payload.evidence_id in row.payload.evidence_refs
+    ]
+    # Only call A's own result cites A's evidence.
+    assert len(cited) == 1
+
+
+@pytest.mark.anyio
+async def test_same_call_redelivery_still_enriches_after_its_own_evidence(tmp_path: Path) -> None:
+    """The lineage rule keeps the legitimate shape: the same call's own evidence overlaps.
+
+    A first delivery records call A with one image; a later copy of the same call and source
+    identity adds a second image. The overlap is A's action, result and first image, all recorded
+    under A, so only the second image is appended, under A's action.
+    """
+
+    from finishup.domain.values import JsonObject
+    from unit.application.test_observation_coordinator import (
+        _envelope,
+        _reattach_fixture,
+        _schema_rows,
+    )
+
+    cell = _reattach_fixture(tmp_path, "same-call-evidence")
+    first = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="source:same",
+        corr="call-A",
+        tool="view_image",
+        exit_status=0,
+    )
+    first = replace(
+        first,
+        structural_payload=JsonObject({**first.structural_payload, "observed_images": [_IMAGE]}),
+    )
+    assert (await cell.ingest(first)).disposition is ObservationIngestDisposition.ACCEPTED
+    second_image = {**_IMAGE, "content_digest": "sha256:" + "b" * 64}
+    richer = replace(
+        first,
+        source=ObservationSource.CODEX_SESSION_STREAM,
+        structural_payload=JsonObject(
+            {**first.structural_payload, "observed_images": [_IMAGE, second_image]}
+        ),
+    )
+    result = await cell.ingest(richer)
+    assert result.disposition is ObservationIngestDisposition.ACCEPTED, result.reason
+    assert len(_schema_rows(cell, "evidence_recorded")) == 2
+    assert len(_schema_rows(cell, "result_recorded")) == 1
+    assert len(_schema_rows(cell, "action_recorded")) == 1
+    action_event = str(_schema_rows(cell, "action_recorded")[0].event_id)
+    assert all(
+        action_event in map(str, row.causal_parents)
+        for row in _schema_rows(cell, "evidence_recorded")
+    )

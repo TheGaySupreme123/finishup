@@ -3,23 +3,59 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
-from builders.observed_runs import ObservedLedger
+import pytest
+
+from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
 from finishup.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
 from finishup.application.observation_materialize import materialize_observation_envelope
 from finishup.cli.observe_hooks import map_hook_payload_to_envelope
-from finishup.domain.events import EventPayload, ResultOutcome, ResultRecordedPayload
+from finishup.domain.events import (
+    EventPayload,
+    EventSchema,
+    ObligationPublishedPayload,
+    ObligationStatus,
+    PlanPublishedPayload,
+    RequestedItem,
+    RequestedItemKind,
+    ResultOutcome,
+    ResultRecordedPayload,
+)
 from finishup.domain.observation import ObservationCursor
-from finishup.domain.values import JsonObject
+from finishup.domain.values import JsonObject, obligation_id
 from finishup.kernel.reducers import replay
-from finishup.kernel.task_facts import EDITED_AFTER_LAST_VERIFICATION_GAP, task_fact_signals
+from finishup.kernel.task_facts import (
+    EDITED_AFTER_LAST_VERIFICATION_GAP,
+    register_command_identity_key,
+    task_fact_signals,
+)
 from fixture_loader import load_fixture_json
 
+_OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000001081")
 
-def test_write_stdin_completed_regression_verification_is_after_edit(tmp_path: Path) -> None:
+
+@pytest.fixture(autouse=True)
+def installation_key() -> Iterator[None]:
+    register_command_identity_key(INSTALLATION_KEY)
+    yield
+    register_command_identity_key(None)
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_write_stdin_completed_regression_verification_is_after_edit(
+    tmp_path: Path, declared: bool
+) -> None:
+    """The audited vLLM verifier counts after the edit when the agent declared it (round 4).
+
+    ``*_regression.py`` is not verification by name (it can name a model-fitting generator), so
+    the same completion leaves the stale-verification gap when no requested command names it.
+    The native argv normalization and the write_stdin poll are unchanged.
+    """
+
     # Bounded reduction of the vLLM audited command: verifier scripts, heredoc, log and date.
     command = """set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -53,13 +89,34 @@ date -u
         session_commitment=session,
         profile=None,
         cursor=ObservationCursor(1, 0, 0, "hmac-sha256:" + "0" * 64, STREAM_MAPPING_VERSION),
-        key_material=b"k" * 32,
+        key_material=INSTALLATION_KEY,
     )
     observed = next(
         row for row in reader.advance(path).envelopes if row.event_kind == "item_completed"
     )
-    assert observed.structural_payload["runner_class"] == "test"
+    assert observed.structural_payload["runner_class"] == "compound"
     ledger = ObservedLedger()
+    if declared:
+        ledger.append(
+            EventSchema("obligation_published", "1.0.0"),
+            ObligationPublishedPayload(
+                obligation_id=_OBLIGATION,
+                description="Streaming parser verified by its regression harness",
+                evidence_expectation="Observed harness run",
+                status=ObligationStatus.OPEN,
+                requested_items=(
+                    RequestedItem(
+                        RequestedItemKind.COMMAND, "python -B /tmp/deepseek_stream_regression.py"
+                    ),
+                ),
+            ),
+            observed=False,
+        )
+        ledger.append(
+            EventSchema("plan_published", "1.0.0"),
+            PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+            observed=False,
+        )
     ledger.passes("npm run build")
     ledger.edit()
     batch = materialize_observation_envelope(observed, task_id=str(ledger.records[0].task_id))
@@ -84,7 +141,7 @@ date -u
         ),
         session_commitment=session,
         event_ordinal=2,
-        key_material=b"k" * 32,
+        key_material=INSTALLATION_KEY,
     )
     for item in materialize_observation_envelope(
         poll, task_id=str(ledger.records[0].task_id)
@@ -92,8 +149,8 @@ date -u
         ledger.append(item.draft.schema, cast(EventPayload, item.draft.payload), observed=True)
     assert (
         EDITED_AFTER_LAST_VERIFICATION_GAP
-        not in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
-    )
+        in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
+    ) is not declared
     ledger.edit()
     assert (
         EDITED_AFTER_LAST_VERIFICATION_GAP

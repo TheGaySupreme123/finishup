@@ -101,7 +101,7 @@ from finishup.cli.hook_io import (
 )
 from finishup.cli.hook_timing import HookPassTiming, record_hook_pass_timing
 from finishup.cli.runtime_facts import SHELL_APPLY_PATCH as _SHELL_APPLY_PATCH
-from finishup.cli.runtime_facts import runtime_structural_facts
+from finishup.cli.runtime_facts import git_status_execution_free, runtime_structural_facts
 from finishup.cli.runtime_facts import shell_heredocs as _shell_heredocs
 from finishup.domain.advice_actions import STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS
 from finishup.domain.command_segments import (
@@ -1102,6 +1102,36 @@ def _extract_structural(
                 validate_observed_images(payload.get(OBSERVED_IMAGES_KEY))
             )
     return JsonObject(fields)
+
+
+def _with_proven_git_status(
+    envelope: ObservationEnvelope, payload: Mapping[str, JsonValue], event_name: str
+) -> ObservationEnvelope:
+    """Record a closed ``git status`` as exploration only once its repository is proven.
+
+    The classifier keeps the call ``vcs``: Git can run a configured fsmonitor, hook or filter
+    during status, which its argv cannot rule out. This hook reads the repository's effective
+    configuration (``runtime_facts.git_status_execution_free``) and upgrades the class only when
+    Git would run nothing else (PR #1080 round 4). Any failure keeps ``vcs``.
+    """
+
+    if (
+        event_name not in {"PreToolUse", "PostToolUse"}
+        or envelope.structural_payload.get("runner_class") != "vcs"
+    ):
+        return envelope
+    try:
+        proven = git_status_execution_free(payload)
+    except Exception:
+        return envelope
+    if not proven:
+        return envelope
+    return replace(
+        envelope,
+        structural_payload=JsonObject(
+            {**envelope.structural_payload, "runner_class": "exploration"}
+        ),
+    )
 
 
 def _pairing_contract(
@@ -5447,6 +5477,7 @@ def handle_observe(
                         {**envelope.structural_payload, "runner_class": _derived_runner_class}
                     ),
                 )
+            envelope = _with_proven_git_status(envelope, classification_payload, resolved_event)
             if resolved_event in {"PreToolUse", "PostToolUse"}:
                 # Closed runtime facts (#977): install target, write scope, effective user.
                 # Read from the host's own tool input in this process; only tokens persist.

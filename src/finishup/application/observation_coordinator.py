@@ -4997,6 +4997,13 @@ class ObservationCoordinator:
         Delivery times, rendering and captured-evidence refs may differ. They cannot change
         the action/command identity or an existing evidence object's digest. Stream outcome
         differences use the existing append-only correction, including dedup_conflict.
+
+        A partial intersection is this call's replay only when the call's own action is already
+        committed and every committed evidence row it touches (an overlapping event, or the row
+        that already holds a repeated captured object) was recorded under that action. Evidence
+        ids derive from a source identity, which another call can reuse: an intersection on such
+        evidence alone proves nothing about the call, and appending its new core would lend the
+        first call's observed evidence to a different call (PR #1080 round 4, #560).
         """
 
         projection = await runtime.ledger.load_projection(
@@ -5014,6 +5021,11 @@ class ObservationCoordinator:
                 retryable=True,
             )
         state = projection.state
+        recorded = {
+            str(record.source_event_id): record.payload
+            for family in (state.actions, state.results, state.evidence)
+            for record in family.values()
+        }
         action_ids = {
             payload.action_id
             for item in batch.drafts
@@ -5021,22 +5033,35 @@ class ObservationCoordinator:
                 payload := item.draft.payload, (ActionRecordedPayload, ResultRecordedPayload)
             )
         }
+        if not action_ids:
+            # A batch already reduced to its new evidence (a reconciliation retry) names its call
+            # only through the materialized causal parent of that evidence.
+            action_ids = {
+                payload.action_id
+                for item in batch.drafts
+                for parent in item.draft.causal_parents
+                if type(payload := recorded.get(str(parent))) is ActionRecordedPayload
+            }
         action_events = frozenset(
             str(row.source_event_id)
             for action in action_ids
             if (row := state.actions.get(action)) is not None and row.payload is not None
         )
-        recorded = {
-            str(record.source_event_id): record.payload
-            for family in (state.actions, state.results, state.evidence)
-            for record in family.values()
-        }
+        if not action_events:
+            # No committed action of this call: whatever intersects is not its replay.
+            raise PublicOperationError(
+                PublicErrorCode.EVENT_INVALID,
+                "Observation replay has no committed core for its call.",
+                retryable=False,
+            )
+        evidence_rows = {str(row.source_event_id): row for row in state.evidence.values()}
         captured = {
-            payload.captured_object_id: payload
+            payload.captured_object_id: row
             for row in state.evidence.values()
             if (payload := row.payload) is not None and payload.captured_object_id is not None
         }
         repeated_content: set[str] = set()
+        lineage_rows: list[ProjectionRecord[EvidenceRecordedPayload]] = []
         for item in batch.drafts:
             incoming = item.draft.payload
             if str(item.draft.event_id) not in overlap:
@@ -5044,8 +5069,9 @@ class ObservationCoordinator:
                     type(incoming) is EvidenceRecordedPayload
                     and incoming.captured_object_id is not None
                 ):
-                    prior_content = captured.get(incoming.captured_object_id)
-                    if prior_content is not None:
+                    prior_row = captured.get(incoming.captured_object_id)
+                    prior_content = None if prior_row is None else prior_row.payload
+                    if prior_row is not None and prior_content is not None:
                         if (
                             incoming.content_digest != prior_content.content_digest
                             or incoming.digest_binding != prior_content.digest_binding
@@ -5058,7 +5084,9 @@ class ObservationCoordinator:
                                 retryable=False,
                             )
                         # One captured object has one evidence association. Reusing it under
-                        # another delivery id would make authenticated resolution ambiguous.
+                        # another delivery id would make authenticated resolution ambiguous; it
+                        # must already be this call's association.
+                        lineage_rows.append(prior_row)
                         repeated_content.add(str(item.draft.event_id))
                 continue
             prior = recorded.get(str(item.draft.event_id))
@@ -5091,13 +5119,54 @@ class ObservationCoordinator:
                 agrees = (
                     replace(incoming, observed_at=prior.observed_at, reference=reference) == prior
                 )
+                row = evidence_rows.get(str(item.draft.event_id))
+                if row is None:
+                    agrees = False
+                else:
+                    lineage_rows.append(row)
             if not agrees:
                 raise PublicOperationError(
                     PublicErrorCode.EVENT_INVALID,
                     "Observation replay conflicts with committed facts.",
                     retryable=False,
                 )
+        if lineage_rows and not await self._evidence_recorded_under(
+            runtime, tuple(lineage_rows), action_events
+        ):
+            raise PublicOperationError(
+                PublicErrorCode.EVENT_INVALID,
+                "Observation replay evidence belongs to another call.",
+                retryable=False,
+            )
         return action_events, frozenset(repeated_content)
+
+    @staticmethod
+    async def _evidence_recorded_under(
+        runtime: TaskRuntime,
+        rows: tuple[ProjectionRecord[EvidenceRecordedPayload], ...],
+        action_events: frozenset[str],
+    ) -> bool:
+        """Whether every committed evidence row was recorded under one of ``action_events``.
+
+        Observation evidence names its call's action event as its causal parent; the projection
+        keeps no parents, so each row's own ledger record is read at its exact frontier. A ledger
+        without the event read, or a row it cannot find, does not establish the lineage.
+        """
+
+        for row in {str(row.source_event_id): row for row in rows}.values():
+            frontier = row.source_frontier
+            parents: frozenset[str] | None = None
+            try:
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, after=frontier - 1, through=frontier
+                ):
+                    if str(record.event_id) == str(row.source_event_id):
+                        parents = frozenset(map(str, record.causal_parents))
+            except AttributeError:
+                return False
+            if parents is None or not parents & action_events:
+                return False
+        return True
 
     async def _append_inspection_snapshot(
         self,

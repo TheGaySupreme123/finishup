@@ -317,8 +317,14 @@ unsupported claims and unbounded duplicate findings.
     their append-only conflict correction. A smaller committed operation cannot discard new
     captured evidence. One immediate reconciliation also handles an overlap that races append;
     further agreeing races remain retryable rather than quarantined.
-    A collision on source-identity-keyed ids (#560) remains a content refusal. This changes no
-    capture consent, content authentication, byte budget or provider eligibility rule.
+    A collision on source-identity-keyed ids (#560) remains a content refusal. A partial
+    intersection is that call's replay only when the call's own action is already committed and
+    every committed evidence row it touches (an overlapping event, or the row that already holds a
+    repeated captured object) names that action event as its causal parent. Evidence of another
+    call that a reused source identity intersects is such a collision: the delivery appends nothing,
+    so no new action or result can cite it, whether or not the second call's pre-event recorded its
+    action first (round-4 review). This changes no capture consent, content authentication, byte
+    budget or provider eligibility rule.
     Late evidence uses the existing optional `evidence_recorded.reference` to name its original action
     event after core and causal-parent validation. Selection follows that link only for service-stamped
     observation-captured provenance and retains the original execution frontier. F1 authenticated
