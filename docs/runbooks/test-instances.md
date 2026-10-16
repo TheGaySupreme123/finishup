@@ -175,6 +175,54 @@ unlabeled ADR-026 root. If a holder does not release within the window
 Expiry is a serving limit, not a sweeper: an expired snapshot refuses to start until disposed.
 Disposal deletes files; it is not secure erasure.
 
+## Replay recorded hook payloads through two builds (#1083)
+
+`scripts/hook_replay.py` tests whether a change to the hook path alters what hooks do. It feeds the
+same recorded payloads through two revisions, each in its own disposable snapshot, and compares
+every exit code, stdout and stderr byte, an `observe drain` after each callback, and each
+workspace's ledger history read back through `status`. Run the builds one after the other, never
+at the same time, so their timings are comparable.
+
+```text
+uv run python -I scripts/hook_replay.py corpus --rollout <codex-rollout.jsonl> \
+    [--rollout ...] --max-calls 24 --out corpus.json
+uv run python -I scripts/hook_replay.py replay --checkout . --revision <old> --tag rpo \
+    --python <python3.14> --corpus corpus.json --work-root <scratch> \
+    --mode pinned --mode shipped --out old.json
+uv run python -I scripts/hook_replay.py replay --checkout . --revision <new> --tag rpn \
+    --python <python3.14> --corpus corpus.json --work-root <scratch> \
+    --mode pinned --mode shipped --out new.json
+uv run python -I scripts/hook_replay.py compare old.json new.json --report report.md
+```
+
+What the corpus holds:
+
+- Codex callbacks are rebuilt from a rollout, in the shapes pinned by
+  `fixtures/observations/codex-post-tool-outcomes-0.157.1.case.json`. Each callback fires at the
+  rollout position where its call or output landed, and its `transcript_path` names a copy of the
+  rollout that has grown to that point.
+- Claude Code and Cursor sessions use the ordinary profiles, built from the repository's recorded
+  shapes.
+- Malformed stdin for each host, and invalid workflow requests through the CLI, cover the
+  rejection paths.
+
+Both builds use the same workspace paths, which are fresh `git` repositories with a fixed commit.
+
+How the replay runs:
+
+- **Isolation.** Every instance process gets a scratch `HOME` and `CODEX_HOME`, and
+  `PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring`, so it never reads host configuration or
+  the OS keychain. The vault is initialized and the Private privacy recipe chosen through
+  `scripts/dogfood_ci/ceremony.py`, with a passphrase generated for the run and never written down.
+- **Modes.** `pinned` runs each callback through the retained interpreter with the hook budgets in
+  `PINNED_HOOK_BUDGETS` raised equally for both builds. A build that is merely slower then takes
+  the same branch as a faster one, which makes `pinned` the equivalence check. `shipped` runs the
+  launcher untouched and gives the latency figures.
+- **Comparison.** `compare` renames only values that one run produced and the other never saw:
+  identifiers, timestamps, installation-keyed commitments, and digests over them. A value present
+  in both runs is compared verbatim.
+- **Cleanup.** The replay stops only the service it started, then disposes the snapshot.
+
 ## Recovering a workstation whose everyday service was replaced
 
 Symptom: every everyday `finishup` command answers `service_incompatible` and points at
