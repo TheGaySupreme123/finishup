@@ -185,6 +185,7 @@ from finishup.ports.ledger import (
     ProjectionPage,
     ProjectionQuery,
     ProjectionView,
+    ResultsProjectionFilter,
     SelectedAttempt,
     SemanticAttemptHandle,
     SemanticAttemptRecord,
@@ -250,6 +251,7 @@ from finishup.protocol.models import (
     StatusStructuralSubjectStateModel,
     StatusVersionSliceModel,
 )
+from finishup.protocol.publish_boilerplate import ServerFilled
 from finishup.protocol.redacted_values import SemanticRedactedValue
 from finishup.version import build_status_version_slice_facts
 
@@ -1071,8 +1073,8 @@ def _record_preimage(
     return record
 
 
-def _result_bytes(result: AppendResult) -> bytes:
-    value = {
+def _result_bytes(result: AppendResult, server_filled: ServerFilled | None = None) -> bytes:
+    value: dict[str, object] = {
         "accepted": tuple(
             {
                 "entry_digest": row.entry_digest,
@@ -1087,13 +1089,17 @@ def _result_bytes(result: AppendResult) -> bytes:
         "subject_frontier": result.subject_frontier.as_wire(),
         "warnings": tuple(item.value for item in result.warnings),
     }
-    return canonical_encode(value)
+    if server_filled is not None:
+        # Issue #1084: field names only, present only for a sparse publish request, so a complete
+        # body keeps its earlier stored result bytes.
+        value["server_filled"] = server_filled.as_json()
+    return canonical_encode(cast(JsonValue, value))
 
 
 def build_append_operation_record(
     command: AppendCommand, result: AppendResult, now: datetime
 ) -> OperationRecord:
-    canonical = _result_bytes(result)
+    canonical = _result_bytes(result, command.server_filled)
     first = result.accepted[0].ingestion_sequence
     last = result.accepted[-1].ingestion_sequence
     from finishup.ports.ledger import OperationResultLocator
@@ -2693,6 +2699,12 @@ class MemoryLedgerAdapter:
             )
             candidates = all_items
         filtered_items: list[ProjectionItem] = []
+        # Issue #1084: a results filter reads each row's source event envelope from this prefix.
+        result_sources: dict[str, LedgerRecord] = (
+            {str(row.event_id): row for row in prefix}
+            if type(query.filter) is ResultsProjectionFilter
+            else {}
+        )
         for item in candidates:
             keep = True
             if type(query.filter) is AssignmentProjectionFilter:
@@ -2727,6 +2739,23 @@ class MemoryLedgerAdapter:
             elif type(query.filter) is EvidenceProjectionFilter:
                 # Already applied, before construction, by ``_evidence_page_rows``.
                 assert type(item) is StatusEvidenceItemModel
+            elif type(query.filter) is ResultsProjectionFilter:
+                assert type(item) is StatusResultItemModel
+                source_row = result_sources.get(item.source_event_id)
+                keep = source_row is not None and (
+                    (
+                        query.filter.after_sequence is None
+                        or source_row.ledger.ingestion_sequence > query.filter.after_sequence
+                    )
+                    and (
+                        query.filter.actor_id is None
+                        or str(source_row.author.actor_id) == query.filter.actor_id
+                    )
+                    and (
+                        query.filter.author is None
+                        or _authored_by_requester(_source_authorship(source_row), query, effective)
+                    )
+                )
             elif type(query.filter) is HistoryProjectionFilter:
                 assert type(item) in {StatusHistoryItemModel, StatusHistoryItemV14Model}
                 history_item = cast(StatusHistoryItemModel | StatusHistoryItemV14Model, item)

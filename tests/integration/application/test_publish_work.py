@@ -20,7 +20,11 @@ from finishup.application.import_review import (
 from finishup.application.publish_work import Application, execute_publish_work
 from finishup.application.status import Application as StatusApplication
 from finishup.application.status import execute_status
-from finishup.domain.events import ClaimRecordedPayload, ClaimRecordedPayloadV1_1
+from finishup.domain.events import (
+    AssignmentRecordedPayload,
+    ClaimRecordedPayload,
+    ClaimRecordedPayloadV1_1,
+)
 from finishup.domain.values import Frontier, session_id
 from finishup.kernel.plan_scope import current_plan_scope
 from finishup.ports.diagnostics import RuntimeCapability
@@ -694,10 +698,11 @@ async def test_dry_run_rejects_missing_causal_parent_like_real_publish() -> None
 
 
 async def test_unsorted_obligation_ids_match_on_dry_run_and_publish() -> None:
-    """A two-member unsorted assignment list is EVENT_INVALID on both dry_run and commit.
+    """A two-member unsorted assignment list is canonicalized on both dry_run and commit.
 
-    Issue #579: one-element dry_run subsets are trivially sorted, so bisection cannot find the
-    set-order rule. Both the preview and the real append must reject the same pointer.
+    Issue #579 required the preview and the real append to agree on the set-order rule. Issue
+    #1084 replaces the refusal: a reference set has no order and no multiplicity, so both paths
+    now sort it and record the canonical set, and they still agree.
     """
 
     app, _objects = _composition()
@@ -711,6 +716,7 @@ async def test_unsorted_obligation_ids_match_on_dry_run_and_publish() -> None:
             "obligation_ids": (
                 "obl_00000000-0000-4000-8000-000000000002",
                 "obl_00000000-0000-4000-8000-000000000001",
+                "obl_00000000-0000-4000-8000-000000000002",
             ),
             "scope_description": "One independently reviewable work package.",
         },
@@ -722,26 +728,28 @@ async def test_unsorted_obligation_ids_match_on_dry_run_and_publish() -> None:
         event_drafts=(draft,),
         expected_frontier={"sequence": "0", "head_digest": "genesis"},
     )
+    canonical = (
+        "obl_00000000-0000-4000-8000-000000000001",
+        "obl_00000000-0000-4000-8000-000000000002",
+    )
+    payload = cast(dict[str, object], cast(dict[str, object], request.event_drafts[0])["payload"])
+    assert tuple(cast(list[str], payload["obligation_ids"])) == canonical
     preview_payload = request.model_dump(mode="json", by_alias=True, exclude_none=True)
     preview_payload["dry_run"] = True
-    with pytest.raises(PublicOperationError) as preview:
-        await execute_publish_work(
-            cast(Application, app), PublishWorkRequestModel.model_validate(preview_payload)
-        )
-    with pytest.raises(PublicOperationError) as real:
-        await execute_publish_work(cast(Application, app), request)
+    preview = await execute_publish_work(
+        cast(Application, app), PublishWorkRequestModel.model_validate(preview_payload)
+    )
+    real = await execute_publish_work(cast(Application, app), request)
 
-    assert preview.value.code is PublicErrorCode.EVENT_INVALID
-    assert real.value.code is PublicErrorCode.EVENT_INVALID
-    expected = {
-        "continuation": "sorted_set_required",
-        "field": "/event_drafts/0/payload/obligation_ids",
-        "reason_code": "unsorted_set_field",
-    }
-    assert dict(preview.value.safe_details) == expected
-    assert dict(real.value.safe_details) == expected
-    assert "ascending ASCII" in preview.value.message
-    assert preview.value.message == real.value.message
+    assert preview.outcome == "dry_run"
+    assert real.outcome == "accepted"
+    records = [
+        record
+        async for record in app.runtime.task.ledger.load_events(app.runtime.task.session_id)
+        if record.schema.name == "assignment_recorded"
+    ]
+    (assignment,) = records
+    assert cast(AssignmentRecordedPayload, assignment.payload).obligation_ids == canonical
 
 
 async def test_dry_run_frontier_gate_matches_sequence_only_publish_predicate() -> None:

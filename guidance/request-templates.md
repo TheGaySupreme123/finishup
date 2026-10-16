@@ -26,7 +26,10 @@ metadata do not require this document.
 Every `req_`, `evt_`, `ses_`, `wri_`, `tsk_`, `obl_`, `act_`, `res_`, `evd_`, `clm_`, and `fnd_`
 value below is a shape-valid placeholder. Replace it with the real fresh or returned identifier
 required by the operation. Also replace every illustrative task string, reference, timestamp,
-frontier sequence, and digest. A frontier is the one you already hold: the `frontier` `start`
+frontier sequence, and digest. In `publish_work`, drop instead of replacing: omit `request_id`,
+`expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
+`artifact_refs` and `evidence_refs`, and FinishUP fills them (`publication-policy.md#service-filled-values`).
+A frontier you do send is the one you already hold: the `frontier` `start`
 returned for the first plan, then the `result_frontier` of your latest accepted write; read
 `status` for one only when you hold none or after `frontier_changed`. Never send
 `expected_frontier: null` on a state-sensitive batch. `head_digest: "genesis"` is valid only with
@@ -35,18 +38,17 @@ frontier sequences, limits, and `max_findings` as JSON strings (a `status` `limi
 integer from 1 to 100 is read as its string).
 
 Use the real client identity for your integration. Never copy a template timestamp as if it were
-the event time; `occurred_at` is your assertion and should be the best real UTC millisecond time
-available. A preview is optional: a write that fails validation appends nothing and names what
+the event time. Omit `occurred_at` and FinishUP records its clock; one you send is your assertion
+and should be the best real UTC millisecond time you already hold (never a `date` call). A preview is optional: a write that fails validation appends nothing and names what
 stopped it, not every error (for drafts, the first rejected draft and its field), so fix that and
 resubmit. When unsure, send the completed `publish_work` request once with `dry_run: true`; after a
-successful preview, reuse the same `request_id` without `dry_run` (or with `dry_run: false`).
+successful preview, send the same body without `dry_run` (with your own `request_id`, reuse it).
 
 Every set-valued list — `obligation_refs`, `obligation_ids`, `supporting_refs`, `limitation_refs`,
 `supersedes_claim_refs`, `causal_parents`, `evidence_refs`, `artifact_refs`, and the other
-canonical set fields — must already have unique members in ascending ASCII order. JSON Schema
-`uniqueItems` does not express order; the kernel rejects `unsorted_set_field` at the owning field.
-A one-element `dry_run` subset cannot demonstrate this rule. The two-member `obligation_ids`
-example under assignment is already sorted.
+canonical set fields — is recorded with unique members in ascending ASCII order. In an ordinary
+`publish_work` batch FinishUP sorts and de-duplicates them for you; lineage and coordination
+payload sets are still refused with `unsorted_set_field` at the owning field.
 
 ## Initial shape matrix and bounded guidance reads
 
@@ -60,17 +62,17 @@ The initial fields that prevent the most common mechanical rejections are:
 | --- | --- | --- |
 | `start` | `1.1.0` | `mode`, `task_title`, `requested_view`, exact `client`, and either the held `session_id` or both `workspace_ref` and `external_ref`; include the user's whole `task_statement` when first starting |
 | `read_guidance` | `1.1.0` | URI-only reads remain available on demand; for bounded delivery send canonical string `page` and `page_size`, then echo `revision` and `digest` from the response's continuation |
-| `publish_work` | `1.2.0` | state-sensitive bodies require `expected_frontier` with both sequence and `head_digest`; all mirrored references must match in both locations |
-| `status` | `1.2.0` | `at_frontier` is a sequence string, while `limit` is a canonical page-limit string; neither is a frontier object |
+| `publish_work` | `1.2.0` | `session_id`, `writer_id`, `actor`, `client` and drafts of `schema` plus `payload`; omit `request_id`, `expected_frontier` and the other draft keys (`server_filled` names what FinishUP filled), or send an explicit frontier with both sequence and `head_digest` |
+| `status` | `1.2.0` | `at_frontier` is a sequence string, while `limit` is an optional canonical page-limit string (default `"20"`); neither is a frontier object. `detail` is `brief` (the MCP default) or `full`; `view=results` admits `filter` `after_sequence`, `actor_id` or `author: "mine"` |
 | `check` / `respond` | `1.1.0` | carry returned task/session/writer ids; respond at a `finding_frontier` at or after the finding record |
 | `receipt` | `1.0.0` | carry the current returned identities and frontier after the final check |
 
 For a completion claim, put admissible evidence and successful results in `supporting_refs`, every
 partial, failed, or unknown result in `limitation_refs`, and every in-scope obligation in
-`obligation_refs`. `result_recorded` and `response_recorded` require envelope `evidence_refs` to
-mirror the payload list exactly. `evidence_recorded` requires envelope `artifact_refs` to mirror
-the captured object reference exactly. The validator never supplies a missing mirror or invents a
-limitation claim.
+`obligation_refs`. `result_recorded` and `response_recorded` envelope `evidence_refs` mirror the
+payload list, and `evidence_recorded` envelope `artifact_refs` mirrors the captured object
+reference: omit them and FinishUP copies the mirror; one you send must match exactly. The
+validator never invents a limitation claim.
 
 ### Reconstruct a bounded guidance document
 
@@ -125,10 +127,11 @@ Exact topic URIs; use these anchors verbatim and never derive one:
 
 ## Publish shapes
 
-Replace ids. Not one live batch. Skip a resolved obligation.
+Replace ids. Not one live batch. Skip a resolved obligation. FinishUP fills `request_id`,
+`expected_frontier`, `event_id`, `occurred_at` and the envelope lists; `server_filled` names them.
 
 ```json
-{"protocol_version":"0.1","schema_version":"1.0.0","request_id":"req_00000000-0000-4000-8000-000000000001","session_id":"ses_00000000-0000-4000-8000-000000000001","writer_id":"wri_00000000-0000-4000-8000-000000000001","expected_frontier":{"sequence":"0","head_digest":"genesis"},"event_drafts":[{"event_id":"evt_00000000-0000-4000-8000-000000000001","schema":{"name":"plan_published","version":"1.0.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":[],"payload":{"plan_version":1,"summary":"plan","obligation_refs":["obl_00000000-0000-4000-8000-000000000001"]},"artifact_refs":[],"evidence_refs":[]},{"event_id":"evt_00000000-0000-4000-8000-000000000002","schema":{"name":"obligation_published","version":"1.0.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":[],"payload":{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","description":"outcome","acceptance_criteria":"criterion","evidence_expectation":"test","status":"open","requested_items":[{"item_kind":"command","value":"pytest -q"}],"source_refs":["evt_00000000-0000-4000-8000-000000000000"]},"artifact_refs":[],"evidence_refs":[]},{"event_id":"evt_00000000-0000-4000-8000-000000000003","schema":{"name":"action_recorded","version":"1.0.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":[],"payload":{"action_id":"act_00000000-0000-4000-8000-000000000001","action_kind":"command","command":"pytest -q","description":"action","attempted_items":["pytest -q"]},"artifact_refs":[],"evidence_refs":[]},{"event_id":"evt_00000000-0000-4000-8000-000000000004","schema":{"name":"result_recorded","version":"1.0.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":["evt_00000000-0000-4000-8000-000000000003"],"payload":{"result_id":"res_00000000-0000-4000-8000-000000000001","action_id":"act_00000000-0000-4000-8000-000000000001","outcome":"success","summary":"result","evidence_refs":["evd_00000000-0000-4000-8000-000000000001"]},"artifact_refs":[],"evidence_refs":["evd_00000000-0000-4000-8000-000000000001"]},{"event_id":"evt_00000000-0000-4000-8000-000000000005","schema":{"name":"evidence_recorded","version":"1.1.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":[],"payload":{"evidence_id":"evd_00000000-0000-4000-8000-000000000001","evidence_kind":"test_result","strength":"content_digest","content_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","digest_binding":{"subject":"test_stdout","content_availability":"digest_only","byte_count":1,"provenance":"caller_asserted"},"observed_at":"2026-01-01T00:00:00.000Z"},"artifact_refs":[],"evidence_refs":[]},{"event_id":"evt_00000000-0000-4000-8000-000000000006","schema":{"name":"claim_recorded","version":"1.1.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":[],"payload":{"claim_id":"clm_00000000-0000-4000-8000-000000000001","claim_kind":"completion","statement":"claim","supporting_refs":["evd_00000000-0000-4000-8000-000000000001"],"obligation_refs":["obl_00000000-0000-4000-8000-000000000001"],"limitation_refs":["res_00000000-0000-4000-8000-000000000004"],"supersedes_claim_refs":[]},"artifact_refs":[],"evidence_refs":[]},{"event_id":"evt_00000000-0000-4000-8000-000000000007","schema":{"name":"plan_revised","version":"1.0.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":[],"payload":{"plan_version":2,"supersedes_plan_version":1,"reason":"changed","summary":"revised","obligation_changes":[{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","change":"carried"}]},"artifact_refs":[],"evidence_refs":[]},{"event_id":"evt_00000000-0000-4000-8000-000000000008","schema":{"name":"decision_recorded","version":"1.0.0"},"occurred_at":"2026-01-01T00:00:00.000Z","causal_parents":[],"payload":{"statement":"decision","rationale":"why","authority":"harness:cli"},"artifact_refs":[],"evidence_refs":[]}],"actor":{"actor_id":"harness:cli","actor_type":"harness"},"client":{"kind":"cooperative_agent","version":"0.1.0","integration":"cooperative_mcp"}}
+{"protocol_version":"0.1","schema_version":"1.0.0","session_id":"ses_00000000-0000-4000-8000-000000000001","writer_id":"wri_00000000-0000-4000-8000-000000000001","event_drafts":[{"schema":{"name":"plan_published","version":"1.0.0"},"payload":{"plan_version":1,"summary":"plan","obligation_refs":["obl_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"obligation_published","version":"1.0.0"},"payload":{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","description":"outcome","acceptance_criteria":"criterion","evidence_expectation":"test","status":"open","requested_items":[{"item_kind":"command","value":"pytest -q"}],"source_refs":["evt_00000000-0000-4000-8000-000000000000"]}},{"schema":{"name":"action_recorded","version":"1.0.0"},"payload":{"action_id":"act_00000000-0000-4000-8000-000000000001","action_kind":"command","command":"pytest -q","description":"action","attempted_items":["pytest -q"]}},{"schema":{"name":"result_recorded","version":"1.0.0"},"payload":{"result_id":"res_00000000-0000-4000-8000-000000000001","action_id":"act_00000000-0000-4000-8000-000000000001","outcome":"success","summary":"result","evidence_refs":["evd_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"evidence_recorded","version":"1.1.0"},"payload":{"evidence_id":"evd_00000000-0000-4000-8000-000000000001","evidence_kind":"test_result","strength":"content_digest","content_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","digest_binding":{"subject":"test_stdout","content_availability":"digest_only","byte_count":1,"provenance":"caller_asserted"},"observed_at":"2026-01-01T00:00:00.000Z"}},{"schema":{"name":"claim_recorded","version":"1.1.0"},"payload":{"claim_id":"clm_00000000-0000-4000-8000-000000000001","claim_kind":"completion","statement":"claim","supporting_refs":["evd_00000000-0000-4000-8000-000000000001"],"obligation_refs":["obl_00000000-0000-4000-8000-000000000001"],"limitation_refs":["res_00000000-0000-4000-8000-000000000004"],"supersedes_claim_refs":[]}},{"schema":{"name":"plan_revised","version":"1.0.0"},"payload":{"plan_version":2,"supersedes_plan_version":1,"reason":"changed","summary":"revised","obligation_changes":[{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","change":"carried"}]}},{"schema":{"name":"decision_recorded","version":"1.0.0"},"payload":{"statement":"decision","rationale":"why","authority":"harness:cli"}}],"actor":{"actor_id":"harness:cli","actor_type":"harness"},"client":{"kind":"cooperative_agent","version":"0.1.0","integration":"cooperative_mcp"}}
 ```
 
 ## `start`
@@ -180,7 +183,7 @@ When a semantic-required check pauses with `state: "awaiting_input"` and
 `semantic_reason: "review_input_required"`, the review needs the user's complete request. Publish it
 through the same session and writer: a `plan_revised` event at version `1.1.0` carrying
 `task_statement` (or `plan_published` `1.1.0` when no plan exists yet). Carry every existing
-obligation forward, and use the paused check's `result_frontier` as `expected_frontier`. Then replay
+obligation forward, and omit `expected_frontier` (or send the paused check's `result_frontier`). Then replay
 the original check request unchanged, with the same `request_id`; do not open a new check or a new
 task, and do not request a receipt before that check reaches a terminal result.
 
@@ -188,19 +191,11 @@ task, and do not request a receipt before that check reaches a terminal result.
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000020",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "7",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000020",
       "schema": {"name": "plan_revised", "version": "1.1.0"},
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "plan_version": 2,
         "supersedes_plan_version": 1,
@@ -210,9 +205,7 @@ task, and do not request a receipt before that check reaches a terminal result.
           {"obligation_id": "obl_00000000-0000-4000-8000-000000000001", "change": "carried"}
         ],
         "task_statement": "Replace with the user's whole request, verbatim"
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {
@@ -248,11 +241,12 @@ citing the observed run. If a script or client ran the command for you, link tha
 under the action template; the link is disclosed as your equivalence.
 
 Send this first plan with `expected_frontier` set to the `frontier` your `start` returned (the
-`start` result's `next_request_template` already carries it); the genesis value in the example
-below only keeps it schema-valid. An observation recorded since `start` does not invalidate it.
+`start` result's `next_request_template` already carries it), or omit it, as the example below
+does, to publish on the latest frontier. An observation recorded since `start` does not
+invalidate a frontier you send.
 
-To resolve an obligation, publish this same `obligation_published` draft again with a new
-`event_id`, every meaning field exactly as recorded (`status` `view: "obligations"` shows them),
+To resolve an obligation, publish this same `obligation_published` draft again (FinishUP mints
+its new `event_id`), every meaning field exactly as recorded (`status` `view: "obligations"` shows them),
 `status: "resolved"`, and `resolution_evidence_refs` naming the evidence (`evd_`) or result
 (`res_`) ids that show the work done.
 
@@ -268,32 +262,19 @@ and why. Never empty or withdraw the deliverable because of it.
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000002",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "0",
-    "head_digest": "genesis"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000001",
       "schema": {"name": "plan_published", "version": "1.0.0"},
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "plan_version": 1,
         "summary": "Replace with the bounded implementation plan",
         "obligation_refs": ["obl_00000000-0000-4000-8000-000000000001"]
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     },
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000002",
       "schema": {"name": "obligation_published", "version": "1.0.0"},
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "obligation_id": "obl_00000000-0000-4000-8000-000000000001",
         "description": "Replace with the outcome this work owes",
@@ -305,9 +286,7 @@ and why. Never empty or withdraw the deliverable because of it.
           {"item_kind": "change", "value": "Replace with the named change this obligation owes"}
         ],
         "source_refs": ["evt_00000000-0000-4000-8000-000000000000"]
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
@@ -328,19 +307,11 @@ batch as its own draft, listed in the plan's `obligation_refs`; standalone, it r
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000012",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "0",
-    "head_digest": "genesis"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000003",
       "schema": {"name": "obligation_published", "version": "1.1.0"},
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "obligation_id": "obl_00000000-0000-4000-8000-000000000002",
         "description": "Replace with the deliverable this work owes",
@@ -352,9 +323,7 @@ batch as its own draft, listed in the plan's `obligation_refs`; standalone, it r
           {"item_kind": "file", "value": "data/input_spec.json", "role": "input"}
         ],
         "source_refs": ["evt_00000000-0000-4000-8000-000000000000"]
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
@@ -406,23 +375,16 @@ reason beside nonempty `obligation_refs`.
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000015",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000015",
     "schema": {"name": "plan_published", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z",
-    "causal_parents": [],
     "payload": {
       "plan_version": 1,
       "summary": "Replace with the bounded obligation-free plan",
       "obligation_refs": [],
       "no_obligations_reason": "single_atomic_change"
-    },
-    "artifact_refs": [],
-    "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {
@@ -438,14 +400,10 @@ reason beside nonempty `obligation_refs`.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000003",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000003",
     "schema": {"name": "assignment_recorded", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "assignee_actor_id": "harness:mcp-template",
       "obligation_ids": [
@@ -453,8 +411,7 @@ reason beside nonempty `obligation_refs`.
         "obl_00000000-0000-4000-8000-000000000002"
       ],
       "scope_description": "Replace with one independently reviewable work package"
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -478,20 +435,15 @@ records it, so never cite it.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000004",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000004",
     "schema": {"name": "decision_recorded", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "statement": "Replace with the material decision",
       "rationale": "Replace with the bounded rationale summary",
       "authority": "harness:mcp-template"
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -507,21 +459,16 @@ result.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000014",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000014",
     "schema": {"name": "decision_recorded", "version": "1.1.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "statement": "Turn on AI-powered review for the rest of this task.",
       "rationale": "Cross-module change that local checks cannot judge.",
       "authority": "harness:mcp-template",
       "review_mode": "ai_powered"
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -541,21 +488,16 @@ claim payload in particular stays closed. Each entry copies one attempted obliga
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000005",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000005",
     "schema": {"name": "action_recorded", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "action_id": "act_00000000-0000-4000-8000-000000000001",
       "action_kind": "command", "command": "pytest -q",
       "description": "Replace with the material action summary",
       "attempted_items": ["pytest -q"]
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -576,32 +518,23 @@ ends; if it was abandoned, record outcome `unknown` and say so in the summary.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000060",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000060",
     "schema": {"name": "action_recorded", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "action_id": "act_00000000-0000-4000-8000-000000000060",
       "action_kind": "edit",
       "description": "Replace with the completed change",
       "obligation_refs": ["obl_00000000-0000-4000-8000-000000000001"]
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }, {
-    "event_id": "evt_00000000-0000-4000-8000-000000000061",
     "schema": {"name": "result_recorded", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z",
-    "causal_parents": ["evt_00000000-0000-4000-8000-000000000060"],
     "payload": {
       "result_id": "res_00000000-0000-4000-8000-000000000060",
       "action_id": "act_00000000-0000-4000-8000-000000000060",
       "outcome": "success", "summary": "Replace with what the change achieved"
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -619,22 +552,17 @@ equivalence.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000015",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000015",
     "schema": {"name": "action_recorded", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z",
     "causal_parents": ["evt_00000000-0000-4000-8000-000000000014"],
     "payload": {
       "action_id": "act_00000000-0000-4000-8000-000000000015",
       "action_kind": "command", "command": "pytest -q",
       "description": "Replace with how the observed run executed the planned command",
       "attempted_items": ["pytest -q"]
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -646,20 +574,15 @@ equivalence.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000006",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000006",
     "schema": {"name": "result_recorded", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "result_id": "res_00000000-0000-4000-8000-000000000001",
       "action_id": "act_00000000-0000-4000-8000-000000000001",
       "outcome": "success", "summary": "Replace with the independently useful result"
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -671,14 +594,10 @@ equivalence.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000007",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000007",
     "schema": {"name": "evidence_recorded", "version": "1.1.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "evidence_id": "evd_00000000-0000-4000-8000-000000000001",
       "evidence_kind": "test_result", "strength": "content_digest",
@@ -691,8 +610,7 @@ equivalence.
       },
       "observed_at": "2026-01-01T00:00:00.000Z",
       "description": "Caller-authored summary; not the bytes identified by content_digest"
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -719,22 +637,17 @@ request body's `schema_version` remains `1.0.0` as shown below.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000008",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000008",
     "schema": {"name": "claim_recorded", "version": "1.1.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "claim_id": "clm_00000000-0000-4000-8000-000000000001",
       "claim_kind": "completion", "statement": "Replace with the bounded claim",
       "supporting_refs": ["evd_00000000-0000-4000-8000-000000000001"],
       "obligation_refs": ["obl_00000000-0000-4000-8000-000000000001"],
       "limitation_refs": [], "supersedes_claim_refs": []
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -754,15 +667,11 @@ true`; append it only after the preview accepts it. `disputes_refs` and
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000016",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "dry_run": true,
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000016",
     "schema": {"name": "claim_recorded", "version": "1.1.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "claim_id": "clm_00000000-0000-4000-8000-000000000016",
       "claim_kind": "completion",
@@ -771,8 +680,7 @@ true`; append it only after the preview accepts it. `disputes_refs` and
       "obligation_refs": ["obl_00000000-0000-4000-8000-000000000001"],
       "limitation_refs": ["res_00000000-0000-4000-8000-000000000001"],
       "supersedes_claim_refs": ["clm_00000000-0000-4000-8000-000000000001"]
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -788,14 +696,10 @@ current closed reason. A revision never inherits an earlier reason by omission.
 ```json
 {
   "protocol_version": "0.1", "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000009",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
   "event_drafts": [{
-    "event_id": "evt_00000000-0000-4000-8000-000000000009",
     "schema": {"name": "plan_revised", "version": "1.0.0"},
-    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
     "payload": {
       "plan_version": 2, "supersedes_plan_version": 1,
       "reason": "Replace with the material fact that changed the plan",
@@ -804,8 +708,7 @@ current closed reason. A revision never inherits an earlier reason by omission.
         "obligation_id": "obl_00000000-0000-4000-8000-000000000001",
         "change": "carried"
       }]
-    },
-    "artifact_refs": [], "evidence_refs": []
+    }
   }],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
@@ -1167,27 +1070,17 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000040",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000040",
       "schema": {
         "name": "child_accepted",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "child_task_id": "tsk_00000000-0000-4000-8000-000000000002"
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {
@@ -1208,27 +1101,17 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000041",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000041",
       "schema": {
         "name": "child_rejected",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "child_task_id": "tsk_00000000-0000-4000-8000-000000000002"
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {
@@ -1249,27 +1132,17 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000042",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000042",
       "schema": {
         "name": "child_written_off",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "child_task_id": "tsk_00000000-0000-4000-8000-000000000002"
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {
@@ -1290,27 +1163,17 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000043",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000043",
       "schema": {
         "name": "delegation_cancelled",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "child_task_id": "tsk_00000000-0000-4000-8000-000000000002"
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {
@@ -1331,25 +1194,15 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000044",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000044",
       "schema": {
         "name": "work_closed",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
-      "payload": {},
-      "artifact_refs": [],
-      "evidence_refs": []
+      "payload": {}
     }
   ],
   "actor": {
@@ -1370,25 +1223,15 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000045",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000045",
       "schema": {
         "name": "work_cancelled",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
-      "payload": {},
-      "artifact_refs": [],
-      "evidence_refs": []
+      "payload": {}
     }
   ],
   "actor": {
@@ -1409,25 +1252,15 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000046",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000046",
       "schema": {
         "name": "work_written_off",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
-      "payload": {},
-      "artifact_refs": [],
-      "evidence_refs": []
+      "payload": {}
     }
   ],
   "actor": {
@@ -1453,31 +1286,21 @@ detection and the current project generation. Replace every identifier with the 
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000049",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000048",
       "schema": {
         "name": "coordination_obligation_declared",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "detection_id": "evt_00000000-0000-4000-8000-000000000049",
         "project_id": "prj_00000000-0000-4000-8000-000000000001",
         "membership_generation": "1",
         "recipient_task_id": "tsk_00000000-0000-4000-8000-000000000001",
         "obligation_id": "obl_00000000-0000-4000-8000-000000000001"
-      },
-      "artifact_refs": [],
-      "evidence_refs": []
+      }
     }
   ],
   "actor": {
@@ -1507,22 +1330,14 @@ reauthorize it. Run `check`, which records the superseded context as history.
 {
   "protocol_version": "0.1",
   "schema_version": "1.0.0",
-  "request_id": "req_00000000-0000-4000-8000-000000000050",
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
-  "expected_frontier": {
-    "sequence": "1",
-    "head_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
   "event_drafts": [
     {
-      "event_id": "evt_00000000-0000-4000-8000-000000000050",
       "schema": {
         "name": "coordination_disposition_recorded",
         "version": "1.0.0"
       },
-      "occurred_at": "2026-01-01T00:00:00.000Z",
-      "causal_parents": [],
       "payload": {
         "detection_id": "evt_00000000-0000-4000-8000-000000000049",
         "project_id": "prj_00000000-0000-4000-8000-000000000001",
@@ -1534,7 +1349,6 @@ reauthorize it. Run `check`, which records the superseded context as history.
           "evd_00000000-0000-4000-8000-000000000001"
         ]
       },
-      "artifact_refs": [],
       "evidence_refs": [
         "evd_00000000-0000-4000-8000-000000000001"
       ]

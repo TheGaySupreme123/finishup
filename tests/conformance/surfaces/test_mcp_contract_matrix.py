@@ -304,8 +304,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:c143ab8edbcc88c3f440730f956eb4c570953862e0bece5797394fb62429e534",
-        "strict": "sha256:3c172d0ab8c8977bdbcd4d3f998aafb59a646c2db553a6eb70b73402b1b42a5e",
+        "policy": "sha256:79145df6f744d367d897a04ce0b30bba17f4abfba328026c83ab452359c23b32",
+        "strict": "sha256:96cfdb0a08ad5a63e1745e6312905af3a5cd3f2af338c883fe47da08798b85a2",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -340,17 +340,21 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "workspace_ref and external_ref are admitted only as a pair" in start_description
     assert "A new session's first workflow operation is this call" in start_description
     assert "for intro and guidance" in start_description
-    assert (
-        "unique and already in ascending ASCII order" in descriptor_for("publish_work").description
+    # Issue #1084: the service sorts reference lists and fills the envelope boilerplate, and the
+    # descriptor says so instead of asking for hand-sorted, hand-mirrored drafts.
+    assert "Reference lists are sorted and de-duplicated for you" in (
+        descriptor_for("publish_work").description
     )
-    assert "unsorted_set_field" in descriptor_for("publish_work").description
+    assert "server_filled" in descriptor_for("publish_work").description
+    assert "never run date" in descriptor_for("publish_work").description
     properties = descriptor_for("publish_work").input_schema["properties"]
     assert isinstance(properties, dict)
     event_drafts = properties["event_drafts"]
     assert isinstance(event_drafts, dict)
     description = event_drafts["description"]
     assert isinstance(description, str)
-    assert "unsorted_set_field" in description
+    assert "sorts and de-duplicates reference lists" in description
+    assert "server_filled" in description
     publish_descriptor = descriptor_for("publish_work")
     assert publish_descriptor.input_schema_ref.endswith("publish-work-request-1.2.0.schema.json")
     assert publish_descriptor.output_schema_ref.endswith("publish-work-result-1.1.0.schema.json")
@@ -388,9 +392,10 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
         assert descriptor_for(name, "policy") == descriptor_for(name, "strict")
     assert "uncertain what you already did or committed to" in descriptor_for("status").description
     assert "recommended_next_action" in descriptor_for("status").description
-    assert "caller-asserted occurred_at beside the service-stamped accepted_at" in (
-        descriptor_for("status").description
-    )
+    assert (
+        "occurred_at (caller-asserted, or the service clock where a publish omitted it, which "
+        "view=operation's server_filled names) beside the service-stamped accepted_at"
+    ) in descriptor_for("status").description
     assert "call receipt before claiming completion" in descriptor_for("publish_work").description
     assert "do not copy the illustrative example timestamp" in (
         descriptor_for("publish_work").description

@@ -74,6 +74,7 @@ from finishup.protocol.models import (
     validate_semantic_provenance_binding,
 )
 from finishup.protocol.policy_packs import RECORDED_POLICY_PACKS
+from finishup.protocol.publish_boilerplate import ServerFilled
 from finishup.protocol.redacted_values import (
     SemanticRedactedValue,
     validate_semantic_redacted_values,
@@ -128,6 +129,7 @@ __all__ = [
     "ProjectionQuery",
     "ProjectionView",
     "QueryableProjectionView",
+    "ResultsProjectionFilter",
     "SelectedAttempt",
     "SemanticAttemptHandle",
     "SemanticAttemptRecord",
@@ -456,6 +458,9 @@ class AppendCommand:
     # is staged before the ledger append, so the ledger must receive the exact
     # descriptor in order to retain it across a restart/replay.
     artifact_object_refs: tuple[ObjectRef, ...] = ()
+    # Issue #1084: the values the service filled for a sparse publish request, stored with the
+    # operation result. Field names only; ``None`` for a complete body (the earlier result bytes).
+    server_filled: ServerFilled | None = None
 
     def __post_init__(self) -> None:
         _id(IdKind.TASK, self.task_id)
@@ -467,6 +472,13 @@ class AppendCommand:
         _digest(self.request_digest)
         if self.expected_frontier is not None:
             _uint(self.expected_frontier, sqlite=True)
+        if self.server_filled is not None and (
+            type(self.server_filled) is not ServerFilled
+            or self.server_filled.empty
+            or self.operation_kind is not OperationKind.PUBLISH_WORK
+            or any(item.index >= len(self.entries) for item in self.server_filled.drafts)
+        ):
+            raise _invalid()
         if (
             type(self.entries) is not tuple
             or not 1 <= len(self.entries) <= MAX_EVENTS_PER_BATCH
@@ -1924,12 +1936,39 @@ class HistoryProjectionFilter:
             _uint(self.after_sequence, sqlite=True)
 
 
+@dataclass(frozen=True, slots=True)
+class ResultsProjectionFilter:
+    """Issue #1084: results selected by their source event's ledger envelope.
+
+    ``after_sequence`` keeps results whose source event was ingested after that sequence,
+    ``actor_id`` those whose source event that actor published, and ``author: mine`` those the
+    querying writer published in its own session (``ProjectionQuery.writer_id``). Every test reads
+    the accepted envelope, never caller input.
+    """
+
+    after_sequence: int | None = None
+    actor_id: str | None = None
+    author: Literal["mine"] | None = None
+
+    def __post_init__(self) -> None:
+        if self.after_sequence is not None:
+            _uint(self.after_sequence, sqlite=True)
+        if self.actor_id is not None:
+            try:
+                validate_actor_id(self.actor_id)
+            except ValueError as exc:
+                raise _invalid() from exc
+        if self.author is not None and (type(self.author) is not str or self.author != "mine"):
+            raise _invalid()
+
+
 type ProjectionFilter = (
     AssignmentProjectionFilter
     | ObligationsProjectionFilter
     | FindingsProjectionFilter
     | EvidenceProjectionFilter
     | HistoryProjectionFilter
+    | ResultsProjectionFilter
 )
 
 
@@ -2004,8 +2043,9 @@ class ProjectionQuery:
         if self.writer_id is not None:
             _id(IdKind.WRITER, self.writer_id)
         if (
-            type(self.filter) is EvidenceProjectionFilter
-            and self.filter.author is not None
+            type(self.filter) in {EvidenceProjectionFilter, ResultsProjectionFilter}
+            and cast(EvidenceProjectionFilter | ResultsProjectionFilter, self.filter).author
+            is not None
             and self.writer_id is None
         ):
             raise _invalid()
@@ -2032,7 +2072,7 @@ class ProjectionQuery:
             "obligations": ObligationsProjectionFilter,
             "findings": FindingsProjectionFilter,
             "evidence": EvidenceProjectionFilter,
-            "results": None,
+            "results": ResultsProjectionFilter,
             "history": HistoryProjectionFilter,
             "versions": None,
         }

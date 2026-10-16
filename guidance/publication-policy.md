@@ -28,12 +28,16 @@ For a large inventory, create obligations per coherent work package. Publish one
 
 Publish one batch per material transition, roughly one to eight events. A normal session is a handful of batches: the plan and its obligations, each independently useful result with its evidence, the completion claim, and any finding response. It is not one batch per file, per tool call, or per message.
 
-State-sensitive families require `expected_frontier` (never `null`). Send the frontier you
-already hold: the first plan batch uses the `frontier` that `start` returned (its
+`publish_work` may omit `expected_frontier`: that is the `latest` mode. The batch is validated
+against the frontier it lands on, with no compare-and-set guard against another writer, and the
+result's `server_filled` names it. Send one only when a concurrent writer could change what the
+batch depends on (a parent and its delegates, two sessions on one task). Then send the frontier
+you already hold: the first plan batch uses the `frontier` that `start` returned (its
 `next_request_template` already carries it), and every later batch uses the `result_frontier` of
 your last accepted `publish_work`, `check` or `respond`. No `status` read is needed for it; read
-`status` only when you hold no frontier, or after a `frontier_changed` conflict. Omitting it
-returns retryable `expected_frontier_required` without writing an operation.
+`status` only when you hold no frontier, or after a `frontier_changed` conflict. An explicit
+`null` on a state-sensitive family returns retryable `expected_frontier_required` without writing
+an operation.
 The guard is task-scoped. Publication tolerates a held frontier when every intervening record is
 observation-authored and then appends at the real head. Check acquisition applies the same suffix
 predicate but freezes the case at that real head. Receipt may instead stay pinned to the supplied
@@ -301,9 +305,11 @@ never invent a finding disposition when a host reports that the wrong operation 
 The complete operation bodies remain in `finishup://guidance/request-templates.md`; read the one
 section for your operation, such as `#respond` or `#receipt` (page 0 lists every section).
 
-Newly minted caller IDs (`request_id`, event/object payload IDs, and claim IDs) use the required
-prefix plus a fresh lowercase UUID v4. Existing returned evidence, obligation, claim, and finding
-references remain exactly as returned; retries reuse the original request/body identity. Use the
+`publish_work` needs no caller-minted `request_id` or draft `event_id` (see
+[service-filled values](#service-filled-values)). Payload IDs you mint (action, result, evidence,
+obligation and claim IDs, and an explicit `request_id`) use the required prefix plus a fresh
+lowercase UUID v4. Existing returned evidence, obligation, claim, and finding references remain
+exactly as returned; retries reuse the original request/body identity. Use the
 exact closed enums and field-owning event family from the current schemas; do not handcraft,
 uppercase, or derive an ID from a sequence, run number, digest, or timestamp.
 
@@ -409,12 +415,39 @@ and as complete fallback bodies in one section per family of
 `#publish-shapes`. Example `occurred_at`
 values are illustrative shape only; do not copy them into live drafts.
 
+### Service-filled values
+
+<a id="service-filled-values"></a>
+
+A `publish_work` body may omit every value FinishUP can derive (issue #1084). A value you send is
+used unchanged; a sent mirror that disagrees with its payload is still refused.
+
+| Omitted | FinishUP records | Retry and provenance |
+| --- | --- | --- |
+| `request_id` | an id derived from the canonical body | resending the same body replays the stored outcome; a corrected body is a new request |
+| `expected_frontier` | the frontier the batch lands on (`latest`) | no compare-and-set guard; send one to refuse a concurrent change |
+| draft `event_id` | an id minted from the request id, the draft position and whether it is a dry run | a dry run never mints its commit's ids |
+| draft `occurred_at` | the service clock when the batch is published | never your assertion; `status view=operation` names it |
+| `causal_parents`, `artifact_refs`, `evidence_refs` | an empty set, or the payload's own mirror | the payload stays the assertion |
+
+A derived `request_id` cannot tell a retry from a deliberate repeat, so an identical body always
+replays and its result carries `replay_notice` (nothing new appended). To record the same facts
+again on purpose, such as confirming a `finishup-blocker` line or switching review mode back,
+reword the body or send a fresh `request_id`.
+
+Reference sets are also sorted and de-duplicated. Every accepted or previewed result lists what was
+filled in `server_filled` (`request`, plus `drafts` by batch index), and the operation record keeps
+the same names, so a filled value is never read as caller-asserted. The minted event ids are the
+`accepted_events` ids at the same positions. Payload ids (`act_`, `res_`, `evd_`, `obl_`, `clm_`)
+and evidence `observed_at` are still yours: use a time you already hold, never a `date` call.
+
 ### Event draft skeleton
 
 <a id="event-draft-skeleton"></a>
 
-A host may drop the tool schema `examples` entry, so the envelope shape is restated here. Every
-draft carries exactly these seven keys, and nothing else:
+A host may drop the tool schema `examples` entry, so the envelope shape is restated here. A
+draft needs only `schema` and `payload`; FinishUP fills the other five keys when they are omitted.
+Every draft carries at most these seven keys, and nothing else:
 
 ```json
 {
@@ -433,32 +466,33 @@ draft carries exactly these seven keys, and nothing else:
 `plan_revised`, `obligation_published`, `assignment_recorded`, `decision_recorded`,
 `action_recorded`, `result_recorded`, `evidence_recorded`, and `claim_recorded`.
 
-The illustrative `event_id` and `occurred_at` above are shape only: mint a real UUIDv4 and use the
-best real time available, exactly as for the schema examples.
+The illustrative `event_id` and `occurred_at` above are shape only. Omit them, or mint a real
+UUIDv4 and use the best real time you already hold, exactly as for the schema examples.
 
 ### Set-valued reference lists
 
 <a id="set-valued-lists"></a>
 
-Every canonical set field is admitted only when its members are unique and already in ascending
-ASCII order. The kernel does not sort them. JSON Schema `uniqueItems` does not express this order
-rule, so a bridge-side schema hint cannot catch it. Authoring order (the order ids were minted) is
-the usual failure. A rejection names `unsorted_set_field` or `duplicate_set_member` at the owning
-field. A one-element `dry_run` subset is trivially sorted and cannot locate this rule.
-Sort the named field as ASCII bytes and retry; do not reverse-engineer order from a one-member subset.
+Every canonical set field is recorded with unique members in ascending ASCII order. FinishUP
+sorts and de-duplicates every envelope reference set and the payload reference sets of an
+ordinary publishable family before validation (issue #1084), so authoring order no longer matters
+there. Lineage and coordination payload sets keep the earlier refusal: a rejection names `unsorted_set_field` or `duplicate_set_member` at the owning
+field. Sort the named field as ASCII bytes and retry; do not reverse-engineer order from a
+one-member subset.
 
 The rule applies to payload lists including `obligation_refs`, `obligation_ids`,
 `affected_obligation_ids`, `supporting_refs`, `limitation_refs`, `supersedes_claim_refs`,
 `disputes_refs`, and `source_refs`, and to envelope lists `causal_parents`, `evidence_refs`, and
-`artifact_refs`. Publish sorted-unique members; do not rely on the kernel to reorder them.
+`artifact_refs`.
 
 ### Reference mirrors
 
 <a id="reference-mirrors"></a>
 
-Some families mirror a payload reference into the draft envelope, and the two must match exactly —
-the same ids in the same ascending ASCII order, with no extra and no omitted member. A mismatch is
-rejected with reason `ref_mirror_mismatch`, and the public error names the envelope field:
+Some families mirror a payload reference into the draft envelope. Omit the envelope list and
+FinishUP copies the mirror. A list you send must match exactly — the same ids in the same
+ascending ASCII order, with no extra and no omitted member. A mismatch is rejected with reason
+`ref_mirror_mismatch`, and the public error names the envelope field:
 
 - `result_recorded` and `response_recorded`: envelope `evidence_refs` equals the payload's own
   `evidence_refs`, or both are empty.
@@ -469,7 +503,7 @@ rejected with reason `ref_mirror_mismatch`, and the public error names the envel
 
 ## Event time claims
 
-`occurred_at` is a caller assertion of when the event happened. Never guess it or round it to a convenient future value: use the best real RFC 3339 millisecond UTC time available. If the exact time is unknown, use an honest bounded approximation and understand that it remains a claim — the service does not check outside clocks and does not reject far-past, future, or out-of-order caller times.
+An omitted `occurred_at` is the service clock at publication, named in `server_filled` and never presented as your assertion; omit it unless you know a better time. A sent `occurred_at` is a caller assertion of when the event happened. Never guess it or round it to a convenient future value: use the best real RFC 3339 millisecond UTC time available, and never run `date` only to fill it. If the exact time is unknown, use an honest bounded approximation and understand that it remains a claim — the service does not check outside clocks and does not reject far-past, future, or out-of-order caller times.
 
 The service independently stamps `accepted_at` on acceptance. Both values are durable and bound into the entry digest. Ledger order, causality, supersession, optimistic concurrency, and receipt freshness use ingestion sequence and frontier, not caller time. `status` with `view=history` returns both clocks plus `occurred_at_consistency` on each item. The closed classification is `within_forward_skew_allowance` when caller time is no more than five seconds ahead of service acceptance and `ahead_of_forward_skew_allowance` otherwise. It exposes only that exact comparison; it does not verify the caller timestamp or make wall clock authoritative. The same two clocks and classification are carried into a new check's bounded frozen timeline so AI-powered review can see forward drift.
 

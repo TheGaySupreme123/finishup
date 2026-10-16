@@ -58,7 +58,10 @@ def test_publish_shapes_is_one_default_guidance_page(monkeypatch: pytest.MonkeyP
     text = payload.decode("utf-8")
     for family in _FAMILIES:
         assert family in text
-    assert text.count('"evidence_refs":["evd_') == 2
+    # Issue #1084: each reference is written once; the envelope mirror is FinishUP's to copy.
+    assert text.count('"evidence_refs":["evd_') == 1
+    for boilerplate in ('"request_id"', '"expected_frontier"', '"event_id"', '"occurred_at"'):
+        assert boilerplate not in text
     assert '"limitation_refs":["res_' in text
     assert '"supporting_refs":["evd_' in text
     assert "Not one live batch." in text

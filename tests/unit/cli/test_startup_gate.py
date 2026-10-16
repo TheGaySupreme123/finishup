@@ -9,7 +9,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
 
@@ -852,3 +852,30 @@ def test_bare_legacy_launcher_resolves_through_path_to_this_runtime(
     assert resolved == ["yoetz"]
     payload = {"tool_name": "Bash", "tool_input": {"command": "yoetzx service status"}}
     assert not bootstrap_tool(payload, "claude", "PreToolUse")
+
+
+def test_sparse_publication_opens_the_gate_under_its_derived_identity(host: Host) -> None:
+    """Issue #1084: a first plan without request_id or event ids still releases the gate.
+
+    The hook derives the request id the service derives from the same body, and matches the
+    service-minted event ids by their position in ``accepted_events``.
+    """
+
+    from finishup.protocol.publish_boilerplate import derived_publish_request_id
+
+    host.start()
+    request, result = host.publication()
+    del request["request_id"]
+    drafts = cast(list[dict[str, JsonValue]], request["event_drafts"])
+    for draft in drafts:
+        del draft["event_id"]
+    derived = derived_publish_request_id(request)
+    assert derived is not None
+    result["request_id"] = derived
+    host.pre("publish_work", request)
+    scope = host.store.read()
+    assert scope is not None and scope.pending.get(derived) == "publish_work"
+    host.post("publish_work", request, result)
+    scope = host.store.read()
+    assert scope is not None and derived not in scope.pending
+    assert not host.denied()

@@ -265,6 +265,51 @@ drafts are prepared, a retry of the same `request_id` with or without it is a re
 and the recorded event never holds it. Every other unadmitted key, in every family, keeps its
 `extra_forbidden` refusal. The advertised schemas keep the one canonical spelling (ADR-002).
 
+Server-filled publish boilerplate (issue #1084, ADR-050). A `publish_work` request
+(`publish-work-request` 1.2.0 and `event-draft` 1.2.0, changed in place while unreleased) may omit
+`request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
+`artifact_refs` and `evidence_refs`; only `schema` and `payload` remain required in a draft. The
+pure half lives in `finishup.protocol.publish_boilerplate` so the bridge, CLI, host hooks and
+service compute the same values:
+
+- Reference sets are canonicalized by the request model before the schema check: the envelope sets
+  of every draft and the top-level id arrays of the ordinary agent families are sorted as ASCII
+  bytes and de-duplicated. Free-text arrays never are; lineage and coordination payload sets keep
+  `unsorted_set_field`/`duplicate_set_member`.
+- An omitted `request_id` is `derive_publish_request_id(body)`: SHA-256 over a domain tag and the
+  canonical request body without `request_id`, shaped as a `req_` UUIDv4. The model keeps it
+  *unset*, so `exclude_unset` serializations forward the sparse body and the service derives the
+  same id. Resending an identical body after a lost response is therefore the idempotent retry
+  (replay, `REQUEST_IDENTITY_CONFLICT` and `status view=operation` all key on it); any change to the
+  body is a new request. `derived_publish_request_id(arguments)` gives a host hook or a bridge error
+  envelope the same id without the model.
+- An omitted draft `event_id` is `mint_draft_event_id(request_id, index, dry_run=...)`. The dry-run
+  flag is in the seed, so a preview never mints the ids its commit records.
+- An omitted `occurred_at` is the service clock, read once per operation. It enters the request
+  identity as `null`, never as the time, so a resend replays instead of conflicting. An omitted
+  `expected_frontier` is the `latest` mode and enters the identity as `"latest"`; the append runs
+  without the compare-and-set guard (`AppendCommand.expected_frontier = None`) and the state checks
+  still run against the frontier it lands on. An explicit `null` keeps its earlier meaning
+  (`expected_frontier_required` on a state-sensitive batch); a supplied frontier keeps its guard.
+- Omitted envelope mirrors are copied from the payload (`result_recorded`, `response_recorded` and
+  `coordination_disposition_recorded` `evidence_refs`; `evidence_recorded` `captured_object_id`);
+  `causal_parents` defaults to empty. A sent value is never replaced, so a sent mirror that
+  disagrees is still `ref_mirror_mismatch`, and a request that sends every value keeps its earlier
+  identity, digest and result bytes.
+
+A body-derived id cannot tell a lost-response retry from a deliberate repeat, so an identical
+sparse body always replays (never a second append) and its success result carries the closed
+`replay_notice` (`identical_body_replayed` plus fixed text) saying nothing new was appended and
+that a deliberate repeat needs a reworded body or a fresh `request_id`. An explicit `request_id`
+replay carries no notice.
+
+Provenance: every success and dry-run result carries `server_filled` (`request`: the filled
+request fields; `drafts`: groups of filled envelope `fields` with the batch `indexes` they apply
+to) exactly when something was filled, and the publish operation's stored result keeps the same field names (structural only, no
+caller content), returned by a replay and by `status view=operation`. A filled `occurred_at` is
+therefore never read as a caller assertion. Payload ids and evidence `observed_at` stay
+caller-authored: their payload schemas are released.
+
 For an `extra_forbidden` payload rejection whose unknown key is a known field with exactly one
 legal owning event family among the ordinary `publish_work` families, `safe_details` additionally
 carries a flat bounded repair fact (issue #266): `repair_kind` (always `field_ownership`),
@@ -551,8 +596,8 @@ never echoed. `resources/list` omits `annotations.priority`, because Codex's rmc
 decode a fractional number in that result (see the Codex integration runbook).
 
 Protocol reason
-`expected_frontier_required` marks a state-sensitive `publish_work` batch that omitted
-`expected_frontier` (or sent `null`). It names that field and is retryable because validation wrote
+`expected_frontier_required` marks a state-sensitive `publish_work` batch that sent
+`expected_frontier: null` (omitting it is the `latest` mode, issue #1084). It names that field and is retryable because validation wrote
 no durable operation; the caller may reuse the same `request_id` with a corrected body. Here
 `retryable` describes whether safe recovery exists for the durable state reached, not whether the
 request bytes must remain unchanged. Its continuation is `frontier_held_required` (tb4n5, #1048):
@@ -602,7 +647,9 @@ Optional `dry_run: true` on `PublishWorkRequest` validates the full batch and re
 `outcome: "dry_run"` with `evidential: false` and a `would_accept` preview (event ids, schema
 identity, refs) plus coverage/gaps. It appends nothing, records no operation, does not consume
 `request_id`, and does not move the frontier — same non-citable discipline as
-`status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`.
+`status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`; a
+dry run that omitted `request_id` derives a different one than its commit (the body differs by
+`dry_run`), and its minted event ids are never the commit's.
 `dry_run: null` is rejected; omit the field or pass a boolean.
 The coverage on an accepted internal success is derived from the authored envelope coverage and the
 resulting projection, so its diagnostic `known_gaps` are reporting output and must not be copied into
@@ -2287,6 +2334,18 @@ filtering, or resolution. The obligations row also returns `requested_items` and
 omission under a stricter client policy, while item kinds and attempt matching remain structural.
 Results returns only `result_id`, source event id, payload availability, outcome, linked action id,
 and evidence ids; it never returns result prose, command text, exit output, or subject-state content.
+Its optional filter (issue #1084) selects by the source event's accepted envelope only:
+`after_sequence` (ingestion sequence strictly after), `actor_id` (the asserted author), and
+`author: "mine"` (the same self-authorship rule as evidence). A status request's `limit` defaults to
+`"20"` when omitted, and `detail` selects `full` (the protocol default) or `brief`. A brief body
+(`status-result` 1.4.0 `brief_success`) is a strict subset of the full one: frontiers equal to
+`result_frontier`, projection metadata at their current defaults, an empty import status and an
+enforced credential filter are omitted; the compact view keeps `coverage` and `closure_readiness`
+and every other view carries `closure_state` (state, blocking conditions, agent-actionable tokens).
+It is built before the disclosure boundary, so the privacy projection and its commitment cover
+exactly the brief body. The MCP `status` tool asks for `brief` unless the agent names a `detail`;
+the CLI, hooks and the bridge's own recovery reads keep the full body. A publish operation page
+adds `server_filled` when the operation recorded one.
 Together with history's claim event/schema identity and candidate findings' bounded claim/result
 ids, this is the minimum public projection needed to author and dry-run a v1.1 replacement without
 reading raw ledger internals.

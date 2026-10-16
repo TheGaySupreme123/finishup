@@ -3483,3 +3483,32 @@ authenticated command/output binding, privacy policy and provider limits remain 
 Native runner classification unwraps one ordinary host shell and retains nested executable paths;
 keyed identity normalization is separate. The original completed
 verification remains authoritative when its output is later retrieved through `write_stdin`.
+
+### Server-filled publish boilerplate and brief status (#1084)
+
+Host decision: supported, no host-specific code. The change lives in the shared protocol request
+models, the publish application, the MCP bridge and the startup gate hook, so Codex takes the same
+path as every other host. What a Codex agent can rely on:
+
+- `publish_work` may omit `request_id`, `expected_frontier`, and each draft's `event_id`,
+  `occurred_at`, `causal_parents`, `artifact_refs` and `evidence_refs`. FinishUP derives the
+  request id from the body (resending the same body replays it), mints event ids, records its own
+  clock, copies the payload mirrors and publishes on the latest frontier. The result's
+  `server_filled` names every filled value, and `status view=operation` shows the same record.
+  Reference sets are sorted and de-duplicated instead of refused. A request that sends every
+  value behaves exactly as before.
+- No `date -u` call is needed to timestamp a draft.
+- An identical sparse body is the same request: it replays and its result carries
+  `replay_notice`. To record the same facts again on purpose (a `finishup-blocker` confirmation,
+  a review-mode switch back), reword the body or send a fresh `request_id`.
+- An MCP `status` read returns `detail: brief` unless the agent sends `detail: "full"`;
+  `limit` defaults to 20, and `view: results` accepts `filter` `after_sequence`, `actor_id`
+  or `author: "mine"`.
+- Codex reads the structured result, so the minted ids arrive in `accepted_events` and `server_filled`. In code mode a sandbox without `crypto` no longer needs a UUIDv4 helper for `publish_work` (it still does for `start`, `check`, `respond` and `receipt`).
+- The startup gate hook derives the same request id for a sparse `publish_work`, and matches
+  minted event ids by position in `accepted_events`, so a sparse first plan still releases the gate.
+
+Verification: `tests/integration/application/test_publish_server_filled.py`,
+`tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
+MCP unit suites exercise the shared path. A live Codex session on macOS, Linux or WSL 2 is not
+recorded for this change; native Windows is not claimed.

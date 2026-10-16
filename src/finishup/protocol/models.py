@@ -62,6 +62,11 @@ from finishup.protocol.guidance_uris import (
     canonical_guidance_uri as _canonical_guidance_uri,
 )
 from finishup.protocol.ids import PREFIX_BY_KIND, IdKind, validate_actor_id, validate_id
+from finishup.protocol.publish_boilerplate import (
+    derive_publish_request_id,
+    normalize_publish_drafts,
+    server_filled_from_json,
+)
 from finishup.protocol.redacted_values import (
     MAX_SEMANTIC_REDACTED_VALUE_ITEMS,
     MAX_SEMANTIC_REDACTED_VALUE_LINE,
@@ -1749,59 +1754,24 @@ class StartRequestModel(PublicRequestModel):
         return self
 
 
-_IGNORED_DECISION_ID_KEY: Final = "decision_id"
-
-
-def _drop_ignored_decision_ids(drafts: object) -> object:
-    """Drop ``decision_id`` from every ``decision_recorded`` draft payload (tb4n4, #1049).
-
-    ``decision_recorded`` is the one ordinary family without an id of its own (a decision is
-    addressed by its ``event_id``), and ten tb4n4 attempts sent a ``decision_id`` by analogy with
-    ``action_id``, ``claim_id`` and the rest. The key has no meaning in any spelling, so it is
-    accepted and ignored: dropped here, before the schema check and before anything prepares,
-    commits or hashes the drafts. A retry with or without it is therefore the same request (one
-    request digest), and the recorded event never holds it. Every other unknown key, in this and
-    every other family, keeps its ``extra_forbidden`` refusal.
-    """
-
-    if not isinstance(drafts, list | tuple):
-        return drafts
-    sequence = cast(Sequence[object], drafts)
-    adapted: list[object] = []
-    changed = False
-    for draft in sequence:
-        replacement: object = draft
-        if isinstance(draft, Mapping):
-            source = cast(Mapping[object, object], draft)
-            schema: object = source.get("schema")
-            payload: object = source.get("payload")
-            if (
-                isinstance(schema, Mapping)
-                and cast(Mapping[object, object], schema).get("name") == "decision_recorded"
-                and isinstance(payload, Mapping)
-                and _IGNORED_DECISION_ID_KEY in cast(Mapping[object, object], payload)
-            ):
-                kept: dict[object, object] = {
-                    key: value
-                    for key, value in cast(Mapping[object, object], payload).items()
-                    if key != _IGNORED_DECISION_ID_KEY
-                }
-                rebuilt: dict[object, object] = dict(source)
-                rebuilt["payload"] = kept
-                replacement = rebuilt
-                changed = True
-        adapted.append(replacement)
-    if not changed:
-        return sequence
-    return adapted if isinstance(sequence, list) else tuple(adapted)
+# Placeholder for an omitted publish ``request_id``; replaced by the derived id before any reader
+# can observe the model (issue #1084). Never a valid id, so it can never reach the wire.
+_PENDING_REQUEST_ID: Final = ""
 
 
 class PublishWorkRequestModel(PublicRequestModel):
-    optional_non_null_fields = frozenset({"dry_run"})
+    optional_non_null_fields = frozenset({"dry_run", "request_id"})
 
+    # Issue #1084: optional. An absent ``request_id`` is derived from the caller's canonical body
+    # after validation (``request_id_derived``); it stays *unset*, so the bridge forwards the
+    # sparse body and the service derives the identical id itself.
+    request_id: RequestIdWire = Field(default=_PENDING_REQUEST_ID, validate_default=False)
     session_id: SessionIdWire
     writer_id: WriterIdWire
-    expected_frontier: FrontierModel | None
+    # Issue #1084: absent selects the documented ``latest`` mode (``expected_frontier_latest``):
+    # the batch is validated against the frontier it lands on, without a compare-and-set guard.
+    # An explicit ``null`` keeps its earlier meaning, and a supplied frontier keeps its guard.
+    expected_frontier: FrontierModel | None = None
     event_drafts: tuple[JsonValue, ...]
     # When true, validate the batch and return a non-evidential preview without appending.
     dry_run: bool | None = None
@@ -1813,15 +1783,40 @@ class PublishWorkRequestModel(PublicRequestModel):
             return value
         source = cast(Mapping[object, object], value)
         drafts = source.get("event_drafts")
-        adapted = _drop_ignored_decision_ids(drafts)
+        adapted = normalize_publish_drafts(drafts)
         if adapted is drafts:
             return cast(object, value)
         return {**source, "event_drafts": adapted}
 
     @model_validator(mode="after")
     def _validate_publish_work_request(self) -> PublishWorkRequestModel:
+        if "request_id" not in self.model_fields_set:
+            body = _strip_optional_non_null_fields(
+                self,
+                cast(
+                    Mapping[str, JsonValue],
+                    self.model_dump(
+                        mode="json", by_alias=True, exclude_unset=True, exclude_none=False
+                    ),
+                ),
+            )
+            # Frozen model: the derived id is installed without marking the field as set, so
+            # ``exclude_unset`` serializations keep forwarding the caller's sparse body.
+            object.__setattr__(self, "request_id", derive_publish_request_id(body))
         _validate_model_against_schema(self, "publish-work-request")
         return self
+
+    @property
+    def request_id_derived(self) -> bool:
+        """Whether ``request_id`` was derived from the body rather than sent by the caller."""
+
+        return "request_id" not in self.model_fields_set
+
+    @property
+    def expected_frontier_latest(self) -> bool:
+        """Whether the caller omitted ``expected_frontier`` (the ``latest`` mode, #1084)."""
+
+        return "expected_frontier" not in self.model_fields_set
 
 
 class CheckRequestModel(PublicRequestModel):
@@ -1993,6 +1988,21 @@ class StatusOperationFilterModel(_ClosedModel):
     operation_request_id: RequestIdWire
 
 
+class StatusResultsFilterModel(_ClosedModel):
+    """Issue #1084: the filters agents already sent with ``view: results``.
+
+    Each is decided by the service from the ledger envelope of the result's source event: its
+    ingestion sequence, its asserted actor, and (``author: mine``) whether this writer published
+    it in this session. None of them can widen what the view returns.
+    """
+
+    optional_non_null_fields = frozenset({"actor_id", "after_sequence", "author"})
+
+    actor_id: ActorAssertionIdWire | None = None
+    after_sequence: CanonicalUInt64Wire | None = None
+    author: Literal["mine"] | None = None
+
+
 type StatusFilter = (
     StatusAssignmentFilterModel
     | StatusCandidateFindingsFilterModel
@@ -2001,6 +2011,7 @@ type StatusFilter = (
     | StatusHistoryFilterModel
     | StatusObligationsFilterModel
     | StatusOperationFilterModel
+    | StatusResultsFilterModel
 )
 
 _STATUS_FILTER_BY_VIEW: Final[Mapping[str, type[_ClosedModel]]] = MappingProxyType(
@@ -2012,12 +2023,17 @@ _STATUS_FILTER_BY_VIEW: Final[Mapping[str, type[_ClosedModel]]] = MappingProxyTy
         "history": StatusHistoryFilterModel,
         "obligations": StatusObligationsFilterModel,
         "operation": StatusOperationFilterModel,
+        "results": StatusResultsFilterModel,
     }
 )
+# Issue #1084: the page size a status request gets when it omits ``limit``.
+STATUS_DEFAULT_PAGE_LIMIT: Final = "20"
 
 
 class StatusRequestModel(PublicRequestModel):
-    optional_non_null_fields = frozenset({"filter", "project_id", "task_id", "correlation_id"})
+    optional_non_null_fields = frozenset(
+        {"filter", "project_id", "task_id", "correlation_id", "detail", "limit"}
+    )
 
     session_id: SessionIdWire
     writer_id: WriterIdWire
@@ -2036,12 +2052,16 @@ class StatusRequestModel(PublicRequestModel):
         "results",
         "versions",
     ]
-    limit: CanonicalPageLimitWire
+    # Issue #1084: optional; an absent limit pages STATUS_DEFAULT_PAGE_LIMIT items.
+    limit: CanonicalPageLimitWire = STATUS_DEFAULT_PAGE_LIMIT
     filter: StatusFilter | None = None
     project_id: ProjectIdWire | None = None
     task_id: TaskIdWire | None = None
     correlation_id: HostCorrelationWire | None = None
     at_frontier: CanonicalUInt64Wire | None = None
+    # Issue #1084: ``brief`` returns only what the next step needs; absent or ``full`` returns the
+    # earlier body. The MCP tool asks for ``brief`` unless the agent names a detail.
+    detail: Literal["brief", "full"] | None = None
     cursor: CursorWire | None = None
 
     @model_validator(mode="before")
@@ -2975,6 +2995,15 @@ class PublishWorkBlockerNoticeModel(_ClosedModel):
 # recorded that no ``result_recorded`` names yet. It carries no caller value; the act_ id rides
 # beside it. 15 of 15 tb4n5 ``action_without_result`` findings were agent-published actions whose
 # result followed only after the check asked for it.
+# Issue #1084: a body that omitted request_id derives its id from its content, so an identical
+# body is the same request. The notice makes that replay visible; it never changes what replays.
+PUBLISH_REPLAY_NOTICE_TEXT: Final = (
+    "This body is identical to one FinishUP already recorded, so it replayed that publication and"
+    " appended nothing new: the safe retry after a lost response. To record the same facts again on"
+    " purpose (a finishup-blocker confirmation, a repeated review-mode switch), reword the body or"
+    " send a fresh request_id."
+)
+
 PUBLISH_ACTION_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "result_not_linked": (
@@ -3004,6 +3033,47 @@ class PublishWorkActionNoticeModel(_ClosedModel):
         return self
 
 
+class PublishWorkReplayNoticeModel(_ClosedModel):
+    """Issue #1084: a derived-id publish replayed an earlier identical body; nothing was appended."""
+
+    notice: Literal["identical_body_replayed"]
+    text: str
+
+    @model_validator(mode="after")
+    def _validate_fixed_text(self) -> PublishWorkReplayNoticeModel:
+        if self.text != PUBLISH_REPLAY_NOTICE_TEXT:
+            raise ValueError("publish_replay_notice_text_mismatch")
+        return self
+
+
+class PublishWorkServerFilledDraftModel(_ClosedModel):
+    """The envelope fields the service filled for a group of drafts (issue #1084).
+
+    One group per distinct filled-field set; ``indexes`` are the drafts' batch positions.
+    """
+
+    fields: tuple[
+        Literal["artifact_refs", "causal_parents", "event_id", "evidence_refs", "occurred_at"], ...
+    ]
+    indexes: tuple[CanonicalUInt64Wire, ...]
+
+
+class PublishWorkServerFilledModel(_ClosedModel):
+    """Which values the service supplied for one publication (issue #1084).
+
+    Field names only. It is present exactly when the caller omitted a fillable value, so a filled
+    value is never read as a caller assertion; the operation record stores the same names.
+    """
+
+    request: tuple[Literal["expected_frontier", "request_id"], ...]
+    drafts: tuple[PublishWorkServerFilledDraftModel, ...]
+
+    @model_validator(mode="after")
+    def _validate_server_filled(self) -> PublishWorkServerFilledModel:
+        server_filled_from_json(self.model_dump(mode="json"))
+        return self
+
+
 class PublishWorkSuccessModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
@@ -3025,8 +3095,14 @@ class PublishWorkSuccessModel(_ClosedModel):
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
     # tb4n5 follow-up: present only when the batch recorded an action no result names yet.
     action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
+    # Issue #1084: present only when the service filled an omitted value.
+    server_filled: PublishWorkServerFilledModel | None = None
+    # Issue #1084: present only when a derived request_id replayed an identical earlier body.
+    replay_notice: PublishWorkReplayNoticeModel | None = None
 
-    optional_non_null_fields = frozenset({"blocker_notices", "action_notices"})
+    optional_non_null_fields = frozenset(
+        {"blocker_notices", "action_notices", "server_filled", "replay_notice"}
+    )
 
     @model_validator(mode="after")
     def _validate_publish_success(self) -> PublishWorkSuccessModel:
@@ -3124,8 +3200,10 @@ class PublishWorkDryRunModel(_ClosedModel):
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
     # tb4n5 follow-up: the same unlinked-action notices a real publish would return.
     action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
+    # Issue #1084: the values a real publish of this body would have the service fill.
+    server_filled: PublishWorkServerFilledModel | None = None
 
-    optional_non_null_fields = frozenset({"blocker_notices", "action_notices"})
+    optional_non_null_fields = frozenset({"blocker_notices", "action_notices", "server_filled"})
 
     @model_validator(mode="after")
     def _validate_publish_dry_run(self) -> PublishWorkDryRunModel:
@@ -6250,7 +6328,13 @@ class StatusOperationPageModel(_ClosedModel):
     """One request-id-keyed operation recovery page within the authenticated task."""
 
     optional_non_null_fields = frozenset(
-        {"semantic_progress", "admission", "semantic_withheld_items", "semantic_redacted_values"}
+        {
+            "semantic_progress",
+            "admission",
+            "semantic_withheld_items",
+            "semantic_redacted_values",
+            "server_filled",
+        }
     )
 
     operation_request_id: RequestIdWire
@@ -6277,6 +6361,9 @@ class StatusOperationPageModel(_ClosedModel):
     # Issue #838: pre-admission stage of a check request that has no operation record yet.
     # Omitted whenever the service knows of no reservation or refusal for the exact key.
     admission: StatusCheckAdmissionModel | None = None
+    # Issue #1084: the values the service filled for a sparse publish, read from the operation's
+    # stored result. Omitted for every other operation and for a complete publish body.
+    server_filled: PublishWorkServerFilledModel | None = None
     next_cursor: None = None
 
     @model_validator(mode="after")
@@ -6455,8 +6542,144 @@ class StatusSuccessModel(_ClosedModel):
         return self
 
 
+class StatusClosureStateModel(_ClosedModel):
+    """Issue #1084: the closure readiness a brief non-compact status body carries.
+
+    The readiness ``state``, its ``blocking_conditions`` and the ``agent_actionable`` tokens: what
+    the next step needs. The compact view, and every ``detail: full`` body, carry the complete
+    ``closure_readiness``.
+    """
+
+    optional_non_null_fields = frozenset({"state", "agent_actionable"})
+
+    blocking_conditions: tuple[
+        Literal[
+            "obligations_open",
+            "findings_unanswered",
+            "receipt_findings_unresolved",
+            "no_plan_published",
+            "no_obligations_declared",
+            "projection_stale",
+            "coverage_gaps_declared",
+            "readiness_unknown",
+        ],
+        ...,
+    ]
+    state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
+    agent_actionable: tuple[ReadinessItemWire, ...] | None = None
+
+
+class StatusBriefSuccessModel(_ClosedModel):
+    """Issue #1084: a status success with only what the next step needs (``detail: brief``).
+
+    A strict subset of :class:`StatusSuccessModel`: a frontier equal to ``result_frontier`` is
+    omitted, as are projection metadata at their current defaults, an empty import status and an
+    enforced credential filter. Only the compact view keeps ``coverage`` and the full
+    ``closure_readiness``; other views carry ``closure_state``. ``detail: full`` returns the rest.
+    """
+
+    optional_non_null_fields = frozenset(
+        {
+            "requested_frontier",
+            "head_frontier",
+            "subject_frontier",
+            "projection_lag",
+            "projection_version",
+            "rebuild_state",
+            "coverage",
+            "import_status",
+            "closure_readiness",
+            "closure_state",
+            "credential_heuristic",
+            "review_mode",
+        }
+    )
+
+    protocol_version: Literal["0.1"]
+    schema_version: Literal["1.0.0"]
+    request_id: RequestIdWire
+    ok: Literal[True]
+    detail: Literal["brief"]
+    task_id: TaskIdWire
+    session_id: SessionIdWire
+    writer_id: WriterIdWire
+    view: Literal[
+        "advice",
+        "assignment",
+        "candidate_findings",
+        "compact",
+        "evidence",
+        "findings",
+        "history",
+        "obligations",
+        "operation",
+        "lineage",
+        "project",
+        "results",
+        "versions",
+    ]
+    requested_frontier: FrontierModel | None = None
+    head_frontier: FrontierModel | None = None
+    subject_frontier: FrontierModel | None = None
+    result_frontier: FrontierModel
+    projection_lag: CanonicalUInt64Wire | None = None
+    projection_version: VersionWire | None = None
+    rebuild_state: Literal["current", "rebuild_required", "rebuilding"] | None = None
+    page: StatusPage
+    coverage: CoverageModel | None = None
+    gaps: tuple[CodeWire, ...]
+    import_status: StatusImportStatusModel | None = None
+    closure_readiness: StatusClosureReadinessModel | None = None
+    closure_state: StatusClosureStateModel | None = None
+    privacy_projection: PrivacyProjectionModel
+    credential_heuristic: StatusCredentialHeuristicModel | None = None
+    review_mode: StatusReviewModeModel | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _route_status_page(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        source = cast(Mapping[object, object], value)
+        raw_page = source.get("page")
+        raw_view = source.get("view")
+        if raw_page is None or type(raw_view) is not str:
+            return cast(object, value)
+        page_type = _STATUS_PAGE_BY_VIEW.get(raw_view)
+        if page_type is None:
+            return cast(object, value)
+        routed = dict(source)
+        routed["page"] = page_type.model_validate(raw_page)
+        return routed
+
+    @model_validator(mode="after")
+    def _validate_status_brief_success(self) -> StatusBriefSuccessModel:
+        expected_type = _STATUS_PAGE_BY_VIEW[self.view]
+        if type(self.page) is not expected_type:
+            raise ValueError("status_view_page_mismatch")
+        _require_unique(self.gaps, limit=64)
+        _validate_model_against_schema(self, "status-result")
+        return self
+
+
+def _status_result_kind(value: object) -> str:
+    """Discriminate full, brief and failure status results (issue #1084)."""
+
+    if isinstance(value, Mapping):
+        source = cast(Mapping[object, object], value)
+        if source.get("ok") is False:
+            return "failure"
+        return "brief" if source.get("detail") == "brief" else "success"
+    if getattr(value, "ok", None) is False:
+        return "failure"
+    return "brief" if getattr(value, "detail", None) == "brief" else "success"
+
+
 type StatusResultBranch = Annotated[
-    StatusSuccessModel | OperationFailureModel, Field(discriminator="ok")
+    Annotated[StatusSuccessModel, Tag("success")]
+    | Annotated[StatusBriefSuccessModel, Tag("brief")]
+    | Annotated[OperationFailureModel, Tag("failure")],
+    Discriminator(_status_result_kind),
 ]
 
 
@@ -6988,6 +7211,11 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
         "/action_notices/*",
         ("action_id", "notice", "text"),
     )
+    # Issue #1084: a closed code and fixed repository text only.
+    + _prefix_leaf_patterns("/replay_notice", ("notice", "text"))
+    # Issue #1084: closed field names and a batch position the service writes, never content.
+    + ("/server_filled/request/*",)
+    + _prefix_leaf_patterns("/server_filled/drafts/*", ("fields/*", "indexes/*"))
 )
 
 # ADR-045: closed tokens, counts and service-minted ids only (no path, command text or prose).
@@ -7291,6 +7519,11 @@ _RESPOND_STRUCTURAL_POINTERS: Final = (
 _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
     _COMMON_SUCCESS_LEAVES
     + (
+        # Issue #1084: the brief detail marker and its closure state, closed tokens only.
+        "/closure_state/agent_actionable/*",
+        "/closure_state/blocking_conditions/*",
+        "/closure_state/state",
+        "/detail",
         "/gaps/*",
         "/projection_lag",
         "/projection_version",
@@ -7707,6 +7940,10 @@ _STATUS_OPERATION_STRUCTURAL_POINTERS: Final = (
         "/page/operation_kind",
         "/page/operation_request_id",
         "/page/outcome",
+        # Issue #1084: closed field names and batch positions the service filled for a publish.
+        "/page/server_filled/drafts/*/fields/*",
+        "/page/server_filled/drafts/*/indexes/*",
+        "/page/server_filled/request/*",
         # Nullable frontier objects are leaves when null and expand when present.
         "/page/result_frontier",
         # Issue #571 A2: service-derived structural progress; no provider or user content.
@@ -8205,12 +8442,14 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1630
+        len(result) != 1642
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,
-        # #1079 +2 admissible_verification, +1 closing_material_frontier
+        # #1079 +2 admissible_verification, +1 closing_material_frontier,
+        # #1084 +3 (publish server_filled), +3 (status operation server_filled),
+        # +4 (status brief: detail and closure_state), +2 (publish replay_notice)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

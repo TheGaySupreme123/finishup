@@ -96,25 +96,23 @@ finish a substantial change and want a final independent review.
 local checks already cover what changed; or you are reading or exploring.
 
 **How.** Publish one `decision_recorded` 1.1.0 draft with `review_mode: "ai_powered"`.
-`statement` and `rationale` say why in one line each; `authority` is your own actor id. Use a fresh
-`event_id` and the real `occurred_at`; the ids, timestamp and authority below are placeholders.
-Then omit `mode` on later checks. To go back to local checks, publish a new decision (fresh
-`event_id`) with `review_mode: "local"`. The complete request is the
+`statement` and `rationale` say why in one line each; `authority` is your own actor id (a
+placeholder below). Omit `event_id` and `occurred_at`: FinishUP fills them and names them in
+`server_filled`. Then omit `mode` on later checks. To go back to local checks, publish a new
+decision with `review_mode: "local"`. A body identical to one already recorded replays it and
+records nothing new, so to switch again later reword the decision or send a fresh `request_id`. The complete request is the
 [`#publish-work-decision`](request-templates.md#publish-work-decision) template's second body; its
 draft is:
 
 ```json
 {
-  "event_id": "evt_00000000-0000-4000-8000-000000000014",
   "schema": {"name": "decision_recorded", "version": "1.1.0"},
-  "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
   "payload": {
     "statement": "Turn on AI-powered review for the rest of this task.",
     "rationale": "Cross-module change that local checks cannot judge.",
     "authority": "harness:mcp-template",
     "review_mode": "ai_powered"
-  },
-  "artifact_refs": [], "evidence_refs": []
+  }
 }
 ```
 

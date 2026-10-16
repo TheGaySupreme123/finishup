@@ -9,6 +9,7 @@ import hmac
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import BaseModel
@@ -95,6 +96,7 @@ from finishup.ports.ledger import (
     ProjectionPosition,
     ProjectionQuery,
     ProjectionView,
+    ResultsProjectionFilter,
     SemanticProgressRecord,
 )
 from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
@@ -158,6 +160,7 @@ from finishup.protocol.models import (
     StatusProjectPageModel,
     StatusRecheckModel,
     StatusRequest,
+    StatusResultsFilterModel,
     StatusResultsPageModel,
     StatusSemanticProgressModel,
     StatusUndeclaredReferenceModel,
@@ -169,6 +172,7 @@ from finishup.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from finishup.protocol.publish_boilerplate import server_filled_from_json
 from finishup.protocol.redacted_values import validate_semantic_redacted_values
 
 __all__ = [
@@ -295,8 +299,14 @@ class StatusInternalResult:
     # ADR-049: the conversation's review mode, the owner's setting and the latest switch,
     # composed from the head projection and the owner's policy; ``None`` when not composed.
     review_mode: dict[str, JsonValue] | None = None
+    # Issue #1084: ``brief`` serializes the strict subset ``brief_status_body`` keeps.
+    detail: Literal["brief", "full"] = "full"
 
     def as_json(self) -> dict[str, JsonValue]:
+        full = self._full_json()
+        return brief_status_body(full) if self.detail == "brief" else full
+
+    def _full_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
         # subject-state digests) must be entirely absent from the internal body, never present as
         # explicit null. A blanket ``exclude_none`` would also drop required nullable keys such as
@@ -340,6 +350,79 @@ class StatusInternalResult:
             ),
             **({} if self.review_mode is None else {"review_mode": dict(self.review_mode)}),
         }
+
+
+# What a brief status body omits when it carries nothing the next step needs (issue #1084).
+_EMPTY_IMPORT_STATUS: Final[Mapping[str, JsonValue]] = MappingProxyType(
+    {
+        "pending_count": "0",
+        "terminal_count": "0",
+        "phase": None,
+        "report_evidence_id": None,
+        "source_identity_digest": None,
+    }
+)
+_ENFORCED_CREDENTIAL_HEURISTIC: Final[Mapping[str, JsonValue]] = MappingProxyType(
+    {"repository": "enforced", "machine_default": "enforced"}
+)
+_BRIEF_ALWAYS: Final = (
+    "protocol_version",
+    "schema_version",
+    "request_id",
+    "ok",
+    "task_id",
+    "session_id",
+    "writer_id",
+    "view",
+)
+
+
+def brief_status_body(full: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """Return the ``detail: brief`` subset of one full status success body (issue #1084).
+
+    Only omission, never a new value: a frontier equal to ``result_frontier`` is dropped, as are
+    projection metadata at their current/zero defaults, an empty import status and an enforced
+    credential filter. The compact view keeps ``coverage`` and the full ``closure_readiness``;
+    every other view keeps ``closure_state`` (readiness state, blocking conditions and the
+    agent-actionable tokens), which is what the next step needs from it. Status reads made
+    ~36% of the N6 trials' extra uncached input, and these envelope fields half of each page.
+    """
+
+    body: dict[str, JsonValue] = {key: full[key] for key in _BRIEF_ALWAYS}
+    body["detail"] = "brief"
+    result_frontier = full["result_frontier"]
+    for key in ("requested_frontier", "head_frontier", "subject_frontier"):
+        if full.get(key) != result_frontier:
+            body[key] = full[key]
+    body["result_frontier"] = result_frontier
+    if full.get("projection_lag") != "0" or full.get("rebuild_state") != "current":
+        for key in ("projection_lag", "projection_version", "rebuild_state"):
+            body[key] = full[key]
+    body["page"] = full["page"]
+    body["gaps"] = full["gaps"]
+    readiness = cast(Mapping[str, JsonValue], full["closure_readiness"])
+    if full["view"] == "compact":
+        body["coverage"] = full["coverage"]
+        body["closure_readiness"] = readiness
+    else:
+        body["closure_state"] = {
+            key: readiness[key]
+            for key in ("blocking_conditions", "state", "agent_actionable")
+            if key in readiness
+        }
+    import_status = full.get("import_status")
+    if import_status is not None and dict(cast(Mapping[str, JsonValue], import_status)) != dict(
+        _EMPTY_IMPORT_STATUS
+    ):
+        body["import_status"] = import_status
+    credential = full.get("credential_heuristic")
+    if credential is not None and dict(cast(Mapping[str, JsonValue], credential)) != dict(
+        _ENFORCED_CREDENTIAL_HEURISTIC
+    ):
+        body["credential_heuristic"] = credential
+    if "review_mode" in full:
+        body["review_mode"] = full["review_mode"]
+    return body
 
 
 async def _task_review_mode(
@@ -785,6 +868,13 @@ def _port_filter(value: StatusFilter | None) -> ProjectionFilter | None:
             value.actor_id,
             None if value.after_sequence is None else int(value.after_sequence),
         )
+    if type(value) is StatusResultsFilterModel:
+        # Issue #1084: the filters agents already sent with view=results.
+        return ResultsProjectionFilter(
+            None if value.after_sequence is None else int(value.after_sequence),
+            value.actor_id,
+            value.author,
+        )
     if type(value) is StatusOperationFilterModel:
         # Operation recovery is ledger-operation keyed, not a projection row query.
         raise ValueError("status_filter_invalid")
@@ -1140,24 +1230,26 @@ def _operation_page_from_record(
         )
         subject = cast(dict[str, object], source["subject_frontier"])
         result = cast(dict[str, object], source["result_frontier"])
-        return StatusOperationPageModel.model_validate(
-            {
-                "operation_request_id": operation_request_id,
-                "found": True,
-                "state": "complete",
-                "operation_kind": "publish_work",
-                "outcome": "accepted",
-                "subject_frontier": {
-                    "sequence": cast(str, subject["sequence"]),
-                    "head_digest": cast(str, subject["head_digest"]),
-                },
-                "result_frontier": {
-                    "sequence": cast(str, result["sequence"]),
-                    "head_digest": cast(str, result["head_digest"]),
-                },
-                "accepted_events": accepted,
-            }
-        )
+        published: dict[str, JsonValue] = {
+            "operation_request_id": operation_request_id,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "publish_work",
+            "outcome": "accepted",
+            "subject_frontier": {
+                "sequence": cast(str, subject["sequence"]),
+                "head_digest": cast(str, subject["head_digest"]),
+            },
+            "result_frontier": {
+                "sequence": cast(str, result["sequence"]),
+                "head_digest": cast(str, result["head_digest"]),
+            },
+            "accepted_events": accepted,
+        }
+        if "server_filled" in source:
+            # Issue #1084: the values the service filled, stored with the operation.
+            published["server_filled"] = server_filled_from_json(source["server_filled"]).as_json()
+        return StatusOperationPageModel.model_validate(published)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("status_operation_result_invalid") from exc
 
@@ -2626,6 +2718,7 @@ async def execute_status(
             item_authorship,
             leaf_authorship=leaf_authorship,
             review_mode=review_mode,
+            detail="brief" if request.detail == "brief" else "full",
         )
     except (StatusFault, TypeError, ValueError) as exc:
         # The request passed schema validation and every caller-shape rejection above is explicit,

@@ -69,21 +69,24 @@ def _repair_discriminator(rejected: _Request) -> _Request:
 
 def _missing_envelope_keys() -> _Request:
     draft = _example_draft()
-    del draft["artifact_refs"]
-    del draft["evidence_refs"]
+    draft.pop("artifact_refs", None)
+    draft.pop("evidence_refs", None)
     return _publish_request([draft])
 
 
-def _repair_envelope_keys(rejected: _Request) -> _Request:
-    drafts = cast(list[JsonValue], rejected["event_drafts"])
-    draft = dict(cast(Mapping[str, JsonValue], drafts[0]))
-    draft["artifact_refs"] = []
-    draft["evidence_refs"] = []
-    return _publish_request([draft])
+def test_omitted_fillable_envelope_keys_are_admitted() -> None:
+    """Issue #1084: the service fills omitted envelope keys, so their absence is no rejection."""
+
+    PublishWorkRequestModel.model_validate(_missing_envelope_keys())
+    draft = _example_draft()
+    assert set(draft) == {"schema", "payload"}
+    PublishWorkRequestModel.model_validate(_publish_request([draft]))
 
 
 def _stub_draft() -> _Request:
-    return _publish_request([{"event_id": _example_draft()["event_id"], "payload": {}}])
+    return _publish_request(
+        [{"event_id": "evt_00000000-0000-4000-8000-000000000001", "payload": {}}]
+    )
 
 
 def _repair_stub_draft(rejected: _Request) -> _Request:
@@ -125,16 +128,10 @@ _AUTHORING_MATRIX: Final[
     ),
     (
         "publish_work",
-        "missing envelope keys",
-        _missing_envelope_keys,
-        ("event_id", "schema", "occurred_at", "causal_parents", "artifact_refs", "evidence_refs"),
-        _repair_envelope_keys,
-    ),
-    (
-        "publish_work",
         "stub draft with only an id and a payload",
         _stub_draft,
-        ("schema.name", "occurred_at", "causal_parents", "artifact_refs", "evidence_refs"),
+        # Issue #1084: the service fills every other envelope key, so only the family is named.
+        ("schema.name", "schema and payload"),
         _repair_stub_draft,
     ),
     (

@@ -241,7 +241,8 @@ _COMMON_MODEL_SPECS: tuple[tuple[str, str, str | None], ...] = (
 
 _REQUEST_MODEL_SPECS: tuple[tuple[str, str], ...] = (
     ("StartRequestModel", "operations/start-request-1.1.0.schema.json"),
-    ("PublishWorkRequestModel", "operations/publish-work-request-1.1.0.schema.json"),
+    # Issue #1084: request_id and expected_frontier are optional on the current 1.2.0 contract.
+    ("PublishWorkRequestModel", "operations/publish-work-request-1.2.0.schema.json"),
     ("CheckRequestModel", "operations/check-request-1.1.0.schema.json"),
     ("RespondRequestModel", "operations/respond-request-1.1.0.schema.json"),
     ("StatusRequestModel", "operations/status-request-1.2.0.schema.json"),
@@ -318,16 +319,17 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
         None,
     ): 442,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
     # #1047 +1 follow_up_round; ADR-049 +4 review_mode
-    ("publish_work", None): 64,
+    ("publish_work", None): 69,  # #1084 +3 server_filled, +2 replay_notice
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
     (
         "status",
         None,
-    ): 132,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
+    ): 136,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
     # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode;
-    # #1079 +2 admissible_verification, +1 closing_material_frontier
+    # #1079 +2 admissible_verification, +1 closing_material_frontier;
+    # #1084 +4 brief detail and closure_state
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
@@ -337,7 +339,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "history"): 64,  # #1047 +1: review_input_manifest/follow_up_round
     ("status", "lineage"): 17,
     ("status", "obligations"): 42,  # #1027: in_current_plan +1; W2-A +2 closure_class/basis
-    ("status", "operation"): 48,
+    ("status", "operation"): 51,  # #1084 +3 server_filled
     ("status", "project"): 68,
     ("status", "results"): 11,
     ("status", "versions"): 13,
@@ -2584,11 +2586,11 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1602
+        len(derived_patterns) == 1614
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification,
-    # +1 closing_material_frontier
+    # +1 closing_material_frontier, #1084 +10 server_filled and brief status
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2598,8 +2600,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1630  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
-        # +1 closing_material_frontier
+        len(rules) == 1642  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        # +1 closing_material_frontier; #1084 +10 server_filled and brief status
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification
@@ -2611,7 +2613,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1602  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    assert len(registry_patterns) == 1614  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification
     assert registry_patterns == derived_patterns
 
@@ -2958,6 +2960,18 @@ def _derived_result_success_patterns(
     derived.update(("status", None, pattern) for pattern in common_patterns)
 
     status_definitions = _schema_mapping(status_document.json_schema.get("$defs"))
+    # Issue #1084: the ``detail: brief`` body is a second status success branch; its envelope
+    # leaves (``detail``, ``closure_state``) must classify like the full body's.
+    brief = _schema_mapping(status_definitions.get("brief_success"))
+    brief_properties = dict(_schema_mapping(brief.get("properties")))
+    if brief_properties.pop("page", None) is None:
+        raise AssertionError("status_brief_page_property_missing")
+    brief_without_page: dict[str, JsonValue] = dict(brief)
+    brief_without_page["properties"] = cast(JsonValue, brief_properties)
+    derived.update(
+        ("status", None, pattern)
+        for pattern in _walk_schema_leaf_patterns(catalog, status_document, brief_without_page)
+    )
     for view, definition_name in _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST:
         page_definition = status_definitions.get(definition_name)
         if page_definition is None:
@@ -3328,8 +3342,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_040
-    )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_095
+    )  # #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
+    # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
     # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),
     # tb4n5 +2 (read_guidance page-zero sections: the item and its uri), ADR-049 +9

@@ -80,8 +80,11 @@ def test_the_switch_draft_is_never_reused_verbatim() -> None:
     """Review round 1 (P3): placeholders are named, and switching back is a new decision."""
 
     section = _section()
-    assert "Use a fresh `event_id` and the real `occurred_at`" in section
-    assert 'publish a new decision (fresh `event_id`) with `review_mode: "local"`' in section
+    # Issue #1084: FinishUP fills the ids and time; an identical body replays, so a repeated
+    # switch must differ or carry a fresh request_id.
+    assert "Omit `event_id` and `occurred_at`: FinishUP fills them" in section
+    assert 'publish a new decision with `review_mode: "local"`' in section
+    assert "replays it and records nothing new" in section
     assert "a `final_review: true` check that omits `mode` runs that review" in section
     assert "mode: semantic_if_configured" not in section
     # Review round 3: switching back after the closing review makes it stale.

@@ -35,6 +35,7 @@ from finishup.ports.integrations import FINISHUP_WORKFLOW_TOOL_NAMES
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.ids import IdKind, is_valid_id
+from finishup.protocol.publish_boilerplate import derived_publish_request_id
 
 _WORKFLOW = frozenset(FINISHUP_WORKFLOW_TOOL_NAMES)
 # Cursor's ``mcp_server_name`` for the external and the plugin-bundled server, under the current
@@ -207,6 +208,22 @@ def proposed_obligations(request: Mapping[str, JsonValue] | None) -> list[str]:
             if isinstance(ref, str) and is_valid_id(IdKind.OBLIGATION, ref):
                 refs.add(ref)
     return sorted(refs)
+
+
+def _request_identity(tool: str | None, request: Mapping[str, JsonValue] | None) -> object:
+    """The request id a tracked write runs under, including one the service derives (#1084).
+
+    A ``publish_work`` body may omit ``request_id``; the service then derives it from the body,
+    and this computes the same id so the pending ticket, the bridge's error envelope and the
+    service's result all name one operation.
+    """
+
+    if request is None:
+        return None
+    rid = request.get("request_id")
+    if rid is None and tool == "publish_work":
+        return derived_publish_request_id(request)
+    return rid
 
 
 def clear_pending(scope: GateScope, rid: str) -> None:
@@ -436,7 +453,7 @@ def handle_startup_gate(
                         else:
                             if scope is None:
                                 scope = GateScope.fresh()
-                            rid = None if request is None else request.get("request_id")
+                            rid = _request_identity(tool, request)
                             if isinstance(rid, str) and is_valid_id(IdKind.REQUEST, rid):
                                 if len(scope.pending) >= 32 and rid not in scope.pending:
                                     # Preserve every ambiguous write identity. The
@@ -468,7 +485,7 @@ def handle_startup_gate(
                 result = _result(
                     payload.get("result_json") if host == "cursor" else payload.get("tool_response")
                 )
-                rid = None if request is None else request.get("request_id")
+                rid = _request_identity(tool, request)
                 # Cursor afterMCPExecution may omit tool_input. The service's
                 # echoed request id still needs the exact pre-call ticket.
                 if rid is None and result is not None:

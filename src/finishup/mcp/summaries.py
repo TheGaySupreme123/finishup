@@ -2848,10 +2848,13 @@ _START_FRONTIER_NEXT: Final = (
     " (next_request_template carries it); no status read is needed for it."
 )
 _START_FRONTIER_NEXT_SHORT: Final = "Send this frontier as your first plan's expected_frontier."
+# Issue #1084: the next write may omit expected_frontier (the latest mode). The returned frontier
+# is the compare-and-set guard for a caller that wants one; neither needs a status read.
 _WRITE_FRONTIER_NEXT: Final = (
-    "Send this frontier as the next write's expected_frontier; no status read is needed for it."
+    "Next write: omit expected_frontier to publish on the latest frontier, or send this one to "
+    "refuse a concurrent change; no status read is needed for either."
 )
-_WRITE_FRONTIER_NEXT_SHORT: Final = "Send it as the next expected_frontier."
+_WRITE_FRONTIER_NEXT_SHORT: Final = "Next write may omit expected_frontier."
 
 
 def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
@@ -2869,6 +2872,81 @@ def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
     return None
 
 
+_FILLED_REQUEST_FIELDS: Final = frozenset({"expected_frontier", "request_id"})
+_FILLED_DRAFT_FIELDS: Final = frozenset(
+    {"artifact_refs", "causal_parents", "event_id", "evidence_refs", "occurred_at"}
+)
+_EVENT_ID: Final = re.compile(
+    r"^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
+_MAX_RENDERED_MINTED_EVENT_IDS: Final = 8
+
+
+def _server_filled_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Name the values the service filled and the event ids it minted (issue #1084).
+
+    Closed field names and re-validated service-minted ``evt_`` ids only. The minted ids are the
+    ones a later draft cites (``causal_parents``); the structured result carries all of them.
+    """
+
+    filled = source.get("server_filled")
+    if not isinstance(filled, Mapping):
+        return None
+    record = cast(Mapping[str, JsonValue], filled)
+    request = record.get("request")
+    drafts = record.get("drafts")
+    if not isinstance(request, list | tuple) or not isinstance(drafts, list | tuple):
+        return None
+    request_names = [
+        name
+        for name in cast(Sequence[JsonValue], request)
+        if type(name) is str and name in _FILLED_REQUEST_FIELDS
+    ]
+    field_names: set[str] = set()
+    minted: list[int] = []
+    for row in cast(Sequence[JsonValue], drafts):
+        if not isinstance(row, Mapping):
+            return None
+        entry = cast(Mapping[str, JsonValue], row)
+        indexes, fields = entry.get("indexes"), entry.get("fields")
+        if not isinstance(indexes, list | tuple) or not isinstance(fields, list | tuple):
+            return None
+        names = {
+            name
+            for name in cast(Sequence[JsonValue], fields)
+            if type(name) is str and name in _FILLED_DRAFT_FIELDS
+        }
+        field_names |= names
+        for index in cast(Sequence[JsonValue], indexes):
+            if type(index) is not str or not index.isdigit():
+                return None
+            if "event_id" in names:
+                minted.append(int(index))
+    minted.sort()
+    accepted = source.get("accepted_events")
+    if accepted is None:
+        accepted = source.get("would_accept")
+    rows = cast(Sequence[JsonValue], accepted) if isinstance(accepted, list | tuple) else ()
+    ids: list[str] = []
+    for position in minted[:_MAX_RENDERED_MINTED_EVENT_IDS]:
+        row = rows[position] if position < len(rows) else None
+        value = (
+            cast(Mapping[str, JsonValue], row).get("event_id") if isinstance(row, Mapping) else None
+        )
+        if type(value) is str and _EVENT_ID.fullmatch(value) is not None:
+            ids.append(f"[{position}] {value}")
+    hidden = len(minted) - len(ids)
+    described = ", ".join(sorted(set(request_names) | field_names, key=str.encode))
+    if not described:
+        return None
+    text = f"service-filled: {described};"
+    if ids:
+        text += (
+            " minted event ids: " + ", ".join(ids) + (f" (+{hidden})" if hidden > 0 else "") + ";"
+        )
+    return _opt(text, f"service-filled: {described};", priority=_P_IDENTITY)
+
+
 def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     outcome = _safe_token(source.get("outcome"), fallback="recorded")
     identity = _identity_clause(source)
@@ -2877,8 +2955,35 @@ def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     if accepted is not None:
         parts.append(_req(f"accepted events: {_item_count(accepted)};"))
     parts.append(_req(f"{identity}{_frontier_clause(source)}."))
+    parts.append(_replay_notice_part(source))
+    parts.append(_server_filled_part(source))
     parts.append(_frontier_next_part(source))
     return _compose(parts)
+
+
+def _replay_notice_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Say that an identical body replayed and appended nothing (issue #1084).
+
+    Rendered only when the closed code and the fixed repository text both match exactly.
+    """
+
+    from finishup.protocol.models import PUBLISH_REPLAY_NOTICE_TEXT
+
+    notice = source.get("replay_notice")
+    if not isinstance(notice, Mapping):
+        return None
+    entry = cast(Mapping[str, JsonValue], notice)
+    if (
+        entry.get("notice") != "identical_body_replayed"
+        or entry.get("text") != PUBLISH_REPLAY_NOTICE_TEXT
+    ):
+        return None
+    return _opt(
+        PUBLISH_REPLAY_NOTICE_TEXT,
+        "Identical body replayed; nothing new appended. Reword it or send a fresh request_id to "
+        "record it again.",
+        priority=_P_ACTION,
+    )
 
 
 _OBLIGATION_ID: Final = re.compile(

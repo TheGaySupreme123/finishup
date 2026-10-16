@@ -47,6 +47,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [047](ADR-047-inspection-check-and-operating-card.md) | The read-only inspection check (`mode: inspect`): what is left and why, what hooks observed, whether evidence links to declared items; no mandatory status read or dry run; an operating card instead of a startup reading list |
 | [048](ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md) | FinishUP rebrand: identifiers frozen under protocol 0.1, legacy Yoetz spellings recognized beside the new ones, the transitional `yoetz` distribution and its one-release alias window |
 | [049](ADR-049-per-conversation-review-mode-and-hybrid-default.md) | Per-task review mode: every task starts local, the agent turns on AI-powered review for a task with one `decision_recorded` 1.1.0 switch, the owner's `conversation_review` setting (hybrid recommended, local only, owner approval, every task), and three first-run answers on the policy route |
+| [050](ADR-050-server-filled-publish-boilerplate-and-brief-status.md) | Server-filled publish boilerplate: body-derived `request_id`, minted draft event ids, service-clock `occurred_at`, the `latest` frontier mode, copied mirrors and canonicalized sets, all named in `server_filled`; brief status detail and the results filter |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.

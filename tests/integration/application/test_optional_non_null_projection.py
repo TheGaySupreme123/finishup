@@ -95,8 +95,10 @@ from finishup.protocol.models import (
     StartSuccessModel,
     StatusAdviceItemModel,
     StatusBlockedObligationModel,
+    StatusBriefSuccessModel,
     StatusCheckCauseModel,
     StatusClosureReadinessModel,
+    StatusClosureStateModel,
     StatusCompactItemModel,
     StatusCompactObligationModel,
     StatusEvidenceItemModel,
@@ -292,8 +294,34 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (PublishWorkAcceptedEventModel, frozenset({"summary"})),
     # #985 publish notices and blocker confirmation, absent when nothing applies; tb4n5 action
     # notices, absent when every action the batch recorded has a result naming it.
-    (PublishWorkSuccessModel, frozenset({"blocker_notices", "action_notices"})),
-    (PublishWorkDryRunModel, frozenset({"blocker_notices", "action_notices"})),
+    # Issue #1084: server_filled is absent for a complete caller body.
+    (
+        PublishWorkSuccessModel,
+        frozenset({"blocker_notices", "action_notices", "server_filled", "replay_notice"}),
+    ),
+    (PublishWorkDryRunModel, frozenset({"blocker_notices", "action_notices", "server_filled"})),
+    # Issue #1084: the brief status body omits whatever it does not need, and its closure state
+    # keeps readiness's own optional checklist leaves.
+    (
+        StatusBriefSuccessModel,
+        frozenset(
+            {
+                "requested_frontier",
+                "head_frontier",
+                "subject_frontier",
+                "projection_lag",
+                "projection_version",
+                "rebuild_state",
+                "coverage",
+                "import_status",
+                "closure_readiness",
+                "closure_state",
+                "credential_heuristic",
+                "review_mode",
+            }
+        ),
+    ),
+    (StatusClosureStateModel, frozenset({"state", "agent_actionable"})),
     (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
     (StatusCheckCauseModel, frozenset({"tool"})),
     (PublicErrorModel, frozenset({"safe_details"})),
@@ -438,6 +466,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "admission",
                 "semantic_withheld_items",
                 "semantic_redacted_values",
+                "server_filled",
             }
         ),
     ),
@@ -473,6 +502,7 @@ _REQUEST_SIDE_OPTIONAL_NON_NULL = frozenset(
         "StatusEvidenceFilterModel",
         "StatusFindingsFilterModel",
         "StatusHistoryFilterModel",
+        "StatusResultsFilterModel",
         "ReadGuidanceRequest",
         "ReadGuidanceRequestModel",
         "StatusObligationsFilterModel",
@@ -1916,6 +1946,21 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     for model in ("PublishWorkSuccessModel", "PublishWorkDryRunModel"):
         covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
         covered[model, "action_notices"] = "test_publish_accepted_events_omit_unset_summary"
+        covered[model, "server_filled"] = "test_server_filled_and_brief_fields_omit_when_unset"
+    covered["PublishWorkSuccessModel", "replay_notice"] = (
+        "test_an_explicit_request_id_replay_carries_no_replay_notice"
+    )
+    covered["StatusOperationPageModel", "server_filled"] = (
+        "test_server_filled_and_brief_fields_omit_when_unset"
+    )
+    for field in StatusBriefSuccessModel.optional_non_null_fields:
+        covered["StatusBriefSuccessModel", field] = (
+            "test_brief_status_is_a_strict_subset_of_the_full_body"
+        )
+    for field in StatusClosureStateModel.optional_non_null_fields:
+        covered["StatusClosureStateModel", field] = (
+            "test_server_filled_and_brief_fields_omit_when_unset"
+        )
     for field in ("confirmation", "confirmation_event_id"):
         covered["StatusBlockedObligationModel", field] = (
             "test_blocked_obligation_omits_an_unset_confirmation"
@@ -2074,6 +2119,28 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         f"unset-projection coverage drifted: missing={expected - set(covered)} "
         f"extra={set(covered) - expected}"
     )
+
+
+def test_server_filled_and_brief_fields_omit_when_unset() -> None:
+    """Issue #1084: the new optional leaves are omitted when unset and refused as null."""
+
+    state = StatusClosureStateModel.model_validate({"blocking_conditions": []})
+    assert state.model_dump(mode="json", exclude_unset=True) == {"blocking_conditions": []}
+    with pytest.raises(ValidationError):
+        StatusClosureStateModel.model_validate({"blocking_conditions": [], "state": None})
+    page = StatusOperationPageModel.model_validate(
+        {"operation_request_id": protocol_id("req_", 1084), "found": False, "state": "absent"}
+    )
+    assert "server_filled" not in page.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError):
+        StatusOperationPageModel.model_validate(
+            {
+                "operation_request_id": protocol_id("req_", 1084),
+                "found": False,
+                "state": "absent",
+                "server_filled": None,
+            }
+        )
 
 
 def test_review_mode_omits_unset_reason_and_switch() -> None:

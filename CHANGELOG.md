@@ -333,6 +333,14 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 ### Changed
 
+- **Agents write each fact once.** A `publish_work` request may leave out its request id, its
+  frontier, and each event's id, time, empty lists and repeated references. FinishUP fills them,
+  orders reference lists for you, and names every filled value in the result's `server_filled` and
+  in the operation record. Sending the same request again after a lost answer is still the safe
+  retry, and a request that sends every value behaves exactly as before. Agent `status` reads are
+  brief by default; `detail: full` returns the complete body, `limit` defaults to 20, and
+  `view=results` accepts the filters agents already sent it (#1084, ADR-050).
+
 - **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
   advice packet to your configured reviewer where every task uses AI-powered review and your
   privacy policy allows unattended requests (#1019). That is the "AI-powered review on every task"

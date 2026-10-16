@@ -129,7 +129,7 @@ from finishup.protocol.guidance_uris import (
     GUIDANCE_TOPIC_URIS,
     canonical_guidance_uri,
 )
-from finishup.protocol.ids import IdKind, new_id, safe_request_id_from
+from finishup.protocol.ids import IdKind, is_valid_id, new_id, safe_request_id_from
 from finishup.protocol.models import (
     CheckRequest,
     CheckResult,
@@ -149,6 +149,7 @@ from finishup.protocol.models import (
     StatusResult,
     public_model_to_wire,
 )
+from finishup.protocol.publish_boilerplate import derived_publish_request_id
 from finishup.protocol.recovery import (
     READ_ONLY_CHECK_MODES,
     REASON_REMEDIES,
@@ -2426,7 +2427,7 @@ async def _timeout_operation_state(
     failure is ``UNKNOWN``: the write outcome stays unknown and nothing is inferred from silence.
     """
 
-    envelope = _publish_envelope_fields(arguments)
+    envelope = _publish_envelope_fields(arguments, request_id)
     if envelope is None:
         return None
     op_request_id, session_id, writer_id, actor, client = envelope
@@ -2543,6 +2544,13 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             operation=operation,
             check_mode=check_mode,
         )
+    if request_id is None:
+        # Issue #1084: a publish body may omit ``request_id``; the validated model carries the id
+        # derived from that body, which is the id the service records and replays under. Every
+        # error envelope and the timeout probe below then name the operation the caller owns.
+        derived: object = getattr(request, "request_id", None)
+        if type(derived) is str and is_valid_id(IdKind.REQUEST, derived):
+            request_id = derived
     # Deadline settings belong to this bridge, so a compatible already-running service cannot
     # validate them for us. Refuse disagreements before on-demand discovery can spawn or replace
     # a service; do not silently choose a default or an all-tools override (ADR-048).
@@ -2726,14 +2734,17 @@ async def dispatch_start(
 
 def _publish_envelope_fields(
     arguments: Mapping[str, object],
+    derived_request_id: str | None = None,
 ) -> tuple[str, str, str, Mapping[str, object], Mapping[str, object]] | None:
     """Return ``(request_id, session_id, writer_id, actor, client)`` when the envelope is complete.
 
     Recovery is keyed only on these fields. Event drafts are intentionally ignored so a body that
     fails schema validation can still reach the operation-identity recovery path.
+    ``derived_request_id`` is the id a *validated* body that omitted ``request_id`` derives
+    (issue #1084); a body that failed validation has none, and none was ever committed under it.
     """
 
-    request_id = safe_request_id_from(arguments)
+    request_id = safe_request_id_from(arguments) or derived_request_id
     session_id = arguments.get("session_id")
     writer_id = arguments.get("writer_id")
     actor = arguments.get("actor")
@@ -2976,7 +2987,11 @@ async def _publish_recovery_from_envelope(
 async def dispatch_publish_work(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
 ) -> types.CallToolResult:
-    request_id = safe_request_id_from(arguments)
+    # Issue #1084: a body without ``request_id`` runs under the id derived from it, so even a
+    # refusal names the operation a resend of the same body would be (and a host hook tracking
+    # that write can match it). Envelope-first recovery below still keys only on a caller id: an
+    # invalid sparse body can never have committed under its derived id.
+    request_id = safe_request_id_from(arguments) or derived_publish_request_id(arguments)
     try:
         _rpc_deadline_ms("publish_work")
     except ConfigError:
@@ -3079,6 +3094,11 @@ async def dispatch_respond(
 async def dispatch_status(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
 ) -> types.CallToolResult:
+    # Issue #1084: an agent's status read is brief unless it names a detail. ``detail: full``
+    # returns the complete body; the bridge's own recovery reads build their requests directly
+    # and keep the full body.
+    if "detail" not in arguments:
+        arguments = {**arguments, "detail": "brief"}
     return await _dispatch(
         arguments,
         StatusRequest,
