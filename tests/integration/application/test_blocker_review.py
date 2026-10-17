@@ -807,13 +807,20 @@ async def test_pretrain_blocker_question_requires_a_challenge_on_the_main_delive
     question = case.question_set[-1]
     golden = cast(Mapping[str, Any], strict_json_parse(_PRETRAIN_GOLDEN.read_bytes()))
     # The golden is recorded tb4 evidence from before the rename (ADR-048) and stays byte-identical;
-    # the question differs from it only in the product name and the marker spelling.
+    # the question differs from it only in the product name, the marker spelling and the sentence
+    # issue #1082 puts ahead of the blocker instruction.
     assert question == (
         cast(str, golden["question_template"])
         .replace("<decision>", decision)
         .replace("<obligation>", obligation)
         .replace("yoetz-blocker:", "finishup-blocker:")
         .replace("Yoetz or this review", "FinishUP or this review")
+        .replace(
+            "For each blocker, first quote",
+            "A blocker's kind and the agent's account of it are its claim, not evidence that an"
+            " authority, a dependency or data is missing (issue #1082). For each blocker, first"
+            " quote",
+        )
     )
     assert question.endswith(BLOCKER_REVIEW_INSTRUCTION)
     assert "You must challenge it" in question
