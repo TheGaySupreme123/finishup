@@ -2553,17 +2553,48 @@ native Windows is not claimed.
 
 ### Closing currency and observation replay (PR #1080)
 
-The shared host classifier recognizes non-setting `date -u`, ordinary `rg`, bounded numeric
-`sed -n` print ranges, and FinishUP workflow CLI calls with known non-writing verbs/options as
-read-only closure traffic. Output-path and unknown options stay material. Original executable
-spelling survives wrapper/compound parsing; arbitrary `bin` paths and environment overrides do not
-inherit a trusted utility identity. `nohup` stays material because it can create `nohup.out`.
-Observed `git status` stays material: later config inspection cannot establish its execution-time
-state, and disabling only fsmonitor/hooks still permits configured clean filters. Safely exempting
-ordinary status requires execution-time evidence beyond this change.
-A runtime workspace write still re-arms closing review, as do real edits and review-mode switches.
-Unknown commands remain material, with an explicit explanation that FinishUP could not establish
-that they were read-only. Receipt, work-close and lifecycle records do not re-arm review.
+Closing-review currency follows what a command did to the workspace, never its text (owner
+decision, PR #1080 round 5; ADR-033). Under the ordinary observation profile, the Cursor
+`preToolUse` and `postToolUse` hooks fingerprint the workspace around every `Shell` call and every
+other tool except FinishUP's own, native reads, edits and planning or web tools, and the post
+envelope carries `workspace_effect`. A call without its `preToolUse` pass, or whose result states no
+outcome, stays material. The structural profile (`afterFileEdit`, `afterMCPExecution`) observes no
+shell calls.
+An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a FinishUP CLI read) does not
+re-arm the closing review; a command that changed the workspace does, and so does one whose effect
+FinishUP could not establish, which the Stop text says. A command that backgrounds or detaches a
+process (`cmd &`, `nohup`, `setsid`, `disown`) is never established, because it may write after the
+call ends. Round 6: neither is a call whose exit leaves a process it started still running in the
+project (a launcher whose new-session child keeps working, with no background word in its text):
+before comparing, the post-call hook reads the process table (`libproc` on macOS, `/proc` on Linux
+and WSL 2) for a process of the same user that started during the call, is no longer parented by
+the host, and has its working directory or a file open for writing in the project; one found, or a
+process table that cannot be read, makes the call unverified. A directory that gains or loses an
+entry while it is being compared does too. A pre-call snapshot that could not finish before the
+host stops waiting is never stored, and the 0.75 s bound covers the whole pass, hashing included.
+Verification runs (test, build, lint and
+typecheck runners, and the task's requested commands) and package installs stay material whatever
+the workspace shows. The workspace is everything under the project root, ignored files included;
+inside VCS metadata only the internal churn (objects, refs, reflogs, the index and lock files) is
+skipped, so `git status`, a commit or a branch stays unchanged while a `.git/config` or hook edit
+counts; `node_modules`, `.venv`/`venv`, `.tox`/`.nox` and tool caches are compared at their first
+level (files by content, subdirectories by identity); `__pycache__` bytecode is skipped but any
+other file there counts; FinishUP's saved receipts and state are skipped. A task that declares a
+delivery inside the project where the comparison does not reach it (a VCS store such as
+`.git/objects` or a skipped bookkeeping file such as `.git/HEAD`, below the first level of a
+dependency environment or tool cache, `__pycache__` bytecode, a saved receipt) gets no unchanged
+command; a declared `.git/config`, `.git/hooks/*` or `node_modules/x.js` is compared and does not.
+Effects outside the root (databases, `/tmp`, the network, a deliverable path outside the root,
+judged against the task's absolute `workspace_ref`) are out of scope, as before.
+`finishup observe status` names a degraded comparison once as a `workspace_fingerprint_<reason>`
+diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`, `store_unusable`,
+`process_table_unreadable`); a call
+without its pre-call snapshot or still running is recorded on its result as `(workspace
+unverified)` instead. A repeated delivery of the same call that states another fact is kept as an
+annotation under the call, and `changed` or `unavailable` outweighs `unchanged` (round 6). Real
+edits and review-mode switches still re-arm; receipt,
+work-close and lifecycle records do not. The behavior is the same on macOS, Linux and WSL 2;
+native Windows is not claimed.
 
 Call-keyed hook/stream overlap requires an agreeing committed action core and checks reused
 evidence against its original causal action/result association. An evidence-only collision cannot

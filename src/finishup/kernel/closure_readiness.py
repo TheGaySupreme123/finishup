@@ -80,6 +80,7 @@ from finishup.kernel.gap_effect import (
     gap_base_code,
     unclassified_marker,
 )
+from finishup.kernel.later_material import WorkspaceEffects, workspace_effects
 from finishup.kernel.observed_failures import observed_event_ids_from_records
 from finishup.kernel.plan_drift import PLAN_DRIFT_GAPS
 from finishup.kernel.plan_scope import current_plan_scope
@@ -660,13 +661,17 @@ def _review_mode_undeliverable(payload: CheckRecordedPayload) -> bool:
 
 
 def _closing_delta_after(
-    check: LedgerRecord, records: tuple[LedgerRecord, ...], state: ProjectionState
+    check: LedgerRecord,
+    records: tuple[LedgerRecord, ...],
+    state: ProjectionState,
+    effects: WorkspaceEffects,
 ) -> bool:
     """Whether a material task or verification change was recorded after *check*."""
 
     sequence = check.ledger.ingestion_sequence
     return any(
-        later.ledger.ingestion_sequence > sequence and closing_review_delta(later, state)
+        later.ledger.ingestion_sequence > sequence
+        and closing_review_delta(later, state, effects=effects)
         for later in records
     )
 
@@ -719,11 +724,12 @@ def _closing_review_facts(
     deferred = bool(checks) and _review_deferred(checks[-1])
     newest_coordinator_failure = False
     first = True
+    effects = workspace_effects(records, state)
     for record in reversed(records):
         payload = record.payload
         if record.schema.name != "check_recorded" or type(payload) is not CheckRecordedPayload:
             continue
-        stale = _closing_delta_after(record, records, state)
+        stale = _closing_delta_after(record, records, state, effects)
         is_newest = first
         first = False
         if is_newest and stale:

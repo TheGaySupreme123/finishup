@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import threading
@@ -11751,6 +11752,13 @@ class LocalObservationStore:
                 _rotate_content_capture_epoch(state)
             state.consent = next_consent
             self._save(command.workspace_commitment, state)
+            # Revoking observation also removes the workspace's before/after fingerprint
+            # snapshots (keyed path and content digests only; PR #1080).
+            from finishup.adapters.workspace_fingerprint import workspace_fingerprint_dir
+
+            fingerprints = workspace_fingerprint_dir(self._root, command.workspace_commitment)
+            if fingerprints is not None and fingerprints.is_dir() and not fingerprints.is_symlink():
+                shutil.rmtree(fingerprints, ignore_errors=True)
             return self._status_unlocked(command.workspace_commitment)
 
     def batched(self, workspace_commitment: str) -> _ObservationBatch:

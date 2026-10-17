@@ -1148,18 +1148,201 @@ The owning gap-effect table classifies this code under G13 as a standing limitat
 bounding on both local and AI-powered receipt routes. It adds one recorded code to the
 unreleased classification version `8` (222 total rows including readiness-only tokens).
 Check text uses a fixed limitation sentence; status and receipt pairings name obligation ids.
+It is also a proof-tolerated code for both local and AI-powered findings: it says nothing about
+whether the rows a local pack judges were readable or what a reviewer was shown, so it never
+keeps any repaired finding open (which would reblock Stop); the receipt stays bounded by it.
 
-## Amendment (2026-10-16, PR #1080): read-only closure traffic and native verification
+## Amendment (2026-10-16, PR #1080): closing currency by workspace change, and native verification
 
-Closing-review currency uses host-derived command facts. Non-setting `date -u`, ordinary `rg`,
-`sed -n` with a closed numeric print range, and FinishUP workflow CLI calls with known non-writing
-verbs/options are exploration. Output-path options (including `closure-prepare --output`) and
-unknown options remain material. A composed read is exploration only if every command is recognized,
-with no output redirection, command substitution, heredoc or background execution. Runtime workspace-write facts
-still override exploration. Receipt, work-close and lifecycle records remain bookkeeping. Real
-edits, workspace-writing commands, fresh verification runs and review-mode switches retain the
-#1079 material-delta rule. Unknown commands remain material; the Stop text says that FinishUP
-could not establish they were read-only, without claiming an edit was observed.
+Owner decision (2026-10-16, PR #1080 round 5): whether a command observed after the closing review
+is a new review input is decided by whether the project workspace actually changed across it,
+never by parsing its text. Rounds 3 and 4 of this PR recognized read-only spellings (`date -u`,
+bounded `sed -n`, `rg`, FinishUP CLI verbs, wrappers); each adversarial review found a spelling that
+wrote while looking like a read (an executable `PATH` or `bin` shadow, `closure-prepare --output`,
+a Git fsmonitor or a case-sensitive clean-filter collision run by `git status`, a quoted `-C ~`
+path, zsh glob qualifiers that execute code, `nohup.out`). Those exemptions no longer affect
+closure currency.
+
+**The fact.** The live host hook takes a fingerprint of the workspace in its `PreToolUse` pass
+(the host waits for that pass before it runs the call) and another in the `PostToolUse` pass, and
+sends one closed structural token, `workspace_effect`: `unchanged`, `changed` or `unavailable`
+(`adapters/workspace_fingerprint`, `cli/workspace_effect_hook`, `domain/workspace_effect`).
+Materialization appends it to the observed result's summary as ` (workspace unchanged|changed|
+unverified)`; the kernel reads it back only from service-stamped observation results
+(`kernel/later_material.workspace_effects`). A host payload cannot supply the key, and an
+agent-published result carrying the suffix is ignored.
+
+*One call, several deliveries (round 6).* A Codex session-stream copy carries no fingerprint, and a
+hook pass may repeat; both mint the call-keyed result id the first delivery committed, so the later
+one appends no result. Its fact is not dropped: when it states a fact the recorded result does not,
+the coordinator appends one observation-authored, metadata-only evidence row under the call's
+action whose description is exactly `Observed workspace effect=<token>`
+(`materialize_workspace_effect_annotation`), with ids derived from the result and the token, so a
+repeat, a restart or a third delivery adds nothing. The kernel folds every fact of the call: it is
+`unchanged` only when some delivery said `unchanged` and none said `changed` or `unavailable`,
+whatever the arrival order. A stream copy recorded first is therefore enriched by the hook's
+`unchanged`; if no hook fact ever arrives the call stays material. An annotation is judged as its
+call at the position it arrived, so a `changed` or `unavailable` that lands after a closing review
+re-arms it.
+
+**What is material.** An observed shell command, or its result, is a closing-review delta unless
+a result of that call reports `unchanged`, no result of it reports `changed` or `unavailable`, and
+it is neither a verification run (a `test`, `build`, `lint` or `typecheck` runner class, or a run of
+a command an effective obligation requests, matched under ADR-045 or linked by the agent) nor a
+package install (an `install` runtime token: the environment is not walked). When the task
+requests a command but no installation key is registered to match runs, no command is quiet.
+Real edits (edit tools, lexical shell writes), review-mode switches and cooperative edit or command
+actions keep the #1079 rule. Another observed tool that is not FinishUP's own and not a host-native
+read (a third-party MCP tool, a subagent, Codex `write_stdin`, Claude Code `BashOutput`) is a
+delta when its result reports `changed`, and keeps its earlier bookkeeping reading otherwise.
+Receipt, work-close and lifecycle records, FinishUP's own MCP calls and host-native reads remain
+bookkeeping. The later-material classifier applies the same rule to the receipt's
+check-currency disclosure (`observed_workspace_unchanged`), and a read-shaped shell call joins a
+routine-read summary only when its fingerprint is `unchanged` (the Codex session stream, which
+has no fingerprint, never summarizes shell calls). Runner classes are unchanged and still keep
+failed exploratory reads out of failure accounting and advice; they no longer exempt anything from
+currency.
+
+**Conservative fallback.** `unavailable` reads exactly like `changed`. It is recorded when there is
+no pre-call snapshot (a post-only profile, a lost or killed pre pass, the synchronous legacy Codex
+spool path, a session-stream copy), when the host has not reported that the call ended (a Codex
+process still running behind a session id, a Claude Code `run_in_background` launch: later writes
+would fall outside the window), when the command text backgrounds or detaches a process (a lone
+`&`, `nohup`, `setsid`, `disown`; text can only make a call less trusted, never more), when the walk
+exceeds 60,000 entries or 64 directory levels, when the pass exceeds its time bound, when a
+directory cannot be read or the root is unusable, and when the snapshot store is unusable or its
+record fails its keyed MAC. The hook names a degraded comparison (`too_large`, `timeout`,
+`unreadable`, `root_unusable`, `store_unusable`, `process_table_unreadable`) once as a
+`workspace_fingerprint_<reason>`
+diagnostic in `observe status`; a workspace that exceeded a walk bound is not walked again for ten
+minutes (two after a walk timeout). A missing pre-call snapshot or a call still running is an
+ordinary per-call fact on the result, kept out of the bounded diagnostic window. The Stop text
+names the case: the latest material input may be "a command FinishUP could not establish left the
+workspace unchanged".
+
+*Quiescence (round 6).* A host's completion fact says the process it started ended, not that
+nothing that process started is still writing: an ordinary program can start a child in a new
+session, exit 0 and leave the child to write after the post-call snapshot, with no background word
+in its text. Before it walks, the post-call pass therefore reads the process table
+(`adapters/process_lifetime`: `libproc` on macOS, `/proc` on Linux and WSL 2). A process of the
+same user that started during the call window (less 50 ms of clock slack), is still running, is not
+parented by this hook's own chain or by the host that ran it, and has its working directory or a
+file open for writing inside the workspace makes the call `unavailable` (`call_incomplete`); so does
+such a process whose directory or descriptors cannot be read, and so does a process table the hook
+cannot read at all (`process_table_unreadable`, a standing condition diagnosed once per ten
+minutes: a host that sandboxed its hooks this way would leave every call unverified, and
+`observe status` says so). The host's own other children (its parallel hooks and tool calls) are its ongoing work and
+are judged by their own calls. After the walk the pass re-reads the modification time of every
+directory it entered (VCS metadata and bytecode caches excepted): an entry created, removed or
+renamed while the workspace was being compared makes the call `unavailable` too. The probe adds
+about 1-3 ms; no process is signalled, attached to or killed.
+
+*Host window (round 6).* A pre-call snapshot is published only when its whole capture (walk and
+hashing) finished before the host could stop waiting for the hook (the host timeout less one
+second). A late capture may already hold the call's writes, so it is never stored: neither a
+concurrent post-call pass nor a pre-call process killed at the host timeout can leave a usable late
+snapshot. The record also carries its capture-completion time and the host deadline under its
+keyed MAC, and the post-call pass re-checks them.
+
+*Budget (round 6).* The 0.75 s bound covers the whole pass, not only the walk: loading the digest
+cache, expiring pending records, walking, hashing (checked before every 256 KiB read), the
+directory re-read and persisting the record. A pass that overruns it is `unavailable` (`timeout`);
+a hashing or persistence overrun does not start the walk back-off. One blocking read of a regular
+file is the largest step that can run past the bound before it is noticed; a filesystem that
+blocks a single read indefinitely is not bounded by this pass.
+
+**What the workspace covers.** Every entry beneath the hook's canonical workspace root, tracked and
+untracked alike; ignore files are not consulted. Honouring them would mean running Git in the hook
+(which executes repository-configured programs and resolves `git` through the agent's `PATH`, the
+round-4 hazards) or re-implementing ignore semantics, where a mistake hides a real change; ignored
+paths can hold graded output, and many task workspaces are not repositories. Counting them is the
+conservative direction. Round 5 recorded whole directories by identity only; round 6 narrowed that
+after the review showed a script writing `venv/answer.txt` or `__pycache__/answer.txt` read as
+`unchanged`:
+
+- *VCS metadata* (`.git`, `.hg`, `.svn`) is walked except its exact internal churn: the object
+  store, reflogs, refs, LFS objects, `fsmonitor--daemon`, `rr-cache`, submodule and worktree
+  administration, `git fsck` `lost-found` and Cursor's `cursor` checkpoint store are recorded by
+  identity only; the index files directly in the metadata root (Git's own, split and temporary
+  indexes, and private index copies tools keep there), `HEAD`-style pointer files, `packed-refs`,
+  commit and merge messages, maintenance logs and lock files are skipped (Mercurial's `store`,
+  `dirstate`, and Subversion's `pristine` and `wc.db` likewise). A commit, a fetch, a branch or an
+  index refresh by `git status` is not a change; a write to `config`, `hooks/`, `info/attributes`
+  or any other file there is.
+- *Dependency environments and tool caches* (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`,
+  `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.hypothesis`) are compared at their first level:
+  a file directly inside one is compared like any other file, a subdirectory by its identity. A
+  full walk is not affordable on every call: measured on this machine a plain walk costs 24-27 µs
+  per entry under load (a 10,186-entry `node_modules` 276 ms, a 5,119-entry `.venv` 123 ms), and
+  typical environments hold tens to hundreds of thousands of entries, so walking them would exceed
+  the whole 0.75 s bound and make every call `unavailable`. Package installs stay material through
+  the `install` runtime fact; lexical writes (`sed -i`, redirections) stay material whatever their
+  target.
+- *Bytecode caches* (`__pycache__`) are walked, but the interpreter's `.pyc` files (and their
+  temporary names) and the directory's own creation by an import are not changes; any other file
+  in one is compared.
+- *Declared deliveries the walk cannot fully see.* The hook does not read obligations. When an
+  effective obligation names a non-input `file` or `directory` inside the workspace where the walk
+  does not compare it, the kernel treats no command as `unchanged`
+  (`domain/workspace_effect.path_beyond_workspace_fingerprint`,
+  `kernel/task_facts.declared_path_beyond_fingerprint`). The rule is the walk's own, read from the
+  same domain constants the adapter walks by: a path inside a VCS store recorded by identity only
+  (`.git/objects`, `refs`, `logs`, ...) or a VCS bookkeeping file the walk skips (`HEAD`, the
+  metadata-root index, `*.lock`, ...), anything below the first level of a dependency environment
+  or tool cache, a bytecode file in `__pycache__`, a saved receipt or export name, or a declared
+  directory that is itself VCS metadata or a dependency environment. VCS files the walk compares
+  (`.git/config`, `.git/hooks/*`) and files directly inside a dependency environment
+  (`node_modules/x.js`, `venv/report.txt`) do not trigger it (round 7). A relative path is read
+  against the workspace root. An absolute path is judged by its part below the task's root, the
+  one absolute `workspace_ref` every `session_opened` of the task names
+  (`kernel/task_facts.task_workspace_root`; hook auto-attach sends the canonical root the walk
+  uses), and a path outside that root, or a relative one that leaves it, is out of scope like any
+  other effect outside the root (`/usr/local/lib/node_modules/...` installed globally does not
+  trigger it). With no such root (no session names one, sessions disagree, or a ref is not an
+  absolute path) an absolute path triggers the rule when it would for any of its ancestors as the
+  root, so an in-root `/app/node_modules/pkg/index.js` stays covered. The judgment is lexical and
+  replay-stable: no path is resolved and no filesystem is read.
+
+A commit leaves the closing review's base-to-working-tree change capture (ADR-031) unchanged, which
+is why the VCS internals stay out. FinishUP's saved receipts and exports (ADR-042) and its state or
+isolation root inside the workspace are skipped. Links are not followed; a link compares by its
+target text.
+
+**Comparison and cost.** An entry is unchanged when its kind, permission bits, size, modification
+and change times, inode and device match; the change time cannot be set back by an unprivileged
+process, so a write that restores the modification time is still seen. Content is hashed only for
+an entry whose metadata moved since the last snapshot, so a rewrite of identical bytes or a `touch`
+is not a change once its digest is known, and is conservatively a change otherwise. An entry whose
+timestamps fall within two seconds of the pre-call snapshot is hashed before the call, so a
+coarse-timestamp filesystem cannot hide a same-second write. Hashing is bounded (8 MiB per file,
+64 MiB per snapshot). Measured on macOS (APFS): a 2,580-entry checkout costs about 20 ms per
+snapshot and a 19,700-entry tree about 160 ms warm (about 620 ms cold); the bound makes larger trees
+`unavailable`. Round 6, measured as an alternating A/B of the round-5 and round-6 adapters on the
+same trees under the same (loaded) machine: this repository's worktree 32/32 ms pre/post before
+and 35/36 ms after; the primary checkout without `.claude/` (now walking 121 `.git` and 55
+`node_modules` entries) 40/41 ms before and 66/74 ms after; synthetic steady-state trees of 1,000,
+5,000, 20,000 and 50,000 entries 13/12, 48/49, 181/193 and 513/529 ms before and 12/15, 50/51,
+185/185 and 513/547 ms after. Snapshots are stored in an owner-only directory beside the local observation
+store, holding only keyed path and content digests and a keyed MAC; pending snapshots expire after
+a day, and revoking observation for the workspace removes the directory.
+
+**Limits.** Effects outside the workspace root are out of scope for this signal, as before:
+databases, `/tmp`, the network, other repositories, and a deliverable path outside the root that an
+obligation names (the hook does not read obligations; a lexically visible write outside the root
+still records `write outside_workspace` and stays material). Round 6 states the remaining
+guarantee explicitly. The fact covers what the call did to the walked workspace before its post-call
+pass began, plus anything a process it started was still able to do while that process ran in the
+workspace. It does not cover: an in-place rewrite of an already compared file during or after the
+post-call walk by a process that was not started during the call (an editor, another agent, a dev
+server started by an earlier call); a process the call started that moved its working directory out
+of the workspace, holds no workspace file open for writing, and later opens one by absolute path; a
+background job still parented by a long-lived process the host owns (a persistent terminal shell;
+the background-operator text rule still covers `cmd &`); a host that makes itself a subreaper; a
+deep in-place edit inside a dependency environment or tool cache by a command that is neither an
+install nor a lexical write (unless the task declares a delivery there); and filesystems that do
+not maintain change times. The first fingerprinted call after a FinishUP service start can read
+`unavailable` once, because the service it started keeps running in the workspace. Two concurrent
+calls each see the other's writes and processes, which can only make a call material.
 
 Native Codex `CommandExecution.command` runner classification unwraps only one ordinary host
 shell, preserving any nested executable paths. Keyed identity retains its existing normalization.
@@ -1169,24 +1352,12 @@ ordering rules. An undeclared generator retains a real stale-verification gap. A
 an edit in one command counts at that completed command's result frontier. A native completed
 command also counts when the agent later retrieves its result through `write_stdin`; a poll does not replace the original command's
 identity. Shell compositions that can mask individual outcomes still disclose that uncertainty.
-Runner classification establishes an observed run, never that its assertions are correct.
+Runner classification establishes an observed run, never that its assertions are correct. The
+stale-verification rule (`edited_after_last_verification`) still counts only edits and lexical
+shell writes; the workspace fact feeds closing-review and check currency only.
 
-Read exemptions preserve the original executable spelling through every supported wrapper and
-compound segment. Arbitrary directories named `bin`, resolution-changing environments and
-unresolved wrappers remain material. `nohup` remains material because it can create `nohup.out`.
-Bare commands retain the host's ordinary executable resolution; this does not authenticate an
-arbitrary executable path or an explicit PATH override.
-
-Unguarded `git status` remains material, including in an ordinary repository: its argv cannot
-establish execution-time configuration. A later hook-side config check cannot supply that proof.
-Even `-c core.fsmonitor= -c core.hooksPath=/dev/null` leaves clean filters and other configured
-execution possible, so those flags alone grant no exemption. FinishUP's own hardened Git adapter
-has separate environment/configuration safeguards; they are not inferred for observed agent
-commands. Safely exempting ordinary status needs execution-time evidence beyond this change.
-
-Current inspection/change-capture snapshots do not establish a per-command before/after workspace
-pair. They cannot make arbitrary commands harmless; agent text cannot supply that proof. Returning
-a server timestamp is deferred to a versioned workflow-result change; ordinary `date -u` is safe
-closure traffic in this revision. Codex preserves native argv resolution separately from keyed
-identity normalization; Claude Code and Cursor use the shared classifier through their hook normalizers. The CLI, MCP/status, TUI and receipt
-currency all derive from the same observed classification and kernel predicates.
+Returning a server timestamp is deferred to a versioned workflow-result change; `date -u` leaves
+the workspace unchanged and is harmless closure traffic. The CLI, MCP/status, TUI and receipt
+currency all derive from the same observed facts and kernel predicates. Codex, Claude Code
+(ordinary profile) and Cursor (ordinary profile) fingerprint through the shared `handle_observe`
+path; their structural profiles observe no shell calls.

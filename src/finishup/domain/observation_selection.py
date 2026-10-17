@@ -1205,6 +1205,33 @@ def classify_observation(
     )
 
 
+def without_routine_read(classification: ObservationClassification) -> ObservationClassification:
+    """The same observation as an individually recorded call, never a routine-read summary.
+
+    PR #1080: a shell command's text cannot prove it read only. A shell read-shaped call (``ls``,
+    ``head``, ``rg``, ``git log``) may join a routine-read summary only when the hook's
+    before/after workspace fingerprint saw the workspace unchanged across it; otherwise it is
+    demoted here and delivered with its own action, result and fingerprint fact, exactly like any
+    other command. The Codex session stream, which has no fingerprint, always demotes shell calls.
+    """
+
+    if not classification.routine_candidate:
+        return classification
+    reasons = [
+        token
+        for token in classification.reason_tokens
+        if token not in {"routine_candidate", "routine_success", "routine_shell", "routine_tool"}
+    ]
+    return ObservationClassification(
+        protected=True,
+        routine_candidate=False,
+        proven_routine_success=False,
+        content_role=ObservationContentRole.BOTH,
+        reason_tokens=("unsafe_shell", *reasons),
+        version=classification.version,
+    )
+
+
 def _is_edit_tool_token(lowered: str) -> bool:
     return lowered in _EDIT_TOOL_HINTS or any(
         hint in lowered for hint in ("edit", "write", "patch")
@@ -1271,6 +1298,7 @@ __all__ = [
     "compound_verification_gap_required",
     "command_runner_class",
     "native_command_runner_class",
+    "without_routine_read",
     "envelope_outcome_state",
     "is_edit_tool_name",
     "is_routine_read_candidate",

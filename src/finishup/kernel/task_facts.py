@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import posixpath
 import re
 import threading
 from collections.abc import Iterable, Mapping
@@ -75,6 +76,7 @@ from finishup.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
     ResultOutcome,
+    SessionOpenedPayload,
     is_observation_authored,
 )
 from finishup.domain.observation import normalize_observed_command, observed_command_commitment
@@ -166,6 +168,7 @@ from finishup.domain.task_fact_tokens import (
     WRITE_OUTSIDE_WORKSPACE_GAP as WRITE_OUTSIDE_WORKSPACE_GAP,
 )
 from finishup.domain.values import EventId, ObligationId, obligation_id
+from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
 from finishup.domain.write_scope import finishup_artifact_name, notes_artifact_name, scratch_overlap
 from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.fact_lineage import (
@@ -230,6 +233,8 @@ __all__ = [
     "TaskFactSignals",
     "BlockerDeclaration",
     "acting_started",
+    "declared_path_beyond_fingerprint",
+    "task_workspace_root",
     "acknowledged_obligation_ids",
     "agent_linked_run_events",
     "observed_planned_commands",
@@ -263,6 +268,7 @@ __all__ = [
     "requested_command_identity",
     "requested_planned_command",
     "requested_output_facts",
+    "requested_verification_run_events",
     "superseded_unnamed_outputs",
     "task_fact_signals",
     "non_counting_edits_exempt",
@@ -1143,6 +1149,109 @@ def agent_linked_run_events(
                 if run.action_event is not None
             )
     return frozenset(events)
+
+
+def requested_verification_run_events(
+    projection: ProjectionState, records: Iterable[LedgerRecord]
+) -> frozenset[EventId] | None:
+    """The observed command actions that ran a command an effective obligation requests.
+
+    A run of the task's own requested verification command (ADR-045 matching, or the agent's
+    explicit link) is a verification run whatever its runner class, so the closing review keeps
+    treating it as new input even when the workspace stayed the same (PR #1080). ``None`` means
+    the task requests a command but no installation key is registered to match runs against it:
+    the caller cannot tell which runs verify and must treat every run as possibly verifying.
+    ``records`` must be the accepted prefix that produced ``projection``.
+    """
+
+    values: list[tuple[ObligationId, str]] = []
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        values.extend(
+            (obligation, item.value)
+            for item in payload.requested_items
+            if item.item_kind is RequestedItemKind.COMMAND
+        )
+    if not values:
+        return frozenset()
+    if not command_identity_key_registered():
+        return None
+    prefix = tuple(records)
+    observed = observed_event_ids_from_records(prefix)
+    state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
+    keyed = [run for run in state.runs if run.identity is not None and run.action_event]
+    linked = _agent_linked_runs(projection, prefix, state, observed)
+    events: set[EventId] = set()
+    for obligation, value in values:
+        events.update(
+            run.action_event for run in linked.get((obligation, value), ()) if run.action_event
+        )
+        if requested_command_shape(value) != "command":
+            continue
+        planned = requested_planned_command(value)
+        if planned is None:
+            continue
+        events.update(
+            run.action_event
+            for run in keyed
+            if run.action_event is not None and planned_match(run, planned) is not None
+        )
+    return frozenset(events)
+
+
+def task_workspace_root(records: Iterable[LedgerRecord]) -> str | None:
+    """The one absolute workspace root this task's sessions name, or ``None`` when it is not known.
+
+    ``session_opened`` keeps the ``workspace_ref`` its session started with: hook auto-attach sends
+    the canonical absolute root the workspace fingerprint walks, and guidance asks an agent's
+    ``start`` for the same root. A session without an absolute ref (absent, redacted, or not a
+    path) or two different roots leave the root unknown. Lexical: the value is never resolved.
+    """
+
+    roots: set[str] = set()
+    for record in records:
+        if type(record) is not AcceptedEvent or record.schema.name != "session_opened":
+            continue
+        payload = record.payload
+        ref = payload.workspace_ref if type(payload) is SessionOpenedPayload else None
+        if ref is None or not ref.startswith("/"):
+            return None
+        roots.add(posixpath.normpath(ref))
+    return next(iter(roots)) if len(roots) == 1 else None
+
+
+def declared_path_beyond_fingerprint(
+    projection: ProjectionState, *, workspace_root: str | None = None
+) -> bool:
+    """Whether an effective obligation names a deliverable the workspace fingerprint cannot vouch for.
+
+    A requested non-input ``file`` or ``directory`` inside the workspace where the walk does not
+    compare it: a VCS store recorded by identity only or a skipped VCS bookkeeping file, below the
+    first level of a dependency environment or tool cache, a bytecode file, or a saved receipt or
+    export name (``path_beyond_workspace_fingerprint``, PR #1080 round 6). The hook does not read
+    obligations; the kernel then withholds ``unchanged`` from every command rather than trust a
+    comparison that may not have seen the delivery. ``workspace_root`` is the task's absolute root
+    (``task_workspace_root``): an absolute declaration outside it is out of the walk's scope, and
+    with no known root an absolute one is judged against each of its ancestors. Pure: no
+    filesystem is read.
+    """
+
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if item.item_kind not in _DECLARED_OUTPUT_KINDS or item.role is RequestedItemRole.INPUT:
+                continue
+            if path_beyond_workspace_fingerprint(
+                item.value,
+                directory=item.item_kind is RequestedItemKind.DIRECTORY,
+                workspace_root=workspace_root,
+            ):
+                return True
+    return False
 
 
 def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:

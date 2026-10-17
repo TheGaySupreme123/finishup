@@ -596,6 +596,17 @@ packet limits. Command input is local eligibility context and is never a provide
 or mismatched binding still withholds output. Check-time diffs and current inspection snapshots
 are not a per-command before/after comparison and cannot certify an arbitrary shell command harmless.
 
+Round 5 of the same PR (owner decision, 2026-10-16) adds that per-command comparison outside this
+capture: the host hook fingerprints the workspace before and after each fingerprinted call and
+records only a closed `workspace_effect` token (ADR-033 amendment). It shares nothing with this
+capture's privacy path. It runs no Git and reads no content for the ledger: metadata of every entry
+under the hook's workspace root, and keyed content digests for entries whose metadata moved, kept in
+an owner-only local directory and never sent anywhere. Its scope is deliberately different: this
+capture shows the base-to-working-tree change Git does not ignore, while the fingerprint counts
+ignored files too (except VCS metadata, dependency environments and interpreter caches, recorded by
+identity), because a change to an ignored deliverable must still re-arm the closing review. A
+commit changes neither this capture nor the fingerprint.
+
 Late evidence uses the existing optional `evidence_recorded.reference` to name its original action
 event after core and causal-parent validation. Selection follows that link only for service-stamped
 observation-captured provenance and retains the original execution frontier. F1 authenticated

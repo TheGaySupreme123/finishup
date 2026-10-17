@@ -305,6 +305,9 @@ async def test_a_yielded_cell_that_ran_a_command_keeps_its_record(replay: _Repla
     replay.hook(
         "PreToolUse", tool_name="Bash", tool_use_id="call_cmd40", tool_input={"command": command}
     )
+    # The replayed command really writes its file: the workspace fingerprint reads what the
+    # command changed, not its text, so a command that changed nothing would be quiet.
+    (replay.workspace / "out.json").write_text("")
     replay.hook(
         "PostToolUse",
         tool_name="Bash",

@@ -5993,7 +5993,8 @@ interruption, so subsequent writers can proceed. Hook timing rows attribute queu
 `store_lock_wait` and the pass's own critical sections as
 `store_lock_hold`, cover the previously unwindowed resolve/deliver regions, and name any remaining
 wall-time difference as `unattributed`; nested store sub-stages are reported separately from the
-end-to-end partition (issues #310 and #311). Timing rows stay reserved for over-budget passes,
+end-to-end partition (issues #310 and #311), as is `fingerprint`, the before/after workspace
+fingerprint inside `resolve` (PR #1080). Timing rows stay reserved for over-budget passes,
 session boundaries and legacy-spool hard-cap breaches, so routine passes never evict the
 failure-reason window. The cost of every observation-ingress hook pass lives in a separate
 fixed-size aggregate (issue #915): each host ingress entry (`hooks observe` and `hooks spool` for Codex,
@@ -7883,26 +7884,31 @@ rejected finding that waits for a reviewer ruling (a check is the next move),
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
 `check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
-after the check counts; FinishUP's own calls, read-only reads and host bookkeeping do not,
-`kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
+after the check counts; FinishUP's own calls, host-native reads, commands whose fingerprint saw the
+workspace unchanged and host bookkeeping do not, `kernel/later_material`, tb4n3 RC-6, PR #1080), then `closing_review_required` (issue
 #976: AI-powered review is required on the route, or completed on the task, or was deferred before
 the first material edit by a check whose route requires it (#1046), and no completed final-phase
 review, or undeliverable review attempt, is current since the last material task or verification
-change — an observed edit or shell write, an unclassified observed command or its result, a
-cooperative edit or command, or a `decision_recorded` whose `review_mode` is set (ADR-049); a
+change — an observed edit or shell write, an observed command or its result that is not shown to
+leave the workspace unchanged, a cooperative edit or command, or a `decision_recorded` whose `review_mode` is set (ADR-049); a
 decision that leaves `review_mode` unset, and the rest of bookkeeping and dispositions, do not count
-(`kernel/closing_review_delta`, #1079). Closed host-derived read shapes (non-setting `date -u`,
-`rg` without a preprocessor, bounded `sed -n` print ranges, and FinishUP workflow
-CLI calls with known non-writing verbs/options) are exploration; output-path and unknown options
-remain material. Executable resolution is checked before wrappers and paths can be erased, including
-every original compound segment. Arbitrary `bin` paths, environment overrides and unresolved
-wrappers remain material; so does `nohup`, which can create `nohup.out`.
-Observed `git status` stays material without execution-time proof; a later config check or disabling
-only fsmonitor/hooks cannot rule out configured filters and other execution.
-Read-only compositions carry the exploration class only when every command is
-proven read-only and none redirects output or substitutes a command. Workspace write facts still
-win. Receipt, work-close and lifecycle events do not re-arm the review. Unknown commands stay
-conservative: the Stop explanation names that FinishUP could not establish they were read-only.
+(`kernel/closing_review_delta`, #1079). An observed shell command, or its result, is that change
+unless the hook's before/after workspace fingerprint recorded the workspace `unchanged` across it
+(PR #1080 round 5; ADR-033 amendment): the structural `workspace_effect` token
+(`unchanged|changed|unavailable`) the live `PreToolUse`/`PostToolUse` hook pair derives, which the
+result summary carries as ` (workspace unchanged|changed|unverified)` and
+`kernel/later_material.workspace_effects` reads back only from service-stamped results. An
+unchanged command still counts when it is a verification run (a `test|build|lint|typecheck`
+runner, or a run of a command an effective obligation requests,
+`task_facts.requested_verification_run_events`) or a package install (`install` runtime token).
+A command without the fact (no pre-call snapshot, a call the host has not reported as ended, a
+workspace beyond the walk bound, an unreadable directory, a legacy-spool or session-stream
+observation, a record from before the fact) is material; the Stop text names it as a command
+FinishUP could not establish left the workspace unchanged. Command text never decides: the
+round-3/4 read shapes (`date -u`, bounded `sed -n`, `rg`, `git status`, FinishUP CLI verbs) keep
+their runner class only for failure accounting and advice. Another observed tool that is not
+FinishUP's own and not a host-native read counts when its result reports `changed`. Workspace
+write facts still win. Receipt, work-close and lifecycle events do not re-arm the review.
 Native Codex runner classification unwraps one ordinary host shell, retaining nested executable
 paths separately from keyed identity normalization. Generic finalizer and
 regression names grant no verification credit. Explicitly requested verification commands use
@@ -10694,7 +10700,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   runner classification; nested executable spelling remains visible. Generic `finalize` and
   `*_regression` names grant no verification credit. Exploration additionally requires established
   executable resolution and closed non-writing arguments, independent of canonical verification
-  matching. `RecordedPolicyVersionWire`,
+  matching. Since PR #1080 round 5 the exploration class of a shell command keeps failed exploratory
+  reads out of failure accounting and advice only; it exempts nothing from closing-review or check
+  currency, which follow the `workspace_effect` fact below. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
   `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
   `work-integrity/0.2.0` generation.
@@ -10703,9 +10711,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|workspace`; ADR-042:
   `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
   FinishUP's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
-  writes the workspace) and
-  `effective_user` (`root|non_root`),
-  produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
+  writes the workspace),
+  `effective_user` (`root|non_root`) and `workspace_effect` (`unchanged|changed|unavailable`,
+  PR #1080 round 5: produced only by `cli/workspace_effect_hook.workspace_fingerprint_pass` on a
+  live `PostToolUse`, never copied from a host payload; materialization appends it to the observed
+  result summary through `domain/workspace_effect.result_summary_with_workspace_effect`), the first
+  three produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
   against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
   item 7). `observed_action_description(...,
   install_target=, write_outside_workspace=, effective_user=, write_scope=)` appends
@@ -10724,6 +10735,79 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   name or a requested non-input directory exists). Observation advice 0.1.8 adds the
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
+- **Workspace fingerprint (PR #1080 rounds 5-6).** `adapters/workspace_fingerprint.WorkspaceFingerprintStore(directory, key_material, *, lingering=lingering_process)`:
+  `capture_before(root, call_identity, *, deadline, host_deadline=None, excluded) -> reason | None`
+  and
+  `effect_after(root, call_identity, *, deadline, call_complete, excluded) -> WorkspaceEffectReading(effect, reason)`,
+  `discard()`; `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
+  `<observation>/workspace-fingerprints/<commitment digest>/` (`pending/` per open call,
+  `latest.bin` for digest reuse; owner-only; keyed BLAKE2b path and content digests plus a keyed
+  MAC, never a path or byte of content; revoking observation removes it). Record format
+  `FUWF\x02`: the header adds the call window start (`process_lifetime.process_clock_ns`), the
+  capture-completion time and the host deadline (monotonic ns, 0 when absent), all under the MAC;
+  a version-1 record reads as `no_pre_snapshot`. The walk covers every entry under the canonical
+  workspace root without consulting ignore files. Inside `VCS_METADATA_DIRECTORIES` (`.git`,
+  `.hg`, `.svn`) it skips the exact internal churn (`domain/workspace_effect.VCS_OPAQUE_DIRECTORIES`
+  by identity: `objects`, `logs`, `refs`, `lfs`, `rr-cache`, `fsmonitor--daemon`, `modules`,
+  `worktrees`, `lost-found`, `cursor`, `store`, `cache`, `wcache`, `pristine`, `tmp`;
+  `vcs_bookkeeping_name`: `VCS_BOOKKEEPING_FILES`, `undo.*`, `*.lock`, and any `*index*` file
+  directly in the metadata root) and compares the rest;
+  `SHALLOW_DIRECTORY_NAMES` (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`, `.pytest_cache`,
+  `.mypy_cache`, `.ruff_cache`, `.hypothesis`) are compared at their first level (files by content,
+  subdirectories by identity); `__pycache__` is walked without recording the directory itself or
+  its bytecode (`domain/workspace_effect.bytecode_artifact_name`). It skips FinishUP receipt/export
+  names (`saved_artifact_name`) and FinishUP state roots inside the workspace, never follows links,
+  and is bounded by `MAX_ENTRIES` (60,000), depth 64 and `SNAPSHOT_SECONDS` (0.75) over the whole
+  pass (cache load, cleanup, walk, hashing checked before every 256 KiB read, directory re-read,
+  persistence), hashing at most `HASH_FILE_BYTES` (8 MiB) per file and `HASH_TOTAL_BYTES` (64 MiB)
+  per snapshot. `capture_before` publishes nothing unless the capture finished before both the
+  deadline and `host_deadline`. `effect_after` returns `unavailable`/`call_incomplete` when
+  `lingering(window_ns, root)` is `True` (before the walk; `None` gives
+  `process_table_unreadable`) or a walked directory's
+  modification time moved during the walk, and `unavailable`/`timeout` when the record's capture
+  missed its host deadline or the pass overran. Reasons:
+  `no_pre_snapshot|call_incomplete|process_table_unreadable|too_large|timeout|unreadable|root_unusable|store_unusable`;
+  `WorkspaceEffectReading(effect, reason, fresh)`. The degraded reasons (`too_large`, `timeout`,
+  `unreadable`, `root_unusable`, `store_unusable`, `process_table_unreadable`: a standing
+  condition marked once per ten minutes) are recorded once, when `fresh`, as hook
+  diagnostics `workspace_fingerprint_<reason>`; a walk-bound back-off (`bounded` marker: ten
+  minutes, two after a walk timeout; hashing, persistence and host-window overruns start none)
+  skips walking meanwhile. `recently_bounded()`, `invalidate(call_identity, reason)`.
+  `adapters/process_lifetime`: `process_clock_ns() -> int | None` (wall clock on macOS, boot clock
+  on Linux, `None` elsewhere) and `lingering_process(window_ns, workspace_root) -> bool | None`
+  (`True` when a same-user process started since `window_ns - PROCESS_CLOCK_SLACK_NS` (50 ms),
+  still running, not a descendant of the hook's chain up to its host, has its working directory or
+  a write-open file inside the root, or cannot be read; `None` when the process table cannot be
+  read; never signals a process).
+  `cli/workspace_effect_hook`: `fingerprinted_tool(tool_name, *, finishup_owned)` (shell/exec tools
+  and every other tool except FinishUP's own, host-native reads, edits and a closed inert set),
+  `host_call_complete(payload)` (an integer `exit_status`, a boolean `success` or `denied: true`,
+  never with `run_in_background` or when `command_may_outlive_call(payload)` finds a background
+  `&`, `nohup`, `setsid`, `disown` or similar in the command text: conservative only), `owned_relative_paths(workspace, roots)` and
+  `workspace_fingerprint_pass(event, *, call_identity, workspace_locator, workspace_commitment,
+  key_material, observation_root, complete, excluded, seconds, host_deadline)`, called by
+  `handle_observe` before the observation store lock and only with an explicit locator (never on
+  spool replay); `host_deadline` is the hook entry plus the host's hook window less
+  `_FINGERPRINT_HOST_MARGIN_SECONDS`.
+  `domain/workspace_effect`: `WORKSPACE_EFFECT_ANNOTATION_PREFIX` (`Observed workspace effect=`),
+  `workspace_effect_annotation(effect)`, `workspace_effect_from_annotation(description)`,
+  `path_beyond_workspace_fingerprint(value, *, directory=False, workspace_root=None)` (the walk's
+  own rules below the root; out of scope outside `workspace_root` or for a relative path that
+  leaves it; with no root, an absolute path is judged against each of its ancestors). `application/observation_materialize.materialize_workspace_effect_annotation(envelope, *, task_id, recorded_result_id, action_event_id, effect)`:
+  one metadata-only observed `evidence_recorded` row (role `workspace_effect_<token>`, ids from
+  the recorded result id and the token, causal parent the call's action event, no known gaps);
+  `ObservationCoordinator._reconcile_workspace_effect` appends it after an ingest whose delivery
+  carried a fact that the call's recorded result does not state.
+  `kernel/later_material`: `WorkspaceEffects(quiet, changed, annotations)`, `workspace_effects(records,
+  projection)` (folds result suffixes and annotations per action; `changed`/`unavailable` win; no
+  action is quiet when `kernel/task_facts.declared_path_beyond_fingerprint(projection, *,
+  workspace_root)` with `workspace_root=task_workspace_root(records)`, the one absolute
+  `session_opened.workspace_ref` all of the task's sessions name, else `None`), rules
+  `observed_workspace_unchanged` and `workspace_effect_of_action`; `classify_later_material(...,
+  effects=)` and `closing_review_delta(record, projection, *, effects=None)` (no effects: no
+  command is quiet; an annotation is judged as its call at its own position).
+  `domain/observation_selection.without_routine_read(classification)` demotes a routine-read
+  candidate to an individually recorded protected call.
 - **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are
   `obligations_open`, `receipt_findings_unresolved` (agent-work findings only),
   `finding_rejection_awaiting_ruling` (a finding the agent rejected with a reason that awaits the

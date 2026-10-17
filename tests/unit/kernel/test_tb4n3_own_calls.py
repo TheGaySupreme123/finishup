@@ -302,32 +302,46 @@ def test_a_declared_temp_output_makes_a_scratch_write_a_deliverable_edit() -> No
 
 
 @pytest.mark.parametrize(
-    ("tool", "runner", "expected"),
+    ("tool", "kind", "runner", "effect", "expected"),
     (
-        ("exec_command", "exploration", _C.EXPLORATION),
-        ("Read", "exploration", _C.EXPLORATION),
-        ("exec_command", "test", _C.OTHER),
-        ("exec_command", "build", _C.OTHER),
-        ("exec_command", "vcs", _C.OTHER),
-        ("exec_command", "compound", _C.OTHER),
-        ("exec_command", "other", _C.OTHER),
+        # PR #1080: a shell command is read-only only when its workspace fingerprint says so.
+        ("exec_command", ActionKind.COMMAND, "exploration", None, _C.OTHER),
+        ("exec_command", ActionKind.COMMAND, "exploration", "unavailable", _C.OTHER),
+        ("exec_command", ActionKind.COMMAND, "exploration", "changed", _C.OTHER),
+        ("exec_command", ActionKind.COMMAND, "exploration", "unchanged", _C.EXPLORATION),
+        ("exec_command", ActionKind.COMMAND, "vcs", "unchanged", _C.EXPLORATION),
+        ("exec_command", ActionKind.COMMAND, "compound", "unchanged", _C.EXPLORATION),
+        ("exec_command", ActionKind.COMMAND, "other", "unchanged", _C.EXPLORATION),
+        # A verification run stays new input whatever the workspace shows.
+        ("exec_command", ActionKind.COMMAND, "test", "unchanged", _C.OTHER),
+        ("exec_command", ActionKind.COMMAND, "build", "unchanged", _C.OTHER),
+        ("exec_command", ActionKind.COMMAND, "other", None, _C.OTHER),
+        # A host-native read tool keeps its closed meaning without command text.
+        ("Read", ActionKind.OTHER, "exploration", None, _C.EXPLORATION),
+        # A third-party tool with a read-shaped command argument is not a host-native read.
+        ("mcp__other__run", ActionKind.OTHER, "exploration", None, _C.OTHER),
     ),
 )
-def test_only_the_closed_exploration_runner_class_is_read_only(
-    tool: str, runner: str, expected: _C
+def test_only_an_unchanged_workspace_or_a_native_read_is_read_only(
+    tool: str, kind: ActionKind, runner: str, effect: str | None, expected: _C
 ) -> None:
+    from finishup.kernel.later_material import workspace_effects
+
     ledger = _after_check()
     ledger.run(
         None,
         ResultOutcome.SUCCESS,
         exit_status=0,
-        kind=ActionKind.COMMAND,
+        kind=kind,
         tool=tool,
         runner=runner,
+        workspace_effect=effect,
     )
     projection = replay(ledger.prefix)
+    effects = workspace_effects(ledger.prefix, projection)
     assert {
-        classify_later_material(record, projection).material_class for record in ledger.prefix[-2:]
+        classify_later_material(record, projection, effects=effects).material_class
+        for record in ledger.prefix[-2:]
     } == {expected}
 
 
