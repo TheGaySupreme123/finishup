@@ -345,7 +345,14 @@ def _hook_host_window_seconds(source: ObservationSource, event: str | None) -> i
 # host may run the call while the snapshot is still being taken (PR #1080).
 _FINGERPRINT_HOST_MARGIN_SECONDS: Final = 1.0
 _FINGERPRINT_DIAGNOSED: Final = frozenset(
-    {"too_large", "timeout", "unreadable", "root_unusable", "store_unusable"}
+    {
+        "too_large",
+        "timeout",
+        "unreadable",
+        "root_unusable",
+        "store_unusable",
+        "process_table_unreadable",
+    }
 )
 _TIMING_REPORT_EVENTS: Final = frozenset({"SessionStart", "Stop", "SessionEnd"})
 # The stages that partition one pass end to end, in order. Advice refresh is

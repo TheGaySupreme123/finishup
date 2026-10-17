@@ -16,7 +16,9 @@ Codex poll or sleep). A third-party MCP tool, a subagent, a process poll such as
 A post-call reading is ``unavailable`` unless the host reported that the call ended: an explicit
 process exit, a closed success or failure fact, or a denial. Codex reports a process still running
 behind a session id with no exit, and Claude Code's ``run_in_background`` launch has no completion
-fact; their later writes would fall outside the window, so FinishUP does not vouch for them.
+fact; their later writes would fall outside the window, so FinishUP does not vouch for them. A
+reported completion is necessary, not sufficient: the adapter also reads the process table and
+stays ``unavailable`` while a process begun during the call still runs in the workspace (round 6).
 
 Replays never fingerprint: the service's legacy-spool replay passes no workspace locator, and the
 synchronous legacy Codex spool hook does not call this path at all. Those observations carry no
@@ -190,7 +192,7 @@ def workspace_fingerprint_pass(
     one the two phases cannot be joined and the post reading is ``unavailable``.
     ``host_deadline`` (monotonic) is when the host may stop waiting for this pre-call pass and run
     the call anyway: a snapshot that completes after it may already include the call's writes, so
-    it is withdrawn and the post reading becomes ``unavailable`` (``timeout``).
+    it is never published and the post reading becomes ``unavailable`` (``timeout``).
     """
 
     try:
@@ -203,12 +205,16 @@ def workspace_fingerprint_pass(
             if call_identity is None:
                 return WorkspaceEffectReading("unavailable", "no_pre_snapshot")
             backoff = store.recently_bounded()
+            # The host window is enforced inside the capture, before anything is published: a
+            # late snapshot is never stored, so neither a concurrent post-call pass nor a pre-call
+            # process killed at its timeout can leave one behind (PR #1080 round 6).
             reason = store.capture_before(
-                workspace_locator, call_identity, deadline=deadline, excluded=excluded
+                workspace_locator,
+                call_identity,
+                deadline=deadline,
+                host_deadline=host_deadline,
+                excluded=excluded,
             )
-            if reason is None and host_deadline is not None and time.monotonic() > host_deadline:
-                store.invalidate(call_identity, "timeout")
-                reason = "timeout"
             if reason is None:
                 return None
             return WorkspaceEffectReading("unavailable", reason, fresh=backoff is None)
