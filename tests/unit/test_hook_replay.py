@@ -341,13 +341,20 @@ def _make_run(
     consent: str = "active",
     description: str = "Observed pending command via Codex hook (tool Bash)",
     payload_hook: Callable[[str, dict[str, Any], _Gen], None] | None = None,
+    seeded: bool = True,
 ) -> dict[str, Any]:
-    """A synthetic replay record; ``payload_hook`` may edit each payload before it is sealed."""
+    """A synthetic replay record; ``payload_hook`` may edit each payload before it is sealed.
+
+    ``seeded`` runs share one observation key (``--fixed-observation-key``): their observation-keyed
+    values (command commitments, source identities) are the same in every seed, while identifiers
+    and vault-keyed payload commitments still differ.
+    """
 
     gen = _Gen(seed)
+    keyed = _Gen(10_000) if seeded else gen
     task, session, writer = gen.id("tsk"), gen.id("ses"), gen.id("wri")
     action, evidence, result, finding = gen.id("act"), gen.id("evd"), gen.id("res"), gen.id("fnd")
-    segments = sorted(gen.keyed() for _ in range(3))
+    segments = sorted(keyed.keyed() for _ in range(3))
     events: list[dict[str, Any]] = []
     digests: list[str] = []
     event_ids: list[str] = []
@@ -374,7 +381,7 @@ def _make_run(
         {
             "action_id": action,
             "action_kind": "command",
-            "command": f"omitted:{gen.keyed()} and_chain {' '.join(segments)}",
+            "command": f"omitted:{keyed.keyed()} and_chain {' '.join(segments)}",
             "description": description,
         },
     )
@@ -430,7 +437,7 @@ def _make_run(
         "delivery_lag": {"count": 3, "mean_ms": 900 + seed, "since": gen.clock(1)},
         "hook_diagnostics": {
             "count": 1,
-            "drain_failures": [{"source_commitment": gen.keyed(), "ts": gen.clock(2)}],
+            "drain_failures": [{"source_commitment": keyed.keyed(), "ts": gen.clock(2)}],
         },
         "last_successful_drain": f"{seed % 7 + 1}.5s ago",
         "selection": {"capture_backlog": {"routes": {task: {"count": 0}}}},
@@ -445,9 +452,14 @@ def _make_run(
             "codex/w/001/PostToolUse/Bash",
             f"Next: resolve_failed_command. Evidence: {_HOOK_IDENTITY}.",
         ),
-        ("codex/w/002/PostToolUse/Bash", f"Evidence: stream:{gen.hex(48)}. Result {result}."),
+        ("codex/w/002/PostToolUse/Bash", f"Evidence: stream:{keyed.hex(48)}. Result {result}."),
     ]
     return {
+        "controls": {
+            "fixed_observation_key": seeded,
+            "admission_clock": "due",
+            "observation_key_seeded": seeded,
+        },
         "started_at": _STARTED.isoformat(),
         "finished_at": (_STARTED + timedelta(minutes=10)).isoformat(),
         "setup": {
@@ -527,6 +539,10 @@ def test_sets_ordered_by_generated_value_are_compared_as_sets() -> None:
     first = orders(1)
     other = next(seed for seed in range(2, 200) if orders(seed)[0] != first[0])
     assert _compare(_make_run(1), _make_run(other))["identical"]
+
+    # Without a shared observation key the keyed command segments are per-instance values sorted
+    # by value, so their order is compared as a set too.
+    assert _compare(_make_run(1, seeded=False), _make_run(other, seeded=False))["identical"]
 
 
 def test_a_replaced_chain_head_now_fails() -> None:
@@ -1228,3 +1244,49 @@ def test_a_set_path_out_of_its_producer_order_is_compared_by_position() -> None:
     assert not _compare(
         _make_run(1, payload_hook=refs("sorted")), _make_run(2, payload_hook=refs("reversed"))
     )["identical"]
+
+
+def test_seeded_runs_keep_observation_keyed_values_exact() -> None:
+    # Probe P4: under one shared observation key a source identity is deterministic, so a
+    # different one in the same place is a difference, not a renaming.
+    old, new = _make_run(1), _make_run(2)
+    new = json.loads(json.dumps(new).replace(_HOOK_IDENTITY, "hook:" + "e" * 48))
+    result = _compare(old, new)
+    assert not result["identical"]
+    assert (
+        result["workspaces"]["w"]["mismatches"][0]["part"] == "codex/w/001/PostToolUse/Bash stdout"
+    )
+    # A keyed command commitment the same way.
+    other = _Gen(4).keyed()
+
+    def recommit(name: str, payload: dict[str, Any], _gen: _Gen) -> None:
+        if name == "action_recorded":
+            parts = cast(str, payload["command"]).split(" ")
+            payload["command"] = " ".join(["omitted:" + other, *parts[1:]])
+
+    assert not _compare(_make_run(1), _make_run(2, payload_hook=recommit))["identical"]
+    # Without the shared key the same values are per-instance and are renamed.
+    unseeded_old, unseeded_new = _make_run(1, seeded=False), _make_run(2, seeded=False)
+    assert _compare(unseeded_old, unseeded_new)["identical"]
+    unseeded_new = json.loads(json.dumps(unseeded_new).replace(_HOOK_IDENTITY, "hook:" + "e" * 48))
+    assert _compare(unseeded_old, unseeded_new)["identical"]
+    # Vault-keyed payload commitments differ in every pair of seeded runs and stay renamed.
+    entries = [json.loads(e["canonical_entry"]) for e in old["export"]["tasks"][0]["events"]]
+    assert {entry["payload_ref"]["commitment"] for entry in entries} == set(
+        _MODULE.vault_keyed_values(old)
+    )
+
+
+def test_runs_under_different_controls_or_an_unwritten_seed_are_refused() -> None:
+    old, new = _make_run(1), _make_run(2)
+    new["controls"]["admission_clock"] = "held"
+    assert _compare(old, new)["refused"]["new"] == [
+        "controls_differ:{'fixed_observation_key': True, 'admission_clock': 'held'}"
+    ]
+    old, new = _make_run(1), _make_run(2, seeded=False)
+    assert "refused" in _compare(old, new)
+    old, new = _make_run(1), _make_run(2)
+    new["controls"]["observation_key_seeded"] = False
+    assert _compare(old, new)["refused"]["new"] == ["observation_key_not_seeded"]
+    del new["controls"]
+    assert _compare(old, new)["refused"]["new"] == ["controls_missing"]

@@ -1921,6 +1921,14 @@ _TOKEN_CLASS: Final = {
     "member": "derived",
     "frontier": "derived",
 }
+# Values keyed by the observation key alone, so equal in two runs seeded with
+# ``FIXED_OBSERVATION_KEY``: the workspace, session and command commitments and every other
+# ``hmac-sha256:`` value outside ``payload_ref.commitment`` (``domain.observation``,
+# ``domain.command_segments``), the ``hook:``/``stream:`` source identities over them, and the
+# advice frontier suffix, a digest over evidence bases made of those identities
+# (``observation_advice._freshness_frontier``). Seeded runs keep them exact, which also proves the
+# seed took effect. Routine-read summary and member digests carry receipt times and stay renamed.
+_OBSERVATION_KEYED_GROUPS: Final = frozenset({"keyed", "source", "frontier"})
 # The keyed segment commitments that follow a command composition word are sorted by keyed value.
 _SEGMENT_GROUP: Final = re.compile(r"\b(?:single|and_chain|masked)((?: hmac-sha256:[0-9a-f]{64})+)")
 _CLOCK_KEYS: Final = frozenset(
@@ -2171,6 +2179,12 @@ def run_failures(run: Mapping[str, Any]) -> list[str]:
     for name in ("started_at", "finished_at"):
         if _parse_time(cast(str, run.get(name) or "")) is None:
             failures.append(f"run_window_missing:{name}")
+    controls = cast(dict[str, Any] | None, run.get("controls"))
+    if not isinstance(controls, dict) or type(controls.get("fixed_observation_key")) is not bool:
+        failures.append("controls_missing")
+    elif controls["fixed_observation_key"] and controls.get("observation_key_seeded") is not True:
+        # The fixed key was asked for but never written: this run's keyed values are random.
+        failures.append("observation_key_not_seeded")
     if stop_unclean(cast(dict[str, Any], run.get("service_stop") or {})):
         failures.append("service_stop_unclean")
     export = cast(dict[str, Any], run.get("export") or {})
@@ -2417,6 +2431,10 @@ class _Tokens:
     slots: dict[str, list[tuple[Any, ...]]]
     kinds: dict[str, str]
     names: dict[str, str]
+    # Both runs used ``FIXED_OBSERVATION_KEY``: observation-keyed values stay exact, except those
+    # in ``vault_keyed`` (``vault_keyed_values``).
+    observation_exact: bool = False
+    vault_keyed: frozenset[str] = frozenset()
 
     def _scan(self, text: str) -> list[tuple[int, int, str, str | None]]:
         """``(start, end, value, class)`` spans; class ``None`` keeps the value exact."""
@@ -2431,7 +2449,11 @@ class _Tokens:
                 start, end = match.span(group)
                 if kind == "chain":
                     spans.append((start, end, value, "chain" if value in self.chain else None))
-                elif value in self.exact:
+                elif value in self.exact or (
+                    self.observation_exact
+                    and group in _OBSERVATION_KEYED_GROUPS
+                    and value not in self.vault_keyed
+                ):
                     spans.append((start, end, value, None))
                 else:
                     in_group = any(low <= start < high for low, high in grouped)
@@ -2563,6 +2585,27 @@ def _first_difference(old: Any, new: Any, path: str = "") -> tuple[str, Any, Any
     return path or "/", cast(Any, old), cast(Any, new)
 
 
+def run_controls(run: Mapping[str, Any]) -> dict[str, Any]:
+    """The experiment controls a run was replayed under, which two compared runs must share."""
+
+    controls = cast(dict[str, Any], run.get("controls") or {})
+    return {
+        "fixed_observation_key": controls.get("fixed_observation_key"),
+        "admission_clock": controls.get("admission_clock"),
+    }
+
+
+def vault_keyed_values(run: Mapping[str, Any]) -> frozenset[str]:
+    """Every ``payload_ref.commitment``: keyed by the bundle's own random vault key, per instance."""
+
+    bound, _ = bind_workspaces(run)
+    return frozenset(
+        cast(str, _entry(event)["payload_ref"]["commitment"])
+        for task in bound.values()
+        for event in cast(list[dict[str, Any]], task["events"])
+    )
+
+
 def compare_runs(
     old: Mapping[str, Any], new: Mapping[str, Any], exact: frozenset[str] = frozenset()
 ) -> dict[str, Any]:
@@ -2577,14 +2620,26 @@ def compare_runs(
         # A failed, partial or inconsistent read is never a comparable (let alone equal) run.
         result["refused"] = refused
         return result
+    controls = (run_controls(old), run_controls(new))
+    result["controls"] = controls[0]
+    if controls[0] != controls[1]:
+        # Two runs under different experiment controls are two different experiments.
+        result["refused"] = {
+            "old": [f"controls_differ:{controls[0]}"],
+            "new": [f"controls_differ:{controls[1]}"],
+        }
+        return result
     failures: dict[str, list[str]] = {"old": [], "new": []}
     parts = {"old": _parts(old, failures["old"]), "new": _parts(new, failures["new"])}
     if failures["old"] or failures["new"]:
         result["refused"] = failures
         return result
+    seeded = controls[0]["fixed_observation_key"] is True
     tokens: dict[str, _Tokens] = {}
     for side, run in (("old", old), ("new", new)):
         collected = _Tokens(exact, _chain_names(run), {}, {}, {})
+        collected.observation_exact = seeded
+        collected.vault_keyed = vault_keyed_values(run)
         for bucket in parts[side].values():
             for label, value, sets in bucket:
                 collected.collect(label, value, sets)
@@ -2873,6 +2928,13 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             run = replayer.replay(corpus, mode)
             run["started_at"] = started_at
             run["finished_at"] = datetime.now(UTC).isoformat()
+            seeded = cast(dict[str, Any] | None, entry["setup"].get("observation_key_seeded"))
+            run["controls"] = {
+                "fixed_observation_key": args.fixed_observation_key,
+                "admission_clock": args.admission_clock,
+                "observation_key_seeded": seeded is not None and seeded.get("returncode") == 0,
+                "delay_ms": args.delay_ms,
+            }
             record["runs"][mode] = run
             # The service stops cleanly before its stores are exported; ``compare`` refuses a
             # run whose stop or export did not succeed.
