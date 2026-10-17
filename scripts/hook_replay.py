@@ -1889,16 +1889,20 @@ _LATENCY_KEYS: Final = frozenset(
         "pass_timings",
         "recent_max_ms",
         "recent_p95_ms",
-        # The serialized size of local state that holds the latency figures above.
+        # The serialized size of local state that holds the latency figures above, and its share
+        # of the byte budget.
         "state_bytes",
+        "store_lock_events",
         "sum_ms",
         "timings",
+        "utilization_bps",
     }
 )
-# Observability-only diagnostics recorded when a pass's wall time exceeds its budget; they never
-# change what the pass does (``observe_hooks._record_pass_timing``). Each is removed from
+# Observability-only diagnostics recorded when a pass's wall time exceeds its budget or a store
+# lock was held for a second or more; they never change what the pass does
+# (``observe_hooks._record_pass_timing``, ``observation_local`` lock ``long_hold``). Each is removed from
 # ``hook_diagnostics.reasons`` with its counts taken out of the totals.
-_LATENCY_REASONS: Final = frozenset({"hook_budget_exceeded"})
+_LATENCY_REASONS: Final = frozenset({"hook_budget_exceeded", "store_lock_long_hold"})
 _SERVICE_AUTHORS: Final = frozenset({"yoetz.engine", "yoetz:observation-coordinator"})
 _CLOCK_MARGIN_SECONDS: Final = 120.0
 _RELATIVE_CLOCK: Final = re.compile(r"\A[0-9]+(?:\.[0-9]+)?s ago\Z")
