@@ -57,7 +57,9 @@ def unresolved_verification_obligations(
         if item.kind == "verification_limit"
     }
     linked = dict(
-        admissible_verification_refs(projection, records, (obligation for obligation, _ in flagged))
+        admissible_verification_refs(
+            projection, records, (obligation for obligation, _ in flagged), limit=None
+        )
     )
     return tuple(
         obligation
@@ -155,7 +157,7 @@ def _pairing_lines(
     }
     linked = dict(
         admissible_verification_refs(
-            projection, records, (obligation for obligation, _reasons in flagged)
+            projection, records, (obligation for obligation, _reasons in flagged), limit=None
         )
     )
     lines = [CLAIM_VERIFICATION_HEADER]
