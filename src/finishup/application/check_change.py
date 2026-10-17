@@ -825,8 +825,9 @@ def verification_input_paths(projection: ProjectionState) -> tuple[str, ...]:
     input. A test the agent wrote or changed is therefore never read here; it is in the change.
     """
 
-    runs: list[tuple[int, str]] = []
-    seen: set[str] = set()
+    # Each command is ranked by its latest run, so a re-run moves its files ahead of a command run
+    # in between.
+    latest: dict[str, int] = {}
     for row in projection.results.values():
         payload = row.payload
         if payload is None or row.redacted:
@@ -841,12 +842,11 @@ def verification_input_paths(projection: ProjectionState) -> tuple[str, ...]:
         ):
             continue
         command = action.payload.command
-        if command in seen or not command_is_verification(command):
+        if command not in latest and not command_is_verification(command):
             continue
-        seen.add(command)
-        runs.append((row.source_frontier, command))
+        latest[command] = max(latest.get(command, row.source_frontier), row.source_frontier)
     candidates: list[str] = []
-    for _, command in sorted(runs, key=lambda run: (-run[0], run[1])):
+    for command, _ in sorted(latest.items(), key=lambda run: (-run[1], run[0])):
         try:
             words = shlex.split(command, posix=True)
         except ValueError:

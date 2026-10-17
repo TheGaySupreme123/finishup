@@ -265,6 +265,23 @@ def test_verification_commands_name_their_test_files_newest_first() -> None:
     )
 
 
+def test_a_rerun_command_ranks_by_its_latest_run() -> None:
+    """Runs A, B, A: the test behind the latest run takes the oracle place, not B's."""
+
+    from finishup.application.check_change import review_input_paths, verification_input_paths
+
+    case = _verification_case(
+        ("pytest -q tests/test_a.py", "failure"),
+        ("pytest -q tests/test_b.py", "success"),
+        ("pytest -q tests/test_a.py", "success"),
+    )
+    projection = cast(Any, case).projection
+
+    assert verification_input_paths(projection) == ("tests/test_a.py", "tests/test_b.py")
+    ordered, _oracle = review_input_paths(projection, "Fix x.py, y.py and z.py.")
+    assert ordered[:4] == ("x.py", "y.py", "z.py", "tests/test_a.py")
+
+
 def test_an_input_only_a_verification_named_is_labelled_as_its_oracle() -> None:
     from finishup.ports.change_capture import TaskInputFile
 
