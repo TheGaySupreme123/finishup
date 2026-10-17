@@ -2647,9 +2647,10 @@ class _Tokens:
     def _is_set(self, items: list[Any]) -> bool:
         """Whether a list at a set path is what its producer emits: renamed values, sorted.
 
-        A value kept exact makes the list positional. Set paths hold event, evidence and artifact
-        identifiers only, never an advice finding identifier or an observation-keyed value, and a
-        positional comparison could only report a difference there, never hide one.
+        A value kept exact makes the list positional. Set paths hold event, evidence, result,
+        object, obligation and claim identifiers only, never a finding identifier or an
+        observation-keyed value, and a positional comparison could only report a difference there,
+        never hide one.
         """
 
         if not items or not all(isinstance(item, str) for item in items):
