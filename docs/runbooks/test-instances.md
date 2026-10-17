@@ -177,23 +177,32 @@ Disposal deletes files; it is not secure erasure.
 
 ## Replay recorded hook payloads through two builds (#1083)
 
-`scripts/hook_replay.py` tests whether a change to the hook path alters what hooks do. It feeds the
-same recorded payloads through two revisions, each in its own disposable snapshot, and compares
-every exit code, stdout and stderr byte, an `observe drain` after each callback, and each
-workspace's ledger history read back through `status`. Run the builds one after the other, never
-at the same time, so their timings are comparable.
+`scripts/hook_replay.py` proves that a change to the hook path does not change what hooks do. It
+feeds the same recorded payloads through two revisions, each in its own disposable snapshot, and
+compares every exit code, stdout and stderr byte, the `observe drain` after each callback, each
+workspace's `observe status` read right after its own last callback, its ledger history read back
+through `status`, and every accepted ledger event with the payload bytes it binds, exported from
+the stopped snapshot.
+
+The proof is one `replay` per build, the old build being the merged predecessor and the new one the
+change's head. Run them one after the other, never at the same time, on an otherwise idle machine,
+with one shared `--work-root`:
 
 ```text
 uv run python -I scripts/hook_replay.py corpus --rollout <codex-rollout.jsonl> \
     [--rollout ...] --max-calls 24 --out corpus.json
 uv run python -I scripts/hook_replay.py replay --checkout . --revision <old> --tag rpo \
-    --python <python3.14> --corpus corpus.json --work-root <scratch> \
-    --mode pinned --mode shipped --out old.json
+    --python <python3.14> --base <instances> --corpus corpus.json --work-root <work> \
+    --mode pinned --admission-clock due --fixed-observation-key --out old.json
 uv run python -I scripts/hook_replay.py replay --checkout . --revision <new> --tag rpn \
-    --python <python3.14> --corpus corpus.json --work-root <scratch> \
-    --mode pinned --mode shipped --out new.json
+    --python <python3.14> --base <instances> --corpus corpus.json --work-root <work> \
+    --mode pinned --admission-clock due --fixed-observation-key --out new.json
 uv run python -I scripts/hook_replay.py compare old.json new.json --report report.md
 ```
+
+`compare` exits 0 only when its verdict is IDENTICAL. Workspace paths are hashed into keyed
+commitments and recorded in each session, so `compare` refuses two records replayed under different
+work roots and names that cause.
 
 What the corpus holds:
 
@@ -203,8 +212,8 @@ What the corpus holds:
   rollout that has grown to that point.
 - Claude Code and Cursor sessions use the ordinary profiles, built from the repository's recorded
   shapes.
-- Malformed stdin for each host, and invalid workflow requests through the CLI, cover the
-  rejection paths.
+- Malformed stdin for each host, invalid workflow requests through the CLI, and schema-validation
+  probes in fresh installed-runtime processes cover the rejection paths.
 
 Both builds use the same workspace paths, which are fresh `git` repositories with a fixed commit.
 
@@ -214,26 +223,46 @@ How the replay runs:
   `PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring`, so it never reads host configuration or
   the OS keychain. The vault is initialized and the Private privacy recipe chosen through
   `scripts/dogfood_ci/ceremony.py`, with a passphrase generated for the run and never written down.
-- **Modes.** `pinned` runs each callback through the retained interpreter with the hook budgets in
-  `PINNED_HOOK_BUDGETS` raised equally for both builds. Its service runs with the background
-  observation sweep, lineage recovery and coordination retry paused, so every row reaches the
-  ledger through the callback itself or the `observe drain` that follows it, in replay order. A
-  build that is merely slower then takes the same branch as a faster one, which makes `pinned` the
-  equivalence check. `shipped` runs the launcher and service untouched and gives the latency
-  figures. Its outputs can still differ where a slower build misses a budget the faster one meets.
-- **Comparison.** `compare` renames only values that one run produced and the other never saw:
-  identifiers, installation-keyed commitments, and digests over them become `<kind#n>`,
-  consistently in order of first appearance. Wall-clock times become a bare `<time>`, because
-  which events share a millisecond depends on machine speed. A value present in both runs is
-  compared verbatim.
+- **Pinned controls, equal for both builds.** Each callback runs through the retained interpreter
+  with the hook budgets in `PINNED_HOOK_BUDGETS` raised, the end-to-end
+  `_HOOK_TOTAL_BUDGET_SECONDS` included. The service runs with its background observation sweep,
+  lineage recovery and coordination retry paused, so every row reaches the ledger through the
+  callback itself or the `observe drain` that follows it, in replay order. `--admission-clock due`
+  makes every held admission row due at the next flush instead of after two or five wall-clock
+  seconds. `--fixed-observation-key` writes one observation key into each snapshot before its first
+  service start, so keyed commitments, source identities and the advice order they decide are the
+  same in both builds. A build that is merely slower then takes the branch a faster one takes.
 - **Cleanup.** The replay stops only the service it started, then disposes the snapshot.
 
-A difference in `pinned` is a finding only if it does not also appear when the same build is
-replayed against itself. To check, run `replay` twice for one revision with a different `--tag`,
-and compare those two records. In the #1083 replay, whether a Codex PostToolUse delivered a
-second `resolve_failed_command` advice varied between two replays of the same build, for both
-builds. Every other compared part was identical in every run. `--delay-ms` holds each pinned
-callback back by a fixed time, to test whether a difference follows build speed.
+How `compare` decides:
+
+- **Refusals.** A failed or partial read is never compared: a setup step or drain that exited
+  nonzero, a status read that did not follow its workspace's last callback, a history page, the
+  service stop or the ledger export failing, an exported hash chain that does not recompute from its
+  own bytes, two runs under different controls or work roots, or a fixed key that was asked for and
+  not written.
+- **Exact comparison.** Every compared part must be equal after normalizing only values that differ
+  between two runs of one build: identifiers, which are random or digests over a run's random task
+  ids and are matched one-to-one by where they occur; vault-keyed payload commitments; routine-read
+  summary digests, which carry receipt times; named service clock fields, each checked to fall
+  inside the run; wall-time figures at named `observe status` paths, never counts, outcomes or
+  limits; and the order of one call's captured tool input and output evidence, which the
+  materializer emits in random object-id order and which is compared as a set of full events. With
+  the fixed key, observation-keyed values are compared exactly. A list of identifiers is an
+  unordered set only where its producer sorts it by value; an advice ranking is compared in order.
+- **The lazy path was taken.** The verdict also requires that no valid hook callback of the new
+  build built the full schema catalog, that at least one parsed its schemas lazily, and that every
+  callback that loaded schemas in the old build loaded them lazily in the new one.
+- **Pinned only.** Only the pinned runs decide. `--mode shipped` and the `latency` command run the
+  launcher untouched and give latency figures only.
+
+**Result (#1087).** The proof ran on Linux x86_64 (a shared 4-CPU container, Python 3.14.6) with a
+corpus of 106 items: 20 Codex callbacks rebuilt from a synthetic rollout of 8 tool calls, the 19
+Claude Code and 13 Cursor ordinary-profile callbacks, 27 malformed hook payloads, 8 invalid CLI
+requests and 19 schema probes. The merged predecessor and this change compared IDENTICAL: 677
+compared parts, including 59 ledger events with their full payloads. In the new build 30 of the 52
+valid hook callbacks parsed only their schemas (92 documents) and none built the full catalog; the
+old build built it in the same 30. A second replay of the change compared IDENTICAL with the first.
 
 ## Recovering a workstation whose everyday service was replaced
 

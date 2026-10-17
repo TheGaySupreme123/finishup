@@ -1,13 +1,15 @@
-"""Replay recorded host hook payloads through FinishUP builds and compare what each did (#1083).
+"""Replay recorded host hook payloads through two FinishUP builds and prove they behave the same.
 
 A build is replayed in its own disposable test instance (ADR-028, ``provision_test_instance.py``),
 built from one exact revision, with its own service, synthetic vault, ledger and private ``HOME``.
-The replay drives the instance's installed launcher exactly as a host does: one fresh process
-per hook callback, the payload on stdin, the registered argv and working directory. It records
-every exit code, stdout and stderr byte, the wall time of each callback, an ``observe drain``
-after each one, and finally each workspace's ledger history read back through ``status``.
-``compare`` then holds two records to byte equality after renaming only the values one run
-generated and the other never saw (identifiers, timestamps, installation-keyed commitments).
+The replay drives the instance's installed runtime exactly as a host does: one fresh process per
+hook callback, the payload on stdin, the registered argv and working directory. It records every
+exit code, stdout and stderr byte, an ``observe drain`` after each callback, each workspace's
+``observe status`` right after its last callback, its ledger history read back through ``status``,
+and finally every accepted ledger event with the payload bytes it binds, exported from the stopped
+instance. ``compare`` refuses any failed or partial read, verifies each run's hash chains from the
+exported bytes, and then holds the two records to equality, normalizing only values that are
+provably different between two runs of one build (see the comparison section below).
 
 Corpus sources:
 
@@ -19,22 +21,30 @@ Corpus sources:
   repository (``write_stdin``, ``view_image``, MCP resource listing) are left out.
 * Claude Code and Cursor: the ordinary-profile session assembled from the repository's recorded
   shapes (``fixtures/observations/*-outcomes.case.json`` and the host test payloads).
-* Malformed hook stdin for every host, and invalid workflow requests through the CLI, so the
-  rejection paths are compared too.
+* Malformed hook stdin for every host, invalid workflow requests through the CLI, and schema
+  validation probes in fresh installed-runtime processes, so the rejection paths are compared too.
 
-``--mode pinned`` runs each callback through the retained interpreter with the hook budgets
-raised equally for every build, so a build that is merely slower takes the same branch as a faster
-one; that run is the equivalence proof. ``--mode shipped`` runs the launcher untouched and is the
-latency measurement. Contributor tooling: it never targets an everyday installation, and every
-instance process gets a scratch ``HOME``/``CODEX_HOME`` and a keyring backend that refuses all
-access, so no host configuration or OS keychain is read.
+The proof is the ``pinned`` mode with both experiment controls, every build replayed one after the
+other under one shared ``--work-root`` (workspace paths are hashed into keyed commitments), on an
+otherwise idle machine. ``pinned`` runs each callback through the retained interpreter with the
+hook budgets in ``PINNED_HOOK_BUDGETS`` raised equally for every build and the service's
+background passes paused, so a build that is merely slower takes the same branch as a faster one.
+``--admission-clock`` decides the admission buffer's flush without the wall clock, and
+``--fixed-observation-key`` gives every instance one observation key, so keyed values and the
+advice order they decide are the same in both builds and compared exactly. ``compare``'s verdict
+is decided by the pinned runs alone; a ``shipped`` run (launcher untouched) only adds a latency
+table. Contributor tooling: it never targets an everyday installation, and every instance process
+gets a scratch ``HOME``/``CODEX_HOME`` and a keyring backend that refuses all access, so no host
+configuration or OS keychain is read.
 
-Usage::
+Usage (old = the merged predecessor, new = the change's head)::
 
     hook_replay.py corpus --rollout <rollout.jsonl> [--rollout ...] --out corpus.json
-    hook_replay.py replay --checkout <tree> --revision <sha> --tag <t> --corpus corpus.json \\
-        --work-root <dir> --mode pinned --mode shipped --out old.json
-    hook_replay.py compare old.json new.json [--report report.md]
+    hook_replay.py replay --checkout <tree> --revision <old> --tag rpo --corpus corpus.json \\
+        --base <instances> --work-root <work> --mode pinned --admission-clock due \\
+        --fixed-observation-key --out old.json
+    hook_replay.py replay ... --revision <new> --tag rpn ... --out new.json
+    hook_replay.py compare old.json new.json --report report.md
     hook_replay.py latency --checkout <tree> --old-revision <sha> --new-revision <sha> --tag <t> \\
         --corpus corpus.json --work-root <dir> --out latency.json
 """
@@ -2182,6 +2192,8 @@ def run_failures(run: Mapping[str, Any]) -> list[str]:
     for name in ("started_at", "finished_at"):
         if _parse_time(cast(str, run.get(name) or "")) is None:
             failures.append(f"run_window_missing:{name}")
+    if not isinstance(run.get("workspace_root"), str):
+        failures.append("workspace_root_missing")
     controls = cast(dict[str, Any] | None, run.get("controls"))
     if not isinstance(controls, dict) or type(controls.get("fixed_observation_key")) is not bool:
         failures.append("controls_missing")
@@ -2747,6 +2759,16 @@ def compare_runs(
         # A failed, partial or inconsistent read is never a comparable (let alone equal) run.
         result["refused"] = refused
         return result
+    roots = (old.get("workspace_root"), new.get("workspace_root"))
+    if roots[0] != roots[1]:
+        # Workspace paths are hashed into the keyed workspace commitments and recorded as each
+        # session's ``workspace_ref``, so runs from two roots differ for that reason alone.
+        cause = "replay both builds with one --work-root"
+        result["refused"] = {
+            "old": [f"workspace_roots_differ:{roots[0]} ({cause})"],
+            "new": [f"workspace_roots_differ:{roots[1]} ({cause})"],
+        }
+        return result
     controls = (run_controls(old), run_controls(new))
     result["controls"] = controls[0]
     if controls[0] != controls[1]:
@@ -2937,38 +2959,48 @@ def lazy_catalog_coverage(
 
 
 def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
-    """Compare two replay records mode by mode; any missing mode or other corpus is a failure."""
+    """The verdict on two replay records: their ``pinned`` runs compared, any other mode timed.
+
+    Only ``pinned`` decides: its controls make a slower build take the branch a faster one takes.
+    A ``shipped`` run, where a slower build may miss a budget the faster one meets, contributes a
+    latency table only. A missing ``pinned`` run or another corpus is a failure.
+    """
 
     summary: dict[str, Any] = {
         "old": old.get("build"),
         "new": new.get("build"),
         "modes": {},
+        "latency_only": {},
         "failures": [],
     }
     old_corpus = cast(dict[str, Any], old.get("corpus") or {})
     new_corpus = cast(dict[str, Any], new.get("corpus") or {})
     if not old_corpus.get("sha256") or old_corpus.get("sha256") != new_corpus.get("sha256"):
         summary["failures"].append("corpus_mismatch_or_missing")
-    old_modes = set(cast(dict[str, Any], old.get("runs") or {}))
-    new_modes = set(cast(dict[str, Any], new.get("runs") or {}))
-    if not old_modes or old_modes != new_modes:
-        summary["failures"].append(f"modes_differ:{sorted(old_modes)}:{sorted(new_modes)}")
+    old_runs = cast(dict[str, Any], old.get("runs") or {})
+    new_runs = cast(dict[str, Any], new.get("runs") or {})
+    if "pinned" not in old_runs or "pinned" not in new_runs:
+        summary["failures"].append(f"pinned_run_missing:{sorted(old_runs)}:{sorted(new_runs)}")
     exact = frozenset(
         cast(list[str], old_corpus.get("generated_tokens") or [])
         + cast(list[str], new_corpus.get("generated_tokens") or [])
     )
-    for mode in sorted(old_modes & new_modes):
-        old_run, new_run = old["runs"][mode], new["runs"][mode]
+    for mode in sorted(set(old_runs) & set(new_runs)):
+        old_run, new_run = old_runs[mode], new_runs[mode]
+        if mode != "pinned":
+            summary["latency_only"][mode] = latency_table(old_run, new_run)
+            continue
         summary["modes"][mode] = {
             "comparison": compare_runs(old_run, new_run, exact),
             "latency": latency_table(old_run, new_run),
         }
-        if mode == "pinned":
-            coverage, uncovered = lazy_catalog_coverage(old_run, new_run)
-            summary["lazy_catalog"] = coverage
-            summary["failures"] += uncovered
-    summary["identical"] = not summary["failures"] and all(
-        entry["comparison"]["identical"] for entry in summary["modes"].values()
+        coverage, uncovered = lazy_catalog_coverage(old_run, new_run)
+        summary["lazy_catalog"] = coverage
+        summary["failures"] += uncovered
+    summary["identical"] = (
+        not summary["failures"]
+        and bool(summary["modes"])
+        and all(entry["comparison"]["identical"] for entry in summary["modes"].values())
     )
     return summary
 
@@ -2978,6 +3010,18 @@ def render_report(old: Mapping[str, Any], new: Mapping[str, Any]) -> tuple[str, 
     old_ref = cast(dict[str, Any], old.get("build") or {}).get("source_ref")
     new_ref = cast(dict[str, Any], new.get("build") or {}).get("source_ref")
     lines = [f"# Hook replay: {old_ref} against {new_ref}", ""]
+    verdict = "IDENTICAL" if summary["identical"] else "DIFFERENT"
+    lines.append(f"Verdict (pinned runs only): **{verdict}**.")
+    lines.append("")
+    for name, record in (("old", old), ("new", new)):
+        run = cast(
+            dict[str, Any], cast(dict[str, Any], record.get("runs") or {}).get("pinned") or {}
+        )
+        lines.append(
+            f"- {name} pinned run: controls `{json.dumps(run.get('controls'), sort_keys=True)}`, "
+            f"workspace root `{run.get('workspace_root')}`"
+        )
+    lines.append("")
     for failure in summary["failures"]:
         lines.append(f"- record failure: `{failure}`")
     coverage = summary.get("lazy_catalog")
@@ -3034,6 +3078,17 @@ def render_report(old: Mapping[str, Any], new: Mapping[str, Any]) -> tuple[str, 
                 lines.append("old: " + mismatch["old"][:1500])
                 lines.append("new: " + mismatch["new"][:1500])
                 lines.append("```")
+    for mode, rows in summary["latency_only"].items():
+        lines.append(f"## Mode `{mode}`: latency only, not compared")
+        lines.append("")
+        lines.append("| Host | Event | n | Old median | New median | Old p90 | New p90 |")
+        lines.append("|---|---|---:|---:|---:|---:|---:|")
+        for row in rows:
+            lines.append(
+                f"| {row['host']} | {row['event']} | {row['n']} | {row['old_median_ms']} ms | "
+                f"{row['new_median_ms']} ms | {row['old_p90_ms']} ms | {row['new_p90_ms']} ms |"
+            )
+        lines.append("")
     return "\n".join(lines) + "\n", summary
 
 
@@ -3115,6 +3170,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             started_at = datetime.now(UTC).isoformat()
             entry["setup"] = replayer.start(pause_background=mode == "pinned")
             run = replayer.replay(corpus, mode)
+            run["workspace_root"] = str(work_root.resolve() / mode)
             run["started_at"] = started_at
             run["finished_at"] = datetime.now(UTC).isoformat()
             seeded = cast(dict[str, Any] | None, entry["setup"].get("observation_key_seeded"))
@@ -3231,12 +3287,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     replay.add_argument(
         "--admission-clock",
         choices=sorted(ADMISSION_CLOCKS),
-        help="Pinned mode: decide the admission buffer's flush without the wall clock (experiments).",
+        help="Pinned mode: decide the admission buffer's flush without the wall clock (the proof).",
     )
     replay.add_argument(
         "--fixed-observation-key",
         action="store_true",
-        help="Pinned mode: give every instance the same observation key (experiments).",
+        help="Pinned mode: give every instance the same observation key (the proof).",
     )
     replay.set_defaults(handler=_cmd_replay)
     latency = commands.add_parser(

@@ -498,6 +498,7 @@ def _make_run(
             "admission_clock": "due",
             "observation_key_seeded": seeded,
         },
+        "workspace_root": "/replay/work/pinned",
         "started_at": _STARTED.isoformat(),
         "finished_at": (_STARTED + timedelta(minutes=10)).isoformat(),
         "setup": {
@@ -1410,3 +1411,33 @@ def test_the_proof_requires_the_new_build_to_take_the_lazy_path() -> None:
     del skipped["items"][1]["catalog_trace"]
     summary = _MODULE.compare_records(_record(eager, "old"), _record(skipped, "new"))
     assert summary["failures"] == ["catalog_trace_missing:codex/w/001/PostToolUse/Bash"]
+
+
+def test_runs_from_two_work_roots_are_refused_with_the_cause() -> None:
+    old, new = _make_run(1), _make_run(2)
+    new["workspace_root"] = "/elsewhere/pinned"
+    refused = _compare(old, new)["refused"]
+    assert refused["new"] == [
+        "workspace_roots_differ:/elsewhere/pinned (replay both builds with one --work-root)"
+    ]
+    del new["workspace_root"]
+    assert _compare(old, new)["refused"]["new"] == ["workspace_root_missing"]
+
+
+def test_only_the_pinned_runs_decide_the_verdict() -> None:
+    old, new = _record(_make_run(1, catalog="eager"), "old"), _record(_make_run(2), "new")
+    # A shipped run that differs is timed, never compared.
+    old["runs"]["shipped"] = _make_run(3, catalog="eager")
+    new["runs"]["shipped"] = _make_run(4, outcome="success")
+    summary = _MODULE.compare_records(old, new)
+    assert summary["identical"], summary
+    assert set(summary["modes"]) == {"pinned"}
+    assert summary["latency_only"]["shipped"]
+    report, _ = _MODULE.render_report(old, new)
+    assert "Verdict (pinned runs only): **IDENTICAL**." in report
+    assert "## Mode `shipped`: latency only, not compared" in report
+    # Without pinned runs there is no verdict to give.
+    del old["runs"]["pinned"], new["runs"]["pinned"]
+    summary = _MODULE.compare_records(old, new)
+    assert not summary["identical"]
+    assert summary["failures"] == ["pinned_run_missing:['shipped']:['shipped']"]

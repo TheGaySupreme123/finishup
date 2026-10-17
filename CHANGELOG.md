@@ -1028,9 +1028,9 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   service call. A short-lived client now parses only the schemas its frames use (92 of 232), with
   the same verdicts and errors; the service keeps the full catalog. Recorded Codex, Claude Code and
   Cursor hooks were replayed through the builds before and after the change on an idle macOS arm64
-  machine. The median tool callback took 1.26 s instead of 1.90 s. Outputs and ledgers matched,
-  except for when one advice message arrived, which also varies between two runs of the same
-  build (#1083).
+  machine, and the median tool callback took 1.26 s instead of 1.90 s. A replay with the timing
+  and key controls pinned found every hook output, drain, status read and ledger event, with full
+  payloads, identical in both builds (#1083).
 
 - A later run of the same command (only its latest run is judged), or a later observed edit, now
   retires an earlier hook-observed failure before a completion claim. Such a failure no longer

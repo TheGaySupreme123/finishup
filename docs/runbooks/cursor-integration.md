@@ -2254,10 +2254,16 @@ with the same verdicts and errors ([interfaces](../INTERFACES.md)). Unchanged on
 
 Host decision: supported, same code path.
 
-The #1083 replay drove 4 preToolUse and 3 postToolUse ordinary-profile callbacks from the repository's recorded shapes. The median preToolUse fell from 1,926 to 1,284 ms and postToolUse from 2,002 to 1,388 ms, through the build before and after the change on macOS arm64
-(single idle machine, shipped launcher). Both builds produced identical exit codes, stdout, stderr
-and ledger history under pinned budgets. Linux and WSL 2 timings are not yet measured;
-issue #1083 owns them. See [test instances](test-instances.md).
+Latency: the #1083 replay drove 4 preToolUse and 3 postToolUse ordinary-profile callbacks from the
+repository's recorded shapes through the build before and after the change on macOS arm64 (single
+idle machine, shipped launcher). The median preToolUse fell from 1,926 to 1,284 ms and postToolUse
+from 2,002 to 1,388 ms. Linux and WSL 2 timings are not yet measured; issue #1083 owns them.
+
+Equivalence: the #1087 replay proof ([test instances](test-instances.md)) replayed the 13
+ordinary-profile callbacks, and 9 malformed payloads, through the merged predecessor and this
+change on Linux x86_64. Every exit code, stdout and stderr byte, drain, status read and ledger event
+with its full payload was identical, and 7 of those callbacks parsed only their schemas in the new
+build.
 
 ## Expanded excerpt count (issue #907 Phase 1b)
 
