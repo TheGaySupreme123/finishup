@@ -138,7 +138,10 @@ def command_identity_for(command: str) -> str:
     )
 
 
-def _logical_key(payload: EventPayload, identifier: EventId) -> str:
+def _logical_key(payload: EventPayload, identifier: EventId) -> str | None:
+    if type(payload).__name__ == "SessionOpenedPayload":
+        # A session event projects no record of its own.
+        return None
     for name in ("result_id", "action_id", "claim_id", "obligation_id", "evidence_id"):
         value = getattr(payload, name, None)
         if value is not None:

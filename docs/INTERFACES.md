@@ -10693,10 +10693,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   capture-completion time and the host deadline (monotonic ns, 0 when absent), all under the MAC;
   a version-1 record reads as `no_pre_snapshot`. The walk covers every entry under the canonical
   workspace root without consulting ignore files. Inside `VCS_METADATA_DIRECTORIES` (`.git`,
-  `.hg`, `.svn`) it skips the exact internal churn (`_VCS_OPAQUE_DIRECTORIES` by identity:
-  `objects`, `logs`, `refs`, `lfs`, `rr-cache`, `fsmonitor--daemon`, `modules`, `worktrees`,
-  `lost-found`, `cursor`, `store`, `cache`, `wcache`, `pristine`, `tmp`; `_VCS_IGNORED_FILES`,
-  `undo.*`, `*.lock`, and any `*index*` file directly in the metadata root) and compares the rest;
+  `.hg`, `.svn`) it skips the exact internal churn (`domain/workspace_effect.VCS_OPAQUE_DIRECTORIES`
+  by identity: `objects`, `logs`, `refs`, `lfs`, `rr-cache`, `fsmonitor--daemon`, `modules`,
+  `worktrees`, `lost-found`, `cursor`, `store`, `cache`, `wcache`, `pristine`, `tmp`;
+  `vcs_bookkeeping_name`: `VCS_BOOKKEEPING_FILES`, `undo.*`, `*.lock`, and any `*index*` file
+  directly in the metadata root) and compares the rest;
   `SHALLOW_DIRECTORY_NAMES` (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`, `.pytest_cache`,
   `.mypy_cache`, `.ruff_cache`, `.hypothesis`) are compared at their first level (files by content,
   subdirectories by identity); `__pycache__` is walked without recording the directory itself or
@@ -10736,14 +10737,18 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `_FINGERPRINT_HOST_MARGIN_SECONDS`.
   `domain/workspace_effect`: `WORKSPACE_EFFECT_ANNOTATION_PREFIX` (`Observed workspace effect=`),
   `workspace_effect_annotation(effect)`, `workspace_effect_from_annotation(description)`,
-  `path_beyond_workspace_fingerprint(value)`. `application/observation_materialize.materialize_workspace_effect_annotation(envelope, *, task_id, recorded_result_id, action_event_id, effect)`:
+  `path_beyond_workspace_fingerprint(value, *, directory=False, workspace_root=None)` (the walk's
+  own rules below the root; out of scope outside `workspace_root` or for a relative path that
+  leaves it; with no root, an absolute path is judged against each of its ancestors). `application/observation_materialize.materialize_workspace_effect_annotation(envelope, *, task_id, recorded_result_id, action_event_id, effect)`:
   one metadata-only observed `evidence_recorded` row (role `workspace_effect_<token>`, ids from
   the recorded result id and the token, causal parent the call's action event, no known gaps);
   `ObservationCoordinator._reconcile_workspace_effect` appends it after an ingest whose delivery
   carried a fact that the call's recorded result does not state.
   `kernel/later_material`: `WorkspaceEffects(quiet, changed, annotations)`, `workspace_effects(records,
   projection)` (folds result suffixes and annotations per action; `changed`/`unavailable` win; no
-  action is quiet when `kernel/task_facts.declared_path_beyond_fingerprint(projection)`), rules
+  action is quiet when `kernel/task_facts.declared_path_beyond_fingerprint(projection, *,
+  workspace_root)` with `workspace_root=task_workspace_root(records)`, the one absolute
+  `session_opened.workspace_ref` all of the task's sessions name, else `None`), rules
   `observed_workspace_unchanged` and `workspace_effect_of_action`; `classify_later_material(...,
   effects=)` and `closing_review_delta(record, projection, *, effects=None)` (no effects: no
   command is quiet; an annotation is judged as its call at its own position).

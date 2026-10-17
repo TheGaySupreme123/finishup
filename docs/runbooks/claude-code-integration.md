@@ -2478,8 +2478,12 @@ skipped, so `git status`, a commit or a branch stays unchanged while a `.git/con
 counts; `node_modules`, `.venv`/`venv`, `.tox`/`.nox` and tool caches are compared at their first
 level (files by content, subdirectories by identity); `__pycache__` bytecode is skipped but any
 other file there counts; FinishUP's saved receipts and state are skipped. A task that declares a
-delivery inside VCS metadata, a dependency environment or a tool cache gets no unchanged command. Effects outside the root
-(databases, `/tmp`, the network, a deliverable path outside the root) are out of scope, as before.
+delivery inside the project where the comparison does not reach it (a VCS store such as
+`.git/objects` or a skipped bookkeeping file such as `.git/HEAD`, below the first level of a
+dependency environment or tool cache, `__pycache__` bytecode, a saved receipt) gets no unchanged
+command; a declared `.git/config`, `.git/hooks/*` or `node_modules/x.js` is compared and does not.
+Effects outside the root (databases, `/tmp`, the network, a deliverable path outside the root,
+judged against the task's absolute `workspace_ref`) are out of scope, as before.
 `finishup observe status` names a degraded comparison once as a `workspace_fingerprint_<reason>`
 diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`, `store_unusable`,
 `process_table_unreadable`); a call

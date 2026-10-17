@@ -10,6 +10,7 @@ import pytest
 
 from finishup.adapters import workspace_fingerprint as fingerprint
 from finishup.adapters.workspace_fingerprint import WorkspaceFingerprintStore
+from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
 
 _KEY = b"w" * 32
 
@@ -166,6 +167,59 @@ def test_dependency_and_tool_cache_directories_compare_their_first_level(
         == "unchanged"
     )
     assert _around(store, root, lambda: os.rename(shallow / "pkg", shallow / "moved")) == "changed"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "src/module.py",
+        ".git/config",
+        ".git/hooks/pre-commit",
+        ".git/hooks/reindex",
+        ".git/info/attributes",
+        ".git/HEAD",
+        ".git/index",
+        ".git/packed-refs",
+        ".git/hooks/pre-commit.lock",
+        ".git/objects/ab/cdef0123",
+        ".git/refs/heads/main",
+        ".git/logs/HEAD",
+        "sub/.git/modules/lib/config",
+        "node_modules/x.js",
+        "node_modules/pkg/index.js",
+        "node_modules/pkg/lib/index.js",
+        "node_modules/.git/config",
+        "venv/report.txt",
+        ".venv/lib/site.py",
+        ".pytest_cache/report.txt",
+        "src/__pycache__/notes.txt",
+        "src/__pycache__/module.cpython-312.pyc",
+        "__pycache__/.git/HEAD",
+        "out/finishup-receipt.md",
+    ],
+)
+def test_the_kernel_rule_names_exactly_the_files_the_walk_does_not_compare(
+    tmp_path: Path, relative: str
+) -> None:
+    """``path_beyond_workspace_fingerprint`` and the walk read one rule (PR #1080 round 7).
+
+    A declared file the kernel calls beyond the walk is one whose in-place rewrite the walk does
+    not see, and every other file's rewrite is ``changed``; named absolutely under the root, the
+    file is judged the same way.
+    """
+
+    root = _workspace(tmp_path)
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("reviewed")
+    store = _store(tmp_path)
+    beyond = path_beyond_workspace_fingerprint(relative)
+    assert _around(store, root, lambda: target.write_text("UNREVIEWED")) == (
+        "unchanged" if beyond else "changed"
+    )
+    assert path_beyond_workspace_fingerprint(str(target), workspace_root=str(root)) is beyond
+    # Outside the root the walk sees nothing, so the rule claims nothing there either.
+    assert not path_beyond_workspace_fingerprint(str(target), workspace_root=str(root / "other"))
 
 
 def test_bytecode_caches_hide_only_bytecode(tmp_path: Path) -> None:

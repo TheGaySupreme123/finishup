@@ -1279,11 +1279,26 @@ after the review showed a script writing `venv/answer.txt` or `__pycache__/answe
   temporary names) and the directory's own creation by an import are not changes; any other file
   in one is compared.
 - *Declared deliveries the walk cannot fully see.* The hook does not read obligations. When an
-  effective obligation names a non-input `file` or `directory` inside VCS metadata or a dependency
-  environment or tool cache, a bytecode file, or a saved receipt or export name
+  effective obligation names a non-input `file` or `directory` inside the workspace where the walk
+  does not compare it, the kernel treats no command as `unchanged`
   (`domain/workspace_effect.path_beyond_workspace_fingerprint`,
-  `kernel/task_facts.declared_path_beyond_fingerprint`), the kernel treats no command as
-  `unchanged`.
+  `kernel/task_facts.declared_path_beyond_fingerprint`). The rule is the walk's own, read from the
+  same domain constants the adapter walks by: a path inside a VCS store recorded by identity only
+  (`.git/objects`, `refs`, `logs`, ...) or a VCS bookkeeping file the walk skips (`HEAD`, the
+  metadata-root index, `*.lock`, ...), anything below the first level of a dependency environment
+  or tool cache, a bytecode file in `__pycache__`, a saved receipt or export name, or a declared
+  directory that is itself VCS metadata or a dependency environment. VCS files the walk compares
+  (`.git/config`, `.git/hooks/*`) and files directly inside a dependency environment
+  (`node_modules/x.js`, `venv/report.txt`) do not trigger it (round 7). A relative path is read
+  against the workspace root. An absolute path is judged by its part below the task's root, the
+  one absolute `workspace_ref` every `session_opened` of the task names
+  (`kernel/task_facts.task_workspace_root`; hook auto-attach sends the canonical root the walk
+  uses), and a path outside that root, or a relative one that leaves it, is out of scope like any
+  other effect outside the root (`/usr/local/lib/node_modules/...` installed globally does not
+  trigger it). With no such root (no session names one, sessions disagree, or a ref is not an
+  absolute path) an absolute path triggers the rule when it would for any of its ancestors as the
+  root, so an in-root `/app/node_modules/pkg/index.js` stays covered. The judgment is lexical and
+  replay-stable: no path is resolved and no filesystem is read.
 
 A commit leaves the closing review's base-to-working-tree change capture (ADR-031) unchanged, which
 is why the VCS internals stay out. FinishUP's saved receipts and exports (ADR-042) and its state or

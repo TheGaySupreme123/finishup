@@ -81,6 +81,7 @@ from finishup.kernel.task_facts import (
     effective_obligations,
     non_counting_edits_exempt,
     requested_verification_run_events,
+    task_workspace_root,
 )
 
 __all__ = [
@@ -265,10 +266,12 @@ def workspace_effects(
             annotations[record.event_id] = action
             note(action, effect)
     quiet: set[ActionId] = unchanged - contradicted
-    if quiet and declared_path_beyond_fingerprint(projection):
-        # The task declares a delivery the fingerprint does not walk (VCS metadata, deep inside a
-        # dependency environment or cache, a bytecode or saved-receipt name): no comparison can
-        # vouch for it, so no command is quiet.
+    if quiet and declared_path_beyond_fingerprint(
+        projection, workspace_root=task_workspace_root(prefix)
+    ):
+        # The task declares a delivery inside the workspace that the fingerprint does not compare
+        # (a VCS store or bookkeeping file, below a dependency environment's first level, a
+        # bytecode or saved-receipt name): no comparison can vouch for it, so no command is quiet.
         quiet = set[ActionId]()
     if quiet:
         verifying = requested_verification_run_events(projection, prefix)

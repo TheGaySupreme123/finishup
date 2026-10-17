@@ -28,9 +28,10 @@ narrowed them; round 5 skipped whole directories by name):
   object store, reflogs, refs, LFS objects, submodule and worktree administration directories (and
   ``lost-found`` and Cursor's ``cursor`` checkpoint store) are recorded by identity only, and the
   index files in the metadata root, ``HEAD``-style pointer files, ``packed-refs``, lock files and the
-  like are skipped (``_VCS_OPAQUE_DIRECTORIES``, ``_VCS_IGNORED_FILES``). A commit, a fetch or an
-  index refresh by ``git status`` is therefore not a workspace change, while a write to ``config``,
-  ``hooks/``, ``info/attributes`` or any other file there is.
+  like are skipped (``domain.workspace_effect.VCS_OPAQUE_DIRECTORIES`` and
+  ``vcs_bookkeeping_name``, which the kernel's ``path_beyond_workspace_fingerprint`` reads too). A
+  commit, a fetch or an index refresh by ``git status`` is therefore not a workspace change, while a
+  write to ``config``, ``hooks/``, ``info/attributes`` or any other file there is.
 * *Dependency environments and tool caches* (``SHALLOW_DIRECTORY_NAMES``: ``node_modules``,
   ``.venv``, ``venv``, ``.tox``, ``.nox``, ``.pytest_cache``, ``.mypy_cache``, ``.ruff_cache``,
   ``.hypothesis``) are compared at their first level: a file directly inside one is compared like
@@ -114,11 +115,13 @@ from finishup.domain.workspace_effect import (
     BYTECODE_CACHE_DIRECTORY,
     SHALLOW_DIRECTORY_NAMES,
     VCS_METADATA_DIRECTORIES,
+    VCS_OPAQUE_DIRECTORIES,
     WORKSPACE_CHANGED,
     WORKSPACE_UNAVAILABLE,
     WORKSPACE_UNCHANGED,
     bytecode_artifact_name,
     saved_artifact_name,
+    vcs_bookkeeping_name,
 )
 
 __all__ = [
@@ -135,61 +138,6 @@ __all__ = [
 ]
 
 FINGERPRINT_DIRECTORY: Final = "workspace-fingerprints"
-# Inside VCS metadata: the internal stores recorded by identity only, at any depth (Git's object
-# store, reflogs, refs, LFS objects, fsmonitor state, submodule and worktree administration,
-# ``git fsck --lost-found`` output, Cursor's checkpoint store; Mercurial's store and caches;
-# Subversion's pristine copies), and the bookkeeping files skipped (pointer files, packed refs,
-# commit/merge messages, maintenance logs and locks; and, directly in the metadata root, any index
-# file: Git's own, its split and temporary indexes, and the private index copies tools keep there).
-_VCS_OPAQUE_DIRECTORIES: Final = frozenset(
-    {
-        "objects",
-        "logs",
-        "refs",
-        "lfs",
-        "rr-cache",
-        "fsmonitor--daemon",
-        "modules",
-        "worktrees",
-        "lost-found",
-        "cursor",
-        "store",
-        "cache",
-        "wcache",
-        "pristine",
-        "tmp",
-    }
-)
-_VCS_IGNORED_FILES: Final = frozenset(
-    {
-        "HEAD",
-        "ORIG_HEAD",
-        "FETCH_HEAD",
-        "MERGE_HEAD",
-        "MERGE_MSG",
-        "MERGE_MODE",
-        "MERGE_RR",
-        "AUTO_MERGE",
-        "REBASE_HEAD",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-        "BISECT_LOG",
-        "COMMIT_EDITMSG",
-        "TAG_EDITMSG",
-        "packed-refs",
-        "shallow",
-        "gc.log",
-        "gc.pid",
-        "dirstate",
-        "last-message.txt",
-        "wlock",
-        "lock",
-        "wc.db",
-        "wc.db-journal",
-    }
-)
-_VCS_IGNORED_PREFIXES: Final = ("undo.",)
-_VCS_IGNORED_SUFFIXES: Final = (".lock",)
 MAX_ENTRIES: Final = 60_000
 SNAPSHOT_SECONDS: Final = 0.75
 HASH_FILE_BYTES: Final = 8 * 1024 * 1024
@@ -341,15 +289,6 @@ def _kind(mode: int) -> int:
 
 def _past(deadline: float) -> bool:
     return time.monotonic() >= deadline
-
-
-def _vcs_bookkeeping(name: str, *, in_root: bool) -> bool:
-    return (
-        name in _VCS_IGNORED_FILES
-        or name.startswith(_VCS_IGNORED_PREFIXES)
-        or name.endswith(_VCS_IGNORED_SUFFIXES)
-        or (in_root and "index" in name)
-    )
 
 
 class _Hasher:
@@ -699,9 +638,9 @@ class WorkspaceFingerprintStore:
                     opaque = False
                     record = True
                     if mode in {_MODE_VCS, _MODE_VCS_ROOT}:
-                        if kind == _KIND_DIR and name in _VCS_OPAQUE_DIRECTORIES:
+                        if kind == _KIND_DIR and name in VCS_OPAQUE_DIRECTORIES:
                             opaque = True
-                        elif kind != _KIND_DIR and _vcs_bookkeeping(
+                        elif kind != _KIND_DIR and vcs_bookkeeping_name(
                             name, in_root=mode == _MODE_VCS_ROOT
                         ):
                             continue

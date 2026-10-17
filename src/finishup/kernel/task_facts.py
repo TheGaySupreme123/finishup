@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import posixpath
 import re
 import threading
 from collections.abc import Iterable, Mapping
@@ -75,6 +76,7 @@ from finishup.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
     ResultOutcome,
+    SessionOpenedPayload,
     is_observation_authored,
 )
 from finishup.domain.observation import normalize_observed_command, observed_command_commitment
@@ -232,6 +234,7 @@ __all__ = [
     "BlockerDeclaration",
     "acting_started",
     "declared_path_beyond_fingerprint",
+    "task_workspace_root",
     "acknowledged_obligation_ids",
     "agent_linked_run_events",
     "observed_planned_commands",
@@ -1198,15 +1201,41 @@ def requested_verification_run_events(
     return frozenset(events)
 
 
-def declared_path_beyond_fingerprint(projection: ProjectionState) -> bool:
+def task_workspace_root(records: Iterable[LedgerRecord]) -> str | None:
+    """The one absolute workspace root this task's sessions name, or ``None`` when it is not known.
+
+    ``session_opened`` keeps the ``workspace_ref`` its session started with: hook auto-attach sends
+    the canonical absolute root the workspace fingerprint walks, and guidance asks an agent's
+    ``start`` for the same root. A session without an absolute ref (absent, redacted, or not a
+    path) or two different roots leave the root unknown. Lexical: the value is never resolved.
+    """
+
+    roots: set[str] = set()
+    for record in records:
+        if type(record) is not AcceptedEvent or record.schema.name != "session_opened":
+            continue
+        payload = record.payload
+        ref = payload.workspace_ref if type(payload) is SessionOpenedPayload else None
+        if ref is None or not ref.startswith("/"):
+            return None
+        roots.add(posixpath.normpath(ref))
+    return next(iter(roots)) if len(roots) == 1 else None
+
+
+def declared_path_beyond_fingerprint(
+    projection: ProjectionState, *, workspace_root: str | None = None
+) -> bool:
     """Whether an effective obligation names a deliverable the workspace fingerprint cannot vouch for.
 
-    A requested non-input ``file`` or ``directory`` inside VCS metadata or a dependency environment
-    or tool cache, a bytecode file, or a saved receipt or export name
-    (``path_beyond_workspace_fingerprint``, PR #1080 round 6). The hook does not read obligations
-    and compares those places only in part or not at all; the kernel then withholds ``unchanged``
-    from every command rather than trust a comparison that may not have seen the delivery. Pure:
-    no filesystem is read.
+    A requested non-input ``file`` or ``directory`` inside the workspace where the walk does not
+    compare it: a VCS store recorded by identity only or a skipped VCS bookkeeping file, below the
+    first level of a dependency environment or tool cache, a bytecode file, or a saved receipt or
+    export name (``path_beyond_workspace_fingerprint``, PR #1080 round 6). The hook does not read
+    obligations; the kernel then withholds ``unchanged`` from every command rather than trust a
+    comparison that may not have seen the delivery. ``workspace_root`` is the task's absolute root
+    (``task_workspace_root``): an absolute declaration outside it is out of the walk's scope, and
+    with no known root an absolute one is judged against each of its ancestors. Pure: no
+    filesystem is read.
     """
 
     for obligation in effective_obligations(projection):
@@ -1216,7 +1245,11 @@ def declared_path_beyond_fingerprint(projection: ProjectionState) -> bool:
         for item in payload.requested_items:
             if item.item_kind not in _DECLARED_OUTPUT_KINDS or item.role is RequestedItemRole.INPUT:
                 continue
-            if path_beyond_workspace_fingerprint(item.value):
+            if path_beyond_workspace_fingerprint(
+                item.value,
+                directory=item.item_kind is RequestedItemKind.DIRECTORY,
+                workspace_root=workspace_root,
+            ):
                 return True
     return False
 

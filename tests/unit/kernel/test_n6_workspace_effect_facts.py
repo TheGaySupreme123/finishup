@@ -13,13 +13,17 @@ import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from finishup.domain.events import (
+    ClientKind,
     EventSchema,
+    IntegrationKind,
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
     RequestedItem,
     RequestedItemKind,
     RequestedItemRole,
+    RuntimeProfile,
+    SessionOpenedPayload,
 )
 from finishup.domain.values import obligation_id
 from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
@@ -31,7 +35,7 @@ from finishup.kernel.later_material import (
     workspace_effects,
 )
 from finishup.kernel.reducers import replay
-from finishup.kernel.task_facts import register_command_identity_key
+from finishup.kernel.task_facts import register_command_identity_key, task_workspace_root
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +104,28 @@ def test_another_tools_annotation_follows_its_tool_rule() -> None:
         assert (closing_material_frontier(state, ledger.prefix) > 0) is material, effect
 
 
-def _declare(ledger: ObservedLedger, value: str, role: RequestedItemRole | None) -> None:
+def _open_session(ledger: ObservedLedger, workspace_ref: str | None) -> None:
+    ledger.append(
+        EventSchema("session_opened", "1.0.0"),
+        SessionOpenedPayload(
+            task_title="Deliver the report",
+            client_kind=ClientKind.FINISHUP_CLI,
+            client_version="0.3.0",
+            integration=IntegrationKind.LOCAL_CLI,
+            profile=RuntimeProfile.STRICT_LOCAL,
+            workspace_ref=workspace_ref,
+        ),
+        observed=False,
+    )
+
+
+def _declare(
+    ledger: ObservedLedger,
+    value: str,
+    role: RequestedItemRole | None,
+    *,
+    kind: RequestedItemKind = RequestedItemKind.FILE,
+) -> None:
     obligation = obligation_id("obl_00000000-0000-4000-8000-000000001086")
     ledger.append(
         EventSchema("obligation_published", "1.1.0"),
@@ -109,7 +134,7 @@ def _declare(ledger: ObservedLedger, value: str, role: RequestedItemRole | None)
             description="Deliver the report",
             evidence_expectation="A report",
             status=ObligationStatus.OPEN,
-            requested_items=(RequestedItem(RequestedItemKind.FILE, value, role),),
+            requested_items=(RequestedItem(kind, value, role),),
         ),
         observed=False,
     )
@@ -120,50 +145,108 @@ def _declare(ledger: ObservedLedger, value: str, role: RequestedItemRole | None)
     )
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        "venv/report.txt",
-        ".venv/lib/python3.12/site-packages/pkg/patch.py",
-        "node_modules/pkg/index.js",
-        ".git/config",
-        "src/__pycache__/module.cpython-312.pyc",
-        ".pytest_cache/report.txt",
-        "out/finishup-receipt.md",
-    ],
-)
-def test_a_declared_delivery_the_fingerprint_cannot_fully_see_quiets_nothing(value: str) -> None:
-    """The review's ``venv/report.txt`` probe: a quiet command no longer outranks the delivery."""
+def _quiet_after_declaring(
+    value: str,
+    role: RequestedItemRole,
+    *,
+    root: str | None,
+    kind: RequestedItemKind = RequestedItemKind.FILE,
+) -> tuple[bool, bool]:
+    """Whether an unchanged command is quiet, and whether it re-arms the closing review."""
 
-    assert path_beyond_workspace_fingerprint(value)
     ledger = ObservedLedger()
-    _declare(ledger, value, RequestedItemRole.OUTPUT)
+    if root is not None:
+        _open_session(ledger, root)
+    _declare(ledger, value, role, kind=kind)
     start = len(ledger.records)
     ledger.passes("python generate.py", workspace_effect="unchanged")
     state = replay(ledger.prefix)
-    assert workspace_effects(ledger.prefix, state).quiet == frozenset()
-    assert any(
-        closing_review_delta(row, state, effects=workspace_effects(ledger.prefix, state))
-        for row in ledger.records[start:]
+    effects = workspace_effects(ledger.prefix, state)
+    rearms = any(
+        closing_review_delta(row, state, effects=effects) for row in ledger.records[start:]
+    )
+    assert (closing_material_frontier(state, ledger.prefix) > start) is rearms
+    return bool(effects.quiet), rearms
+
+
+@pytest.mark.parametrize(
+    "value,root,kind",
+    [
+        # Below the first level of a dependency environment: recorded by identity only.
+        (".venv/lib/python3.12/site-packages/pkg/patch.py", None, RequestedItemKind.FILE),
+        ("node_modules/pkg/index.js", None, RequestedItemKind.FILE),
+        ("node_modules/pkg/lib/index.js", None, RequestedItemKind.FILE),
+        ("node_modules/pkg", None, RequestedItemKind.DIRECTORY),
+        # Absolute and inside the task's root, or with no known root (a TB-style ``/app`` path).
+        ("/app/node_modules/pkg/index.js", "/app", RequestedItemKind.FILE),
+        ("/app/node_modules/x/y.js", None, RequestedItemKind.FILE),
+        # VCS internals the walk records by identity or skips.
+        (".git/objects/ab/cdef0123", None, RequestedItemKind.FILE),
+        ("/app/.git/refs/heads/main", "/app", RequestedItemKind.FILE),
+        (".git/HEAD", None, RequestedItemKind.FILE),
+        ("src/__pycache__/module.cpython-312.pyc", None, RequestedItemKind.FILE),
+        ("out/finishup-receipt.md", None, RequestedItemKind.FILE),
+    ],
+)
+def test_a_declared_delivery_the_fingerprint_cannot_fully_see_quiets_nothing(
+    value: str, root: str | None, kind: RequestedItemKind
+) -> None:
+    """A quiet command never outranks a delivery the walk does not compare."""
+
+    directory = kind is RequestedItemKind.DIRECTORY
+    assert path_beyond_workspace_fingerprint(value, directory=directory, workspace_root=root)
+    assert _quiet_after_declaring(value, RequestedItemRole.OUTPUT, root=root, kind=kind) == (
+        False,
+        True,
     )
 
 
 @pytest.mark.parametrize(
-    "value,role",
+    "value,role,root",
     [
-        ("report.txt", RequestedItemRole.OUTPUT),
-        ("src/__pycache__/notes.txt", RequestedItemRole.OUTPUT),
-        ("venv/report.txt", RequestedItemRole.INPUT),
+        ("report.txt", RequestedItemRole.OUTPUT, None),
+        ("src/__pycache__/notes.txt", RequestedItemRole.OUTPUT, None),
+        ("node_modules/pkg/index.js", RequestedItemRole.INPUT, None),
+        # Files the walk compares: the first level of a dependency environment or tool cache,
+        # and VCS configuration and hooks.
+        ("node_modules/x.js", RequestedItemRole.OUTPUT, None),
+        ("venv/report.txt", RequestedItemRole.OUTPUT, None),
+        (".pytest_cache/report.txt", RequestedItemRole.OUTPUT, None),
+        (".git/hooks/pre-commit", RequestedItemRole.OUTPUT, None),
+        (".git/config", RequestedItemRole.OUTPUT, None),
+        ("/app/.git/config", RequestedItemRole.OUTPUT, "/app"),
+        ("/app/node_modules/x.js", RequestedItemRole.OUTPUT, None),
+        # Outside the task's root: out of the walk's scope (PR #1080 round 7).
+        ("/usr/local/lib/node_modules/left-pad/index.js", RequestedItemRole.OUTPUT, "/app"),
+        ("/opt/venv/lib/python3.12/site-packages/pkg/core.py", RequestedItemRole.OUTPUT, "/app"),
+        ("/home/git/project/.git/hooks/post-receive", RequestedItemRole.OUTPUT, "/app"),
+        ("../other/node_modules/pkg/index.js", RequestedItemRole.OUTPUT, None),
     ],
 )
 def test_an_ordinary_or_input_declaration_keeps_unchanged_commands_quiet(
-    value: str, role: RequestedItemRole
+    value: str, role: RequestedItemRole, root: str | None
 ) -> None:
-    assert path_beyond_workspace_fingerprint(value) is (value == "venv/report.txt")
+    beyond = path_beyond_workspace_fingerprint(value, workspace_root=root)
+    assert beyond is (role is RequestedItemRole.INPUT)
+    assert _quiet_after_declaring(value, role, root=root) == (True, False)
+
+
+def test_the_tasks_root_is_known_only_when_every_session_names_the_same_absolute_one() -> None:
+    """Out-of-root declarations stay quiet only against one root every session agrees on."""
+
+    outside = "/usr/local/lib/node_modules/left-pad/index.js"
     ledger = ObservedLedger()
-    _declare(ledger, value, role)
-    start = len(ledger.records)
-    ledger.passes("python generate.py", workspace_effect="unchanged")
-    state = replay(ledger.prefix)
-    assert workspace_effects(ledger.prefix, state).quiet
-    assert closing_material_frontier(state, ledger.prefix) <= start
+    assert task_workspace_root(ledger.prefix) is None
+    _open_session(ledger, "/app/")
+    _open_session(ledger, "/app")
+    assert task_workspace_root(ledger.prefix) == "/app"
+    for other in ("/srv/other", "my-repo", None):
+        mixed = ObservedLedger()
+        _open_session(mixed, "/app")
+        _open_session(mixed, other)
+        assert task_workspace_root(mixed.prefix) is None
+        _declare(mixed, outside, RequestedItemRole.OUTPUT)
+        mixed.passes("python generate.py", workspace_effect="unchanged")
+        state = replay(mixed.prefix)
+        # Unknown root: every ancestor may be the root, so the declaration quiets nothing.
+        assert workspace_effects(mixed.prefix, state).quiet == frozenset(), other
