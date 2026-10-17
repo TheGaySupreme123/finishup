@@ -282,13 +282,20 @@ How `compare` decides:
 - **Pinned only.** Only the pinned runs decide. `--mode shipped` and the `latency` command run the
   launcher untouched and give latency figures only.
 
-**Result (#1087).** The proof ran on Linux x86_64 (a shared 4-CPU container, Python 3.14.6) with a
-corpus of 106 items: 20 Codex callbacks rebuilt from a synthetic rollout of 8 tool calls, the 19
-Claude Code and 13 Cursor ordinary-profile callbacks, 27 malformed hook payloads, 8 invalid CLI
-requests and 19 schema probes. The merged predecessor and this change compared IDENTICAL: 677
-compared parts, including 59 ledger events with their full payloads. In the new build 30 of the 52
-valid hook callbacks parsed only their schemas (92 documents) and none built the full catalog; the
-old build built it in the same 30. A second replay of the change compared IDENTICAL with the first.
+**Result (#1087).** The proof ran on 2026-10-17 on Linux x86_64 (a shared 4-CPU container, Python
+3.14.6), with its three replays (old, new and a second new) run one after the other. The old build
+was the merged predecessor, `0.3` at `c0198bb169a0fcb3411476f93bc060bcf9f15a19` (with #1080 and
+#1086); the new build was this change's head at `ea1f6eda4ad9a02a45a758b7bf7f97acfe601aaa`, which
+merges that revision. Both were built from clean trees. The corpus held 106 items: 20 Codex
+callbacks rebuilt from a synthetic rollout of 8 tool calls (`--max-calls 24`), the 19 Claude Code
+and 13 Cursor ordinary-profile callbacks, 27 malformed hook payloads, 8 invalid CLI requests and 19
+schema probes. The two builds compared IDENTICAL: 677 compared parts, including 59 ledger events
+with their full payloads. In the new build 30 of the 52 valid hook callbacks parsed only their
+schemas (92 documents) and none built the full catalog; the old build built it in the same 30. A
+second replay of the new head compared IDENTICAL with the first, over the same 677 parts and 59
+events. In every run one result reads "(workspace unverified)": a Cursor `postToolUse` whose payload
+carries no exit code, so the host outcome is unavailable. The payload decides it, not a fingerprint
+deadline.
 
 ## Recovering a workstation whose everyday service was replaced
 

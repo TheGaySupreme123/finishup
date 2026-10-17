@@ -3230,11 +3230,14 @@ from 1,921 to 1,261 ms (p90 2,173 to 1,527 ms and 2,141 to 1,564 ms). Linux and 
 not yet measured; issue #1083 owns them.
 
 Equivalence: the #1087 replay proof ([test instances](test-instances.md)) replayed 20 Codex
-callbacks rebuilt from a synthetic rollout, and 9 malformed payloads, through the merged
-predecessor and this change on Linux x86_64. Every exit code, stdout and stderr byte, drain, status
-read and ledger event with its full payload compared identical after the normalization that runbook
-describes, which matches run-generated values, such as task, session and result ids, one-to-one.
-In the new build 15 of those callbacks parsed only their schemas.
+callbacks rebuilt from a synthetic rollout of 8 tool calls, and 9 malformed payloads, on Linux
+x86_64 on 2026-10-17 through the merged predecessor (`0.3` at `c0198bb16`, with #1080 and #1086)
+and this change's head (`ea1f6eda4`). Every exit code, stdout and stderr byte, drain, status read
+and ledger event with its full payload compared identical after the normalization that runbook
+describes, which matches run-generated values, such as task, session and result ids, one-to-one:
+231 compared parts in the Codex workspace, including 26 ledger events. In the new build 15 of those
+callbacks parsed only their schemas and none built the full catalog; the old build built it in the
+same 15. A second replay of the new head compared identical with the first.
 The MCP bridge (`mcp serve --host codex`) is not replayed: it builds the full catalog as it starts,
 so its validation is unchanged by this change.
 
