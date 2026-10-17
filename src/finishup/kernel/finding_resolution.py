@@ -85,6 +85,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+    UNRESOLVED_VERIFICATION_GAP,
 )
 from finishup.domain.task_statement import (
     TASK_STATEMENT_FINDING_SUMMARIES,
@@ -328,6 +329,10 @@ _BASE_DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = (
     # Task facts (#977) describe the work, never whether the rows a local pack judges were
     # readable, so they never veto a local absence proof either; they stay on the receipt.
     | TASK_FACT_GAPS
+    # The derived unanswered-verification limit (#1079 F2, ADR-033) says only that a resolved
+    # obligation lacks observed verification or a recorded limit. It bounds the receipt and never
+    # reblocks Stop, so it must not keep an unrelated repaired local finding open either.
+    | {UNRESOLVED_VERIFICATION_GAP}
 )
 # A reduced AI-powered review scope bounds the review packet only; the local-check case is not
 # reduced (ADR-006), so review selection never weakens a local absence proof (issue #904).
