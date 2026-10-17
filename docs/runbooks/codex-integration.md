@@ -2439,7 +2439,8 @@ than the agent's work. Their dispositions:
   rejected left its `PreToolUse` pending until it expired as `pending_attempt_expired` (17 of 18
   tb4n5 attempts; the shell heredoc above did not occur once). The FinishUP MCP bridge now records each
   error answer it returns (a commitment to the tool, the request's FinishUP session and writer, and
-  its `request_id`, nothing else), and the pending attempt of that call closes as
+  its `request_id`, or for a `publish_work` sent without one its canonical arguments; nothing
+  else), and the pending attempt of that call closes as
   `rejected_by_yoetz` without the gap once the next hook runs at least 5 s later, or at once when
   the session ends or its generation advances. Each rejection closes at most one attempt in any
   workspace. Every other missing post still expires with the gap, and `finishup observe
@@ -3558,8 +3559,13 @@ so Codex takes the same path as every other host. What a Codex agent can rely on
   `publish_work` (it still does for `start`, `check`, `respond` and `receipt`). Codex has no
   startup gate hook; its observation hooks are unchanged.
 - Host tool-call ids are not used: none of the three hosts' MCP call identity is verified in this
-  repository, so the bridge mints its own. A rejected id-less call cannot be matched to its pending hook attempt
-  (the hook never sees the minted id), so that attempt still expires as before.
+  repository, so the bridge mints its own. The hook never sees that id, so a rejected id-less
+  `publish_work` is matched to its pending hook attempt by a commitment to the agent's own
+  arguments (tool, FinishUP session and writer, and the canonical body both the pre-event and the
+  bridge see; ADR-029): the attempt closes as `rejected_by_yoetz`, not `pending_attempt_expired`,
+  and two identical rejected bodies close one attempt each. It still expires when the arguments
+  have no canonical form (a fractional number, for example) or the pre-event body outgrew the
+  1 MiB hook parse and was reduced to its identity view.
 
 Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/unit/mcp/test_server_filled_bridge.py`, `tests/unit/mcp/test_publish_identity_guard.py`,

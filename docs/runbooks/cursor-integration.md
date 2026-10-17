@@ -2631,8 +2631,13 @@ so Cursor takes the same path as every other host. What a Cursor agent can rely 
   ticket at `afterMCPExecution` from the result's echoed `request_id`, and matches minted event ids
   by position in `accepted_events`; a sparse first plan still releases the gate.
 - Host tool-call ids are not used: none of the three hosts' MCP call identity is verified in this
-  repository, so the bridge mints its own. A rejected id-less call cannot be matched to its pending hook attempt
-  (the hook never sees the minted id), so that attempt still expires as before.
+  repository, so the bridge mints its own. The hook never sees that id, so a rejected id-less
+  `publish_work` is matched to its pending hook attempt by a commitment to the agent's own
+  arguments (tool, FinishUP session and writer, and the canonical body both the pre-event and the
+  bridge see; ADR-029): the attempt closes as `rejected_by_yoetz`, not `pending_attempt_expired`,
+  and two identical rejected bodies close one attempt each. It still expires when the arguments
+  have no canonical form (a fractional number, for example) or the pre-event body outgrew the
+  1 MiB hook parse and was reduced to its identity view.
 
 Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/unit/mcp/test_server_filled_bridge.py`, `tests/unit/mcp/test_publish_identity_guard.py`,
