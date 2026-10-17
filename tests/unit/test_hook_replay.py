@@ -1021,3 +1021,145 @@ def test_a_status_read_taken_after_another_item_is_refused() -> None:
     status["status"] = {"lifecycle": "active"}
     old["ledgers"]["w"]["observe_status"] = json.dumps(status)
     assert not _compare(old, new)["identical"]
+
+
+def _with_status(run: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    ledger = run["ledgers"]["w"]
+    ledger["observe_status"] = json.dumps({**json.loads(ledger["observe_status"]), **change})
+    return run
+
+
+def _pass_timings(outcome: str, ms: int) -> dict[str, Any]:
+    return {
+        "bucket_upper_bounds_ms": [5, 10],
+        "dropped_sample_count": ms % 2,
+        "entries": [
+            {
+                "bucket_counts": [0, ms],
+                "count": 1,
+                "event": "PreToolUse",
+                "first_seen": "2026-10-16T20:00:01.000000Z",
+                "host": "claude",
+                "last_seen": "2026-10-16T20:00:01.000000Z",
+                "max_ms": ms,
+                "max_ts": "2026-10-16T20:00:01.000000Z",
+                "mean_ms": ms,
+                "outcomes": {"failed": 0, outcome: 1},
+                "p50_ms_at_most": ms,
+                "p95_ms_at_most": ms,
+                "path": "ordinary",
+                "recent": {"count": 1, "max_ms": ms, "since": "2026-10-16T19:00:00Z"},
+                "sum_ms": ms,
+            }
+        ],
+        "evicted_entry_count": 0,
+        "since": "2026-10-16T20:00:01.000000Z",
+        "status": "retained",
+    }
+
+
+def test_latency_figures_are_dropped_only_at_their_own_paths() -> None:
+    assert _MODULE.latency_path("/hook_diagnostics/pass_timings/entries[]/max_ms")
+    assert _MODULE.latency_path("/hook_diagnostics/timings/paths/sync_fallback_spool/recent_p95_ms")
+    assert _MODULE.latency_path("/selection/state_bytes")
+    assert not _MODULE.latency_path("/selection/effective_budget/limits/state_bytes")
+    assert not _MODULE.latency_path("/hook_diagnostics/pass_timings/entries[]/count")
+    assert not _MODULE.latency_path("/hook_diagnostics/pass_timings/entries[]/outcomes")
+    assert not _MODULE.latency_path("/hook_diagnostics/timings/count")
+    assert not _MODULE.latency_path("/advice/max_ms")  # A key name alone never drops a field.
+    # Every pass's wall time differs between the runs; nothing else does.
+    old = _with_status(_make_run(1), {"hook_diagnostics": {"pass_timings": _pass_timings("a", 7)}})
+    new = _with_status(_make_run(2), {"hook_diagnostics": {"pass_timings": _pass_timings("a", 8)}})
+    assert _compare(old, new)["identical"]
+
+
+def test_a_pass_outcome_that_differs_is_not_hidden_as_latency() -> None:
+    # Probe P2: one pass ingested in one run and was not ingested in the other.
+    timings = {"hook_diagnostics": {"pass_timings": _pass_timings("ingested", 7)}}
+    old = _with_status(_make_run(1), timings)
+    timings = {"hook_diagnostics": {"pass_timings": _pass_timings("not_ingested", 7)}}
+    new = _with_status(_make_run(2), timings)
+    result = _compare(old, new)
+    assert not result["identical"]
+    assert result["workspaces"]["w"]["mismatches"][0]["path"].startswith(
+        "/hook_diagnostics/pass_timings/entries[0]/outcomes"
+    )
+
+
+def test_a_configured_limit_is_compared_while_the_usage_size_is_not() -> None:
+    def budget(limit: int, used: int) -> dict[str, Any]:
+        effective = {"limits": {"state_bytes": limit}, "utilization_bps": used // 100}
+        return {"selection": {"state_bytes": used, "effective_budget": effective}}
+
+    # The serialized state size differs with its timing figures: not a behaviour difference.
+    assert _compare(
+        _with_status(_make_run(1), budget(1048576, 34784)),
+        _with_status(_make_run(2), budget(1048576, 34790)),
+    )["identical"]
+    # Probe P3: a different configured limit is.
+    result = _compare(
+        _with_status(_make_run(1), budget(1048576, 34784)),
+        _with_status(_make_run(2), budget(2097152, 34784)),
+    )
+    assert not result["identical"]
+    assert result["workspaces"]["w"]["mismatches"][0]["path"] == (
+        "/selection/effective_budget/limits/state_bytes"
+    )
+
+
+def test_a_lock_timeout_row_is_compared_while_a_long_hold_row_is_not() -> None:
+    long_hold = {
+        "event": "PostToolUse",
+        "holder_held_ms": 1200,
+        "kind": "store_lock",
+        "phase": "capture",
+        "reason": "store_lock_long_hold",
+        "role": "hook",
+        "ts": "2026-10-16T20:00:02.000000Z",
+    }
+    timeout = {
+        **long_hold,
+        "holder_held_ms": 2100,
+        "holder_phase": "drain",
+        "holder_role": "service",
+        "holder_waiting": False,
+        "reason": "store_lock_timeout",
+        "scope": "process",
+        "waited_ms": 2000,
+    }
+
+    def locks(*rows: dict[str, Any]) -> dict[str, Any]:
+        return {"hook_diagnostics": {"store_lock_events": list(rows)}}
+
+    assert _compare(
+        _with_status(_make_run(1), locks()), _with_status(_make_run(2), locks(long_hold))
+    )["identical"]
+    assert _compare(
+        _with_status(_make_run(1), locks(timeout)),
+        _with_status(_make_run(2), locks({**timeout, "holder_held_ms": 2500, "waited_ms": 2001})),
+    )["identical"]
+    # Probe P8: a lock timeout in one run only.
+    result = _compare(
+        _with_status(_make_run(1), locks()), _with_status(_make_run(2), locks(timeout))
+    )
+    assert not result["identical"]
+
+
+def test_session_boundary_timing_rows_are_counted_and_only_their_milliseconds_dropped() -> None:
+    def timings(count: int, ms: int) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "count": count,
+            "last_ms": ms,
+            "max_ms": ms,
+            "recent_count": count,
+            "paths": {},
+        }
+        return {"hook_diagnostics": {"timings": row}}
+
+    assert _compare(
+        _with_status(_make_run(1), timings(3, 900)), _with_status(_make_run(2), timings(3, 950))
+    )["identical"]
+    assert not _compare(
+        _with_status(_make_run(1), timings(3, 900)), _with_status(_make_run(2), timings(4, 900))
+    )["identical"]
+    assert _MODULE.PINNED_HOOK_BUDGETS["_HOOK_TOTAL_BUDGET_SECONDS"] >= 120.0

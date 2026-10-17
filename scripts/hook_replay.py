@@ -950,6 +950,10 @@ _SEED_OBSERVATION_KEY: Final = (
     "print(json.dumps({'ok': True}))\n"
 )
 # Raised equally in every replayed build: a slower build then takes the branch a faster one takes.
+# ``_HOOK_TOTAL_BUDGET_SECONDS`` is computed once at import from its parts, so raising the parts
+# does not raise it; it is pinned itself. It decides when a pass is recorded as
+# ``hook_budget_exceeded`` with an over-budget timing row, and it bounds the SessionStart context
+# read.
 PINNED_HOOK_BUDGETS: Final[Mapping[str, float | int]] = {
     "_AUTO_ATTACH_RETRY_BUDGET_SECONDS": 30.0,
     "_AUTO_ATTACH_RETRY_SERVICE_START_BUDGET_SECONDS": 30.0,
@@ -958,6 +962,7 @@ PINNED_HOOK_BUDGETS: Final[Mapping[str, float | int]] = {
     "_HOOK_DRAIN_ROW_LIMIT": 100_000,
     "_HOOK_LOCAL_STAGE_ALLOWANCE_SECONDS": 120.0,
     "_HOOK_SERVICE_START_BUDGET_SECONDS": 30.0,
+    "_HOOK_TOTAL_BUDGET_SECONDS": 120.0,
     "_NATIVE_CONTENT_DRAIN_BUDGET_SECONDS": 30.0,
     "_NATIVE_CONTENT_ROW_LIMIT": 100_000,
     "_SESSION_END_DRAIN_BUDGET_SECONDS": 30.0,
@@ -1889,8 +1894,9 @@ def _event_of(argv: Sequence[str]) -> str:
 #   clock window: ``accepted_at``; ``occurred_at`` and evidence ``observed_at`` of events the
 #   service or its observation coordinator authored; observe-status times (``_CLOCK_KEYS``) and
 #   ages (``_AGE_KEYS``, each no longer than the run).
-# * latency: observe-status timing statistics (``_LATENCY_KEYS``), dropped, and the
-#   observability-only budget diagnostics (``_LATENCY_REASONS``), removed with their counts.
+# * latency: observe-status wall-time figures at named paths (``_LATENCY_PATHS``), dropped, and the
+#   observability-only lock-hold diagnostics (``_LATENCY_ROWS``, ``_LATENCY_REASONS``), removed
+#   with their counts.
 
 _ID_PREFIXES: Final = (
     "act aut agt att cas clm dsp egr err evd evt fnd ins job obj obl pin ppr prj psw pvy rcp req "
@@ -1933,31 +1939,71 @@ _CLOCK_KEYS: Final = frozenset(
 )
 # Ages measured against the wall clock at read time: compared only as present or absent.
 _AGE_KEYS: Final = frozenset({"oldest_pending_age_ms"})
-_LATENCY_KEYS: Final = frozenset(
+# Wall-time figures in ``observe status``, dropped at exactly these paths (``[]`` is any list
+# item, ``*`` any object key) and nowhere else. Counts, outcomes, limits and constants beside
+# them stay compared.
+_LATENCY_PATHS: Final = frozenset(
     {
-        "bucket_counts",
-        "last_ms",
-        "max_ms",
-        "mean_ms",
-        "p50_ms_at_most",
-        "p95_ms_at_most",
-        "pass_timings",
-        "recent_max_ms",
-        "recent_p95_ms",
-        # The serialized size of local state that holds the latency figures above, and its share
-        # of the byte budget.
-        "state_bytes",
-        "store_lock_events",
-        "sum_ms",
-        "timings",
-        "utilization_bps",
+        # Enqueue-to-accept delivery latency (``observation_local`` delivery-lag histogram); its
+        # count, unit and bucket bounds stay compared.
+        *(
+            f"/delivery_lag/{key}"
+            for key in (
+                "bucket_counts",
+                "last_ms",
+                "max_ms",
+                "mean_ms",
+                "p50_ms_at_most",
+                "p95_ms_at_most",
+            )
+        ),
+        # Every hook pass's wall time (``hook_timing.hook_pass_timing_summary``). Each entry's
+        # host, event, path, count and outcomes, the aggregate's status and evicted-entry count,
+        # and its constants stay compared.
+        "/hook_diagnostics/pass_timings/since",
+        "/hook_diagnostics/pass_timings/dropped_sample_count",
+        *(
+            f"/hook_diagnostics/pass_timings/entries[]/{key}"
+            for key in (
+                "bucket_counts",
+                "first_seen",
+                "hard_cap_breach_count",
+                "last_seen",
+                "max_ms",
+                "max_ts",
+                "mean_ms",
+                "p50_ms_at_most",
+                "p95_ms_at_most",
+                "recent",
+                "sum_ms",
+            )
+        ),
+        # Session-boundary and over-budget pass rows (``hook_diagnostics._Timings``): only their
+        # milliseconds. Pinned mode raises the total budget, so every row is a session-boundary
+        # row and the row counts stay compared.
+        *(
+            f"/hook_diagnostics/timings/{key}"
+            for key in ("last_ms", "max_ms", "recent_max_ms", "recent_p95_ms")
+        ),
+        "/hook_diagnostics/timings/paths/*/recent_p95_ms",
+        "/hook_diagnostics/timings/paths/*/recent_hard_cap_breach_count",
+        # How long a timed-out store lock was held and waited for; the timeout row stays compared.
+        "/hook_diagnostics/store_lock_events[]/holder_held_ms",
+        "/hook_diagnostics/store_lock_events[]/waited_ms",
+        # The serialized size of the local selection state, which holds the timing figures above,
+        # and the utilization derived from it: at the usage level only, never under ``limits``.
+        "/selection/state_bytes",
+        "/selection/effective_budget/utilization_bps",
+        "/status/selection_runtime/state_bytes",
+        "/status/selection_runtime/effective_budget/utilization_bps",
     }
 )
-# Observability-only diagnostics recorded when a pass's wall time exceeds its budget or a store
-# lock was held for a second or more; they never change what the pass does
-# (``observe_hooks._record_pass_timing``, ``observation_local`` lock ``long_hold``). Each is removed from
-# ``hook_diagnostics.reasons`` with its counts taken out of the totals.
-_LATENCY_REASONS: Final = frozenset({"hook_budget_exceeded", "store_lock_long_hold"})
+_LATENCY_PATTERNS: Final = tuple(tuple(path.split("/")) for path in sorted(_LATENCY_PATHS))
+# A store lock held for a second or more is reported after its release and never changes what the
+# pass does (``observation_local`` lock ``long_hold``): its ``store_lock_events`` rows are removed,
+# and its ``hook_diagnostics.reasons`` entry with its counts taken out of the totals.
+_LATENCY_ROWS: Final = {"/hook_diagnostics/store_lock_events": ("reason", "store_lock_long_hold")}
+_LATENCY_REASONS: Final = frozenset({"store_lock_long_hold"})
 _SERVICE_AUTHORS: Final = frozenset({"yoetz.engine", "yoetz:observation-coordinator"})
 _CLOCK_MARGIN_SECONDS: Final = 120.0
 _RELATIVE_CLOCK: Final = re.compile(r"\A[0-9]+(?:\.[0-9]+)?s ago\Z")
@@ -2230,6 +2276,17 @@ def _policy_payload(
     return out
 
 
+def latency_path(path: str) -> bool:
+    """Whether ``path`` in ``observe status`` is one of the wall-time figures ``compare`` drops."""
+
+    segments = tuple(path.split("/"))
+    return any(
+        len(pattern) == len(segments)
+        and all(want in ("*", have) for want, have in zip(pattern, segments, strict=True))
+        for pattern in _LATENCY_PATTERNS
+    )
+
+
 def _policy_status(value: Any, window: _Window, failures: list[str], path: str = "") -> Any:
     if isinstance(value, dict):
         source = cast(dict[str, Any], value)
@@ -2247,7 +2304,7 @@ def _policy_status(value: Any, window: _Window, failures: list[str], path: str =
             source["reasons"] = kept
         out: dict[str, Any] = {}
         for key, item in source.items():
-            if key in _LATENCY_KEYS:
+            if latency_path(f"{path}/{key}"):
                 continue
             if key in _CLOCK_KEYS and (item is None or type(item) is str):
                 window.check(item, f"{path}/{key}", failures)
@@ -2259,7 +2316,15 @@ def _policy_status(value: Any, window: _Window, failures: list[str], path: str =
                 out[key] = _policy_status(item, window, failures, f"{path}/{key}")
         return out
     if isinstance(value, list):
-        return [_policy_status(item, window, failures, path) for item in cast(list[Any], value)]
+        items = cast(list[Any], value)
+        if path in _LATENCY_ROWS:
+            field, latency = _LATENCY_ROWS[path]
+            items = [
+                row
+                for row in items
+                if not (isinstance(row, dict) and cast(dict[str, Any], row).get(field) == latency)
+            ]
+        return [_policy_status(item, window, failures, f"{path}[]") for item in items]
     return value
 
 
