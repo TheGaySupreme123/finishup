@@ -81,10 +81,13 @@ def test_the_switch_draft_is_never_reused_verbatim() -> None:
 
     section = _section()
     # Issue #1084: FinishUP fills the ids and time, and (review R1 of PR #1088) each call is its
-    # own publication, so switching back is simply published again.
+    # own publication, so switching back is simply published again. Round 3: an id-less body
+    # identical to the previous publish is refused as a possible retry, which the section says.
     assert "Omit `event_id` and `occurred_at`: FinishUP fills them" in section
     assert 'publish a new decision with `review_mode: "local"`' in section
-    assert "each call is its own publication, even with an identical body" in section
+    assert "each call is its own publication." in section
+    assert "even with an identical body" not in section
+    assert "identical to your previous publish is refused, as a possible retry" in section
     assert "replays it and records nothing new" not in section
     assert "a `final_review: true` check that omits `mode` runs that review" in section
     assert "mode: semantic_if_configured" not in section

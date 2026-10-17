@@ -417,8 +417,10 @@ and its text offered the blocker as the exit. The owner decided:
    when an active Stop emitted nothing. A blocker row readiness reports as `confirmation:
    confirmed` (the agent re-published the same line in a later decision) is never re-asked, and
    the readiness token `obligation_blocker_unconfirmed` is a gate item like `obligations_open`.
-   How to confirm a blocker (publish the same `finishup-blocker` line again in a later decision) is
-   told only after the challenge: in the re-check, or in a later gate whose blocker was already
+   How to confirm a blocker (publish the same `finishup-blocker` line again in a later decision,
+   whose rationale names what was re-checked: the MCP bridge refuses a writer's previous id-less
+   body resent unchanged as a possible retry, ADR-050, while the confirmation rule keys only on
+   the line and the obligation) is told only after the challenge: in the re-check, or in a later gate whose blocker was already
    re-asked. The offer that introduces the blocker line never says it, so publishing the line
    twice up front cannot skip the challenge (the kernel rule that a repeat confirms only after
    the challenge is owned by the blockers change). The re-check tells the agent that a FinishUP

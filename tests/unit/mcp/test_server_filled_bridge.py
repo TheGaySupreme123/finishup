@@ -573,6 +573,103 @@ async def test_an_immediate_deliberate_repeat_is_asked_not_dropped(
     await bridge.close_bridge_runtime(runtime)
 
 
+def _blocker(envelope: Mapping[str, object], obligation: str, rationale: str) -> dict[str, object]:
+    return {
+        **envelope,
+        "event_drafts": [
+            {
+                "schema": {"name": "decision_recorded", "version": "1.0.0"},
+                "payload": {
+                    "statement": "finishup-blocker:dependency_unavailable",
+                    "rationale": rationale,
+                    "authority": "projection-sweep",
+                    "affected_obligation_ids": [obligation],
+                },
+            }
+        ],
+    }
+
+
+def _notices(result: types.CallToolResult) -> list[str]:
+    assert result.isError is not True, result.structuredContent
+    wire = cast(Mapping[str, Any], result.structuredContent)
+    return [cast(str, row["notice"]) for row in wire.get("blocker_notices", [])]
+
+
+@pytest.mark.anyio
+async def test_a_blocker_confirmed_as_the_challenge_says_is_never_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #1088 round 3: the id-less confirmation the challenge asks for is a different body.
+
+    The claimed notice asks for the same line with a rationale that names the re-check, so the
+    guard sends it and it confirms. An unchanged id-less resend of the claim is still refused
+    (a lost-reply retry must never confirm a blocker unasked, #985), and the refusal says what
+    a caller who saw the claim succeed does instead.
+    """
+
+    service, _started, envelope = await _service(monkeypatch, 12520)
+    runtime = _runtime()
+    ledger, _objects = next(iter(service.app.runtime.resources.values()))
+    task_event = str(next(iter(ledger._state.records)).event_id)
+    obligation = protocol_id("obl_", 12521)
+    plan = await bridge.dispatch_publish_work(
+        {
+            **envelope,
+            "event_drafts": [
+                {
+                    "schema": {"name": "plan_published", "version": "1.0.0"},
+                    "payload": {
+                        "plan_version": 1,
+                        "summary": "Install and run the tool.",
+                        "obligation_refs": [obligation],
+                    },
+                },
+                {
+                    "schema": {"name": "obligation_published", "version": "1.0.0"},
+                    "payload": {
+                        "obligation_id": obligation,
+                        "description": "Install and run the tool",
+                        "evidence_expectation": "test",
+                        "status": "open",
+                        "source_refs": [task_event],
+                    },
+                },
+            ],
+        },
+        runtime,
+    )
+    assert plan.isError is not True, plan.structuredContent
+    claim = _blocker(envelope, obligation, "The package index is unreachable from this container.")
+    claimed = await bridge.dispatch_publish_work(claim, runtime)
+    assert _notices(claimed) == ["blocker_claimed"]
+    claim_id = cast(str, cast(Mapping[str, Any], claimed.structuredContent)["request_id"])
+    assert "with a rationale that names what you re-checked" in _text(claimed)
+
+    sent = len(service.publish_ids)
+    refused = await bridge.dispatch_publish_work(claim, runtime)
+    assert _refusal(refused) == claim_id
+    assert len(service.publish_ids) == sent  # nothing was sent
+    text = _text(refused)
+    assert "If you saw it succeed, it is recorded" in text
+    assert "change the body or send a fresh request_id" in text
+    assert "req_ plus a new lowercase UUIDv4" in text
+    assert f"If you did not see its result, or it was an error, send request_id {claim_id}" in text
+    message = cast(str, _error(refused)["message"])
+    assert "If you saw that call succeed, it is recorded" in message
+    assert "send replay_request_id as request_id to retry that call" in message
+
+    confirm = _blocker(
+        envelope,
+        obligation,
+        "Re-checked: the index and its mirror refuse connections and nothing is vendored.",
+    )
+    confirmed = await bridge.dispatch_publish_work(confirm, runtime)
+    assert _notices(confirmed) == ["blocker_confirmed"]
+    assert len(service.publish_ids) == sent + 1
+    await bridge.close_bridge_runtime(runtime)
+
+
 @pytest.mark.anyio
 async def test_a_certainly_rejected_call_does_not_guard_its_resend(
     monkeypatch: pytest.MonkeyPatch,

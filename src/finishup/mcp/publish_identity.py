@@ -11,7 +11,9 @@ What this module adds is a guard, never a guess. It remembers, in this bridge pr
 writer's previous id-less publish whose outcome could have committed: a commitment over the
 canonical body and the id it ran under. An id-less call whose body is identical to that previous
 call is refused before anything is sent, naming the earlier id, so the caller chooses explicitly:
-send that id to retry it, or a fresh ``request_id`` to publish the same facts again. The record
+send that id to retry a call whose result it did not see, or, for a call it saw succeed, change
+the body or send a fresh ``request_id`` to publish again. A ``finishup-blocker`` confirmation
+names its re-check in the rationale, so it is a different body and is not refused. The record
 is replaced by the writer's next id-less publish, dropped by an explicit-id publish of that writer
 that could have committed, cleared when the previous call was certainly rejected before any
 append, and forgotten after one hour of monotonic time. Dry runs never touch it.

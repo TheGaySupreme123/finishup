@@ -317,7 +317,9 @@ advertised and catalog input schemas drop it from `required`).
   refused before sending as `INVALID_REQUEST` with `reason_code: publish_repeat_unconfirmed`,
   continuation `publish_identity_choice`, and `safe_details.replay_request_id` naming the earlier
   id. The envelope `request_id` is absent, so no hook reads the refusal as the earlier call's
-  outcome.
+  outcome. The refusal (`retryable: false`) says a call the caller saw succeed is recorded, so a
+  deliberate repeat changes the body or sends a fresh `request_id` (`req_` plus a new lowercase
+  UUIDv4), and a call whose result it did not see is retried with `replay_request_id`.
 - **Forgetting.** The record is replaced by the writer's next id-less publish. It is dropped by:
   - the writer's explicit-id publish that could have committed;
   - a certain pre-append rejection of that call (`INVALID_REQUEST`, `EVENT_INVALID`,
@@ -10519,8 +10521,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   blocker lines, from `task_facts.blocker_publication_notices(projection_with_batch,
   ((event_id, payload), ...))`. `blocker_claimed` is the challenge (repair first; a FinishUP limit is
   never a blocker, respond `self_verified`; recoverable data is not a blocker; only if still
-  genuine, confirm by repeating the line in a later publish) and, with the Stop re-check, the
-  only text that says how to confirm. `blocker_without_effect` marks a blocker naming no open
+  genuine, confirm by repeating the line in a later publish with a rationale that names what was
+  re-checked, since an unchanged id-less resend is refused as a possible retry) and, with the Stop
+  re-check, the only text that says how to confirm. `blocker_without_effect` marks a blocker naming no open
   obligation, including an id the task does not know: it changes no readiness, gap or finding (use `self_verified`, or
   `acknowledged_not_done` as a last resort). `mcp.summaries.render_publish_blocker_notices`
   renders the rows on the MCP text channel; structural pointers admit the four leaves.

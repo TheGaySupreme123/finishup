@@ -3039,15 +3039,21 @@ def _minted_id_line(request_id: str) -> str:
 
 
 def _repeat_refusal(previous: str, runtime: BridgeRuntime) -> types.CallToolResult:
-    """Refuse an id-less body identical to the writer's previous, possibly committed, call."""
+    """Refuse an id-less body identical to the writer's previous, possibly committed, call.
+
+    The text separates the two cases only the caller can tell apart: a call whose success it saw
+    is recorded, so a deliberate repeat changes the body (a blocker confirmation names its
+    re-check) or sends a fresh id; a call whose result it did not see is retried by its id.
+    """
 
     refused = structured_error_result(
         PublicErrorCode.INVALID_REQUEST,
         (
             "This publish_work body is identical to this writer's previous publish_work without "
-            "request_id, whose outcome may have been recorded, so FinishUP sent nothing rather "
-            "than guess. Send replay_request_id to retry that call, or send a fresh request_id "
-            "to publish the same facts again."
+            "request_id, so FinishUP sent nothing: it may be a retry. If you saw that call "
+            "succeed, it is recorded; to publish again on purpose, change the body or send a "
+            "fresh request_id (req_ plus a new lowercase UUIDv4). Otherwise send "
+            "replay_request_id as request_id to retry that call."
         ),
         safe_details={"reason_code": "publish_repeat_unconfirmed", "replay_request_id": previous},
         operation="publish_work",
@@ -3056,8 +3062,10 @@ def _repeat_refusal(previous: str, runtime: BridgeRuntime) -> types.CallToolResu
     return _with_identity_line(
         refused,
         (
-            f"The previous identical call ran under request_id {previous}: send that request_id "
-            "to retry it, or a fresh request_id to publish again."
+            f"The previous identical call ran under request_id {previous}. If you saw it "
+            "succeed, it is recorded: to publish again on purpose, change the body or send a "
+            "fresh request_id (req_ plus a new lowercase UUIDv4). If you did not see its result, "
+            f"or it was an error, send request_id {previous} to retry it."
         ),
         runtime,
     )

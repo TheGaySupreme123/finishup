@@ -128,8 +128,13 @@ a material transition, not typing UUIDs, timestamps and mirrors.
    - **Guard, not guess:** the bridge keeps, in memory, each writer's previous id-less publish
      that could have committed. An id-less body identical to it is refused before anything is
      sent (`INVALID_REQUEST`, `publish_repeat_unconfirmed`, continuation
-     `publish_identity_choice`, `replay_request_id` naming the earlier id). The caller then sends
-     that id to retry, or a fresh `request_id` to publish again.
+     `publish_identity_choice`, `replay_request_id` naming the earlier id). The refusal says a
+     call the caller saw succeed is recorded: to publish again on purpose it changes the body or
+     sends a fresh `request_id` (`req_` plus a new lowercase UUIDv4); to retry a call whose result
+     it did not see, it sends that id. A `finishup-blocker` confirmation is therefore asked to
+     name its re-check in the rationale (round 3 of the PR #1088 review): the confirmation rule
+     keys on the line and the obligation, so the changed body confirms, and the guard still
+     refuses a lost-reply resend that would otherwise confirm a blocker unasked (#985).
      - The record is replaced by the writer's next id-less publish.
      - It is dropped by the writer's explicit-id publish that could have committed, by a certain
        pre-append rejection of that call, and after one hour of monotonic time.

@@ -256,16 +256,20 @@ _DIRECTIVES: Final = (
     ),
     # Issue #1084 (ADR-050 decision 2): an id-less publish never resumes an earlier call by its
     # content. An identical id-less resend of the writer's previous, possibly committed call is
-    # refused so the caller decides what it is.
+    # refused so the caller decides what it is. A result the caller saw succeed is recorded, so a
+    # deliberate repeat changes the body or sends a new id; only an unseen outcome is retried.
     RecoveryDirective(
         token="publish_identity_choice",
         directive=(
-            "Nothing was sent: this body repeats your previous publish_work without request_id, "
-            "whose outcome may be recorded. To retry that call, send replay_request_id as "
-            "request_id; to publish the same facts again, send a fresh request_id."
+            "Nothing was sent: this body repeats your previous id-less publish_work. If you saw "
+            "it succeed, it is recorded; to publish again, change the body or send a fresh "
+            "request_id. Otherwise retry it: send replay_request_id as request_id."
         ),
         guidance_uri=_PUBLICATION_RECOVERY,
-        nudge="An id-less resend is never treated as a retry.",
+        nudge=(
+            "A fresh request_id is req_ plus a new lowercase UUIDv4. An id-less resend is never "
+            "a retry."
+        ),
     ),
     RecoveryDirective(
         token="session_rebind_required",

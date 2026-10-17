@@ -36,6 +36,11 @@ def test_the_challenge_is_repair_first_and_never_invites_a_finishup_limit_blocke
     )
     assert "the task says is recoverable or achievable is not a blocker" in claimed
     assert "publish the same finishup-blocker line for it again in a later" in claimed
+    # PR #1088 round 3: the confirmation is a different body, since the MCP bridge refuses the
+    # writer's previous id-less body resent unchanged as a possible retry.
+    assert "with a rationale that names what you re-checked" in claimed
+    assert "resent unchanged without request_id is refused as a possible retry" in claimed
+    assert "send a fresh request_id" in claimed
     assert "acknowledged_not_done" not in claimed
     without = PUBLISH_BLOCKER_NOTICE_TEXTS["blocker_without_effect"]
     assert "no effect" in without

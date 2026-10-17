@@ -394,7 +394,9 @@ def test_tb4v1_pretrain_blocker_for_a_missing_snapshot_is_rechecked_once() -> No
     # limit are not blockers, and how to confirm is said only in the challenge (#985, #984).
     assert "Continue that work unless it is genuinely outside your control" in gate.text
     assert "a FinishUP limit never is" in gate.text
-    assert "same finishup-blocker line again in a later" in gate.text
+    assert "same finishup-blocker line again later, with a rationale naming your re-check" in (
+        gate.text
+    )
 
 
 def test_a_genuine_blocker_lets_pretrain_stop_after_one_recheck() -> None:

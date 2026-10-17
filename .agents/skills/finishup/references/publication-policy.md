@@ -433,14 +433,15 @@ used unchanged; a sent mirror that disagrees with its payload is still refused.
 | draft `occurred_at` | the service clock when the batch is published | never your assertion: history and review inputs mark it `occurred_at_source: service_clock` |
 | `causal_parents`, `artifact_refs`, `evidence_refs` | an empty set, or the payload's own mirror | the payload stays the assertion |
 
-The request id is never derived from the body and never resumed by content, so a deliberate
-repeat, such as confirming a `finishup-blocker` line again or switching review mode back, is
-published again. To retry a call whose outcome you did not see, send its `request_id` (the error
-names it; read `status view=operation` with it when unsure). As a guard, the MCP bridge refuses an
-id-less body identical to your writer's previous id-less publish that could have been recorded
-(`publish_repeat_unconfirmed`, continuation `publish_identity_choice`): nothing is sent, and the
-refusal names the earlier id as `replay_request_id`. Send that id to retry, or a fresh `request_id`
-to publish again.
+The request id is never derived from the body and never resumed by content, so a later
+publication, such as switching review mode back, is published again. To retry a call whose outcome
+you did not see, send its `request_id` (the error names it; read `status view=operation` with it
+when unsure). As a guard, the MCP bridge refuses an id-less body identical to your writer's
+previous id-less publish that could have been recorded (`publish_repeat_unconfirmed`, continuation
+`publish_identity_choice`): nothing is sent, and the refusal names the earlier id as
+`replay_request_id`. If you saw that call succeed, it is recorded: to publish again on purpose,
+change the body or send a fresh `request_id` (`req_` plus a new lowercase UUIDv4). If you did not
+see its result, send `replay_request_id` as `request_id` to retry it.
 
 That guard is best effort, and only the request id is a guarantee. The guard does not exist:
 

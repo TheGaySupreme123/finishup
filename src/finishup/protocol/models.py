@@ -2933,7 +2933,10 @@ PUBLISH_BLOCKER_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
             " (authority, consent, a credential, a dependency you cannot obtain). Until then the"
             " obligation stays your work (obligation_blocker_unconfirmed). If it is still genuine"
             " after you re-read the task and tried the obvious prerequisite, confirm it: publish"
-            " the same finishup-blocker line for it again in a later publish_work call."
+            " the same finishup-blocker line for it again in a later publish_work call, with a"
+            " rationale that names what you re-checked. Your previous body resent unchanged"
+            " without request_id is refused as a possible retry; to repeat it on purpose, send a"
+            " fresh request_id."
         ),
         "blocker_confirmed": (
             "This finishup-blocker is confirmed: the obligation is disclosed as blocked outside your"
