@@ -444,7 +444,11 @@ def _make_run(
     return {
         "started_at": _STARTED.isoformat(),
         "finished_at": (_STARTED + timedelta(minutes=10)).isoformat(),
-        "setup": {"w": {"grant_returncode": 0}},
+        "setup": {
+            "w": {
+                "grant": {"returncode": 0, "stdout": "Observation granted.\n", "stderr": ""},
+            }
+        },
         "service_stop": {"stop_returncode": 0, "exit_code": 0},
         "items": [
             {
@@ -456,7 +460,7 @@ def _make_run(
                 "stdout": stdout,
                 "stderr": "",
                 "elapsed_ms": float(index + 1),
-                "drain": {"returncode": 0, "stdout": '{"terminal":"drained"}\n'},
+                "drain": {"returncode": 0, "stdout": '{"terminal":"drained"}\n', "stderr": ""},
             }
             for index, (label, stdout) in enumerate(items)
         ],
@@ -680,6 +684,7 @@ def test_a_complete_history_page_is_accepted() -> None:
         "export_empty",
         "stop_unclean",
         "setup_failed",
+        "drain_failed",
         "unmapped",
         "observe_status_failed",
         "history_row_forged",
@@ -698,7 +703,11 @@ def test_any_failed_or_inconsistent_read_refuses_the_comparison(breakage: str) -
     elif breakage == "stop_unclean":
         new["service_stop"] = {"stop_returncode": 0, "exit_code": -15, "terminated": True}
     elif breakage == "setup_failed":
-        new["setup"]["w"]["grant_returncode"] = 1
+        new["setup"]["w"]["grant"]["returncode"] = 1
+    elif breakage == "drain_failed":
+        # One failed drain is enough, even when the same drain also failed in the other run.
+        for run in (old, new):
+            run["items"][1]["drain"] = {"returncode": 2, "stdout": "", "stderr": "failed"}
     elif breakage == "unmapped":
         ledger["mapped"] = False
         del ledger["mapping"]
@@ -895,3 +904,42 @@ def test_pinned_only_flags_are_refused_before_any_instance_exists(
         _MODULE.main([*argv, *flags])
     assert str(refused.value) == refusal
     assert not (tmp_path / "w").exists()
+
+
+def test_drain_and_setup_output_are_compared_parts() -> None:
+    old, new = _make_run(1), _make_run(2)
+    new["items"][0]["drain"]["stderr"] = "warning: drain retried\n"
+    result = _compare(old, new)
+    assert [m["part"] for m in result["workspaces"]["w"]["mismatches"]] == [
+        "codex/w/000/SessionStart drain stderr"
+    ]
+    old, new = _make_run(1), _make_run(2)
+    new["setup"]["w"]["grant"]["stdout"] = "Observation already granted.\n"
+    result = _compare(old, new)
+    assert [m["part"] for m in result["workspaces"]["w"]["mismatches"]] == ["w setup grant stdout"]
+
+
+def test_an_unclean_pre_pause_stop_refuses_to_serve_a_second_service(tmp_path: Path) -> None:
+    replayer = object.__new__(_MODULE.Replayer)
+    replayer.home = tmp_path / "home"
+    replayer.fixed_observation_key = False
+    replayer.instance = cast(Any, type("I", (), {"launcher": tmp_path / "finishup", "tag": "t"}))
+    spawned: list[list[str]] = []
+
+    def spawn(command: list[str], _log: str) -> None:
+        spawned.append(command)
+
+    def wait(_accept: object) -> dict[str, Any]:
+        return {"vault_mode": "uninitialized"}
+
+    def stop() -> dict[str, Any]:
+        return {"stop_returncode": 0, "exit_code": -15, "terminated": True}
+
+    replayer._spawn_service = spawn
+    replayer._wait_status = wait
+    replayer.stop = stop
+    with pytest.raises(SystemExit, match="pre-pause service stop unclean"):
+        replayer.start(pause_background=True)
+    assert len(spawned) == 1  # The paused service was never started beside the first one.
+    assert _MODULE.stop_unclean({"stop_returncode": 0, "exit_code": 0}) is False
+    assert _MODULE.stop_unclean({"stop_returncode": 1, "exit_code": 0}) is True

@@ -1227,6 +1227,26 @@ def _git_workspace(path: Path) -> None:
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "replay"], env=dated, check=True)
 
 
+def _completed(done: subprocess.CompletedProcess[bytes]) -> dict[str, Any]:
+    """One finished harness step: its exit code and both output streams, decoded."""
+
+    return {
+        "returncode": done.returncode,
+        "stdout": done.stdout.decode("utf-8", errors="replace"),
+        "stderr": done.stderr.decode("utf-8", errors="replace"),
+    }
+
+
+def stop_unclean(outcome: Mapping[str, Any]) -> bool:
+    """Whether a ``Replayer.stop`` outcome is anything but a clean, unsignalled exit."""
+
+    return (
+        outcome.get("stop_returncode") != 0
+        or outcome.get("exit_code") != 0
+        or bool(outcome.get("terminated"))
+    )
+
+
 def _substitute(text: str, workspace: Path, transcript: Path) -> str:
     return text.replace(WORKSPACE, str(workspace)).replace(TRANSCRIPT, str(transcript))
 
@@ -1383,10 +1403,14 @@ class Replayer:
             seeded = self._seed_observation_key()
         self._spawn_service([launcher, "service", "run"], f"service-{self.instance.tag}.log")
         status = self._wait_status(lambda s: True)
+        pre_pause_stop: dict[str, Any] | None = None
         if pause_background:
             # The first launch made the retained runtime; serve again from it with the
-            # background passes paused (see ``_SERVICE_BOOTSTRAP``).
-            self.stop()
+            # background passes paused (see ``_SERVICE_BOOTSTRAP``). The unpaused service must
+            # have stopped cleanly, or it could still be serving beside the paused one.
+            pre_pause_stop = self.stop()
+            if stop_unclean(pre_pause_stop):
+                raise SystemExit(f"pre-pause service stop unclean: {pre_pause_stop}")
             retained = str(self.instance.retained_python())
             self._spawn_service(
                 [retained, "-I", "-c", _SERVICE_BOOTSTRAP, launcher, "service", "run"],
@@ -1428,6 +1452,7 @@ class Replayer:
             "service_status": ready,
             "privacy_answered": privacy.answered,
             "observation_key_seeded": seeded,
+            "pre_pause_stop": pre_pause_stop,
         }
 
     def _seed_observation_key(self) -> dict[str, Any]:
@@ -1443,7 +1468,7 @@ class Replayer:
         )
         if done.returncode != 0:
             raise SystemExit(f"observation key seed failed: {done.stderr[-2000:]!r}")
-        return {"returncode": done.returncode}
+        return _completed(done)
 
     def _wait_status(self, accept: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
         deadline = time.monotonic() + 120.0
@@ -1469,6 +1494,7 @@ class Replayer:
             return outcome
         done = self.finishup(["service", "stop", "--json"], timeout=60.0)
         outcome["stop_returncode"] = done.returncode
+        outcome["stop_stderr"] = done.stderr.decode("utf-8", errors="replace")[-2000:]
         try:
             outcome["exit_code"] = self.service.wait(timeout=60.0)
         except subprocess.TimeoutExpired:
@@ -1495,7 +1521,9 @@ class Replayer:
             if key == "cli":
                 continue
             grant = self.finishup(["observe", "grant", "--workspace", str(path)])
-            setup[key] = {"grant_returncode": grant.returncode}
+            # Every setup step's exit code and output is kept: ``compare`` refuses a run with a
+            # failed step and compares the outputs of the rest.
+            setup[key] = {"grant": _completed(grant)}
             profile = next(
                 (
                     item["argv"][item["argv"].index("--observation-profile") + 1]
@@ -1508,7 +1536,7 @@ class Replayer:
                 enabled = self.finishup(
                     ["observe", "content-enable", "--workspace", str(path), "--profile", profile]
                 )
-                setup[key]["content_enable_returncode"] = enabled.returncode
+                setup[key]["content_enable"] = _completed(enabled)
         transcript_written = {name: 0 for name in transcripts}
         transcript_paths = {
             name: self.home / ".codex" / "sessions" / "2026" / "10" / "16" / spec["file"]
@@ -1618,10 +1646,8 @@ class Replayer:
                 )
             else:
                 drained = self.finishup(drain_argv, cwd=workspace)
-            record["drain"] = {
-                "returncode": drained.returncode,
-                "stdout": drained.stdout.decode("utf-8", errors="replace"),
-            }
+            # ``compare`` refuses a run with a failed drain and compares every drain's output.
+            record["drain"] = _completed(drained)
         records.append(record)
         self.log(
             f"[{mode}] {number}/{len(items)} {item['label']} rc={done.returncode} {elapsed_ms:.0f}ms"
@@ -2069,8 +2095,7 @@ def run_failures(run: Mapping[str, Any]) -> list[str]:
     for name in ("started_at", "finished_at"):
         if _parse_time(cast(str, run.get(name) or "")) is None:
             failures.append(f"run_window_missing:{name}")
-    stop = cast(dict[str, Any], run.get("service_stop") or {})
-    if stop.get("stop_returncode") != 0 or stop.get("exit_code") != 0 or stop.get("terminated"):
+    if stop_unclean(cast(dict[str, Any], run.get("service_stop") or {})):
         failures.append("service_stop_unclean")
     export = cast(dict[str, Any], run.get("export") or {})
     if export.get("ok") is not True or export.get("returncode") != 0:
@@ -2079,9 +2104,17 @@ def run_failures(run: Mapping[str, Any]) -> list[str]:
     ledgers = cast(dict[str, dict[str, Any]], run.get("ledgers") or {})
     items = cast(list[dict[str, Any]], run.get("items") or [])
     workspaces = sorted({cast(str, item["workspace"]) for item in items} - {"cli"})
+    for item in items:
+        drain = cast(dict[str, Any] | None, item.get("drain"))
+        if item["workspace"] != "cli" and (drain is None or drain.get("returncode") != 0):
+            failures.append(f"drain_failed:{item['label']}")
     for key in workspaces:
-        steps = setup.get(key)
-        if steps is None or any(code != 0 for code in steps.values()):
+        steps = cast(dict[str, dict[str, Any]] | None, setup.get(key))
+        if (
+            not steps
+            or "grant" not in steps
+            or any(step.get("returncode") != 0 for step in steps.values())
+        ):
             failures.append(f"setup_failed:{key}")
         ledger = ledgers.get(key)
         if ledger is None:
@@ -2206,6 +2239,11 @@ def _parts(run: Mapping[str, Any], failures: list[str]) -> dict[str, list[_Part]
         cast(datetime, _parse_time(cast(str, run["finished_at"]))),
     )
     parts: dict[str, list[_Part]] = {}
+    for key, steps in sorted(cast(dict[str, dict[str, Any]], run["setup"]).items()):
+        bucket = parts.setdefault(key, [])
+        for step, done in steps.items():
+            bucket.append((f"{key} setup {step} stdout", cast(str, done["stdout"])))
+            bucket.append((f"{key} setup {step} stderr", cast(str, done["stderr"])))
     for item in cast(list[dict[str, Any]], run["items"]):
         label = cast(str, item["label"])
         bucket = parts.setdefault(cast(str, item["workspace"]), [])
@@ -2215,6 +2253,7 @@ def _parts(run: Mapping[str, Any], failures: list[str]) -> dict[str, list[_Part]
         if "drain" in item:
             drain = cast(dict[str, Any], item["drain"])
             bucket.append((f"{label} drain", f"{drain['returncode']}\n{drain['stdout']}"))
+            bucket.append((f"{label} drain stderr", cast(str, drain["stderr"])))
     bound, _ = bind_workspaces(run)
     for key, task in sorted(bound.items()):
         ledger = cast(dict[str, Any], run["ledgers"][key])
