@@ -1885,8 +1885,9 @@ def _event_of(argv: Sequence[str]) -> str:
 # values are compared by where they occur rather than by value: each value is named by a digest
 # of the sorted list of slots it occupies (part, path, ordinal), so two runs match only when a
 # bijection maps every value of one run to a value of the other occupying exactly the same slots.
-# A set-valued list of identifiers and a keyed command-segment list (sorted by keyed value, so its
-# order is per-instance) are slots without positions.
+# A list of identifiers at a path whose producer sorts it by raw value (``_ENTRY_SETS``,
+# ``_PAYLOAD_SETS``) and a keyed command-segment list (sorted by keyed value, so its order is
+# per-instance) are slots without positions; every other list is compared by position.
 #
 # * ``chain``: a ``sha256:`` value that is a verified entry digest of the run is named by its chain
 #   position; any other ``sha256:`` value (content digests, payload digests) is compared exactly.
@@ -2247,8 +2248,24 @@ def run_failures(run: Mapping[str, Any]) -> list[str]:
     return failures
 
 
-# One compared part: a label and either raw text or a JSON tree already through its field policy.
-type _Part = tuple[str, Any]
+# One compared part: a label, either raw text or a JSON tree already through its field policy, and
+# the paths in that tree whose lists are sets (``_ENTRY_SETS``, ``_PAYLOAD_SETS``).
+type _Part = tuple[str, Any, frozenset[str]]
+_NO_SETS: Final[frozenset[str]] = frozenset()
+# A list of generated identifiers is compared as an unordered set only where its producer sorts it
+# by raw value, so its order carries nothing but the values a run generated; everywhere else (an
+# advice ranking, an insertion-ordered list) order is compared. ``_Tokens`` also checks that the
+# list it is given is in that sorted order, and compares it by position when it is not.
+# Every event entry's reference lists: ``domain.events.EventDraft`` validates each through
+# ``_id_tuple``/``_evidence_result_tuple``, which require ASCII-sorted unique values
+# (``_validate_ascii_sorted_unique``).
+_ENTRY_SETS: Final = frozenset({"/causal_parents", "/artifact_refs", "/evidence_refs"})
+_PAYLOAD_SETS: Final[Mapping[str, frozenset[str]]] = {
+    # ``domain.events.ResultRecordedPayload``: ``_id_tuple(evidence_refs, ...)``, sorted unique.
+    "result_recorded": frozenset({"/evidence_refs"}),
+    # ``domain.findings._validate_subject_refs``: ``ensure_canonical_set``, sorted unique.
+    "finding_recorded": frozenset({"/subject_refs"}),
+}
 
 
 def _policy_entry(entry: dict[str, Any], window: _Window, failures: list[str]) -> dict[str, Any]:
@@ -2339,41 +2356,46 @@ def _parts(run: Mapping[str, Any], failures: list[str]) -> dict[str, list[_Part]
     for key, steps in sorted(cast(dict[str, dict[str, Any]], run["setup"]).items()):
         bucket = parts.setdefault(key, [])
         for step, done in steps.items():
-            bucket.append((f"{key} setup {step} stdout", cast(str, done["stdout"])))
-            bucket.append((f"{key} setup {step} stderr", cast(str, done["stderr"])))
+            bucket.append((f"{key} setup {step} stdout", cast(str, done["stdout"]), _NO_SETS))
+            bucket.append((f"{key} setup {step} stderr", cast(str, done["stderr"]), _NO_SETS))
     for item in cast(list[dict[str, Any]], run["items"]):
         label = cast(str, item["label"])
         bucket = parts.setdefault(cast(str, item["workspace"]), [])
-        bucket.append((f"{label} returncode", str(item["returncode"])))
-        bucket.append((f"{label} stdout", cast(str, item["stdout"])))
-        bucket.append((f"{label} stderr", cast(str, item["stderr"])))
+        bucket.append((f"{label} returncode", str(item["returncode"]), _NO_SETS))
+        bucket.append((f"{label} stdout", cast(str, item["stdout"]), _NO_SETS))
+        bucket.append((f"{label} stderr", cast(str, item["stderr"]), _NO_SETS))
         if "drain" in item:
             drain = cast(dict[str, Any], item["drain"])
-            bucket.append((f"{label} drain", f"{drain['returncode']}\n{drain['stdout']}"))
-            bucket.append((f"{label} drain stderr", cast(str, drain["stderr"])))
+            text = f"{drain['returncode']}\n{drain['stdout']}"
+            bucket.append((f"{label} drain", text, _NO_SETS))
+            bucket.append((f"{label} drain stderr", cast(str, drain["stderr"]), _NO_SETS))
     bound, _ = bind_workspaces(run)
     for key, task in sorted(bound.items()):
         ledger = cast(dict[str, Any], run["ledgers"][key])
         bucket = parts.setdefault(key, [])
         status = json.loads(cast(str, ledger["observe_status"]))
-        bucket.append((f"{key} observe status", _policy_status(status, window, failures)))
-        bucket.append((f"{key} observe status stderr", cast(str, ledger["observe_status_stderr"])))
+        # ``advice.finding_ids`` is in rank order (``kernel.policies.observation_advice``).
+        policed = _policy_status(status, window, failures)
+        bucket.append((f"{key} observe status", policed, _NO_SETS))
+        stderr = cast(str, ledger["observe_status_stderr"])
+        bucket.append((f"{key} observe status stderr", stderr, _NO_SETS))
         entries = {_entry(event)["event_id"]: _entry(event) for event in task["events"]}
         for index, row in enumerate(cast(list[dict[str, Any]], ledger["history"])):
             policed = dict(row)
             policed["accepted_at"] = _CLOCK
             if entries[row["event_id"]]["author"]["actor_id"] in _SERVICE_AUTHORS:
                 policed["occurred_at"] = _CLOCK
-            bucket.append((f"{key} history[{index}]", policed))
-        bucket.append((f"{key} history head", ledger["head_frontier"]))
+            bucket.append((f"{key} history[{index}]", policed, _NO_SETS))
+        bucket.append((f"{key} history head", ledger["head_frontier"], _NO_SETS))
         for index, event in enumerate(cast(list[dict[str, Any]], task["events"]), start=1):
             entry = _entry(event)
-            bucket.append((f"{key} event[{index}] entry", _policy_entry(entry, window, failures)))
+            policed_entry = _policy_entry(entry, window, failures)
+            bucket.append((f"{key} event[{index}] entry", policed_entry, _ENTRY_SETS))
             payload = cast(dict[str, Any], json.loads(cast(str, event["payload"])))
-            bucket.append(
-                (f"{key} event[{index}] payload", _policy_payload(entry, payload, window, failures))
-            )
-        bucket.append((f"{key} export head", task["head"]))
+            policed_payload = _policy_payload(entry, payload, window, failures)
+            sets = _PAYLOAD_SETS.get(entry["schema"]["name"], _NO_SETS)
+            bucket.append((f"{key} event[{index}] payload", policed_payload, sets))
+        bucket.append((f"{key} export head", task["head"], _NO_SETS))
     return parts
 
 
@@ -2417,22 +2439,24 @@ class _Tokens:
                 break
         return spans
 
-    def collect(self, label: str, value: Any, path: str = "") -> None:
+    def collect(
+        self, label: str, value: Any, sets: frozenset[str] = _NO_SETS, path: str = ""
+    ) -> None:
         if isinstance(value, dict):
             for key, item in cast(dict[str, Any], value).items():
                 key_spans = [span for span in self._scan(key) if span[3] not in {None, "chain"}]
                 for _start, _end, token, kind in key_spans:
                     self._note(token, cast(str, kind), (label, path, "key"))
                 child = f"{path}/<key>" if key_spans else f"{path}/{key}"
-                self.collect(label, item, child)
+                self.collect(label, item, sets, child)
         elif isinstance(value, list):
             items = cast(list[Any], value)
-            if self._is_set(items):
+            if path in sets and self._is_set(items):
                 for item in items:
                     self._note(item, self._whole_kind(item), (label, path, "set"))
             else:
                 for index, item in enumerate(items):
-                    self.collect(label, item, f"{path}[{index}]")
+                    self.collect(label, item, sets, f"{path}[{index}]")
         elif isinstance(value, str):
             ordinal = 0
             for _start, _end, token, kind in self._scan(value):
@@ -2449,7 +2473,12 @@ class _Tokens:
         return cast(str, spans[0][3]).split(":")[0]
 
     def _is_set(self, items: list[Any]) -> bool:
+        """Whether a list at a set path is what its producer emits: renamed values, sorted."""
+
         if not items or not all(isinstance(item, str) for item in items):
+            return False
+        raw = [cast(str, item).encode("utf-8") for item in items]
+        if any(low >= high for low, high in zip(raw, raw[1:], strict=False)):
             return False
         for item in items:
             spans = self._scan(cast(str, item))
@@ -2473,18 +2502,19 @@ class _Tokens:
             digest = hashlib.sha256(self.signature(token).encode("utf-8")).hexdigest()[:12]
             self.names[token] = f"<{kind}@{digest}>"
 
-    def render(self, value: Any) -> Any:
+    def render(self, value: Any, sets: frozenset[str] = _NO_SETS, path: str = "") -> Any:
         if isinstance(value, dict):
-            rendered = {
-                self._render_text(key): self.render(item)
-                for key, item in cast(dict[str, Any], value).items()
-            }
+            rendered: dict[str, Any] = {}
+            for key, item in cast(dict[str, Any], value).items():
+                renamed = any(span[3] not in {None, "chain"} for span in self._scan(key))
+                child = f"{path}/<key>" if renamed else f"{path}/{key}"
+                rendered[self._render_text(key)] = self.render(item, sets, child)
             return dict(sorted(rendered.items()))
         if isinstance(value, list):
             items = cast(list[Any], value)
-            if self._is_set(items):
+            if path in sets and self._is_set(items):
                 return sorted(self._render_text(cast(str, item)) for item in items)
-            return [self.render(item) for item in items]
+            return [self.render(item, sets, f"{path}[{index}]") for index, item in enumerate(items)]
         if isinstance(value, str):
             return self._render_text(value)
         return value
@@ -2508,10 +2538,10 @@ class _Tokens:
         )
 
 
-def _render(tokens: _Tokens, value: Any) -> str:
+def _render(tokens: _Tokens, value: Any, sets: frozenset[str]) -> str:
     if isinstance(value, str):
         return tokens.render(value)
-    return json.dumps(tokens.render(value), ensure_ascii=False, sort_keys=True)
+    return json.dumps(tokens.render(value, sets), ensure_ascii=False, sort_keys=True)
 
 
 def _first_difference(old: Any, new: Any, path: str = "") -> tuple[str, Any, Any]:
@@ -2556,20 +2586,23 @@ def compare_runs(
     for side, run in (("old", old), ("new", new)):
         collected = _Tokens(exact, _chain_names(run), {}, {}, {})
         for bucket in parts[side].values():
-            for label, value in bucket:
-                collected.collect(label, value)
+            for label, value, sets in bucket:
+                collected.collect(label, value, sets)
         collected.assign_names()
         tokens[side] = collected
     keys = sorted(set(parts["old"]) | set(parts["new"]))
     for key in keys:
         old_parts, new_parts = parts["old"].get(key, []), parts["new"].get(key, [])
         mismatches: list[dict[str, str]] = []
-        if [label for label, _ in old_parts] != [label for label, _ in new_parts]:
+        if [part[0] for part in old_parts] != [part[0] for part in new_parts]:
             mismatches.append(
                 {"part": "structure", "path": "/", "old": "parts differ", "new": "parts differ"}
             )
-        for (label, old_value), (_label, new_value) in zip(old_parts, new_parts, strict=False):
-            a, b = _render(tokens["old"], old_value), _render(tokens["new"], new_value)
+        for (label, old_value, sets), (_label, new_value, new_sets) in zip(
+            old_parts, new_parts, strict=False
+        ):
+            a = _render(tokens["old"], old_value, sets)
+            b = _render(tokens["new"], new_value, new_sets)
             if a != b:
                 where, a_at, b_at = "/", a, b
                 if not isinstance(old_value, str):
@@ -2582,7 +2615,7 @@ def compare_runs(
                         "new": str(b_at)[:4000],
                     }
                 )
-        events = sum(1 for label, _ in old_parts if label.endswith(" entry"))
+        events = sum(1 for part in old_parts if part[0].endswith(" entry"))
         result["workspaces"][key] = {
             "parts": len(old_parts),
             "events": events,

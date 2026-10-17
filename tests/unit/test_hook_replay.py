@@ -15,6 +15,7 @@ import os
 import random
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -339,7 +340,10 @@ def _make_run(
     outcome: str = "failure",
     consent: str = "active",
     description: str = "Observed pending command via Codex hook (tool Bash)",
+    payload_hook: Callable[[str, dict[str, Any], _Gen], None] | None = None,
 ) -> dict[str, Any]:
+    """A synthetic replay record; ``payload_hook`` may edit each payload before it is sealed."""
+
     gen = _Gen(seed)
     task, session, writer = gen.id("tsk"), gen.id("ses"), gen.id("wri")
     action, evidence, result, finding = gen.id("act"), gen.id("evd"), gen.id("res"), gen.id("fnd")
@@ -349,6 +353,8 @@ def _make_run(
     event_ids: list[str] = []
 
     def add(name: str, payload: dict[str, Any], **kwargs: Any) -> None:
+        if payload_hook is not None:
+            payload_hook(name, payload, gen)
         previous = digests[-1] if digests else "genesis"
         state = (len(digests), previous)
         exported, digest = _event(
@@ -1163,3 +1169,62 @@ def test_session_boundary_timing_rows_are_counted_and_only_their_milliseconds_dr
         _with_status(_make_run(1), timings(3, 900)), _with_status(_make_run(2), timings(4, 900))
     )["identical"]
     assert _MODULE.PINNED_HOOK_BUDGETS["_HOOK_TOTAL_BUDGET_SECONDS"] >= 120.0
+
+
+def test_an_advice_ranking_is_compared_by_position() -> None:
+    # Probe P1: the same three findings, ranked second and third the other way round.
+    def ranked(seed: int, swap: bool) -> dict[str, Any]:
+        run = _make_run(seed)
+        status = json.loads(run["ledgers"]["w"]["observe_status"])
+        gen = _Gen(seed + 50)
+        second, third = gen.id("fnd"), gen.id("fnd")
+        top = status["advice"]["finding_ids"][0]
+        status["advice"]["finding_ids"] = [top, third, second] if swap else [top, second, third]
+        status["failures"] = {"first": second, "second": third}
+        return _with_status(run, status)
+
+    assert _compare(ranked(1, False), ranked(2, False))["identical"]
+    result = _compare(ranked(1, False), ranked(2, True))
+    assert not result["identical"]
+
+
+def test_an_insertion_ordered_identifier_list_is_compared_by_position() -> None:
+    # Probe P5: a list no producer sorts, whose order flips between the runs.
+    def related(flip: bool) -> Callable[[str, dict[str, Any], _Gen], None]:
+        def hook(name: str, payload: dict[str, Any], gen: _Gen) -> None:
+            if name == "finding_recorded":
+                first, second = gen.id("evd"), gen.id("evd")
+                payload["related_refs"] = [second, first] if flip else [first, second]
+                payload["first_ref"] = first
+
+        return hook
+
+    assert _compare(
+        _make_run(1, payload_hook=related(False)), _make_run(2, payload_hook=related(False))
+    )["identical"]
+    result = _compare(
+        _make_run(1, payload_hook=related(False)), _make_run(2, payload_hook=related(True))
+    )
+    assert not result["identical"]
+    assert [m["part"] for m in result["workspaces"]["w"]["mismatches"]] == ["w event[5] payload"]
+
+
+def test_a_set_path_out_of_its_producer_order_is_compared_by_position() -> None:
+    # ``result_recorded.evidence_refs`` is sorted by its producer; a list there that is not sorted
+    # was not made by that producer, so its order is compared.
+    def refs(order: str) -> Callable[[str, dict[str, Any], _Gen], None]:
+        def hook(name: str, payload: dict[str, Any], gen: _Gen) -> None:
+            if name == "result_recorded":
+                pair = sorted([gen.id("evd"), gen.id("evd")])
+                payload["evidence_refs"] = pair if order == "sorted" else pair[::-1]
+                payload["first_ref"] = pair[0]
+
+        return hook
+
+    for seed in range(2, 12):
+        assert _compare(
+            _make_run(1, payload_hook=refs("sorted")), _make_run(seed, payload_hook=refs("sorted"))
+        )["identical"]
+    assert not _compare(
+        _make_run(1, payload_hook=refs("sorted")), _make_run(2, payload_hook=refs("reversed"))
+    )["identical"]
