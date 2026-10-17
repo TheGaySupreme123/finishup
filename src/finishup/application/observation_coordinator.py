@@ -5134,7 +5134,9 @@ class ObservationCoordinator:
 
         Delivery times, rendering and captured-evidence refs may differ. They cannot change
         the action/command identity or an existing evidence object's digest. Stream outcome
-        differences use the existing append-only correction, including dedup_conflict.
+        differences use the existing append-only correction, including dedup_conflict. A
+        committed result that stated no outcome agrees with a copy that states one; two explicit
+        outcomes that differ do not.
         """
 
         projection = await runtime.ledger.load_projection(
@@ -5247,6 +5249,7 @@ class ObservationCoordinator:
                         (incoming.outcome, incoming.exit_status)
                         == (prior.outcome, prior.exit_status)
                         or incoming.outcome is ResultOutcome.UNKNOWN
+                        or prior.outcome is ResultOutcome.UNKNOWN
                         or envelope.source is ObservationSource.CODEX_SESSION_STREAM
                     )
                 )

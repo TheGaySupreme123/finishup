@@ -13,6 +13,13 @@ from typing import cast
 
 import pytest
 
+from builders.codex_replay import Replay as CodexReplay
+from builders.codex_replay import (
+    replay_cell,  # noqa: F401  # pyright: ignore[reportUnusedImport]  (registers the ``replay`` fixture)
+    rollout_row,
+    session_start,
+    sweep_all,
+)
 from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
 from finishup.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
 from finishup.application.missing_for_assessment import plan_review_follow_up
@@ -26,6 +33,10 @@ from finishup.domain.observation import (
     ObservationSource,
 )
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.workspace_effect import workspace_effect_from_annotation
+from finishup.kernel.closing_review_delta import closing_review_delta
+from finishup.kernel.later_material import workspace_effects
+from finishup.kernel.reducers import replay as replay_ledger
 from finishup.ports.ledger import FrozenCase
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from fixture_loader import load_fixture_json
@@ -491,3 +502,159 @@ async def test_same_call_image_overlap_can_append_another_image(tmp_path: Path) 
     assert len(_schema_rows(cell, "action_recorded")) == 1
     assert len(_schema_rows(cell, "result_recorded")) == 1
     assert len(_schema_rows(cell, "evidence_recorded")) == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prior_exit", [None, 0, 1])
+async def test_a_hook_outcome_agrees_with_a_stream_copy_that_stated_none(
+    tmp_path: Path, prior_exit: int | None
+) -> None:
+    """A committed copy without an outcome takes a later copy's explicit one (PR #1080 round 7).
+
+    The stream copy stated no outcome (``prior_exit=None``): a content-bearing hook copy that
+    states one agrees and its new evidence is recorded, as on 0.3. A stream copy that stated a
+    different explicit outcome still makes the hook copy's contradiction a refusal.
+    """
+
+    from finishup.domain.values import JsonObject
+    from unit.application.test_observation_coordinator import (
+        _envelope,
+        _reattach_fixture,
+        _schema_rows,
+    )
+
+    cell = _reattach_fixture(tmp_path, f"unknown-prior-{prior_exit}")
+    stream = _envelope(
+        session=cell.session,
+        kind="function_call_output",
+        identity="stream:unknown-prior",
+        corr="call-unknown",
+        exit_status=prior_exit,
+        source=ObservationSource.CODEX_SESSION_STREAM,
+    )
+    assert (await cell.ingest(stream)).disposition is ObservationIngestDisposition.ACCEPTED
+    prior = _schema_rows(cell, "result_recorded")[0].payload
+    assert type(prior) is ResultRecordedPayload
+    assert (prior.outcome.value == "unknown") is (prior_exit is None)
+    image = {"content_digest": "sha256:" + "c" * 64, "byte_count": 128, "media_type": "image/png"}
+    hook = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="hook:unknown-prior",
+        corr="call-unknown",
+        exit_status=0,
+    )
+    hook = replace(
+        hook,
+        structural_payload=JsonObject({**hook.structural_payload, "observed_images": [image]}),
+    )
+    result = await cell.ingest(hook)
+    if prior_exit == 1:
+        assert result.disposition is ObservationIngestDisposition.REJECTED
+        assert result.reason == "ledger_rejected"
+        assert _schema_rows(cell, "evidence_recorded") == []
+    else:
+        assert result.disposition is ObservationIngestDisposition.ACCEPTED, result.reason
+        assert len(_schema_rows(cell, "evidence_recorded")) == 1
+    assert len(_schema_rows(cell, "result_recorded")) == 1
+
+
+@pytest.mark.anyio
+async def test_a_captured_hook_post_after_its_stream_copy_keeps_evidence_and_fact(
+    replay: CodexReplay,
+) -> None:
+    """Stream ``function_call_output`` first, then a content-bearing Codex hook post (round 7).
+
+    The stream copy states no outcome; the hook copy states one and carries captured output and
+    the workspace fact. Before the fix the overlap check refused it and the delivery was
+    quarantined, losing both; now they are recorded and the unchanged command stays quiet. The
+    next call (``ls``) completes hook-after-stream as well.
+    """
+
+    timestamp = "2026-10-09T08:00:01.000Z"
+
+    def call_rows(call: str, command: str) -> tuple[dict[str, object], dict[str, object]]:
+        return (
+            rollout_row(
+                "response_item",
+                {
+                    "arguments": json.dumps({"cmd": command}),
+                    "call_id": call,
+                    "id": f"fc_{call}",
+                    "name": "exec_command",
+                    "type": "function_call",
+                },
+                timestamp,
+            ),
+            rollout_row(
+                "response_item",
+                {
+                    "call_id": call,
+                    "id": f"fco_{call}",
+                    "output": "Exit code: 0\nOutput:\npublic synthetic",
+                    "type": "function_call_output",
+                },
+                timestamp,
+            ),
+        )
+
+    def pre(call: str, command: str) -> None:
+        replay.hook(
+            "PreToolUse", tool_name="Bash", tool_use_id=call, tool_input={"command": command}
+        )
+
+    def post(call: str, command: str) -> None:
+        replay.hook(
+            "PostToolUse",
+            tool_name="Bash",
+            tool_use_id=call,
+            tool_input={"command": command},
+            tool_response=json.dumps(
+                {
+                    "chunk_id": call[-4:],
+                    "exit_code": 0,
+                    "original_token_count": 1,
+                    "output": "x",
+                    "wall_time_seconds": 0.1,
+                }
+            ),
+        )
+
+    session_start(replay, cli_version="0.159.3")
+    pre("call_a1", "date -u")
+    replay.append(*call_rows("call_a1", "date -u"))
+    # The next call's hook makes the reader deliver the first call's stream copy first.
+    pre("call_b1", "ls")
+    await sweep_all(replay, capture_hook_output=True)
+    stream_results = replay.rows("result_recorded")
+    assert len(stream_results) == 1
+    stream_result = stream_results[0].payload
+    assert type(stream_result) is ResultRecordedPayload
+    assert stream_result.outcome.value == "unknown"
+    captured_before = [
+        row
+        for row in replay.rows("evidence_recorded")
+        if type(row.payload) is EvidenceRecordedPayload
+        and row.payload.captured_object_id is not None
+    ]
+    post("call_a1", "date -u")
+    replay.append(*call_rows("call_b1", "ls"))
+    post("call_b1", "ls")
+    replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    recorder = await sweep_all(replay, capture_hook_output=True)
+
+    assert recorder.refused == []
+    records = tuple(replay.ledger._state.records)
+    evidence = [row.payload for row in records if type(row.payload) is EvidenceRecordedPayload]
+    captured = [item for item in evidence if item.captured_object_id is not None]
+    assert len(captured) > len(captured_before)
+    annotations = [
+        effect
+        for item in evidence
+        if (effect := workspace_effect_from_annotation(item.description)) is not None
+    ]
+    assert annotations == ["unchanged"]
+    state = replay_ledger(records)
+    effects = workspace_effects(records, state)
+    assert effects.quiet
+    assert not any(closing_review_delta(row, state, effects=effects) for row in records)

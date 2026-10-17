@@ -317,7 +317,11 @@ unsupported claims and unbounded duplicate findings.
     evidence/events are appended under their own role-set operation. Existing events remain immutable. Different
     delivery times, rendering and evidence-reference sets do not change the core. A conflicting
     action/command or existing evidence payload still rejects; stream outcome differences keep
-    their append-only conflict correction. A smaller committed operation cannot discard new
+    their append-only conflict correction. A committed result that stated no outcome agrees with a
+    later copy that states one (a Codex stream `function_call_output` recorded first, then the
+    content-bearing hook post), so that copy's captured evidence and workspace fact are recorded
+    instead of the delivery being quarantined; a hook copy whose explicit outcome contradicts a
+    committed explicit outcome still rejects (round 7). A smaller committed operation cannot discard new
     captured evidence. One immediate reconciliation also handles an overlap that races append;
     further agreeing races remain retryable rather than quarantined.
     A collision on source-identity-keyed ids (#560) remains a content refusal. This changes no
