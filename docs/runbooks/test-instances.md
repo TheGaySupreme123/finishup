@@ -232,6 +232,11 @@ How the replay runs:
   seconds. `--fixed-observation-key` writes one observation key into each snapshot before its first
   service start, so keyed commitments, source identities and the advice order they decide are the
   same in both builds. A build that is merely slower then takes the branch a faster one takes.
+- **No setting for the workspace fingerprint.** The pre-call workspace walk has its own 0.75 s
+  budget and must finish before the host's hook timeout; neither has a setting, so pinned mode
+  cannot raise them. The replay workspaces hold one empty commit, so the walk takes milliseconds
+  on an idle machine. A walk that missed its deadline would record the call's workspace effect as
+  unavailable, which `compare` reports as a difference rather than hiding it.
 - **Cleanup.** The replay stops only the service it started, then disposes the snapshot.
 
 How `compare` decides:
