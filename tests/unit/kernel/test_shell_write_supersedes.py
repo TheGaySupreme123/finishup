@@ -86,17 +86,29 @@ def test_a_command_without_a_write_scope_stays_unclassified(scope: str | None) -
 
 
 def test_finishup_exploration_commands_never_supersede() -> None:
-    ledger = _after_check()
-    ledger.run(
-        None,
-        ResultOutcome.SUCCESS,
-        exit_status=0,
-        kind=ActionKind.COMMAND,
-        tool="exec_command",
-        runner="exploration",
-    )
-    assert _classes(ledger) == {_C.EXPLORATION}
-    assert _surfaces(ledger.prefix).superseded is False
+    """A read-shaped command never supersedes. PR #1080: its text alone no longer makes it
+    exploration either; only the hook's ``unchanged`` workspace fingerprint does."""
+
+    from finishup.kernel.later_material import workspace_effects
+
+    for effect, expected in ((None, _C.OTHER), ("unchanged", _C.EXPLORATION)):
+        ledger = _after_check()
+        ledger.run(
+            None,
+            ResultOutcome.SUCCESS,
+            exit_status=0,
+            kind=ActionKind.COMMAND,
+            tool="exec_command",
+            runner="exploration",
+            workspace_effect=effect,
+        )
+        projection = replay(ledger.prefix)
+        effects = workspace_effects(ledger.prefix, projection)
+        assert {
+            classify_later_material(r, projection, effects=effects).material_class
+            for r in ledger.prefix[-2:]
+        } == {expected}
+        assert _surfaces(ledger.prefix).superseded is False
 
 
 def test_a_shell_write_to_scratch_is_not_an_edit() -> None:

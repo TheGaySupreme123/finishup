@@ -3478,17 +3478,31 @@ native Windows is not claimed.
 
 ### Closing currency and observation replay (PR #1080)
 
-The shared host classifier recognizes non-setting `date -u`, ordinary `rg`, bounded numeric
-`sed -n` print ranges, and FinishUP workflow CLI calls with known non-writing verbs/options as
-read-only closure traffic. Output-path and unknown options stay material. Original executable
-spelling survives wrapper/compound parsing; arbitrary `bin` paths and environment overrides do not
-inherit a trusted utility identity. `nohup` stays material because it can create `nohup.out`.
-Observed `git status` stays material: later config inspection cannot establish its execution-time
-state, and disabling only fsmonitor/hooks still permits configured clean filters. Safely exempting
-ordinary status requires execution-time evidence beyond this change.
-A runtime workspace write still re-arms closing review, as do real edits and review-mode switches.
-Unknown commands remain material, with an explicit explanation that FinishUP could not establish
-that they were read-only. Receipt, work-close and lifecycle records do not re-arm review.
+Closing-review currency follows what a command did to the workspace, never its text (owner
+decision, PR #1080 round 5; ADR-033). The Codex `PreToolUse` and `PostToolUse` hooks (`finishup
+hooks observe`) fingerprint the workspace around every shell, `exec_command`, `write_stdin` and
+third-party MCP call, and the post envelope carries `workspace_effect`. FinishUP cannot establish
+the effect of an `exec_command` that returned `Process running with session ID N` (its process may
+still write), of a call whose pre-call pass did not run, and of every call observed only through
+the synchronous legacy `finishup hooks spool` ingress (Codex builds without async command hooks) or
+only through the session stream; those stay material. The session stream never folds a shell call
+into a routine-read summary.
+An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a FinishUP CLI read) does not
+re-arm the closing review; a command that changed the workspace does, and so does one whose effect
+FinishUP could not establish, which the Stop text says. A command that backgrounds or detaches a
+process (`cmd &`, `nohup`, `setsid`, `disown`) is never established, because it may write after the
+call ends. Verification runs (test, build, lint and
+typecheck runners, and the task's requested commands) and package installs stay material whatever
+the workspace shows. The workspace is everything under the project root, ignored files included;
+VCS metadata, `node_modules`, `.venv`/`venv` and interpreter caches count only when created,
+removed or replaced, and FinishUP's saved receipts and state are skipped. Effects outside the root
+(databases, `/tmp`, the network, a deliverable path outside the root) are out of scope, as before.
+`finishup observe status` names a degraded comparison once as a `workspace_fingerprint_<reason>`
+diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`, `store_unusable`); a call
+without its pre-call snapshot or still running is recorded on its result as `(workspace
+unverified)` instead. Real edits and review-mode switches still re-arm; receipt,
+work-close and lifecycle records do not. The behavior is the same on macOS, Linux and WSL 2;
+native Windows is not claimed.
 
 Call-keyed hook/stream overlap requires an agreeing committed action core and checks reused
 evidence against its original causal action/result association. An evidence-only collision cannot

@@ -65,6 +65,7 @@ from finishup.kernel.later_material import (
     classify_later_material,
     observed_actions_by_event,
     supersession_exempt,
+    workspace_effects,
 )
 from finishup.kernel.observed_failures import (
     command_identity,
@@ -298,6 +299,7 @@ def inspection_observed_since(
     since = 0 if latest is None else latest.subject_frontier.sequence
     exempt = supersession_exempt(projection)
     by_event = observed_actions_by_event(records)
+    effects = workspace_effects(records, projection)
     results_by_action = {
         record.payload.action_id: record.payload
         for record in sorted(projection.results.values(), key=lambda row: row.source_frontier)
@@ -313,7 +315,7 @@ def inspection_observed_since(
         ):
             continue
         material = classify_later_material(
-            record, projection, exempt=exempt, actions_by_event=by_event
+            record, projection, exempt=exempt, actions_by_event=by_event, effects=effects
         )
         if material.material_class not in _LISTED_CLASSES:
             continue

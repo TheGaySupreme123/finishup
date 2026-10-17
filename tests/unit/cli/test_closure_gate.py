@@ -359,7 +359,10 @@ def test_closing_review_requirement_continues_with_the_final_review_repair() -> 
     assert gate is not None
     assert gate.items == ("closing_review_required",)
     assert "`final_review: true`" in gate.text
-    assert "could not establish was read-only" in gate.text
+    # PR #1080: a command is material unless its before/after fingerprint saw the workspace
+    # unchanged; the text says so instead of calling the command an edit or "not read-only".
+    assert "a command FinishUP could not establish left the workspace unchanged" in gate.text
+    assert "read-only" not in gate.text
 
 
 # --- blocker re-check (#977 follow-up) -------------------------------------------------------

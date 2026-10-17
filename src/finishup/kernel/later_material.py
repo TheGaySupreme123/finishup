@@ -11,8 +11,13 @@ projection's action rows and the declared outputs, and names *why* (``LaterMater
 
 * ``FINISHUP_OWN_CALL`` - the hook or stream observation of a call to one of FinishUP's own MCP tools.
   The call's effect is the cooperative record the service wrote; the observation is never work.
-* ``EXPLORATION`` - an observed read-only run (the hook's closed ``exploration`` runner class, a
-  native read tool) or a routine-read summary.
+* ``EXPLORATION`` - an observed call that cannot have changed the work: a host-native read tool
+  (``Read``, ``Grep``, ``Glob``), a routine-read summary, or a shell command whose result carries
+  the hook's before/after workspace fingerprint ``unchanged`` (PR #1080) and that is not a
+  verification run or a package install. Command *text* never makes a shell command
+  exploration: rounds 3 and 4 of PR #1080 showed that read-looking spellings can write.
+  ``workspace_effects`` derives the fingerprint facts from the prefix; without them every shell
+  command stays ``OTHER``.
 * ``NO_TOOL_ACTIVITY`` - host stream bookkeeping that names no tool call: token counts, reasoning,
   messages, a tool call's own announcement, completion signals; a host poll tool (Codex
   ``wait``) that only returns the output of work started earlier; and a host sleep (Codex
@@ -52,16 +57,28 @@ from finishup.domain.events import (
     is_observation_authored,
 )
 from finishup.domain.finishup_tools import finishup_tool_spelling
-from finishup.domain.values import EventId
+from finishup.domain.observation_selection import ROUTINE_READ_TOOLS
+from finishup.domain.values import ActionId, EventId
+from finishup.domain.workspace_effect import (
+    WORKSPACE_CHANGED,
+    WORKSPACE_UNAVAILABLE,
+    WORKSPACE_UNCHANGED,
+    workspace_effect_from_result_summary,
+)
 from finishup.domain.write_scope import finishup_tree_overlap
 from finishup.kernel.observed_failures import (
     observed_action_runner_class,
+    observed_action_runtime_tokens,
     observed_action_tool,
     observed_edit_counts,
     observed_shell_write_counts,
 )
 from finishup.kernel.projections import ProjectionState
-from finishup.kernel.task_facts import effective_obligations, non_counting_edits_exempt
+from finishup.kernel.task_facts import (
+    effective_obligations,
+    non_counting_edits_exempt,
+    requested_verification_run_events,
+)
 
 __all__ = [
     "COMPLETION_SIGNAL_PREFIX",
@@ -71,11 +88,13 @@ __all__ = [
     "STREAM_BOOKKEEPING_KINDS",
     "LaterMaterial",
     "LaterMaterialClass",
+    "WorkspaceEffects",
     "classify_later_material",
     "counted_later_material",
     "later_material_class",
     "observed_actions_by_event",
     "supersession_exempt",
+    "workspace_effects",
 ]
 
 # The descriptions the observation materializer writes for evidence rows that carry no tool call.
@@ -149,6 +168,79 @@ class LaterMaterial:
         return self.material_class is LaterMaterialClass.EDIT_OR_WRITE
 
 
+# Runner classes of a verification run: a new result of one is new closing-review input whatever
+# it did to the workspace ("verification-run semantics", #1079 item 3).
+_VERIFYING_RUNNERS: Final = frozenset({"test", "build", "lint", "typecheck"})
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceEffects:
+    """What the hook's before/after workspace fingerprints established for a prefix (PR #1080).
+
+    ``quiet`` holds the observed actions a service-stamped result reports ``unchanged`` for, with
+    no result of the same action reporting ``changed`` or ``unavailable``, minus every run of a
+    command the task itself requests (a verification run stays new input). ``changed`` holds the
+    actions a result reports ``changed`` for. An action in neither set has no usable fact: the
+    pre-call snapshot was missing, the call had not ended, the workspace was beyond the walk
+    bound, or the record predates the fact. It reads exactly like a change.
+    """
+
+    quiet: frozenset[ActionId] = frozenset()
+    changed: frozenset[ActionId] = frozenset()
+
+
+def workspace_effects(
+    records: Iterable[LedgerRecord], projection: ProjectionState
+) -> WorkspaceEffects:
+    """Read the workspace-effect facts of the observed results in this prefix.
+
+    Only service-stamped observation results count: an agent-published result cannot claim that
+    a command left the workspace unchanged. Records past the projection frontier are ignored.
+    """
+
+    if type(projection) is not ProjectionState:
+        return WorkspaceEffects()
+    frontier = projection.frontier
+    prefix = tuple(
+        record
+        for record in records
+        if type(sequence := getattr(getattr(record, "ledger", None), "ingestion_sequence", None))
+        is int
+        and sequence <= frontier
+    )
+    unchanged: set[ActionId] = set()
+    contradicted: set[ActionId] = set()
+    changed: set[ActionId] = set()
+    for record in prefix:
+        if record.schema.name != "result_recorded":
+            continue
+        payload = record.payload
+        if type(payload) is not ResultRecordedPayload or not is_observation_authored(record):
+            continue
+        effect = workspace_effect_from_result_summary(payload.summary)
+        if effect == WORKSPACE_UNCHANGED:
+            unchanged.add(payload.action_id)
+        elif effect in {WORKSPACE_CHANGED, WORKSPACE_UNAVAILABLE}:
+            contradicted.add(payload.action_id)
+            if effect == WORKSPACE_CHANGED:
+                changed.add(payload.action_id)
+    quiet: set[ActionId] = unchanged - contradicted
+    if quiet:
+        verifying = requested_verification_run_events(projection, prefix)
+        if verifying is None:
+            # The task requests a command, but no run can be matched to it: any run may be that
+            # verification, so none is quiet.
+            quiet = set[ActionId]()
+        elif verifying:
+            quiet = {
+                action
+                for action in quiet
+                if (row := projection.actions.get(action)) is None
+                or row.source_event_id not in verifying
+            }
+    return WorkspaceEffects(frozenset(quiet), frozenset(changed))
+
+
 def supersession_exempt(projection: ProjectionState) -> frozenset[str]:
     """The write tokens an observed edit may carry without superseding a check.
 
@@ -195,7 +287,10 @@ _HOST_NO_ACTIVITY_TOOLS: Final[Mapping[str, str]] = {
 
 
 def _classify_action(
-    payload: ActionRecordedPayload, projection: ProjectionState, exempt: frozenset[str] | None
+    payload: ActionRecordedPayload,
+    projection: ProjectionState,
+    exempt: frozenset[str] | None,
+    effects: WorkspaceEffects | None = None,
 ) -> LaterMaterial:
     tool = observed_action_tool(payload.description)
     if tool is not None and finishup_tool_spelling(tool) is not None:
@@ -218,10 +313,31 @@ def _classify_action(
         # ADR-045: a shell command that wrote the workspace (``cat > f``, ``sed -i``) changed the
         # work as surely as an edit tool, whatever its exit status or whether a result arrived.
         return LaterMaterial(LaterMaterialClass.EDIT_OR_WRITE, "observed_shell_write", tool)
+    runner = observed_action_runner_class(payload.description)
+    if payload.action_kind is ActionKind.COMMAND:
+        # PR #1080: a shell command is judged by what it did, never by its text. Only the hook's
+        # before/after fingerprint can make it harmless; a verification run and a package install
+        # (an environment change the fingerprint does not walk) stay material.
+        if (
+            effects is not None
+            and payload.action_id in effects.quiet
+            and runner not in _VERIFYING_RUNNERS
+            and not any(
+                token.startswith("install ")
+                for token in observed_action_runtime_tokens(payload.description)
+            )
+        ):
+            return LaterMaterial(
+                LaterMaterialClass.EXPLORATION, "observed_workspace_unchanged", tool
+            )
+        return LaterMaterial(LaterMaterialClass.OTHER, "unclassified_observed_action", tool)
     if (
-        payload.action_kind in {ActionKind.COMMAND, ActionKind.OTHER}
-        and observed_action_runner_class(payload.description) == "exploration"
+        payload.action_kind is ActionKind.OTHER
+        and runner == "exploration"
+        and tool is not None
+        and tool.casefold() in ROUTINE_READ_TOOLS
     ):
+        # A host-native read tool has a closed meaning without any command text.
         return LaterMaterial(LaterMaterialClass.EXPLORATION, "observed_exploration_runner", tool)
     return LaterMaterial(LaterMaterialClass.OTHER, "unclassified_observed_action", tool)
 
@@ -248,6 +364,7 @@ def classify_later_material(
     *,
     exempt: frozenset[str] | None = None,
     actions_by_event: Mapping[EventId, ActionRecordedPayload] | None = None,
+    effects: WorkspaceEffects | None = None,
 ) -> LaterMaterial:
     """Classify one accepted record that follows a check, with the rule that decided it.
 
@@ -257,7 +374,8 @@ def classify_later_material(
     ``actions_by_event`` maps the observed action events of the prefix to their payloads: content
     the host captured for a call (tool output, a workspace diff) is evidence recorded under that
     action (``causal_parents``) and takes the action's class, never a cleaner one. Without it
-    such evidence is read by its description alone and stays ``other``.
+    such evidence is read by its description alone and stays ``other``. ``effects`` is
+    ``workspace_effects`` over the same prefix; without it no shell command is exploration.
     """
 
     name = record.schema.name
@@ -269,19 +387,19 @@ def classify_later_material(
         return LaterMaterial(LaterMaterialClass.OTHER, "unclassified_observed_record")
     payload = record.payload
     if name == "action_recorded" and type(payload) is ActionRecordedPayload:
-        return _classify_action(payload, projection, exempt)
+        return _classify_action(payload, projection, exempt, effects)
     if name == "result_recorded" and type(payload) is ResultRecordedPayload:
         action = projection.actions.get(payload.action_id)
         if action is None or action.payload is None:
             return LaterMaterial(LaterMaterialClass.OTHER, "result_without_readable_action")
-        answered = _classify_action(action.payload, projection, exempt)
+        answered = _classify_action(action.payload, projection, exempt, effects)
         return LaterMaterial(answered.material_class, "result_of_action", answered.tool)
     if name == "evidence_recorded" and type(payload) is EvidenceRecordedPayload:
         if actions_by_event:
             for parent in record.causal_parents:
                 parent_action = actions_by_event.get(parent)
                 if parent_action is not None:
-                    answered = _classify_action(parent_action, projection, exempt)
+                    answered = _classify_action(parent_action, projection, exempt, effects)
                     if answered.material_class is LaterMaterialClass.EDIT_OR_WRITE:
                         # The edit itself is the superseding record, at the position it was
                         # ingested; its late output is not a second change. Disclosed, never
@@ -330,11 +448,13 @@ def counted_later_material(
 
     exempt = supersession_exempt(projection)
     selected = tuple(records)
-    actions = observed_actions_by_event(selected if all_records is None else all_records)
+    prefix = selected if all_records is None else tuple(all_records)
+    actions = observed_actions_by_event(prefix)
+    effects = workspace_effects(prefix, projection)
     return tuple(
         record
         for record in selected
         if not classify_later_material(
-            record, projection, exempt=exempt, actions_by_event=actions
+            record, projection, exempt=exempt, actions_by_event=actions, effects=effects
         ).ignored
     )

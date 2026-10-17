@@ -44,5 +44,6 @@ def test_a_rearmed_closing_review_still_continues_the_agent_once() -> None:
         observation_pending=False,
     )
     assert gate is not None
-    assert "closing review has not run since your last change" in gate.text
+    # The text names the material input (PR #1080), not "your last change".
+    assert "the closing review has not run for the latest material input" in gate.text
     assert "check_not_applicable" not in gate.text
