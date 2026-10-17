@@ -2117,8 +2117,8 @@ async def test_brief_status_is_a_strict_subset_of_the_full_body(view: str) -> No
 async def test_results_filters_select_by_source_event_envelope() -> None:
     """Issue #1084: view results admits after_sequence, actor_id and author: mine.
 
-    The result is published in the sparse form (no request_id, event ids, times, mirrors or
-    frontier), so this also proves the service-filled path end to end.
+    The result is published in the sparse form (no event ids, times, mirrors or frontier; the
+    request id is the one a host binds), so this also proves the service-filled path end to end.
     """
 
     app, _runtime, _projection = _build_app(seed_offset=8)
@@ -2126,7 +2126,6 @@ async def test_results_filters_select_by_source_event_envelope() -> None:
     action = protocol_id("act_", 10861)
     result = protocol_id("res_", 10861)
     sparse = dict(_request_base(protocol_id("req_", 10862)))
-    del sparse["request_id"]
     published = await app.publish_work(
         PublishWorkRequest.model_validate(
             {

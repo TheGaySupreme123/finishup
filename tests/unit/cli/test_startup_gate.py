@@ -854,28 +854,48 @@ def test_bare_legacy_launcher_resolves_through_path_to_this_runtime(
     assert not bootstrap_tool(payload, "claude", "PreToolUse")
 
 
-def test_sparse_publication_opens_the_gate_under_its_derived_identity(host: Host) -> None:
+def test_a_host_bound_publication_opens_the_gate(host: Host) -> None:
     """Issue #1084: a first plan without request_id or event ids still releases the gate.
 
-    The hook derives the request id the service derives from the same body, and matches the
-    service-minted event ids by their position in ``accepted_events``.
+    The MCP bridge mints and binds the request id after the pre-call hook ran (ADR-050 decision
+    2), so the pre-call event holds no ticket; the post-call event tracks the write under the id
+    the result echoes, and matches the minted event ids by their position in ``accepted_events``.
     """
-
-    from finishup.protocol.publish_boilerplate import derived_publish_request_id
 
     host.start()
     request, result = host.publication()
-    del request["request_id"]
+    minted = cast(str, request.pop("request_id"))
     drafts = cast(list[dict[str, JsonValue]], request["event_drafts"])
     for draft in drafts:
         del draft["event_id"]
-    derived = derived_publish_request_id(request)
-    assert derived is not None
-    result["request_id"] = derived
+    assert result["request_id"] == minted
     host.pre("publish_work", request)
     scope = host.store.read()
-    assert scope is not None and scope.pending.get(derived) == "publish_work"
+    assert scope is not None and minted not in scope.pending
     host.post("publish_work", request, result)
     scope = host.store.read()
-    assert scope is not None and derived not in scope.pending
+    assert scope is not None and minted not in scope.pending
     assert not host.denied()
+
+
+def test_a_host_bound_write_with_an_unknown_outcome_keeps_a_ticket(host: Host) -> None:
+    """Issue #1084: the result's minted id holds the gate until the outcome is known."""
+
+    host.start()
+    host.publish()
+    assert not host.denied()
+    request, result = host.publication(plan=False)
+    minted = cast(str, request.pop("request_id"))
+    host.pre("publish_work", request)
+    unknown: dict[str, JsonValue] = {
+        "request_id": minted,
+        "ok": False,
+        "error": {"code": "OPERATION_PENDING", "retryable": True},
+    }
+    host.post("publish_work", request, unknown)
+    scope = host.store.read()
+    assert scope is not None and scope.pending.get(minted) == "publish_work"
+    # The resumed call replays under the same id and settles the ticket.
+    host.post("publish_work", request, {**result, "outcome": "replayed"})
+    scope = host.store.read()
+    assert scope is not None and minted not in scope.pending

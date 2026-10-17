@@ -35,6 +35,10 @@ from finishup.adapters.integrations.finishup_call_rejections import (
     record_rejected_finishup_call,
     record_served_finishup_read,
 )
+from finishup.adapters.integrations.publish_call_identity import (
+    PublishCallIdentities,
+    PublishCallIdentityUnavailable,
+)
 from finishup.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES, bounded_stdio_server
 from finishup.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
@@ -129,8 +133,9 @@ from finishup.protocol.guidance_uris import (
     GUIDANCE_TOPIC_URIS,
     canonical_guidance_uri,
 )
-from finishup.protocol.ids import IdKind, is_valid_id, new_id, safe_request_id_from
+from finishup.protocol.ids import IdKind, new_id, safe_request_id_from
 from finishup.protocol.models import (
+    PUBLISH_RESUMED_CALL_NOTICE_TEXT,
     CheckRequest,
     CheckResult,
     ClosurePrepareRequest,
@@ -149,7 +154,6 @@ from finishup.protocol.models import (
     StatusResult,
     public_model_to_wire,
 )
-from finishup.protocol.publish_boilerplate import derived_publish_request_id
 from finishup.protocol.recovery import (
     READ_ONLY_CHECK_MODES,
     REASON_REMEDIES,
@@ -518,6 +522,11 @@ class BridgeRuntime:
     # tb4 n5: consecutive status reads per (session, actor) since the session's last write call.
     status_streaks: StatusReadStreaks = field(
         default_factory=StatusReadStreaks, repr=False, compare=False
+    )
+    # Issue #1084 (ADR-050 decision 2): the durable binding of each publish call that omits
+    # request_id to the one request id this bridge minted for it.
+    publish_calls: PublishCallIdentities = field(
+        default_factory=PublishCallIdentities, repr=False, compare=False
     )
 
 
@@ -2427,7 +2436,7 @@ async def _timeout_operation_state(
     failure is ``UNKNOWN``: the write outcome stays unknown and nothing is inferred from silence.
     """
 
-    envelope = _publish_envelope_fields(arguments, request_id)
+    envelope = _publish_envelope_fields(arguments)
     if envelope is None:
         return None
     op_request_id, session_id, writer_id, actor, client = envelope
@@ -2510,7 +2519,15 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
     invoke: Callable[[ServiceClient, RequestT], Awaitable[ResultT]],
     runtime: BridgeRuntime,
     operation: str,
+    *,
+    amend_wire: Callable[[dict[str, JsonValue]], dict[str, JsonValue]] | None = None,
 ) -> types.CallToolResult:
+    """Validate, invoke and project one operation.
+
+    ``amend_wire`` may add bridge-owned closed fields to a successful result's wire body before
+    the result model validates it (issue #1084: the resumed-call notice).
+    """
+
     request_id = safe_request_id_from(arguments)
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read, like the
     # daemon classifies it. The value is only compared with a closed set, never echoed.
@@ -2544,13 +2561,6 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             operation=operation,
             check_mode=check_mode,
         )
-    if request_id is None:
-        # Issue #1084: a publish body may omit ``request_id``; the validated model carries the id
-        # derived from that body, which is the id the service records and replays under. Every
-        # error envelope and the timeout probe below then name the operation the caller owns.
-        derived: object = getattr(request, "request_id", None)
-        if type(derived) is str and is_valid_id(IdKind.REQUEST, derived):
-            request_id = derived
     # Deadline settings belong to this bridge, so a compatible already-running service cannot
     # validate them for us. Refuse disagreements before on-demand discovery can spawn or replace
     # a service; do not silently choose a default or an all-tools override (ADR-048).
@@ -2681,6 +2691,8 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
     stage = "wire"
     try:
         wire = public_model_to_wire(result)
+        if amend_wire is not None:
+            wire = amend_wire(dict(wire))
         stage = "validate"
         validated = result_type.model_validate(wire)
         stage = "wire"
@@ -2734,17 +2746,14 @@ async def dispatch_start(
 
 def _publish_envelope_fields(
     arguments: Mapping[str, object],
-    derived_request_id: str | None = None,
 ) -> tuple[str, str, str, Mapping[str, object], Mapping[str, object]] | None:
     """Return ``(request_id, session_id, writer_id, actor, client)`` when the envelope is complete.
 
     Recovery is keyed only on these fields. Event drafts are intentionally ignored so a body that
     fails schema validation can still reach the operation-identity recovery path.
-    ``derived_request_id`` is the id a *validated* body that omitted ``request_id`` derives
-    (issue #1084); a body that failed validation has none, and none was ever committed under it.
     """
 
-    request_id = safe_request_id_from(arguments) or derived_request_id
+    request_id = safe_request_id_from(arguments)
     session_id = arguments.get("session_id")
     writer_id = arguments.get("writer_id")
     actor = arguments.get("actor")
@@ -2984,14 +2993,144 @@ async def _publish_recovery_from_envelope(
         return _PublishRecoveryOutcome(_PublishRecoveryKind.UNAVAILABLE)
 
 
+def _publish_delivered(result: types.CallToolResult) -> bool:
+    """Whether a publish result delivered an ``ok: true`` outcome to the caller."""
+
+    wire = result.structuredContent
+    return result.isError is not True and isinstance(wire, Mapping) and wire.get("ok") is True
+
+
+def _resumed_call_notice(wire: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Say so when a resumed id-less call replayed its earlier, undelivered outcome (#1084)."""
+
+    if wire.get("ok") is True and wire.get("outcome") == "replayed":
+        wire["replay_notice"] = {
+            "notice": "unresolved_call_resumed",
+            "text": PUBLISH_RESUMED_CALL_NOTICE_TEXT,
+        }
+    return wire
+
+
+def _with_bound_identity_line(
+    result: types.CallToolResult, request_id: str, runtime: BridgeRuntime
+) -> types.CallToolResult:
+    """Name the minted request id in an id-less call's error text (issue #1084).
+
+    A host that reads only text otherwise cannot follow "retry with the same request_id" for an
+    id it never saw. The structured error already carries it; the Cursor profile's first block is
+    the exact canonical JSON, so there the line is a separate block. Never fails the call.
+    """
+
+    try:
+        line = (
+            f"FinishUP minted request_id {request_id} for this call. To retry it, resend the "
+            "identical body without request_id, or send this request_id."
+        )
+        content = list(result.content)
+        first = content[0] if content else None
+        if runtime.host_profile != "cursor" and isinstance(first, types.TextContent):
+            content[0] = first.model_copy(update={"text": f"{first.text}\n{line}"})
+        else:
+            content.append(types.TextContent(type="text", text=line))
+        return result.model_copy(update={"content": content})
+    except Exception:  # noqa: BLE001 - the line is advisory text; the served result stands
+        return result
+
+
+_PUBLISH_IDENTITY_UNAVAILABLE_MESSAGE: Final = (
+    "FinishUP could not record this call's request identity on this machine, so nothing was "
+    "sent. Send the call again with your own request_id (req_ followed by a UUIDv4) and reuse "
+    "that id for any retry of it."
+)
+
+
+async def _dispatch_publish_without_identity(
+    arguments: Mapping[str, object], runtime: BridgeRuntime
+) -> types.CallToolResult:
+    """Mint, durably bind and send the request id of a publish call that omits it (#1084).
+
+    ADR-050 decision 2: the identity is host-owned, never derived from the body. The body is
+    validated first under a provisional id, so an invalid body is never bound or sent. A dry run
+    consumes no identity, so its fresh id is never bound. A real call is bound before it is sent;
+    the binding stays resumable by the next identical call from this writer until an ``ok: true``
+    outcome is delivered, so a lost reply is retried safely and a deliberate repeat is recorded.
+    """
+
+    try:
+        _rpc_deadline_ms("publish_work")
+    except ConfigError:
+        return _deadline_config_conflict_result(None, "publish_work", runtime.host_profile)
+    provisional: dict[str, object] = {**arguments, "request_id": new_id(IdKind.REQUEST)}
+    try:
+        PublishWorkRequest.model_validate(provisional)
+    except ValidationError as exc:
+        # Nothing with this body can have committed: no operation identity exists for it yet.
+        locations = safe_validation_locations(exc)
+        return structured_error_result(
+            PublicErrorCode.INVALID_REQUEST,
+            invalid_request_message("publish_work", locations),
+            safe_details=locations if locations else None,
+            operation="publish_work",
+            host_profile=runtime.host_profile,
+        )
+    except Exception as exc:
+        correlation_id = record_unexpected_exception_without_raising(
+            exc,
+            component="mcp.bridge",
+            operation="publish_work_request_internal_error",
+        )
+        return _internal_stage_error(
+            "bridge_request_validation_failed",
+            request_id=None,
+            correlation_id=correlation_id,
+            host_profile=runtime.host_profile,
+            operation="publish_work",
+        )
+
+    def invoke(client: ServiceClient, request: PublishWorkRequest) -> Awaitable[PublishWorkResult]:
+        return client.publish_work(request, deadline_ms=_rpc_deadline_ms("publish_work"))
+
+    if _publish_is_declared_dry_run(arguments):
+        return await _dispatch(
+            provisional, PublishWorkRequest, PublishWorkResult, invoke, runtime, "publish_work"
+        )
+    try:
+        binding = runtime.publish_calls.bind(arguments)
+    except PublishCallIdentityUnavailable:
+        return structured_error_result(
+            PublicErrorCode.STORAGE_UNSAFE,
+            _PUBLISH_IDENTITY_UNAVAILABLE_MESSAGE,
+            operation="publish_work",
+            diagnostic_reason="publish_call_identity_unavailable",
+            host_profile=runtime.host_profile,
+        )
+    delivered = False
+    try:
+        result = await _dispatch(
+            {**arguments, "request_id": binding.request_id},
+            PublishWorkRequest,
+            PublishWorkResult,
+            invoke,
+            runtime,
+            "publish_work",
+            amend_wire=_resumed_call_notice if binding.resumed else None,
+        )
+        delivered = _publish_delivered(result)
+        if result.isError is True:
+            return _with_bound_identity_line(result, binding.request_id, runtime)
+        return result
+    finally:
+        # A delivered outcome closes the binding; anything else (an error, a cancelled call)
+        # leaves it resumable by the next identical call from this writer.
+        runtime.publish_calls.settle(binding, delivered=delivered)
+
+
 async def dispatch_publish_work(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
 ) -> types.CallToolResult:
-    # Issue #1084: a body without ``request_id`` runs under the id derived from it, so even a
-    # refusal names the operation a resend of the same body would be (and a host hook tracking
-    # that write can match it). Envelope-first recovery below still keys only on a caller id: an
-    # invalid sparse body can never have committed under its derived id.
-    request_id = safe_request_id_from(arguments) or derived_publish_request_id(arguments)
+    if "request_id" not in arguments:
+        return await _dispatch_publish_without_identity(arguments, runtime)
+    request_id = safe_request_id_from(arguments)
     try:
         _rpc_deadline_ms("publish_work")
     except ConfigError:
@@ -3044,7 +3183,7 @@ async def dispatch_publish_work(
             host_profile=runtime.host_profile,
             operation="publish_work",
         )
-    return await _dispatch(
+    result = await _dispatch(
         arguments,
         PublishWorkRequest,
         PublishWorkResult,
@@ -3054,6 +3193,11 @@ async def dispatch_publish_work(
         runtime,
         "publish_work",
     )
+    if request_id is not None and _publish_delivered(result):
+        # The caller retried a host-bound call with its id (as an unknown outcome instructs):
+        # that delivery closes the binding, so a later identical body is a new publication.
+        runtime.publish_calls.settle_caller_identity(arguments, request_id)
+    return result
 
 
 async def dispatch_check(

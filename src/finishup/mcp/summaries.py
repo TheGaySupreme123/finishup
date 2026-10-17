@@ -1859,6 +1859,21 @@ def _acknowledged_obligations_clause(source: Mapping[str, JsonValue]) -> str:
     return f"acknowledged not done (not open): {count}; "
 
 
+def _brief_without_counts(source: Mapping[str, JsonValue]) -> bool:
+    """A ``detail: brief`` body of a non-compact view: counts omitted, ``closure_state`` kept.
+
+    Issue #1084, review R5: such a body is not "unavailable" anything. Its counts are simply not
+    sent, so the text omits them instead of inventing a value, and closure comes from
+    ``closure_state``.
+    """
+
+    return (
+        source.get("detail") == "brief"
+        and not isinstance(source.get("closure_readiness"), Mapping)
+        and isinstance(source.get("closure_state"), Mapping)
+    )
+
+
 def _compact_status_fields(source: Mapping[str, JsonValue], view: str) -> tuple[str, str, str, str]:
     item = _first_page_item(source)
     readiness = source.get("closure_readiness")
@@ -2025,10 +2040,15 @@ def summary_for_status(envelope: object) -> str:
         )
     freshness, obligations, unanswered, _receipt_blocking = _compact_status_fields(source, view)
     gaps = _item_count(source.get("gaps"))
+    brief = _brief_without_counts(source)
     parts: list[Part | None] = [
         _req(f"Status view: {view}; {_frontier_clause(source)};"),
-        _req(f"freshness: {freshness};"),
-        _req(f"open obligations: {obligations};"),
+        # Issue #1084 (review R5): a brief non-compact body carries no counts; say so, never
+        # "unavailable". view compact or detail full returns them.
+        _req("detail: brief (counts in view compact);")
+        if brief
+        else _req(f"freshness: {freshness};"),
+        None if brief else _req(f"open obligations: {obligations};"),
         _opt(
             render.text("acknowledged", lambda: _acknowledged_obligations_clause(source)),
             priority=_P_ACTION,
@@ -2083,7 +2103,11 @@ def summary_for_status(envelope: object) -> str:
         recipe = render.variants("resolve_recipe", lambda: _obligation_resolve_recipe(source))
         if recipe:
             parts.append(_opt(*recipe, priority=_P_STATE))
-    parts.append(_req(f"unanswered findings: {unanswered}; reported gaps: {gaps}."))
+    parts.append(
+        _req(f"reported gaps: {gaps}.")
+        if brief
+        else _req(f"unanswered findings: {unanswered}; reported gaps: {gaps}.")
+    )
     deferral = _deferral_sentence(source.get("semantic_reason"), source)
     if deferral:
         parts.append(_req(deferral))
@@ -2270,7 +2294,7 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
 
     readiness = source.get("closure_readiness")
     if not isinstance(readiness, Mapping):
-        return []
+        return _brief_closure_parts(source)
     typed = cast(Mapping[str, JsonValue], readiness)
     state = typed.get("state")
     if type(state) is not str or state not in READINESS_STATES:
@@ -2320,6 +2344,46 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
             parts.append(Part(listed("Standing limitations: ", standing), priority=_P_BOILERPLATE))
         return [*parts, *verdict_parts]
     return [Part((f"{head} {sentence}", head), required=True), *verdict_parts]
+
+
+def _brief_closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
+    """The closure state and its instruction from a brief body's ``closure_state`` (review R5).
+
+    The same required state token, the same agent-actionable list and the same stop instruction
+    as the full rendering, without the counts a brief body does not carry: the count-free variant
+    of each directive is used, and no count is invented.
+    """
+
+    closure = source.get("closure_state")
+    if not isinstance(closure, Mapping):
+        return []
+    typed = cast(Mapping[str, JsonValue], closure)
+    state = typed.get("state")
+    if type(state) is not str or state not in READINESS_STATES:
+        return []
+    head = f"Closure: {state}."
+    if state == "action_required":
+        parts = [
+            Part((head,), required=True),
+            Part((readiness_directive(state),), priority=_P_BOILERPLATE),
+        ]
+        actionable = _readiness_tokens(typed, "agent_actionable")
+        if actionable:
+            variants = list_variants("Agent-actionable: ", actionable, suffix="")
+            within = tuple(variant for variant in variants if len(variant) <= _LIST_MAX_CHARS)
+            parts.append(
+                Part(
+                    tuple(f"{variant}." for variant in within or variants[-1:]),
+                    required=True,
+                    priority=_P_ACTION,
+                )
+            )
+        return parts
+    if state == "ready_with_limitations":
+        # The full directive's counts sentence needs counts a brief body omits; the stop
+        # instruction itself does not.
+        return [Part((f"{head} Nothing further to do. Request the receipt.",), required=True)]
+    return [Part((f"{head} {readiness_directive(state)}", head), required=True)]
 
 
 def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]:
@@ -2848,13 +2912,14 @@ _START_FRONTIER_NEXT: Final = (
     " (next_request_template carries it); no status read is needed for it."
 )
 _START_FRONTIER_NEXT_SHORT: Final = "Send this frontier as your first plan's expected_frontier."
-# Issue #1084: the next write may omit expected_frontier (the latest mode). The returned frontier
-# is the compare-and-set guard for a caller that wants one; neither needs a status read.
+# Issue #1084: the next publish_work may omit expected_frontier (the service guards it with the
+# frontier it reads at admission). check, respond and receipt still send a frontier, and the
+# returned one is it; none of them needs a status read (review of PR #1088).
 _WRITE_FRONTIER_NEXT: Final = (
-    "Next write: omit expected_frontier to publish on the latest frontier, or send this one to "
-    "refuse a concurrent change; no status read is needed for either."
+    "Next publish_work may omit expected_frontier (guarded at admission); send this frontier when "
+    "the batch rests on what you read, and to check, respond and receipt. No status read needed."
 )
-_WRITE_FRONTIER_NEXT_SHORT: Final = "Next write may omit expected_frontier."
+_WRITE_FRONTIER_NEXT_SHORT: Final = "Next publish_work may omit expected_frontier."
 
 
 def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
@@ -2872,7 +2937,7 @@ def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
     return None
 
 
-_FILLED_REQUEST_FIELDS: Final = frozenset({"expected_frontier", "request_id"})
+_FILLED_REQUEST_FIELDS: Final = frozenset({"expected_frontier"})
 _FILLED_DRAFT_FIELDS: Final = frozenset(
     {"artifact_refs", "causal_parents", "event_id", "evidence_refs", "occurred_at"}
 )
@@ -2962,26 +3027,26 @@ def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
 
 
 def _replay_notice_part(source: Mapping[str, JsonValue]) -> Part | None:
-    """Say that an identical body replayed and appended nothing (issue #1084).
+    """Say that a resumed id-less call replayed its earlier outcome (issue #1084).
 
     Rendered only when the closed code and the fixed repository text both match exactly.
     """
 
-    from finishup.protocol.models import PUBLISH_REPLAY_NOTICE_TEXT
+    from finishup.protocol.models import PUBLISH_RESUMED_CALL_NOTICE_TEXT
 
     notice = source.get("replay_notice")
     if not isinstance(notice, Mapping):
         return None
     entry = cast(Mapping[str, JsonValue], notice)
     if (
-        entry.get("notice") != "identical_body_replayed"
-        or entry.get("text") != PUBLISH_REPLAY_NOTICE_TEXT
+        entry.get("notice") != "unresolved_call_resumed"
+        or entry.get("text") != PUBLISH_RESUMED_CALL_NOTICE_TEXT
     ):
         return None
     return _opt(
-        PUBLISH_REPLAY_NOTICE_TEXT,
-        "Identical body replayed; nothing new appended. Reword it or send a fresh request_id to "
-        "record it again.",
+        PUBLISH_RESUMED_CALL_NOTICE_TEXT,
+        "Resumed an earlier undelivered call; nothing new appended. Publish again to record it "
+        "again.",
         priority=_P_ACTION,
     )
 

@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 import finishup.mcp.server as bridge
+from builders.publish_identity import bridge_bound
 from finishup.mcp.descriptors import descriptor_for
 from finishup.mcp.errors import authoring_hint, safe_validation_locations
 from finishup.mcp.server import invalid_request_message
@@ -63,7 +64,7 @@ def _obligation_request() -> dict[str, Any]:
 
 def _locations(request: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequestModel.model_validate(request)
+        PublishWorkRequestModel.model_validate(bridge_bound(request))
     return safe_validation_locations(captured.value)
 
 

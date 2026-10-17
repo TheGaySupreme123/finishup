@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from bisect import bisect_right
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -251,7 +251,7 @@ from finishup.protocol.models import (
     StatusStructuralSubjectStateModel,
     StatusVersionSliceModel,
 )
-from finishup.protocol.publish_boilerplate import ServerFilled
+from finishup.protocol.publish_boilerplate import ServerFilled, server_filled_from_json
 from finishup.protocol.redacted_values import SemanticRedactedValue
 from finishup.version import build_status_version_slice_facts
 
@@ -1096,6 +1096,61 @@ def _result_bytes(result: AppendResult, server_filled: ServerFilled | None = Non
     return canonical_encode(cast(JsonValue, value))
 
 
+def _service_clock_events_of(
+    prior: tuple[OperationRecord, AppendResult | None] | None,
+) -> frozenset[str]:
+    """The events one publish operation appended with the service clock as ``occurred_at``.
+
+    Review R7: read from the operation's stored structural result (its ``server_filled`` draft
+    positions and its accepted events, in draft order), never from caller input. Any other
+    operation, or a publish that sent every time itself, contributes nothing.
+    """
+
+    if prior is None:
+        return frozenset()
+    operation = prior[0]
+    if (
+        operation.operation_kind is not OperationKind.PUBLISH_WORK
+        or operation.state is not OperationState.COMPLETE
+        or operation.result_canonical is None
+        or b'"server_filled"' not in operation.result_canonical
+    ):
+        return frozenset()
+    try:
+        source = cast(Mapping[str, JsonValue], strict_json_parse(operation.result_canonical))
+        positions = server_filled_from_json(source["server_filled"]).filled_time_indexes()
+        accepted = cast(Sequence[Mapping[str, JsonValue]], source["accepted"])
+        if any(position >= len(accepted) for position in positions):
+            raise ValueError("server_filled_index_out_of_range")
+        return frozenset(cast(str, accepted[position]["event_id"]) for position in positions)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _error(PublicErrorCode.STORAGE_CORRUPT) from exc
+
+
+def service_clock_event_ids(
+    operations: Mapping[tuple[str, str], tuple[OperationRecord, AppendResult | None]],
+    records: Iterable[LedgerRecord],
+) -> frozenset[str]:
+    """Which of ``records`` carry a service-recorded ``occurred_at`` (issue #1084, review R7).
+
+    Each record names the operation that appended it (its writer and ``operation_id``); that
+    operation's durable result says which drafts omitted their time. History and frozen review
+    inputs label exactly these events, so a filled time is never read as a caller assertion.
+    """
+
+    by_operation: dict[tuple[str, str], frozenset[str]] = {}
+    found: set[str] = set()
+    for record in records:
+        key = (str(record.writer.writer_id), str(record.operation_id))
+        events = by_operation.get(key)
+        if events is None:
+            events = _service_clock_events_of(operations.get(key))
+            by_operation[key] = events
+        if str(record.event_id) in events:
+            found.add(str(record.event_id))
+    return frozenset(found)
+
+
 def build_append_operation_record(
     command: AppendCommand, result: AppendResult, now: datetime
 ) -> OperationRecord:
@@ -1545,8 +1600,13 @@ def _projection_items(
     *,
     task: str,
     session: str,
+    service_clock_events: frozenset[str] = frozenset(),
 ) -> tuple[ProjectionItem, ...]:
-    """Project one immutable state into the exact bounded public row types."""
+    """Project one immutable state into the exact bounded public row types.
+
+    ``service_clock_events`` names the history rows whose ``occurred_at`` the service recorded
+    (issue #1084, review R7); see :func:`service_clock_event_ids`.
+    """
 
     if view is ProjectionView.CANDIDATE_FINDINGS:
         return ()
@@ -1569,8 +1629,17 @@ def _projection_items(
                     )
                 )
             )
+            service_clock = str(row.event_id) in service_clock_events
+            # Optional non-null leaves are passed only when set (never as an explicit null).
+            history_extras: dict[str, object] = {}
+            if manifest_model is not None:
+                history_extras["review_input_manifest"] = manifest_model
+            if service_clock:
+                history_extras["occurred_at_source"] = "service_clock"
             history_type = (
-                StatusHistoryItemV14Model if manifest_model is not None else StatusHistoryItemModel
+                StatusHistoryItemV14Model
+                if manifest_model is not None or service_clock
+                else StatusHistoryItemModel
             )
             result_history.append(
                 history_type(
@@ -1592,11 +1661,7 @@ def _projection_items(
                         _SummaryCode,
                         "opaque_unknown" if type(row) is UnknownEvent else row.schema.name,
                     ),
-                    **(
-                        {"review_input_manifest": manifest_model}
-                        if manifest_model is not None
-                        else {}
-                    ),
+                    **cast(dict[str, Any], history_extras),
                 )
             )
         return tuple(result_history)
@@ -2503,7 +2568,16 @@ class MemoryLedgerAdapter:
             state: ProjectionState | tuple[ProjectionItem, ...] = projection
         else:
             state = _projection_items(
-                view, projection, records, task=self._task_id, session=session_id
+                view,
+                projection,
+                records,
+                task=self._task_id,
+                session=session_id,
+                service_clock_events=(
+                    service_clock_event_ids(self._state.operations, records)
+                    if view is ProjectionView.HISTORY
+                    else frozenset()
+                ),
             )
         return StoredProjection(view, state, frontier, 0, PROJECTION_VERSION, False)
 
@@ -2695,6 +2769,11 @@ class MemoryLedgerAdapter:
                     prefix,
                     task=self._task_id,
                     session=query.session_id,
+                    service_clock_events=(
+                        service_clock_event_ids(self._state.operations, prefix)
+                        if view is ProjectionView.HISTORY
+                        else frozenset()
+                    ),
                 )
             )
             candidates = all_items
@@ -3061,6 +3140,7 @@ class MemoryLedgerAdapter:
                 raise _error(PublicErrorCode.SESSION_NOT_FOUND)
             if self._pending_import(session_id):
                 raise _error(PublicErrorCode.OPERATION_PENDING, retryable=True)
+            clock_events = service_clock_event_ids(self._state.operations, records)
 
         availability = await self.load_case_availability(session_id, frontier, projection)
 
@@ -3071,6 +3151,7 @@ class MemoryLedgerAdapter:
                     records,
                     availability,
                     _projection_validated=True,
+                    service_clock_events=clock_events,
                 )
             except ValueError as exc:
                 if str(exc) == "deterministic_case_invalid":
@@ -3250,6 +3331,8 @@ class MemoryLedgerAdapter:
             frozen_projection = projection
             frozen_records = records
             frozen_frontier = frontier
+            # Committed operations never change, so their filled-time record is read here.
+            frozen_clock_events = service_clock_event_ids(self._state.operations, records)
 
             def freeze() -> tuple[DeterministicCase, str, bytes]:
                 # ``projection`` and ``records`` were read together under the ledger lock, so the
@@ -3261,6 +3344,7 @@ class MemoryLedgerAdapter:
                         frozen_records,
                         availability,
                         _projection_validated=True,
+                        service_clock_events=frozen_clock_events,
                     )
                 except ValueError as exc:
                     if str(exc) == "deterministic_case_invalid":

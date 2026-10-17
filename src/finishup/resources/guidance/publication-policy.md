@@ -28,10 +28,13 @@ For a large inventory, create obligations per coherent work package. Publish one
 
 Publish one batch per material transition, roughly one to eight events. A normal session is a handful of batches: the plan and its obligations, each independently useful result with its evidence, the completion claim, and any finding response. It is not one batch per file, per tool call, or per message.
 
-`publish_work` may omit `expected_frontier`: that is the `latest` mode. The batch is validated
-against the frontier it lands on, with no compare-and-set guard against another writer, and the
-result's `server_filled` names it. Send one only when a concurrent writer could change what the
-batch depends on (a parent and its delegates, two sessions on one task). Then send the frontier
+`publish_work` may omit `expected_frontier`. FinishUP then reads the current frontier when it
+admits the batch and enforces it through the append, tolerating hook observations exactly as a
+sent frontier does: a cooperative write that lands while the batch is in flight returns
+`FRONTIER_CONFLICT` (`frontier_changed`) and nothing is written. The result's `server_filled`
+names the omission. That guard cannot see a change made before the request arrived, so send a
+frontier when the batch rests on what you read earlier, such as a claim, a resolution or a
+decision while a parent and its delegates, or two sessions, share the task. Then send the frontier
 you already hold: the first plan batch uses the `frontier` that `start` returned (its
 `next_request_template` already carries it), and every later batch uses the `result_frontier` of
 your last accepted `publish_work`, `check` or `respond`. No `status` read is needed for it; read
@@ -424,20 +427,25 @@ used unchanged; a sent mirror that disagrees with its payload is still refused.
 
 | Omitted | FinishUP records | Retry and provenance |
 | --- | --- | --- |
-| `request_id` | an id derived from the canonical body | resending the same body replays the stored outcome; a corrected body is a new request |
-| `expected_frontier` | the frontier the batch lands on (`latest`) | no compare-and-set guard; send one to refuse a concurrent change |
-| draft `event_id` | an id minted from the request id, the draft position and whether it is a dry run | a dry run never mints its commit's ids |
-| draft `occurred_at` | the service clock when the batch is published | never your assertion; `status view=operation` names it |
+| `request_id` | a fresh id the MCP bridge (or `finishup publish-work`) mints for this call and records before sending | after an unknown outcome, the identical body resumes this id and replays; once an outcome reached you, the same body is a new publication |
+| `expected_frontier` | the frontier FinishUP reads when it admits the batch | a cooperative write landing in flight is a `FRONTIER_CONFLICT`; send one to also refuse earlier changes |
+| draft `event_id` | an id minted from the task, writer, request id, draft position and whether it is a dry run | a dry run never mints its commit's ids; two operations never share one |
+| draft `occurred_at` | the service clock when the batch is published | never your assertion: history and review inputs mark it `occurred_at_source: service_clock` |
 | `causal_parents`, `artifact_refs`, `evidence_refs` | an empty set, or the payload's own mirror | the payload stays the assertion |
 
-A derived `request_id` cannot tell a retry from a deliberate repeat, so an identical body always
-replays and its result carries `replay_notice` (nothing new appended). To record the same facts
-again on purpose, such as confirming a `finishup-blocker` line or switching review mode back,
-reword the body or send a fresh `request_id`.
+The request id is never derived from the body, so a deliberate repeat, such as confirming a
+`finishup-blocker` line again or switching review mode back, is simply published again. Only the
+next call from the same writer with the identical body, after a call whose outcome never reached
+you, resumes that call; its result then carries `replay_notice` (`unresolved_call_resumed`:
+nothing new appended). Keep the request id an error names: resending the body or that id are the
+same retry. If FinishUP cannot record a minted id it sends nothing and asks for your own
+`request_id`.
 
-Reference sets are also sorted and de-duplicated. Every accepted or previewed result lists what was
+Reference-set fields are also sorted and de-duplicated; text lists are kept exactly as sent.
+Every accepted or previewed result lists what was
 filled in `server_filled` (`request`, plus `drafts` by batch index), and the operation record keeps
-the same names, so a filled value is never read as caller-asserted. The minted event ids are the
+the same names; a replay reports the committed operation's record, so a filled value is never read
+as caller-asserted. The minted event ids are the
 `accepted_events` ids at the same positions. Payload ids (`act_`, `res_`, `evd_`, `obl_`, `clm_`)
 and evidence `observed_at` are still yours: use a time you already hold, never a `date` call.
 
@@ -474,9 +482,11 @@ UUIDv4 and use the best real time you already hold, exactly as for the schema ex
 <a id="set-valued-lists"></a>
 
 Every canonical set field is recorded with unique members in ascending ASCII order. FinishUP
-sorts and de-duplicates every envelope reference set and the payload reference sets of an
+sorts and de-duplicates every envelope reference set and the payload reference-set fields of an
 ordinary publishable family before validation (issue #1084), so authoring order no longer matters
-there. Lineage and coordination payload sets keep the earlier refusal: a rejection names `unsorted_set_field` or `duplicate_set_member` at the owning
+there. It reads only those fields, by name: a text list such as `alternatives`, `attempted_items`
+or `scope_exclusions` keeps its exact order and repeats even when its members look like ids.
+Lineage and coordination payload sets keep the earlier refusal: a rejection names `unsorted_set_field` or `duplicate_set_member` at the owning
 field. Sort the named field as ASCII bytes and retry; do not reverse-engineer order from a
 one-member subset.
 

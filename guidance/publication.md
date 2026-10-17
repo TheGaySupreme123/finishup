@@ -13,18 +13,20 @@ an existing obligation: to map a missed requirement, publish a new obligation.
 Then publish material transitions, results, evidence, and a completion claim. Keep one transition together in a small
 batch. `work_closed` closes work; a receipt never does. A `publish_work` body may omit
 `request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
-`artifact_refs` and `evidence_refs`: FinishUP derives the request id from the body (resending the
-same body is the idempotent retry), mints event ids, records its own clock, copies the payload
-mirrors, publishes on the latest frontier, and names every filled value in the result's
-`server_filled`. Send a value only when you need it: an explicit `expected_frontier` (the
-`frontier` `start` returned for the first plan, then the `result_frontier` of your last accepted
-write) refuses a concurrent change; a `causal_parents` entry cites an earlier event id.
+`artifact_refs` and `evidence_refs`. FinishUP mints a request id for that one call, mints event
+ids, records its own clock, copies the payload mirrors, guards the batch with the frontier it reads
+when it admits it, and names every filled value in the result's `server_filled`. After an unknown
+outcome, resend the identical body: it runs under the same request id and replays instead of
+appending twice. Any other call, including the same body after its outcome reached you, is a new
+publication. Send a value only when you need it: an explicit `expected_frontier` (the `frontier`
+`start` returned for the first plan, then the `result_frontier` of your last accepted write) also
+refuses a change made since you read it; a `causal_parents` entry cites an earlier event id.
 
 ## Before you send a batch
 
 Check each line. Each one names the refusal or finding it prevents.
 
-1. Omit `expected_frontier` (latest), or send the frontier you hold; never `null`
+1. Omit `expected_frontier` (guarded at admission), or send the frontier you hold; never `null`
    (`expected_frontier_required`).
 2. Every `action_recorded` has a `result_recorded` naming its `action_id`, normally in the same
    batch, with `outcome` `success`, `failure`, `partial` or `unknown` (`action_without_result`).
@@ -35,8 +37,9 @@ Check each line. Each one names the refusal or finding it prevents.
    `test_report` or `static_analysis_report`. `test_result` takes `test_stdout`, `test_report` or
    `static_analysis_report`. `research_source` takes `artifact_bytes` or `bounded_excerpt`.
    `other` takes `bounded_excerpt`.
-5. Write each reference once. FinishUP sorts and de-duplicates reference lists and copies the
-   envelope mirrors; a mirror you do send must match the payload (`ref_mirror_mismatch`).
+5. Write each reference once. FinishUP sorts and de-duplicates reference-set fields (never text
+   lists such as `alternatives` or `attempted_items`) and copies the envelope mirrors; a mirror
+   you do send must match the payload (`ref_mirror_mismatch`).
 6. `attempted_items` appears only on `action_recorded`, and each value is copied exactly from a
    `requested_items` `value`.
 7. An obligation is resolved once. Do not republish a `resolved` obligation as `resolved` to add

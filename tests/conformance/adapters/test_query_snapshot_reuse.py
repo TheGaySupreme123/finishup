@@ -53,9 +53,17 @@ async def test_pages_reuse_frontier_and_rows(backend: str, monkeypatch: pytest.M
             *,
             task: str,
             session: str,
+            service_clock_events: frozenset[str] = frozenset(),
         ) -> tuple[ProjectionItem, ...]:
             counts["rows"] += 1
-            return original_items(view, projection, records, task=task, session=session)
+            return original_items(
+                view,
+                projection,
+                records,
+                task=task,
+                session=session,
+                service_clock_events=service_clock_events,
+            )
 
         monkeypatch.setattr(module, "replay", replay)
         monkeypatch.setattr(module, "_projection_items", items)

@@ -3487,28 +3487,45 @@ verification remains authoritative when its output is later retrieved through `w
 ### Server-filled publish boilerplate and brief status (#1084)
 
 Host decision: supported, no host-specific code. The change lives in the shared protocol request
-models, the publish application, the MCP bridge and the startup gate hook, so Codex takes the same
-path as every other host. What a Codex agent can rely on:
+models, the publish application, the MCP bridge, `finishup publish-work` and the startup gate hook,
+so Codex takes the same path as every other host. What a Codex agent can rely on:
 
 - `publish_work` may omit `request_id`, `expected_frontier`, and each draft's `event_id`,
-  `occurred_at`, `causal_parents`, `artifact_refs` and `evidence_refs`. FinishUP derives the
-  request id from the body (resending the same body replays it), mints event ids, records its own
-  clock, copies the payload mirrors and publishes on the latest frontier. The result's
-  `server_filled` names every filled value, and `status view=operation` shows the same record.
-  Reference sets are sorted and de-duplicated instead of refused. A request that sends every
-  value behaves exactly as before.
-- No `date -u` call is needed to timestamp a draft.
-- An identical sparse body is the same request: it replays and its result carries
-  `replay_notice`. To record the same facts again on purpose (a `finishup-blocker` confirmation,
-  a review-mode switch back), reword the body or send a fresh `request_id`.
+  `occurred_at`, `causal_parents`, `artifact_refs` and `evidence_refs`. The service still
+  requires `request_id`: the FinishUP MCP bridge (or `finishup publish-work`) mints one per call and
+  records it under the user state directory (`publish-calls/`, commitments and ids only) before
+  sending. The service mints event ids from the task, writer, request id, position and preview
+  role, records its own clock, copies the payload mirrors, and guards an omitted frontier with the
+  one it reads on admission. The result's `server_filled` names every filled value, and
+  `status view=operation` shows the committed operation's record. Reference-set fields are sorted
+  and de-duplicated; text lists are kept as sent. A request that sends every value behaves exactly
+  as before.
+- After an unknown outcome, resend the identical body (or send the request id the error names):
+  the bridge reuses that call's id and the service replays, and the result carries
+  `replay_notice` (`unresolved_call_resumed`). Once an outcome was delivered, the identical body
+  is a new publication, so a `finishup-blocker` confirmation or a review-mode switch back is simply
+  published again. If the bridge cannot record a minted id it sends nothing and asks for an
+  explicit `request_id`.
+- A cooperative write that lands while an id-less, frontier-less batch is in flight returns
+  `FRONTIER_CONFLICT`; hook observations do not. Send `expected_frontier` when the batch rests on
+  something read earlier and another writer shares the task.
+- No `date -u` call is needed to timestamp a draft. A time FinishUP filled is marked
+  `occurred_at_source: service_clock` in `status view=history` and in check review inputs.
 - An MCP `status` read returns `detail: brief` unless the agent sends `detail: "full"`;
   `limit` defaults to 20, and `view: results` accepts `filter` `after_sequence`, `actor_id`
-  or `author: "mine"`.
-- Codex reads the structured result, so the minted ids arrive in `accepted_events` and `server_filled`. In code mode a sandbox without `crypto` no longer needs a UUIDv4 helper for `publish_work` (it still does for `start`, `check`, `respond` and `receipt`).
-- The startup gate hook derives the same request id for a sparse `publish_work`, and matches
-  minted event ids by position in `accepted_events`, so a sparse first plan still releases the gate.
+  or `author: "mine"`. The brief text still names `Closure: <state>`, the agent-actionable tokens
+  and, at `ready_with_limitations`, the stop-and-request-the-receipt instruction.
+- Codex reads the structured result, so the minted ids arrive in `accepted_events` and
+  `server_filled`. In code mode a sandbox without `crypto` no longer needs a UUIDv4 helper for
+  `publish_work` (it still does for `start`, `check`, `respond` and `receipt`). Codex has no
+  startup gate hook; its observation hooks are unchanged.
+- Host tool-call ids are not used for the binding: none of the three hosts' MCP call identity is
+  verified in this repository, so the bridge mints its own and the binding is keyed by the FinishUP
+  session, writer and body. A rejected id-less call cannot be matched to its pending hook attempt
+  (the hook never sees the minted id), so that attempt still expires as before.
 
 Verification: `tests/integration/application/test_publish_server_filled.py`,
+`tests/unit/mcp/test_server_filled_bridge.py`, `tests/unit/cli/test_startup_gate.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Codex session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.

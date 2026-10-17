@@ -247,8 +247,8 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="frontier_held_required",
         directive=(
-            "Null expected_frontier: nothing written. Omit it (latest frontier) or send the one "
-            "you hold: start returned it for a first plan, else your last accepted write's "
+            "Null expected_frontier: nothing written. Omit it (guarded at admission) or send the "
+            "one you hold: start returned it for a first plan, else your last accepted write's "
             "result_frontier. Retry with this same request_id."
         ),
         guidance_uri=_PUBLICATION_RECOVERY,

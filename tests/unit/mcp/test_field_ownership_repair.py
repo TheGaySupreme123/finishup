@@ -21,6 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 import finishup.mcp.server as bridge
+from builders.publish_identity import bridge_bound
 from finishup.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
 from finishup.mcp.errors import safe_validation_locations
 from finishup.mcp.server import invalid_request_message
@@ -67,7 +68,7 @@ def _with_payload_keys(family: str, **extra: Any) -> dict[str, Any]:
 
 def _locations(request: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequestModel.model_validate(request)
+        PublishWorkRequestModel.model_validate(bridge_bound(request))
     return safe_validation_locations(captured.value)
 
 
@@ -264,7 +265,7 @@ def test_one_retry_moves_the_field_instead_of_deleting_it() -> None:
     owner_draft["event_id"] = "evt_00000000-0000-4000-8000-000000000099"
     request["event_drafts"] = [owner_draft, claim_draft]
 
-    repaired = PublishWorkRequestModel.model_validate(request)
+    repaired = PublishWorkRequestModel.model_validate(bridge_bound(request))
     payloads = cast(tuple[Any, ...], repaired.event_drafts)
     assert cast(dict[str, Any], payloads[0])["payload"][misplaced] == ["pytest -q"]
 

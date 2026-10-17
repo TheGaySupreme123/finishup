@@ -11,6 +11,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from builders.publish_identity import bridge_bound
 from builders.readiness import with_checklist
 from finishup.mcp import resources as resource_module
 from finishup.mcp.descriptors import (
@@ -210,7 +211,9 @@ def test_frontier_leaf_names_are_locatable_in_safe_details() -> None:
 
     with pytest.raises(ValidationError) as captured:
         PublishWorkRequest.model_validate(
-            {**base, "expected_frontier": {"sequence": "10", "digest": f"sha256:{'a' * 64}"}}
+            bridge_bound(
+                {**base, "expected_frontier": {"sequence": "10", "digest": f"sha256:{'a' * 64}"}}
+            )
         )
     locations = safe_validation_locations(captured.value)
 
@@ -241,7 +244,7 @@ def test_rejected_event_draft_is_located_by_ordinal() -> None:
     }
 
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate({**base, "event_drafts": [good, bad]})
+        PublishWorkRequest.model_validate(bridge_bound({**base, "event_drafts": [good, bad]}))
     locations = safe_validation_locations(captured.value)
 
     assert any(item["field"] == "/event_drafts/1/payload/action_kind" for item in locations)
@@ -269,7 +272,9 @@ def test_unknown_nested_payload_key_keeps_the_extra_forbidden_reason() -> None:
     payload = {**cast(dict[str, object], good["payload"]), secret: "x"}
 
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate({**base, "event_drafts": [{**good, "payload": payload}]})
+        PublishWorkRequest.model_validate(
+            bridge_bound({**base, "event_drafts": [{**good, "payload": payload}]})
+        )
     locations = safe_validation_locations(captured.value)
 
     assert {"field": "/event_drafts/0/payload", "reason": "extra_forbidden"}.items() <= (
@@ -304,8 +309,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:79145df6f744d367d897a04ce0b30bba17f4abfba328026c83ab452359c23b32",
-        "strict": "sha256:96cfdb0a08ad5a63e1745e6312905af3a5cd3f2af338c883fe47da08798b85a2",
+        "policy": "sha256:c88392f8924d9d9dea28dc50498cc9f9ab09e5455db6a2b5511374112e674dd5",
+        "strict": "sha256:b4959529296d8f1b218b44cdf0ce9afd4e72c40692976c90d44e600c2a2b56bb",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -342,18 +347,23 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "for intro and guidance" in start_description
     # Issue #1084: the service sorts reference lists and fills the envelope boilerplate, and the
     # descriptor says so instead of asking for hand-sorted, hand-mirrored drafts.
-    assert "Reference lists are sorted and de-duplicated for you" in (
+    assert "Reference sets are sorted and de-duplicated for you" in (
         descriptor_for("publish_work").description
     )
     assert "server_filled" in descriptor_for("publish_work").description
     assert "never run date" in descriptor_for("publish_work").description
+    # Review R1/R3 of PR #1088: the call's id is minted, not derived; the frontier is guarded.
+    assert "FinishUP mints the call's id" in descriptor_for("publish_work").description
+    assert "frontier it reads on admission" in descriptor_for("publish_work").description
     properties = descriptor_for("publish_work").input_schema["properties"]
     assert isinstance(properties, dict)
     event_drafts = properties["event_drafts"]
     assert isinstance(event_drafts, dict)
     description = event_drafts["description"]
     assert isinstance(description, str)
-    assert "sorts and de-duplicates reference lists" in description
+    assert (
+        "sorts and de-duplicates reference-set fields; text lists are kept as sent" in description
+    )
     assert "server_filled" in description
     publish_descriptor = descriptor_for("publish_work")
     assert publish_descriptor.input_schema_ref.endswith("publish-work-request-1.2.0.schema.json")
@@ -393,8 +403,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "uncertain what you already did or committed to" in descriptor_for("status").description
     assert "recommended_next_action" in descriptor_for("status").description
     assert (
-        "occurred_at (caller-asserted, or the service clock where a publish omitted it, which "
-        "view=operation's server_filled names) beside the service-stamped accepted_at"
+        "occurred_at (caller-asserted, or the service clock where a publish omitted it: "
+        "occurred_at_source service_clock) beside the service-stamped accepted_at"
     ) in descriptor_for("status").description
     assert "call receipt before claiming completion" in descriptor_for("publish_work").description
     assert "do not copy the illustrative example timestamp" in (
@@ -888,7 +898,7 @@ def test_mcp_can_amend_review_input_without_replacing_the_session(
     validator = Draft202012Validator(cast(Any, descriptor.input_schema))
     is_valid = cast(Callable[[Any], bool], getattr(validator, "is_valid"))
     assert is_valid(request)
-    PublishWorkRequest.model_validate(request)
+    PublishWorkRequest.model_validate(bridge_bound(request))
     validate_schema_instance(family.replace("_", "-"), "1.1.0", draft["payload"])
 
     # The new field must not accidentally become authorable under the frozen old wire version.
@@ -1011,7 +1021,8 @@ def test_presentation_examples_admit_under_catalog_models() -> None:
     exercised: set[str] = set()
     for example in publish_examples:
         assert isinstance(example, dict)
-        PublishWorkRequest.model_validate(example)
+        # Issue #1084: the bridge binds a request id to an id-less example before the model.
+        PublishWorkRequest.model_validate(bridge_bound(cast(dict[str, Any], example)))
         drafts = example["event_drafts"]
         assert isinstance(drafts, list)
         for draft in drafts:

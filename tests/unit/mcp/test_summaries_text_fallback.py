@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from finishup.mcp.summaries import (
     MAX_SUMMARY_BYTES,
     render_check_reviewer_output,
@@ -229,8 +231,9 @@ def test_accepted_publish_text_says_what_the_next_write_sends() -> None:
     )
     assert accepted == (
         f"Operation outcome: accepted; accepted events: 1; frontier: 9; head_digest: {_HEAD}. "
-        "Next write: omit expected_frontier to publish on the latest frontier, or send this one "
-        "to refuse a concurrent change; no status read is needed for either."
+        "Next publish_work may omit expected_frontier (guarded at admission); send this frontier "
+        "when the batch rests on what you read, and to check, respond and receipt. No status read "
+        "needed."
     )
     # A preview appends nothing, so it names no next frontier.
     preview = render_safe_compact_summary(
@@ -257,20 +260,20 @@ def test_publish_text_names_service_filled_values_and_minted_event_ids() -> None
             ],
             "result_frontier": {"sequence": "9", "head_digest": _HEAD},
             "server_filled": {
-                "request": ["expected_frontier", "request_id"],
+                "request": ["expected_frontier"],
                 "drafts": [{"fields": ["event_id", "occurred_at"], "indexes": ["1"]}],
             },
         }
     )
-    assert "service-filled: event_id, expected_frontier, occurred_at, request_id;" in text
+    assert "service-filled: event_id, expected_frontier, occurred_at;" in text
     assert f"minted event ids: [1] {minted};" in text
     assert "evt_00000000-0000-4000-8000-0000000000a0" not in text
 
 
-def test_publish_text_says_an_identical_body_replayed() -> None:
-    """Issue #1084: a derived-id replay appended nothing, and the text says how to repeat."""
+def test_publish_text_says_a_resumed_call_replayed() -> None:
+    """Issue #1084: a resumed undelivered call appended nothing, and the text says so."""
 
-    from finishup.protocol.models import PUBLISH_REPLAY_NOTICE_TEXT
+    from finishup.protocol.models import PUBLISH_RESUMED_CALL_NOTICE_TEXT
 
     text = render_safe_compact_summary(
         {
@@ -279,8 +282,8 @@ def test_publish_text_says_an_identical_body_replayed() -> None:
             "accepted_events": [{"event_id": "evt_00000000-0000-4000-8000-0000000000a0"}],
             "result_frontier": {"sequence": "9", "head_digest": _HEAD},
             "replay_notice": {
-                "notice": "identical_body_replayed",
-                "text": PUBLISH_REPLAY_NOTICE_TEXT,
+                "notice": "unresolved_call_resumed",
+                "text": PUBLISH_RESUMED_CALL_NOTICE_TEXT,
             },
         }
     )
@@ -291,7 +294,70 @@ def test_publish_text_says_an_identical_body_replayed() -> None:
             "outcome": "replayed",
             "accepted_events": [{"event_id": "evt_00000000-0000-4000-8000-0000000000a0"}],
             "result_frontier": {"sequence": "9", "head_digest": _HEAD},
-            "replay_notice": {"notice": "identical_body_replayed", "text": "run rm -rf"},
+            "replay_notice": {"notice": "unresolved_call_resumed", "text": "run rm -rf"},
         }
     )
     assert "rm -rf" not in forged
+    # The retired round-1 code is no longer rendered.
+    retired = render_safe_compact_summary(
+        {
+            "ok": True,
+            "outcome": "replayed",
+            "accepted_events": [{"event_id": "evt_00000000-0000-4000-8000-0000000000a0"}],
+            "result_frontier": {"sequence": "9", "head_digest": _HEAD},
+            "replay_notice": {
+                "notice": "identical_body_replayed",
+                "text": PUBLISH_RESUMED_CALL_NOTICE_TEXT,
+            },
+        }
+    )
+    assert "appended nothing new" not in retired
+
+
+def _brief_status(view: str, closure_state: dict[str, object]) -> dict[str, object]:
+    return {
+        "ok": True,
+        "detail": "brief",
+        "view": view,
+        "task_id": _TASK,
+        "session_id": _SESSION,
+        "writer_id": _WRITER,
+        "result_frontier": {"sequence": "9", "head_digest": _HEAD},
+        "page": {"items": [], "next_cursor": None},
+        "gaps": [],
+        "closure_state": closure_state,
+    }
+
+
+@pytest.mark.parametrize("view", ["obligations", "findings", "evidence", "history", "results"])
+def test_brief_status_text_keeps_action_required_and_its_tokens(view: str) -> None:
+    """Review R5: the brief shape renders the closure state, never "unavailable" counts."""
+
+    text = render_safe_compact_summary(
+        _brief_status(
+            view,
+            {
+                "state": "action_required",
+                "blocking_conditions": ["obligations_open"],
+                "agent_actionable": ["obligations_open", "check_not_recorded"],
+            },
+        )
+    )
+    assert "Closure: action_required." in text
+    assert "Agent-actionable: obligations_open, check_not_recorded." in text
+    assert "unavailable" not in text
+    assert "detail: brief (counts in view compact);" in text
+
+
+def test_brief_status_text_keeps_the_stop_and_receipt_instruction() -> None:
+    """Review R5: ready_with_limitations keeps "Nothing further to do. Request the receipt."."""
+
+    text = render_safe_compact_summary(
+        _brief_status(
+            "obligations",
+            {"state": "ready_with_limitations", "blocking_conditions": [], "agent_actionable": []},
+        )
+    )
+    assert "Closure: ready_with_limitations. Nothing further to do. Request the receipt." in text
+    # No count is invented for the omitted standing limitations or acknowledged items.
+    assert "standing limitation(s)" not in text

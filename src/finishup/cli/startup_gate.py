@@ -35,7 +35,6 @@ from finishup.ports.integrations import FINISHUP_WORKFLOW_TOOL_NAMES
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.ids import IdKind, is_valid_id
-from finishup.protocol.publish_boilerplate import derived_publish_request_id
 
 _WORKFLOW = frozenset(FINISHUP_WORKFLOW_TOOL_NAMES)
 # Cursor's ``mcp_server_name`` for the external and the plugin-bundled server, under the current
@@ -210,20 +209,15 @@ def proposed_obligations(request: Mapping[str, JsonValue] | None) -> list[str]:
     return sorted(refs)
 
 
-def _request_identity(tool: str | None, request: Mapping[str, JsonValue] | None) -> object:
-    """The request id a tracked write runs under, including one the service derives (#1084).
+def _host_bound_publish(tool: str | None, request: Mapping[str, JsonValue] | None) -> bool:
+    """Whether this is a ``publish_work`` call whose request id the host binds (#1084).
 
-    A ``publish_work`` body may omit ``request_id``; the service then derives it from the body,
-    and this computes the same id so the pending ticket, the bridge's error envelope and the
-    service's result all name one operation.
+    An agent may omit ``request_id``; the MCP bridge (or the CLI) then mints one per call and
+    binds it before sending, so the pre-call hook cannot know it. The service's result echoes it,
+    and the post-call event tracks the write under that id instead (ADR-050 decision 2).
     """
 
-    if request is None:
-        return None
-    rid = request.get("request_id")
-    if rid is None and tool == "publish_work":
-        return derived_publish_request_id(request)
-    return rid
+    return tool == "publish_work" and request is not None and "request_id" not in request
 
 
 def clear_pending(scope: GateScope, rid: str) -> None:
@@ -453,7 +447,7 @@ def handle_startup_gate(
                         else:
                             if scope is None:
                                 scope = GateScope.fresh()
-                            rid = _request_identity(tool, request)
+                            rid = None if request is None else request.get("request_id")
                             if isinstance(rid, str) and is_valid_id(IdKind.REQUEST, rid):
                                 if len(scope.pending) >= 32 and rid not in scope.pending:
                                     # Preserve every ambiguous write identity. The
@@ -485,7 +479,7 @@ def handle_startup_gate(
                 result = _result(
                     payload.get("result_json") if host == "cursor" else payload.get("tool_response")
                 )
-                rid = _request_identity(tool, request)
+                rid = None if request is None else request.get("request_id")
                 # Cursor afterMCPExecution may omit tool_input. The service's
                 # echoed request id still needs the exact pre-call ticket.
                 if rid is None and result is not None:
@@ -493,6 +487,22 @@ def handle_startup_gate(
                 if tool == "status" and result is not None and result.get("ok") is True:
                     recover_pending(scope, result)
                     store.write(scope)
+                if (
+                    _host_bound_publish(tool, request)
+                    and isinstance(rid, str)
+                    and is_valid_id(IdKind.REQUEST, rid)
+                    and rid not in scope.pending
+                    and result is not None
+                    and result.get("request_id") == rid
+                    and (result.get("ok") is True or len(scope.pending) < 32)
+                ):
+                    # Issue #1084: the host minted this write's id after the pre-call event, so
+                    # the result opens its ticket here. A success settles it below exactly as a
+                    # caller-identified write's would; an unknown outcome keeps it pending until
+                    # an exact successful replay or an operation read settles it.
+                    scope.pending[rid] = "publish_work"
+                    scope.pending_generations[rid] = scope.generation
+                    scope.pending_refs[rid] = proposed_obligations(request)
                 if isinstance(rid, str) and scope.pending.get(rid) == tool:
                     if (
                         result is not None

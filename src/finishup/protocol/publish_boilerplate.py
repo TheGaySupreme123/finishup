@@ -1,26 +1,30 @@
-"""Server-filled ``publish_work`` boilerplate (issue #1084).
+"""Server-filled ``publish_work`` boilerplate (issue #1084, ADR-050).
 
-An agent used to hand-write every envelope value the service could derive itself: a fresh
-``request_id``, one ``event_id`` per draft, ``occurred_at`` from ``date -u``, empty
-``causal_parents``/``artifact_refs`` lists, an exact copy of the payload's ``evidence_refs`` and an
-ASCII-sorted, duplicate-free order for every reference set. Across the 62 N6 trials that clerical
-load cost more output tokens than any other FinishUP activity.
+An agent used to hand-write every envelope value the service could derive itself: one ``event_id``
+per draft, ``occurred_at`` from ``date -u``, empty ``causal_parents``/``artifact_refs`` lists, an
+exact copy of the payload's ``evidence_refs`` and an ASCII-sorted, duplicate-free order for every
+reference set. Across the 62 N6 trials that clerical load cost more output tokens than any other
+FinishUP activity.
 
-This module owns the pure, deterministic half of that derivation, so the MCP bridge, the CLI and
-the service compute the same values from the same body:
+This module owns the pure, deterministic half of that derivation, so the service and every test
+compute the same values from the same body:
 
-* ``request_id`` (when absent) is a digest of the caller's canonical request body. Resending the
-  same body after a lost response is the idempotent retry; any corrected body gets a new identity.
-* a draft's ``event_id`` (when absent) is minted from the request identity, the draft position and
-  whether the call is a dry run, so a dry-run preview never mints the ids its commit records.
+* a draft's ``event_id`` (when absent) is minted from the complete operation scope (task, writer
+  and ``request_id``), the draft position and whether the call is a preview or a commit. A dry-run
+  preview never mints the ids its commit records, and two operations never share a minted id.
 * envelope mirrors (``evidence_refs``, ``artifact_refs``) are copied from the payload, and
   ``causal_parents`` defaults to an empty set.
-* reference sets are sorted and de-duplicated instead of refused.
+* the reference sets an explicit ``(family, version, field)`` allowlist names are sorted and
+  de-duplicated instead of refused. Every other array, including free text that happens to look
+  like ids, is kept exactly as sent.
 
-The time-dependent half -- ``occurred_at`` from the service clock and the ``latest`` frontier mode --
-belongs to the service at append time. Every filled value is named in the result's
-``server_filled`` record, which is also stored with the operation, so a filled value is never
-presented as a caller assertion.
+The operation identity is never derived here. ``request_id`` stays caller- or host-owned: the MCP
+bridge and the CLI mint one for a call that omits it and bind it durably before sending
+(``finishup.adapters.integrations.publish_call_identity``), so a lost reply is retried safely and
+a deliberate identical repeat is still a new publication. The time-dependent half (``occurred_at``
+from the service clock and the admission frontier guard) belongs to the service. Every value the
+service fills is named in the result's ``server_filled`` record, which is also stored with the
+operation, so a filled value is never presented as a caller assertion.
 """
 
 from __future__ import annotations
@@ -30,28 +34,30 @@ import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, cast
 
-from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue
 from finishup.protocol.errors import ProtocolValueError
 
 __all__ = [
     "FILLABLE_DRAFT_FIELDS",
     "FILLABLE_REQUEST_FIELDS",
+    "PAYLOAD_SET_FIELDS",
+    "DraftMintScope",
     "ServerFilled",
     "ServerFilledDraft",
     "canonicalize_publish_sets",
     "complete_draft_envelope",
-    "derive_publish_request_id",
-    "derived_publish_request_id",
     "drop_ignored_decision_ids",
     "mint_draft_event_id",
     "normalize_publish_drafts",
     "server_filled_from_json",
 ]
 
-# Request-level values the service may fill, in canonical (ASCII) order.
-FILLABLE_REQUEST_FIELDS: Final[tuple[str, ...]] = ("expected_frontier", "request_id")
+# Request-level values the service may fill, in canonical (ASCII) order. ``request_id`` is never
+# one of them: the operation identity is caller- or host-owned (ADR-050 decision 2).
+FILLABLE_REQUEST_FIELDS: Final[tuple[str, ...]] = ("expected_frontier",)
 # Draft-envelope values the service may fill, in canonical (ASCII) order.
 FILLABLE_DRAFT_FIELDS: Final[tuple[str, ...]] = (
     "artifact_refs",
@@ -61,31 +67,49 @@ FILLABLE_DRAFT_FIELDS: Final[tuple[str, ...]] = (
     "occurred_at",
 )
 
-_REQUEST_ID_DOMAIN: Final = b"finishup/publish_work/request_id/v1\x00"
-_EVENT_ID_DOMAIN: Final = b"finishup/publish_work/event_id/v1\x00"
+# Version 2: the seed carries the whole operation scope (task, writer, request) plus position and
+# role. Version 1 seeded only (request, position, role), so one explicit request id reused by two
+# writers minted the same event id (review R4).
+_EVENT_ID_DOMAIN: Final = b"finishup/publish_work/event_id/v2\x00"
 
-# A reference set member: any typed ledger identifier a draft may name. Free text never matches,
-# so a list of labels or prose (``attempted_items``, ``alternatives``) is never reordered.
+# A reference set member: any typed ledger identifier a set-valued field may name.
 _REFERENCE: Final[re.Pattern[str]] = re.compile(
     r"\A(?:act|clm|evd|evt|fnd|obj|obl|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}"
     r"-[0-9a-f]{12}\Z",
     re.ASCII,
 )
+# Every draft envelope's reference lists are sets in the event-draft contract (the domain decoder
+# requires them unique and ASCII-sorted), whatever the payload family.
 _ENVELOPE_SETS: Final[tuple[str, ...]] = ("artifact_refs", "causal_parents", "evidence_refs")
-# Families an agent publishes whose top-level id arrays are all canonical sets (ASCII-sorted and
-# unique, enforced by the domain decoders). Lineage, coordination and service-only families keep
-# their exact refusal: their arrays are either not caller-authored or not plain sets.
-_SET_CANONICAL_FAMILIES: Final[frozenset[str]] = frozenset(
+# The payload fields whose contract is a reference *set*: decoded by the domain as unique,
+# ASCII-sorted typed ids (``_id_tuple`` / ``_evidence_result_tuple`` / the claim reference sets).
+# Keyed by the exact ``(family, version)`` an agent publishes; a family or version absent here, and
+# every field not named, keeps its exact bytes and its exact refusal. Free-text tuples
+# (``alternatives``, ``attempted_items``, ``scope_exclusions``) are never sets here, even when
+# every member looks like an id (review R2).
+PAYLOAD_SET_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = MappingProxyType(
     {
-        "action_recorded",
-        "assignment_recorded",
-        "claim_recorded",
-        "decision_recorded",
-        "evidence_recorded",
-        "obligation_published",
-        "plan_published",
-        "plan_revised",
-        "result_recorded",
+        ("action_recorded", "1.0.0"): frozenset({"obligation_refs"}),
+        ("assignment_recorded", "1.0.0"): frozenset({"obligation_ids"}),
+        ("claim_recorded", "1.0.0"): frozenset(
+            {"disputes_refs", "obligation_refs", "supporting_refs"}
+        ),
+        ("claim_recorded", "1.1.0"): frozenset(
+            {
+                "disputes_refs",
+                "limitation_refs",
+                "obligation_refs",
+                "supersedes_claim_refs",
+                "supporting_refs",
+            }
+        ),
+        ("decision_recorded", "1.0.0"): frozenset({"affected_obligation_ids"}),
+        ("decision_recorded", "1.1.0"): frozenset({"affected_obligation_ids"}),
+        ("obligation_published", "1.0.0"): frozenset({"resolution_evidence_refs", "source_refs"}),
+        ("obligation_published", "1.1.0"): frozenset({"resolution_evidence_refs", "source_refs"}),
+        ("plan_published", "1.0.0"): frozenset({"obligation_refs"}),
+        ("plan_published", "1.1.0"): frozenset({"obligation_refs"}),
+        ("result_recorded", "1.0.0"): frozenset({"evidence_refs"}),
     }
 )
 # Payload field whose value the envelope ``evidence_refs`` must mirror, by family.
@@ -101,34 +125,50 @@ def _uuid4_shaped(prefix: str, digest: bytes) -> str:
     return prefix + str(uuid.UUID(bytes=bytes(material)))
 
 
-def derive_publish_request_id(identity_body: JsonValue) -> str:
-    """Return the ``req_`` id of one caller body that omitted ``request_id``.
+@dataclass(frozen=True, slots=True)
+class DraftMintScope:
+    """The complete operation scope an omitted draft ``event_id`` is minted from (review R4).
 
-    ``identity_body`` is the caller's canonical request body without ``request_id`` (after the
-    model's meaning-preserving normalization: ignored ``decision_id`` keys dropped and reference
-    sets canonicalized). Equal bodies always derive the same id, so a resend after a lost
-    response replays the stored outcome instead of appending twice.
+    An operation is keyed by ``(task_id, writer_id, request_id)`` (INTERFACES, idempotency), so
+    the seed carries all three. The session is not part of it: a writer belongs to one session,
+    and a task-scoped replay of the same operation must recompute the same ids. ``dry_run``
+    separates a non-evidential preview's ids from its commit's.
     """
 
-    if isinstance(identity_body, Mapping) and "request_id" in identity_body:
-        raise ProtocolValueError("invalid_event_value_type")
-    digest = hashlib.sha256(_REQUEST_ID_DOMAIN + canonical_encode(identity_body)).digest()
-    return _uuid4_shaped("req_", digest)
+    task_id: str
+    writer_id: str
+    request_id: str
+    dry_run: bool
+
+    def __post_init__(self) -> None:
+        for prefix, value in (
+            ("tsk_", self.task_id),
+            ("wri_", self.writer_id),
+            ("req_", self.request_id),
+        ):
+            if type(value) is not str or not value.startswith(prefix) or not value.isascii():
+                raise ProtocolValueError("invalid_event_value_type")
+        if type(self.dry_run) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
 
 
-def mint_draft_event_id(request_id: str, index: int, *, dry_run: bool) -> str:
-    """Mint the ``evt_`` id of draft ``index`` in one request.
+def mint_draft_event_id(scope: DraftMintScope, index: int) -> str:
+    """Mint the ``evt_`` id of draft ``index`` in one operation.
 
-    The dry-run flag is part of the seed: a preview's ids are never the ids its commit records,
-    even when the caller reuses one explicit ``request_id`` for both.
+    Deterministic within one operation scope and role, so a replay recomputes the same ids, also
+    across a service restart. A different task, writer, request or role mints a different id.
     """
 
-    if type(request_id) is not str or type(index) is not int or index < 0:
+    if type(scope) is not DraftMintScope or type(index) is not int or index < 0:
         raise ProtocolValueError("invalid_event_value_type")
-    seed = b"%s\x00%d\x00%s" % (
-        request_id.encode("ascii"),
-        index,
-        b"dry_run" if dry_run else b"commit",
+    seed = b"\x00".join(
+        (
+            scope.task_id.encode("ascii"),
+            scope.writer_id.encode("ascii"),
+            scope.request_id.encode("ascii"),
+            b"%d" % index,
+            b"dry_run" if scope.dry_run else b"commit",
+        )
     )
     return _uuid4_shaped("evt_", hashlib.sha256(_EVENT_ID_DOMAIN + seed).digest())
 
@@ -183,38 +223,19 @@ def drop_ignored_decision_ids(drafts: object) -> object:
 def normalize_publish_drafts(drafts: object) -> object:
     """Apply every meaning-preserving draft normalization, in the order the request model does.
 
-    ``decision_id`` keys are dropped (#1049) and reference sets canonicalized (#1084). The same
-    object is returned when nothing changes.
+    ``decision_id`` keys are dropped (#1049) and allowlisted reference sets canonicalized (#1084).
+    The same object is returned when nothing changes.
     """
 
     return canonicalize_publish_sets(drop_ignored_decision_ids(drafts))
 
 
-def derived_publish_request_id(arguments: object) -> str | None:
-    """The ``request_id`` the service derives for a raw publish body, or ``None``.
-
-    ``None`` when the body names its own ``request_id`` or is not a JSON object. For a body the
-    request model accepts, this is exactly the id the model derives (strict wire values are
-    never coerced, so the model's serialization equals the normalized body); a host hook can
-    therefore track a sparse write's identity without importing the request model.
-    """
-
-    if not isinstance(arguments, Mapping):
-        return None
-    source = cast(Mapping[object, object], arguments)
-    if "request_id" in source or any(type(key) is not str for key in source):
-        return None
-    body: dict[str, object] = {cast(str, key): value for key, value in source.items()}
-    if "event_drafts" in body:
-        body["event_drafts"] = normalize_publish_drafts(body["event_drafts"])
-    try:
-        return derive_publish_request_id(cast(JsonValue, body))
-    except ProtocolValueError, TypeError, ValueError, RecursionError:
-        return None
-
-
 def _canonical_reference_set(value: object) -> object:
-    """Sort and de-duplicate one array of typed references; anything else is returned as is."""
+    """Sort and de-duplicate one array of typed references; anything else is returned as is.
+
+    Only called for a field the contract defines as a reference set. A member that is not a typed
+    id leaves the array untouched, so the domain decoder reports the exact member error.
+    """
 
     if not isinstance(value, list | tuple):
         return value
@@ -229,6 +250,16 @@ def _canonical_reference_set(value: object) -> object:
     return canonical
 
 
+def _schema_key(schema: object) -> tuple[str, str] | None:
+    if not isinstance(schema, Mapping):
+        return None
+    source = cast(Mapping[object, object], schema)
+    name, version = source.get("name"), source.get("version")
+    if type(name) is not str or type(version) is not str:
+        return None
+    return name, version
+
+
 def _canonical_draft_sets(draft: Mapping[object, object]) -> Mapping[object, object]:
     replacement: dict[object, object] | None = None
     for key in _ENVELOPE_SETS:
@@ -238,15 +269,16 @@ def _canonical_draft_sets(draft: Mapping[object, object]) -> Mapping[object, obj
         if canonical is not draft[key]:
             replacement = dict(draft) if replacement is None else replacement
             replacement[key] = canonical
-    schema: object = draft.get("schema")
+    schema_key = _schema_key(draft.get("schema"))
+    fields = PAYLOAD_SET_FIELDS.get(schema_key) if schema_key is not None else None
     payload: object = draft.get("payload")
-    family = (
-        cast(Mapping[object, object], schema).get("name") if isinstance(schema, Mapping) else None
-    )
-    if family in _SET_CANONICAL_FAMILIES and isinstance(payload, Mapping):
+    if fields and isinstance(payload, Mapping):
         source = cast(Mapping[object, object], payload)
         rebuilt: dict[object, object] | None = None
-        for key, member in source.items():
+        for key in sorted(fields):
+            if key not in source:
+                continue
+            member = source[key]
             canonical = _canonical_reference_set(member)
             if canonical is not member:
                 rebuilt = dict(source) if rebuilt is None else rebuilt
@@ -258,13 +290,13 @@ def _canonical_draft_sets(draft: Mapping[object, object]) -> Mapping[object, obj
 
 
 def canonicalize_publish_sets(drafts: object) -> object:
-    """Return ``drafts`` with every reference set in canonical order (issue #1084).
+    """Return ``drafts`` with every allowlisted reference set in canonical order (issue #1084).
 
     A reference set has no order and no multiplicity, so sorting it and dropping repeats never
     changes what the caller asserted; it only removes the ``unsorted_set_field`` and
     ``duplicate_set_member`` rejections that used to cost a whole resend. Envelope sets and the
-    top-level id arrays of ordinary agent families are canonicalized; free-text arrays never are.
-    The same object is returned when nothing changes.
+    payload fields named in :data:`PAYLOAD_SET_FIELDS` are canonicalized; no other array is
+    touched, whatever its members look like. The same object is returned when nothing changes.
     """
 
     if not isinstance(drafts, list | tuple):
@@ -315,16 +347,16 @@ def _payload_mirrors(
 def complete_draft_envelope(
     draft: Mapping[str, JsonValue],
     *,
-    request_id: str,
+    scope: DraftMintScope | None,
     index: int,
-    dry_run: bool,
     occurred_at: str,
 ) -> tuple[Mapping[str, JsonValue], tuple[str, ...]]:
     """Fill the envelope values one draft omitted and name each filled field.
 
     A present value is never replaced, so an old client's complete draft is returned unchanged
     (the same object) and a present-but-inconsistent mirror still fails its exact validation. The
-    returned names are in canonical order.
+    returned names are in canonical order. ``scope`` is required only to mint an omitted
+    ``event_id``.
     """
 
     missing = tuple(field for field in FILLABLE_DRAFT_FIELDS if field not in draft)
@@ -338,7 +370,9 @@ def complete_draft_envelope(
     completed: dict[str, JsonValue] = dict(draft)
     for field in missing:
         if field == "event_id":
-            completed[field] = mint_draft_event_id(request_id, index, dry_run=dry_run)
+            if scope is None:
+                raise ProtocolValueError("invalid_event_value_type")
+            completed[field] = mint_draft_event_id(scope, index)
         elif field == "occurred_at":
             completed[field] = occurred_at
         elif field == "causal_parents":
@@ -387,6 +421,11 @@ class ServerFilled:
     @property
     def empty(self) -> bool:
         return not self.request and not self.drafts
+
+    def filled_time_indexes(self) -> frozenset[int]:
+        """The batch positions whose ``occurred_at`` is the service clock (review R7)."""
+
+        return frozenset(item.index for item in self.drafts if "occurred_at" in item.fields)
 
     def as_json(self) -> dict[str, JsonValue]:
         """Group drafts that share one filled-field set, so a uniform batch costs one row.

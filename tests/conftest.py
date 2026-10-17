@@ -126,6 +126,29 @@ def _isolated_rejected_finishup_calls(  # pyright: ignore[reportUnusedFunction]
     monkeypatch.setattr(rejections_module, "state_dir", lambda: Path(root))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_publish_call_identities(  # pyright: ignore[reportUnusedFunction]
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the bridge's publish-call identity record out of the developer's real state directory.
+
+    The MCP bridge and the CLI bind each ``publish_work`` call that omits ``request_id`` to one
+    minted request id under the platform ``state_dir()`` before sending it (issue #1084, ADR-050).
+    MCP and CLI tests publish without a state root of their own, so without this redirect they
+    would write into a live install's state. The import is inside the fixture for the same
+    dependency-free collection reason as the diagnostic log above.
+    """
+
+    try:
+        import finishup.adapters.integrations.publish_call_identity as identity_module
+    except ImportError:
+        return
+
+    root = tmp_path_factory.mktemp("publish-call-identities")
+    root.chmod(0o700)
+    monkeypatch.setattr(identity_module, "state_dir", lambda: Path(root))
+
+
 @pytest.fixture(scope="session")
 def fixture_loader() -> FixtureLoader:
     """Expose the lazy read-only loader without touching Wave A resources at collection."""

@@ -62,13 +62,16 @@ attempt, an independently useful result, a completion, a revision. Skip routine 
 formatting, and per-file mechanics.
 
 Write each fact once. A publish needs only your session and writer, your actor and client, and
-events made of a `schema` and a `payload`. FinishUP fills the rest when you leave it out: the
-request id (derived from the request itself, so sending the same request again after a lost answer
-is the safe retry), each event id, the event time (FinishUP's clock, never your claim), empty
-reference lists and the reference lists that repeat the payload's, and the frontier (the latest
-one). Reference lists are put in canonical order for you. The result's `server_filled` names every
-value FinishUP filled, and so does the operation record. Send a value when you need it, for
-example a frontier to refuse a concurrent change from another participant.
+events made of a `schema` and a `payload`. FinishUP fills the rest when you leave it out. It gives
+each call its own request id and records it before sending, so after an answer that never arrived
+you send the same request again and it is the safe retry; once an answer arrived, the same request
+again is a new record (switching review back on, for example). It also fills each event id, the
+event time (FinishUP's clock, never your claim, and marked as such in history), empty reference
+lists and the reference lists that repeat the payload's, and the frontier: the one it reads when it
+takes the request, so a change another participant makes meanwhile is refused. Reference lists are
+put in canonical order for you; text lists are kept exactly as you wrote them. The result's
+`server_filled` names every value FinishUP filled, and so does the operation record. Send a value
+when you need it, for example the frontier you last read when what you publish depends on it.
 
 A plan must make completion scope inspectable. Normally, list its obligation refs. If no
 obligations apply, record `no_obligations_reason` as exactly `no_material_change`,

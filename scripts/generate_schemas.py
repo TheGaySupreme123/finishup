@@ -4602,6 +4602,16 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     history_item = cast(dict[str, JsonValue], definitions["history_item"])
     history_properties = cast(dict[str, JsonValue], history_item["properties"])
     history_properties["review_input_manifest"] = {"$ref": "#/$defs/review_input_manifest"}
+    # Issue #1084 (review R7), unreleased in-place addition: present only when the publish that
+    # appended the event omitted occurred_at and the service recorded its own clock.
+    history_properties["occurred_at_source"] = {
+        "description": (
+            "Present only when the publish that appended this event omitted occurred_at, so the "
+            "service recorded its own clock; occurred_at is then not a caller assertion."
+        ),
+        "enum": ["service_clock"],
+        "type": "string",
+    }
     history_summary = cast(dict[str, JsonValue], history_properties["summary_code"])
     history_codes = cast(list[JsonValue], history_summary["enum"])
     history_codes.extend(
@@ -6425,13 +6435,12 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
         "operations/publish-work-request-1.1.0.schema.json",
         {"event-draft-1.1.0": "event-draft-1.2.0"},
     )
-    # Issue #1084, unreleased in-place change: the service derives an omitted ``request_id`` from
-    # the canonical body, and an omitted ``expected_frontier`` selects the ``latest`` mode. A
-    # request that sends both is unchanged byte for byte.
+    # Issue #1084, unreleased in-place change: an omitted ``expected_frontier`` is guarded by the
+    # frontier the service reads when it admits the batch. ``request_id`` stays required: the
+    # operation identity is caller- or host-owned (the MCP bridge and the CLI mint one for an agent
+    # call that omits it), never derived by the service. A request that sends both is unchanged.
     required = cast(list[JsonValue], document["required"])
-    document["required"] = [
-        name for name in required if name not in {"request_id", "expected_frontier"}
-    ]
+    document["required"] = [name for name in required if name != "expected_frontier"]
     return document
 
 
@@ -8781,27 +8790,32 @@ def _add_publish_server_filled(document: dict[str, JsonValue]) -> None:
     field still receives its earlier result shape.
     """
 
-    from finishup.protocol.models import PUBLISH_REPLAY_NOTICE_TEXT
+    from finishup.protocol.models import PUBLISH_RESUMED_CALL_NOTICE_TEXT
 
     definitions = cast(dict[str, JsonValue], document["$defs"])
     definitions["server_filled"] = _server_filled_schema()
-    for branch in ("success", "dry_run"):
+    for branch in ("success", "accepted_projection_unavailable", "dry_run"):
         properties = cast(
             dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
         )
         properties["server_filled"] = {"$ref": "#/$defs/server_filled"}
-    # A derived request_id that replayed an identical earlier body says so; never on a dry run,
-    # which replays nothing.
-    success = cast(dict[str, JsonValue], definitions["success"])
-    cast(dict[str, JsonValue], success["properties"])["replay_notice"] = {
+    # A host-minted request_id that resumed an earlier call of the same body, whose outcome was
+    # not delivered, says so when the service replayed it; never on a dry run, which replays
+    # nothing. The reduced success keeps it too (review R1).
+    definitions["replay_notice"] = {
         "additionalProperties": False,
         "properties": {
-            "notice": {"const": "identical_body_replayed"},
-            "text": {"const": PUBLISH_REPLAY_NOTICE_TEXT},
+            "notice": {"const": "unresolved_call_resumed"},
+            "text": {"const": PUBLISH_RESUMED_CALL_NOTICE_TEXT},
         },
         "required": ["notice", "text"],
         "type": "object",
     }
+    for branch in ("success", "accepted_projection_unavailable"):
+        properties = cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
+        )
+        properties["replay_notice"] = {"$ref": "#/$defs/replay_notice"}
 
 
 def _add_publish_action_notices(document: dict[str, JsonValue]) -> None:

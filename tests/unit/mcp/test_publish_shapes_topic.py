@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 from jsonschema import Draft202012Validator
 
+from builders.publish_identity import bridge_bound
 from finishup.mcp import resources
 from finishup.mcp.descriptors import descriptor_for
 from finishup.mcp.resources import DEFAULT_GUIDANCE_PAGE_SIZE
@@ -77,4 +78,4 @@ def test_publish_shapes_is_one_default_guidance_page(monkeypatch: pytest.MonkeyP
         descriptor.input_schema,
     ):
         cast(Any, Draft202012Validator(cast(Any, schema))).validate(request)
-    PublishWorkRequestModel.model_validate(request)
+    PublishWorkRequestModel.model_validate(bridge_bound(request))

@@ -99,8 +99,8 @@ local checks already cover what changed; or you are reading or exploring.
 `statement` and `rationale` say why in one line each; `authority` is your own actor id (a
 placeholder below). Omit `event_id` and `occurred_at`: FinishUP fills them and names them in
 `server_filled`. Then omit `mode` on later checks. To go back to local checks, publish a new
-decision with `review_mode: "local"`. A body identical to one already recorded replays it and
-records nothing new, so to switch again later reword the decision or send a fresh `request_id`. The complete request is the
+decision with `review_mode: "local"`, and publish the `ai_powered` decision again to switch back;
+each call is its own publication, even with an identical body. The complete request is the
 [`#publish-work-decision`](request-templates.md#publish-work-decision) template's second body; its
 draft is:
 

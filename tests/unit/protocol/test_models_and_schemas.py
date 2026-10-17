@@ -336,7 +336,8 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "compact"): 61,  # #1027: latest_check +4
     ("status", "evidence"): 19,
     ("status", "findings"): 129,  # W2-A +3: closure_class/basis/next_actions
-    ("status", "history"): 64,  # #1047 +1: review_input_manifest/follow_up_round
+    # #1047 +1: review_input_manifest/follow_up_round; #1084 +1: occurred_at_source (review R7).
+    ("status", "history"): 65,
     ("status", "lineage"): 17,
     ("status", "obligations"): 42,  # #1027: in_current_plan +1; W2-A +2 closure_class/basis
     ("status", "operation"): 51,  # #1084 +3 server_filled
@@ -377,9 +378,11 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/publish-work-result-1.0.0.schema.json",
         "accepted_minimal_event",
     ),
+    # Issue #1084: the unreleased 1.1.0 reduced success keeps server_filled and the resumed-call
+    # notice (review R1 of PR #1088), changed in place.
     (
         "PublishWorkAcceptedProjectionUnavailableModel",
-        "operations/publish-work-result-1.0.0.schema.json",
+        "operations/publish-work-result-1.1.0.schema.json",
         "accepted_projection_unavailable",
     ),
     (
@@ -2586,11 +2589,12 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1614
+        len(derived_patterns) == 1615
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification,
-    # +1 closing_material_frontier, #1084 +10 server_filled and brief status
+    # +1 closing_material_frontier, #1084 +10 server_filled and brief status,
+    # +1 history occurred_at_source (review R7 of PR #1088)
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2600,8 +2604,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1642  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
-        # +1 closing_material_frontier; #1084 +10 server_filled and brief status
+        len(rules) == 1643  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
+        # +1 history occurred_at_source (review R7)
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification
@@ -2613,7 +2618,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1614  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    assert (
+        len(registry_patterns) == 1615
+    )  # #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification
     assert registry_patterns == derived_patterns
 
@@ -3342,8 +3349,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_095
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_098
     )  # #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
+    # +3 (review of PR #1088: reduced success server_filled and the shared replay_notice),
     # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
     # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),

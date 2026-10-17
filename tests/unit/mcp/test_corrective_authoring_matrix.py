@@ -18,6 +18,7 @@ from typing import Final, cast
 import pytest
 from pydantic import ValidationError
 
+from builders.publish_identity import bridge_bound
 from builders.replay import replay_records
 from finishup.application.publish_work import Application, prepare_publication
 from finishup.domain.events import EventPayload, encode_payload
@@ -77,10 +78,10 @@ def _missing_envelope_keys() -> _Request:
 def test_omitted_fillable_envelope_keys_are_admitted() -> None:
     """Issue #1084: the service fills omitted envelope keys, so their absence is no rejection."""
 
-    PublishWorkRequestModel.model_validate(_missing_envelope_keys())
+    PublishWorkRequestModel.model_validate(bridge_bound(_missing_envelope_keys()))
     draft = _example_draft()
     assert set(draft) == {"schema", "payload"}
-    PublishWorkRequestModel.model_validate(_publish_request([draft]))
+    PublishWorkRequestModel.model_validate(bridge_bound(_publish_request([draft])))
 
 
 def _stub_draft() -> _Request:
@@ -159,7 +160,7 @@ _MODELS: Final = {
 def _rejection_message(tool: str, request: _Request) -> str:
     model = _MODELS[tool]
     with pytest.raises(ValidationError) as captured:
-        model.model_validate(request)
+        model.model_validate(bridge_bound(request) if tool == "publish_work" else request)
     return invalid_request_message(tool, safe_validation_locations(captured.value))
 
 
@@ -183,7 +184,8 @@ def test_one_retry_repairs_the_request_from_the_public_output(
 
     # The repaired request is derived from the rejected one plus the message, and must be admitted
     # by the real model. A message that names the fields but states the wrong rule fails here.
-    _MODELS[tool].model_validate(repair(rejected))
+    repaired = repair(rejected)
+    _MODELS[tool].model_validate(bridge_bound(repaired) if tool == "publish_work" else repaired)
 
 
 def test_the_scope_rule_names_the_third_admitted_shape() -> None:

@@ -18,6 +18,11 @@ import typer
 from pydantic import BaseModel, ValidationError
 
 from finishup import __version__
+from finishup.adapters.integrations.publish_call_identity import (
+    PublishCallBinding,
+    PublishCallIdentities,
+    PublishCallIdentityUnavailable,
+)
 from finishup.cli.agent_start import AGENT_START_HANDOFF
 from finishup.cli.bootstrap import (
     control_failure as _shared_control_failure,
@@ -66,6 +71,7 @@ from finishup.protocol.errors import ProtocolValueError, PublicErrorCode
 from finishup.protocol.ids import IdKind, new_id
 from finishup.protocol.models import (
     MAX_TASK_STATEMENT_BYTES,
+    PUBLISH_RESUMED_CALL_NOTICE_TEXT,
     CheckAwaitingHumanModel,
     CheckInspectionModel,
     CheckRequest,
@@ -74,6 +80,7 @@ from finishup.protocol.models import (
     OperationFailureModel,
     PublishWorkRequest,
     PublishWorkResult,
+    PublishWorkResultModel,
     ReceiptRequest,
     ReceiptResult,
     ReceiptSuccessModel,
@@ -764,6 +771,38 @@ def _read_task_statement_file(path: str) -> str:
     return raw.decode("utf-8", errors="strict")
 
 
+def _publish_work_request(
+    input_path: str | None, inline: str | None
+) -> tuple[BaseModel, PublishCallBinding | None, PublishCallIdentities | None]:
+    """Parse one ``publish-work`` body, binding a host-minted request id when it omits one.
+
+    Issue #1084 (ADR-050 decision 2), the same contract the MCP bridge keeps: the body is
+    validated under a provisional id first, a dry run gets a fresh id that is never bound, and a
+    real call's id is durably bound before it is sent. Re-running the identical command after an
+    undelivered outcome resumes that id, so the service replays instead of appending twice.
+    """
+
+    parsed = _bounded_input(input_path, inline)
+    if not isinstance(parsed, Mapping) or "request_id" in parsed:
+        return PublishWorkRequest.model_validate(parsed), None, None
+    body = cast(Mapping[str, JsonValue], parsed)
+    PublishWorkRequest.model_validate({**body, "request_id": new_id(IdKind.REQUEST)})
+    if body.get("dry_run") is True:
+        return (
+            PublishWorkRequest.model_validate({**body, "request_id": new_id(IdKind.REQUEST)}),
+            None,
+            None,
+        )
+    calls = PublishCallIdentities()
+    # PublishCallIdentityUnavailable propagates: nothing is sent without a durable binding.
+    binding = calls.bind(body)
+    return (
+        PublishWorkRequest.model_validate({**body, "request_id": binding.request_id}),
+        binding,
+        calls,
+    )
+
+
 def _start_request_model(
     input_path: str | None, inline: str | None, task_statement_file: str | None
 ) -> BaseModel:
@@ -799,6 +838,10 @@ async def _call_workflow(
 ) -> int:
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
     check_mode: object = None
+    # Issue #1084: the host-minted identity of an id-less publish, settled after the call.
+    binding: PublishCallBinding | None = None
+    calls: PublishCallIdentities | None = None
+    delivered = False
     try:
         if method == "start":
             request = cast(
@@ -814,6 +857,9 @@ async def _call_workflow(
                 WorkflowRequest,
                 request_type.model_validate({"await_observations": True, **parsed}),
             )
+        elif method == "publish_work":
+            parsed_request, binding, calls = _publish_work_request(input_path, inline)
+            request = cast(WorkflowRequest, parsed_request)
         else:
             request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
         if type(request) is CheckRequest:
@@ -839,6 +885,23 @@ async def _call_workflow(
             await client.close()
         wire = public_model_to_wire(result)
         branch = result.root
+        if method == "publish_work" and wire.get("ok") is True:
+            delivered = True
+            if binding is not None and binding.resumed and wire.get("outcome") == "replayed":
+                # The same resumed-call notice the MCP bridge adds (closed code, fixed text).
+                wire = {
+                    **wire,
+                    "replay_notice": {
+                        "notice": "unresolved_call_resumed",
+                        "text": PUBLISH_RESUMED_CALL_NOTICE_TEXT,
+                    },
+                }
+                PublishWorkResultModel.model_validate(wire)
+            elif binding is None and type(request) is PublishWorkRequest:
+                PublishCallIdentities().settle_caller_identity(
+                    {"session_id": request.session_id, "writer_id": request.writer_id},
+                    request.request_id,
+                )
         if json_output or not sys.stdout.isatty():
             _stdout_json(wire)
             if isinstance(branch, OperationFailureModel):
@@ -864,10 +927,22 @@ async def _call_workflow(
         if isinstance(branch, OperationFailureModel):
             return exit_code_for(branch.error.code)
         return 0
+    except PublishCallIdentityUnavailable:
+        # Issue #1084: the id-less body was not sent; its identity could not be made durable.
+        _stderr(
+            "publish_call_identity_unavailable: nothing was sent; add your own request_id "
+            "(req_ followed by a UUIDv4) to the body and reuse it for any retry"
+        )
+        return exit_code_for(PublicErrorCode.STORAGE_UNSAFE)
     except OSError, ProtocolValueError, ValidationError, ValueError:
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, operation=method, check_mode=check_mode)
+    finally:
+        if binding is not None and calls is not None:
+            # Anything but a delivered success leaves the binding resumable by the identical
+            # command, so re-running it after a lost reply replays instead of appending twice.
+            calls.settle(binding, delivered=delivered)
 
 
 def _finish(code: int) -> None:

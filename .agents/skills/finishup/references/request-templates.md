@@ -28,7 +28,9 @@ value below is a shape-valid placeholder. Replace it with the real fresh or retu
 required by the operation. Also replace every illustrative task string, reference, timestamp,
 frontier sequence, and digest. In `publish_work`, drop instead of replacing: omit `request_id`,
 `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
-`artifact_refs` and `evidence_refs`, and FinishUP fills them (`publication-policy.md#service-filled-values`).
+`artifact_refs` and `evidence_refs`, and FinishUP fills them (`publication-policy.md#service-filled-values`):
+the request id is minted per call, so after an unknown outcome resend the identical body, and any
+other call (even an identical body after its outcome reached you) is a new publication.
 A frontier you do send is the one you already hold: the `frontier` `start`
 returned for the first plan, then the `result_frontier` of your latest accepted write; read
 `status` for one only when you hold none or after `frontier_changed`. Never send
@@ -127,8 +129,9 @@ Exact topic URIs; use these anchors verbatim and never derive one:
 
 ## Publish shapes
 
-Replace ids. Not one live batch. Skip a resolved obligation. FinishUP fills `request_id`,
-`expected_frontier`, `event_id`, `occurred_at` and the envelope lists; `server_filled` names them.
+Replace ids. Not one live batch. Skip a resolved obligation. FinishUP mints the call's `request_id`
+and fills `expected_frontier`, `event_id`, `occurred_at` and the envelope lists; `server_filled`
+names them.
 
 ```json
 {"protocol_version":"0.1","schema_version":"1.0.0","session_id":"ses_00000000-0000-4000-8000-000000000001","writer_id":"wri_00000000-0000-4000-8000-000000000001","event_drafts":[{"schema":{"name":"plan_published","version":"1.0.0"},"payload":{"plan_version":1,"summary":"plan","obligation_refs":["obl_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"obligation_published","version":"1.0.0"},"payload":{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","description":"outcome","acceptance_criteria":"criterion","evidence_expectation":"test","status":"open","requested_items":[{"item_kind":"command","value":"pytest -q"}],"source_refs":["evt_00000000-0000-4000-8000-000000000000"]}},{"schema":{"name":"action_recorded","version":"1.0.0"},"payload":{"action_id":"act_00000000-0000-4000-8000-000000000001","action_kind":"command","command":"pytest -q","description":"action","attempted_items":["pytest -q"]}},{"schema":{"name":"result_recorded","version":"1.0.0"},"payload":{"result_id":"res_00000000-0000-4000-8000-000000000001","action_id":"act_00000000-0000-4000-8000-000000000001","outcome":"success","summary":"result","evidence_refs":["evd_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"evidence_recorded","version":"1.1.0"},"payload":{"evidence_id":"evd_00000000-0000-4000-8000-000000000001","evidence_kind":"test_result","strength":"content_digest","content_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","digest_binding":{"subject":"test_stdout","content_availability":"digest_only","byte_count":1,"provenance":"caller_asserted"},"observed_at":"2026-01-01T00:00:00.000Z"}},{"schema":{"name":"claim_recorded","version":"1.1.0"},"payload":{"claim_id":"clm_00000000-0000-4000-8000-000000000001","claim_kind":"completion","statement":"claim","supporting_refs":["evd_00000000-0000-4000-8000-000000000001"],"obligation_refs":["obl_00000000-0000-4000-8000-000000000001"],"limitation_refs":["res_00000000-0000-4000-8000-000000000004"],"supersedes_claim_refs":[]}},{"schema":{"name":"plan_revised","version":"1.0.0"},"payload":{"plan_version":2,"supersedes_plan_version":1,"reason":"changed","summary":"revised","obligation_changes":[{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","change":"carried"}]}},{"schema":{"name":"decision_recorded","version":"1.0.0"},"payload":{"statement":"decision","rationale":"why","authority":"harness:cli"}}],"actor":{"actor_id":"harness:cli","actor_type":"harness"},"client":{"kind":"cooperative_agent","version":"0.1.0","integration":"cooperative_mcp"}}
@@ -242,8 +245,8 @@ under the action template; the link is disclosed as your equivalence.
 
 Send this first plan with `expected_frontier` set to the `frontier` your `start` returned (the
 `start` result's `next_request_template` already carries it), or omit it, as the example below
-does, to publish on the latest frontier. An observation recorded since `start` does not
-invalidate a frontier you send.
+does: FinishUP then guards the batch with the frontier it reads on admission. An observation
+recorded since `start` does not invalidate either frontier.
 
 To resolve an obligation, publish this same `obligation_published` draft again (FinishUP mints
 its new `event_id`), every meaning field exactly as recorded (`status` `view: "obligations"` shows them),

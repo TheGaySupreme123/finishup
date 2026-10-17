@@ -1339,9 +1339,9 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
     request_id = properties.get("request_id")
     if isinstance(request_id, dict):
         request_id["description"] = (
-            # Issue #1084: publish derives an omitted request_id from the body.
-            "Optional: omit it and the service derives it from the body, so resending the same "
-            "body is the idempotent retry."
+            # Issue #1084 (ADR-050 decision 2): the bridge mints one per id-less publish call.
+            "Optional: omit it and FinishUP mints one for this call. After an unknown outcome, "
+            "resend the identical body to retry; any other call is a new publication."
             if name == "publish-work-request"
             else "Use a fresh req_ prefixed random UUID for each request."
         )
@@ -1357,10 +1357,11 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             "when you hold none or after frontier_changed."
         )
         if name == "publish-work-request":
-            # Issue #1084: omission is the documented latest mode.
+            # Issue #1084: omission is guarded by the frontier the service reads at admission.
             expected_frontier["description"] = (
                 cast(str, expected_frontier["description"])
-                + " Or omit it to publish on the latest frontier, with no concurrent-change guard."
+                + " Or omit it: the service guards the batch with the frontier it reads on "
+                "admission. Send yours when the batch rests on what you read."
             )
 
     if name == "start-request":
@@ -1371,6 +1372,12 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "session_id."
             )
     elif name == "publish-work-request":
+        # Issue #1084 (ADR-050 decision 2): an agent may omit request_id; the bridge mints and
+        # binds one per call before the service, which still requires it, sees the body.
+        required = schema.get("required")
+        if not isinstance(required, list):
+            raise RuntimeError("mcp_schema_invalid")
+        schema["required"] = [item for item in required if item != "request_id"]
         event_drafts = properties.get("event_drafts")
         if not isinstance(event_drafts, dict):
             raise RuntimeError("mcp_event_draft_projection_invalid")
@@ -1379,7 +1386,7 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             "payload shape. Omit event_id, occurred_at, causal_parents, artifact_refs and "
             "evidence_refs unless you need a value: the service mints the id, records its clock, "
             "copies the payload mirrors and names each in server_filled. It sorts and "
-            "de-duplicates reference lists."
+            "de-duplicates reference-set fields; text lists are kept as sent."
         )
         items = event_drafts.get("items")
         if not isinstance(items, dict):
@@ -1851,11 +1858,23 @@ class ToolDescriptor:
 
     @property
     def catalog_input_schema(self) -> Mapping[str, JsonValue]:
-        """Full catalog-bundled input schema (admission dual-surface; not tools/list)."""
+        """Full catalog-bundled input schema (admission dual-surface; not tools/list).
 
-        return _mcp_schema(
+        Issue #1084 (ADR-050 decision 2): ``publish_work`` admits an agent body without
+        ``request_id``; the bridge mints and binds one before the service, whose protocol schema
+        still requires it, sees the body. Every other constraint is the protocol schema's.
+        """
+
+        schema = _mcp_schema(
             f"{self.name.replace('_', '-')}-request", _tool_input_schema_version(self.name)
         )
+        if self.name != "publish_work":
+            return schema
+        admitted = dict(schema)
+        admitted["required"] = [
+            item for item in cast(list[JsonValue], schema["required"]) if item != "request_id"
+        ]
+        return MappingProxyType(admitted)
 
 
 def _descriptor(
@@ -1937,9 +1956,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "plan via a revision. Accepted records are assertions, not repair proof. "
         "Previews or appends asserted work to the local FinishUP ledger. It does not publish to GitHub "
         "or run an AI-powered evaluation. Omit request_id, expected_frontier and each draft's "
-        "event_id, occurred_at, empty lists and mirrored refs: the service fills and names them in "
-        "server_filled, and resending the same body replays it. Reference lists are sorted and "
-        "de-duplicated for you. attempted_items belongs only on the "
+        "event_id, occurred_at, empty lists and mirrored refs: FinishUP mints the call's id, "
+        "guards the batch with the frontier it reads on admission, and names the filled values in "
+        "server_filled. After an unknown outcome resend the identical body; any other call is new. "
+        "Reference sets are sorted and de-duplicated for you. attempted_items belongs only on the "
         "action_recorded payload; copy each requested_items value exactly and never place it on "
         "claim_recorded. decision_recorded.authority is a structural actor id, not approval prose; "
         "decision_recorded 1.1.0 review_mode ai_powered or local switches this task's review "
@@ -2079,7 +2099,7 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "project, results, and versions. Lineage is a live preview; parent receipts use recorded "
         "child manifests. Project shows generation-bound membership and coordination. "
         "History pairs occurred_at (caller-asserted, or the service clock where a publish omitted "
-        "it, which view=operation's server_filled names) beside the service-stamped "
+        "it: occurred_at_source service_clock) beside the service-stamped "
         "accepted_at; forward-skew classification compares clocks, not truth, and order follows "
         "ingestion sequence. A result is detail brief (one frontier, the page, closure_state; "
         "compact keeps closure_readiness) unless you send detail full; limit defaults to 20; "
@@ -2213,10 +2233,10 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "policy": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:abaabca95547f54d035045869e8d7b471ab4ce44b849ce49e3f7d8732df83af2",
+                "publish_work": "sha256:e8773d5594be663f5108f6e5338497d10359eaee1684720c7431d2f3c4d5a213",
                 "check": "sha256:d1c5018a531b794062485d475432f89902ca81fa598b1e992a8a158cd5ff1632",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
-                "status": "sha256:3df1141fc082d9f8e6fdf229234fd0f761a3994d4fddcaae26fe1b8739281b62",
+                "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
@@ -2225,10 +2245,10 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "strict": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:abaabca95547f54d035045869e8d7b471ab4ce44b849ce49e3f7d8732df83af2",
+                "publish_work": "sha256:e8773d5594be663f5108f6e5338497d10359eaee1684720c7431d2f3c4d5a213",
                 "check": "sha256:4374e8f3ddb53fa9bf07c6de45dca86a689d37ae70b5d4c0a55ad96750a426e4",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
-                "status": "sha256:3df1141fc082d9f8e6fdf229234fd0f761a3994d4fddcaae26fe1b8739281b62",
+                "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
@@ -2238,8 +2258,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:79145df6f744d367d897a04ce0b30bba17f4abfba328026c83ab452359c23b32",
-        "strict": "sha256:96cfdb0a08ad5a63e1745e6312905af3a5cd3f2af338c883fe47da08798b85a2",
+        "policy": "sha256:c88392f8924d9d9dea28dc50498cc9f9ab09e5455db6a2b5511374112e674dd5",
+        "strict": "sha256:b4959529296d8f1b218b44cdf0ce9afd4e72c40692976c90d44e600c2a2b56bb",
     }
 )
 

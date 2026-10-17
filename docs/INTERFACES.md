@@ -267,48 +267,66 @@ and the recorded event never holds it. Every other unadmitted key, in every fami
 
 Server-filled publish boilerplate (issue #1084, ADR-050). A `publish_work` request
 (`publish-work-request` 1.2.0 and `event-draft` 1.2.0, changed in place while unreleased) may omit
-`request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
-`artifact_refs` and `evidence_refs`; only `schema` and `payload` remain required in a draft. The
-pure half lives in `finishup.protocol.publish_boilerplate` so the bridge, CLI, host hooks and
-service compute the same values:
+`expected_frontier` and each draft's `event_id`, `occurred_at`, `causal_parents`, `artifact_refs`
+and `evidence_refs`; only `schema` and `payload` remain required in a draft. `request_id` stays
+required at the service. The pure half lives in `finishup.protocol.publish_boilerplate`:
 
-- Reference sets are canonicalized by the request model before the schema check: the envelope sets
-  of every draft and the top-level id arrays of the ordinary agent families are sorted as ASCII
-  bytes and de-duplicated. Free-text arrays never are; lineage and coordination payload sets keep
+- Reference sets are canonicalized by the request model before the schema check: the envelope
+  sets of every draft, and the payload fields `PAYLOAD_SET_FIELDS` names for an exact
+  `(family, version)`, are sorted as ASCII bytes and de-duplicated. No other array is touched,
+  whatever its members look like (a `decision_recorded` `alternatives` tuple of id-shaped text
+  keeps its order and repeats); lineage and coordination payload sets keep
   `unsorted_set_field`/`duplicate_set_member`.
-- An omitted `request_id` is `derive_publish_request_id(body)`: SHA-256 over a domain tag and the
-  canonical request body without `request_id`, shaped as a `req_` UUIDv4. The model keeps it
-  *unset*, so `exclude_unset` serializations forward the sparse body and the service derives the
-  same id. Resending an identical body after a lost response is therefore the idempotent retry
-  (replay, `REQUEST_IDENTITY_CONFLICT` and `status view=operation` all key on it); any change to the
-  body is a new request. `derived_publish_request_id(arguments)` gives a host hook or a bridge error
-  envelope the same id without the model.
-- An omitted draft `event_id` is `mint_draft_event_id(request_id, index, dry_run=...)`. The dry-run
-  flag is in the seed, so a preview never mints the ids its commit records.
+- An omitted draft `event_id` is `mint_draft_event_id(DraftMintScope(task_id, writer_id,
+  request_id, dry_run), index)`: the whole operation key, the position and the preview/commit role.
+  Two writers reusing one explicit `request_id` never mint the same id, and a preview never mints
+  the ids its commit records. The session is not in the seed: a task-scoped replay of the same
+  operation recomputes the same ids.
 - An omitted `occurred_at` is the service clock, read once per operation. It enters the request
-  identity as `null`, never as the time, so a resend replays instead of conflicting. An omitted
-  `expected_frontier` is the `latest` mode and enters the identity as `"latest"`; the append runs
-  without the compare-and-set guard (`AppendCommand.expected_frontier = None`) and the state checks
-  still run against the frontier it lands on. An explicit `null` keeps its earlier meaning
-  (`expected_frontier_required` on a state-sensitive batch); a supplied frontier keeps its guard.
+  identity as `null`, never as the time, so a same-id retry replays instead of conflicting.
+- An omitted `expected_frontier` is the frontier the service reads when it admits the batch
+  (`load_frontier`, before the batch is prepared or staged), passed through to
+  `AppendCommand.expected_frontier` and enforced with ADR-022's observation-only tolerance: a
+  cooperative append that lands while the batch is in flight is `FRONTIER_CONFLICT`
+  (`frontier_changed`). It enters the identity as `"admission"`. An explicit `null` keeps its
+  earlier meaning (`expected_frontier_required` on a state-sensitive batch; no guard otherwise);
+  a supplied frontier keeps its guard. There is no omission-selected unconditional mode.
 - Omitted envelope mirrors are copied from the payload (`result_recorded`, `response_recorded` and
   `coordination_disposition_recorded` `evidence_refs`; `evidence_recorded` `captured_object_id`);
   `causal_parents` defaults to empty. A sent value is never replaced, so a sent mirror that
   disagrees is still `ref_mirror_mismatch`, and a request that sends every value keeps its earlier
   identity, digest and result bytes.
 
-A body-derived id cannot tell a lost-response retry from a deliberate repeat, so an identical
-sparse body always replays (never a second append) and its success result carries the closed
-`replay_notice` (`identical_body_replayed` plus fixed text) saying nothing new was appended and
-that a deliberate repeat needs a reworded body or a fresh `request_id`. An explicit `request_id`
-replay carries no notice.
+Host-owned request identity (ADR-050 decision 2). The MCP `publish_work` tool, and
+`finishup publish-work`, admit a body without `request_id` (the advertised and catalog input
+schemas drop it from `required`). The host side mints one `req_` UUIDv4 per call through
+`finishup.adapters.integrations.publish_call_identity.PublishCallIdentities` and binds it before
+sending: the body is first validated under a provisional id (an invalid body is never bound or
+sent), a dry run gets a fresh unbound id, and a real call writes an `in_flight` binding to
+`<state_dir>/publish-calls/calls.json` (owner-only folder, atomic fsynced replace, file lock) holding
+only SHA-256 commitments over the FinishUP session and writer and over the canonical body, the
+minted id, an owner token, a process id and a time. Every retry the host makes for that call reuses
+the id. A delivered `ok: true` outcome deletes the binding and every `unresolved` binding of the
+same session and writer, and so does a delivered call that sends a bound id itself. Any other end
+(an error, a cancelled call) marks it `unresolved`. The next call with the identical body from the
+same writer reuses an `unresolved` binding, or an `in_flight` one whose owner process is gone,
+within one hour; a binding still in flight in a live process is never shared. The resumed call's
+success then carries the closed `replay_notice` (`unresolved_call_resumed` plus fixed text) when the
+service replayed it, also on the reduced `accepted_projection_unavailable` success. When the binding
+cannot be written the call is refused as `STORAGE_UNSAFE` and nothing is sent. An id-less error
+result names the minted id in its text. The startup-gate hook, which never saw the id, opens the
+write's ticket at the post-call event from the result's echoed `request_id`.
 
-Provenance: every success and dry-run result carries `server_filled` (`request`: the filled
-request fields; `drafts`: groups of filled envelope `fields` with the batch `indexes` they apply
-to) exactly when something was filled, and the publish operation's stored result keeps the same field names (structural only, no
-caller content), returned by a replay and by `status view=operation`. A filled `occurred_at` is
-therefore never read as a caller assertion. Payload ids and evidence `observed_at` stay
-caller-authored: their payload schemas are released.
+Provenance: every success, reduced success and dry-run result carries `server_filled` (`request`:
+`expected_frontier` when omitted; `drafts`: groups of filled envelope `fields` with the batch
+`indexes` they apply to) exactly when something was filled, and the publish operation's stored
+result keeps the same field names (structural only, no caller content). A replay and `status
+view=operation` return the committed operation's stored record, never one recomputed from the retry
+body. `status view=history` items (`status-result` 1.4.0 history row) and the frozen check history
+and review packet rows carry `occurred_at_source: "service_clock"` for an event whose publish
+omitted `occurred_at`, derived from the appending operation's stored record; absence means
+caller-asserted. Payload ids and evidence `observed_at` stay caller-authored: their payload schemas
+are released.
 
 For an `extra_forbidden` payload rejection whose unknown key is a known field with exactly one
 legal owning event family among the ordinary `publish_work` families, `safe_details` additionally
@@ -597,7 +615,7 @@ decode a fractional number in that result (see the Codex integration runbook).
 
 Protocol reason
 `expected_frontier_required` marks a state-sensitive `publish_work` batch that sent
-`expected_frontier: null` (omitting it is the `latest` mode, issue #1084). It names that field and is retryable because validation wrote
+`expected_frontier: null` (omitting it is guarded by the admission-time frontier, issue #1084). It names that field and is retryable because validation wrote
 no durable operation; the caller may reuse the same `request_id` with a corrected body. Here
 `retryable` describes whether safe recovery exists for the durable state reached, not whether the
 request bytes must remain unchanged. Its continuation is `frontier_held_required` (tb4n5, #1048):
@@ -647,9 +665,9 @@ Optional `dry_run: true` on `PublishWorkRequest` validates the full batch and re
 `outcome: "dry_run"` with `evidential: false` and a `would_accept` preview (event ids, schema
 identity, refs) plus coverage/gaps. It appends nothing, records no operation, does not consume
 `request_id`, and does not move the frontier — same non-citable discipline as
-`status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`; a
-dry run that omitted `request_id` derives a different one than its commit (the body differs by
-`dry_run`), and its minted event ids are never the commit's.
+`status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`; an
+id-less dry run through the bridge or the CLI gets a fresh unbound id, and its minted event ids are
+never the commit's.
 `dry_run: null` is rejected; omit the field or pass a boolean.
 The coverage on an accepted internal success is derived from the authored envelope coverage and the
 resulting projection, so its diagnostic `known_gaps` are reporting output and must not be copied into
@@ -2345,7 +2363,10 @@ and every other view carries `closure_state` (state, blocking conditions, agent-
 It is built before the disclosure boundary, so the privacy projection and its commitment cover
 exactly the brief body. The MCP `status` tool asks for `brief` unless the agent names a `detail`;
 the CLI, hooks and the bridge's own recovery reads keep the full body. A publish operation page
-adds `server_filled` when the operation recorded one.
+adds `server_filled` when the operation recorded one. The MCP text summary of a brief non-compact
+body renders `Closure: <state>.`, the `Agent-actionable:` tokens and the count-free directive (for
+`ready_with_limitations`, "Nothing further to do. Request the receipt.") from `closure_state`, and
+omits the counts a brief body does not carry instead of printing them as unavailable.
 Together with history's claim event/schema identity and candidate findings' bounded claim/result
 ids, this is the minimum public projection needed to author and dry-run a v1.1 replacement without
 reading raw ledger internals.

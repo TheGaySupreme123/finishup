@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -58,6 +58,7 @@ from finishup.ports.ledger import CheckAwaitingHuman, CheckCommitResult, CheckVe
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
 from finishup.protocol.models import (
+    PUBLISH_RESUMED_CALL_NOTICE_TEXT,
     CheckAwaitingHumanModel,
     CheckChecklistCountsModel,
     CheckChecklistItemModel,
@@ -82,7 +83,9 @@ from finishup.protocol.models import (
     ProjectTextRefModel,
     PublicErrorModel,
     PublishWorkAcceptedEventModel,
+    PublishWorkAcceptedProjectionUnavailableModel,
     PublishWorkDryRunModel,
+    PublishWorkReplayNoticeModel,
     PublishWorkRequest,
     PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
@@ -300,6 +303,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         frozenset({"blocker_notices", "action_notices", "server_filled", "replay_notice"}),
     ),
     (PublishWorkDryRunModel, frozenset({"blocker_notices", "action_notices", "server_filled"})),
+    # Issue #1084 (review R1): the reduced success keeps provenance and the resumed-call notice.
+    (PublishWorkAcceptedProjectionUnavailableModel, frozenset({"server_filled", "replay_notice"})),
     # Issue #1084: the brief status body omits whatever it does not need, and its closure state
     # keeps readiness's own optional checklist leaves.
     (
@@ -425,7 +430,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (CheckVerifiedItemModel, frozenset({"requirement_or_claim", "snippet"})),
     (StatusCompactItemModel, frozenset({"latest_check_test_edits", "latest_check"})),
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
-    (StatusHistoryItemV14Model, frozenset({"review_input_manifest"})),
+    # Issue #1084 (review R7): a service-recorded event time is labelled on the history row.
+    (StatusHistoryItemV14Model, frozenset({"review_input_manifest", "occurred_at_source"})),
     (
         ReviewInputManifestModel,
         frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
@@ -1948,7 +1954,14 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         covered[model, "action_notices"] = "test_publish_accepted_events_omit_unset_summary"
         covered[model, "server_filled"] = "test_server_filled_and_brief_fields_omit_when_unset"
     covered["PublishWorkSuccessModel", "replay_notice"] = (
-        "test_an_explicit_request_id_replay_carries_no_replay_notice"
+        "test_server_filled_and_brief_fields_omit_when_unset"
+    )
+    for field in ("server_filled", "replay_notice"):
+        covered["PublishWorkAcceptedProjectionUnavailableModel", field] = (
+            "test_server_filled_and_brief_fields_omit_when_unset"
+        )
+    covered["StatusHistoryItemV14Model", "occurred_at_source"] = (
+        "test_server_filled_and_brief_fields_omit_when_unset"
     )
     covered["StatusOperationPageModel", "server_filled"] = (
         "test_server_filled_and_brief_fields_omit_when_unset"
@@ -2141,6 +2154,64 @@ def test_server_filled_and_brief_fields_omit_when_unset() -> None:
                 "server_filled": None,
             }
         )
+    # Review R1 of PR #1088: the reduced success's provenance and resumed-call notice.
+    frontier = {"sequence": "2", "head_digest": "sha256:" + "2" * 64}
+    reduced_body: dict[str, Any] = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": protocol_id("req_", 1085),
+        "ok": True,
+        "response_completeness": "accepted_projection_unavailable",
+        "reason_code": "response_projection_failed",
+        "correlation_id": protocol_id("err_", 1085),
+        "outcome": "replayed",
+        "task_id": protocol_id("tsk_", 1085),
+        "session_id": protocol_id("ses_", 1085),
+        "writer_id": protocol_id("wri_", 1085),
+        "subject_frontier": {"sequence": "1", "head_digest": "sha256:" + "1" * 64},
+        "result_frontier": frontier,
+        "accepted_events": [
+            {
+                "event_id": protocol_id("evt_", 1085),
+                "entry_digest": "sha256:" + "3" * 64,
+                "ingestion_sequence": "2",
+            }
+        ],
+    }
+    reduced = PublishWorkAcceptedProjectionUnavailableModel.model_validate(reduced_body)
+    dumped = reduced.model_dump(mode="json", exclude_unset=True)
+    assert "server_filled" not in dumped and "replay_notice" not in dumped
+    for field in ("server_filled", "replay_notice"):
+        with pytest.raises(ValidationError):
+            PublishWorkAcceptedProjectionUnavailableModel.model_validate(
+                {**reduced_body, field: None}
+            )
+    success_notice = PublishWorkReplayNoticeModel.model_validate(
+        {"notice": "unresolved_call_resumed", "text": PUBLISH_RESUMED_CALL_NOTICE_TEXT}
+    )
+    assert success_notice.notice == "unresolved_call_resumed"
+    # Review R7: an unlabelled history row omits occurred_at_source and refuses null.
+    row: dict[str, Any] = {
+        "event_id": protocol_id("evt_", 1086),
+        "schema_name": "decision_recorded",
+        "schema_version": "1.0.0",
+        "actor_id": "harness:test",
+        "publication_channel": "cooperative_mcp",
+        "ingestion_sequence": "3",
+        "occurred_at": "2026-10-16T00:00:00.000Z",
+        "accepted_at": "2026-10-16T00:00:00.000Z",
+        "occurred_at_consistency": "within_forward_skew_allowance",
+        "projection_status": "projected",
+        "summary_code": "decision_recorded",
+    }
+    history = StatusHistoryItemV14Model.model_validate(row)
+    assert "occurred_at_source" not in history.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError):
+        StatusHistoryItemV14Model.model_validate({**row, "occurred_at_source": None})
+    labelled = StatusHistoryItemV14Model.model_validate(
+        {**row, "occurred_at_source": "service_clock"}
+    )
+    assert labelled.occurred_at_source == "service_clock"
 
 
 def test_review_mode_omits_unset_reason_and_switch() -> None:

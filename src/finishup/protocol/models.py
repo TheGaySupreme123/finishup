@@ -63,7 +63,6 @@ from finishup.protocol.guidance_uris import (
 )
 from finishup.protocol.ids import PREFIX_BY_KIND, IdKind, validate_actor_id, validate_id
 from finishup.protocol.publish_boilerplate import (
-    derive_publish_request_id,
     normalize_publish_drafts,
     server_filled_from_json,
 )
@@ -1754,23 +1753,18 @@ class StartRequestModel(PublicRequestModel):
         return self
 
 
-# Placeholder for an omitted publish ``request_id``; replaced by the derived id before any reader
-# can observe the model (issue #1084). Never a valid id, so it can never reach the wire.
-_PENDING_REQUEST_ID: Final = ""
-
-
 class PublishWorkRequestModel(PublicRequestModel):
-    optional_non_null_fields = frozenset({"dry_run", "request_id"})
+    optional_non_null_fields = frozenset({"dry_run"})
 
-    # Issue #1084: optional. An absent ``request_id`` is derived from the caller's canonical body
-    # after validation (``request_id_derived``); it stays *unset*, so the bridge forwards the
-    # sparse body and the service derives the identical id itself.
-    request_id: RequestIdWire = Field(default=_PENDING_REQUEST_ID, validate_default=False)
+    # ``request_id`` (inherited) stays required at the service: the operation identity is caller-
+    # or host-owned, never derived from the body (ADR-050 decision 2). The MCP bridge and the CLI
+    # mint and durably bind one for an agent call that omits it before the body reaches here.
     session_id: SessionIdWire
     writer_id: WriterIdWire
-    # Issue #1084: absent selects the documented ``latest`` mode (``expected_frontier_latest``):
-    # the batch is validated against the frontier it lands on, without a compare-and-set guard.
-    # An explicit ``null`` keeps its earlier meaning, and a supplied frontier keeps its guard.
+    # Issue #1084: optional. Absent, the service reads the current frontier when it admits the
+    # batch and enforces it through the append (``expected_frontier_omitted``), keeping ADR-022's
+    # observation-only tolerance. An explicit ``null`` keeps its earlier meaning, and a supplied
+    # frontier keeps its guard.
     expected_frontier: FrontierModel | None = None
     event_drafts: tuple[JsonValue, ...]
     # When true, validate the batch and return a non-evidential preview without appending.
@@ -1790,31 +1784,12 @@ class PublishWorkRequestModel(PublicRequestModel):
 
     @model_validator(mode="after")
     def _validate_publish_work_request(self) -> PublishWorkRequestModel:
-        if "request_id" not in self.model_fields_set:
-            body = _strip_optional_non_null_fields(
-                self,
-                cast(
-                    Mapping[str, JsonValue],
-                    self.model_dump(
-                        mode="json", by_alias=True, exclude_unset=True, exclude_none=False
-                    ),
-                ),
-            )
-            # Frozen model: the derived id is installed without marking the field as set, so
-            # ``exclude_unset`` serializations keep forwarding the caller's sparse body.
-            object.__setattr__(self, "request_id", derive_publish_request_id(body))
         _validate_model_against_schema(self, "publish-work-request")
         return self
 
     @property
-    def request_id_derived(self) -> bool:
-        """Whether ``request_id`` was derived from the body rather than sent by the caller."""
-
-        return "request_id" not in self.model_fields_set
-
-    @property
-    def expected_frontier_latest(self) -> bool:
-        """Whether the caller omitted ``expected_frontier`` (the ``latest`` mode, #1084)."""
+    def expected_frontier_omitted(self) -> bool:
+        """Whether the caller omitted ``expected_frontier`` (guarded at admission, #1084)."""
 
         return "expected_frontier" not in self.model_fields_set
 
@@ -2995,13 +2970,14 @@ class PublishWorkBlockerNoticeModel(_ClosedModel):
 # recorded that no ``result_recorded`` names yet. It carries no caller value; the act_ id rides
 # beside it. 15 of 15 tb4n5 ``action_without_result`` findings were agent-published actions whose
 # result followed only after the check asked for it.
-# Issue #1084: a body that omitted request_id derives its id from its content, so an identical
-# body is the same request. The notice makes that replay visible; it never changes what replays.
-PUBLISH_REPLAY_NOTICE_TEXT: Final = (
-    "This body is identical to one FinishUP already recorded, so it replayed that publication and"
-    " appended nothing new: the safe retry after a lost response. To record the same facts again on"
-    " purpose (a finishup-blocker confirmation, a repeated review-mode switch), reword the body or"
-    " send a fresh request_id."
+# Issue #1084 (ADR-050 decision 2): the MCP bridge or the CLI minted the request_id of a call that
+# omitted one. It reuses that id only for the identical body of an earlier call by the same writer
+# whose outcome was never delivered, and the service then replays the stored outcome. The notice
+# makes that resumption visible; it never changes what replays.
+PUBLISH_RESUMED_CALL_NOTICE_TEXT: Final = (
+    "This call resent the body of an earlier publish_work call whose outcome was not delivered, so"
+    " it ran under that call's request_id: FinishUP returned the stored outcome and appended"
+    " nothing new. Publishing the same body again now records a new publication."
 )
 
 PUBLISH_ACTION_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
@@ -3034,14 +3010,14 @@ class PublishWorkActionNoticeModel(_ClosedModel):
 
 
 class PublishWorkReplayNoticeModel(_ClosedModel):
-    """Issue #1084: a derived-id publish replayed an earlier identical body; nothing was appended."""
+    """Issue #1084: a host-minted request_id resumed an undelivered call; nothing was appended."""
 
-    notice: Literal["identical_body_replayed"]
+    notice: Literal["unresolved_call_resumed"]
     text: str
 
     @model_validator(mode="after")
     def _validate_fixed_text(self) -> PublishWorkReplayNoticeModel:
-        if self.text != PUBLISH_REPLAY_NOTICE_TEXT:
+        if self.text != PUBLISH_RESUMED_CALL_NOTICE_TEXT:
             raise ValueError("publish_replay_notice_text_mismatch")
         return self
 
@@ -3065,7 +3041,7 @@ class PublishWorkServerFilledModel(_ClosedModel):
     value is never read as a caller assertion; the operation record stores the same names.
     """
 
-    request: tuple[Literal["expected_frontier", "request_id"], ...]
+    request: tuple[Literal["expected_frontier"], ...]
     drafts: tuple[PublishWorkServerFilledDraftModel, ...]
 
     @model_validator(mode="after")
@@ -3097,7 +3073,8 @@ class PublishWorkSuccessModel(_ClosedModel):
     action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
     # Issue #1084: present only when the service filled an omitted value.
     server_filled: PublishWorkServerFilledModel | None = None
-    # Issue #1084: present only when a derived request_id replayed an identical earlier body.
+    # Issue #1084: present only when the MCP bridge or the CLI resumed an earlier call of the same
+    # body whose outcome was not delivered, and the service replayed it. The host adds it.
     replay_notice: PublishWorkReplayNoticeModel | None = None
 
     optional_non_null_fields = frozenset(
@@ -3146,6 +3123,13 @@ class PublishWorkAcceptedProjectionUnavailableModel(_ClosedModel):
     subject_frontier: FrontierModel
     result_frontier: FrontierModel
     accepted_events: tuple[PublishWorkAcceptedMinimalEventModel, ...]
+    # Issue #1084 (review R1): the reduced envelope keeps the structural provenance of the
+    # operation it reports and the resumed-call notice, so a degraded response says what a full
+    # one would have said about filled values and resumption.
+    server_filled: PublishWorkServerFilledModel | None = None
+    replay_notice: PublishWorkReplayNoticeModel | None = None
+
+    optional_non_null_fields = frozenset({"server_filled", "replay_notice"})
 
     @model_validator(mode="after")
     def _validate_publish_accepted_projection_unavailable(
@@ -5133,7 +5117,8 @@ class StatusHistoryItemModel(_ClosedModel):
         "local_cli",
     ]
     ingestion_sequence: CanonicalUInt64Wire
-    # Caller-asserted event time; not service acceptance time.
+    # Caller-asserted event time; not service acceptance time. When ``occurred_at_source`` is
+    # ``service_clock`` the caller omitted it and the service recorded its own clock instead.
     occurred_at: TimestampWire
     # Trusted-local service acceptance time bound into the entry digest.
     accepted_at: TimestampWire
@@ -5188,10 +5173,14 @@ class StatusHistoryItemModel(_ClosedModel):
 
 
 class StatusHistoryItemV14Model(StatusHistoryItemModel):
-    """v1.4 history row carrying a completed check's provider-bound input coverage."""
+    """v1.4 history row: a completed check's provider-bound input coverage, and time provenance."""
 
-    optional_non_null_fields = frozenset({"review_input_manifest"})
+    optional_non_null_fields = frozenset({"review_input_manifest", "occurred_at_source"})
     review_input_manifest: ReviewInputManifestModel | None = None
+    # Issue #1084 (review R7): present only when the publish that appended this event omitted
+    # ``occurred_at`` and the service recorded its own clock. Absent means caller-asserted. Derived
+    # from the appending operation's stored ``server_filled`` record, never from caller input.
+    occurred_at_source: Literal["service_clock"] | None = None
 
 
 class StatusHistoryPageModel(_ClosedModel):
@@ -7853,6 +7842,8 @@ _STATUS_HISTORY_STRUCTURAL_POINTERS: Final = (
             "ingestion_sequence",
             "occurred_at",
             "occurred_at_consistency",
+            # Issue #1084 (review R7): a closed source token the service derives.
+            "occurred_at_source",
             "projection_status",
             "publication_channel",
             "schema_name",
@@ -8442,14 +8433,15 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1642
+        len(result) != 1643
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,
         # #1079 +2 admissible_verification, +1 closing_material_frontier,
         # #1084 +3 (publish server_filled), +3 (status operation server_filled),
-        # +4 (status brief: detail and closure_state), +2 (publish replay_notice)
+        # +4 (status brief: detail and closure_state), +2 (publish replay_notice),
+        # +1 (status history occurred_at_source)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
