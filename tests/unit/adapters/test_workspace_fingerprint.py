@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from builders.process_reaping import not_a_child_subreaper
 from finishup.adapters import workspace_fingerprint as fingerprint
 from finishup.adapters.workspace_fingerprint import WorkspaceFingerprintStore
 from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
@@ -519,13 +520,14 @@ def test_a_child_left_running_in_the_workspace_makes_the_comparison_unavailable(
     (root / "deliverable.txt").write_text("reviewed")
     store = _store(tmp_path)
     assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
-    release_write, done_read = launch_lingering_worker(root)
-    try:
-        reading = store.effect_after(
-            str(root), "call", deadline=time.monotonic() + 10, call_complete=True
-        )
-    finally:
-        release_worker(release_write, done_read)
+    with not_a_child_subreaper():
+        release_write, done_read = launch_lingering_worker(root)
+        try:
+            reading = store.effect_after(
+                str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+            )
+        finally:
+            release_worker(release_write, done_read)
     assert (reading.effect, reading.reason) == ("unavailable", "call_incomplete")
     # The child really did write after the post-call pass: "unchanged" would have been false.
     assert (root / "deliverable.txt").read_text() == "LATE UNREVIEWED"

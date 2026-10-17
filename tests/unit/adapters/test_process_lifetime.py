@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from builders.process_reaping import not_a_child_subreaper
 from finishup.adapters import process_lifetime
 from finishup.adapters.process_lifetime import (
     PROCESS_CLOCK_SLACK_NS,
@@ -135,20 +136,21 @@ def test_a_real_escaped_child_lingers_by_its_directory_or_written_file(
     assert window is not None
     release_read, release_write = os.pipe()
     ready_read, ready_write = os.pipe()
-    subprocess.run(
-        [sys.executable, "-c", launcher, worker, str(release_read), str(ready_write)],
-        cwd=workspace if where == "cwd" else outside,
-        pass_fds=(release_read, ready_write),
-        check=True,
-    )
-    os.close(release_read)
-    os.close(ready_write)
-    try:
-        ready, _write, _error = select.select([ready_read], [], [], 30)
-        assert ready and os.read(ready_read, 1) == b"R"
-        answer = lingering_process(window, str(workspace))
-    finally:
-        os.write(release_write, b"G")
-        os.close(release_write)
-        os.close(ready_read)
+    with not_a_child_subreaper():
+        subprocess.run(
+            [sys.executable, "-c", launcher, worker, str(release_read), str(ready_write)],
+            cwd=workspace if where == "cwd" else outside,
+            pass_fds=(release_read, ready_write),
+            check=True,
+        )
+        os.close(release_read)
+        os.close(ready_write)
+        try:
+            ready, _write, _error = select.select([ready_read], [], [], 30)
+            assert ready and os.read(ready_read, 1) == b"R"
+            answer = lingering_process(window, str(workspace))
+        finally:
+            os.write(release_write, b"G")
+            os.close(release_write)
+            os.close(ready_read)
     assert answer is (where in {"cwd", "open_for_write"})
