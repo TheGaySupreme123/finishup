@@ -426,6 +426,7 @@ _CHANGE_GROUPS: Final[tuple[tuple[str, tuple[tuple[str, str], ...]], ...]] = (
         "Information disclosed",
         (
             ("global", "credential_heuristic"),
+            ("global", "admitted_input_roots"),
             ("channel", "categories"),
             ("channel", "data_classes"),
             ("review", "sections"),
@@ -481,6 +482,7 @@ _CHANGE_LABELS: Final[dict[tuple[str, str], str]] = {
     ("global", "provider_data_use_evidence"): "Current provider data-use evidence",
     ("global", "credential_heuristic"): "Possible-credential filter",
     ("global", "conversation_review"): "Tasks and AI-powered review",
+    ("global", "admitted_input_roots"): "Directories outside the workspace read as task inputs",
     ("channel", "enabled"): "Channel",
     ("channel", "provider"): "Provider and model",
     ("channel", "fallback_provider"): "Fallback provider and model",
@@ -598,6 +600,8 @@ def _change_value_text(change: PrivacyPolicyChange, value: PrivacyPolicyChangeVa
         return _scope_text(value.labels)
     if change.field == "conversation_review" and len(value.labels) == 1:
         return CONVERSATION_REVIEW_WORDS.get(value.labels[0], value.labels[0])
+    if change.field == "admitted_input_roots":
+        return ", ".join(label.removeprefix("dir:") for label in value.labels)
     return ", ".join(value.labels)
 
 

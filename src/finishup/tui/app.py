@@ -1890,6 +1890,9 @@ class FinishUpTui(App[int]):
         if current.conversation_review_summary is not None:
             # ADR-049: how tasks use AI-powered review, in the wording status uses.
             authority_lines.append(current.conversation_review_summary)
+        if current.admitted_input_roots_summary is not None:
+            # Issue #1082: the outside-workspace directories this repository admits.
+            authority_lines.append(current.admitted_input_roots_summary)
         self.say(
             Level.ACTIVE,
             "Privacy",

@@ -56,7 +56,9 @@ __all__ = [
     "MAX_TASK_INPUT_FILES",
     "MAX_TASK_INPUT_TEXT_BYTES",
     "NestedUntrackedBaseline",
+    "TASK_INPUT_ORIGINS",
     "TaskInputFile",
+    "TaskInputOrigin",
     "UntrackedBaselineFile",
 ]
 
@@ -286,6 +288,10 @@ class TaskChangeBase:
             raise _invalid()
 
 
+type TaskInputOrigin = Literal["task", "verification", "outside_workspace"]
+TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset({"task", "verification", "outside_workspace"})
+
+
 @dataclass(frozen=True, slots=True)
 class TaskInputFile:
     """One read-only task input file the check carries for review (issue #1045).
@@ -302,9 +308,23 @@ class TaskInputFile:
     text: bytes = field(repr=False)
     size: int
     redacted: bool = False
+    # Issue #1082: who named the file and where it was read. ``task``: the task statement or a
+    # ``role: input`` item, inside the repository (the #1045 rule). ``verification``: a path
+    # operand of a recorded verification command, under the same repository rule, so a test the
+    # task ships reaches the reviewer as the oracle. ``outside_workspace``: named by the task and
+    # read beneath a root the owner admitted in the repository's privacy grant.
+    origin: TaskInputOrigin = "task"
+    # Issue #1082: ``text`` is FinishUP's own bounded summary of a binary or data file it never
+    # sends whole (``finishup.adapters.input_summary``), not the file's bytes.
+    summary: bool = False
 
     def __post_init__(self) -> None:
-        if not _json_path(self.path):
+        if self.origin not in TASK_INPUT_ORIGINS or type(self.summary) is not bool:
+            raise _invalid()
+        if self.origin == "outside_workspace":
+            if not self.path.startswith("/") or not _json_path(self.path.lstrip("/")):
+                raise _invalid()
+        elif not _json_path(self.path):
             raise _invalid()
         if (
             type(self.text) is not bytes
@@ -797,12 +817,16 @@ def encode_check_change(capture: CheckChangeCapture) -> bytes:
     if capture.inputs:
         # Only present when the read carried task input files (issue #1045), so every object
         # written without them keeps its bytes.
+        # ``origin`` and ``summary`` (issue #1082) are written only when not the default, so an
+        # input read before they existed keeps its bytes.
         body["inputs"] = [
             {
                 "path": item.path,
                 "redacted": item.redacted,
                 "size": item.size,
                 "text": item.text.decode("utf-8"),
+                **({"origin": item.origin} if item.origin != "task" else {}),
+                **({"summary": True} if item.summary else {}),
             }
             for item in capture.inputs
         ]
@@ -835,7 +859,13 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         if type(row) is not dict:
             raise _invalid()
         fields = cast(dict[str, object], row)
-        if set(fields) != {"path", "redacted", "size", "text"} or type(fields["text"]) is not str:
+        if (
+            set(fields) - {"origin", "summary"} != {"path", "redacted", "size", "text"}
+            or type(fields["text"]) is not str
+            or fields.get("origin", "verification") == "task"
+            or fields.get("summary", True) is not True
+        ):
+            # A default value is never written, so a present default is not canonical.
             raise _invalid()
         inputs.append(
             TaskInputFile(
@@ -843,6 +873,8 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
                 fields["text"].encode("utf-8"),
                 cast(int, fields["size"]),
                 cast(bool, fields["redacted"]),
+                cast(TaskInputOrigin, fields.get("origin", "task")),
+                fields.get("summary", False) is True,
             )
         )
     return CheckChangeCapture(

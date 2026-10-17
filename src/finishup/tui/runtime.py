@@ -1518,7 +1518,13 @@ class FinishUpRuntime:
         network_raw = policy_map.get("network_egress_permitted")
         network_egress = network_raw if type(network_raw) is bool else None
         task_statement_sent, task_statement_disclosure = _task_statement_posture(policy_map)
+        roots = policy_map.get("admitted_input_roots")
         return PrivacyPosture(
+            admitted_input_roots=(
+                tuple(str(item) for item in cast("Sequence[object]", roots))
+                if isinstance(roots, (list, tuple))
+                else ()
+            ),
             conversation_review=_conversation_review_token(policy_map, llm_enabled),
             conversation_review_explicit=policy_map.get("conversation_review") is not None,
             recipe_outdated=_review_recipe_outdated(policy_map),
