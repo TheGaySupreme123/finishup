@@ -1301,6 +1301,53 @@ def test_only_a_later_publish_batch_confirms_a_blocker() -> None:
     assert dict(blocked_obligations(projection, _batches(ledger))) == {_OBLIGATION: "consent"}
 
 
+def test_a_confirmation_whose_rationale_names_the_recheck_confirms() -> None:
+    """PR #1088 round 3: the confirmation rule keys on the obligation and the line's kind only.
+
+    The claimed notice and the Stop re-check ask for a rationale that names what was re-checked,
+    so the confirming body differs from the claim and the MCP bridge never refuses it as an
+    unchanged id-less resend. The changed rationale (and nothing else) must still confirm.
+    """
+
+    from finishup.kernel.task_facts import BLOCKER_NOTICE_CONFIRMED, blocker_publication_notices
+
+    ledger = ObservedLedger()
+    _planned(ledger, obligation=_OBLIGATION)
+    _plan(ledger, _OBLIGATION)
+    claim = DecisionRecordedPayload(
+        statement="finishup-blocker:dependency_unavailable",
+        rationale="The package index is unreachable from this container.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(_OBLIGATION,),
+    )
+    ledger.append(
+        _DECISION_SCHEMA,
+        claim,
+        observed=False,
+        operation="req_98500000-0000-4000-8000-0000000009d1",
+    )
+    confirm = DecisionRecordedPayload(
+        statement=claim.statement,
+        rationale="Re-checked: the index and its mirror both refuse connections; no vendored copy.",
+        authority=claim.authority,
+        affected_obligation_ids=claim.affected_obligation_ids,
+    )
+    confirmed = ledger.append(
+        _DECISION_SCHEMA,
+        confirm,
+        observed=False,
+        operation="req_98500000-0000-4000-8000-0000000009d2",
+    )
+    projection = replay(ledger.prefix)
+    declaration = blocker_declarations(projection, _batches(ledger))[_OBLIGATION]
+    assert declaration.confirmed and declaration.confirmation_event_id == confirmed
+    assert dict(blocked_obligations(projection, _batches(ledger))) == {
+        _OBLIGATION: "dependency_unavailable"
+    }
+    [notice] = blocker_publication_notices(projection, ((confirmed, confirm),))
+    assert notice.notice == BLOCKER_NOTICE_CONFIRMED
+
+
 def test_publish_notices_challenge_a_first_claim_and_confirm_only_from_a_later_batch() -> None:
     from finishup.kernel.task_facts import (
         BLOCKER_NOTICE_CLAIMED,

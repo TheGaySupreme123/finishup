@@ -336,6 +336,9 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "public_error_invalid_correlation_id",
     "public_error_invalid_message",
     "public_error_missing_correlation_id",
+    # Issue #1084 (ADR-050 decision 2): an id-less publish body identical to the writer's
+    # previous id-less call that could have committed; the bridge refuses rather than guesses.
+    "publish_repeat_unconfirmed",
     "read_projection_failed",
     "receipt_child_manifest_mismatch",
     "receipt_children_not_canonical",
@@ -426,7 +429,7 @@ SERVICE_HANDSHAKE_PHASES: frozenset[str] = frozenset({"handshake", "handshake_gi
 # caller's start budget: still starting (a slow machine, or the first start after an install or
 # update), not a closed hello. ``phase`` on a retryable ``service_unavailable`` error.
 SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 347
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 348  # #1084: publish_repeat_unconfirmed
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -518,6 +521,7 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         "input_correction_new_identity",
         "operation_pending_inspect",
         "privacy_audit_review",
+        "publish_identity_choice",
         "read_timeout_new_identity",
         "recovery_check_then_correct",
         "resource_integrity_repair",
@@ -608,6 +612,8 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         # Issue #921: a stored privacy receipt could not be read back. The request was valid, so
         # the continuation names the audit, never a correction of the command.
         "privacy_audit_unreadable": "privacy_audit_review",
+        # Issue #1084: retry the named earlier call by its id, or publish again under a new one.
+        "publish_repeat_unconfirmed": "publish_identity_choice",
         # Issue #885: record one concrete attempt, then answer the finding under a new identity.
         "resolution_attempt_required": "input_correction_new_identity",
         # Issue #984: repair and check first, or answer the finding with another disposition,

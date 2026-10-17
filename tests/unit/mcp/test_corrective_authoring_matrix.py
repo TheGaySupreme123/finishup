@@ -18,6 +18,7 @@ from typing import Final, cast
 import pytest
 from pydantic import ValidationError
 
+from builders.publish_identity import bridge_bound
 from builders.replay import replay_records
 from finishup.application.publish_work import Application, prepare_publication
 from finishup.domain.events import EventPayload, encode_payload
@@ -69,21 +70,24 @@ def _repair_discriminator(rejected: _Request) -> _Request:
 
 def _missing_envelope_keys() -> _Request:
     draft = _example_draft()
-    del draft["artifact_refs"]
-    del draft["evidence_refs"]
+    draft.pop("artifact_refs", None)
+    draft.pop("evidence_refs", None)
     return _publish_request([draft])
 
 
-def _repair_envelope_keys(rejected: _Request) -> _Request:
-    drafts = cast(list[JsonValue], rejected["event_drafts"])
-    draft = dict(cast(Mapping[str, JsonValue], drafts[0]))
-    draft["artifact_refs"] = []
-    draft["evidence_refs"] = []
-    return _publish_request([draft])
+def test_omitted_fillable_envelope_keys_are_admitted() -> None:
+    """Issue #1084: the service fills omitted envelope keys, so their absence is no rejection."""
+
+    PublishWorkRequestModel.model_validate(bridge_bound(_missing_envelope_keys()))
+    draft = _example_draft()
+    assert set(draft) == {"schema", "payload"}
+    PublishWorkRequestModel.model_validate(bridge_bound(_publish_request([draft])))
 
 
 def _stub_draft() -> _Request:
-    return _publish_request([{"event_id": _example_draft()["event_id"], "payload": {}}])
+    return _publish_request(
+        [{"event_id": "evt_00000000-0000-4000-8000-000000000001", "payload": {}}]
+    )
 
 
 def _repair_stub_draft(rejected: _Request) -> _Request:
@@ -125,16 +129,10 @@ _AUTHORING_MATRIX: Final[
     ),
     (
         "publish_work",
-        "missing envelope keys",
-        _missing_envelope_keys,
-        ("event_id", "schema", "occurred_at", "causal_parents", "artifact_refs", "evidence_refs"),
-        _repair_envelope_keys,
-    ),
-    (
-        "publish_work",
         "stub draft with only an id and a payload",
         _stub_draft,
-        ("schema.name", "occurred_at", "causal_parents", "artifact_refs", "evidence_refs"),
+        # Issue #1084: the service fills every other envelope key, so only the family is named.
+        ("schema.name", "schema and payload"),
         _repair_stub_draft,
     ),
     (
@@ -162,7 +160,7 @@ _MODELS: Final = {
 def _rejection_message(tool: str, request: _Request) -> str:
     model = _MODELS[tool]
     with pytest.raises(ValidationError) as captured:
-        model.model_validate(request)
+        model.model_validate(bridge_bound(request) if tool == "publish_work" else request)
     return invalid_request_message(tool, safe_validation_locations(captured.value))
 
 
@@ -186,7 +184,8 @@ def test_one_retry_repairs_the_request_from_the_public_output(
 
     # The repaired request is derived from the rejected one plus the message, and must be admitted
     # by the real model. A message that names the fields but states the wrong rule fails here.
-    _MODELS[tool].model_validate(repair(rejected))
+    repaired = repair(rejected)
+    _MODELS[tool].model_validate(bridge_bound(repaired) if tool == "publish_work" else repaired)
 
 
 def test_the_scope_rule_names_the_third_admitted_shape() -> None:

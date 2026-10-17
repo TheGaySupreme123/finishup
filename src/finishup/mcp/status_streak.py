@@ -113,6 +113,9 @@ class StatusReadStreaks:
 def _readiness(wire: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
     raw = wire.get("closure_readiness")
     if not isinstance(raw, Mapping):
+        # Issue #1084: a brief non-compact status body carries the same tokens as closure_state.
+        raw = wire.get("closure_state")
+    if not isinstance(raw, Mapping):
         return "", ()
     readiness = cast(Mapping[str, JsonValue], raw)
     state = _token(readiness.get("state"))

@@ -11,16 +11,24 @@ Each obligation's `source_refs` cites the task-statement event (see `startup.md`
 `requested_items` name the files and commands the request names. `source_refs` cannot change on
 an existing obligation: to map a missed requirement, publish a new obligation.
 Then publish material transitions, results, evidence, and a completion claim. Keep one transition together in a small
-batch. `work_closed` closes work; a receipt never does. Every retryable write carries its
-idempotency identity and expected frontier: the `frontier` `start` returned for the first plan,
-then the `result_frontier` of your last accepted write (read `status` for one only when you hold
-none). Reuse exact request and event ids only for the allowed same-body recovery path.
+batch. `work_closed` closes work; a receipt never does. A `publish_work` body may omit
+`request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
+`artifact_refs` and `evidence_refs`. FinishUP mints a request id for that one call, mints event
+ids, records its own clock, copies the payload mirrors, guards the batch with the frontier it reads
+when it admits it, and names every filled value in the result's `server_filled`. Every result and
+error names that request id. After an unknown outcome, retry by sending that `request_id` with the
+body: it replays instead of appending twice. Resending the body without it is never a retry: right
+after the same call FinishUP refuses it and names the id, and otherwise it is a new publication.
+Send a value only when you need it: an explicit `expected_frontier` (the `frontier`
+`start` returned for the first plan, then the `result_frontier` of your last accepted write) also
+refuses a change made since you read it; a `causal_parents` entry cites an earlier event id.
 
 ## Before you send a batch
 
 Check each line. Each one names the refusal or finding it prevents.
 
-1. `expected_frontier` is the frontier you hold, never `null` (`expected_frontier_required`).
+1. Omit `expected_frontier` (guarded at admission), or send the frontier you hold; never `null`
+   (`expected_frontier_required`).
 2. Every `action_recorded` has a `result_recorded` naming its `action_id`, normally in the same
    batch, with `outcome` `success`, `failure`, `partial` or `unknown` (`action_without_result`).
 3. A `result_recorded` lists only `evd_` ids in `evidence_refs`. A `res_` id belongs in a claim's
@@ -30,14 +38,17 @@ Check each line. Each one names the refusal or finding it prevents.
    `test_report` or `static_analysis_report`. `test_result` takes `test_stdout`, `test_report` or
    `static_analysis_report`. `research_source` takes `artifact_bytes` or `bounded_excerpt`.
    `other` takes `bounded_excerpt`.
-5. Every reference list holds unique ids in ascending ASCII order (`unsorted_set_field`).
+5. Write each reference once. FinishUP sorts and de-duplicates reference-set fields (never text
+   lists such as `alternatives` or `attempted_items`) and copies the envelope mirrors; a mirror
+   you do send must match the payload (`ref_mirror_mismatch`).
 6. `attempted_items` appears only on `action_recorded`, and each value is copied exactly from a
    `requested_items` `value`.
 7. An obligation is resolved once. Do not republish a `resolved` obligation as `resolved` to add
    evidence (`obligation_resolution_mismatch`); cite the new evidence from the claim. If its work
    no longer holds, republish it `open`, or `acknowledged_not_done` with the reason, repeating
    every meaning field.
-8. `occurred_at` is the real current UTC time with milliseconds, never a template's example time.
+8. Omit `occurred_at`; FinishUP records its clock. Never run `date` for it. An `occurred_at` or
+   `observed_at` you send is your claim: a time you already hold, never a template's example.
 9. A file the task writes only under a condition is a `change` item that names the condition and
    the path. Never create an empty or placeholder file for it.
 
@@ -56,8 +67,8 @@ no exit status for that run (a long run that outlived the tool's wait), cite its
 `limitation_refs`: it still shows the run happened after your last edit.
 
 For completion scope, put admissible evidence in `supporting_refs`, partial/failed/unknown results
-in `limitation_refs`, and the named in-scope obligations in `obligation_refs`. Mirror
-`evidence_refs` and `artifact_refs` exactly where the event family requires it. Record every
+in `limitation_refs`, and the named in-scope obligations in `obligation_refs`. Leave the envelope
+`evidence_refs` and `artifact_refs` out: FinishUP copies the payload mirrors. Record every
 requested item attempted on `action_recorded.attempted_items`; it does not belong on a claim.
 Publish each action's outcome as a `result_recorded` whose `action_id` names it, normally in the
 same batch as the action; evidence and decisions do not link an action.

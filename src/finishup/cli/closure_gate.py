@@ -609,9 +609,12 @@ _BLOCKER_OFFER_TEXT: Final = (
 )
 # How to confirm a blocker appears only AFTER the challenge (the re-check, or a later gate whose
 # blocker was already re-asked), so publishing a blocker twice up front never skips it (#985).
+# The confirmation is a different body (its rationale names the re-check), because the MCP bridge
+# refuses a writer's previous id-less body resent unchanged as a possible retry (#1084). The
+# sentence stays this short so the worst-case re-check still fits the 2,000-character bound.
 _CONFIRM_TEXT: Final = (
-    "If it is genuine, confirm it by publishing the same finishup-blocker line again in a later"
-    " decision, then stop."
+    "If genuine, confirm it: publish the same finishup-blocker line again later, with a rationale"
+    " naming your re-check; then stop."
 )
 _UNCONFIRMED_AFTER_RECHECK_TEXT: Final = (
     "You were already asked about your recorded blocker: continue that work unless it is"

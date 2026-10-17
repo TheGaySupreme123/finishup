@@ -11,6 +11,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from builders.publish_identity import bridge_bound
 from builders.readiness import with_checklist
 from finishup.mcp import resources as resource_module
 from finishup.mcp.descriptors import (
@@ -210,7 +211,9 @@ def test_frontier_leaf_names_are_locatable_in_safe_details() -> None:
 
     with pytest.raises(ValidationError) as captured:
         PublishWorkRequest.model_validate(
-            {**base, "expected_frontier": {"sequence": "10", "digest": f"sha256:{'a' * 64}"}}
+            bridge_bound(
+                {**base, "expected_frontier": {"sequence": "10", "digest": f"sha256:{'a' * 64}"}}
+            )
         )
     locations = safe_validation_locations(captured.value)
 
@@ -241,7 +244,7 @@ def test_rejected_event_draft_is_located_by_ordinal() -> None:
     }
 
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate({**base, "event_drafts": [good, bad]})
+        PublishWorkRequest.model_validate(bridge_bound({**base, "event_drafts": [good, bad]}))
     locations = safe_validation_locations(captured.value)
 
     assert any(item["field"] == "/event_drafts/1/payload/action_kind" for item in locations)
@@ -269,7 +272,9 @@ def test_unknown_nested_payload_key_keeps_the_extra_forbidden_reason() -> None:
     payload = {**cast(dict[str, object], good["payload"]), secret: "x"}
 
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate({**base, "event_drafts": [{**good, "payload": payload}]})
+        PublishWorkRequest.model_validate(
+            bridge_bound({**base, "event_drafts": [{**good, "payload": payload}]})
+        )
     locations = safe_validation_locations(captured.value)
 
     assert {"field": "/event_drafts/0/payload", "reason": "extra_forbidden"}.items() <= (
@@ -304,8 +309,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:c143ab8edbcc88c3f440730f956eb4c570953862e0bece5797394fb62429e534",
-        "strict": "sha256:3c172d0ab8c8977bdbcd4d3f998aafb59a646c2db553a6eb70b73402b1b42a5e",
+        "policy": "sha256:73febdec57969d915948bfed2ffed6cfc8e8de96182127f420921461db22da84",
+        "strict": "sha256:b17a0c6544e3efc3ba895fe31108ccafb739ef21f7b78d8280e9bc5dc8ae9ed6",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -340,17 +345,26 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "workspace_ref and external_ref are admitted only as a pair" in start_description
     assert "A new session's first workflow operation is this call" in start_description
     assert "for intro and guidance" in start_description
-    assert (
-        "unique and already in ascending ASCII order" in descriptor_for("publish_work").description
+    # Issue #1084: the service sorts reference lists and fills the envelope boilerplate, and the
+    # descriptor says so instead of asking for hand-sorted, hand-mirrored drafts.
+    assert "Reference sets are sorted and de-duplicated for you" in (
+        descriptor_for("publish_work").description
     )
-    assert "unsorted_set_field" in descriptor_for("publish_work").description
+    assert "server_filled" in descriptor_for("publish_work").description
+    assert "never run date" in descriptor_for("publish_work").description
+    # Review R1/R3 of PR #1088: the call's id is minted, not derived; the frontier is guarded.
+    assert "FinishUP mints the call's id" in descriptor_for("publish_work").description
+    assert "frontier it reads on admission" in descriptor_for("publish_work").description
     properties = descriptor_for("publish_work").input_schema["properties"]
     assert isinstance(properties, dict)
     event_drafts = properties["event_drafts"]
     assert isinstance(event_drafts, dict)
     description = event_drafts["description"]
     assert isinstance(description, str)
-    assert "unsorted_set_field" in description
+    assert (
+        "sorts and de-duplicates reference-set fields; text lists are kept as sent" in description
+    )
+    assert "server_filled" in description
     publish_descriptor = descriptor_for("publish_work")
     assert publish_descriptor.input_schema_ref.endswith("publish-work-request-1.2.0.schema.json")
     assert publish_descriptor.output_schema_ref.endswith("publish-work-result-1.1.0.schema.json")
@@ -388,9 +402,10 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
         assert descriptor_for(name, "policy") == descriptor_for(name, "strict")
     assert "uncertain what you already did or committed to" in descriptor_for("status").description
     assert "recommended_next_action" in descriptor_for("status").description
-    assert "caller-asserted occurred_at beside the service-stamped accepted_at" in (
-        descriptor_for("status").description
-    )
+    assert (
+        "occurred_at (caller-asserted, or the service clock where a publish omitted it: "
+        "occurred_at_source service_clock) beside the service-stamped accepted_at"
+    ) in descriptor_for("status").description
     assert "call receipt before claiming completion" in descriptor_for("publish_work").description
     assert "do not copy the illustrative example timestamp" in (
         descriptor_for("publish_work").description
@@ -883,7 +898,7 @@ def test_mcp_can_amend_review_input_without_replacing_the_session(
     validator = Draft202012Validator(cast(Any, descriptor.input_schema))
     is_valid = cast(Callable[[Any], bool], getattr(validator, "is_valid"))
     assert is_valid(request)
-    PublishWorkRequest.model_validate(request)
+    PublishWorkRequest.model_validate(bridge_bound(request))
     validate_schema_instance(family.replace("_", "-"), "1.1.0", draft["payload"])
 
     # The new field must not accidentally become authorable under the frozen old wire version.
@@ -1006,7 +1021,8 @@ def test_presentation_examples_admit_under_catalog_models() -> None:
     exercised: set[str] = set()
     for example in publish_examples:
         assert isinstance(example, dict)
-        PublishWorkRequest.model_validate(example)
+        # Issue #1084: the bridge binds a request id to an id-less example before the model.
+        PublishWorkRequest.model_validate(bridge_bound(cast(dict[str, Any], example)))
         drafts = example["event_drafts"]
         assert isinstance(drafts, list)
         for draft in drafts:

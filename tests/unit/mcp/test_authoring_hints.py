@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import pytest
 
+from builders.publish_identity import bridge_bound
 from finishup.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
 from finishup.mcp.errors import authoring_hint
 from finishup.mcp.resources import read_resource
@@ -419,7 +420,10 @@ def test_every_worked_example_validates_against_its_request_schema() -> None:
         schema = descriptor_for(name).input_schema
         examples = cast(list[JsonValue], schema["examples"])
         for example in examples:
-            model.model_validate(example)
+            # Issue #1084: the bridge binds a request id to an id-less publish example.
+            model.model_validate(
+                bridge_bound(cast(dict[str, Any], example)) if name == "publish_work" else example
+            )
 
 
 def test_guidance_uris_in_tool_descriptions_resolve() -> None:

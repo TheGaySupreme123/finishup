@@ -4470,9 +4470,57 @@ def _status_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             },
         ]
     )
+    _add_status_request_token_economy(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz status request {entry.schema_version}"
     return document
+
+
+def _add_status_request_token_economy(document: dict[str, JsonValue]) -> None:
+    """Issue #1084, unreleased in-place additions that cut what a status read costs.
+
+    * ``detail``: ``brief`` returns only what the next step needs (one frontier, the page, the
+      closure state); ``full`` (the protocol default when absent) is the earlier body.
+    * ``limit`` becomes optional; the service pages 20 items when it is absent.
+    * ``view: results`` admits the filters agents already sent it: results after an ingestion
+      sequence, results an actor published, and the caller's own results.
+    """
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    properties = cast(dict[str, JsonValue], document["properties"])
+    properties["detail"] = {"enum": ["brief", "full"], "type": "string"}
+    document["required"] = [
+        name for name in cast(list[JsonValue], document["required"]) if name != "limit"
+    ]
+    definitions["results_filter"] = {
+        "additionalProperties": False,
+        "properties": {
+            "actor_id": {"$ref": "#/$defs/actor_id"},
+            "after_sequence": {"$ref": "#/$defs/canonical_uint"},
+            "author": {"enum": ["mine"]},
+        },
+        "type": "object",
+    }
+    filter_schema = cast(dict[str, JsonValue], properties["filter"])
+    cast(list[JsonValue], filter_schema["anyOf"]).append({"$ref": "#/$defs/results_filter"})
+    rules = cast(list[JsonValue], document["allOf"])
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        condition = rule.get("if")
+        if not isinstance(condition, dict):
+            continue
+        view = cast(dict[str, JsonValue], condition.get("properties", {})).get("view")
+        if isinstance(view, dict) and isinstance(view.get("enum"), list):
+            values = cast(list[JsonValue], view["enum"])
+            if "results" in values and "compact" in values:
+                values.remove("results")
+    rules.append(
+        {
+            "if": {"properties": {"view": {"const": "results"}}, "required": ["view", "filter"]},
+            "then": {"properties": {"filter": {"$ref": "#/$defs/results_filter"}}},
+        }
+    )
 
 
 def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -4569,6 +4617,16 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     history_item = cast(dict[str, JsonValue], definitions["history_item"])
     history_properties = cast(dict[str, JsonValue], history_item["properties"])
     history_properties["review_input_manifest"] = {"$ref": "#/$defs/review_input_manifest"}
+    # Issue #1084 (review R7), unreleased in-place addition: present only when the publish that
+    # appended the event omitted occurred_at and the service recorded its own clock.
+    history_properties["occurred_at_source"] = {
+        "description": (
+            "Present only when the publish that appended this event omitted occurred_at, so the "
+            "service recorded its own clock; occurred_at is then not a caller assertion."
+        ),
+        "enum": ["service_clock"],
+        "type": "string",
+    }
     history_summary = cast(dict[str, JsonValue], history_properties["summary_code"])
     history_codes = cast(list[JsonValue], history_summary["enum"])
     history_codes.extend(
@@ -5108,10 +5166,90 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_credential_heuristic(definitions)
     _add_status_review_mode(definitions)
     _add_status_requested_item_role(definitions)
+    _add_status_operation_server_filled(definitions)
+    _add_status_brief_success(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
     document["title"] = f"Yoetz status result {entry.schema_version}"
     return document
+
+
+def _add_status_operation_server_filled(definitions: dict[str, JsonValue]) -> None:
+    """Issue #1084: a publish operation page names the values the service filled, when any."""
+
+    definitions["server_filled"] = _server_filled_schema()
+    page = cast(dict[str, JsonValue], definitions["operation_page"])
+    cast(dict[str, JsonValue], page["properties"])["server_filled"] = {
+        "$ref": "#/$defs/server_filled"
+    }
+
+
+# What a brief status body always carries (issue #1084). Everything else in the full body is either
+# a repeat of these (three more frontiers), a default (zero lag, a current projection, no import,
+# an enforced credential filter) or closure detail that the compact view carries.
+_STATUS_BRIEF_REQUIRED: Final[tuple[str, ...]] = (
+    "protocol_version",
+    "schema_version",
+    "request_id",
+    "ok",
+    "detail",
+    "task_id",
+    "session_id",
+    "writer_id",
+    "view",
+    "result_frontier",
+    "page",
+    "gaps",
+    "privacy_projection",
+)
+
+
+def _add_status_brief_success(document: dict[str, JsonValue]) -> None:
+    """Issue #1084: the ``brief`` status body, a strict subset of the full success body.
+
+    Frontiers equal to ``result_frontier`` are omitted, as are projection metadata at their
+    current/zero defaults, an empty import status and an enforced credential filter. The compact
+    view keeps ``closure_readiness`` and ``coverage``; every other view carries only
+    ``closure_state`` (the readiness state, its blocking conditions and agent-actionable tokens).
+    """
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    success = cast(dict[str, JsonValue], definitions["success"])
+    brief = cast(dict[str, JsonValue], json.loads(json.dumps(success)))
+    properties = cast(dict[str, JsonValue], brief["properties"])
+    properties["detail"] = {"const": "brief"}
+    properties["closure_state"] = {"$ref": "#/$defs/closure_state"}
+    readiness = cast(
+        dict[str, JsonValue], cast(dict[str, JsonValue], definitions["closure_readiness"])
+    )
+    readiness_properties = cast(dict[str, JsonValue], readiness["properties"])
+    definitions["closure_state"] = {
+        "additionalProperties": False,
+        "properties": {
+            name: json.loads(json.dumps(readiness_properties[name]))
+            for name in ("agent_actionable", "blocking_conditions", "state")
+        },
+        "required": ["blocking_conditions"],
+        "type": "object",
+    }
+    brief["required"] = list(_STATUS_BRIEF_REQUIRED)
+    rules = cast(list[JsonValue], brief.setdefault("allOf", []))
+    rules.append(
+        {
+            "if": {"properties": {"view": {"const": "compact"}}, "required": ["view"]},
+            "then": {
+                "not": {"required": ["closure_state"]},
+                "required": ["closure_readiness", "coverage"],
+            },
+            "else": {
+                "not": {"anyOf": [{"required": ["closure_readiness"]}, {"required": ["coverage"]}]},
+                "required": ["closure_state"],
+            },
+        }
+    )
+    definitions["brief_success"] = brief
+    branches = cast(list[JsonValue], document["oneOf"])
+    branches.insert(1, {"$ref": "#/$defs/brief_success"})
 
 
 def _credential_heuristic_pair_schema() -> dict[str, JsonValue]:
@@ -6307,11 +6445,18 @@ def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
 
 def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
-    return _simple_versioned_schema(
+    document = _simple_versioned_schema(
         entry,
         "operations/publish-work-request-1.1.0.schema.json",
         {"event-draft-1.1.0": "event-draft-1.2.0"},
     )
+    # Issue #1084, unreleased in-place change: an omitted ``expected_frontier`` is guarded by the
+    # frontier the service reads when it admits the batch. ``request_id`` stays required: the
+    # operation identity is caller- or host-owned (the MCP bridge and the CLI mint one for an agent
+    # call that omits it), never derived by the service. A request that sends both is unchanged.
+    required = cast(list[JsonValue], document["required"])
+    document["required"] = [name for name in required if name != "expected_frontier"]
+    return document
 
 
 def _decision_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -6420,6 +6565,14 @@ def _event_draft_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+_OCCURRED_AT_DRAFT_V1_2_DESCRIPTION: Final = (
+    "Optional caller-asserted event time (RFC 3339 UTC, millisecond precision). Omit it and the "
+    "service records its own clock at publication instead, named in the result's server_filled. "
+    "When you send it, use the best real time available, never an illustrative example; it is a "
+    "claim. Ledger order uses ingestion sequence; receipt freshness is frontier-bound."
+)
+
+
 def _event_draft_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add lineage payload families while retaining every previously admitted event pair."""
 
@@ -6490,6 +6643,14 @@ def _event_draft_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "coordination_disposition_recorded",
     ):
         add_branch(family, "1.0.0")
+    # Issue #1084, unreleased in-place change: the service fills an omitted envelope value. It
+    # mints ``event_id`` from the request identity, records its own clock as ``occurred_at``,
+    # copies the payload mirrors into ``evidence_refs``/``artifact_refs`` and defaults
+    # ``causal_parents`` to an empty set; the result's ``server_filled`` names each one.
+    document["required"] = ["schema", "payload"]
+    properties = cast(dict[str, JsonValue], document["properties"])
+    occurred = cast(dict[str, JsonValue], properties["occurred_at"])
+    occurred["description"] = _OCCURRED_AT_DRAFT_V1_2_DESCRIPTION
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz event draft {entry.schema_version}"
     return document
@@ -8592,7 +8753,74 @@ def _publish_work_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonVal
     _admit_recorded_policy_identities(document)
     _add_publish_blocker_notices(document)
     _add_publish_action_notices(document)
+    _add_publish_server_filled(document)
     return document
+
+
+def _server_filled_schema() -> dict[str, JsonValue]:
+    """The ``server_filled`` record: which values the service supplied (issue #1084)."""
+
+    from finishup.protocol.publish_boilerplate import (
+        FILLABLE_DRAFT_FIELDS,
+        FILLABLE_REQUEST_FIELDS,
+    )
+
+    return {
+        "additionalProperties": False,
+        "properties": {
+            "drafts": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "fields": {
+                            "items": {"enum": list(FILLABLE_DRAFT_FIELDS), "type": "string"},
+                            "maxItems": len(FILLABLE_DRAFT_FIELDS),
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": True,
+                        },
+                        "indexes": {
+                            "items": {"$ref": "#/$defs/canonical_uint"},
+                            "maxItems": 100,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": True,
+                        },
+                    },
+                    "required": ["fields", "indexes"],
+                    "type": "object",
+                },
+                # One group per distinct filled-field set (at most 2^5 - 1 of them).
+                "maxItems": 31,
+                "type": "array",
+            },
+            "request": {
+                "items": {"enum": list(FILLABLE_REQUEST_FIELDS), "type": "string"},
+                "maxItems": len(FILLABLE_REQUEST_FIELDS),
+                "type": "array",
+                "uniqueItems": True,
+            },
+        },
+        "required": ["request", "drafts"],
+        "type": "object",
+    }
+
+
+def _add_publish_server_filled(document: dict[str, JsonValue]) -> None:
+    """Optional record of the values the service filled (issue #1084).
+
+    Present only when the caller omitted at least one fillable value, so a request that sends every
+    field still receives its earlier result shape.
+    """
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    definitions["server_filled"] = _server_filled_schema()
+    # The reduced success keeps the provenance of the operation it reports (review R1).
+    for branch in ("success", "accepted_projection_unavailable", "dry_run"):
+        properties = cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
+        )
+        properties["server_filled"] = {"$ref": "#/$defs/server_filled"}
 
 
 def _add_publish_action_notices(document: dict[str, JsonValue]) -> None:

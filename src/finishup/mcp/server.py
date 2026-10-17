@@ -62,6 +62,7 @@ from finishup.mcp.errors import (
     sanitize_unknown_tool_name,
     tool_error_envelope,
 )
+from finishup.mcp.publish_identity import PublishRepeatGuard
 from finishup.mcp.resources import (
     DEFAULT_GUIDANCE_PAGE_SIZE,
     GUIDANCE_RESOURCES,
@@ -517,6 +518,11 @@ class BridgeRuntime:
     # tb4 n5: consecutive status reads per (session, actor) since the session's last write call.
     status_streaks: StatusReadStreaks = field(
         default_factory=StatusReadStreaks, repr=False, compare=False
+    )
+    # Issue #1084 (ADR-050 decision 2): each writer's previous id-less publish in this process,
+    # so an identical id-less resend is refused with an explicit choice instead of guessed.
+    publish_guard: PublishRepeatGuard = field(
+        default_factory=PublishRepeatGuard, repr=False, compare=False
     )
 
 
@@ -2510,6 +2516,7 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
     runtime: BridgeRuntime,
     operation: str,
 ) -> types.CallToolResult:
+
     request_id = safe_request_id_from(arguments)
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read, like the
     # daemon classifies it. The value is only compared with a closed set, never echoed.
@@ -2973,9 +2980,172 @@ async def _publish_recovery_from_envelope(
         return _PublishRecoveryOutcome(_PublishRecoveryKind.UNAVAILABLE)
 
 
+# A publish_work failure with one of these codes was refused before any append, so nothing was
+# written under its request id (review N1-N6 of PR #1088 round 2): validation, the batch's own
+# events, a frontier conflict, a size limit, or the route. Anything else (a timeout, an unavailable
+# service, a pending operation, a storage or internal error) may have committed.
+_PUBLISH_NOT_WRITTEN_CODES: Final = frozenset(
+    {
+        PublicErrorCode.INVALID_REQUEST.value,
+        PublicErrorCode.EVENT_INVALID.value,
+        PublicErrorCode.FRONTIER_CONFLICT.value,
+        PublicErrorCode.LIMIT_EXCEEDED.value,
+        PublicErrorCode.PROTOCOL_VERSION_UNSUPPORTED.value,
+        PublicErrorCode.SESSION_CONFLICT.value,
+        PublicErrorCode.SESSION_NOT_FOUND.value,
+    }
+)
+
+
+def _publish_certainly_not_written(result: types.CallToolResult) -> bool:
+    """Whether a publish result proves that nothing was appended under its request id."""
+
+    wire = result.structuredContent
+    if result.isError is not True or not isinstance(wire, Mapping):
+        return False
+    error = cast(Mapping[str, object], wire).get("error")
+    if not isinstance(error, Mapping):
+        return False
+    return cast(Mapping[str, object], error).get("code") in _PUBLISH_NOT_WRITTEN_CODES
+
+
+def _with_identity_line(
+    result: types.CallToolResult, line: str, runtime: BridgeRuntime
+) -> types.CallToolResult:
+    """Add one fixed bridge line naming a request id to a result's text (issue #1084).
+
+    A host that reads only text otherwise cannot follow "retry with the same request_id" for an
+    id it never saw. The structured result already carries the id; the Cursor profile's first
+    block is the exact canonical JSON, so there the line is a separate block. Never fails the call.
+    """
+
+    try:
+        content = list(result.content)
+        first = content[0] if content else None
+        if runtime.host_profile != "cursor" and isinstance(first, types.TextContent):
+            content[0] = first.model_copy(update={"text": f"{first.text}\n{line}"})
+        else:
+            content.append(types.TextContent(type="text", text=line))
+        return result.model_copy(update={"content": content})
+    except Exception:  # noqa: BLE001 - the line is advisory text; the served result stands
+        return result
+
+
+def _minted_id_line(request_id: str) -> str:
+    return (
+        f"FinishUP minted request_id {request_id} for this call. To retry this call, send this "
+        "request_id; resending the body without it is not a retry."
+    )
+
+
+def _repeat_refusal(previous: str, runtime: BridgeRuntime) -> types.CallToolResult:
+    """Refuse an id-less body identical to the writer's previous, possibly committed, call.
+
+    The text separates the two cases only the caller can tell apart: a call whose success it saw
+    is recorded, so a deliberate repeat changes the body (a blocker confirmation names its
+    re-check) or sends a fresh id; a call whose result it did not see is retried by its id.
+    """
+
+    refused = structured_error_result(
+        PublicErrorCode.INVALID_REQUEST,
+        (
+            "This publish_work body is identical to this writer's previous publish_work without "
+            "request_id, so FinishUP sent nothing: it may be a retry. If you saw that call "
+            "succeed, it is recorded; to publish again on purpose, change the body or send a "
+            "fresh request_id (req_ plus a new lowercase UUIDv4). Otherwise send "
+            "replay_request_id as request_id to retry that call."
+        ),
+        safe_details={"reason_code": "publish_repeat_unconfirmed", "replay_request_id": previous},
+        operation="publish_work",
+        host_profile=runtime.host_profile,
+    )
+    return _with_identity_line(
+        refused,
+        (
+            f"The previous identical call ran under request_id {previous}. If you saw it "
+            "succeed, it is recorded: to publish again on purpose, change the body or send a "
+            "fresh request_id (req_ plus a new lowercase UUIDv4). If you did not see its result, "
+            f"or it was an error, send request_id {previous} to retry it."
+        ),
+        runtime,
+    )
+
+
+async def _dispatch_publish_without_identity(
+    arguments: Mapping[str, object], runtime: BridgeRuntime
+) -> types.CallToolResult:
+    """Mint and send the request id of a publish call that omits it (issue #1084).
+
+    ADR-050 decision 2: the identity is never derived from the body and never resumed by
+    content. Every id-less call gets a fresh id, which the bridge's own transport retries reuse
+    and every result and error names; retrying an unknown outcome means sending that id. The body
+    is validated first under a provisional id, so an invalid body is never sent or remembered. A
+    dry run gets a fresh id and touches nothing. An id-less body identical to this writer's
+    previous id-less call that could have committed is refused, naming that call's id
+    (``PublishRepeatGuard``): the caller decides whether it is a retry or a new publication.
+    """
+
+    try:
+        _rpc_deadline_ms("publish_work")
+    except ConfigError:
+        return _deadline_config_conflict_result(None, "publish_work", runtime.host_profile)
+    provisional: dict[str, object] = {**arguments, "request_id": new_id(IdKind.REQUEST)}
+    try:
+        PublishWorkRequest.model_validate(provisional)
+    except ValidationError as exc:
+        # Nothing with this body can have committed: no operation identity exists for it yet.
+        locations = safe_validation_locations(exc)
+        return structured_error_result(
+            PublicErrorCode.INVALID_REQUEST,
+            invalid_request_message("publish_work", locations),
+            safe_details=locations if locations else None,
+            operation="publish_work",
+            host_profile=runtime.host_profile,
+        )
+    except Exception as exc:
+        correlation_id = record_unexpected_exception_without_raising(
+            exc,
+            component="mcp.bridge",
+            operation="publish_work_request_internal_error",
+        )
+        return _internal_stage_error(
+            "bridge_request_validation_failed",
+            request_id=None,
+            correlation_id=correlation_id,
+            host_profile=runtime.host_profile,
+            operation="publish_work",
+        )
+
+    def invoke(client: ServiceClient, request: PublishWorkRequest) -> Awaitable[PublishWorkResult]:
+        return client.publish_work(request, deadline_ms=_rpc_deadline_ms("publish_work"))
+
+    if _publish_is_declared_dry_run(arguments):
+        # A preview appends nothing and consumes no identity.
+        return await _dispatch(
+            provisional, PublishWorkRequest, PublishWorkResult, invoke, runtime, "publish_work"
+        )
+    previous = runtime.publish_guard.previous_request_id(arguments)
+    if previous is not None:
+        return _repeat_refusal(previous, runtime)
+    request_id = cast(str, provisional["request_id"])
+    # Remembered before sending, so a call that is cancelled or whose result never reaches the
+    # caller still guards the identical resend.
+    runtime.publish_guard.record(arguments, request_id)
+    result = await _dispatch(
+        provisional, PublishWorkRequest, PublishWorkResult, invoke, runtime, "publish_work"
+    )
+    if _publish_certainly_not_written(result):
+        runtime.publish_guard.rejected(arguments, request_id)
+    if result.isError is True:
+        return _with_identity_line(result, _minted_id_line(request_id), runtime)
+    return result
+
+
 async def dispatch_publish_work(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
 ) -> types.CallToolResult:
+    if "request_id" not in arguments:
+        return await _dispatch_publish_without_identity(arguments, runtime)
     request_id = safe_request_id_from(arguments)
     try:
         _rpc_deadline_ms("publish_work")
@@ -3029,7 +3199,7 @@ async def dispatch_publish_work(
             host_profile=runtime.host_profile,
             operation="publish_work",
         )
-    return await _dispatch(
+    result = await _dispatch(
         arguments,
         PublishWorkRequest,
         PublishWorkResult,
@@ -3039,6 +3209,13 @@ async def dispatch_publish_work(
         runtime,
         "publish_work",
     )
+    if not _publish_is_declared_dry_run(arguments) and not _publish_certainly_not_written(result):
+        # This writer sent an explicit-id publish that could have committed (a retry of an
+        # earlier minted id, or anything else): its previous id-less call is no longer the one an
+        # identical id-less body would repeat. A dry run, a certain rejection, or another writer's
+        # call never drops it (review N6 of PR #1088 round 2).
+        runtime.publish_guard.explicit(arguments)
+    return result
 
 
 async def dispatch_check(
@@ -3079,6 +3256,11 @@ async def dispatch_respond(
 async def dispatch_status(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
 ) -> types.CallToolResult:
+    # Issue #1084: an agent's status read is brief unless it names a detail. ``detail: full``
+    # returns the complete body; the bridge's own recovery reads build their requests directly
+    # and keep the full body.
+    if "detail" not in arguments:
+        arguments = {**arguments, "detail": "brief"}
     return await _dispatch(
         arguments,
         StatusRequest,
@@ -3839,6 +4021,8 @@ def _record_rejected_call(
     A host fires no ``PostToolUse`` for an error result, so the call's ``PreToolUse`` would
     otherwise expire as a pipeline loss. Only a commitment to the call (tool, FinishUP session,
     writer and ``request_id``) is written; the call is never delayed or failed by this record.
+    ``arguments`` are the agent's own, never the minted body: an id-less ``publish_work`` is
+    committed to by its canonical body, as the host's pre-event saw it (#1084).
     """
 
     if result.isError is not True:

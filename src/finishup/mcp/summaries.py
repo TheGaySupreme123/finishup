@@ -1859,6 +1859,21 @@ def _acknowledged_obligations_clause(source: Mapping[str, JsonValue]) -> str:
     return f"acknowledged not done (not open): {count}; "
 
 
+def _brief_without_counts(source: Mapping[str, JsonValue]) -> bool:
+    """A ``detail: brief`` body of a non-compact view: counts omitted, ``closure_state`` kept.
+
+    Issue #1084, review R5: such a body is not "unavailable" anything. Its counts are simply not
+    sent, so the text omits them instead of inventing a value, and closure comes from
+    ``closure_state``.
+    """
+
+    return (
+        source.get("detail") == "brief"
+        and not isinstance(source.get("closure_readiness"), Mapping)
+        and isinstance(source.get("closure_state"), Mapping)
+    )
+
+
 def _compact_status_fields(source: Mapping[str, JsonValue], view: str) -> tuple[str, str, str, str]:
     item = _first_page_item(source)
     readiness = source.get("closure_readiness")
@@ -2025,10 +2040,15 @@ def summary_for_status(envelope: object) -> str:
         )
     freshness, obligations, unanswered, _receipt_blocking = _compact_status_fields(source, view)
     gaps = _item_count(source.get("gaps"))
+    brief = _brief_without_counts(source)
     parts: list[Part | None] = [
         _req(f"Status view: {view}; {_frontier_clause(source)};"),
-        _req(f"freshness: {freshness};"),
-        _req(f"open obligations: {obligations};"),
+        # Issue #1084 (review R5): a brief non-compact body carries no counts; say so, never
+        # "unavailable". view compact or detail full returns them.
+        _req("detail: brief (counts in view compact);")
+        if brief
+        else _req(f"freshness: {freshness};"),
+        None if brief else _req(f"open obligations: {obligations};"),
         _opt(
             render.text("acknowledged", lambda: _acknowledged_obligations_clause(source)),
             priority=_P_ACTION,
@@ -2083,7 +2103,11 @@ def summary_for_status(envelope: object) -> str:
         recipe = render.variants("resolve_recipe", lambda: _obligation_resolve_recipe(source))
         if recipe:
             parts.append(_opt(*recipe, priority=_P_STATE))
-    parts.append(_req(f"unanswered findings: {unanswered}; reported gaps: {gaps}."))
+    parts.append(
+        _req(f"reported gaps: {gaps}.")
+        if brief
+        else _req(f"unanswered findings: {unanswered}; reported gaps: {gaps}.")
+    )
     deferral = _deferral_sentence(source.get("semantic_reason"), source)
     if deferral:
         parts.append(_req(deferral))
@@ -2270,7 +2294,7 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
 
     readiness = source.get("closure_readiness")
     if not isinstance(readiness, Mapping):
-        return []
+        return _brief_closure_parts(source)
     typed = cast(Mapping[str, JsonValue], readiness)
     state = typed.get("state")
     if type(state) is not str or state not in READINESS_STATES:
@@ -2320,6 +2344,46 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
             parts.append(Part(listed("Standing limitations: ", standing), priority=_P_BOILERPLATE))
         return [*parts, *verdict_parts]
     return [Part((f"{head} {sentence}", head), required=True), *verdict_parts]
+
+
+def _brief_closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
+    """The closure state and its instruction from a brief body's ``closure_state`` (review R5).
+
+    The same required state token, the same agent-actionable list and the same stop instruction
+    as the full rendering, without the counts a brief body does not carry: the count-free variant
+    of each directive is used, and no count is invented.
+    """
+
+    closure = source.get("closure_state")
+    if not isinstance(closure, Mapping):
+        return []
+    typed = cast(Mapping[str, JsonValue], closure)
+    state = typed.get("state")
+    if type(state) is not str or state not in READINESS_STATES:
+        return []
+    head = f"Closure: {state}."
+    if state == "action_required":
+        parts = [
+            Part((head,), required=True),
+            Part((readiness_directive(state),), priority=_P_BOILERPLATE),
+        ]
+        actionable = _readiness_tokens(typed, "agent_actionable")
+        if actionable:
+            variants = list_variants("Agent-actionable: ", actionable, suffix="")
+            within = tuple(variant for variant in variants if len(variant) <= _LIST_MAX_CHARS)
+            parts.append(
+                Part(
+                    tuple(f"{variant}." for variant in within or variants[-1:]),
+                    required=True,
+                    priority=_P_ACTION,
+                )
+            )
+        return parts
+    if state == "ready_with_limitations":
+        # The full directive's counts sentence needs counts a brief body omits; the stop
+        # instruction itself does not.
+        return [Part((f"{head} Nothing further to do. Request the receipt.",), required=True)]
+    return [Part((f"{head} {readiness_directive(state)}", head), required=True)]
 
 
 def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]:
@@ -2848,10 +2912,14 @@ _START_FRONTIER_NEXT: Final = (
     " (next_request_template carries it); no status read is needed for it."
 )
 _START_FRONTIER_NEXT_SHORT: Final = "Send this frontier as your first plan's expected_frontier."
+# Issue #1084: the next publish_work may omit expected_frontier (the service guards it with the
+# frontier it reads at admission). check, respond and receipt still send a frontier, and the
+# returned one is it; none of them needs a status read (review of PR #1088).
 _WRITE_FRONTIER_NEXT: Final = (
-    "Send this frontier as the next write's expected_frontier; no status read is needed for it."
+    "Next publish_work may omit expected_frontier (guarded at admission); send this frontier when "
+    "the batch rests on what you read, and to check, respond and receipt. No status read needed."
 )
-_WRITE_FRONTIER_NEXT_SHORT: Final = "Send it as the next expected_frontier."
+_WRITE_FRONTIER_NEXT_SHORT: Final = "Next publish_work may omit expected_frontier."
 
 
 def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
@@ -2869,6 +2937,81 @@ def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
     return None
 
 
+_FILLED_REQUEST_FIELDS: Final = frozenset({"expected_frontier"})
+_FILLED_DRAFT_FIELDS: Final = frozenset(
+    {"artifact_refs", "causal_parents", "event_id", "evidence_refs", "occurred_at"}
+)
+_EVENT_ID: Final = re.compile(
+    r"^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
+_MAX_RENDERED_MINTED_EVENT_IDS: Final = 8
+
+
+def _server_filled_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Name the values the service filled and the event ids it minted (issue #1084).
+
+    Closed field names and re-validated service-minted ``evt_`` ids only. The minted ids are the
+    ones a later draft cites (``causal_parents``); the structured result carries all of them.
+    """
+
+    filled = source.get("server_filled")
+    if not isinstance(filled, Mapping):
+        return None
+    record = cast(Mapping[str, JsonValue], filled)
+    request = record.get("request")
+    drafts = record.get("drafts")
+    if not isinstance(request, list | tuple) or not isinstance(drafts, list | tuple):
+        return None
+    request_names = [
+        name
+        for name in cast(Sequence[JsonValue], request)
+        if type(name) is str and name in _FILLED_REQUEST_FIELDS
+    ]
+    field_names: set[str] = set()
+    minted: list[int] = []
+    for row in cast(Sequence[JsonValue], drafts):
+        if not isinstance(row, Mapping):
+            return None
+        entry = cast(Mapping[str, JsonValue], row)
+        indexes, fields = entry.get("indexes"), entry.get("fields")
+        if not isinstance(indexes, list | tuple) or not isinstance(fields, list | tuple):
+            return None
+        names = {
+            name
+            for name in cast(Sequence[JsonValue], fields)
+            if type(name) is str and name in _FILLED_DRAFT_FIELDS
+        }
+        field_names |= names
+        for index in cast(Sequence[JsonValue], indexes):
+            if type(index) is not str or not index.isdigit():
+                return None
+            if "event_id" in names:
+                minted.append(int(index))
+    minted.sort()
+    accepted = source.get("accepted_events")
+    if accepted is None:
+        accepted = source.get("would_accept")
+    rows = cast(Sequence[JsonValue], accepted) if isinstance(accepted, list | tuple) else ()
+    ids: list[str] = []
+    for position in minted[:_MAX_RENDERED_MINTED_EVENT_IDS]:
+        row = rows[position] if position < len(rows) else None
+        value = (
+            cast(Mapping[str, JsonValue], row).get("event_id") if isinstance(row, Mapping) else None
+        )
+        if type(value) is str and _EVENT_ID.fullmatch(value) is not None:
+            ids.append(f"[{position}] {value}")
+    hidden = len(minted) - len(ids)
+    described = ", ".join(sorted(set(request_names) | field_names, key=str.encode))
+    if not described:
+        return None
+    text = f"service-filled: {described};"
+    if ids:
+        text += (
+            " minted event ids: " + ", ".join(ids) + (f" (+{hidden})" if hidden > 0 else "") + ";"
+        )
+    return _opt(text, f"service-filled: {described};", priority=_P_IDENTITY)
+
+
 def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     outcome = _safe_token(source.get("outcome"), fallback="recorded")
     identity = _identity_clause(source)
@@ -2877,6 +3020,7 @@ def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     if accepted is not None:
         parts.append(_req(f"accepted events: {_item_count(accepted)};"))
     parts.append(_req(f"{identity}{_frontier_clause(source)}."))
+    parts.append(_server_filled_part(source))
     parts.append(_frontier_next_part(source))
     return _compose(parts)
 

@@ -209,6 +209,17 @@ def proposed_obligations(request: Mapping[str, JsonValue] | None) -> list[str]:
     return sorted(refs)
 
 
+def _host_bound_publish(tool: str | None, request: Mapping[str, JsonValue] | None) -> bool:
+    """Whether this is a ``publish_work`` call whose request id the host binds (#1084).
+
+    An agent may omit ``request_id``; the MCP bridge (or the CLI) then mints one per call and
+    binds it before sending, so the pre-call hook cannot know it. The service's result echoes it,
+    and the post-call event tracks the write under that id instead (ADR-050 decision 2).
+    """
+
+    return tool == "publish_work" and request is not None and "request_id" not in request
+
+
 def clear_pending(scope: GateScope, rid: str) -> None:
     scope.pending.pop(rid, None)
     scope.pending_refs.pop(rid, None)
@@ -476,6 +487,22 @@ def handle_startup_gate(
                 if tool == "status" and result is not None and result.get("ok") is True:
                     recover_pending(scope, result)
                     store.write(scope)
+                if (
+                    _host_bound_publish(tool, request)
+                    and isinstance(rid, str)
+                    and is_valid_id(IdKind.REQUEST, rid)
+                    and rid not in scope.pending
+                    and result is not None
+                    and result.get("request_id") == rid
+                    and (result.get("ok") is True or len(scope.pending) < 32)
+                ):
+                    # Issue #1084: the host minted this write's id after the pre-call event, so
+                    # the result opens its ticket here. A success settles it below exactly as a
+                    # caller-identified write's would; an unknown outcome keeps it pending until
+                    # an exact successful replay or an operation read settles it.
+                    scope.pending[rid] = "publish_work"
+                    scope.pending_generations[rid] = scope.generation
+                    scope.pending_refs[rid] = proposed_obligations(request)
                 if isinstance(rid, str) and scope.pending.get(rid) == tool:
                     if (
                         result is not None

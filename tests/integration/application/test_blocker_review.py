@@ -449,6 +449,7 @@ async def test_publish_challenges_a_first_blocker_and_flags_one_on_finished_work
     assert "A FinishUP limit" in text and "never a" in text and "respond self_verified" in text
     assert "recoverable" in text
     assert "publish the same finishup-blocker line for it again in a later" in text
+    assert "with a rationale that names what you re-checked" in text
     # The MCP bridge projection keeps the notices: closed codes, ids and fixed text only.
     request_wire = {**request_base(protocol_id("req_", seed + 6)), **base}
     projected = await project_case(

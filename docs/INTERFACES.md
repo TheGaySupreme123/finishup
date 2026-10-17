@@ -265,6 +265,91 @@ drafts are prepared, a retry of the same `request_id` with or without it is a re
 and the recorded event never holds it. Every other unadmitted key, in every family, keeps its
 `extra_forbidden` refusal. The advertised schemas keep the one canonical spelling (ADR-002).
 
+Server-filled publish boilerplate (issue #1084, ADR-050). A `publish_work` request
+(`publish-work-request` 1.2.0 and `event-draft` 1.2.0, changed in place while unreleased) may omit
+`expected_frontier` and each draft's `event_id`, `occurred_at`, `causal_parents`, `artifact_refs`
+and `evidence_refs`; only `schema` and `payload` remain required in a draft. `request_id` stays
+required at the service. The pure half lives in `finishup.protocol.publish_boilerplate`:
+
+- Reference sets are canonicalized by the request model before the schema check: the envelope
+  sets of every draft, and the payload fields `PAYLOAD_SET_FIELDS` names for an exact
+  `(family, version)`, are sorted as ASCII bytes and de-duplicated. No other array is touched,
+  whatever its members look like (a `decision_recorded` `alternatives` tuple of id-shaped text
+  keeps its order and repeats); lineage and coordination payload sets keep
+  `unsorted_set_field`/`duplicate_set_member`.
+- An omitted draft `event_id` is `mint_draft_event_id(DraftMintScope(task_id, writer_id,
+  request_id, dry_run), index)`: the whole operation key, the position and the preview/commit role.
+  Two writers reusing one explicit `request_id` never mint the same id, and a preview never mints
+  the ids its commit records. The session is not in the seed: a task-scoped replay of the same
+  operation recomputes the same ids.
+- An omitted `occurred_at` is the service clock, read once per operation. It enters the request
+  identity as `null`, never as the time, so a same-id retry replays instead of conflicting.
+- An omitted `expected_frontier` is the frontier the service reads when it admits the batch
+  (`load_frontier`, before the batch is prepared or staged), passed through to
+  `AppendCommand.expected_frontier` and enforced with ADR-022's observation-only tolerance: a
+  cooperative append that lands while the batch is in flight is `FRONTIER_CONFLICT`
+  (`frontier_changed`). It enters the identity as `"admission"`. An explicit `null` keeps its
+  earlier meaning (`expected_frontier_required` on a state-sensitive batch; no guard otherwise);
+  a supplied frontier keeps its guard. There is no omission-selected unconditional mode.
+- Omitted envelope mirrors are copied from the payload (`result_recorded`, `response_recorded` and
+  `coordination_disposition_recorded` `evidence_refs`; `evidence_recorded` `captured_object_id`);
+  `causal_parents` defaults to empty. A sent value is never replaced, so a sent mirror that
+  disagrees is still `ref_mirror_mismatch`, and a request that sends every value keeps its earlier
+  identity, digest and result bytes.
+
+Host-owned request identity (ADR-050 decision 2, revised by round 2 of the PR #1088 review).
+The MCP `publish_work` tool, and `finishup publish-work`, admit a body without `request_id` (the
+advertised and catalog input schemas drop it from `required`).
+
+- **Minting.** The host mints a fresh `req_` UUIDv4 for every such call. The body is first
+  validated under a provisional id, so an invalid body is never sent. A dry run gets its own
+  fresh id. Nothing is persisted and nothing is resumed by content.
+- **Reuse.** The bridge's own transport retries (reconnect, and the timeout probe with its
+  replay) reuse the id.
+- **Disclosure.** Every result and error carries it. An id-less error's text adds the line
+  `FinishUP minted request_id … for this call`. `finishup publish-work` prints
+  `request_id …: minted by FinishUP` on stderr before sending. When a write's result cannot be
+  written to stdout, it reports `result_output_failed` with that id instead of a usage error.
+- **Retry contract.** Retrying an unknown outcome means sending that id.
+- **Repeat guard.** `finishup.mcp.publish_identity.PublishRepeatGuard` keeps, in the bridge
+  process only, each writer's previous id-less publish that could have committed: a commitment
+  over the canonical body, the id, and a monotonic time. An id-less body identical to it is
+  refused before sending as `INVALID_REQUEST` with `reason_code: publish_repeat_unconfirmed`,
+  continuation `publish_identity_choice`, and `safe_details.replay_request_id` naming the earlier
+  id. The envelope `request_id` is absent, so no hook reads the refusal as the earlier call's
+  outcome. The refusal (`retryable: false`) says a call the caller saw succeed is recorded, so a
+  deliberate repeat changes the body or sends a fresh `request_id` (`req_` plus a new lowercase
+  UUIDv4), and a call whose result it did not see is retried with `replay_request_id`.
+- **Forgetting.** The record is replaced by the writer's next id-less publish. It is dropped by:
+  - the writer's explicit-id publish that could have committed;
+  - a certain pre-append rejection of that call (`INVALID_REQUEST`, `EVENT_INVALID`,
+    `FRONTIER_CONFLICT`, `LIMIT_EXCEEDED`, `PROTOCOL_VERSION_UNSUPPORTED`, `SESSION_CONFLICT`,
+    `SESSION_NOT_FOUND`);
+  - one hour of monotonic time;
+  - the 4,096-writer bound.
+
+  Dry runs and other writers' calls never drop it.
+- **No guard:** across a bridge restart, after the writer's next publish, after the hour, and for
+  the CLI. An identical id-less body is then a new publication.
+- **Startup gate.** The startup-gate hook never saw a minted id, so in required startup mode an
+  id-less publish is admitted with no pre-call ticket. Its ticket opens only at a post-call event
+  that carries the structured result naming the minted `request_id`. On Claude Code, whose hooks
+  receive MCP error results as text only (or `PostToolUseFailure` with no `tool_response`), an
+  id-less publish that errors or loses its reply holds no ticket, and a concurrent delegate's tool
+  can pass while one is in flight (still live-probed against the current accepted plan). A retry by
+  the minted id takes a ticket again; fail-closed tracking needs the caller's own `request_id`.
+
+Provenance: every success, reduced success and dry-run result carries `server_filled` (`request`:
+`expected_frontier` when omitted; `drafts`: groups of filled envelope `fields` with the batch
+`indexes` they apply to) exactly when something was filled, and the publish operation's stored
+result keeps the same field names (structural only, no caller content). A replay and `status
+view=operation` return the committed operation's stored record, never one recomputed from the retry
+body. `status view=history` items (`status-result` 1.4.0 history row) and the frozen check history
+and review packet rows carry `occurred_at_source: "service_clock"` for an event whose publish
+omitted `occurred_at`, derived from the appending operation's stored record; absence means
+caller-asserted. Payload ids and evidence `observed_at` stay caller-authored: their payload schemas
+are released.
+
 For an `extra_forbidden` payload rejection whose unknown key is a known field with exactly one
 legal owning event family among the ordinary `publish_work` families, `safe_details` additionally
 carries a flat bounded repair fact (issue #266): `repair_kind` (always `field_ownership`),
@@ -551,8 +636,8 @@ never echoed. `resources/list` omits `annotations.priority`, because Codex's rmc
 decode a fractional number in that result (see the Codex integration runbook).
 
 Protocol reason
-`expected_frontier_required` marks a state-sensitive `publish_work` batch that omitted
-`expected_frontier` (or sent `null`). It names that field and is retryable because validation wrote
+`expected_frontier_required` marks a state-sensitive `publish_work` batch that sent
+`expected_frontier: null` (omitting it is guarded by the admission-time frontier, issue #1084). It names that field and is retryable because validation wrote
 no durable operation; the caller may reuse the same `request_id` with a corrected body. Here
 `retryable` describes whether safe recovery exists for the durable state reached, not whether the
 request bytes must remain unchanged. Its continuation is `frontier_held_required` (tb4n5, #1048):
@@ -602,7 +687,9 @@ Optional `dry_run: true` on `PublishWorkRequest` validates the full batch and re
 `outcome: "dry_run"` with `evidential: false` and a `would_accept` preview (event ids, schema
 identity, refs) plus coverage/gaps. It appends nothing, records no operation, does not consume
 `request_id`, and does not move the frontier — same non-citable discipline as
-`status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`.
+`status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`; an
+id-less dry run through the bridge or the CLI gets a fresh unbound id, and its minted event ids are
+never the commit's.
 `dry_run: null` is rejected; omit the field or pass a boolean.
 The coverage on an accepted internal success is derived from the authored envelope coverage and the
 resulting projection, so its diagnostic `known_gaps` are reporting output and must not be copied into
@@ -2331,6 +2418,21 @@ filtering, or resolution. The obligations row also returns `requested_items` and
 omission under a stricter client policy, while item kinds and attempt matching remain structural.
 Results returns only `result_id`, source event id, payload availability, outcome, linked action id,
 and evidence ids; it never returns result prose, command text, exit output, or subject-state content.
+Its optional filter (issue #1084) selects by the source event's accepted envelope only:
+`after_sequence` (ingestion sequence strictly after), `actor_id` (the asserted author), and
+`author: "mine"` (the same self-authorship rule as evidence). A status request's `limit` defaults to
+`"20"` when omitted, and `detail` selects `full` (the protocol default) or `brief`. A brief body
+(`status-result` 1.4.0 `brief_success`) is a strict subset of the full one: frontiers equal to
+`result_frontier`, projection metadata at their current defaults, an empty import status and an
+enforced credential filter are omitted; the compact view keeps `coverage` and `closure_readiness`
+and every other view carries `closure_state` (state, blocking conditions, agent-actionable tokens).
+It is built before the disclosure boundary, so the privacy projection and its commitment cover
+exactly the brief body. The MCP `status` tool asks for `brief` unless the agent names a `detail`;
+the CLI, hooks and the bridge's own recovery reads keep the full body. A publish operation page
+adds `server_filled` when the operation recorded one. The MCP text summary of a brief non-compact
+body renders `Closure: <state>.`, the `Agent-actionable:` tokens and the count-free directive (for
+`ready_with_limitations`, "Nothing further to do. Request the receipt.") from `closure_state`, and
+omits the counts a brief body does not carry instead of printing them as unavailable.
 Together with history's claim event/schema identity and candidate findings' bounded claim/result
 ids, this is the minimum public projection needed to author and dry-run a v1.1 replacement without
 reading raw ledger internals.
@@ -5695,9 +5797,13 @@ delivered no row within its budget) and old rows are read back under the new nam
 amendment of 2026-10-13). The FinishUP MCP bridge's rejection record (`record_rejected_finishup_call`,
 `observation/yoetz-rejected-calls.json`, schema `yoetz.rejected-calls/2`) holds per entry only
 `sha256("yoetz/rejected-call/v2", tool basename, session_id, writer_id, request_id)` (an absent
-or invalid session or writer commits as `-`), a millisecond time, and the opaque claimant digest
-of the one pending attempt that consumed it, 256 newest. A hook pre-event of a FinishUP tool keeps
-the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
+or invalid session or writer commits as `-`) or, for a `publish_work` whose arguments have no
+`request_id` key (issue #1084: the bridge mints that id after the host's pre-event),
+`sha256("finishup/rejected-call/body/v1", tool basename, session_id, writer_id,
+canonical_encode(arguments))` over the agent's own arguments (none when they have no canonical
+form; the served-read record keeps the `request_id` form only), a millisecond time, and the
+opaque claimant digest of the one pending attempt that consumed it, 256 newest. A hook pre-event
+of a FinishUP tool keeps the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
 Cursor adapters compute it from the host payload and pass it to the shared ingress as
 `_request_commitment`. `consume_rejected_finishup_call` claims an entry installation-wide under the
 record's lock and is idempotent for its claimant. On the Cursor host profile only, the bridge also
@@ -10496,8 +10602,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   blocker lines, from `task_facts.blocker_publication_notices(projection_with_batch,
   ((event_id, payload), ...))`. `blocker_claimed` is the challenge (repair first; a FinishUP limit is
   never a blocker, respond `self_verified`; recoverable data is not a blocker; only if still
-  genuine, confirm by repeating the line in a later publish) and, with the Stop re-check, the
-  only text that says how to confirm. `blocker_without_effect` marks a blocker naming no open
+  genuine, confirm by repeating the line in a later publish with a rationale that names what was
+  re-checked, since an unchanged id-less resend is refused as a possible retry) and, with the Stop
+  re-check, the only text that says how to confirm. `blocker_without_effect` marks a blocker naming no open
   obligation, including an id the task does not know: it changes no readiness, gap or finding (use `self_verified`, or
   `acknowledged_not_done` as a last resort). `mcp.summaries.render_publish_blocker_notices`
   renders the rows on the MCP text channel; structural pointers admit the four leaves.

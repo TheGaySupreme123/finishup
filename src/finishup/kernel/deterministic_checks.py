@@ -1096,8 +1096,14 @@ class FrozenHistoryEvent:
     payload_digest: str
     content_visibility: Literal["available", "not_recorded", "not_selected", "redacted_never_send"]
     payload: JsonValue | None
+    # Issue #1084 (review R7): ``service_clock`` when the publish that appended this event omitted
+    # ``occurred_at`` and the service recorded its own clock; ``None`` means caller-asserted (or a
+    # case frozen before the label existed). Derived from the appending operation's durable record.
+    occurred_at_source: Literal["service_clock"] | None = None
 
     def __post_init__(self) -> None:
+        if self.occurred_at_source not in {None, "service_clock"}:
+            raise _invalid_case()
         try:
             object.__setattr__(self, "event_id", event_id(self.event_id))
             schema = EventSchema(self.schema_name, self.schema_version)
@@ -1529,6 +1535,11 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
                         "occurred_at_consistency": item.occurred_at_consistency,
                     }
                 ),
+                **(
+                    {}
+                    if item.occurred_at_source is None
+                    else {"occurred_at_source": item.occurred_at_source}
+                ),
             }
             for item in case.history
         ],
@@ -1659,7 +1670,16 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
                 current_history_keys = legacy_history_keys | frozenset(
                     {"accepted_at", "occurred_at_consistency"}
                 )
-                if frozenset(item) not in {legacy_history_keys, current_history_keys}:
+                # Issue #1084 (review R7): a service-recorded event time is labelled.
+                labelled_history_keys = current_history_keys | frozenset({"occurred_at_source"})
+                if frozenset(item) not in {
+                    legacy_history_keys,
+                    current_history_keys,
+                    labelled_history_keys,
+                }:
+                    raise _invalid_case()
+                source_label = item.get("occurred_at_source")
+                if source_label is not None and source_label != "service_clock":
                     raise _invalid_case()
                 accepted_at = cast(str, item["accepted_at"]) if "accepted_at" in item else None
                 consistency = (
@@ -1693,6 +1713,9 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
                             item["content_visibility"],
                         ),
                         payload=item["payload"],
+                        occurred_at_source=(
+                            "service_clock" if source_label == "service_clock" else None
+                        ),
                     )
                 )
             history_availability = cast(
@@ -2012,8 +2035,12 @@ def build_deterministic_case(
     *,
     _projection_validated: bool = False,
     _replay_index: ReplayIndex | None = None,
+    service_clock_events: frozenset[str] = frozenset(),
 ) -> DeterministicCase:
     """Freeze one exact accepted prefix into the pure local-policy input.
+
+    ``service_clock_events`` names the events whose ``occurred_at`` the service recorded because
+    their publish omitted it (issue #1084, review R7); their frozen history rows say so.
 
     ``_projection_validated`` and ``_replay_index`` are internal trusted-snapshot seams. The
     SQLite/memory append path and exact-frontier application snapshot loader already validate the
@@ -2270,6 +2297,9 @@ def build_deterministic_case(
                 payload_digest=record.projection_locator.canonical_payload_digest,
                 content_visibility=visibility,
                 payload=history_payload,
+                occurred_at_source=(
+                    "service_clock" if str(record.event_id) in service_clock_events else None
+                ),
             )
         )
     history = tuple(reversed(newest_first))

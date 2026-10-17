@@ -103,6 +103,8 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "cursor",
         "described_state",
         "description",
+        # Issue #1084: the status detail level (``brief`` or ``full``).
+        "detail",
         "diff_digest",
         "digest_binding",
         "display_name",
@@ -293,8 +295,8 @@ _CHECK_SCOPE_CORRECTION: Final = (
 )
 _STATUS_FILTER_CORRECTION: Final = (
     "filter is admitted only with view assignment, candidate_findings, evidence, findings, "
-    "history, obligations, or operation; omit filter for advice, compact, lineage, project, "
-    "results, and versions"
+    "history, obligations, operation, or results; omit filter for advice, compact, lineage, "
+    "project, and versions"
 )
 _CORRECTIVE_HINTS: Final[Mapping[tuple[str, str, str], tuple[str, tuple[str, ...]]]] = (
     MappingProxyType(
@@ -895,6 +897,21 @@ def _event_draft_hint_parts(
     )
     if required:
         text = f"each event_drafts entry requires {required}"
+        # Issue #1084: name the envelope keys the service fills when a draft omits them, read
+        # from the same frozen schema, so a corrected draft never re-adds clerical values.
+        optional = _format_required_list(
+            sorted(
+                (
+                    name
+                    for name in cast(Mapping[str, JsonValue], item_properties)
+                    if name not in cast(Sequence[object], node.get("required") or ())
+                ),
+                key=str.encode,
+            ),
+            cast(Mapping[str, JsonValue], item_properties),
+        )
+        if optional:
+            text += f"; the service fills {optional} when omitted"
         parts.append((text, (text, "")))
     admitted = _union_schema_names(document, node)
     if admitted:

@@ -117,8 +117,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # 2.0.0 provider contract, and its golden-vector case; +1: the advice egress/category-denial
 # canonical vector (#1019). ADR-049: +1 schema decision-recorded 1.1.0, +1 canonical
 # review-mode vectors (CAN-020). n6 item 4: +2 schemas (check-result 1.5.0,
-# check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021).
-REVIEWED_RESOURCE_COUNT: Final = 315
+# check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021). #1084: +1
+# canonical server-filled publish and brief status vectors (CAN-022).
+REVIEWED_RESOURCE_COUNT: Final = 316
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

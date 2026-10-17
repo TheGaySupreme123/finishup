@@ -158,6 +158,7 @@ from finishup.protocol.models import (
     StatusRequest,
     StatusResult,
 )
+from finishup.protocol.publish_boilerplate import server_filled_from_json
 from finishup.protocol.recovery import READ_ONLY_CHECK_MODES
 from finishup.protocol.schemas import use_full_schema_catalog
 from finishup.service.check_waits import EXPLICIT_CONTROL_CANCEL, CheckReadWindow, CheckWaits
@@ -511,6 +512,12 @@ def _publish_accepted_projection_unavailable(
                     ),
                     accepted=root.accepted_events,
                     correlation_id=correlation_id,
+                    # Issue #1084: keep the reported operation's structural provenance.
+                    server_filled=(
+                        None
+                        if root.server_filled is None
+                        else server_filled_from_json(root.server_filled.model_dump(mode="json"))
+                    ),
                 )
             # Dry-run previews never append; there is nothing to reduce to an acceptance envelope.
             if type(root) is PublishWorkDryRunModel:

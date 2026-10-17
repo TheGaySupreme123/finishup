@@ -13,6 +13,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
+from builders.publish_identity import bridge_bound
 from finishup.mcp import advertisement, descriptors
 from finishup.mcp.advertisement import ADVERTISED_INPUT_SCHEMA_MAX_BYTES, compact_input_schema
 from finishup.mcp.descriptors import TOOL_DESCRIPTORS, McpRouteProfile, descriptor_for
@@ -207,13 +208,13 @@ def test_publish_examples_remain_strictly_validated_after_advertisement() -> Non
     descriptor = descriptor_for("publish_work")
     examples = cast(list[dict[str, Any]], descriptor.input_schema["examples"])
     for example in examples:
-        PublishWorkRequest.model_validate(example)
+        PublishWorkRequest.model_validate(bridge_bound(example))
     invalid = deepcopy(examples[0])
     invalid["event_drafts"][0]["payload"]["invented_payload_field"] = True
     # Advertisement intentionally accepts an open payload; actual dispatch must not use it.
     cast(Any, Draft202012Validator(cast(Any, descriptor.advertised_input_schema))).validate(invalid)
     with pytest.raises(ValidationError):
-        PublishWorkRequest.model_validate(invalid)
+        PublishWorkRequest.model_validate(bridge_bound(invalid))
     validator = cast(Any, Draft202012Validator(cast(Any, descriptor.catalog_input_schema)))
     assert not validator.is_valid(invalid)
     invalid["dry_run"] = True  # No operation-recovery lookup or service access is needed.

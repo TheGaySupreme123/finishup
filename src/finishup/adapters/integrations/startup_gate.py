@@ -317,11 +317,21 @@ def accepted_publication(
         for row in rows
         if isinstance(row, dict) and isinstance(row.get("event_id"), str)
     }
-    for draft in drafts:
-        if not isinstance(draft, dict) or draft.get("event_id") not in accepted:
+    for position, draft in enumerate(drafts):
+        if not isinstance(draft, dict):
             scope.plan_generation = None
             return
-        row = accepted[cast(str, draft["event_id"])]
+        # Issue #1084: a draft may omit ``event_id``; the service minted it, and accepted events
+        # are returned in draft order, so the row at the same position names it.
+        event_id_value: object = draft.get("event_id")
+        if event_id_value is None and len(rows) == len(drafts):
+            positional = rows[position]
+            event_id_value = positional.get("event_id") if isinstance(positional, dict) else None
+        if not isinstance(event_id_value, str) or event_id_value not in accepted:
+            scope.plan_generation = None
+            return
+        draft_event_id = event_id_value
+        row = accepted[draft_event_id]
         schema, payload = draft.get("schema"), draft.get("payload")
         if not isinstance(schema, dict) or not isinstance(payload, dict):
             scope.plan_generation = None
@@ -344,7 +354,7 @@ def accepted_publication(
             scope.required_refs = sorted(required)
         if name not in {"plan_published", "plan_revised"}:
             continue
-        if draft["event_id"] == scope.plan_id and scope.plan_generation != scope.generation:
+        if draft_event_id == scope.plan_id and scope.plan_generation != scope.generation:
             # Wall clocks can share a millisecond (or move backwards). An
             # idempotent replay of the previous plan is not a new scope.
             scope.plan_generation = None
@@ -394,5 +404,5 @@ def accepted_publication(
                     refs.add(obligation)
             scope.plan_refs = sorted(refs)
         scope.plan_version = version
-        scope.plan_id = cast(str, draft["event_id"])
+        scope.plan_id = draft_event_id
         scope.plan_generation = scope.generation

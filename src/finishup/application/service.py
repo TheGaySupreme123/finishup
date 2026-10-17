@@ -153,6 +153,7 @@ from finishup.protocol.models import (
     StartResult,
     StartResultModel,
     StartSuccessModel,
+    StatusBriefSuccessModel,
     StatusRequest,
     StatusResult,
     StatusResultModel,
@@ -841,12 +842,16 @@ def _public_model(method: ControlMethod, value: Mapping[str, JsonValue]) -> Proj
         if value.get("state") == "inspected"
         else CheckSuccessModel
     )
+    # Issue #1084: a ``detail: brief`` status body is its own closed subset shape.
+    status_success: type[BaseModel] = (
+        StatusBriefSuccessModel if value.get("detail") == "brief" else StatusSuccessModel
+    )
     model: tuple[type[BaseModel], type[BaseModel]] | None = {
         ControlMethod.START: (StartSuccessModel, StartResultModel),
         ControlMethod.PUBLISH_WORK: (PublishWorkSuccessModel, PublishWorkResultModel),
         ControlMethod.CHECK: (check_success, CheckResultModel),
         ControlMethod.RESPOND: (RespondSuccessModel, RespondResultModel),
-        ControlMethod.STATUS: (StatusSuccessModel, StatusResultModel),
+        ControlMethod.STATUS: (status_success, StatusResultModel),
         ControlMethod.RECEIPT: (ReceiptSuccessModel, ReceiptResultModel),
     }.get(method)
     if model is None:

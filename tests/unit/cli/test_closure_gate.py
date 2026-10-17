@@ -620,6 +620,8 @@ def test_unconfirmed_blocker_token_gates_and_confirms_only_in_the_recheck() -> N
     recheck = gate.text.index("Blocker re-check (asked once)")
     assert gate.text.count("same finishup-blocker line again") == 1
     assert gate.text.index("same finishup-blocker line again") > recheck
+    # The confirmation differs from the claim: the bridge refuses an unchanged id-less resend.
+    assert "with a rationale naming your re-check; then stop." in gate.text[recheck:]
     # An obligation is never `self_verified`: the re-check says to finish it and disclose.
     assert "self_verified" not in gate.text[recheck:]
     assert "finish the obligation and disclose any limit in your final answer" in gate.text
@@ -639,6 +641,7 @@ def test_unconfirmed_blocker_already_rechecked_says_how_to_confirm() -> None:
     assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN,)
     assert "You were already asked about your recorded blocker" in gate.text
     assert "same finishup-blocker line again" in gate.text
+    assert "with a rationale naming your re-check" in gate.text
 
 
 def test_full_recheck_never_offers_self_verified_for_an_obligation() -> None:

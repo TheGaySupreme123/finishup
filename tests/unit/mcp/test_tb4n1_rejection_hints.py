@@ -312,13 +312,27 @@ def test_status_frontier_with_digest_says_sequence_only() -> None:
     assert "at_frontier is a ledger sequence alone" in message
 
 
-@pytest.mark.parametrize("view", ["results", "lineage", "compact"])
+@pytest.mark.parametrize("view", ["lineage", "compact"])
 def test_status_filter_beside_a_filterless_view_names_filter(view: str) -> None:
-    """sglang-qwen-burst__rnWf5WV, lake-temp-glm__9kxaSRp: filter with view results."""
+    """sglang-qwen-burst__rnWf5WV, lake-temp-glm__9kxaSRp: a filter beside a filterless view."""
 
     locations, message = _status({"view": view, "limit": "20", "filter": {"actor_id": "codex"}})
     assert locations == ({"field": "/filter", "reason": "extra_forbidden"},)
-    assert "omit filter for advice, compact, lineage, project, results, and versions" in message
+    assert "omit filter for advice, compact, lineage, project, and versions" in message
+
+
+@pytest.mark.parametrize(
+    "status_filter",
+    [{"actor_id": "codex"}, {"after_sequence": "618"}, {"author": "mine"}],
+)
+def test_status_results_admits_the_filters_agents_sent(status_filter: dict[str, str]) -> None:
+    """Issue #1084: N6 agents sent these with view results 13 times; each is now a real filter."""
+
+    request = StatusRequest.model_validate(
+        {**_IDENTITY, "view": "results", "filter": status_filter}
+    )
+    assert request.filter is not None
+    assert request.limit == "20"
 
 
 def test_status_filter_sentence_matches_the_routed_views() -> None:

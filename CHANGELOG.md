@@ -351,6 +351,16 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   large data file sends its first and last lines; duplicate captured edits give their room to the
   latest verification output; and an agent's digest of output FinishUP already captured now reaches
   that output.
+- **Agents write each fact once.** A `publish_work` request may leave out its request id, its
+  frontier, and each event's id, time, empty lists and repeated references. The MCP tool and
+  `finishup publish-work` give each call its own request id and name it in every answer: retry a
+  lost answer by sending that id, while a deliberate repeat is a new record (an identical id-less
+  resend right after the same call is refused and names the earlier id). FinishUP guards an omitted frontier with the one it reads when it takes
+  the request, orders reference-set lists (never text lists), marks a time it filled in history and
+  review inputs, and names every other filled field in the result's `server_filled` and in the
+  operation record. A request that sends every value behaves exactly as before. Agent `status` reads are
+  brief by default; `detail: full` returns the complete body, `limit` defaults to 20, and
+  `view=results` accepts the filters agents already sent it (#1084, ADR-050).
 
 - **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
   advice packet to your configured reviewer where every task uses AI-powered review and your

@@ -745,9 +745,13 @@ Decision:
   where observation was already set up. A call is its operation scope, not its `request_id`
   alone (replay identity is task, writer and request): the commitment is
   `sha256(domain, tool basename, FinishUP session_id, writer_id, request_id)`, an absent or invalid
-  session or writer committing as a fixed placeholder. A hook pre-event of a FinishUP tool keeps the
-  same commitment on its pending attempt; every host adapter computes it from the payload the host
-  sent (Codex directly; Claude Code and Cursor before their structural normalization drops
+  session or writer committing as a fixed placeholder. A `publish_work` with no `request_id` key
+  (the default shape since ADR-050; the bridge mints its id after the host's pre-event) commits
+  instead to `sha256(body domain, tool basename, session_id, writer_id, canonical arguments)` under
+  a separate domain (amendment of PR #1088 round 3); identical id-less bodies share it, and each
+  rejection still closes only the oldest matching attempt received before it. A hook pre-event of
+  a FinishUP tool keeps the same commitment on its pending attempt; every host adapter computes it
+  from the payload the host sent (Codex directly; Claude Code and Cursor before their structural normalization drops
   `tool_input`, passing only the commitment on), so it works on every paired profile. An
   oversized hook body whose skim kept no `tool_input` commits to nothing and keeps the ordinary
   expiry.

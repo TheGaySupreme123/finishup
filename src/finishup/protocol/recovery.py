@@ -108,6 +108,9 @@ _SEMANTIC_COVERAGE: Final = (
 _PUBLICATION_RECOVERY: Final = (
     "finishup://guidance/publication-policy.md#operation-specific-recovery-and-templates"
 )
+_PUBLICATION_SERVICE_FILLED: Final = (
+    "finishup://guidance/publication-policy.md#service-filled-values"
+)
 
 _DIRECTIVES: Final = (
     RecoveryDirective(
@@ -247,12 +250,29 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="frontier_held_required",
         directive=(
-            "This batch sent no expected_frontier, so nothing was written. Send the frontier you "
-            "hold: the one start returned for a first plan, else your last accepted write's "
+            "Null expected_frontier: nothing written. Omit it (guarded at admission) or send the "
+            "one you hold: start returned it for a first plan, else your last accepted write's "
             "result_frontier. Retry with this same request_id."
         ),
         guidance_uri=_PUBLICATION_RECOVERY,
         nudge="Read status for a frontier only when you hold none.",
+    ),
+    # Issue #1084 (ADR-050 decision 2): an id-less publish never resumes an earlier call by its
+    # content. An identical id-less resend of the writer's previous, possibly committed call is
+    # refused so the caller decides what it is. A result the caller saw succeed is recorded, so a
+    # deliberate repeat changes the body or sends a new id; only an unseen outcome is retried.
+    RecoveryDirective(
+        token="publish_identity_choice",
+        directive=(
+            "Nothing was sent: this body repeats your previous id-less publish_work. If you saw "
+            "it succeed, it is recorded; to publish again, change the body or send a fresh "
+            "request_id. Otherwise retry it: send replay_request_id as request_id."
+        ),
+        guidance_uri=_PUBLICATION_SERVICE_FILLED,
+        nudge=(
+            "A fresh request_id is req_ plus a new lowercase UUIDv4. An id-less resend is never "
+            "a retry."
+        ),
     ),
     RecoveryDirective(
         token="session_rebind_required",

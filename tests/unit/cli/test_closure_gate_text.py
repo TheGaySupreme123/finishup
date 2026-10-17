@@ -157,6 +157,7 @@ def test_open_obligations_keep_the_blocker_sentence_but_never_the_confirmation(
     # line twice up front must never skip it (#985).
     assert "same finishup-blocker line again" not in text
     assert "same line again" not in text
+    assert "rationale naming your re-check" not in text
     assert "A FinishUP limit is never a `finishup-blocker`" in text
     if "receipt-blocking" in remaining:
         assert "`self_verified`" in text
@@ -260,6 +261,8 @@ def test_worst_case_text_stays_within_the_host_bound_and_keeps_the_recheck(
     if rows:
         assert "Blocker re-check (asked once)" in gate.text
         assert "same finishup-blocker line again" in gate.text
+        # PR #1088 round 3: the confirm instruction keeps the changed-body clause at the bound.
+        assert "with a rationale naming your re-check; then stop." in gate.text
         if rows > 3:
             assert f"and {rows - 3} more" in gate.text
 

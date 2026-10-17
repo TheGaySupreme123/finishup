@@ -8,6 +8,8 @@ from typing import Final
 from finishup.mcp.descriptors import (
     CLAUDE_CODE_INITIALIZE_INSTRUCTIONS,
     COMPACT_INITIALIZE_INSTRUCTIONS,
+    McpHostProfile,
+    server_instructions,
 )
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
@@ -35,6 +37,37 @@ def test_initialize_plus_host_skill_fits_the_mandatory_8kib_budget() -> None:
         assert total <= _BUDGET_BYTES, (
             f"{host} mandatory host surface is {total} bytes; budget is {_BUDGET_BYTES} bytes"
         )
+
+
+# The host profile whose initialize block each skill is served beside. The portable skill rides the
+# compact block the Codex and Cursor profiles share.
+_SERVED_PROFILE: Final[dict[str, McpHostProfile]] = {
+    "claude-code": "claude",
+    "codex": "codex",
+    "cursor": "cursor",
+    "portable": "codex",
+}
+
+
+def test_the_served_startup_surface_with_its_route_tail_fits_the_budget() -> None:
+    """Review R8 of PR #1088: count the initialize block exactly as it is served.
+
+    ``server_instructions`` appends a mandatory route line to the packaged body on every route,
+    and the strict route's line is the longer one. The budget holds for both routes on every host,
+    without the optional AI-powered-review destination disclosure, which keeps its own separate
+    allowance (ADR-043).
+    """
+
+    core_bytes = len(_MANDATORY_CORE.read_bytes())
+    for host, (skill_path, _kind) in _HOST_SKILLS.items():
+        skill_bytes = len(skill_path.read_bytes())
+        for route in ("policy", "strict"):
+            served = server_instructions(route, host_profile=_SERVED_PROFILE[host])
+            total = core_bytes + skill_bytes + len(served.encode("utf-8"))
+            assert total <= _BUDGET_BYTES, (
+                f"{host} {route} served startup surface is {total} bytes; "
+                f"budget is {_BUDGET_BYTES} bytes"
+            )
 
 
 def test_only_the_compact_core_is_mandatory_before_start() -> None:

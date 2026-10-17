@@ -456,23 +456,17 @@ def _example_draft(
     payload: dict[str, JsonValue],
     *,
     version: str = "1.0.0",
-    evidence_refs: list[JsonValue] | None = None,
 ) -> dict[str, JsonValue]:
-    """One minimal valid draft envelope for a family, so agents copy shape rather than guess it.
+    """One minimal valid draft for a family, so agents copy shape rather than guess it.
 
-    ``occurred_at`` is intentionally a fixed illustrative placeholder. Live drafts must use the
-    best real caller-asserted event time; service acceptance time is stamped separately.
+    Issue #1084: only ``schema`` and ``payload``. The service mints ``event_id``, records its own
+    clock as ``occurred_at``, copies the payload mirrors and defaults ``causal_parents``, and the
+    result's ``server_filled`` names each, so an example never models hand-written boilerplate.
+    ``seed`` is kept so each example's ids stay stable.
     """
 
-    return {
-        "event_id": _example_id("event", seed),
-        "schema": {"name": family, "version": version},
-        "occurred_at": _EXAMPLE_OCCURRED_AT,
-        "causal_parents": [],
-        "payload": payload,
-        "artifact_refs": [],
-        "evidence_refs": [] if evidence_refs is None else evidence_refs,
-    }
+    del seed
+    return {"schema": {"name": family, "version": version}, "payload": payload}
 
 
 _EXAMPLE_ACTOR: Final[dict[str, JsonValue]] = {
@@ -497,10 +491,8 @@ def _lifecycle_example(ordinal: int, family: str) -> dict[str, JsonValue]:
     return {
         "protocol_version": "0.1",
         "schema_version": "1.0.0",
-        "request_id": _example_id("request", ordinal),
         "session_id": _example_id("session", 1),
         "writer_id": _example_id("writer", 1),
-        "expected_frontier": {"sequence": "1", "head_digest": _EXAMPLE_HEAD_DIGEST},
         "event_drafts": [_example_draft(ordinal, family, payload)],
         "actor": dict(_EXAMPLE_ACTOR),
         "client": dict(_EXAMPLE_CLIENT),
@@ -631,10 +623,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 3),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
                 "event_drafts": [
                     _example_draft(
                         1,
@@ -653,10 +643,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 4),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "1", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         2,
@@ -696,10 +684,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 5),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "4", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         5,
@@ -766,10 +752,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 6),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "8", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         9,
@@ -796,10 +780,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 10),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         10,
@@ -856,10 +838,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 13),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         13,
@@ -885,10 +865,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 14),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         14,
@@ -922,10 +900,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 50),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "1", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         50,
@@ -939,7 +915,6 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
                             "disposition": "shared_work",
                             "evidence_refs": [_example_id("evidence", 1)],
                         },
-                        evidence_refs=[_example_id("evidence", 1)],
                     )
                 ],
                 "actor": dict(_EXAMPLE_ACTOR),
@@ -948,10 +923,8 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
             {
                 "protocol_version": "0.1",
                 "schema_version": "1.0.0",
-                "request_id": _example_id("request", 51),
                 "session_id": _example_id("session", 1),
                 "writer_id": _example_id("writer", 1),
-                "expected_frontier": {"sequence": "1", "head_digest": _EXAMPLE_HEAD_DIGEST},
                 "event_drafts": [
                     _example_draft(
                         51,
@@ -1365,7 +1338,13 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
 
     request_id = properties.get("request_id")
     if isinstance(request_id, dict):
-        request_id["description"] = "Use a fresh req_ prefixed random UUID for each request."
+        request_id["description"] = (
+            # Issue #1084 (ADR-050 decision 2): the bridge mints one per id-less publish call.
+            "Optional: omit it and FinishUP mints one for this call and names it in the result. "
+            "After an unknown outcome, retry by sending that id; an id-less resend is not a retry."
+            if name == "publish-work-request"
+            else "Use a fresh req_ prefixed random UUID for each request."
+        )
 
     expected_frontier = properties.get("expected_frontier")
     if isinstance(expected_frontier, dict):
@@ -1377,6 +1356,13 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
             "write's result_frontier (later hook observations are tolerated). Read status only "
             "when you hold none or after frontier_changed."
         )
+        if name == "publish-work-request":
+            # Issue #1084: omission is guarded by the frontier the service reads at admission.
+            expected_frontier["description"] = (
+                cast(str, expected_frontier["description"])
+                + " Or omit it: the service guards the batch with the frontier it reads on "
+                "admission. Send yours when the batch rests on what you read."
+            )
 
     if name == "start-request":
         mode = properties.get("mode")
@@ -1386,14 +1372,21 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "session_id."
             )
     elif name == "publish-work-request":
+        # Issue #1084 (ADR-050 decision 2): an agent may omit request_id; the bridge mints and
+        # binds one per call before the service, which still requires it, sees the body.
+        required = schema.get("required")
+        if not isinstance(required, list):
+            raise RuntimeError("mcp_schema_invalid")
+        schema["required"] = [item for item in required if item != "request_id"]
         event_drafts = properties.get("event_drafts")
         if not isinstance(event_drafts, dict):
             raise RuntimeError("mcp_event_draft_projection_invalid")
         event_drafts["description"] = (
             "Send one bounded batch per material transition. Each schema.name selects the "
-            "payload shape. Every reference list in the envelope and payload must already be "
-            "unique and in ascending ASCII order; a kernel rejection names unsorted_set_field "
-            "at the owning field. A one-element dry_run subset cannot demonstrate that rule."
+            "payload shape. Omit event_id, occurred_at, causal_parents, artifact_refs and "
+            "evidence_refs unless you need a value: the service mints the id, records its clock, "
+            "copies the payload mirrors and names each in server_filled. It sorts and "
+            "de-duplicates reference-set fields; text lists are kept as sent."
         )
         items = event_drafts.get("items")
         if not isinstance(items, dict):
@@ -1865,11 +1858,23 @@ class ToolDescriptor:
 
     @property
     def catalog_input_schema(self) -> Mapping[str, JsonValue]:
-        """Full catalog-bundled input schema (admission dual-surface; not tools/list)."""
+        """Full catalog-bundled input schema (admission dual-surface; not tools/list).
 
-        return _mcp_schema(
+        Issue #1084 (ADR-050 decision 2): ``publish_work`` admits an agent body without
+        ``request_id``; the bridge mints and binds one before the service, whose protocol schema
+        still requires it, sees the body. Every other constraint is the protocol schema's.
+        """
+
+        schema = _mcp_schema(
             f"{self.name.replace('_', '-')}-request", _tool_input_schema_version(self.name)
         )
+        if self.name != "publish_work":
+            return schema
+        admitted = dict(schema)
+        admitted["required"] = [
+            item for item in cast(list[JsonValue], schema["required"]) if item != "request_id"
+        ]
+        return MappingProxyType(admitted)
 
 
 def _descriptor(
@@ -1950,8 +1955,12 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "native captures. Put feedback and requested delivery in the effective "
         "plan via a revision. Accepted records are assertions, not repair proof. "
         "Previews or appends asserted work to the local FinishUP ledger. It does not publish to GitHub "
-        "or run an AI-powered evaluation. Set-valued lists must be unique and already in "
-        "ascending ASCII order; rejection names unsorted_set_field. attempted_items belongs only on the "
+        "or run an AI-powered evaluation. Omit request_id, expected_frontier and each draft's "
+        "event_id, occurred_at, empty lists and mirrored refs: FinishUP mints the call's id, "
+        "guards the batch with the frontier it reads on admission, and names the filled values in "
+        "server_filled. Every result names the call's request_id: retry an unknown outcome by "
+        "sending it; an id-less resend is never a retry. "
+        "Reference sets are sorted and de-duplicated for you. attempted_items belongs only on the "
         "action_recorded payload; copy each requested_items value exactly and never place it on "
         "claim_recorded. decision_recorded.authority is a structural actor id, not approval prose; "
         "decision_recorded 1.1.0 review_mode ai_powered or local switches this task's review "
@@ -1962,9 +1971,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "Completion requires explicit obligation_refs; [] cannot carry obligation support. "
         "An accepted empty-scope target can be superseded with explicit empty or populated scope. "
         "Dry-run checks references, outcome, scope, replacement, and limitation linkage; author "
-        "corrections from candidate_findings, history, and results. occurred_at is caller-asserted "
-        "RFC 3339 UTC time with milliseconds; do not copy the illustrative example timestamp. Ledger order uses "
-        "ingestion sequence. Service accepted_at is independent; receipt freshness is frontier-bound. "
+        "corrections from candidate_findings, history, and results. An occurred_at you send is "
+        "caller-asserted RFC 3339 UTC time with milliseconds; do not copy the illustrative example "
+        "timestamp, and never run date for one. Ledger order uses ingestion sequence. Service "
+        "accepted_at is independent; receipt freshness is frontier-bound. "
         "Dry-run previews are not evidence. Read status "
         "view=obligations for exact unattempted_items before resolution; after publishing repair, "
         "claim and evidence, disposition older findings, call check, respond, then call receipt "
@@ -2089,9 +2099,13 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "candidate_findings, compact, evidence, findings, history, lineage, obligations, operation, "
         "project, results, and versions. Lineage is a live preview; parent receipts use recorded "
         "child manifests. Project shows generation-bound membership and coordination. "
-        "History pairs caller-asserted occurred_at beside the service-stamped "
+        "History pairs occurred_at (caller-asserted, or the service clock where a publish omitted "
+        "it: occurred_at_source service_clock) beside the service-stamped "
         "accepted_at; forward-skew classification compares clocks, not truth, and order follows "
-        "ingestion sequence. view=operation with filter.operation_request_id recovers the stored "
+        "ingestion sequence. A result is detail brief (one frontier, the page, closure_state; "
+        "compact keeps closure_readiness) unless you send detail full; limit defaults to 20; "
+        "view=results filters by after_sequence, actor_id or author mine. "
+        "view=operation with filter.operation_request_id recovers the stored "
         "outcome without resending the body; for a running or finished check it adds structural "
         "semantic_progress (phase, elapsed time, deadline). Before evidence or completion claims, "
         "cite IDs you published (view=evidence filter.author=mine); find native captures with "
@@ -2220,10 +2234,10 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "policy": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
+                "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
                 "check": "sha256:d1c5018a531b794062485d475432f89902ca81fa598b1e992a8a158cd5ff1632",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
-                "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
+                "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
@@ -2232,10 +2246,10 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "strict": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
+                "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
                 "check": "sha256:4374e8f3ddb53fa9bf07c6de45dca86a689d37ae70b5d4c0a55ad96750a426e4",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
-                "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
+                "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
@@ -2245,8 +2259,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:c143ab8edbcc88c3f440730f956eb4c570953862e0bece5797394fb62429e534",
-        "strict": "sha256:3c172d0ab8c8977bdbcd4d3f998aafb59a646c2db553a6eb70b73402b1b42a5e",
+        "policy": "sha256:73febdec57969d915948bfed2ffed6cfc8e8de96182127f420921461db22da84",
+        "strict": "sha256:b17a0c6544e3efc3ba895fe31108ccafb739ef21f7b78d8280e9bc5dc8ae9ed6",
     }
 )
 

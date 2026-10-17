@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Final, Literal, Protocol, TypedDict, cast
+from typing import Any, Final, Literal, Protocol, TypedDict, cast
 
 from finishup.application.ledger_snapshot import replay_off_loop, trusted_projection_at
 from finishup.application.unit_of_work import (
@@ -146,6 +146,7 @@ from finishup.protocol.models import (
     PublishWorkRequestModel,
     PublishWorkResult,
     PublishWorkResultModel,
+    PublishWorkServerFilledModel,
     PublishWorkVersionSliceModel,
     RecordedVersionSlicePackWire,
 )
@@ -153,6 +154,13 @@ from finishup.protocol.policy_packs import (
     RESEARCH_EVIDENCE_POLICY_ID,
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
+)
+from finishup.protocol.publish_boilerplate import (
+    DraftMintScope,
+    ServerFilled,
+    ServerFilledDraft,
+    complete_draft_envelope,
+    server_filled_from_json,
 )
 
 __all__ = [
@@ -242,6 +250,8 @@ class _PreparedDraft:
     draft: EventDraft
     payload_bytes: bytes
     projection_status: Literal["projected", "unknown_unprojected"]
+    # Issue #1084: the envelope fields the service filled for this draft, in canonical order.
+    filled: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +262,8 @@ class PreparedPublication:
     author: Actor
     coverage: Coverage
     drafts: tuple[_PreparedDraft, ...]
+    # Issue #1084: every value the service filled for this request; empty for a complete body.
+    server_filled: ServerFilled = ServerFilled((), ())
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +290,9 @@ class PublishWorkInternalResult:
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] = ()
     # tb4n5 follow-up: fixed notices for actions no result names yet; empty means absent.
     action_notices: tuple[PublishWorkActionNoticeModel, ...] = ()
+    # Issue #1084: the values the service filled for the operation this result reports (on a
+    # replay, the committed operation's stored record); empty means absent.
+    server_filled: ServerFilled = ServerFilled((), ())
 
     def as_json(self) -> dict[str, JsonValue]:
         """Serialize the closed internal result without materializing absent optional leaves."""
@@ -319,6 +334,9 @@ class PublishWorkInternalResult:
             body["action_notices"] = tuple(
                 cast(JsonValue, item.model_dump(mode="json")) for item in self.action_notices
             )
+        if not self.server_filled.empty:
+            # Absent when the caller sent every fillable value (an unchanged earlier body).
+            body["server_filled"] = self.server_filled.as_json()
         return body
 
 
@@ -570,12 +588,15 @@ def _event_invalid(
     # frontier is fixed with the one the caller already holds (tb4n5, #1048): every write returns
     # it, and the first plan uses the frontier start returned.
     if reason_code == "expected_frontier_required":
+        # Issue #1084: only an explicit null reaches here; omitting the field is guarded by the
+        # frontier the service reads at admission.
         message = (
-            "The event batch is invalid. State-sensitive event families require "
-            "expected_frontier (not null). Send the frontier you already hold: the frontier "
-            "start returned for your first plan, otherwise the result_frontier of your last "
-            "accepted write; read status only if you hold none. Retry idempotently with the "
-            "same request_id and expected_frontier set."
+            "The event batch is invalid. State-sensitive event families do not accept "
+            "expected_frontier null. Omit the field (the service then guards the batch with the "
+            "frontier it reads when it admits it), or send the frontier you already hold: the "
+            "frontier start returned for your first plan, otherwise the result_frontier of your "
+            "last accepted write; read status only if you hold none. Retry idempotently with the "
+            "same request_id."
         )
     elif reason_code == "frontier_changed":
         message = (
@@ -659,10 +680,32 @@ def _reason_code_of(exc: BaseException, fallback: str = "invalid_event_value_typ
     return reason if reason in PROTOCOL_REASON_CODES else fallback
 
 
-def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
+@dataclass(frozen=True, slots=True)
+class _DraftCompletion:
+    """What the service needs to fill a draft's omitted envelope values (issue #1084).
+
+    ``scope`` is ``None`` only for a caller that prepares a batch outside a task (a test of the
+    decoder); such a batch cannot have an ``event_id`` minted and is refused if it omits one.
+    """
+
+    scope: DraftMintScope | None
+    occurred_at: str
+
+
+def _decode_draft(
+    value: JsonValue, event_index: int, completion: _DraftCompletion | None = None
+) -> _PreparedDraft:
     """Decode one draft, attributing any rejection to that draft and its owning field."""
 
     source = _mapping(value)
+    filled: tuple[str, ...] = ()
+    if completion is not None:
+        source, filled = complete_draft_envelope(
+            source,
+            scope=completion.scope,
+            index=event_index,
+            occurred_at=completion.occurred_at,
+        )
     # The declared family selects a family-specific corrective hint (issue #1023: without it the
     # obligation-version hint was unreachable and every rejection read as a generic one).
     declared_family = _declared_schema_name(value)
@@ -723,7 +766,7 @@ def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
             ),
         ),
     )
-    return _PreparedDraft(draft, canonical_encode(payload_json), projection_status)
+    return _PreparedDraft(draft, canonical_encode(payload_json), projection_status, filled)
 
 
 def _validate_admission(
@@ -782,9 +825,17 @@ def _validate_admission(
                     subfield="payload",
                     payload_field="digest_binding",
                 )
-    if request.expected_frontier is None and any(
-        item.draft.schema in PAYLOAD_TYPES and item.draft.schema.name in _STATE_SENSITIVE_FAMILIES
-        for item in drafts
+    # Issue #1084: an omitted frontier is guarded by the frontier the service reads at admission,
+    # so only an explicit ``null`` (the earlier way to say "no frontier") still needs one for a
+    # state-sensitive batch.
+    if (
+        request.expected_frontier is None
+        and not request.expected_frontier_omitted
+        and any(
+            item.draft.schema in PAYLOAD_TYPES
+            and item.draft.schema.name in _STATE_SENSITIVE_FAMILIES
+            for item in drafts
+        )
     ):
         raise _event_invalid("expected_frontier_required", retryable=True)
 
@@ -813,15 +864,34 @@ def prepare_publication(
     *,
     channel: PublicationChannel,
     app: Application,
+    occurred_at: str | None = None,
+    task_id: str | None = None,
 ) -> PreparedPublication:
-    """Decode, normalize, authorize, and cross-check one bounded batch."""
+    """Decode, normalize, authorize, and cross-check one bounded batch.
+
+    ``occurred_at`` is the service clock reading recorded for any draft that omitted its own
+    (issue #1084); it is read from ``app.clock`` when the caller does not pass the one reading it
+    took for the whole operation. ``task_id`` completes the operation scope an omitted draft
+    ``event_id`` is minted from (task, writer, request, position, preview or commit).
+    """
 
     if not 1 <= len(request.event_drafts) <= MAX_EVENTS_PER_BATCH:
         raise _error(PublicErrorCode.INVALID_REQUEST, "The event batch size is invalid.")
+    if occurred_at is None and any(
+        isinstance(value, Mapping) and "occurred_at" not in value for value in request.event_drafts
+    ):
+        occurred_at = timestamp_from_datetime(app.clock.now_utc()).wire
+    # A complete body never reads the clock: every draft keeps its own caller-asserted time.
+    scope = (
+        None
+        if task_id is None
+        else DraftMintScope(task_id, request.writer_id, request.request_id, request.dry_run is True)
+    )
+    completion = _DraftCompletion(scope, occurred_at or "")
     decoded: list[_PreparedDraft] = []
     for index, value in enumerate(request.event_drafts):
         try:
-            decoded.append(_decode_draft(value, index))
+            decoded.append(_decode_draft(value, index, completion))
         except PublicOperationError:
             raise
         except (TypeError, ValueError) as exc:
@@ -851,7 +921,23 @@ def prepare_publication(
         ActorType(request.actor.actor_type.value),
         coverage.authorship_assurance,
     )
-    return PreparedPublication(channel, author, coverage, drafts)
+    return PreparedPublication(channel, author, coverage, drafts, _server_filled(request, drafts))
+
+
+def _server_filled(
+    request: PublishWorkRequestModel, drafts: tuple[_PreparedDraft, ...]
+) -> ServerFilled:
+    """Name every value the service supplied for this request (issue #1084)."""
+
+    request_fields = ("expected_frontier",) if request.expected_frontier_omitted else ()
+    return ServerFilled(
+        request_fields,
+        tuple(
+            ServerFilledDraft(index, item.filled)
+            for index, item in enumerate(drafts)
+            if item.filled
+        ),
+    )
 
 
 def _request_identity(
@@ -859,8 +945,15 @@ def _request_identity(
     prepared: PreparedPublication,
     commitments: tuple[str, ...],
 ) -> JsonValue:
-    expected = (
-        None
+    # Issue #1084: a value the service fills enters the identity as a marker, never as the value
+    # it filled, so a retry of the same sparse body under its request_id is the same request (one
+    # digest) even though the clock and the admission frontier moved. ``"admission"`` and ``null``
+    # are never a frontier or a timestamp, and a complete caller body keeps its earlier identity
+    # byte for byte.
+    expected: JsonValue = (
+        "admission"
+        if request.expected_frontier_omitted
+        else None
         if request.expected_frontier is None
         else request.expected_frontier.model_dump(mode="json")
     )
@@ -888,7 +981,9 @@ def _request_identity(
                     "name": item.draft.schema.name,
                     "version": item.draft.schema.version,
                 },
-                "occurred_at": item.draft.occurred_at.wire,
+                "occurred_at": (
+                    None if "occurred_at" in item.filled else item.draft.occurred_at.wire
+                ),
                 "causal_parents": item.draft.causal_parents,
                 "artifact_refs": item.draft.artifact_refs,
                 "evidence_refs": item.draft.evidence_refs,
@@ -899,13 +994,35 @@ def _request_identity(
     }
 
 
+def _decode_stored_server_filled(data: bytes) -> ServerFilled:
+    """The values the service filled for one committed operation, from its stored result.
+
+    Review R6: a replay reports the committed operation's provenance, never the retry body's. An
+    empty record means the committed request sent every fillable value.
+    """
+
+    try:
+        source = _mapping(strict_json_parse(data))
+        if "server_filled" not in source:
+            return ServerFilled((), ())
+        return server_filled_from_json(source["server_filled"])
+    except (TypeError, ValueError) as exc:
+        raise _error(
+            PublicErrorCode.STORAGE_CORRUPT,
+            "The stored operation result is invalid.",
+        ) from exc
+
+
 def _decode_stored_append_result(data: bytes) -> AppendResult:
     try:
         source = _mapping(strict_json_parse(data))
-        if frozenset(source) != frozenset(
-            {"accepted", "subject_frontier", "result_frontier", "warnings"}
-        ):
+        keys = frozenset(source)
+        base = frozenset({"accepted", "subject_frontier", "result_frontier", "warnings"})
+        # Issue #1084: an operation whose request omitted fillable values also stores which ones.
+        if keys != base and keys != base | {"server_filled"}:
             raise ProtocolValueError("stored_result_shape_invalid")
+        if "server_filled" in source:
+            server_filled_from_json(source["server_filled"])
         accepted = tuple(
             AcceptedEventSummary(
                 cast(str, _field(item, "event_id")),
@@ -1104,6 +1221,7 @@ async def _internal_result(
     prepared: PreparedPublication,
     result: AppendResult,
     digest: str,
+    server_filled: ServerFilled,
 ) -> PublishWorkInternalResult:
     expected_ids = tuple(item.draft.event_id for item in prepared.drafts)
     if tuple(item.event_id for item in result.accepted) != expected_ids:
@@ -1144,6 +1262,7 @@ async def _internal_result(
         ),
         blocker_notices=notices,
         action_notices=action_notices,
+        server_filled=server_filled,
     )
 
 
@@ -1230,13 +1349,15 @@ def build_accepted_projection_unavailable_result(
     result_frontier: Frontier,
     accepted: tuple[AcceptedEventSummary, ...] | tuple[PublishWorkAcceptedEventModel, ...],
     correlation_id: str,
+    server_filled: ServerFilled | None = None,
 ) -> PublishWorkResult:
     """Build the reduced total-acceptance envelope from ledger facts alone.
 
     Constructible by construction from ``AppendResult`` or the closed internal result — never from
     privacy projection or event payload content. A committed publish must always be able to emit
     this shape; if it cannot, that is a genuine internal defect rather than a reported failure of
-    the write itself.
+    the write itself. ``server_filled`` is the reported operation's structural provenance (field
+    names only); it is kept so a degraded response names what the service filled (review R1).
     """
 
     events = tuple(
@@ -1267,6 +1388,8 @@ def build_accepted_projection_unavailable_result(
         "result_frontier": dict(result_frontier.as_wire().items()),
         "accepted_events": events,
     }
+    if server_filled is not None and not server_filled.empty:
+        body["server_filled"] = cast(Any, server_filled.as_json())
     return PublishWorkResultModel.model_validate(body)
 
 
@@ -1287,6 +1410,7 @@ def accepted_projection_unavailable_from_internal(
         result_frontier=internal.result_frontier,
         accepted=internal.accepted_events,
         correlation_id=correlation_id,
+        server_filled=internal.server_filled,
     )
 
 
@@ -1296,6 +1420,7 @@ def accepted_projection_unavailable_from_append(
     result: AppendResult,
     *,
     correlation_id: str,
+    server_filled: ServerFilled | None = None,
 ) -> PublishWorkResult:
     """Reduce a committed append to the total-acceptance envelope without reloading events."""
 
@@ -1309,6 +1434,7 @@ def accepted_projection_unavailable_from_append(
         result_frontier=result.result_frontier,
         accepted=result.accepted,
         correlation_id=correlation_id,
+        server_filled=server_filled,
     )
 
 
@@ -1667,17 +1793,23 @@ class _DryRunNotices(TypedDict, total=False):
 
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...]
     action_notices: tuple[PublishWorkActionNoticeModel, ...]
+    server_filled: PublishWorkServerFilledModel
 
 
 def _dry_run_notices(
     blocker: tuple[PublishWorkBlockerNoticeModel, ...],
     action: tuple[PublishWorkActionNoticeModel, ...],
+    server_filled: ServerFilled,
 ) -> _DryRunNotices:
     present: _DryRunNotices = {}
     if blocker:
         present["blocker_notices"] = blocker
     if action:
         present["action_notices"] = action
+    if not server_filled.empty:
+        present["server_filled"] = PublishWorkServerFilledModel.model_validate(
+            server_filled.as_json()
+        )
     return present
 
 
@@ -1686,11 +1818,14 @@ async def _execute_dry_run(
     request: PublishWorkRequestModel,
     channel: PublicationChannel,
     runtime: TaskRuntime,
+    occurred_at: str,
 ) -> PublishWorkResult:
     """Validate a batch and return a non-evidential preview without any durable side effects."""
 
     # Intentionally skip operation lookup: dry_run must not consume or conflict on request_id.
-    prepared = prepare_publication(request, channel=channel, app=app)
+    prepared = prepare_publication(
+        request, channel=channel, app=app, occurred_at=occurred_at, task_id=runtime.task_id
+    )
     _validate_new_completion_scope(request, prepared)
     current, coverage, projected = await _preflight_dry_run_feasibility(runtime, request, prepared)
     notices = _blocker_notices(projected, prepared)
@@ -1722,7 +1857,7 @@ async def _execute_dry_run(
         would_accept=preview,
         coverage=CoverageModel.model_validate(coverage_to_json(coverage)),
         gaps=coverage.known_gaps,
-        **_dry_run_notices(notices, action_notices),
+        **_dry_run_notices(notices, action_notices, prepared.server_filled),
     )
     return PublishWorkResultModel.model_validate(
         body.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -1755,6 +1890,10 @@ async def execute_publish_work(
         raise _error(PublicErrorCode.LIMIT_EXCEEDED, "The request is too large.")
 
     channel = _channel_for(request)
+    # Issue #1084: one service clock reading per operation, recorded for every draft that omitted
+    # ``occurred_at``. It never enters the request identity (a marker does), so a resend of the
+    # same sparse body replays instead of conflicting.
+    occurred_at = timestamp_from_datetime(app.clock.now_utc()).wire
     runtime = await app.runtime.route(
         RouteCommand(
             request.session_id,
@@ -1768,7 +1907,7 @@ async def execute_publish_work(
             raise _error(PublicErrorCode.SESSION_CONFLICT, "The writer route is inconsistent.")
 
         if request.dry_run is True:
-            return await _execute_dry_run(app, request, channel, runtime)
+            return await _execute_dry_run(app, request, channel, runtime, occurred_at)
 
         # Resolve replay before prepare_publication and before expected_frontier so recovery is
         # never blocked by body validation or a stale pre-append frontier.
@@ -1782,8 +1921,16 @@ async def execute_publish_work(
                     "The stored operation result is invalid.",
                 )
             stored = _decode_stored_append_result(existing.result_canonical)
+            # Review R6: a replay names what the service filled for the committed operation.
+            stored_filled = _decode_stored_server_filled(existing.result_canonical)
             try:
-                prepared = prepare_publication(request, channel=channel, app=app)
+                prepared = prepare_publication(
+                    request,
+                    channel=channel,
+                    app=app,
+                    occurred_at=occurred_at,
+                    task_id=runtime.task_id,
+                )
                 commitments, digest = await _commitments_and_digest(runtime, request, prepared)
             except PublicOperationError:
                 # Body cannot be prepared; the operation still stands. Surface the committed
@@ -1795,7 +1942,9 @@ async def execute_publish_work(
             # Digest matches: return the stored result. expected_frontier is intentionally not
             # re-evaluated — a correct replay carries the pre-append frontier by definition.
             try:
-                return await _internal_result(request, runtime, prepared, stored, digest)
+                return await _internal_result(
+                    request, runtime, prepared, stored, digest, stored_filled
+                )
             except PublicOperationError:
                 raise
             except (asyncio.CancelledError, Exception) as exc:
@@ -1815,6 +1964,7 @@ async def execute_publish_work(
                         runtime,
                         stored,
                         correlation_id=correlation_id,
+                        server_filled=stored_filled,
                     )
                 except (asyncio.CancelledError, Exception) as envelope_exc:
                     record_unexpected_exception_without_raising(
@@ -1835,7 +1985,16 @@ async def execute_publish_work(
                     ) from envelope_exc
 
         # No prior operation: ordinary publish path. Body validation and expected_frontier apply.
-        prepared = prepare_publication(request, channel=channel, app=app)
+        # Issue #1084 (review R3): an omitted frontier is the one this service reads now, at
+        # admission, before the batch is prepared or staged. The append enforces it with ADR-022's
+        # observation-only tolerance, so a cooperative write that lands while this batch is in
+        # flight is a FRONTIER_CONFLICT, never silently overtaken.
+        admission_frontier = (
+            await runtime.ledger.load_frontier() if request.expected_frontier_omitted else None
+        )
+        prepared = prepare_publication(
+            request, channel=channel, app=app, occurred_at=occurred_at, task_id=runtime.task_id
+        )
         _validate_new_completion_scope(request, prepared)
         commitments, digest = await _commitments_and_digest(runtime, request, prepared)
         refs: list[ObjectRef] = []
@@ -1875,7 +2034,9 @@ async def execute_publish_work(
                     )
                 )
             expected_frontier = (
-                None
+                admission_frontier.sequence
+                if admission_frontier is not None
+                else None
                 if request.expected_frontier is None
                 else int(request.expected_frontier.sequence)
             )
@@ -1888,6 +2049,9 @@ async def execute_publish_work(
                 digest,
                 expected_frontier,
                 tuple(entries),
+                # Issue #1084: stored with the operation, so the filled values stay named after a
+                # restart and on every replay (status view=operation reads the same record).
+                server_filled=(None if prepared.server_filled.empty else prepared.server_filled),
             )
             mutation = PreparedMutation(
                 command.writer_id,
@@ -1923,7 +2087,9 @@ async def execute_publish_work(
         # envelope so assembling the full closed model can never present an accepted write as a
         # failure.
         try:
-            return await _internal_result(request, runtime, prepared, append_result, digest)
+            return await _internal_result(
+                request, runtime, prepared, append_result, digest, prepared.server_filled
+            )
         except PublicOperationError:
             raise
         except (asyncio.CancelledError, Exception) as exc:
@@ -1943,6 +2109,7 @@ async def execute_publish_work(
                     runtime,
                     append_result,
                     correlation_id=correlation_id,
+                    server_filled=prepared.server_filled,
                 )
             except (asyncio.CancelledError, Exception) as envelope_exc:
                 # Genuinely impossible for a committed AppendResult: every accepted summary already

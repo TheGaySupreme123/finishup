@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
+from builders.publish_identity import bridge_bound
 from finishup.mcp.descriptors import descriptor_for
 from finishup.mcp.errors import authoring_hint, safe_validation_locations
 from finishup.mcp.server import invalid_request_message
@@ -115,7 +116,7 @@ def test_nested_event_draft_enum_retains_existing_behavior() -> None:
         },
     }
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate({**base, "event_drafts": [good, bad]})
+        PublishWorkRequest.model_validate(bridge_bound({**base, "event_drafts": [good, bad]}))
     locations = safe_validation_locations(captured.value)
     assert any(item["field"] == "/event_drafts/1/payload/action_kind" for item in locations)
     assert secret not in repr(locations)
@@ -138,7 +139,7 @@ def test_selected_payload_one_of_names_its_missing_co_required_field() -> None:
         "description": "bounded evidence description",
     }
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate(base)
+        PublishWorkRequest.model_validate(bridge_bound(base))
 
     locations = safe_validation_locations(captured.value)
     assert locations == (
@@ -169,7 +170,7 @@ def test_selected_payload_any_of_required_names_metadata_only_alternatives() -> 
         "observed_at": "2026-01-01T00:00:00.000Z",
     }
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate(base)
+        PublishWorkRequest.model_validate(bridge_bound(base))
 
     locations = safe_validation_locations(captured.value)
     assert locations == (
@@ -210,7 +211,7 @@ def test_selected_payload_required_peers_share_one_complete_hint_part() -> None:
         "description": "bounded evidence description",
     }
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate(base)
+        PublishWorkRequest.model_validate(bridge_bound(base))
 
     locations = safe_validation_locations(captured.value)
     message = invalid_request_message("publish_work", locations)
@@ -233,7 +234,7 @@ def test_selected_payload_all_of_requires_digest_binding_with_content_digest() -
         "description": "bounded evidence description",
     }
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate(base)
+        PublishWorkRequest.model_validate(bridge_bound(base))
 
     locations = safe_validation_locations(captured.value)
     assert locations == (
@@ -256,7 +257,7 @@ def _action_recorded_locations(payload: dict[str, object]) -> tuple[dict[str, st
     draft["schema"] = {"name": "action_recorded", "version": "1.0.0"}
     draft["payload"] = payload
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate(base)
+        PublishWorkRequest.model_validate(bridge_bound(base))
     return safe_validation_locations(captured.value)
 
 
@@ -356,7 +357,7 @@ def test_unselected_sibling_branch_contract_is_never_projected() -> None:
         "description": "bounded evidence description",
     }
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequest.model_validate(base)
+        PublishWorkRequest.model_validate(bridge_bound(base))
 
     locations = safe_validation_locations(captured.value)
     assert all(item.get("reason") != "conditional_field_required" for item in locations)

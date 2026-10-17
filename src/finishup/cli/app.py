@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import importlib
 import os
@@ -764,6 +765,28 @@ def _read_task_statement_file(path: str) -> str:
     return raw.decode("utf-8", errors="strict")
 
 
+def _publish_work_request(
+    input_path: str | None, inline: str | None
+) -> tuple[BaseModel, str | None]:
+    """Parse one ``publish-work`` body, minting its request id when it omits one.
+
+    Issue #1084 (ADR-050 decision 2), the bridge's contract: the identity is never derived from
+    the body. A body without ``request_id`` is validated under a provisional id and then sent
+    under a fresh one; the minted id is returned so the caller can name it before sending (a dry
+    run's id is not returned: a preview consumes no identity). Re-running the identical command
+    is a new publication; retrying means sending the named id.
+    """
+
+    parsed = _bounded_input(input_path, inline)
+    if not isinstance(parsed, Mapping) or "request_id" in parsed:
+        return PublishWorkRequest.model_validate(parsed), None
+    request_id = new_id(IdKind.REQUEST)
+    request = PublishWorkRequest.model_validate(
+        {**cast(Mapping[str, JsonValue], parsed), "request_id": request_id}
+    )
+    return request, None if request.dry_run is True else request_id
+
+
 def _start_request_model(
     input_path: str | None, inline: str | None, task_statement_file: str | None
 ) -> BaseModel:
@@ -799,6 +822,10 @@ async def _call_workflow(
 ) -> int:
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
     check_mode: object = None
+    # Issue #1084: the request id this command minted for an id-less publish, and whether a
+    # workflow result came back (so an output failure afterwards is not called a usage error).
+    minted: str | None = None
+    completed_request_id: str | None = None
     try:
         if method == "start":
             request = cast(
@@ -814,6 +841,9 @@ async def _call_workflow(
                 WorkflowRequest,
                 request_type.model_validate({"await_observations": True, **parsed}),
             )
+        elif method == "publish_work":
+            parsed_request, minted = _publish_work_request(input_path, inline)
+            request = cast(WorkflowRequest, parsed_request)
         else:
             request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
         if type(request) is CheckRequest:
@@ -825,6 +855,12 @@ async def _call_workflow(
             raise ProtocolValueError("unsupported_json_type")
         if use_passphrase and not owner_view:
             raise ProtocolValueError("unsupported_json_type")
+        if minted is not None:
+            # Named before anything is sent, so the id survives a lost or unwritable result.
+            _stderr(
+                f"request_id {minted}: minted by FinishUP for this publish-work; send it as "
+                "request_id to retry this call (re-running the command publishes again)"
+            )
         client = await build_service_client()
         try:
             if owner_view:
@@ -837,6 +873,8 @@ async def _call_workflow(
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))
         finally:
             await client.close()
+        if method in {"start", "publish_work", "check", "respond", "receipt"}:
+            completed_request_id = cast(str, getattr(request, "request_id", "")) or None
         wire = public_model_to_wire(result)
         branch = result.root
         if json_output or not sys.stdout.isatty():
@@ -864,7 +902,18 @@ async def _call_workflow(
         if isinstance(branch, OperationFailureModel):
             return exit_code_for(branch.error.code)
         return 0
-    except OSError, ProtocolValueError, ValidationError, ValueError:
+    except OSError:
+        if completed_request_id is not None:
+            # Review N1 of PR #1088 round 2: the service answered (a write may have committed)
+            # and only writing that answer failed. That is not a usage error.
+            with contextlib.suppress(Exception):
+                _stderr(
+                    "result_output_failed: the call completed but its result could not be "
+                    f"written; read status view=operation for request_id {completed_request_id}"
+                )
+            return exit_code_for(PublicErrorCode.INTERNAL_ERROR)
+        return _usage_failure()
+    except ProtocolValueError, ValidationError, ValueError:
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, operation=method, check_mode=check_mode)

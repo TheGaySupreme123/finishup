@@ -76,6 +76,7 @@ from finishup.protocol.models import (
     StatusRequest,
     StatusResultModel,
     StatusResultsPageModel,
+    StatusSuccessModel,
 )
 
 pytestmark = pytest.mark.anyio
@@ -401,7 +402,7 @@ async def _assert_mcp_scope_projection(
         status,
     )
     assert isinstance(projected, StatusResultModel)
-    assert projected.root.ok is True
+    assert isinstance(projected.root, StatusSuccessModel)
     page = cast(StatusCompactPageModel, projected.root.page)
     assert page.items[0].declared_obligation_count == declared
     assert page.items[0].open_obligation_count == opened
@@ -552,8 +553,8 @@ async def test_status_distinguishes_undeclared_and_declared_empty_scope(
         status,
     )
     assert isinstance(projected, StatusResultModel)
-    assert projected.root.ok is True
     projected_success = projected.root
+    assert isinstance(projected_success, StatusSuccessModel)
     projected_page = cast(StatusCompactPageModel, projected_success.page)
     assert projected_page.items[0].no_obligations_reason == reason
     assert projected_success.closure_readiness.blocking_conditions == (
@@ -2051,3 +2052,128 @@ async def test_project_status_pages_and_lineage_fallback_use_the_public_projecti
     assert isinstance(projected, StatusResultModel)
     assert projected.root.ok is True
     assert projected.root.view == "lineage"
+
+
+async def _projected_status(
+    app: Application, wire: dict[str, JsonValue], rpc_seed: int
+) -> StatusResultModel:
+    status = await app.status(StatusRequest.model_validate(wire))
+    facts = await app.projection_binding_facts(ControlMethod.STATUS, wire, status)
+    projected = await app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+        ),
+        _cli_binding(rpc_seed, facts),
+        status,
+    )
+    assert isinstance(projected, StatusResultModel)
+    return projected
+
+
+@pytest.mark.parametrize("view", ["compact", "findings", "obligations", "results", "history"])
+async def test_brief_status_is_a_strict_subset_of_the_full_body(view: str) -> None:
+    """Issue #1084: ``detail: brief`` only omits; every value it keeps is the full body's."""
+
+    app, _runtime, _projection = _build_app(seed_offset=7)
+    started, _checked, _obligations = await _bootstrap_finding(app, seed=10840)
+    base: dict[str, JsonValue] = {
+        **_request_base(protocol_id("req_", 10850)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "view": view,
+    }
+    full = await _projected_status(app, {**base, "limit": "20"}, 10851)
+    brief = await _projected_status(app, {**base, "detail": "brief"}, 10853)
+    full_body = full.root.model_dump(mode="json", exclude_unset=True)
+    brief_body = brief.root.model_dump(mode="json", exclude_unset=True)
+
+    assert brief_body["detail"] == "brief"
+    assert "detail" not in full_body
+    for key, value in brief_body.items():
+        if key in {"detail", "closure_state", "privacy_projection"}:
+            continue
+        assert full_body[key] == value, key
+    # One frontier when they agree; projection metadata at its defaults is omitted.
+    assert full_body["head_frontier"] == full_body["result_frontier"]
+    for key in ("requested_frontier", "head_frontier", "subject_frontier", "projection_lag"):
+        assert key not in brief_body
+    if view == "compact":
+        assert brief_body["closure_readiness"] == full_body["closure_readiness"]
+        assert "closure_state" not in brief_body
+    else:
+        assert "closure_readiness" not in brief_body
+        assert "coverage" not in brief_body
+        readiness = cast(Mapping[str, JsonValue], full_body["closure_readiness"])
+        assert brief_body["closure_state"] == {
+            key: readiness[key]
+            for key in ("blocking_conditions", "state", "agent_actionable")
+            if key in readiness
+        }
+    assert len(canonical_encode(cast(JsonValue, brief_body))) < len(
+        canonical_encode(cast(JsonValue, full_body))
+    )
+
+
+async def test_results_filters_select_by_source_event_envelope() -> None:
+    """Issue #1084: view results admits after_sequence, actor_id and author: mine.
+
+    The result is published in the sparse form (no event ids, times, mirrors or frontier; the
+    request id is the one a host binds), so this also proves the service-filled path end to end.
+    """
+
+    app, _runtime, _projection = _build_app(seed_offset=8)
+    started, checked, _obligations = await _bootstrap_finding(app, seed=10860)
+    action = protocol_id("act_", 10861)
+    result = protocol_id("res_", 10861)
+    sparse = dict(_request_base(protocol_id("req_", 10862)))
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **sparse,
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "event_drafts": [
+                    {
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "payload": {
+                            "action_id": action,
+                            "action_kind": "command",
+                            "command": "pytest -q",
+                            "description": "Ran the tests.",
+                        },
+                    },
+                    {
+                        "schema": {"name": "result_recorded", "version": "1.0.0"},
+                        "payload": {
+                            "result_id": result,
+                            "action_id": action,
+                            "outcome": "success",
+                            "summary": "passed",
+                        },
+                    },
+                ],
+            }
+        )
+    )
+    assert published.outcome == "accepted"
+    base: dict[str, JsonValue] = {
+        **_request_base(protocol_id("req_", 10870)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "view": "results",
+        "detail": "full",
+    }
+
+    async def result_ids(status_filter: dict[str, JsonValue] | None) -> list[str]:
+        wire = base if status_filter is None else {**base, "filter": status_filter}
+        page = (await app.status(StatusRequest.model_validate(wire))).page
+        return [item.result_id for item in cast(StatusResultsPageModel, page).items]
+
+    assert result in await result_ids(None)
+    head = str(checked.result_frontier.sequence)
+    assert await result_ids({"after_sequence": head}) == [result]
+    assert await result_ids({"after_sequence": str(published.result_frontier.sequence)}) == []
+    assert await result_ids({"actor_id": "nobody-published-this"}) == []
+    actor = cast(Mapping[str, JsonValue], base["actor"])["actor_id"]
+    assert await result_ids({"actor_id": cast(str, actor)}) == [result]
+    assert await result_ids({"author": "mine"}) == [result]

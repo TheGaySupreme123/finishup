@@ -2540,6 +2540,10 @@ def _history_json(
     else:
         body["accepted_at"] = item.accepted_at
         body["occurred_at_consistency"] = item.occurred_at_consistency
+    if item.occurred_at_source is not None:
+        # Issue #1084 (review R7): the publish omitted occurred_at and the service recorded its
+        # own clock, so this time is not something the agent asserted about when the work happened.
+        body["occurred_at_source"] = item.occurred_at_source
     reduced: dict[str, JsonValue] | None = None
     if item.schema_name == "check_recorded":
         # A check's payload may record undeclared-reference names (#1044): repository-excerpt

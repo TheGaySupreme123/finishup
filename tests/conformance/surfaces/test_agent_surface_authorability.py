@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 
+from builders.publish_identity import bridge_bound
 from finishup.mcp.descriptors import (
     ORDINARY_MCP_PUBLISH_EVENT_FAMILIES,
     TOOL_DESCRIPTORS,
@@ -250,7 +251,8 @@ def test_degraded_surface_templates_remain_authorable(profile: str) -> None:
 
     for block, request in zip(raw_blocks, parsed_requests, strict=True):
         model, operation = _request_model_and_operation(request)
-        model.model_validate(request)
+        # Issue #1084: the bridge binds a request id to an id-less publish template.
+        model.model_validate(bridge_bound(request) if operation == "publish_work" else request)
         operations.add(operation)
         assert "src/" not in block
         assert "schemas/" not in block

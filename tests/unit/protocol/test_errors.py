@@ -309,6 +309,7 @@ provider_attempt_provenance_is_not_final
 public_error_invalid_correlation_id
 public_error_invalid_message
 public_error_missing_correlation_id
+publish_repeat_unconfirmed
 read_projection_failed
 receipt_child_manifest_mismatch
 receipt_children_not_canonical
@@ -547,7 +548,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 347
+    assert len(source_values) == 348
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)

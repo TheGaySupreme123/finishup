@@ -61,6 +61,21 @@ actions, results, evidence. Publish material transitions — an assignment, a de
 attempt, an independently useful result, a completion, a revision. Skip routine reads, searches,
 formatting, and per-file mechanics.
 
+Write each fact once. A publish needs only your session and writer, your actor and client, and
+events made of a `schema` and a `payload`. FinishUP fills the rest when you leave it out. It gives
+each call its own request id and names it in every answer, including errors (the command line
+prints it before sending). If an answer never arrived, retry by sending that request id: FinishUP
+returns the stored result instead of recording twice. Sending the same request again without the
+id is a new record (switching review back on, for example). Right after the same call, FinishUP
+asks you to choose instead, naming the earlier id. If you need a retry that holds even after FinishUP
+restarts, send your own request id. It also fills each event id, the
+event time (FinishUP's clock, never your claim, and marked as such in history), empty reference
+lists and the reference lists that repeat the payload's, and the frontier: the one it reads when it
+takes the request, so a change another participant makes meanwhile is refused. Reference lists are
+put in canonical order for you; text lists are kept exactly as you wrote them. The result's
+`server_filled` names every value FinishUP filled, and so does the operation record. Send a value
+when you need it, for example the frontier you last read when what you publish depends on it.
+
 A plan must make completion scope inspectable. Normally, list its obligation refs. If no
 obligations apply, record `no_obligations_reason` as exactly `no_material_change`,
 `single_atomic_change`, or `exploratory_scope_unknown`; the reason is invalid beside effective
@@ -75,8 +90,8 @@ rest of the sent value is not repeated. Before resolving an obligation, account 
 requested item that has no attempt yet. When unsure about a batch, set `dry_run: true` to
 validate it and preview what would be accepted without appending. The preview is not evidential
 and is not citable as a check,
-publication, or coverage source. Reuse the same `request_id` for the real publish after the
-preview succeeds.
+publication, or coverage source. For the real publish, send the same request without `dry_run`
+(and with your own `request_id`, if you set one).
 
 To correct a recorded claim, publish a fresh `claim_recorded/1.1.0` event. Put the prior effective
 claim ids in `supersedes_claim_refs`, keep supporting evidence and successful results in
@@ -256,7 +271,10 @@ that raises it again breaks the link, and then it needs its own answer.
 
 ### `status`
 Reads current state — use it after a resume, a compaction, a handoff, or any uncertainty about what
-is already done. `view=candidate_findings` is an advisory read: it creates no verdict, no IDs, no
+is already done. An agent's read is brief by default: one frontier, the page and the closure state
+(the compact view keeps the full closure readiness and coverage). Send `detail: full` for the
+complete body. `limit` defaults to 20. `view=results` accepts a filter on results recorded after a
+ledger sequence, by an actor, or by you. `view=candidate_findings` is an advisory read: it creates no verdict, no IDs, no
 receipt, and no event. An empty candidate list means only that no rule fired in that read; it is not
 a check and cannot be cited as one. After any ambiguous write, prefer `view=operation` with
 `filter.operation_request_id` set to the write's `request_id`: it looks up that operation's state
