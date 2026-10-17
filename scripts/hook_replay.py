@@ -35,11 +35,14 @@ Usage::
     hook_replay.py replay --checkout <tree> --revision <sha> --tag <t> --corpus corpus.json \\
         --work-root <dir> --mode pinned --mode shipped --out old.json
     hook_replay.py compare old.json new.json [--report report.md]
+    hook_replay.py latency --checkout <tree> --old-revision <sha> --new-revision <sha> --tag <t> \\
+        --corpus corpus.json --work-root <dir> --out latency.json
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -51,8 +54,9 @@ import statistics
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final, cast
@@ -904,6 +908,23 @@ def _replace_event(item: Item, event: str) -> list[str]:
 
 # ------------------------------------------------------------------------------------- execution
 
+# Experiment control, pinned mode only and identical for every build (``--admission-clock``).
+# The local admission buffer holds routine reads and pending attempts and flushes one once it is
+# ``SUMMARY_FLUSH_MS`` (2 s) or ``PENDING_ATTEMPT_FLUSH_MS`` (5 s) old by the wall clock
+# (``observation_admission.flush_admission``), so whether a held row is delivered at one callback
+# or a later one depends on how fast the machine ran. ``held`` never makes a row due by age (only
+# a forced flush at a material boundary, Stop, SessionStart or SessionEnd releases it); ``due``
+# makes every held row due at the next flush. Either way that decision no longer reads the clock.
+ADMISSION_CLOCKS: Final[Mapping[str, int]] = {"held": 10**15, "due": 0}
+_ADMISSION_CLOCK_CONTROL: Final = (
+    "clock = os.environ.get('HOOK_REPLAY_ADMISSION_CLOCK')\n"
+    "if clock:\n"
+    "    from finishup.adapters.integrations import observation_admission as _admission\n"
+    "    for _name in ('SUMMARY_FLUSH_MS', 'PENDING_ATTEMPT_FLUSH_MS'):\n"
+    "        if not hasattr(_admission, _name):\n"
+    "            raise SystemExit('hook_replay_admission_unknown:' + _name)\n"
+    "        setattr(_admission, _name, int(clock))\n"
+)
 # Raised equally in every replayed build: a slower build then takes the branch a faster one takes.
 PINNED_HOOK_BUDGETS: Final[Mapping[str, float | int]] = {
     "_AUTO_ATTACH_RETRY_BUDGET_SECONDS": 30.0,
@@ -940,7 +961,8 @@ _PINNED_BOOTSTRAP: Final = (
     "        with open(trace, 'a') as handle:\n"
     "            handle.write(json.dumps(row) + '\\n')\n"
     "    atexit.register(_catalog_trace)\n"
-    "from finishup.cli import observe_hooks\n"
+    + _ADMISSION_CLOCK_CONTROL
+    + "from finishup.cli import observe_hooks\n"
     "for name, value in json.loads(os.environ['HOOK_REPLAY_PINS']).items():\n"
     "    if not hasattr(observe_hooks, name):\n"
     "        raise SystemExit('hook_replay_pin_unknown:' + name)\n"
@@ -959,8 +981,7 @@ _PINNED_BOOTSTRAP: Final = (
 # that follows from it) would depend on scheduling. Paused, every row is delivered by the
 # callback itself or by the ``observe drain`` that follows it, in replay order.
 _SERVICE_BOOTSTRAP: Final = (
-    "import sys\n"
-    "from finishup.service import daemon\n"
+    "import os, sys\n" + _ADMISSION_CLOCK_CONTROL + "from finishup.service import daemon\n"
     "async def _paused(self, *args, **kwargs):\n"
     "    return None\n"
     "for name in ('_bounded_observation_sweep', '_bounded_lineage_recovery',\n"
@@ -972,6 +993,172 @@ _SERVICE_BOOTSTRAP: Final = (
     "from finishup.cli.entry import main\n"
     "main()\n"
 )
+# The isolated-store ledger reader: run under one instance's own retained interpreter after its
+# service has stopped, it reads every accepted event of every task bundle in that instance and
+# the payload object each event binds. It only reads: the bundle databases through the product's
+# authorizer-guarded read-only connection, the payload objects through the product's own
+# authenticated decryption, and the vault through an unlock with the passphrase this replay set
+# (passed on stdin, never written). Every path it opens must resolve inside the instance root,
+# so it can never read another installation. Any failed check makes it exit nonzero with the
+# reason; a partial export is never printed as a success.
+_LEDGER_EXPORT: Final = r"""
+import asyncio, hashlib, json, os, sys
+from pathlib import Path
+
+
+class ExportFailure(Exception):
+    pass
+
+
+def require(condition, reason):
+    if not condition:
+        raise ExportFailure(reason)
+
+
+async def export(spec):
+    from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+    from finishup.adapters.keys.secret_memory import LocalSecretMemory
+    from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+    from finishup.adapters.sqlite.connection import open_read_only
+    from finishup.config import paths
+    from finishup.config.installation import read_instance_identity
+    from finishup.config.load import load_config
+    from finishup.ports.secret_memory import SecretPurpose
+    from finishup.protocol.canonical import (
+        canonical_digest, canonical_encode, entry_digest, strict_json_parse,
+    )
+    from finishup.service import daemon
+    from finishup.service.installation_recovery import InstallationRecoverySetStore
+    from finishup.service.vault import VaultMode, VaultService
+
+    root = Path(spec["instance_root"]).resolve(strict=True)
+
+    def inside(path):
+        resolved = Path(path).resolve()
+        return resolved == root or root in resolved.parents
+
+    isolated = paths.isolated_root()
+    require(isolated is not None and inside(isolated), "export_root_not_isolated")
+    config = load_config({}, os.environ, None)
+    bundle = paths.bundle_root(_data_dir=config.storage.data_dir)
+    state = paths.state_dir()
+    throttle = paths.unlock_throttle_path()
+    generation = paths.service_generation_path()
+    for path in (bundle, state, throttle, generation):
+        require(inside(path), "export_path_outside_instance")
+    identity = read_instance_identity(state)
+    require(identity is not None, "export_instance_identity_missing")
+    markers = daemon._InstallationStateStore(
+        bundle / daemon._INSTALLATION_MARKER_NAME,
+        throttle,
+        generation,
+        InstallationRecoverySetStore(bundle),
+        instance_installation_id=identity.installation_id,
+    )
+    marker = markers.load(reconcile=False)
+    require(marker is not None, "export_installation_marker_missing")
+    require(marker.vault_mode is VaultMode.PASSPHRASE, "export_vault_not_passphrase")
+    memory = LocalSecretMemory()
+    vault = VaultService(
+        installation_id=markers.select_installation_id(marker),
+        service_generation=1,
+        mode=marker.vault_mode,
+        secret_memory=memory,
+        clock=daemon._SystemClock(),
+        vault_store_factory=lambda: EncryptedVaultStore(bundle / "vault"),
+        root_envelope=marker.root_envelope,
+    )
+    await vault.unlock(
+        memory.capture(SecretPurpose.VAULT_UNLOCK, bytearray(spec["passphrase"].encode()))
+    )
+    tasks_root = bundle / "tasks"
+    require(inside(tasks_root), "export_path_outside_instance")
+    tasks = []
+    for task_dir in sorted(tasks_root.iterdir()) if tasks_root.is_dir() else []:
+        require(inside(task_dir), "export_path_outside_instance")
+        task_id = task_dir.name
+        db = open_read_only(task_dir / "ledger.sqlite3")
+        try:
+            rows = db.execute(
+                "SELECT e.ingestion_seq, e.entry_digest, e.canonical_entry, e.payload_object_id, "
+                "e.payload_commitment, e.previous_ledger_digest, e.redaction_state, "
+                "l.canonical_payload_digest, o.envelope_digest, o.commitment, o.state "
+                "FROM events AS e "
+                "JOIN event_projection_locators AS l ON l.event_id = e.event_id "
+                "JOIN objects AS o ON o.object_id = e.payload_object_id "
+                "ORDER BY e.ingestion_seq"
+            ).fetchall()
+            count = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        finally:
+            db.close()
+        require(count == len(rows), "export_event_rows_unjoined")
+        keys = await vault.load_bundle_keys(task_id)
+        store = EncryptedFilesObjectStore(
+            bundle_root=task_dir,
+            bundle_keys=keys,
+            secret_memory=memory,
+            id_port=None,
+            current_root_snapshot=lambda: None,
+        )
+        events = []
+        previous = "genesis"
+        for expected_seq, row in enumerate(rows, start=1):
+            (seq, digest, canonical, object_id, commitment, previous_digest, redaction,
+             payload_digest, envelope_digest, object_commitment, object_state) = row
+            require(seq == expected_seq, "export_sequence_gap")
+            require(type(canonical) is bytes, "export_canonical_entry_invalid")
+            entry = strict_json_parse(canonical)
+            require(canonical_encode(entry) == canonical, "export_canonical_entry_noncanonical")
+            require(entry["entry_digest"] == digest, "export_entry_digest_column_mismatch")
+            preimage = {key: value for key, value in entry.items() if key != "entry_digest"}
+            require(entry_digest(preimage) == digest, "export_entry_digest_mismatch")
+            require(entry["ledger"]["ingestion_sequence"] == str(seq), "export_entry_sequence")
+            require(entry["ledger"]["previous_entry_digest"] == previous, "export_chain_broken")
+            require(previous_digest == previous, "export_chain_column_mismatch")
+            require(entry["task_id"] == task_id, "export_entry_task_mismatch")
+            ref = entry["payload_ref"]
+            require(ref["object_id"] == object_id, "export_payload_object_mismatch")
+            require(ref["commitment"] == commitment == object_commitment,
+                    "export_payload_commitment_mismatch")
+            require(redaction == "present" and object_state == "present",
+                    "export_payload_not_present")
+            verified = await store.resolve_verified(object_id, envelope_digest)
+            require(verified.commitment == commitment, "export_payload_commitment_mismatch")
+            require(verified.plaintext_size == ref["plaintext_size"], "export_payload_size")
+            payload = b"".join([chunk async for chunk in store.open_verified(verified)])
+            parsed = strict_json_parse(payload)
+            require(canonical_encode(parsed) == payload, "export_payload_noncanonical")
+            require(canonical_digest(parsed) == payload_digest, "export_payload_digest_mismatch")
+            events.append({
+                "canonical_entry": canonical.decode("utf-8"),
+                "payload": payload.decode("utf-8"),
+                "payload_sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            })
+            previous = digest
+        tasks.append({
+            "task_id": task_id,
+            "events": events,
+            "head": {"head_digest": previous, "sequence": str(len(events))},
+        })
+    await vault.close()
+    return tasks
+
+
+def main():
+    spec = json.loads(sys.stdin.read())
+    try:
+        tasks = asyncio.run(export(spec))
+    except ExportFailure as failure:
+        print(json.dumps({"ok": False, "error": str(failure)}))
+        raise SystemExit(3)
+    except Exception as error:
+        print(json.dumps({"ok": False, "error": type(error).__name__ + ":" + str(error)[:300]}))
+        raise SystemExit(4)
+    print(json.dumps({"ok": True, "tasks": tasks}, ensure_ascii=False, sort_keys=True))
+
+
+main()
+"""
 _PASSPHRASE_PROMPTS: Final = (r"Passphrase \(", r"Confirm passphrase")
 _ITEM_TIMEOUT_SECONDS: Final = 180.0
 
@@ -1088,6 +1275,22 @@ def dispose(instance: Instance) -> dict[str, Any]:
     }
 
 
+@dataclass(slots=True)
+class _ReplayState:
+    mode: str
+    root: Path
+    items: list[Item]
+    transcripts: dict[str, dict[str, Any]]
+    workspaces: list[str]
+    setup: dict[str, Any]
+    transcript_written: dict[str, int]
+    transcript_paths: dict[str, Path]
+    claude_transcript: Path
+    retained: Path
+    trace_path: Path
+    records: list[dict[str, Any]]
+
+
 class Replayer:
     """One provisioned build: its service, its ceremonies, and the replay through it."""
 
@@ -1098,11 +1301,20 @@ class Replayer:
         self.log = log
         self.service: subprocess.Popen[bytes] | None = None
         self.delay_seconds = 0.0
+        # ``ADMISSION_CLOCKS`` key, pinned mode only; ``None`` leaves the product clock alone.
+        self.admission_clock: str | None = None
+        # Held in memory for the post-run ledger export only; never written anywhere.
+        self._passphrase: str | None = None
         self._ceremony = _load_by_path("hook_replay_ceremony", _HERE / "dogfood_ci" / "ceremony.py")
         self._lane = _load_by_path("hook_replay_lane", _HERE / "dogfood_ci" / "lane.py")
 
     def env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
-        return instance_env(self.home, extra)
+        control = (
+            {}
+            if self.admission_clock is None
+            else {"HOOK_REPLAY_ADMISSION_CLOCK": str(ADMISSION_CLOCKS[self.admission_clock])}
+        )
+        return instance_env(self.home, {**control, **(extra or {})})
 
     def finishup(
         self,
@@ -1155,6 +1367,7 @@ class Replayer:
         if status.get("vault_mode") != "uninitialized":
             raise SystemExit(f"vault not fresh: {status.get('vault_mode')}")
         passphrase = secrets.token_urlsafe(24)
+        self._passphrase = passphrase
         reply = self._ceremony.Reply
         init = self._ceremony.run_ceremony(
             [str(self.instance.launcher), "service", "initialize-passphrase", "--json"],
@@ -1218,7 +1431,9 @@ class Replayer:
         self.service = None
         return outcome
 
-    def replay(self, corpus: Mapping[str, Any], mode: str) -> dict[str, Any]:
+    def begin(self, corpus: Mapping[str, Any], mode: str) -> _ReplayState:
+        """Fresh workspaces with their grants, ready for the corpus items in order."""
+
         mode_root = self.work_root / mode
         if mode_root.exists():
             shutil.rmtree(mode_root)
@@ -1256,90 +1471,141 @@ class Replayer:
         claude_transcript.touch()
         retained = self.instance.retained_python()
         trace_path = mode_root / "catalog-trace.jsonl"
-        records: list[dict[str, Any]] = []
-        for number, item in enumerate(items, start=1):
-            workspace = mode_root / cast(str, item["workspace"])
-            spec = cast(dict[str, Any] | None, item.get("transcript"))
-            transcript = claude_transcript
-            if spec is not None:
-                name = cast(str, spec["name"])
-                transcript = transcript_paths[name]
-                transcript.parent.mkdir(parents=True, exist_ok=True)
-                lines = cast(list[str], transcripts[name]["lines"])
-                upto = cast(int, spec["upto"])
-                with transcript.open("a", encoding="utf-8") as handle:
-                    for line in lines[transcript_written[name] : upto]:
-                        handle.write(_substitute(line, workspace, transcript) + "\n")
-                transcript_written[name] = max(transcript_written[name], upto)
-            argv = [_substitute(token, workspace, transcript) for token in item["argv"]]
-            stdin = item.get("stdin")
-            text = None if stdin is None else _substitute(cast(str, stdin), workspace, transcript)
-            host_env = {
-                "claude": {"CLAUDE_PROJECT_DIR": str(workspace)},
-                "cursor": {"CURSOR_PROJECT_DIR": str(workspace)},
-            }.get(cast(str, item["host"]), {})
-            if item.get("runner") == "python":
-                command = [str(retained), "-I", "-c", _PROBE]
-                extra = host_env
-            elif mode == "pinned":
-                command = [str(retained), "-I", "-c", _PINNED_BOOTSTRAP]
-                command += [str(self.instance.launcher), *argv]
-                extra = {
-                    **host_env,
-                    "HOOK_REPLAY_PINS": json.dumps(dict(PINNED_HOOK_BUDGETS)),
-                    # A side file only: never stdout or stderr, which are compared.
-                    "HOOK_REPLAY_CATALOG_TRACE": str(trace_path),
-                    # An experiment knob: hold a build's callbacks back to another build's pace.
-                    "HOOK_REPLAY_DELAY_SECONDS": str(self.delay_seconds),
-                }
-            else:
-                command = [str(self.instance.launcher), *argv]
-                extra = host_env
-            traced = trace_path.read_text().splitlines() if trace_path.exists() else []
-            started = time.monotonic()
-            done = subprocess.run(
-                command,
-                cwd=workspace,
-                env=self.env(extra),
-                input=None if text is None else text.encode("utf-8"),
-                capture_output=True,
-                timeout=_ITEM_TIMEOUT_SECONDS,
-                check=False,
-            )
-            elapsed_ms = (time.monotonic() - started) * 1000.0
-            record: dict[str, Any] = {
-                "label": item["label"],
-                "host": item["host"],
-                "workspace": item["workspace"],
-                "event": _event_of(argv),
-                "returncode": done.returncode,
-                "stdout": done.stdout.decode("utf-8", errors="replace"),
-                "stderr": done.stderr.decode("utf-8", errors="replace"),
-                "elapsed_ms": round(elapsed_ms, 3),
+        return _ReplayState(
+            mode=mode,
+            root=mode_root,
+            items=items,
+            transcripts=transcripts,
+            workspaces=workspaces,
+            setup=setup,
+            transcript_written=transcript_written,
+            transcript_paths=transcript_paths,
+            claude_transcript=claude_transcript,
+            retained=retained,
+            trace_path=trace_path,
+            records=[],
+        )
+
+    def step(self, state: _ReplayState, number: int, item: Item) -> dict[str, Any]:
+        """Run one corpus item as its host would, then the drain that follows it."""
+
+        mode, mode_root, items = state.mode, state.root, state.items
+        transcripts, transcript_written = state.transcripts, state.transcript_written
+        transcript_paths, claude_transcript = state.transcript_paths, state.claude_transcript
+        retained, trace_path, records = state.retained, state.trace_path, state.records
+        workspace = mode_root / cast(str, item["workspace"])
+        spec = cast(dict[str, Any] | None, item.get("transcript"))
+        transcript = claude_transcript
+        if spec is not None:
+            name = cast(str, spec["name"])
+            transcript = transcript_paths[name]
+            transcript.parent.mkdir(parents=True, exist_ok=True)
+            lines = cast(list[str], transcripts[name]["lines"])
+            upto = cast(int, spec["upto"])
+            with transcript.open("a", encoding="utf-8") as handle:
+                for line in lines[transcript_written[name] : upto]:
+                    handle.write(_substitute(line, workspace, transcript) + "\n")
+            transcript_written[name] = max(transcript_written[name], upto)
+        argv = [_substitute(token, workspace, transcript) for token in item["argv"]]
+        stdin = item.get("stdin")
+        text = None if stdin is None else _substitute(cast(str, stdin), workspace, transcript)
+        host_env = {
+            "claude": {"CLAUDE_PROJECT_DIR": str(workspace)},
+            "cursor": {"CURSOR_PROJECT_DIR": str(workspace)},
+        }.get(cast(str, item["host"]), {})
+        if item.get("runner") == "python":
+            command = [str(retained), "-I", "-c", _PROBE]
+            extra = host_env
+        elif mode == "pinned":
+            command = [str(retained), "-I", "-c", _PINNED_BOOTSTRAP]
+            command += [str(self.instance.launcher), *argv]
+            extra = {
+                **host_env,
+                "HOOK_REPLAY_PINS": json.dumps(dict(PINNED_HOOK_BUDGETS)),
+                # A side file only: never stdout or stderr, which are compared.
+                "HOOK_REPLAY_CATALOG_TRACE": str(trace_path),
+                # An experiment knob: hold a build's callbacks back to another build's pace.
+                "HOOK_REPLAY_DELAY_SECONDS": str(self.delay_seconds),
             }
-            if trace_path.exists():
-                fresh = trace_path.read_text().splitlines()[len(traced) :]
-                record["catalog_trace"] = [json.loads(line) for line in fresh]
-            if item["workspace"] != "cli":
-                drained = self.finishup(
-                    ["observe", "drain", "--workspace", str(workspace), "--json"], cwd=workspace
-                )
-                record["drain"] = {
-                    "returncode": drained.returncode,
-                    "stdout": drained.stdout.decode("utf-8", errors="replace"),
-                }
-            records.append(record)
-            self.log(
-                f"[{mode}] {number}/{len(items)} {item['label']} rc={done.returncode} {elapsed_ms:.0f}ms"
-            )
-        ledgers = {
-            key: self._ledger(mode_root / key, records, key) for key in workspaces if key != "cli"
+        else:
+            command = [str(self.instance.launcher), *argv]
+            extra = host_env
+        traced = trace_path.read_text().splitlines() if trace_path.exists() else []
+        started = time.monotonic()
+        done = subprocess.run(
+            command,
+            cwd=workspace,
+            env=self.env(extra),
+            input=None if text is None else text.encode("utf-8"),
+            capture_output=True,
+            timeout=_ITEM_TIMEOUT_SECONDS,
+            check=False,
+        )
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        record: dict[str, Any] = {
+            "label": item["label"],
+            "host": item["host"],
+            "workspace": item["workspace"],
+            "event": _event_of(argv),
+            "returncode": done.returncode,
+            "stdout": done.stdout.decode("utf-8", errors="replace"),
+            "stderr": done.stderr.decode("utf-8", errors="replace"),
+            "elapsed_ms": round(elapsed_ms, 3),
         }
-        return {"setup": setup, "items": records, "ledgers": ledgers}
+        if trace_path.exists():
+            fresh = trace_path.read_text().splitlines()[len(traced) :]
+            record["catalog_trace"] = [json.loads(line) for line in fresh]
+        if item["workspace"] != "cli":
+            drain_argv = ["observe", "drain", "--workspace", str(workspace), "--json"]
+            if self.admission_clock is not None:
+                # The drain flushes due admission accounts too, so it runs under the control.
+                drained = subprocess.run(
+                    [str(retained), "-I", "-c", _PINNED_BOOTSTRAP, str(self.instance.launcher)]
+                    + drain_argv,
+                    cwd=workspace,
+                    env=self.env({"HOOK_REPLAY_PINS": "{}"}),
+                    capture_output=True,
+                    timeout=_ITEM_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            else:
+                drained = self.finishup(drain_argv, cwd=workspace)
+            record["drain"] = {
+                "returncode": drained.returncode,
+                "stdout": drained.stdout.decode("utf-8", errors="replace"),
+            }
+        records.append(record)
+        self.log(
+            f"[{mode}] {number}/{len(items)} {item['label']} rc={done.returncode} {elapsed_ms:.0f}ms"
+        )
+        return record
+
+    def finish(self, state: _ReplayState) -> dict[str, Any]:
+        """Read every workspace's ledger back after the last item."""
+
+        ledgers = {
+            key: self._ledger(state.root / key, state.records, key)
+            for key in state.workspaces
+            if key != "cli"
+        }
+        return {"setup": state.setup, "items": state.records, "ledgers": ledgers}
+
+    def replay(self, corpus: Mapping[str, Any], mode: str) -> dict[str, Any]:
+        state = self.begin(corpus, mode)
+        for number, item in enumerate(state.items, start=1):
+            self.step(state, number, item)
+        return self.finish(state)
 
     def _ledger(
         self, workspace: Path, records: Sequence[Mapping[str, Any]], key: str
     ) -> dict[str, Any]:
+        """Read one workspace's ledger history back; any failed or partial read is recorded.
+
+        ``compare`` refuses a run whose record carries ``history_error`` or lacks a complete,
+        cursor-exhausted history ending at the reported head, so a failed read can never pass as
+        an empty history.
+        """
+
         mapping = None
         for record in records:
             if record["workspace"] != key:
@@ -1351,13 +1617,16 @@ class Replayer:
         observed = self.finishup(["observe", "status", "--workspace", str(workspace), "--json"])
         result: dict[str, Any] = {
             "mapped": mapping is not None,
+            "observe_status_returncode": observed.returncode,
             "observe_status": observed.stdout.decode("utf-8", errors="replace"),
         }
         if mapping is None:
             return result
+        result["mapping"] = mapping
         history: list[Any] = []
         cursor: str | None = None
-        for page in range(1, 200):
+        complete = False
+        for page in range(1, _HISTORY_MAX_PAGES + 1):
             body: dict[str, Any] = {
                 "actor": {"actor_id": "harness:hook-replay", "actor_type": "harness"},
                 "client": {"integration": "local_cli", "kind": "yoetz_cli", "version": "0.3.0"},
@@ -1373,19 +1642,96 @@ class Replayer:
             done = self.finishup(
                 ["status", "--input", "-", "--json"], cwd=workspace, stdin=json.dumps(body)
             )
-            try:
-                status = cast(dict[str, Any], json.loads(done.stdout))
-            except ValueError:
-                result["history_error"] = done.stderr.decode("utf-8", errors="replace")[-2000:]
+            failure = history_page_failure(done.returncode, done.stdout)
+            if failure is not None:
+                result["history_error"] = {
+                    "page": page,
+                    "reason": failure,
+                    "returncode": done.returncode,
+                    "stdout": done.stdout.decode("utf-8", errors="replace")[-2000:],
+                    "stderr": done.stderr.decode("utf-8", errors="replace")[-2000:],
+                }
                 break
-            page_value = cast(dict[str, Any], status.get("page") or {})
-            history.extend(cast(list[Any], page_value.get("items") or []))
+            status = cast(dict[str, Any], json.loads(done.stdout))
+            page_value = cast(dict[str, Any], status["page"])
+            history.extend(cast(list[Any], page_value["items"]))
             cursor = cast(str | None, page_value.get("next_cursor"))
             if cursor is None:
-                result["head_frontier"] = status.get("head_frontier")
+                result["head_frontier"] = status["head_frontier"]
+                complete = True
                 break
+        if not complete and "history_error" not in result:
+            result["history_error"] = {"reason": "history_pages_exhausted"}
+        result["history_complete"] = complete
         result["history"] = history
         return result
+
+    def export_ledgers(self) -> dict[str, Any]:
+        """Every accepted event and bound payload in this instance, read after the service stops."""
+
+        if self.service is not None:
+            return {"ok": False, "error": "export_service_running"}
+        if self._passphrase is None:
+            return {"ok": False, "error": "export_passphrase_unavailable"}
+        root = str(self.instance.provenance["isolated_root"])
+        done = subprocess.run(
+            [str(self.instance.retained_python()), "-I", "-c", _LEDGER_EXPORT],
+            cwd=self.home,
+            env=self.env({"FINISHUP_ISOLATED_ROOT": root, "YOETZ_ISOLATED_ROOT": root}),
+            input=json.dumps({"instance_root": root, "passphrase": self._passphrase}).encode(),
+            capture_output=True,
+            timeout=600,
+            check=False,
+        )
+        exported: dict[str, Any]
+        try:
+            exported = cast(dict[str, Any], json.loads(done.stdout))
+        except ValueError:
+            exported = {"ok": False, "error": "export_output_unparsable"}
+        if done.returncode != 0 and exported.get("ok") is not False:
+            exported = {"ok": False, "error": f"export_exit_{done.returncode}"}
+        exported["returncode"] = done.returncode
+        if exported.get("ok") is not True:
+            exported["stderr"] = done.stderr.decode("utf-8", errors="replace")[-4000:]
+        return exported
+
+
+_HISTORY_MAX_PAGES: Final = 200
+
+
+def history_page_failure(returncode: int, stdout: bytes | str) -> str | None:
+    """Why one ``status view=history`` page is not a successful page, or ``None``."""
+
+    if returncode != 0:
+        return "status_exit_nonzero"
+    try:
+        status: Any = json.loads(stdout)
+    except ValueError:
+        return "status_output_unparsable"
+    if not isinstance(status, dict):
+        return "status_output_not_object"
+    status = cast(dict[str, Any], status)
+    if status.get("ok") is False or "error" in status:
+        return "status_error_result"
+    page: Any = status.get("page")
+    if not isinstance(page, dict):
+        return "status_page_missing"
+    page = cast(dict[str, Any], page)
+    if page.get("view", "history") != "history":
+        return "status_page_wrong_view"
+    if not isinstance(page.get("items"), list):
+        return "status_page_items_missing"
+    cursor = page.get("next_cursor")
+    if cursor is not None and (not isinstance(cursor, str) or not cursor):
+        return "status_page_cursor_invalid"
+    head: Any = status.get("head_frontier")
+    if cursor is None and (
+        not isinstance(head, dict)
+        or not isinstance(cast(dict[str, Any], head).get("sequence"), str)
+        or not isinstance(cast(dict[str, Any], head).get("head_digest"), str)
+    ):
+        return "status_head_frontier_missing"
+    return None
 
 
 _MAPPED: Final = re.compile(
@@ -1408,138 +1754,697 @@ def _event_of(argv: Sequence[str]) -> str:
 
 
 # ------------------------------------------------------------------------------------ comparison
+#
+# ``compare`` holds two replay records to equality. It first refuses either record unless every
+# read succeeded and is complete (setup, history pages, observe status, service stop, ledger
+# export) and each run's exported hash chain recomputes from its own canonical entries. It then
+# compares every part exactly, after normalizing only values whose provenance makes them
+# run-generated:
+#
+# * ``id``: product identifiers (``<prefix>_<uuid>``). Most are minted at random; the rest
+#   (action, result, evidence, finding) are digests over a run's random task ids, its keyed
+#   commitments or clock-bearing evidence bases, so every one differs per run by construction.
+# * ``keyed``: ``hmac-sha256:`` commitments, all under the instance's own random keys.
+# * ``source``: observation source identities (``hook:`` and ``stream:``), digests over structural
+#   records into which the installation-keyed command commitments are merged
+#   (``observe_hooks.map_hook_payload_to_envelope``, ``codex_session_stream._stream_envelope``).
+#   One without keyed fields comes out the same in both runs, and is then named the same.
+# * ``derived``: routine-read summary identities and member digests (their members carry receipt
+#   times, ``observation_admission``) and the advice freshness-frontier suffix (a digest over
+#   evidence bases holding the identities above).
+#
+# A value of these classes that appears anywhere in the corpus is input and stays exact. These
+# values are compared by where they occur rather than by value: each value is named by a digest
+# of the sorted list of slots it occupies (part, path, ordinal), so two runs match only when a
+# bijection maps every value of one run to a value of the other occupying exactly the same slots.
+# A set-valued list of identifiers and a keyed command-segment list (sorted by keyed value, so its
+# order is per-instance) are slots without positions.
+#
+# * ``chain``: a ``sha256:`` value that is a verified entry digest of the run is named by its chain
+#   position; any other ``sha256:`` value (content digests, payload digests) is compared exactly.
+# * ``clock``: named service clock fields only, each checked to be a time inside the run's wall
+#   clock window: ``accepted_at``; ``occurred_at`` and evidence ``observed_at`` of events the
+#   service or its observation coordinator authored; observe-status times (``_CLOCK_KEYS``) and
+#   ages (``_AGE_KEYS``, each no longer than the run).
+# * latency: observe-status timing statistics (``_LATENCY_KEYS``), dropped, and the
+#   observability-only budget diagnostics (``_LATENCY_REASONS``), removed with their counts.
 
-_TOKEN_PATTERNS: Final = (
-    ("hmac", re.compile(r"hmac-sha256:[0-9a-f]{64}")),
-    ("digest", re.compile(r"(?<!hmac-)sha256:[0-9a-f]{64}")),
-    (
-        "id",
-        re.compile(r"\b[a-z]{2,5}_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"),
-    ),
-    (
-        "uuid",
-        re.compile(
-            r"(?<![_0-9a-f-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
-        ),
-    ),
-    # Bare keyed digests and commitments (``hook:<48 hex>`` source identities, 64-hex keys).
-    ("hex", re.compile(r"(?<![0-9a-f])[0-9a-f]{32,64}(?![0-9a-f])")),
-    ("time", re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})")),
+_ID_PREFIXES: Final = (
+    "act aut agt att cas clm dsp egr err evd evt fnd ins job obj obl pin ppr prj psw pvy rcp req "
+    "res rpc ses svc tsk wri"
+).split()
+_UUID: Final = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_TOKEN: Final = re.compile(
+    r"(?P<id>\b(?:" + "|".join(_ID_PREFIXES) + r")_" + _UUID + r"\b)"
+    r"|(?P<keyed>hmac-sha256:[0-9a-f]{64})"
+    r"|\b(?:hook|stream):(?P<source>[0-9a-f]{48})\b"
+    r"|\broutine_read_summary:summary:(?P<summary>[0-9a-f]{64})\b"
+    r"|\bmember_digest=(?P<member>sha256:[0-9a-f]{64})\b"
+    r"|\bfrontier-g[0-9]+-e[0-9]+-(?P<frontier>[0-9a-f]{16})\b"
+    r"|(?P<sha>(?<![0-9a-z-])sha256:[0-9a-f]{64})"
 )
+_TOKEN_CLASS: Final = {
+    "id": "id",
+    "keyed": "keyed",
+    "source": "source",
+    "summary": "derived",
+    "member": "derived",
+    "frontier": "derived",
+}
+# The keyed segment commitments that follow a command composition word are sorted by keyed value.
+_SEGMENT_GROUP: Final = re.compile(r"\b(?:single|and_chain|masked)((?: hmac-sha256:[0-9a-f]{64})+)")
+_CLOCK_KEYS: Final = frozenset(
+    {
+        "first_seen",
+        "last_observation_receipt_time",
+        "last_seen",
+        "last_successful_drain",
+        "max_ts",
+        "observed_at",
+        "oldest_pending_receipt",
+        "oldest_read_at",
+        "oldest_receipt_time",
+        "since",
+        "ts",
+    }
+)
+# Ages measured against the wall clock at read time: compared only as present or absent.
+_AGE_KEYS: Final = frozenset({"oldest_pending_age_ms"})
+_LATENCY_KEYS: Final = frozenset(
+    {
+        "bucket_counts",
+        "last_ms",
+        "max_ms",
+        "mean_ms",
+        "p50_ms_at_most",
+        "p95_ms_at_most",
+        "pass_timings",
+        "recent_max_ms",
+        "recent_p95_ms",
+        # The serialized size of local state that holds the latency figures above.
+        "state_bytes",
+        "sum_ms",
+        "timings",
+    }
+)
+# Observability-only diagnostics recorded when a pass's wall time exceeds its budget; they never
+# change what the pass does (``observe_hooks._record_pass_timing``). Each is removed from
+# ``hook_diagnostics.reasons`` with its counts taken out of the totals.
+_LATENCY_REASONS: Final = frozenset({"hook_budget_exceeded"})
+_SERVICE_AUTHORS: Final = frozenset({"yoetz.engine", "yoetz:observation-coordinator"})
+_CLOCK_MARGIN_SECONDS: Final = 120.0
+_RELATIVE_CLOCK: Final = re.compile(r"\A[0-9]+(?:\.[0-9]+)?s ago\Z")
+_CLOCK: Final = "<clock>"
 
 
-def _tokens(text: str) -> Iterator[tuple[str, str]]:
-    for kind, pattern in _TOKEN_PATTERNS:
-        for match in pattern.finditer(text):
-            yield kind, match.group(0)
+def generated_tokens(text: str) -> set[str]:
+    """Every value of a run-generated class that occurs in ``text`` (corpus inputs)."""
+
+    found: set[str] = set()
+    for match in _TOKEN.finditer(text):
+        for group in _TOKEN_CLASS:
+            if match.group(group) is not None:
+                found.add(match.group(group))
+    return found
+
+
+def corpus_identity(corpus: Mapping[str, Any]) -> dict[str, Any]:
+    """The corpus digest and its generated-class values, which every comparison keeps exact."""
+
+    encoded = json.dumps(corpus, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "sha256": "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "generated_tokens": sorted(generated_tokens(encoded)),
+    }
+
+
+def _parse_time(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 @dataclass(slots=True)
-class Renamer:
-    """Renames the values only one run produced, consistently, in order of first appearance.
+class _Window:
+    start: datetime
+    end: datetime
 
-    A value present in both runs (a recorded host id, a digest of identical content) is kept
-    verbatim and compared exactly; a value present in only one run was generated by that run
-    (a fresh identifier, a wall-clock time, an installation-keyed commitment) and is replaced by
-    ``<kind#n>``. Two runs that differ only in such values normalize to identical text.
+    def check_age(self, milliseconds: int, where: str, failures: list[str]) -> None:
+        limit = (self.end - self.start).total_seconds() + _CLOCK_MARGIN_SECONDS
+        if not 0 <= milliseconds <= limit * 1000:
+            failures.append(f"age_outside_run:{where}")
 
-    A wall-clock time becomes a bare ``<time>``: whether two events share a millisecond depends on
-    how fast the machine ran, so the pattern of equal times is not compared, only their places.
-    """
-
-    run_only: frozenset[str]
-    names: dict[str, str]
-    counters: dict[str, int]
-    renamed_kinds: dict[str, int]
-
-    @classmethod
-    def for_runs(cls, mine: str, theirs: str) -> Renamer:
-        own = {value for _kind, value in _tokens(mine)}
-        other = {value for _kind, value in _tokens(theirs)}
-        return cls(frozenset(own - other), {}, {}, {})
-
-    def apply(self, text: str) -> str:
-        spans: list[tuple[int, int, str]] = []
-        for kind, pattern in _TOKEN_PATTERNS:
-            for match in pattern.finditer(text):
-                value = match.group(0)
-                if value not in self.run_only:
-                    continue
-                if any(start < match.end() and match.start() < end for start, end, _ in spans):
-                    continue
-                if kind == "time":
-                    self.names.setdefault(value, "<time>")
-                elif value not in self.names:
-                    self.counters[kind] = self.counters.get(kind, 0) + 1
-                    self.names[value] = f"<{kind}#{self.counters[kind]}>"
-                self.renamed_kinds[kind] = self.renamed_kinds.get(kind, 0) + 1
-                spans.append((match.start(), match.end(), self.names[value]))
-        out: list[str] = []
-        cursor = 0
-        for start, end, name in sorted(spans):
-            out.append(text[cursor:start])
-            out.append(name)
-            cursor = end
-        out.append(text[cursor:])
-        return "".join(out)
+    def check(self, value: Any, where: str, failures: list[str]) -> None:
+        if value is None:
+            return
+        if type(value) is str and _RELATIVE_CLOCK.match(value):
+            seconds = float(value.split("s", 1)[0])
+            if seconds > (self.end - self.start).total_seconds() + _CLOCK_MARGIN_SECONDS:
+                failures.append(f"clock_outside_run:{where}")
+            return
+        parsed = _parse_time(value) if type(value) is str else None
+        margin = timedelta(seconds=_CLOCK_MARGIN_SECONDS)
+        if parsed is None:
+            failures.append(f"clock_unparsable:{where}")
+        elif not self.start - margin <= parsed <= self.end + margin:
+            failures.append(f"clock_outside_run:{where}")
 
 
-def _stream(run: Mapping[str, Any], key: str) -> list[tuple[str, str]]:
-    """Every compared byte of one workspace, as labelled text parts in replay order."""
+def _canonical_tools() -> tuple[
+    Callable[[Any], bytes], Callable[[Any], str], Callable[[bytes], Any]
+]:
+    from finishup.protocol.canonical import canonical_encode, entry_digest, strict_json_parse
 
-    parts: list[tuple[str, str]] = []
-    for item in cast(list[dict[str, Any]], run["items"]):
-        if item["workspace"] != key:
+    return (
+        cast(Callable[[Any], bytes], canonical_encode),
+        cast(Callable[[Any], str], entry_digest),
+        cast(Callable[[bytes], Any], strict_json_parse),
+    )
+
+
+def chain_failures(task: Mapping[str, Any]) -> list[str]:
+    """Recompute one exported task's hash chain and payload digests from its own bytes."""
+
+    encode, digest_of, parse = _canonical_tools()
+    failures: list[str] = []
+    events = cast(list[dict[str, Any]], task.get("events") or [])
+    if not events:
+        return ["export_task_empty"]
+    previous = "genesis"
+    writers: dict[str, tuple[int, str]] = {}
+    for sequence, event in enumerate(events, start=1):
+        where = f"{task.get('task_id')}#{sequence}"
+        try:
+            raw = cast(str, event["canonical_entry"]).encode("utf-8")
+            entry = cast(dict[str, Any], parse(raw))
+            if encode(entry) != raw:
+                failures.append(f"entry_noncanonical:{where}")
+            preimage = {key: value for key, value in entry.items() if key != "entry_digest"}
+            if digest_of(preimage) != entry["entry_digest"]:
+                failures.append(f"entry_digest_mismatch:{where}")
+            ledger = cast(dict[str, Any], entry["ledger"])
+            if ledger["ingestion_sequence"] != str(sequence):
+                failures.append(f"sequence_mismatch:{where}")
+            if ledger["previous_entry_digest"] != previous:
+                failures.append(f"ledger_chain_broken:{where}")
+            if entry["task_id"] != task.get("task_id"):
+                failures.append(f"task_mismatch:{where}")
+            writer = cast(dict[str, Any], entry["writer"])
+            seen, writer_previous = writers.get(writer["writer_id"], (0, "genesis"))
+            if writer["sequence"] != str(seen + 1) or writer["previous_entry_digest"] != (
+                writer_previous
+            ):
+                failures.append(f"writer_chain_broken:{where}")
+            writers[writer["writer_id"]] = (seen + 1, entry["entry_digest"])
+            payload = cast(str, event["payload"]).encode("utf-8")
+            if "sha256:" + hashlib.sha256(payload).hexdigest() != event["payload_sha256"]:
+                failures.append(f"payload_digest_mismatch:{where}")
+            if len(payload) != entry["payload_ref"]["plaintext_size"]:
+                failures.append(f"payload_size_mismatch:{where}")
+            if encode(parse(payload)) != payload:
+                failures.append(f"payload_noncanonical:{where}")
+            previous = entry["entry_digest"]
+        except (KeyError, TypeError, ValueError) as error:
+            failures.append(f"entry_unreadable:{where}:{type(error).__name__}")
+            break
+    head = task.get("head")
+    if head != {"head_digest": previous, "sequence": str(len(events))}:
+        failures.append(f"export_head_mismatch:{task.get('task_id')}")
+    return failures
+
+
+def _entry(event: Mapping[str, Any]) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(cast(str, event["canonical_entry"])))
+
+
+def bind_workspaces(run: Mapping[str, Any]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Each mapped workspace's exported task, matched by its session id, plus binding failures."""
+
+    failures: list[str] = []
+    export = cast(dict[str, Any], run.get("export") or {})
+    tasks = cast(list[dict[str, Any]], export.get("tasks") or [])
+    bound: dict[str, dict[str, Any]] = {}
+    claimed: set[str] = set()
+    for key, ledger in sorted(cast(dict[str, dict[str, Any]], run.get("ledgers") or {}).items()):
+        mapping = cast(dict[str, Any] | None, ledger.get("mapping"))
+        if mapping is None:
             continue
+        matches = [
+            task
+            for task in tasks
+            if task.get("events")
+            and _entry(task["events"][0])["session_id"] == mapping["session_id"]
+        ]
+        if len(matches) != 1:
+            failures.append(f"export_task_unbound:{key}:{len(matches)}")
+            continue
+        bound[key] = matches[0]
+        claimed.add(cast(str, matches[0]["task_id"]))
+    for task in tasks:
+        if task.get("task_id") not in claimed:
+            failures.append(f"export_task_unclaimed:{task.get('task_id')}")
+    return bound, failures
+
+
+def run_failures(run: Mapping[str, Any]) -> list[str]:
+    """Why a replay record cannot be compared: any failed, partial or inconsistent read."""
+
+    failures: list[str] = []
+    if not run.get("items"):
+        failures.append("items_missing")
+    for name in ("started_at", "finished_at"):
+        if _parse_time(cast(str, run.get(name) or "")) is None:
+            failures.append(f"run_window_missing:{name}")
+    stop = cast(dict[str, Any], run.get("service_stop") or {})
+    if stop.get("stop_returncode") != 0 or stop.get("exit_code") != 0 or stop.get("terminated"):
+        failures.append("service_stop_unclean")
+    export = cast(dict[str, Any], run.get("export") or {})
+    if export.get("ok") is not True or export.get("returncode") != 0:
+        failures.append(f"export_failed:{export.get('error', 'missing')}")
+    setup = cast(dict[str, dict[str, Any]], run.get("setup") or {})
+    ledgers = cast(dict[str, dict[str, Any]], run.get("ledgers") or {})
+    items = cast(list[dict[str, Any]], run.get("items") or [])
+    workspaces = sorted({cast(str, item["workspace"]) for item in items} - {"cli"})
+    for key in workspaces:
+        steps = setup.get(key)
+        if steps is None or any(code != 0 for code in steps.values()):
+            failures.append(f"setup_failed:{key}")
+        ledger = ledgers.get(key)
+        if ledger is None:
+            failures.append(f"ledger_missing:{key}")
+            continue
+        if ledger.get("mapped") is not True or not ledger.get("mapping"):
+            failures.append(f"mapping_missing:{key}")
+        if "history_error" in ledger or ledger.get("history_complete") is not True:
+            failures.append(f"history_incomplete:{key}")
+        if not ledger.get("history"):
+            failures.append(f"history_empty:{key}")
+        head = ledger.get("head_frontier")
+        if not isinstance(head, dict):
+            failures.append(f"head_frontier_missing:{key}")
+        if ledger.get("observe_status_returncode") != 0:
+            failures.append(f"observe_status_failed:{key}")
+        try:
+            if not isinstance(json.loads(cast(str, ledger.get("observe_status") or "")), dict):
+                failures.append(f"observe_status_not_object:{key}")
+        except ValueError:
+            failures.append(f"observe_status_unparsable:{key}")
+    if failures:
+        return failures
+    bound, binding = bind_workspaces(run)
+    failures += binding
+    for key, task in sorted(bound.items()):
+        failures += chain_failures(task)
+        ledger = ledgers[key]
+        events = {_entry(event)["event_id"]: _entry(event) for event in task["events"]}
+        if ledger["head_frontier"] != task["head"]:
+            failures.append(f"history_head_not_export_head:{key}")
+        for row in cast(list[dict[str, Any]], ledger["history"]):
+            entry = events.get(cast(str, row.get("event_id")))
+            if entry is None or (
+                row.get("ingestion_sequence"),
+                row.get("schema_name"),
+                row.get("schema_version"),
+                row.get("accepted_at"),
+                row.get("occurred_at"),
+                row.get("publication_channel"),
+                row.get("actor_id"),
+            ) != (
+                entry["ledger"]["ingestion_sequence"],
+                entry["schema"]["name"],
+                entry["schema"]["version"],
+                entry["ledger"]["accepted_at"],
+                entry["occurred_at"],
+                entry["publication_channel"],
+                entry["author"]["actor_id"],
+            ):
+                failures.append(f"history_row_not_in_export:{key}:{row.get('ingestion_sequence')}")
+    return failures
+
+
+# One compared part: a label and either raw text or a JSON tree already through its field policy.
+type _Part = tuple[str, Any]
+
+
+def _policy_entry(entry: dict[str, Any], window: _Window, failures: list[str]) -> dict[str, Any]:
+    out = json.loads(json.dumps(entry))
+    service = entry["author"]["actor_id"] in _SERVICE_AUTHORS
+    window.check(entry["ledger"]["accepted_at"], "accepted_at", failures)
+    out["ledger"]["accepted_at"] = _CLOCK
+    if service:
+        window.check(entry["occurred_at"], "occurred_at", failures)
+        out["occurred_at"] = _CLOCK
+    return out
+
+
+def _policy_payload(
+    entry: Mapping[str, Any], payload: dict[str, Any], window: _Window, failures: list[str]
+) -> dict[str, Any]:
+    out = dict(payload)
+    if (
+        entry["schema"]["name"] == "evidence_recorded"
+        and entry["author"]["actor_id"] in _SERVICE_AUTHORS
+        and "observed_at" in out
+    ):
+        window.check(out["observed_at"], "observed_at", failures)
+        out["observed_at"] = _CLOCK
+    return out
+
+
+def _policy_status(value: Any, window: _Window, failures: list[str], path: str = "") -> Any:
+    if isinstance(value, dict):
+        source = cast(dict[str, Any], value)
+        reasons = source.get("reasons")
+        if isinstance(reasons, dict) and isinstance(source.get("count"), int):
+            source = dict(source)
+            kept = dict(cast(dict[str, Any], reasons))
+            for reason in _LATENCY_REASONS & set(kept):
+                entry = cast(dict[str, Any], kept.pop(reason))
+                for total, part in (("count", "count"), ("recent_count", "recent")):
+                    if isinstance(source.get(total), int) and isinstance(entry.get(part), int):
+                        source[total] = source[total] - entry[part]
+                if source.get("last_reason") == reason:
+                    failures.append(f"latency_reason_is_last:{path}")
+            source["reasons"] = kept
+        out: dict[str, Any] = {}
+        for key, item in source.items():
+            if key in _LATENCY_KEYS:
+                continue
+            if key in _CLOCK_KEYS and (item is None or type(item) is str):
+                window.check(item, f"{path}/{key}", failures)
+                out[key] = None if item is None else _CLOCK
+            elif key in _AGE_KEYS and type(item) is int:
+                window.check_age(item, f"{path}/{key}", failures)
+                out[key] = _CLOCK
+            else:
+                out[key] = _policy_status(item, window, failures, f"{path}/{key}")
+        return out
+    if isinstance(value, list):
+        return [_policy_status(item, window, failures, path) for item in cast(list[Any], value)]
+    return value
+
+
+def _parts(run: Mapping[str, Any], failures: list[str]) -> dict[str, list[_Part]]:
+    """Every compared part of every workspace, in replay order, through the field policies."""
+
+    window = _Window(
+        cast(datetime, _parse_time(cast(str, run["started_at"]))),
+        cast(datetime, _parse_time(cast(str, run["finished_at"]))),
+    )
+    parts: dict[str, list[_Part]] = {}
+    for item in cast(list[dict[str, Any]], run["items"]):
         label = cast(str, item["label"])
-        parts.append((f"{label} returncode", str(item["returncode"])))
-        parts.append((f"{label} stdout", cast(str, item["stdout"])))
-        parts.append((f"{label} stderr", cast(str, item["stderr"])))
+        bucket = parts.setdefault(cast(str, item["workspace"]), [])
+        bucket.append((f"{label} returncode", str(item["returncode"])))
+        bucket.append((f"{label} stdout", cast(str, item["stdout"])))
+        bucket.append((f"{label} stderr", cast(str, item["stderr"])))
         if "drain" in item:
             drain = cast(dict[str, Any], item["drain"])
-            parts.append((f"{label} drain", f"{drain['returncode']}\n{drain['stdout']}"))
-    ledger = cast(dict[str, Any] | None, run["ledgers"].get(key))
-    if ledger is not None:
-        parts.append(("ledger mapped", str(ledger.get("mapped"))))
-        for index, event in enumerate(cast(list[Any], ledger.get("history") or [])):
-            parts.append((f"ledger history[{index}]", json.dumps(event, sort_keys=True)))
-        parts.append(("ledger head", json.dumps(ledger.get("head_frontier"), sort_keys=True)))
+            bucket.append((f"{label} drain", f"{drain['returncode']}\n{drain['stdout']}"))
+    bound, _ = bind_workspaces(run)
+    for key, task in sorted(bound.items()):
+        ledger = cast(dict[str, Any], run["ledgers"][key])
+        bucket = parts.setdefault(key, [])
+        status = json.loads(cast(str, ledger["observe_status"]))
+        bucket.append((f"{key} observe status", _policy_status(status, window, failures)))
+        entries = {_entry(event)["event_id"]: _entry(event) for event in task["events"]}
+        for index, row in enumerate(cast(list[dict[str, Any]], ledger["history"])):
+            policed = dict(row)
+            policed["accepted_at"] = _CLOCK
+            if entries[row["event_id"]]["author"]["actor_id"] in _SERVICE_AUTHORS:
+                policed["occurred_at"] = _CLOCK
+            bucket.append((f"{key} history[{index}]", policed))
+        bucket.append((f"{key} history head", ledger["head_frontier"]))
+        for index, event in enumerate(cast(list[dict[str, Any]], task["events"]), start=1):
+            entry = _entry(event)
+            bucket.append((f"{key} event[{index}] entry", _policy_entry(entry, window, failures)))
+            payload = cast(dict[str, Any], json.loads(cast(str, event["payload"])))
+            bucket.append(
+                (f"{key} event[{index}] payload", _policy_payload(entry, payload, window, failures))
+            )
+        bucket.append((f"{key} export head", task["head"]))
     return parts
 
 
-def compare_runs(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
-    """Compare two replays of one corpus, workspace by workspace, after renaming run-only values."""
+def _chain_names(run: Mapping[str, Any]) -> dict[str, str]:
+    bound, _ = bind_workspaces(run)
+    names: dict[str, str] = {}
+    for key, task in sorted(bound.items()):
+        for index, event in enumerate(cast(list[dict[str, Any]], task["events"]), start=1):
+            names[_entry(event)["entry_digest"]] = f"<chain:{key}:{index}>"
+    return names
 
-    workspaces = sorted({cast(str, item["workspace"]) for item in old["items"]})
-    old_labels = [item["label"] for item in old["items"]]
-    new_labels = [item["label"] for item in new["items"]]
-    result: dict[str, Any] = {"labels_match": old_labels == new_labels, "workspaces": {}}
-    for key in workspaces:
-        old_parts, new_parts = _stream(old, key), _stream(new, key)
-        old_text = "\n".join(text for _label, text in old_parts)
-        new_text = "\n".join(text for _label, text in new_parts)
-        old_renamer = Renamer.for_runs(old_text, new_text)
-        new_renamer = Renamer.for_runs(new_text, old_text)
+
+@dataclass(slots=True)
+class _Tokens:
+    """A run's generated values, each with the slots it occupies, and the names they get."""
+
+    exact: frozenset[str]
+    chain: Mapping[str, str]
+    slots: dict[str, list[tuple[Any, ...]]]
+    kinds: dict[str, str]
+    names: dict[str, str]
+
+    def _scan(self, text: str) -> list[tuple[int, int, str, str | None]]:
+        """``(start, end, value, class)`` spans; class ``None`` keeps the value exact."""
+
+        grouped: list[tuple[int, int]] = [match.span(1) for match in _SEGMENT_GROUP.finditer(text)]
+        spans: list[tuple[int, int, str, str | None]] = []
+        for match in _TOKEN.finditer(text):
+            for group, kind in (*_TOKEN_CLASS.items(), ("sha", "chain")):
+                value = match.group(group)
+                if value is None:
+                    continue
+                start, end = match.span(group)
+                if kind == "chain":
+                    spans.append((start, end, value, "chain" if value in self.chain else None))
+                elif value in self.exact:
+                    spans.append((start, end, value, None))
+                else:
+                    in_group = any(low <= start < high for low, high in grouped)
+                    spans.append((start, end, value, f"{kind}:group" if in_group else kind))
+                break
+        return spans
+
+    def collect(self, label: str, value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in cast(dict[str, Any], value).items():
+                key_spans = [span for span in self._scan(key) if span[3] not in {None, "chain"}]
+                for _start, _end, token, kind in key_spans:
+                    self._note(token, cast(str, kind), (label, path, "key"))
+                child = f"{path}/<key>" if key_spans else f"{path}/{key}"
+                self.collect(label, item, child)
+        elif isinstance(value, list):
+            items = cast(list[Any], value)
+            if self._is_set(items):
+                for item in items:
+                    self._note(item, self._whole_kind(item), (label, path, "set"))
+            else:
+                for index, item in enumerate(items):
+                    self.collect(label, item, f"{path}[{index}]")
+        elif isinstance(value, str):
+            ordinal = 0
+            for _start, _end, token, kind in self._scan(value):
+                if kind is None or kind == "chain":
+                    continue
+                if kind.endswith(":group"):
+                    self._note(token, kind.split(":")[0], (label, path, "group"))
+                else:
+                    self._note(token, kind, (label, path, ordinal))
+                    ordinal += 1
+
+    def _whole_kind(self, item: str) -> str:
+        spans = self._scan(item)
+        return cast(str, spans[0][3]).split(":")[0]
+
+    def _is_set(self, items: list[Any]) -> bool:
+        if not items or not all(isinstance(item, str) for item in items):
+            return False
+        for item in items:
+            spans = self._scan(cast(str, item))
+            if len(spans) != 1 or spans[0][:2] != (0, len(item)):
+                return False
+            if spans[0][3] not in {"id", "keyed", "source"}:
+                return False
+        return True
+
+    def _note(self, token: str, kind: str, slot: tuple[Any, ...]) -> None:
+        self.slots.setdefault(token, []).append(slot)
+        self.kinds[token] = kind
+
+    def signature(self, token: str) -> str:
+        return json.dumps(sorted(self.slots[token], key=repr), separators=(",", ":"))
+
+    def assign_names(self) -> None:
+        # Named by a digest of the occurrence signature alone, so one differing value never
+        # renames the others.
+        for token, kind in self.kinds.items():
+            digest = hashlib.sha256(self.signature(token).encode("utf-8")).hexdigest()[:12]
+            self.names[token] = f"<{kind}@{digest}>"
+
+    def render(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            rendered = {
+                self._render_text(key): self.render(item)
+                for key, item in cast(dict[str, Any], value).items()
+            }
+            return dict(sorted(rendered.items()))
+        if isinstance(value, list):
+            items = cast(list[Any], value)
+            if self._is_set(items):
+                return sorted(self._render_text(cast(str, item)) for item in items)
+            return [self.render(item) for item in items]
+        if isinstance(value, str):
+            return self._render_text(value)
+        return value
+
+    def _render_text(self, text: str) -> str:
+        out: list[str] = []
+        cursor = 0
+        for start, end, token, kind in self._scan(text):
+            if kind is None:
+                continue
+            out.append(text[cursor:start])
+            out.append(self.chain[token] if kind == "chain" else self.names[token])
+            cursor = end
+        out.append(text[cursor:])
+        rendered = "".join(out)
+        # A keyed segment list is a set ordered by keyed value: compare it as a sorted set.
+        return re.sub(
+            r"\b(single|and_chain|masked)((?: <keyed@[0-9a-f]+>)+)",
+            lambda m: m.group(1) + " " + " ".join(sorted(m.group(2).split())),
+            rendered,
+        )
+
+
+def _render(tokens: _Tokens, value: Any) -> str:
+    if isinstance(value, str):
+        return tokens.render(value)
+    return json.dumps(tokens.render(value), ensure_ascii=False, sort_keys=True)
+
+
+def _first_difference(old: Any, new: Any, path: str = "") -> tuple[str, Any, Any]:
+    """The first path at which two rendered JSON trees differ, with both values there."""
+
+    if isinstance(old, dict) and isinstance(new, dict):
+        old_map, new_map = cast(dict[str, Any], old), cast(dict[str, Any], new)
+        for key in sorted(set(old_map) | set(new_map)):
+            if old_map.get(key, ...) != new_map.get(key, ...):
+                if key in old_map and key in new_map:
+                    return _first_difference(old_map[key], new_map[key], f"{path}/{key}")
+                return f"{path}/{key}", old_map.get(key, "<absent>"), new_map.get(key, "<absent>")
+    if isinstance(old, list) and isinstance(new, list):
+        old_list, new_list = cast(list[Any], old), cast(list[Any], new)
+        if len(old_list) == len(new_list):
+            for index, (a, b) in enumerate(zip(old_list, new_list, strict=True)):
+                if a != b:
+                    return _first_difference(a, b, f"{path}[{index}]")
+    return path or "/", cast(Any, old), cast(Any, new)
+
+
+def compare_runs(
+    old: Mapping[str, Any], new: Mapping[str, Any], exact: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """Compare two replays of one corpus; ``exact`` lists corpus values that are never renamed."""
+
+    result: dict[str, Any] = {"identical": False, "workspaces": {}}
+    old_labels = [item["label"] for item in cast(list[dict[str, Any]], old.get("items") or [])]
+    new_labels = [item["label"] for item in cast(list[dict[str, Any]], new.get("items") or [])]
+    result["labels_match"] = old_labels == new_labels and bool(old_labels)
+    refused = {"old": run_failures(old), "new": run_failures(new)}
+    if refused["old"] or refused["new"]:
+        # A failed, partial or inconsistent read is never a comparable (let alone equal) run.
+        result["refused"] = refused
+        return result
+    failures: dict[str, list[str]] = {"old": [], "new": []}
+    parts = {"old": _parts(old, failures["old"]), "new": _parts(new, failures["new"])}
+    if failures["old"] or failures["new"]:
+        result["refused"] = failures
+        return result
+    tokens: dict[str, _Tokens] = {}
+    for side, run in (("old", old), ("new", new)):
+        collected = _Tokens(exact, _chain_names(run), {}, {}, {})
+        for bucket in parts[side].values():
+            for label, value in bucket:
+                collected.collect(label, value)
+        collected.assign_names()
+        tokens[side] = collected
+    keys = sorted(set(parts["old"]) | set(parts["new"]))
+    for key in keys:
+        old_parts, new_parts = parts["old"].get(key, []), parts["new"].get(key, [])
         mismatches: list[dict[str, str]] = []
         if [label for label, _ in old_parts] != [label for label, _ in new_parts]:
-            mismatches.append({"part": "structure", "old": "parts differ", "new": "parts differ"})
+            mismatches.append(
+                {"part": "structure", "path": "/", "old": "parts differ", "new": "parts differ"}
+            )
         for (label, old_value), (_label, new_value) in zip(old_parts, new_parts, strict=False):
-            a, b = old_renamer.apply(old_value), new_renamer.apply(new_value)
+            a, b = _render(tokens["old"], old_value), _render(tokens["new"], new_value)
             if a != b:
-                mismatches.append({"part": label, "old": a[:4000], "new": b[:4000]})
-        ledger = cast(dict[str, Any], old["ledgers"].get(key) or {})
+                where, a_at, b_at = "/", a, b
+                if not isinstance(old_value, str):
+                    where, a_at, b_at = _first_difference(json.loads(a), json.loads(b))
+                mismatches.append(
+                    {
+                        "part": label,
+                        "path": where,
+                        "old": str(a_at)[:4000],
+                        "new": str(b_at)[:4000],
+                    }
+                )
+        events = sum(1 for label, _ in old_parts if label.endswith(" entry"))
         result["workspaces"][key] = {
             "parts": len(old_parts),
-            "history_events": len(cast(list[Any], ledger.get("history") or [])),
+            "events": events,
             "identical": not mismatches,
             "mismatches": mismatches,
-            "renamed_old": dict(old_renamer.renamed_kinds),
-            "renamed_new": dict(new_renamer.renamed_kinds),
         }
-    result["identical"] = result["labels_match"] and all(
-        entry["identical"] for entry in result["workspaces"].values()
+    result["bijection"] = _bijection(tokens["old"], tokens["new"])
+    result["identical"] = (
+        result["labels_match"]
+        and result["bijection"]["consistent"]
+        and all(entry["identical"] for entry in result["workspaces"].values())
     )
     return result
+
+
+def _bijection(old: _Tokens, new: _Tokens) -> dict[str, Any]:
+    """Whether the occurrence naming pairs the two runs' generated values one-to-one."""
+
+    def groups(tokens: _Tokens) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for token, name in tokens.names.items():
+            out.setdefault(name, set()).add(token)
+        return out
+
+    old_groups, new_groups = groups(old), groups(new)
+    unmatched = sorted(set(old_groups) ^ set(new_groups))
+    uneven = sorted(
+        name
+        for name in set(old_groups) & set(new_groups)
+        if len(old_groups[name]) != len(new_groups[name])
+    )
+    per_kind: dict[str, dict[str, int]] = {}
+    for name, values in old_groups.items():
+        kind = name[1:].split("@", 1)[0]
+        stats = per_kind.setdefault(
+            kind, {"values": 0, "identical_in_both": 0, "interchangeable": 0}
+        )
+        stats["values"] += len(values)
+        stats["identical_in_both"] += len(values & new_groups.get(name, set()))
+        if len(values) > 1:
+            stats["interchangeable"] += len(values)
+    only_old = sorted({old.signature(t) for t in old.kinds} - {new.signature(t) for t in new.kinds})
+    only_new = sorted({new.signature(t) for t in new.kinds} - {old.signature(t) for t in old.kinds})
+    return {
+        "consistent": not unmatched and not uneven,
+        "unmatched_names": unmatched[:20],
+        "uneven_names": uneven[:20],
+        "occurrences_only_old": only_old[:5],
+        "occurrences_only_new": only_new[:5],
+        "by_kind": per_kind,
+    }
 
 
 def _nearest_rank(values: Sequence[float], fraction: float) -> float:
@@ -1579,41 +2484,86 @@ def latency_table(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[dict[s
     return rows
 
 
+def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare two replay records mode by mode; any missing mode or other corpus is a failure."""
+
+    summary: dict[str, Any] = {
+        "old": old.get("build"),
+        "new": new.get("build"),
+        "modes": {},
+        "failures": [],
+    }
+    old_corpus = cast(dict[str, Any], old.get("corpus") or {})
+    new_corpus = cast(dict[str, Any], new.get("corpus") or {})
+    if not old_corpus.get("sha256") or old_corpus.get("sha256") != new_corpus.get("sha256"):
+        summary["failures"].append("corpus_mismatch_or_missing")
+    old_modes = set(cast(dict[str, Any], old.get("runs") or {}))
+    new_modes = set(cast(dict[str, Any], new.get("runs") or {}))
+    if not old_modes or old_modes != new_modes:
+        summary["failures"].append(f"modes_differ:{sorted(old_modes)}:{sorted(new_modes)}")
+    exact = frozenset(
+        cast(list[str], old_corpus.get("generated_tokens") or [])
+        + cast(list[str], new_corpus.get("generated_tokens") or [])
+    )
+    for mode in sorted(old_modes & new_modes):
+        old_run, new_run = old["runs"][mode], new["runs"][mode]
+        summary["modes"][mode] = {
+            "comparison": compare_runs(old_run, new_run, exact),
+            "latency": latency_table(old_run, new_run),
+        }
+    summary["identical"] = not summary["failures"] and all(
+        entry["comparison"]["identical"] for entry in summary["modes"].values()
+    )
+    return summary
+
+
 def render_report(old: Mapping[str, Any], new: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
-    modes = sorted(set(old["runs"]) & set(new["runs"]))
-    summary: dict[str, Any] = {"old": old["build"], "new": new["build"], "modes": {}}
-    lines = [
-        f"# Hook replay: {old['build']['source_ref']} against {new['build']['source_ref']}",
-        "",
-    ]
-    for mode in modes:
-        comparison = compare_runs(old["runs"][mode], new["runs"][mode])
-        latency = latency_table(old["runs"][mode], new["runs"][mode])
-        summary["modes"][mode] = {"comparison": comparison, "latency": latency}
-        lines.append(f"## Mode `{mode}`: {'identical' if comparison['identical'] else 'DIFFERENT'}")
+    summary = compare_records(old, new)
+    old_ref = cast(dict[str, Any], old.get("build") or {}).get("source_ref")
+    new_ref = cast(dict[str, Any], new.get("build") or {}).get("source_ref")
+    lines = [f"# Hook replay: {old_ref} against {new_ref}", ""]
+    for failure in summary["failures"]:
+        lines.append(f"- record failure: `{failure}`")
+    for mode, entry in summary["modes"].items():
+        comparison = entry["comparison"]
+        verdict = "identical" if comparison["identical"] else "DIFFERENT"
+        lines.append(f"## Mode `{mode}`: {verdict}")
         lines.append("")
-        lines.append(
-            "| Workspace | Compared parts | Ledger events | Result | Renamed (old / new) |"
-        )
-        lines.append("|---|---:|---:|---|---|")
-        for key, entry in comparison["workspaces"].items():
+        if "refused" in comparison:
+            lines.append("Refused: a read failed or was incomplete, so nothing was compared.")
+            for side, reasons in comparison["refused"].items():
+                for reason in reasons[:20]:
+                    lines.append(f"- {side}: `{reason}`")
+            lines.append("")
+            continue
+        lines.append("| Workspace | Compared parts | Ledger events (full payloads) | Result |")
+        lines.append("|---|---:|---:|---|")
+        for key, item in comparison["workspaces"].items():
+            result = "identical" if item["identical"] else f"{len(item['mismatches'])} differ"
+            lines.append(f"| {key} | {item['parts']} | {item['events']} | {result} |")
+        lines.append("")
+        bijection = comparison["bijection"]
+        lines.append(f"Generated-value bijection consistent: {bijection['consistent']}.")
+        lines.append("")
+        lines.append("| Class | Values (old) | Identical in both | Interchangeable |")
+        lines.append("|---|---:|---:|---:|")
+        for kind, stats in sorted(bijection["by_kind"].items()):
             lines.append(
-                f"| {key} | {entry['parts']} | {entry['history_events']} | "
-                f"{'identical' if entry['identical'] else f'{len(entry["mismatches"])} differ'} | "
-                f"{entry['renamed_old']} / {entry['renamed_new']} |"
+                f"| {kind} | {stats['values']} | {stats['identical_in_both']} | "
+                f"{stats['interchangeable']} |"
             )
         lines.append("")
         lines.append("| Host | Event | n | Old median | New median | Old p90 | New p90 |")
         lines.append("|---|---|---:|---:|---:|---:|---:|")
-        for row in latency:
+        for row in entry["latency"]:
             lines.append(
                 f"| {row['host']} | {row['event']} | {row['n']} | {row['old_median_ms']} ms | "
                 f"{row['new_median_ms']} ms | {row['old_p90_ms']} ms | {row['new_p90_ms']} ms |"
             )
         lines.append("")
-        for key, entry in comparison["workspaces"].items():
-            for mismatch in entry["mismatches"][:5]:
-                lines.append(f"### {mode} / {key} / {mismatch['part']}")
+        for key, item in comparison["workspaces"].items():
+            for mismatch in item["mismatches"][:5]:
+                lines.append(f"### {mode} / {key} / {mismatch['part']} at `{mismatch['path']}`")
                 lines.append("```text")
                 lines.append("old: " + mismatch["old"][:1500])
                 lines.append("new: " + mismatch["new"][:1500])
@@ -1645,8 +2595,9 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             handle.write(message + "\n")
 
     record: dict[str, Any] = {
-        "schema": "finishup.hook-replay-record/1",
+        "schema": "finishup.hook-replay-record/2",
         "pins": dict(PINNED_HOOK_BUDGETS),
+        "corpus": corpus_identity(corpus),
         "runs": {},
         "instances": {},
     }
@@ -1664,15 +2615,86 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         }
         replayer = Replayer(instance, work_root, log)
         replayer.delay_seconds = args.delay_ms / 1000.0
-        entry: dict[str, Any] = {"tag": tag, "delay_ms": args.delay_ms}
+        if args.admission_clock is not None and mode != "pinned":
+            raise SystemExit("--admission-clock applies to --mode pinned only")
+        replayer.admission_clock = args.admission_clock
+        entry: dict[str, Any] = {
+            "tag": tag,
+            "delay_ms": args.delay_ms,
+            "admission_clock": args.admission_clock,
+        }
         record["instances"][mode] = entry
         try:
+            started_at = datetime.now(UTC).isoformat()
             entry["setup"] = replayer.start(pause_background=mode == "pinned")
-            record["runs"][mode] = replayer.replay(corpus, mode)
-        finally:
+            run = replayer.replay(corpus, mode)
+            run["started_at"] = started_at
+            run["finished_at"] = datetime.now(UTC).isoformat()
+            record["runs"][mode] = run
+            # The service stops cleanly before its stores are exported; ``compare`` refuses a
+            # run whose stop or export did not succeed.
             entry["stop"] = replayer.stop()
+            run["service_stop"] = entry["stop"]
+            run["export"] = replayer.export_ledgers()
+            log(f"[{mode}] export ok={run['export'].get('ok')} {run['export'].get('error', '')}")
+        finally:
+            if replayer.service is not None:
+                entry["stop"] = replayer.stop()
             entry["dispose"] = dispose(instance)
             Path(args.out).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    return 0
+
+
+def _cmd_latency(args: argparse.Namespace) -> int:
+    """Both builds live at once, each callback run on one then the other (alternating order).
+
+    Sequential replays of two builds see different machine load; interleaving each callback puts
+    both builds under the same load at the same moment, so drift cancels out of the comparison.
+    Latency only: the untouched launcher and service, nothing compared but wall time.
+    """
+
+    corpus = json.loads(Path(args.corpus).read_text(encoding="utf-8"))
+    work_root = Path(args.work_root)
+    work_root.mkdir(parents=True, exist_ok=True)
+    log_path = work_root / f"latency-{args.tag}.log"
+
+    def log(message: str) -> None:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+
+    record: dict[str, Any] = {
+        "schema": "finishup.hook-replay-latency/1",
+        "corpus": corpus_identity(corpus),
+        "builds": {},
+        "runs": {},
+        "instances": {},
+    }
+    replayers: dict[str, Replayer] = {}
+    base = Path(args.base).expanduser()
+    try:
+        for name, revision in (("old", args.old_revision), ("new", args.new_revision)):
+            tag = f"{args.tag}{name[0]}"
+            instance = provision(Path(args.checkout), revision, base, tag, args.python)
+            record["builds"][name] = {
+                key: instance.provenance.get(key)
+                for key in ("source_ref", "source_state", "package_version", "package_digest")
+            }
+            replayers[name] = Replayer(instance, work_root / name, log)
+            record["instances"][name] = {"tag": tag}
+            record["instances"][name]["setup"] = replayers[name].start(pause_background=False)
+        states = {name: replayer.begin(corpus, "shipped") for name, replayer in replayers.items()}
+        for number, item in enumerate(cast(list[Item], corpus["items"]), start=1):
+            for name in ("old", "new") if number % 2 else ("new", "old"):
+                replayers[name].step(states[name], number, item)
+        for name, state in states.items():
+            record["runs"][name] = {"items": state.records}
+    finally:
+        for name, replayer in replayers.items():
+            record["instances"][name]["stop"] = replayer.stop()
+            record["instances"][name]["dispose"] = dispose(replayer.instance)
+        Path(args.out).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    rows = latency_table(record["runs"]["old"], record["runs"]["new"])
+    print(json.dumps(rows, indent=1))
     return 0
 
 
@@ -1685,7 +2707,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     if args.summary:
         Path(args.summary).write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(report)
-    return 0 if all(m["comparison"]["identical"] for m in summary["modes"].values()) else 1
+    return 0 if summary["identical"] else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1712,7 +2734,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=0.0,
         help="Pinned mode: hold each callback back this long before it starts (experiments).",
     )
+    replay.add_argument(
+        "--admission-clock",
+        choices=sorted(ADMISSION_CLOCKS),
+        help="Pinned mode: decide the admission buffer's flush without the wall clock (experiments).",
+    )
     replay.set_defaults(handler=_cmd_replay)
+    latency = commands.add_parser(
+        "latency", help="Time two builds side by side, each callback interleaved."
+    )
+    latency.add_argument("--checkout", required=True)
+    latency.add_argument("--old-revision", required=True)
+    latency.add_argument("--new-revision", required=True)
+    latency.add_argument("--tag", required=True)
+    latency.add_argument("--base", default="~/.yz-instances")
+    latency.add_argument("--python", default=sys.executable)
+    latency.add_argument("--corpus", required=True)
+    latency.add_argument("--work-root", required=True)
+    latency.add_argument("--out", required=True)
+    latency.set_defaults(handler=_cmd_latency)
     compare = commands.add_parser("compare", help="Compare two replay records.")
     compare.add_argument("old")
     compare.add_argument("new")
