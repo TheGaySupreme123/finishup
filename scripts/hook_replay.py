@@ -31,11 +31,11 @@ hook budgets in ``PINNED_HOOK_BUDGETS`` raised equally for every build and the s
 background passes paused, so a build that is merely slower takes the same branch as a faster one.
 ``--admission-clock`` decides the admission buffer's flush without the wall clock, and
 ``--fixed-observation-key`` gives every instance one observation key, so keyed values and the
-advice order they decide are the same in both builds and compared exactly. ``compare``'s verdict
-is decided by the pinned runs alone; a ``shipped`` run (launcher untouched) only adds a latency
-table. Contributor tooling: it never targets an everyday installation, and every instance process
-gets a scratch ``HOME``/``CODEX_HOME`` and a keyring backend that refuses all access, so no host
-configuration or OS keychain is read.
+advice finding ids and order they decide are the same in both builds and compared exactly.
+``compare``'s verdict is decided by the pinned runs alone; a ``shipped`` run (launcher untouched)
+only adds a latency table. Contributor tooling: it never targets an everyday installation, and
+every instance process gets a scratch ``HOME``/``CODEX_HOME`` and a keyring backend that refuses
+all access, so no host configuration or OS keychain is read.
 
 Usage (old = the merged predecessor, new = the change's head)::
 
@@ -1879,9 +1879,12 @@ def _event_of(argv: Sequence[str]) -> str:
 # compares every part exactly, after normalizing only values whose provenance makes them
 # run-generated:
 #
-# * ``id``: product identifiers (``<prefix>_<uuid>``). Most are minted at random; the rest
-#   (action, result, evidence, finding) are digests over a run's random task ids, its keyed
-#   commitments or clock-bearing evidence bases, so every one differs per run by construction.
+# * ``id``: product identifiers (``<prefix>_<uuid>``). Most are minted at random; the action,
+#   result, evidence and event identifiers of materialized observations are digests that include
+#   a run's random task id (``observation_materialize.stable_observation_id``), so they differ per
+#   run by construction. Observation advice finding identifiers do not: they digest only a rule
+#   code and an observation-keyed detail token (``observation_advice.stable_advice_finding_id``),
+#   so seeded runs keep them exact (``advice_finding_ids``).
 # * ``keyed``: ``hmac-sha256:`` commitments, all under the instance's own random keys.
 # * ``source``: observation source identities (``hook:`` and ``stream:``), digests over structural
 #   records into which the installation-keyed command commitments are merged
@@ -1940,7 +1943,11 @@ _TOKEN_CLASS: Final = {
 # ``domain.command_segments``), the ``hook:``/``stream:`` source identities over them, and the
 # advice frontier suffix, a digest over evidence bases made of those identities
 # (``observation_advice._freshness_frontier``). Seeded runs keep them exact, which also proves the
-# seed took effect. Routine-read summary and member digests carry receipt times and stay renamed.
+# seed took effect, and keep the advice finding identifiers exact wherever they occur
+# (``advice_finding_ids``). Routine-read summary and member digests carry receipt times and stay
+# renamed. In seeded runs a renamed value that is byte-equal in both runs is a deterministic value
+# the renaming would mask, so it fails the comparison (``renamed_equal``): the self-control replay
+# of one build therefore shows that every value the comparison renames is run-generated.
 _OBSERVATION_KEYED_GROUPS: Final = frozenset({"keyed", "source", "frontier"})
 # The keyed segment commitments that follow a command composition word are sorted by keyed value.
 _SEGMENT_GROUP: Final = re.compile(r"\b(?:single|and_chain|masked)((?: hmac-sha256:[0-9a-f]{64})+)")
@@ -2571,9 +2578,11 @@ class _Tokens:
     kinds: dict[str, str]
     names: dict[str, str]
     # Both runs used ``FIXED_OBSERVATION_KEY``: observation-keyed values stay exact, except those
-    # in ``vault_keyed`` (``vault_keyed_values``).
+    # in ``vault_keyed`` (``vault_keyed_values``), and so do the advice finding identifiers in
+    # ``advice_findings`` (``advice_finding_ids``).
     observation_exact: bool = False
     vault_keyed: frozenset[str] = frozenset()
+    advice_findings: frozenset[str] = frozenset()
 
     def _scan(self, text: str) -> list[tuple[int, int, str, str | None]]:
         """``(start, end, value, class)`` spans; class ``None`` keeps the value exact."""
@@ -2590,8 +2599,10 @@ class _Tokens:
                     spans.append((start, end, value, "chain" if value in self.chain else None))
                 elif value in self.exact or (
                     self.observation_exact
-                    and group in _OBSERVATION_KEYED_GROUPS
-                    and value not in self.vault_keyed
+                    and (
+                        (group in _OBSERVATION_KEYED_GROUPS and value not in self.vault_keyed)
+                        or value in self.advice_findings
+                    )
                 ):
                     spans.append((start, end, value, None))
                 else:
@@ -2634,7 +2645,12 @@ class _Tokens:
         return cast(str, spans[0][3]).split(":")[0]
 
     def _is_set(self, items: list[Any]) -> bool:
-        """Whether a list at a set path is what its producer emits: renamed values, sorted."""
+        """Whether a list at a set path is what its producer emits: renamed values, sorted.
+
+        A value kept exact makes the list positional. Set paths hold event, evidence and artifact
+        identifiers only, never an advice finding identifier or an observation-keyed value, and a
+        positional comparison could only report a difference there, never hide one.
+        """
 
         if not items or not all(isinstance(item, str) for item in items):
             return False
@@ -2745,6 +2761,29 @@ def vault_keyed_values(run: Mapping[str, Any]) -> frozenset[str]:
     )
 
 
+def advice_finding_ids(run: Mapping[str, Any]) -> frozenset[str]:
+    """The finding id of every ``finding_recorded`` the observation coordinator authored.
+
+    These are the materialized observation advice findings
+    (``observation_coordinator._materialize_advice_findings``), whose ids come from
+    ``observation_advice.stable_advice_finding_id``: a digest over the rule code and a detail token
+    built from observation-keyed source identities, so two runs seeded with one observation key
+    derive the same ids, and ``compare`` keeps them exact wherever they occur.
+    """
+
+    bound, _ = bind_workspaces(run)
+    found: set[str] = set()
+    for task in bound.values():
+        for event in cast(list[dict[str, Any]], task["events"]):
+            entry = _entry(event)
+            if (
+                entry["schema"]["name"] == "finding_recorded"
+                and entry["author"]["actor_id"] == "yoetz:observation-coordinator"
+            ):
+                found.add(cast(str, json.loads(cast(str, event["payload"]))["finding_id"]))
+    return frozenset(found)
+
+
 def compare_runs(
     old: Mapping[str, Any], new: Mapping[str, Any], exact: frozenset[str] = frozenset()
 ) -> dict[str, Any]:
@@ -2789,11 +2828,17 @@ def compare_runs(
         collected = _Tokens(exact, _chain_names(run), {}, {}, {})
         collected.observation_exact = seeded
         collected.vault_keyed = vault_keyed_values(run)
+        collected.advice_findings = advice_finding_ids(run) if seeded else frozenset()
         for bucket in parts[side].values():
             for label, value, sets in bucket:
                 collected.collect(label, value, sets)
         collected.assign_names()
         tokens[side] = collected
+    # Seeded runs share no run-generated value, so a value renamed in both runs that is the same in
+    # both is deterministic, and renaming it could hide a difference (``_OBSERVATION_KEYED_GROUPS``).
+    renamed_equal = sorted(set(tokens["old"].names) & set(tokens["new"].names)) if seeded else []
+    result["renamed_equal"] = renamed_equal[:20]
+    result["renamed_equal_count"] = len(renamed_equal)
     keys = sorted(set(parts["old"]) | set(parts["new"]))
     for key in keys:
         old_parts, new_parts = parts["old"].get(key, []), parts["new"].get(key, [])
@@ -2830,6 +2875,7 @@ def compare_runs(
     result["identical"] = (
         result["labels_match"]
         and result["bijection"]["consistent"]
+        and not renamed_equal
         and all(entry["identical"] for entry in result["workspaces"].values())
     )
     return result
@@ -3055,6 +3101,13 @@ def render_report(old: Mapping[str, Any], new: Mapping[str, Any]) -> tuple[str, 
         bijection = comparison["bijection"]
         lines.append(f"Generated-value bijection consistent: {bijection['consistent']}.")
         lines.append("")
+        if comparison["controls"]["fixed_observation_key"] is True:
+            lines.append(
+                "Renamed values equal in both runs (seeded runs must have none): "
+                f"{comparison['renamed_equal_count']}."
+            )
+            lines.extend(f"- `{value}`" for value in comparison["renamed_equal"])
+            lines.append("")
         lines.append("| Class | Values (old) | Identical in both | Interchangeable |")
         lines.append("|---|---:|---:|---:|")
         for kind, stats in sorted(bijection["by_kind"].items()):

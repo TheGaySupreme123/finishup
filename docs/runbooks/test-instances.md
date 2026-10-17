@@ -255,14 +255,17 @@ How `compare` decides:
   own bytes, two runs under different controls or work roots, or a fixed key that was asked for and
   not written.
 - **Exact comparison.** Every compared part must be equal after normalizing only values that differ
-  between two runs of one build: identifiers, which are random or digests over a run's random task
-  ids and are matched one-to-one by where they occur; vault-keyed payload commitments; routine-read
+  between two runs of one build: identifiers that are random or digests over a run's random task
+  ids, matched one-to-one by where they occur; vault-keyed payload commitments; routine-read
   summary digests, which carry receipt times; named service clock fields, each checked to fall
   inside the run; wall-time figures at named `observe status` paths, never counts, outcomes or
   limits; and the order of one call's captured tool input and output evidence, which the
   materializer emits in random object-id order and which is compared as a set of full events. With
-  the fixed key, observation-keyed values are compared exactly. A list of identifiers is an
-  unordered set only where its producer sorts it by value; an advice ranking is compared in order.
+  the fixed key, observation-keyed values and the advice finding identifiers derived from them are
+  compared exactly, and a renamed value that is the same in both runs fails the comparison, so the
+  self-control replay shows that everything renamed is generated per run. A list of identifiers is
+  an unordered set only where its producer sorts it by value; an advice ranking is compared in
+  order.
 - **The lazy path was taken.** The verdict also requires that no valid hook callback of the new
   build built the full schema catalog, that at least one parsed its schemas lazily, and that every
   callback that loaded schemas in the old build loaded them lazily in the new one.

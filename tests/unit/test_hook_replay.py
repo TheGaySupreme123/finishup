@@ -349,8 +349,9 @@ def _make_run(
     """A synthetic replay record; ``payload_hook`` may edit each payload before it is sealed.
 
     ``seeded`` runs share one observation key (``--fixed-observation-key``): their observation-keyed
-    values (command commitments, source identities) are the same in every seed, while identifiers
-    and vault-keyed payload commitments still differ. ``captured`` (``"input-first"`` or
+    values (command commitments, source identities) and the advice finding id derived from them
+    (``stable_advice_finding_id``) are the same in every seed, while the other identifiers and
+    vault-keyed payload commitments still differ. ``captured`` (``"input-first"`` or
     ``"output-first"``) adds a call's captured tool input and output evidence before its result,
     in that order, as the materializer emits them in random object-id order (``"apart"``: input
     first, each accepted at its own time). ``catalog`` is how each callback loaded schemas: the
@@ -362,6 +363,10 @@ def _make_run(
     task, session, writer = gen.id("tsk"), gen.id("ses"), gen.id("wri")
     action, evidence, result, finding = gen.id("act"), gen.id("evd"), gen.id("res"), gen.id("fnd")
     segments = sorted(keyed.keyed() for _ in range(3))
+    if seeded:
+        # The coordinator's advice finding id digests a rule code and an observation-keyed detail
+        # token (``observation_advice.stable_advice_finding_id``).
+        finding = keyed.id("fnd")
     events: list[dict[str, Any]] = []
     digests: list[str] = []
     event_ids: list[str] = []
@@ -1319,6 +1324,65 @@ def test_seeded_runs_keep_observation_keyed_values_exact() -> None:
     assert {entry["payload_ref"]["commitment"] for entry in entries} == set(
         _MODULE.vault_keyed_values(old)
     )
+
+
+def _replace_advice_finding(run: dict[str, Any], other: str) -> dict[str, Any]:
+    """Put ``other`` in both places the run's advice finding id occurs, keeping digests valid."""
+
+    finding = json.loads(run["export"]["tasks"][0]["events"][4]["payload"])["finding_id"]
+    _rewrite_payload(run, 4, {"finding_id": other})
+    status = json.loads(run["ledgers"]["w"]["observe_status"])
+    assert status["advice"]["finding_ids"] == [finding]
+    return _with_status(run, {"advice": {**status["advice"], "finding_ids": [other]}})
+
+
+def test_seeded_runs_keep_the_advice_finding_id_exact() -> None:
+    # Probe P9: a build that derived another advice finding id, in the same two places (the
+    # ``finding_recorded`` payload and the observe-status ranking), is a difference.
+    old, new = _make_run(1), _make_run(2)
+    assert _MODULE.advice_finding_ids(old) == _MODULE.advice_finding_ids(new)
+    assert _compare(old, new)["identical"]
+    new = _replace_advice_finding(new, "fnd_00000000-0000-4000-8000-000000000001")
+    assert _MODULE.run_failures(new) == []
+    result = _compare(old, new)
+    assert not result["identical"]
+    assert [m["part"] for m in result["workspaces"]["w"]["mismatches"]] == [
+        "w observe status",
+        "w event[5] payload",
+    ]
+    # Without the shared key the id is per-instance and is renamed by where it occurs.
+    unseeded_old, unseeded_new = _make_run(1, seeded=False), _make_run(2, seeded=False)
+    unseeded_new = _replace_advice_finding(unseeded_new, "fnd_00000000-0000-4000-8000-000000000001")
+    assert _compare(unseeded_old, unseeded_new)["identical"]
+
+
+def test_a_renamed_value_equal_in_both_seeded_runs_fails() -> None:
+    # A deterministic value the comparison renames would hide a difference in it, so in seeded runs,
+    # where no run-generated value repeats, one that is the same in both runs fails the comparison.
+    fixed = "evd_00000000-0000-4000-8000-0000000000aa"
+
+    def cite(name: str, payload: dict[str, Any], _gen: _Gen) -> None:
+        if name == "finding_recorded":
+            payload["related_ref"] = fixed
+
+    result = _compare(_make_run(1, payload_hook=cite), _make_run(2, payload_hook=cite))
+    assert all(entry["identical"] for entry in result["workspaces"].values())
+    assert result["bijection"]["consistent"]
+    assert not result["identical"]
+    assert result["renamed_equal"] == [fixed]
+    assert result["renamed_equal_count"] == 1
+    report, _ = _MODULE.render_report(
+        _record(_make_run(1, payload_hook=cite, catalog="eager"), "old"),
+        _record(_make_run(2, payload_hook=cite), "new"),
+    )
+    assert "Verdict (pinned runs only): **DIFFERENT**." in report
+    assert (
+        f"Renamed values equal in both runs (seeded runs must have none): 1.\n- `{fixed}`" in report
+    )
+    # Unseeded runs keep observation-keyed values renamed, and one without keyed inputs may repeat.
+    assert _compare(
+        _make_run(1, payload_hook=cite, seeded=False), _make_run(2, payload_hook=cite, seeded=False)
+    )["identical"]
 
 
 def test_runs_under_different_controls_or_an_unwritten_seed_are_refused() -> None:
