@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -153,7 +153,9 @@ __all__ = [
     "SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP",
     "SEMANTIC_MISSING_ITEMS_REJECTED_GAP",
     "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
+    "DEFERRED_BEFORE_FIRST_EDIT_TEXT",
     "SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP",
+    "review_deferred_before_first_edit",
     "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
     "SEMANTIC_MISSING_FINISHUP_LIMIT_GAP",
@@ -180,6 +182,8 @@ __all__ = [
     "render_receipt_human",
     "resolved_finding_ids_for_render",
     "unresolved_findings_for_render",
+    "COORDINATOR_FAILURE_LIMITATION",
+    "limitations_name_coordinator_failure",
     "semantic_coverage_gap_code",
     "recorded_semantic_outcome_gap_code",
     "check_time_change_gap_sentence",
@@ -231,6 +235,19 @@ _NO_OBLIGATIONS_REASON_VALUES: Final = frozenset(
 # semantic_review_not_requested marks every local-only check (AI-powered review never attempted).
 SEMANTIC_REVIEW_NOT_CONFIGURED_GAP: Final = "semantic_review_not_configured"
 SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP: Final = "semantic_relevance_review_not_run"
+# Issue #1077: a coordinator failure shares that gap (the review did not complete) and the
+# limitations section names the fault. The sentence is fixed; renderers match it and never
+# echo a caller-supplied reason.
+COORDINATOR_FAILURE_LIMITATION: Final = (
+    "AI-powered review failed inside FinishUP (coordinator_failure). "
+    "This is a fault in FinishUP, not in the work under review or the provider."
+)
+UNRESOLVED_VERIFICATION_GAP: Final = "unresolved_verification_limitation"
+UNRESOLVED_VERIFICATION_LIMITATION: Final = (
+    "Unresolved verification limitation: a risky resolved requirement has no admissible "
+    "observed verification link or recorded verification limit; an unanswered acceptance "
+    "invitation does not establish coverage."
+)
 # The review ran, but the inference channel withheld categories the review profile
 # selected, so it judged the work without material it was configured to receive.
 SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP: Final = "semantic_review_context_withheld"
@@ -297,6 +314,21 @@ SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
 # Nothing was composed or sent. Like the skipped round, never agent work in itself; the next check
 # after an edit reviews as configured.
 SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP: Final = "semantic_review_deferred_before_first_edit"
+# The sentence every user-facing surface uses for that deferral. The wire reason on a new
+# check is ``deferred_before_first_edit`` (check-result 1.5.0). An older record may still
+# say ``deterministic_mode`` beside the gap; prose uses this sentence either way.
+DEFERRED_BEFORE_FIRST_EDIT_TEXT: Final = "AI-powered review is on; it starts after your first edit."
+DEFERRED_BEFORE_FIRST_EDIT_REASON: Final = "deferred_before_first_edit"
+
+
+def review_deferred_before_first_edit(reason: object, gaps: Iterable[object]) -> bool:
+    """Whether this check or receipt is the pre-edit deferral, including older records."""
+
+    if reason == DEFERRED_BEFORE_FIRST_EDIT_REASON:
+        return True
+    return any(gap == SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP for gap in gaps)
+
+
 # A successful provider call can still lose the exact post-admission input manifest.  Keep the
 # failure reason closed and coverage-bounded so a composed manifest is never presented as what the
 # provider received.  These are internal provenance facts surfaced as ordinary receipt gaps.
@@ -3024,6 +3056,39 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
     return text
 
 
+def limitations_name_coordinator_failure(sections: object) -> bool:
+    """Whether a limitations section carries the fixed coordinator-failure sentence.
+
+    Accepts receipt sections or their JSON objects. Returns no text from the section.
+    """
+
+    if not isinstance(sections, (list, tuple)):
+        return False
+    for section in cast(Sequence[object], sections):
+        body: object
+        if type(section) is ReceiptSection:
+            body = section.body
+        elif _is_actual_mapping(section):
+            body = cast(Mapping[object, object], section).get("body")
+        else:
+            continue
+        if type(body) is str and COORDINATOR_FAILURE_LIMITATION in body:
+            return True
+    return False
+
+
+def _compact_not_run_clause(document: ReceiptDocument, clause: str) -> str:
+    """Name a coordinator failure in the compact sentence when the limitations section does."""
+
+    if not limitations_name_coordinator_failure(document.sections):
+        return clause
+    return clause.replace(
+        "AI-powered relevance review was not run",
+        "AI-powered review failed inside FinishUP (coordinator_failure)",
+        1,
+    )
+
+
 def render_receipt_compact(document: ReceiptDocument) -> str:
     """Render the bounded, newline-free compact receipt sentence frozen by v0.1 fixtures."""
 
@@ -3075,19 +3140,35 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
             "recorded."
         )
     if gap_codes & _SEMANTIC_REVIEW_NOT_RUN_GAPS:
+        provenance = document.semantic_provenance
+        deferred = review_deferred_before_first_edit(
+            None if provenance is None else provenance.reason,
+            gap_codes,
+        )
+        # The deferral is not "review was not run": AI-powered review is on and waits
+        # for the first edit. The exact sentence is the one every other surface uses.
+        review_clause = (
+            DEFERRED_BEFORE_FIRST_EDIT_TEXT
+            if deferred
+            else "AI-powered relevance review was not run."
+        )
         if document.conclusion is ReceiptConclusion.UNRESOLVED_FINDINGS_REMAIN:
             count = len(unresolved)
             noun = "finding" if count == 1 else "findings"
             verb = "remains" if count == 1 else "remain"
-            return (
-                prefix
-                + f"{count} unresolved {noun} {verb}; AI-powered relevance review was not run."
+            return _compact_not_run_clause(
+                document,
+                prefix + f"{count} unresolved {noun} {verb}; {review_clause}",
             )
         if document.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
-            return prefix + "coverage is insufficient; AI-powered relevance review was not run."
-        return (
+            return _compact_not_run_clause(
+                document,
+                prefix + f"coverage is insufficient; {review_clause}",
+            )
+        return _compact_not_run_clause(
+            document,
             prefix + "no unresolved local issue was found in the published record; "
-            "AI-powered relevance review was not run."
+            f"{review_clause}",
         )
     if {
         "import_source_range_not_universal",

@@ -14,6 +14,10 @@ from typing import Final, cast
 from packaging.version import InvalidVersion, Version
 
 from finishup import __version__
+from finishup.adapters.integrations.codex_mcp import (
+    isolated_root_environment,
+    proven_serve_command,
+)
 from finishup.adapters.integrations.codex_skill import (
     SkillResourceSource,
     load_packaged_skill_members,
@@ -22,7 +26,12 @@ from finishup.adapters.integrations.codex_skill import (
 )
 from finishup.config.foreign_write import project_root_admitted
 from finishup.domain.values import JsonValue as DomainJsonValue
-from finishup.ports.harness_mcp import MCP_SERVE_COMMAND, MCP_SERVER_NAME
+from finishup.ports.harness_mcp import (
+    MCP_SERVE_COMMAND,
+    MCP_SERVER_NAME,
+    McpRegistrationError,
+    McpRegistrationReason,
+)
 from finishup.ports.integrations import (
     HarnessId,
     IntegrationError,
@@ -43,6 +52,8 @@ __all__ = [
     "PLUGIN_ROOT",
     "PluginHookPresence",
     "PluginInspection",
+    "activation_cache_mcp_binding",
+    "activation_cache_members",
     "codex_supports_async_hooks",
     "inspect_plugin",
     "install_plugin",
@@ -320,16 +331,79 @@ def _plugin_json() -> bytes:
     return canonical_encode(body) + b"\n"
 
 
-def _mcp_json() -> bytes:
-    body: dict[str, JsonValue] = {
-        "mcpServers": {
-            MCP_SERVER_NAME: {
-                "command": MCP_SERVE_COMMAND[0],
-                "args": list(MCP_SERVE_COMMAND[1:]),
-            }
-        }
+def _mcp_json(
+    *,
+    command: tuple[str, ...] | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> bytes:
+    """Portable MCP entry, or one activation-cache entry bound to a proven launcher.
+
+    The default is the historical bare ``finishup`` command with no environment. Repository
+    generation and the project source tree use that form, so neither carries a machine path.
+    The activation cache passes the command and environment the external registration writes.
+    """
+
+    argv = MCP_SERVE_COMMAND if command is None else command
+    entry: dict[str, JsonValue] = {
+        "args": list(argv[1:]),
+        "command": argv[0],
     }
+    if environment:
+        entry["env"] = cast(JsonValue, {key: environment[key] for key in sorted(environment)})
+    body: dict[str, JsonValue] = {"mcpServers": {MCP_SERVER_NAME: entry}}
     return canonical_encode(body) + b"\n"
+
+
+def _binding_error(exc: McpRegistrationError) -> IntegrationError:
+    reason = (
+        IntegrationReason.TARGET_UNSAFE
+        if exc.reason is McpRegistrationReason.ISOLATION_INVALID
+        else IntegrationReason.SOURCE_INVALID
+    )
+    token = exc.safe_details.get("detail", exc.safe_details.get("reason"))
+    details: dict[str, DomainJsonValue] = {}
+    if type(token) is str and token.isascii() and "/" not in token and len(token) <= 64:
+        details["detail"] = token
+    return _error(reason, details)
+
+
+def activation_cache_mcp_binding() -> tuple[tuple[str, ...], dict[str, str] | None]:
+    """The MCP argv and isolation environment the activation cache writes.
+
+    The same pair ``activation_cache_members`` stores in ``.mcp.json``, and the argv a
+    noninteractive connect must approve. An embed with no proven console script keeps a bare
+    command for external registration; the cache refuses that case (``launcher_unproven``)
+    rather than writing a command ``PATH`` would resolve. An unsafe isolation root is refused.
+    ``PATH`` is never consulted.
+    """
+
+    try:
+        command, _digest = proven_serve_command(MCP_SERVE_COMMAND)
+        environment = isolated_root_environment()
+    except McpRegistrationError as exc:
+        raise _binding_error(exc) from exc
+    # ``proven_serve_command`` returns the historical bare argv when this process has neither
+    # an installed RECORD nor an invoking launcher. That is not a cache command.
+    if len(command) < 1 or not Path(command[0]).is_absolute():
+        raise _error(IntegrationReason.SOURCE_INVALID, {"detail": "launcher_unproven"})
+    return command, environment
+
+
+def activation_cache_members(members: Mapping[str, bytes]) -> dict[str, bytes]:
+    """Cache-layer plugin tree: the managed source with its MCP entry bound to this runtime.
+
+    Codex copies the project source into the activation cache and launches that copy. The
+    project ``.mcp.json`` stays the portable bare command. The cache copy names the same proven
+    absolute launcher and isolated-root environment as ``codex mcp add`` (ADR-026, ADR-028,
+    issue #1076). A bare ``finishup`` command or a legacy ``yoetz`` command in the input is
+    replaced. Calling this again on its own output changes nothing. An unproven launcher or an
+    unsafe isolation root is refused. ``PATH`` is never consulted.
+    """
+
+    command, environment = activation_cache_mcp_binding()
+    rewritten = {path: data for path, data in members.items() if path != _MARKER_NAME}
+    rewritten[".mcp.json"] = _mcp_json(command=command, environment=environment)
+    return {**rewritten, _MARKER_NAME: _build_marker(rewritten)}
 
 
 def render_plugin_tree(

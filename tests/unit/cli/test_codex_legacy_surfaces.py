@@ -102,6 +102,12 @@ def _connect(
     monkeypatch.setattr(codex_connection, "FinishUpRuntime", Runtime)
     monkeypatch.setattr(codex_connection, "CodexMcpAdapter", adapter)
     monkeypatch.setattr(codex_connection, "inspect_activation", activation)
+
+    # This surface fixture models a complete current connection; only legacy pieces vary.
+    def current_skill(_target: object) -> str:
+        return "installed_exact"
+
+    monkeypatch.setattr(codex_connection, "skill_tree_state", current_skill)
     installation = HostInstallation(
         "codex", Path("/opt/codex-testing"), "0.153.4", tmp_path / "home", "Codex Testing"
     )

@@ -711,6 +711,8 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             # And the keyed segment commitments of a composed command (#977).
             "command_segment_commitments",
             "command_composition",
+            # And the before/after workspace fingerprint fact (PR #1080 round 5).
+            "workspace_effect",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1362,8 +1364,8 @@ def _structural_properties(document: dict[str, Any]) -> dict[str, Any]:
 def _assert_v29_request_adds_only_command_commitment(
     v28: dict[str, Any], v29: dict[str, Any]
 ) -> None:
-    """The 2.9 request adds the keyed command identity, the runner class and the closed runtime
-    facts (#909, #977) and nothing else."""
+    """The 2.9 request adds the keyed command identity, the runner class, the closed runtime
+    facts (#909, #977) and the workspace-effect fact (PR #1080) and nothing else."""
 
     v28_fields = _structural_properties(v28)
     v29_fields = _structural_properties(v29)
@@ -1376,6 +1378,11 @@ def _assert_v29_request_adds_only_command_commitment(
         "observed_images",
         "command_segment_commitments",
         "command_composition",
+        "workspace_effect",
+    }
+    assert v29_fields["workspace_effect"] == {
+        "enum": ["changed", "unavailable", "unchanged"],
+        "type": "string",
     }
     assert v29_fields["command_segment_commitments"] == {
         "items": {
@@ -1436,6 +1443,7 @@ def _assert_v29_request_adds_only_command_commitment(
         "observed_images",
         "command_segment_commitments",
         "command_composition",
+        "workspace_effect",
     ):
         del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {
@@ -1569,7 +1577,7 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
             f"{name}-2.9.0.schema.json"
         ).read_bytes()
         # 2.9.0 (unreleased) also moves to the respond 1.1.0 pair (issue #905), to the
-        # check-result 1.4.0 review output (issue #961) and to the publish-work 1.1.0 result
+        # check-result 1.5.0 review output (issue #961, deferral reason on 1.5.0) and to the publish-work 1.1.0 result
         # that names the current policy-pack versions; undo those retargets before comparing,
         # so every other byte must still match frozen 2.8.
         v29 = cast(
@@ -1580,7 +1588,7 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
                     .read_bytes()
                     .replace(b"respond-request-1.1.0", b"respond-request-1.0.0")
                     .replace(b"respond-result-1.1.0", b"respond-result-1.0.0")
-                    .replace(b"check-result-1.4.0", b"check-result-1.3.0")
+                    .replace(b"check-result-1.5.0", b"check-result-1.3.0")
                     .replace(b"publish-work-result-1.1.0", b"publish-work-result-1.0.0")
                 )
             ),

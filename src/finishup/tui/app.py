@@ -1002,11 +1002,14 @@ class FinishUpTui(App[int]):
         lines = render_layers(outcome.layers, self.body_width)
         blocked = [layer for layer in outcome.layers if layer.state is LayerState.BLOCKED]
         if blocked:
+            details = [f"outcome={outcome.outcome}", f"reason={outcome.reason}"]
+            if outcome.next_step:
+                details.append(outcome.next_step)
             self.settle(
                 Level.BLOCKED,
                 "FinishUP could not finish connecting",
                 lines,
-                details=(f"outcome={outcome.outcome}", f"reason={outcome.reason}"),
+                details=tuple(details),
             )
             return False
         unproven = [layer for layer in outcome.layers if layer.state is LayerState.UNPROVEN]

@@ -53,11 +53,13 @@ from finishup.domain.observation import (
 from finishup.domain.observation_budget import ObservationMode
 from finishup.domain.observation_selection import (
     OBSERVATION_CLASSIFICATION_VERSION,
+    SHELL_TOOLS,
     ObservationClassification,
     ObservationContentRole,
     classify_observation,
-    command_runner_class,
     compound_verification_gap_required,
+    native_command_runner_class,
+    without_routine_read,
 )
 from finishup.domain.shell_writes import shell_write_scope
 from finishup.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
@@ -945,6 +947,13 @@ def _stream_record_classification(
     return classify_observation(_stream_classification_payload(record, structural), phase)
 
 
+def _stream_shell_tool(tool_name: object) -> bool:
+    return type(tool_name) is str and (
+        tool_name.casefold() in SHELL_TOOLS
+        or any(hint in tool_name.casefold() for hint in ("shell", "exec", "terminal"))
+    )
+
+
 def _carry_stream_candidate(
     classification: ObservationClassification,
     *,
@@ -1242,13 +1251,9 @@ def structural_from_stream_record(
                     fields["command_segment_commitments"] = segments[0]
                     fields["command_composition"] = segments[1]
         if item_type == "CommandExecution":
-            command_payload = JsonObject(
-                {
-                    "tool_name": tool or "shell",
-                    "command": body.get("command"),
-                }
-            )
-            runner = command_runner_class(command_payload)
+            # Identity normalization may recursively erase shell executable paths. Read-only
+            # classification retains them beyond the one ordinary native host-shell layer.
+            runner = native_command_runner_class(body.get("command"))
             if runner is not None:
                 fields["runner_class"] = runner
             raw_command = body.get("command")
@@ -1262,7 +1267,7 @@ def structural_from_stream_record(
                     # The closed token as the hook would send it (workspace, or the non-counting
                     # notes / finishup_owned scope a declared output of that kind overrides).
                     fields["write_scope"] = scope
-                if compound_verification_gap_required(command_payload):
+                if compound_verification_gap_required({"command": raw_command}):
                     # Preserve the host's outer result. The bounded gap records that a
                     # masking-capable composition does not expose each nested outcome (#968).
                     gaps.add(ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value)
@@ -3162,8 +3167,16 @@ def _reconcile_session_stream_path(
         candidate_call_tools = dict(call_tools)
         structural = cast(Mapping[str, JsonValue], unpaired_envelope.structural_payload)
         call_id = _token(structural.get("tool_call_id"))
-        _, paired_candidate = _decode_stream_call_tool(
+        paired_tool, paired_candidate = _decode_stream_call_tool(
             candidate_call_tools.get(call_id) if call_id is not None else None
+        )
+        # PR #1080: the stream sees no before/after workspace fingerprint, and command text cannot
+        # prove a shell call read only, so a shell call never joins a routine-read summary here.
+        # It may still be an explicitly protected read, which is delivered individually anyway.
+        shell_call = _stream_shell_tool(
+            paired_tool
+            if paired_tool is not None
+            else unpaired_envelope.structural_payload.get("tool_name")
         )
         envelope = _pair_stream_tool_name(
             unpaired_envelope,
@@ -3195,7 +3208,9 @@ def _reconcile_session_stream_path(
         # handled.  A failed/unknown post is still a protected individual
         # outcome, but letting the planner flush it preserves the original
         # pending call instead of exposing the summary marker as a pre row.
-        optional_routine = classification is not None and classification.routine_candidate
+        optional_routine = (
+            classification is not None and classification.routine_candidate and not shell_call
+        )
         try:
             flush_ok = store.flush_selected_admission(
                 workspace_commitment,
@@ -3279,11 +3294,16 @@ def _reconcile_session_stream_path(
                     read_protection_probe,
                     protection_reference,
                 )
+            if not read_protected and shell_call:
+                # PR #1080: delivered individually, in its original stream shape.
+                classification = without_routine_read(classification)
+                selection_envelope = envelope
+                selection_fence = ""
             # ``routine_read`` is a service-owned summary marker. Keep the
             # original stream shape when the route is absent or Detailed mode
             # is active so individual materialization still produces action and
             # result records without captured content.
-            if not read_protected:
+            elif not read_protected:
                 selection_envelope = _selection_envelope(
                     selection_envelope,
                     classification,

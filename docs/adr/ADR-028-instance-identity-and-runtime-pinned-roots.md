@@ -158,3 +158,13 @@ real mode bits otherwise), a pre-existing empty root, a late pin conflict, and f
 and rename of the pin; and a real run as `nobody` against a root-owned runtime (previous release:
 `internal_error`, then `instance_exists`; now `runtime_pin_unwritable` with nothing left, and the
 retry succeeds once the prefix is the user's).
+
+**Amended 2026-10-15 (issue #1076).** Decision 6's Codex external-registration rule also covers the
+Codex plugin activation-cache `.mcp.json`: that file names the pinned absolute launcher and, when
+the process is isolated, both isolation-root spellings. A foreign `finishup` earlier on `PATH` is
+not the command the plugin launches. Plugin hook commands in that cache are not rewritten.
+They stay the portable basename `finishup`, with no isolation environment. Decision 2's pin
+still sits next to whichever interpreter a hook command resolves; this amendment does not
+choose that interpreter for hooks, so a bare `finishup` hook command still resolves through
+`PATH` (issue #604). This amendment does not rewrite Claude Code or Cursor
+registrations. The project plugin source and the committed repository tree stay portable.

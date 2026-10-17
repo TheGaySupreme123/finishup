@@ -405,7 +405,8 @@ A `status` read and a dry run before a publish are optional, not a ritual: the w
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
 and as complete fallback bodies in one section per family of
-`finishup://guidance/request-templates.md` (for example `#publish-work-action`). Example `occurred_at`
+`finishup://guidance/request-templates.md`. Ordinary publish is one read,
+`#publish-shapes`. Example `occurred_at`
 values are illustrative shape only; do not copy them into live drafts.
 
 ### Event draft skeleton

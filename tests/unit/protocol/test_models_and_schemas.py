@@ -124,7 +124,11 @@ _EXPECTED_SEMANTIC_STATUSES = {
     "failed",
 }
 _EXPECTED_SEMANTIC_STATUS_REASONS = {
-    "not_requested": {"deterministic_mode", "no_material_semantic_case"},
+    "not_requested": {
+        "deterministic_mode",
+        "deferred_before_first_edit",
+        "no_material_semantic_case",
+    },
     "not_configured": {"provider_not_configured", "local_model_not_configured"},
     "blocked_by_policy": {
         "network_egress_denied",
@@ -321,8 +325,9 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "status",
         None,
-    ): 129,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
-    # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode
+    ): 132,  # +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
+    # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode;
+    # #1079 +2 admissible_verification, +1 closing_material_frontier
     ("status", "advice"): 25,
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
@@ -380,7 +385,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/publish-work-result-1.0.0.schema.json",
         "version_slice",
     ),
-    ("CheckSuccessModel", "operations/check-result-1.4.0.schema.json", "success"),
+    ("CheckSuccessModel", "operations/check-result-1.5.0.schema.json", "success"),
     (
         "CheckPolicyExecutionModel",
         "operations/check-result-1.0.0.schema.json",
@@ -2293,6 +2298,14 @@ def test_check_recorded_schema_matches_final_semantic_provenance_identity() -> N
                 payload["semantic_provenance"] = _semantic_provenance_for(status, reason)
             else:
                 payload.pop("semantic_provenance", None)
+            if reason == "deferred_before_first_edit":
+                # n6 item 4: admitted only on check-recorded 1.5.0. This fixture is a
+                # 1.1 payload, so it cannot prove 1.5 admission; the canonical case and
+                # the pre-edit integration check do. 1.1 still rejects the new reason.
+                with pytest.raises(ProtocolValueError) as deferred_exc:
+                    validate_schema_instance("check-recorded", "1.1.0", payload)
+                _assert_reason(deferred_exc, "schema_instance_invalid")
+                continue
             try:
                 validate_schema_instance("check-recorded", "1.1.0", payload)
             except ProtocolValueError as exc:
@@ -2571,10 +2584,11 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1599
+        len(derived_patterns) == 1602
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
-    # tb4n5 +3 publish action_notices
+    # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification,
+    # +1 closing_material_frontier
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2584,10 +2598,11 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1626
+        len(rules) == 1630  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        # +1 closing_material_frontier
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
-    # tb4n5 +3 publish action_notices
+    # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2596,8 +2611,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1599  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
-    # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode
+    assert len(registry_patterns) == 1602  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -2609,7 +2624,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
         for rule in rules
         if rule.method == "publish_work" and rule.segments == publish_summary_segments
     )
-    assert len(publish_summary_rules) == 28
+    assert len(publish_summary_rules) == 29  # n6 item 4: check_recorded 1.5.0
     assert all(rule.status_view is None for rule in publish_summary_rules)
 
     expected_publish = _expected_publish_summary_rules(models)
@@ -3117,6 +3132,7 @@ def _expected_publish_summary_rules(models: Any) -> dict[object, object]:
         ("check_recorded", "1.2.0"): "public_structural",
         ("check_recorded", "1.3.0"): "public_structural",
         ("check_recorded", "1.4.0"): "public_structural",
+        ("check_recorded", "1.5.0"): "public_structural",
         ("coordination_context_recorded", "1.0.0"): "public_structural",
         ("coordination_obligation_declared", "1.0.0"): "public_structural",
         ("coordination_disposition_recorded", "1.0.0"): "public_structural",
@@ -3227,7 +3243,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 230
+    assert SCHEMA_MEMBER_COUNT == 232  # n6 item 4: check-result and check-recorded 1.5.0
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3312,12 +3328,14 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_815
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_040
     )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
     # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),
     # tb4n5 +2 (read_guidance page-zero sections: the item and its uri), ADR-049 +9
-    # (decision-recorded 1.1.0 and its draft branch, review_mode)
+    # (decision-recorded 1.1.0 and its draft branch, review_mode),
+    # n6 item 4 +221 (check-result 1.5.0 and check-recorded 1.5.0),
+    # #1079 +3 (status admissible_verification refs), +1 closing_material_frontier
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:
@@ -3339,11 +3357,12 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
         "2.9.0",
         "7.0.0",
         "1.4.0",
+        "1.5.0",
     }
-    assert set(event_versions.values()) == {"1.0.0", "1.1.0", "1.2.0", "1.4.0"}
+    assert set(event_versions.values()) == {"1.0.0", "1.1.0", "1.2.0", "1.4.0", "1.5.0"}
     assert event_versions["action_recorded"] == "1.0.0"
     assert event_versions["evidence_recorded"] == "1.2.0"
-    assert event_versions["check_recorded"] == "1.4.0"
+    assert event_versions["check_recorded"] == "1.5.0"
     assert event_versions["claim_recorded"] == "1.1.0"
     assert event_versions["finding_recorded"] == "1.4.0"
     # The task-statement versions (issue #908).

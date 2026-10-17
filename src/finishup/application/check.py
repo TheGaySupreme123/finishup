@@ -5300,6 +5300,25 @@ def _request_digest(
     return canonical_digest(source)
 
 
+def _skipped_review_reason(
+    request: CheckRequest,
+    *,
+    round_stopped: bool,
+    deferred_before_first_edit: bool,
+) -> SemanticReason | None:
+    """The ``not_requested`` reason when this check will not dispatch a review.
+
+    The pre-edit deferral (#1046) keeps its own reason. A local-only request and a stopped
+    insufficient-packet round stay on ``deterministic_mode``.
+    """
+
+    if deferred_before_first_edit:
+        return SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
+    if request.mode == "deterministic_only" or round_stopped:
+        return SemanticReason.DETERMINISTIC_MODE
+    return None
+
+
 async def _semantic_evaluation(
     app: Application,
     request: CheckRequest,
@@ -5312,14 +5331,18 @@ async def _semantic_evaluation(
     require_complete_specification: bool = False,
     task_fact_gaps: tuple[str, ...] = (),
     round_stopped: bool = False,
+    deferred_before_first_edit: bool = False,
 ) -> FinalSemanticEvaluation:
-    if request.mode == "deterministic_only" or round_stopped:
+    skipped = _skipped_review_reason(
+        request,
+        round_stopped=round_stopped,
+        deferred_before_first_edit=deferred_before_first_edit,
+    )
+    if skipped is not None:
         # tb4n1 D3: after two insufficient-packet reviews in a row with no edit since, the round
         # stops; the check runs its local checks only and discloses why (see the commit path).
-        return FinalSemanticEvaluation(
-            SemanticStatus.NOT_REQUESTED,
-            SemanticReason.DETERMINISTIC_MODE,
-        )
+        # Issue #1046: the pre-edit deferral is the same local-only run with its own reason.
+        return FinalSemanticEvaluation(SemanticStatus.NOT_REQUESTED, skipped)
     if route_profile == "strict":
         return FinalSemanticEvaluation(
             SemanticStatus.BLOCKED_BY_POLICY,
@@ -5714,6 +5737,7 @@ async def _semantic_evaluation_with_follow_up(
     route_profile: Literal["policy", "strict"],
     lineage_evaluation: LineageEvaluation | None,
     round_stopped: bool,
+    deferred_before_first_edit: bool,
     deterministic_output_gaps: Iterable[str],
     output_absent: bool,
 ) -> FinalSemanticEvaluation:
@@ -5742,6 +5766,7 @@ async def _semantic_evaluation_with_follow_up(
         lineage_evaluation=lineage_evaluation,
         require_complete_specification=request.mode == "semantic_required",
         round_stopped=round_stopped,
+        deferred_before_first_edit=deferred_before_first_edit,
         task_fact_gaps=task_fact_gaps,
     )
     # Issue #1047: the reviewer's own request for recorded content is answered in this check.
@@ -6137,6 +6162,7 @@ async def execute_check_commit(
             workspace_changed=workspace_changed,
         )
         round_stopped = bool(skip_gaps)
+        deferred_before_first_edit = SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in skip_gaps
         semantic_wait = _semantic_wait(request, runtime, round_stopped=round_stopped)
         if semantic_wait and frozen.lease.phase is CheckPhase.LOCAL_READY:
             lease = await runtime.ledger.advance_check_phase(
@@ -6154,6 +6180,7 @@ async def execute_check_commit(
             route_profile=route_profile,
             lineage_evaluation=lineage_evaluation,
             round_stopped=round_stopped,
+            deferred_before_first_edit=deferred_before_first_edit,
             deterministic_output_gaps=deterministic_output_gaps,
             output_absent=output_absent,
         )

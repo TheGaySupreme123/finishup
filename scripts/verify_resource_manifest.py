@@ -216,6 +216,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/deferred-before-first-edit-1.5.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/review-mode-1.4.0.case.json",
         "canonical_vector",
         "application/json",
@@ -236,6 +242,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/events/check-recorded-1.5.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/events/finding-recorded-1.4.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -250,6 +262,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/operations/check-result-1.4.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/check-result-1.5.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,

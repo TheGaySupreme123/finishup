@@ -71,7 +71,7 @@ _TOOL_INPUT_SCHEMA_VERSIONS: Final = MappingProxyType(
 _TOOL_OUTPUT_SCHEMA_VERSIONS: Final = MappingProxyType(
     {
         "start": "1.1.0",
-        "check": "1.4.0",
+        "check": "1.5.0",
         "respond": "1.1.0",
         "publish_work": "1.1.0",
         "status": "1.4.0",
@@ -2221,7 +2221,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
-                "check": "sha256:47cf4c5da38d3fe16b62c4bbd877d673246e1d11507d4b0e5d26473d0dfedaad",
+                "check": "sha256:d1c5018a531b794062485d475432f89902ca81fa598b1e992a8a158cd5ff1632",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
                 "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2233,7 +2233,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
-                "check": "sha256:b6693e7110658e03adf10536263950ad4d90d11d5549ef190e4a40cec875fa3d",
+                "check": "sha256:4374e8f3ddb53fa9bf07c6de45dca86a689d37ae70b5d4c0a55ad96750a426e4",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
                 "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2245,8 +2245,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:7c02f2c13206ab2fe6be1ebd311a64dc2d3b7f561c2856a18c06cf0ac6e30973",
-        "strict": "sha256:9759d058cee7128b17c2f207ca63d785a5aa5fc11d7ed1da33ff625e7184caa4",
+        "policy": "sha256:c143ab8edbcc88c3f440730f956eb4c570953862e0bece5797394fb62429e534",
+        "strict": "sha256:3c172d0ab8c8977bdbcd4d3f998aafb59a646c2db553a6eb70b73402b1b42a5e",
     }
 )
 

@@ -61,6 +61,8 @@ __all__ = [
     "CommandOutput",
     "codex_project_mcp_leftover",
     "codex_project_mcp_leftovers",
+    "isolated_root_environment",
+    "proven_serve_command",
     "LEGACY_UNREAD_REASONS",
     "PROJECT_CONFIG_UNREADABLE_REASONS",
     "LegacyRegistrationUse",
@@ -332,6 +334,44 @@ def _entry_isolated_root(entry: Mapping[str, object]) -> tuple[bool, str | None,
     return True, raw, len(names) == len(_ISOLATED_ROOT_ENV_NAMES)
 
 
+def proven_serve_command(serve_command: tuple[str, ...]) -> tuple[tuple[str, ...], str | None]:
+    """The serve argv the external Codex registration writes. Never a ``PATH`` lookup.
+
+    A console script this interpreter's installed RECORD still proves replaces the bare launcher.
+    An installed CLI whose script cannot be proved raises ``launcher_unproven`` rather than
+    falling back to ``PATH``. An embed with no invoking launcher keeps the historical bare command.
+    """
+
+    proof = installed_launcher()
+    if proof is not None:
+        return (proof[0], *serve_command[1:]), proof[1]
+    if invoking_launcher() is not None:
+        raise McpRegistrationError(
+            McpRegistrationReason.HARNESS_UNAVAILABLE, {"detail": "launcher_unproven"}
+        )
+    return serve_command, None
+
+
+def isolated_root_environment() -> dict[str, str] | None:
+    """Both isolation-root spellings bound to this process's root, or ``None`` when ambient.
+
+    The same pair the external registration passes to ``codex mcp add --env``. An unsafe root
+    is ``isolation_invalid``, never a silent ambient binding.
+    """
+
+    try:
+        root = isolated_root()
+    except PathSafetyError as exc:
+        raise McpRegistrationError(
+            McpRegistrationReason.ISOLATION_INVALID,
+            {"reason": exc.reason_code},
+        ) from exc
+    if root is None:
+        return None
+    text = str(root)
+    return {ISOLATED_ROOT_ENV: text, LEGACY_ISOLATED_ROOT_ENV: text}
+
+
 def _legacy_distribution_installed() -> bool:
     """Whether a ``yoetz`` distribution, whose RECORD owns the alias script, is installed.
 
@@ -444,19 +484,9 @@ class CodexMcpAdapter:
         )
 
     def _desired_command(self) -> tuple[tuple[str, ...], str | None]:
-        proof = installed_launcher()
-        if proof is not None:
-            return (proof[0], *self._serve_command[1:]), proof[1]
         # Embedded clients retain the historical bare command. An installed CLI with missing
-        # or modified launcher evidence must never quietly fall back to PATH.
-        if invoking_launcher() is not None:
-            # A group- or world-writable prefix (Homebrew's ``/opt/homebrew``), a symlinked
-            # script, or a modified console script: the launcher exists but cannot prove
-            # itself, and the way out is a persistent owner-only install (issue #766).
-            raise McpRegistrationError(
-                McpRegistrationReason.HARNESS_UNAVAILABLE, {"detail": "launcher_unproven"}
-            )
-        return self._serve_command, None
+        # or modified launcher evidence must never quietly fall back to PATH (issue #766).
+        return proven_serve_command(self._serve_command)
 
     def _classify_get(self, output: CommandOutput) -> _Entry:
         if output.exit_code != 0:
@@ -542,14 +572,10 @@ class CodexMcpAdapter:
 
     @staticmethod
     def _expected_isolated_root() -> str | None:
-        try:
-            root = isolated_root()
-        except PathSafetyError as exc:
-            raise McpRegistrationError(
-                McpRegistrationReason.ISOLATION_INVALID,
-                {"reason": exc.reason_code},
-            ) from exc
-        return None if root is None else str(root)
+        environment = isolated_root_environment()
+        if environment is None:
+            return None
+        return environment[ISOLATED_ROOT_ENV]
 
     @staticmethod
     def _require_codex(binary: HarnessBinary) -> None:

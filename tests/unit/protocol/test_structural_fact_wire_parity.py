@@ -192,3 +192,19 @@ def test_the_wire_stays_closed_to_a_class_the_hook_never_emits() -> None:
     # The domain refuses it first, so the hook can never build such a row.
     with pytest.raises(ProtocolValueError):
         observation_ingest_request_from_json(refused)
+
+
+def test_the_wire_admits_exactly_the_workspace_effects_the_hook_emits() -> None:
+    """PR #1080: the before/after fingerprint token crosses unchanged, and nothing else does."""
+
+    from finishup.domain.workspace_effect import WORKSPACE_EFFECTS
+
+    assert set(_wire_structural_fields()["workspace_effect"]["enum"]) == set(WORKSPACE_EFFECTS)
+    for effect in sorted(WORKSPACE_EFFECTS):
+        received = _send(_shell_write_post(workspace_effect=effect))
+        assert received.envelope.structural_payload["workspace_effect"] == effect
+    refused = cast(JsonObject, freeze_json(_shell_write_post(workspace_effect="read_only")))
+    with pytest.raises(ControlProtocolError, match="frame_invalid"):
+        _frame(refused)
+    with pytest.raises(ProtocolValueError):
+        observation_ingest_request_from_json(refused)

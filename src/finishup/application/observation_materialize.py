@@ -67,6 +67,11 @@ from finishup.domain.values import (
     object_id,
     result_id,
 )
+from finishup.domain.workspace_effect import (
+    WORKSPACE_EFFECT_KEY,
+    result_summary_with_workspace_effect,
+    workspace_effect_annotation,
+)
 from finishup.domain.write_scope import WRITE_SCOPES
 from finishup.kernel.later_material import (
     COMPLETION_SIGNAL_PREFIX,
@@ -103,6 +108,7 @@ __all__ = [
     "materialize_selection_loss",
     "materialize_observation_inspection_snapshot",
     "materialize_observation_outcome_correction",
+    "materialize_workspace_effect_annotation",
     "observation_claim_identity",
     "paired_action_link",
     "paired_action_linked_roles",
@@ -191,6 +197,7 @@ STREAM_COMPLETED_EVENT_KINDS: Final = frozenset(
 _CAPTURED_EVIDENCE_KINDS: Final = frozenset(
     {
         ObservationContentKind.TOOL_OUTPUT,
+        ObservationContentKind.TOOL_INPUT,
         ObservationContentKind.CHANGED_FILE,
         ObservationContentKind.WORKSPACE_DIFF,
     }
@@ -553,7 +560,13 @@ def _eligible_captured_content(
         if manifest is None:
             gaps.add(ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value)
             continue
-        if manifest.content_kind not in _CAPTURED_EVIDENCE_KINDS:
+        if manifest.content_kind not in _CAPTURED_EVIDENCE_KINDS or (
+            manifest.content_kind is ObservationContentKind.TOOL_INPUT
+            and (
+                envelope.event_kind != "PostToolUse"
+                or type(envelope.structural_payload.get("command_commitment")) is not str
+            )
+        ):
             gaps.add(ObservationGapCode.CONTENT_UNSELECTED.value)
             continue
         if manifest.content_digest is None or manifest.content_bytes is None:
@@ -1418,7 +1431,12 @@ def materialize_observation_envelope(
                     action_id(action),
                     outcome,
                     exit_status=exit_status,
-                    summary=f"Observed result status={outcome.value}",
+                    # The hook's before/after workspace fingerprint (PR #1080): a closed suffix the
+                    # kernel reads back only from service-stamped observation results.
+                    summary=result_summary_with_workspace_effect(
+                        f"Observed result status={outcome.value}",
+                        structural.get(WORKSPACE_EFFECT_KEY),
+                    ),
                     evidence_refs=tuple(evidence_id(value) for value in captured_refs),
                 ),
                 parents=tuple(
@@ -1780,6 +1798,67 @@ def materialize_observation_outcome_correction(
         role=correction_role,
     )
     return MaterializedObservationBatch((draft,), coverage, channel, gaps, None)
+
+
+def materialize_workspace_effect_annotation(
+    envelope: ObservationEnvelope,
+    *,
+    task_id: str,
+    recorded_result_id: str,
+    action_event_id: str,
+    effect: str,
+) -> MaterializedObservationBatch:
+    """Carry a later delivery's workspace fact for a call whose result is already recorded.
+
+    PR #1080 round 6. Two deliveries of one host call (a Codex session-stream copy with no
+    fingerprint and the hook post with one, or a repeated hook pass) materialize the same
+    call-keyed result id, so the later one appends nothing and its fact would be lost. This batch
+    records it append-only: one observation-authored, metadata-only evidence row whose causal
+    parent is the call's committed action event and whose description is exactly
+    ``Observed workspace effect=<token>``. Its ids derive from the recorded result id and the token,
+    so a retry, a restart or a third delivery with the same fact mints the same row. It carries no
+    known gaps: the delivery's own gaps were already recorded with the call. The kernel folds it
+    with every other fact of the call (``later_material.workspace_effects``); rows are never
+    rewritten.
+    """
+
+    structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
+    coverage = _coverage_for(envelope, gaps=())
+    channel = PublicationChannel.HOOK_OBSERVED
+    description = workspace_effect_annotation(effect)
+    if description is None or structural.get(WORKSPACE_EFFECT_KEY) != effect:
+        return MaterializedObservationBatch((), coverage, channel, (), "no_workspace_effect")
+    source = f"workspace-effect:{recorded_result_id}:{effect}"
+    role = f"workspace_effect_{effect}"
+    evidence = stable_observation_id(
+        kind=IdKind.EVIDENCE,
+        task_id=task_id,
+        source_identity=source,
+        mapping_version=MATERIALIZATION_MAPPING_VERSION,
+        role=role,
+    )
+    event = stable_observation_id(
+        kind=IdKind.EVENT,
+        task_id=task_id,
+        source_identity=source,
+        mapping_version=MATERIALIZATION_MAPPING_VERSION,
+        role=f"{role}_event",
+    )
+    draft = _draft(
+        event=event,
+        schema_name="evidence_recorded",
+        occurred_at=envelope.receipt_time,
+        payload=EvidenceRecordedPayload(
+            evidence_id(evidence),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.METADATA_ONLY,
+            envelope.receipt_time,
+            description=description,
+        ),
+        parents=(action_event_id,),
+        role=role,
+    )
+    return MaterializedObservationBatch((draft,), coverage, channel, (), None)
 
 
 def _logical_source_lane(source: ObservationSource) -> str:

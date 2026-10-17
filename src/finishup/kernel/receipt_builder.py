@@ -41,6 +41,8 @@ from finishup.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
+    COORDINATOR_FAILURE_LIMITATION,
+    DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
@@ -107,6 +109,11 @@ from finishup.domain.values import (
     finding_id,
 )
 from finishup.kernel.check_standing import CheckStanding, LaterRecord
+from finishup.kernel.claim_verification import (
+    UNRESOLVED_VERIFICATION_GAP,
+    claim_verification_report,
+    unresolved_verification_obligations,
+)
 from finishup.kernel.claims import (
     claim_discloses_result,
     effective_claim_items,
@@ -176,7 +183,12 @@ from finishup.kernel.task_facts import (
     task_fact_signals,
 )
 from finishup.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
-from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile, SemanticStatus
+from finishup.protocol.models import (
+    ReceiptInclude,
+    ReceiptRedactionProfile,
+    SemanticReason,
+    SemanticStatus,
+)
 from finishup.protocol.readiness_text import reason_phrases
 
 __all__ = [
@@ -1419,7 +1431,10 @@ def closure_basis_from_context(
         if terminal_sections
         else frozenset[str]()
     )
-    live_codes = tuple(sorted(set(context.coverage.known_gaps) - historical, key=_ascii_key))
+    live = set(context.coverage.known_gaps) - historical
+    if unresolved_verification_obligations(context.projection, context.records):
+        live.add(UNRESOLVED_VERIFICATION_GAP)
+    live_codes = tuple(sorted(live, key=_ascii_key))
     gap_context = _gap_context(context, historical)
     gaps = judge_gaps(live_codes, gap_context)
     if context.applicable_check is None:
@@ -2115,6 +2130,9 @@ def _sections(
     closure_summary: _ClosureSummary | None = None,
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
     review_mode_sentence: str = "",
+    coordinator_failure: bool = False,
+    claim_verification: tuple[str, ...] = (),
+    claim_verification_limitation: str = "",
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2290,6 +2308,9 @@ def _sections(
 
     if attempt_explanations:
         bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] += " " + " ".join(attempt_explanations)
+    if claim_verification:
+        # Issue #1079: the ledger pairing. A final-message attestation is not this text.
+        bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] += " " + " ".join(claim_verification)
 
     if gap_codes:
         limited_by = _limited_by(gap_codes, gap_effects)
@@ -2321,12 +2342,9 @@ def _sections(
                 f"Coverage is limited by: {limited_by}."
             )
         elif not_requested and SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in gap_codes:
-            # Issue #1046: the applicable check ran before any material edit.
-            gap_body = (
-                "AI-powered review was deferred: the applicable check recorded no material edit "
-                "yet, so it ran the local plan checks only; the review runs after the first edit. "
-                f"Coverage is limited by: {limited_by}."
-            )
+            # Issue #1046: the applicable check ran before any material edit. JSON, markdown,
+            # and text all carry this section body.
+            gap_body = f"{DEFERRED_BEFORE_FIRST_EDIT_TEXT} Coverage is limited by: {limited_by}."
         elif not_requested:
             gap_body = (
                 "AI-powered review was not requested (local-only check). "
@@ -2418,6 +2436,18 @@ def _sections(
             "Coverage is bounded to the recorded evidence and is not proof of correctness."
         )
         items[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = ()
+    if coordinator_failure:
+        # Issue #1077: the gap code stays semantic_relevance_review_not_run. The limitations
+        # the reader sees name the fault inside FinishUP, on every rendering of this section.
+        # Issue #1079 item 3 names the same failure as a closing-review limit. One sentence
+        # covers both: the readiness checklist, not this section, says not to send it again.
+        body = bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE]
+        lead = "AI-powered relevance review was not run."
+        if lead in body:
+            body = body.replace(lead, COORDINATOR_FAILURE_LIMITATION, 1)
+        elif COORDINATOR_FAILURE_LIMITATION not in body:
+            body = f"{body} {COORDINATOR_FAILURE_LIMITATION}"
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = body
     if observed_failure_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + observed_failure_sentence
     bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += task_statement_source_sentence
@@ -2432,6 +2462,10 @@ def _sections(
     # receipt of a task without a switch keeps its exact bytes.
     if review_mode_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + review_mode_sentence
+    # #1079: a holed projection omits the pairing for that obligation. The limitation is ids
+    # only, or one fixed sentence, so the receipt still renders.
+    if claim_verification_limitation:
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + claim_verification_limitation
 
     policy_rows = "; ".join(
         f"{entry.policy_id} {entry.policy_version}" for entry in versions.policy_versions
@@ -2759,6 +2793,9 @@ def build_receipt(
         )
     )
     proof_state_cache: dict[tuple[int, int, str], ProjectionState | None] = {}
+    claim_pairing, claim_pairing_limitation = claim_verification_report(
+        context.projection, context.records
+    )
     # The export profiles clear gap details; the sections they keep never copy a path (#1044).
     name_paths = redaction_profile is ReceiptRedactionProfile.FULL_LOCAL
     sections = _sections(
@@ -2797,6 +2834,10 @@ def build_receipt(
             context.applicable_check, context.records
         ),
         review_mode_sentence=_review_mode_sentence(context),
+        coordinator_failure=(
+            context.applicable_check is not None
+            and context.applicable_check.semantic_reason is SemanticReason.COORDINATOR_FAILURE
+        ),
         semantic_usage_sentence=_semantic_usage_sentence(
             None
             if context.applicable_check is None
@@ -2855,6 +2896,8 @@ def build_receipt(
         omitted_rows_sentence=_omitted_rows_sentence(omitted_rows),
         closure_summary=closure_summary,
         gap_effects=gap_effects,
+        claim_verification=claim_pairing,
+        claim_verification_limitation=claim_pairing_limitation,
     )
     suppressed_count = (
         0 if context.applicable_check is None else context.applicable_check.suppressed_count

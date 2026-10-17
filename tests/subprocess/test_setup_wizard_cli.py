@@ -20,6 +20,7 @@ from finishup.adapters.integrations.codex_marketplace import (
     ActivationInspection,
     ActivationPreview,
     ActivationState,
+    skill_tree_state,
 )
 from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
 from finishup.adapters.integrations.observation_local import (
@@ -46,6 +47,7 @@ from finishup.ports.integrations import (
     HarnessId,
     IntegrationError,
     IntegrationReason,
+    IntegrationScope,
     IntegrationState,
     IntegrationTarget,
     SkillSource,
@@ -58,6 +60,10 @@ _RUNNER = CliRunner()
 # ``wizard_env`` replaces the consent step with a canned report; the issue #835 composition
 # tests below restore this real one against a disposable observation store.
 _REAL_GRANT_OBSERVATION_CONSENT = _setup_module_at_import._grant_observation_consent  # pyright: ignore[reportPrivateUsage]
+# ``wizard_env`` also replaces the project-skill install with a canned report that writes
+# nothing. The ``finishup connect codex`` reconnect test restores this real one: a reconnect
+# is a no-op only when the project skill on disk is current.
+_REAL_INSTALL_PROJECT_SKILL = _setup_module_at_import._install_project_skill  # pyright: ignore[reportPrivateUsage]
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -111,9 +117,13 @@ def _finishup_entry(
     route_profile: Literal["policy", "strict"] = "strict",
     *,
     launcher: str = "finishup",
+    env: dict[str, str] | None = None,
 ) -> CommandOutput:
     command = MCP_STRICT_SERVE_COMMAND if route_profile == "strict" else MCP_SERVE_COMMAND
-    return CommandOutput(0, json.dumps({"command": launcher, "args": list(command[1:])}).encode())
+    body: dict[str, object] = {"command": launcher, "args": list(command[1:])}
+    if env is not None:
+        body["env"] = env
+    return CommandOutput(0, json.dumps(body).encode())
 
 
 def _absent_mcp() -> list[CommandOutput]:
@@ -2860,12 +2870,26 @@ def test_interactive_setup_reconfirms_mcp_entry_exposed_by_plugin_activation(
 
 @pytest.mark.parametrize("expected_transition", [True, False])
 def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
-    wizard_env: dict[str, object], expected_transition: bool
+    wizard_env: dict[str, object],
+    expected_transition: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import finishup.cli.setup as setup_module
+    from finishup.adapters.integrations.codex_plugin import activation_cache_mcp_binding
 
     binary = _binary()
     home = cast(Path, wizard_env["codex_home"])
+    pinned = "/opt/pinned/bin/finishup"
+    root = "/opt/pinned/root"
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.installed_launcher",
+        lambda name="finishup": (pinned, "sha256:" + "cd" * 32),
+    )
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.isolated_root", lambda: Path(root)
+    )
+    approved_command, _environment = activation_cache_mcp_binding()
+    isolation = {"FINISHUP_ISOLATED_ROOT": root, "YOETZ_ISOLATED_ROOT": root}
 
     async def prepare():
         adapter = setup_module._mcp_adapter("strict", codex_home=home)  # pyright: ignore[reportPrivateUsage]
@@ -2874,13 +2898,14 @@ def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
         return preview, skill
 
     preview, skill = asyncio.run(prepare())
-    generated = _finishup_entry("policy")
+    generated = _finishup_entry("policy", launcher=pinned, env=isolation)
+    strict = _finishup_entry("strict", launcher=pinned, env=isolation)
     wizard_env["outputs"] = [
         *_absent_mcp(),
         generated,
-        generated if expected_transition else _finishup_entry("strict"),
+        generated if expected_transition else strict,
         *(
-            [generated, generated, CommandOutput(0, b""), _finishup_entry("strict")]
+            [generated, generated, CommandOutput(0, b""), strict, strict]
             if expected_transition
             else []
         ),
@@ -2894,7 +2919,7 @@ def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
             approved_preview_digest=preview.preview_digest,
             approved_skill_preview_digest=skill.preview_digest,
             approved_activation_digest=cast(str, wizard_env["activation_digest"]),
-            approved_activation_mcp_command=MCP_SERVE_COMMAND,
+            approved_activation_mcp_command=approved_command,
         )
     )
     calls = [
@@ -2907,22 +2932,30 @@ def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
 class _CodexMcpHost:
     """A Codex MCP CLI answering from one registration flag, whatever the call order."""
 
-    def __init__(self) -> None:
+    def __init__(self, command: str = "finishup") -> None:
         self.registered = False
         self.calls: list[tuple[str, ...]] = []
+        self.command = command
 
     def __call__(self, argv: tuple[str, ...]) -> CommandOutput:
         self.calls.append(argv)
         verb = argv[1:3]
         if verb == ("mcp", "get"):
-            return _finishup_entry("strict") if self.registered else CommandOutput(1, b"")
+            return (
+                _finishup_entry("strict", launcher=self.command)
+                if self.registered
+                else CommandOutput(1, b"")
+            )
         if verb == ("mcp", "list"):
             # Every observation also lists entries for the legacy ``yoetz`` key (ADR-048).
             if not self.registered:
                 return CommandOutput(0, b"[]")
             entry = {
                 "name": "finishup",
-                "transport": {"command": "finishup", "args": list(MCP_STRICT_SERVE_COMMAND[1:])},
+                "transport": {
+                    "command": self.command,
+                    "args": list(MCP_STRICT_SERVE_COMMAND[1:]),
+                },
             }
             return CommandOutput(0, json.dumps([entry]).encode())
         if verb == ("mcp", "add"):
@@ -3207,11 +3240,23 @@ def test_revocation_after_connection_fences_and_reconnection_infers_no_arm(
 
 
 def test_host_connection_codex_after_claude_keeps_claude_capture(
-    consent_arm_env: dict[str, object],
+    consent_arm_env: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Issue #835 through ``finishup connect codex``: preview, accept, apply, and reconnect."""
 
     env = consent_arm_env
+    # The shared wizard cell scripts a bare launcher. This plan now names the activation-cache
+    # command, which is refused until the launcher is an absolute proven script (#1076).
+    pinned = "/opt/pinned/bin/finishup"
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.installed_launcher",
+        lambda name="finishup": (pinned, "sha256:" + "cd" * 32),
+    )
+    cast(_CodexMcpHost, env["host"]).command = pinned
+    # The reconnect no-op also requires a current project skill, so the connection installs
+    # the real one into this disposable workspace instead of reporting a canned install.
+    monkeypatch.setattr("finishup.cli.setup._install_project_skill", _REAL_INSTALL_PROJECT_SKILL)
+    skill = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(env["workspace"]))
     _approve_claude_capture(env)
     selection = _select_detailed_largest(env)
     claude = _authority(env)
@@ -3219,6 +3264,7 @@ def test_host_connection_codex_after_claude_keeps_claude_capture(
     applied, status = _host_connect_codex(env)
 
     assert applied
+    assert skill_tree_state(skill) == IntegrationState.INSTALLED_EXACT.value
     assert status["configured"] is True
     assert _authority(env) == claude
     assert _still_current(env, claude)

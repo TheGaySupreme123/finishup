@@ -210,7 +210,10 @@ async def test_a_plan_time_check_defers_the_review_and_the_first_edit_rearms_it(
     assert SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in gaps
     # Nothing was dropped or found by a review that never ran.
     assert "semantic_challenges_rejected" not in gaps
-    assert "AI-powered review deferred until the first material edit" in summary_for_check(body)
+    assert body["semantic_reason"] == "deferred_before_first_edit"
+    summary = summary_for_check(body)
+    assert "AI-powered review is on; it starts after your first edit." in summary
+    assert "deterministic_mode" not in summary
     cli = render_human_check(
         CheckSuccessModel.model_construct(
             verdict=body["verdict"],
@@ -225,7 +228,8 @@ async def test_a_plan_time_check_defers_the_review_and_the_first_edit_rearms_it(
             coverage=CoverageModel.model_construct(known_gaps=tuple(gaps)),
         )
     )
-    assert "AI-powered review deferred: no material edit is recorded yet" in cli
+    assert "AI-powered review is on; it starts after your first edit." in cli
+    assert "deterministic_mode" not in cli
 
     edited = await _publish(
         session,

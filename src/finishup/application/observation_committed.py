@@ -44,8 +44,8 @@ async def committed_event_ids(ledger: object, event_ids: Iterable[str]) -> froze
 async def observation_already_committed(ledger: object, event_ids: Iterable[str]) -> bool:
     """True when every one of ``event_ids`` is already in the ledger and there is at least one.
 
-    A partially committed batch is not a duplicate: the ledger refuses it whole, and the refusal
-    stays a content refusal.
+    A partially committed batch is not a complete replay. The coordinator validates its
+    overlapping core and appends the missing evidence; this predicate only answers full replay.
     """
 
     wanted = frozenset(str(item) for item in event_ids)

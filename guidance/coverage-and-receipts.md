@@ -255,7 +255,7 @@ continuing the authorized task; it is not clean AI-powered review coverage. Pend
 approval is different: follow the exact continuation below, not the terminal fallback rules.
 
 
-A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to run in the task's review mode (`status` `review_mode`); use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent, and the next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, about FinishUP's own state (a FinishUP tool call, a hook observation awaiting its result), or that only restate an unpaired action (or a result with no action), which the local check decides over the whole record, are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt. Pair the action with its result and the local finding resolves.
+A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to run in the task's review mode (`status` `review_mode`); use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent. AI-powered review is on; it starts after your first edit. The next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, about FinishUP's own state (a FinishUP tool call, a hook observation awaiting its result), or that only restate an unpaired action (or a result with no action), which the local check decides over the whole record, are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt. Pair the action with its result and the local finding resolves.
 
 A non-succeeding `semantic_status` is a coverage gap, not a failure to retry away.
 
@@ -672,15 +672,12 @@ The check result lists what the reviewer needed in `missing_for_assessment`: eac
 refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a FinishUP limit
 (gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
 `semantic_missing_yoetz_limit`). A `yoetz_limit_*` item is content the packet cannot show
-(unsupported data type, packet room): never your work and never a blocker; verify it yourself (see
-[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts)). Never reshape a
-deliverable to fit the reviewer. Recheck only
-after supplying a named `agent_suppliable` item with new records tied directly to the named ref;
-what answers each kind (path evidence first for a new, untracked file; never stage it) is in
+(unsupported data type, packet room): never your work and never a blocker; verify it yourself.
+Never reshape a deliverable to fit the reviewer. What answers each kind is in
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published material for it,
-report the named limitation instead. Hook-captured tool output never counts as supplied. A named
+report the named limitation instead. Hook-captured output never counts as supplied. A verification follow-up may include observed test, build, lint, or typecheck output the agent ran only when a repository excerpt would already be allowed. Withheld whole: an environment dump, a credential-named path, a path outside the workspace, a path the check-time change refused, and output the secret scan hits (a private-key body or its END line). Ignore rules are not re-checked for a path the change did not list. The omission names the gate. Private sends nothing. A command the agent did not run is never included; included output is marked observed. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names
@@ -690,8 +687,7 @@ recorded review answered such a follow-up; its `missing_inputs` name what Finish
 (`supplied_refs`). Do not publish that material again; what `missing_for_assessment` still lists is
 what remained after the follow-up.
 
-When `missing_for_assessment` contains an `agent_suppliable` item, supplying or repairing that
-item is the overall next action before requesting an ordinary receipt. The structured
+If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
 it. When open obligations or undisclosed live failures remain, or a delivered file may read a
@@ -724,9 +720,8 @@ task says the outcome is achievable or recoverable, or the obvious prerequisite 
 AI-powered review finding unless `evidence_refs` cites evidence or a result recorded after the
 finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
 `failure` or `partial`: there is no `blocked` outcome). An acknowledgement or
-“limitation accepted” is not a repair, a verification result, or a finding resolution. After an
-`insufficient_packet` result with no material repair to publish, go to the receipt and disclose
-`semantic_packet_insufficient` (never a `deterministic_only` fallback).
+“limitation accepted” is not a repair, a verification result, or a finding resolution.
+Never a `deterministic_only` fallback for `insufficient_packet`.
 
 The reviewer verifies from what its packet carries. When a completed review other than
 `insufficient_packet` raised nothing about verification whose readable output the packet carried,

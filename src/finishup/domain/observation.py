@@ -38,6 +38,7 @@ from finishup.domain.values import (
     validate_sha256_digest,
     writer_id,
 )
+from finishup.domain.workspace_effect import WORKSPACE_EFFECTS
 from finishup.domain.write_scope import WRITE_SCOPES
 from finishup.protocol.canonical import canonical_digest, canonical_encode
 from finishup.protocol.coverage import Coverage, coverage_from_json, coverage_to_json
@@ -319,6 +320,8 @@ _STRUCTURAL_KEYS: Final = frozenset(
         "install_target",
         "write_scope",
         "effective_user",
+        # Whether a before/after fingerprint of the workspace saw this call change it (PR #1080).
+        "workspace_effect",
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013).
         "observed_images",
         # Keyed commitments to the simple commands of a compound or wrapped command, and what the
@@ -358,6 +361,7 @@ _RUNTIME_FACT_VALUES: Final = {
     "write_scope": WRITE_SCOPES,
     "effective_user": frozenset({"root", "non_root"}),
     "command_composition": frozenset({"single", "and_chain", "masked"}),
+    "workspace_effect": WORKSPACE_EFFECTS,
 }
 # 32 segment commitments plus 48 domain-separated canonical commitments (ADR-045); a test pins
 # this to ``domain.command_segments.MAX_COMMAND_COMMITMENTS``, which this module cannot import.

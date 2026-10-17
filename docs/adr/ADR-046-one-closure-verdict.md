@@ -226,7 +226,8 @@ frontier (the records, the deterministic case, the check, the gaps judged with t
 `GapContext`). The derivation is memoized per `(session, frontier)` and reused only while the
 adapter's projection object is identical, so it can never be stale; it holds at most eight
 frontiers. If the basis cannot be read, status omits the prediction with a diagnostic and never
-guesses one.
+guesses one. An unpinned current read that loses the frontier to a material append re-reads the
+whole basis at the latest frontier first (amendment of 2026-10-15).
 
 ### 4. Counters, sentences and the wire
 
@@ -403,7 +404,7 @@ receipt in three formats, for each tb4n3 shape and its controls);
 Two recorded gap codes join the table in place on the unreleased classification `"8"`, with
 #1044's `G0c` row above (215 recorded codes plus 3 readiness-only rows): `semantic_process_state_filtered` (G5d, disclosed on both routes,
 tolerated by both absence proofs; listed as a changed row because it never bounded) and
-`semantic_review_deferred_before_first_edit` (G7, standing; disclosed where the deferred check
+`semantic_review_deferred_before_first_edit` (G7, standing; reason `deferred_before_first_edit` on check 1.5.0; disclosed where the deferred check
 recorded that its route did not require review and bounding where it did, exactly like the
 `semantic_review_not_requested` it rides with under G1, so a deferral FinishUP chose never reads worse
 than a `deterministic_only` check on the same route; a changed row because it does not bound on
@@ -421,3 +422,26 @@ readiness ask for the closing review after a deferral where the deferred check's
 review (where it does not, the deferral asks for nothing, like a `deterministic_only` check), so
 check, status, the Stop gate and the receipt agree for a task whose work is not an edit
 (`tests/integration/closure/test_review_deferral_shape.py`).
+
+## Amendment 2026-10-15 (closure-prediction race, F03)
+
+A material append that lands between the closure-basis reads makes the ledger's suffix check
+refuse the torn snapshot (`frontier_changed`). That check stays. Status does not guess a
+conclusion from the pieces it already read.
+
+A current status read, and `current_closure_readiness`, re-reads the projection, the records and
+the case availability together at the latest frontier, immediately, at most twice. There is no
+delay. When that second snapshot is whole, closure readiness is built from the compact page at
+that same frontier and from the basis already loaded, so the counters and `predicted_receipt`
+are one snapshot. `basis_frontier` names it. On a compact status page the page frontier moves
+with that snapshot. On any other view the item page stays on the frontier the cursor or the
+first read captured, `head` and `lag` move forward, and `basis_frontier` is the readiness
+frontier. If the burst outruns the two re-reads, status omits the prediction and records
+`status_closure_prediction_unavailable`, the same visible fallback as any other unreadable case.
+
+A caller-pinned frontier (`at_frontier`, or a status cursor) is never replaced. The same conflict
+omits the prediction. A same-sequence digest change is not treated as a newer head. An extension
+the ledger already accepts — an observation-authored record, or a second receipt rendering —
+does not conflict, so the prediction stays on the frontier that was asked for. Check and
+inspection loads of one exact frontier are unchanged: they call `load_closure_basis` directly and
+do not follow the head.

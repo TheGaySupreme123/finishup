@@ -40,9 +40,9 @@ that document (the section heading written another way, an anchor the text place
 words only its anchor contains) reads that section, and the result names its listed link; an
 anchor that could mean several sections is refused with the document's listed anchors.
 
-If an MCP host drops schema examples or renders required fields as unknown, read the topic for
-that operation, such as `finishup://guidance/request-templates.md#publish-work-plan-plus-obligation`.
-It contains a complete request body. Replace every illustrative identifier,
+If an MCP host drops schema examples or renders required fields as unknown, read
+`finishup://guidance/request-templates.md#publish-shapes` for ordinary publish, or the topic for
+that one operation. It contains a complete request body. Replace every illustrative identifier,
 timestamp, frontier, digest, and content string before use; the resource is an authoring fallback,
 not a second wire authority.
 
@@ -69,9 +69,12 @@ obligation refs. A revision restates the declaration, so omission clears an earl
 Reading `status` or previewing before a publish is optional: a publish that fails validation
 appends nothing and names what stopped it, not every error (for events, the first rejected event
 and its field), so fix that and send it again; one that succeeds returns the new frontier and the
-accepted ids. Before resolving an obligation, account for every requested item that has no attempt
-yet. When unsure about a batch, set `dry_run: true` to validate it and preview what would be
-accepted without appending. The preview is not evidential and is not citable as a check,
+accepted ids. When an id is the wrong kind, the message names the field, the kind it expects, the
+kind that was sent when that kind is one FinishUP already uses, and a shape-valid example. The
+rest of the sent value is not repeated. Before resolving an obligation, account for every
+requested item that has no attempt yet. When unsure about a batch, set `dry_run: true` to
+validate it and preview what would be accepted without appending. The preview is not evidential
+and is not citable as a check,
 publication, or coverage source. Reuse the same `request_id` for the real publish after the
 preview succeeds.
 
@@ -299,7 +302,10 @@ limiting coverage.
 carry, with the reasons (`reasons`, each with a code, a count and at most three ids). Status,
 the check's next step and the receipt use one function, so the label you read here is the label the
 receipt gets. "Nothing further to do" never means the receipt will be clean: read the sentence
-after it ("The receipt will read ...").
+after it ("The receipt will read ..."). `basis_frontier` is the frontier that conclusion was read
+at. A current status read that is interrupted by new work reads the prediction again at the
+newer frontier and names it there. A status read you pinned with `at_frontier`, or continued with
+a cursor, stays on that frontier; if it is no longer a safe basis, the prediction is left out.
 
 `closure_readiness.state` tells you whether anything is left to do. `action_required` lists the
 work in `agent_actionable`: open obligations, unanswered findings, an unresolved finding you can
@@ -316,9 +322,17 @@ requirement keeps the conclusion at `unresolved_findings_remain`. `rechecks` lis
 a Stop will ask you once to re-read (the acceptance criteria of the resolved obligations FinishUP
 flags because a requested item was never attempted or their evidence is unlinked or only your own
 assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
-them. When a flagged obligation's criteria are met, the line `finishup-acceptance:<obligation id>:met`
-in your final answer answers its re-read in Codex and Claude Code. Cursor does not pass your final
-answer to FinishUP, so there the re-read is asked once and saying the criteria are met ends it.
+them. When a flagged obligation's criteria are met, answer with
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
+is already an observed verification for that obligation (hook-captured or observation-captured
+evidence, or a result of an observed command), or with `finishup-verification-limit:<obligation id>`,
+in your final answer in Codex and Claude Code. A completion claim that names no obligation does not
+make those ids a link for an obligation. A well-formed id that is not that observed link,
+including one you only asserted, does not
+answer it. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
+FinishUP, so there publish a decision `finishup-verification-limit:<obligation id>` or link the
+observed evidence or result id in a record. The re-read is asked again only after the work, its
+verification, or the review mode changes.
 `ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 
@@ -351,9 +365,11 @@ blocked obligation is the task's main deliverable.
 
 Beyond the work `agent_actionable` lists, a Stop asks only what `closure_readiness.rechecks` named before you stopped: the acceptance
 criteria of the obligations you resolved, an obligation you recorded as not done, a blocker you
-recorded, or a finding you answered as not done that the review says the task requires. Each is
-asked once, so `ready_with_limitations` is never followed by a surprise. Reading the acceptance
-criteria costs one extra turn, once per set of resolved obligations: if your output does not meet
+recorded, or a finding you answered as not done that the review says the task requires. A blocker,
+an acknowledgement and a premise are each asked once, so `ready_with_limitations` is never followed
+by a surprise from those. Reading the acceptance
+criteria costs one extra turn for that set of resolved obligations, and again only after the work,
+its verification, or the review mode changes: if your output does not meet
 them, publish that obligation again as `acknowledged_not_done` with the reason; if they can only be
 checked outside this environment (a hidden verifier, a withheld artifact) and you did the work, keep
 it resolved and record a decision with the line `finishup-verification-limit:<obligation id>`. An

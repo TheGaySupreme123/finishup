@@ -203,6 +203,21 @@ content-returning read needed its own decision. This is that decision, for exact
    cut is disclosed as `check_time_change_truncated` (issue #983). The shown-file record counts the
    change bytes the carried parts hold, never a part count, so it stays exact whatever part size a
    narrowed selection chose. `_check_time_change_reservation` is the single seam for this share.
+   Amendment (issue #1079): when the captured change does not fit that excerpt budget and its
+   files are not all the same kind, parts are admitted so a file section that changes a decision
+   (`if`, `return`, `raise`, and the same shape) comes before a section that only changes
+   comments, imports or license text. A changed line that is itself a decision counts as one
+   even when it names a license; only a license or copyright comment or header is boilerplate.
+   The rest of the decision's own section is the rule that
+   branch implements, and it is still sent from the section start, so the shown-file record stays
+   a run from that start. A one-file change, a change whose sections are the same kind, and a
+   change that fits the budget keep the historical leading prefix, byte-identical. The first part
+   of a reordered change carries one fixed line saying decision-changing sections are shown ahead
+   of boilerplate and that sections which do not fit are not shown; it names no path. Bytes of a
+   part that are not a prefix of the stored change are not counted as leading bytes. They are
+   reported with the served intervals, so a file shown out of prefix order is still recorded, and
+   a file that was not carried is absent. `check_time_change_truncated` remains the disclosure
+   that something was left out. Ceilings are unchanged.
    Inside the change, files are ordered by what the task delivers, not by path (tb4n2 R7, issue
    #1016): files at or under a requested `role: output` item come first (then requested files with
    no role, an `obligation_published` 1.0.0 deliverable), then files whose rendered section is at
@@ -290,8 +305,8 @@ content-returning read needed its own decision. This is that decision, for exact
    when the channel withholds `repository_excerpt`); a file is recorded through the run of its
    section, from its start, that the two together reached, with the same view commitment a
    leading-run view of those bytes would have. A file shown other than as one run from its
-   section's start has no truthful view: it is left out and the record says it is incomplete, so
-   a finding raised by that review never tolerates a check-time limit. No wire field changes. Replay folds, onto the finding's projection row, the record of every completed review
+   section's start uses the interval-view representation below (issue #1079, F3).
+   No wire field changes. Replay folds, onto the finding's projection row, the record of every completed review
    that raised or re-raised an AI-powered finding (R): whole files are united, a file any of them
    saw whole must be seen whole, a file they saw in part through one view keeps that view, and a
    file they saw in part through two different views must be seen whole. At most 64 contributing
@@ -528,3 +543,74 @@ produced.
 PR CI's conda-image smoke (`scripts/ci/service_image_smoke.sh`) runs the real Git 2.25 there:
 ready status, `start` and a deterministic check whose change capture must succeed, inside a Git
 repository.
+
+## Amendment (issue #1077): a dropped synthetic excerpt names its linked subjects
+
+A check-time change part and a current-file section an in-check follow-up serves both use the
+synthetic source ref `check-time-change`. That token is a valid excerpt source and is not a ledger
+subject. `ReviewOmission` still accepts only ledger subject ids. When selection or the aggregate
+case bound drops one of those excerpts, the omission is recorded against each valid linked subject
+(the edit the section answers, or the change's claims, obligations, or plan) with the same category
+and `not_selected` reason. `content_unselected` remains. No linked ledger subject means no omission
+row and no `coordinator_failure`. Subject validation is not relaxed, and nothing new is sent.
+
+A follow-up whose packet adds no part the earlier packets lacked is not dispatched. The check keeps
+the completed `insufficient_packet` review. A real `coordinator_failure` still fails the check; the
+receipt limitations section names that fault inside FinishUP in a fixed sentence on every rendering.
+
+## Amendment (issue #1079, F3): decisive intervals within one file
+
+When a change does not fit, selection may place a decision-bearing interval inside a large
+file ahead of its leading imports, comments, notices or generated boilerplate. The interval
+includes nearby context and following rule lines. Small sections and changes that fit retain
+their original representation. No excerpt, aggregate packet or policy ceiling increases.
+Each interior excerpt labels the original file, original hunk header and byte interval, and
+names the file intervals skipped in that excerpt. A cut narrows that label too. Truncation
+remains an explicit coverage gap; selection is a heuristic, not a completeness judgment.
+
+Shown-file accounting unions the original intervals that the provider actually received.
+Contiguous leading views keep their existing bytes. Interior or disjoint views use the local
+`yoetz/check-change-interval-view/v1` domain followed by each interval's original relative
+start/end and length-prefixed structural view. Only the keyed view commitment is recorded.
+The structural view also binds the preceding original hunk header repeated in the excerpt's
+context label, including its original offset, even when it lies outside the selected interval.
+Such a file is partial, `section_admitted=false`, with `clean_bytes=0` and `shown_bytes`
+equal to the union's byte count. An identical view or a whole-file review can cover it;
+a different partial view cannot. No wire field or schema changes.
+
+## Amendment (2026-10-16, PR #1080): late captured evidence enriches replay
+
+A hook and a Codex session-stream completion can describe one call with different captured-content
+roles. The original call's agreeing action must already be committed. An intersection on evidence
+alone cannot create a different call's core; an existing pre-action for that different call does
+not permit borrowing the original evidence. Reused evidence is checked against its immutable
+causal action and result association. After the committed core is validated, observation ingest
+appends only the missing captured input/output or digest-only image evidence (#1078 class). It does not rewrite the original result
+or its evidence-reference list; new evidence retains its causal action lineage. The existing
+append-only outcome correction still supplies an explicit native outcome or discloses a conflict.
+
+This reconciliation does not create eligibility for AI-powered review. Auto-supplied verification
+output still needs the service-authenticated post-tool input/output phase binding, matching keyed
+command identity, repository-excerpt permission, secret/path/environment screening and the existing
+packet limits. Command input is local eligibility context and is never a provider excerpt. Missing
+or mismatched binding still withholds output. Check-time diffs and current inspection snapshots
+are not a per-command before/after comparison and cannot certify an arbitrary shell command harmless.
+
+Round 5 of the same PR (owner decision, 2026-10-16) adds that per-command comparison outside this
+capture: the host hook fingerprints the workspace before and after each fingerprinted call and
+records only a closed `workspace_effect` token (ADR-033 amendment). It shares nothing with this
+capture's privacy path. It runs no Git and reads no content for the ledger: metadata of every entry
+under the hook's workspace root, and keyed content digests for entries whose metadata moved, kept in
+an owner-only local directory and never sent anywhere. Its scope is deliberately different: this
+capture shows the base-to-working-tree change Git does not ignore, while the fingerprint counts
+ignored files too (except VCS metadata, dependency environments and interpreter caches, recorded by
+identity), because a change to an ignored deliverable must still re-arm the closing review. A
+commit changes neither this capture nor the fingerprint.
+
+Late evidence uses the existing optional `evidence_recorded.reference` to name its original action
+event after core and causal-parent validation. Selection follows that link only for service-stamped
+observation-captured provenance and retains the original execution frontier. F1 authenticated
+command/output binding remains required. A captured object already represented by agreeing evidence
+is reused, so another delivery does not make its object-to-evidence association ambiguous. New
+image source identities remain distinct; enrichment operation/claim roles bind the appended event
+IDs. Existing schemas and frozen vectors retain their bytes.

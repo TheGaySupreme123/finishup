@@ -55,6 +55,7 @@ from finishup.application.observation_check_policy import (
 )
 from finishup.application.observation_committed import (
     action_event_committed,
+    committed_event_ids,
     observation_already_committed,
 )
 from finishup.application.observation_drain import ObservationCaptureRecoveryOutcome
@@ -64,6 +65,7 @@ from finishup.application.observation_materialize import (
     PAIRED_ACTION_ROLE,
     SESSION_BOUND_MAPPING_VERSIONS,
     MaterializedObservationBatch,
+    MaterializedObservationDraft,
     PairedActionLink,
     approved_check_author,
     canonical_logical_identity,
@@ -73,6 +75,7 @@ from finishup.application.observation_materialize import (
     materialize_observation_inspection_snapshot,
     materialize_observation_outcome_correction,
     materialize_selection_loss,
+    materialize_workspace_effect_annotation,
     media_type_for_schema,
     observation_author,
     observation_claim_identity,
@@ -176,6 +179,11 @@ from finishup.domain.values import (
     result_id,
     timestamp_from_datetime,
     timestamp_from_string,
+)
+from finishup.domain.workspace_effect import (
+    WORKSPACE_EFFECT_KEY,
+    WORKSPACE_EFFECTS,
+    workspace_effect_from_result_summary,
 )
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
 from finishup.observability.logging import record_unexpected_exception_without_raising
@@ -3324,6 +3332,18 @@ class ObservationCoordinator:
                             legacy_writer_id=predecessor_writer_id,
                             legacy_writer_routes=legacy_writer_routes,
                         )
+                        # Its workspace fact likewise reaches the recorded call (PR #1080 r6).
+                        await self._reconcile_workspace_effect(
+                            runtime,
+                            workspace,
+                            store,
+                            codex_session_id,
+                            envelope,
+                            batch,
+                            legacy_session_id=predecessor_session_id,
+                            legacy_writer_id=predecessor_writer_id,
+                            legacy_writer_routes=legacy_writer_routes,
+                        )
                         claim = None
                     if claim is not None:
                         (
@@ -3336,6 +3356,9 @@ class ObservationCoordinator:
                         current_draft_roles = tuple(item.role for item in batch.drafts)
                         if not action_plan.same_content_roles(
                             resolved_draft_roles, current_draft_roles
+                        ) and not await observation_already_committed(
+                            getattr(runtime, "ledger", None),
+                            tuple(str(item.draft.event_id) for item in batch.drafts),
                         ):
                             await self._local(
                                 partial(
@@ -3387,6 +3410,17 @@ class ObservationCoordinator:
                             resolved_mapping_version=resolved_mapping_version,
                             append_result=append_result,
                             already_committed=False,
+                            legacy_session_id=predecessor_session_id,
+                            legacy_writer_id=predecessor_writer_id,
+                            legacy_writer_routes=legacy_writer_routes,
+                        )
+                        await self._reconcile_workspace_effect(
+                            runtime,
+                            workspace,
+                            store,
+                            codex_session_id,
+                            envelope,
+                            batch,
                             legacy_session_id=predecessor_session_id,
                             legacy_writer_id=predecessor_writer_id,
                             legacy_writer_routes=legacy_writer_routes,
@@ -4215,10 +4249,10 @@ class ObservationCoordinator:
     ) -> None:
         """Apply a stream completion's explicit outcome to the call's recorded UNKNOWN one.
 
-        Runs when the completion's own batch was already recorded: as a replay of the
-        committed operation, or (#1027) because every event of the batch is already in the
-        ledger under another delivery shape. A freshly appended batch carries its explicit
-        outcome itself. Historical action/result rows are never rewritten: the correction is a
+        Reconcile the completion's core result after both full and partial replay. New evidence
+        can append while that core result remains the hook's UNKNOWN outcome. A fresh core
+        already carries the stated outcome and needs no correction. Historical rows are never
+        rewritten: the correction is a
         second, source-independent result linked to the same action, so retries are idempotent.
         """
 
@@ -4228,8 +4262,9 @@ class ObservationCoordinator:
         )
         if correction.skip_reason is not None or not correction.drafts:
             return
-        if not already_committed and (append_result is None or append_result.outcome != "replayed"):
-            return
+        # A partial replay can append new evidence while its core result was committed by
+        # the hook. Inspect that result even after an append, so UNKNOWN still gets the
+        # stream's explicit outcome (and a disagreement still gets its conflict correction).
         projection = await runtime.ledger.load_projection(
             runtime.session_id,
             ProjectionView.CANDIDATE_FINDINGS,
@@ -4389,6 +4424,115 @@ class ObservationCoordinator:
                         correction_result,
                     )
 
+    async def _reconcile_workspace_effect(
+        self,
+        runtime: TaskRuntime,
+        workspace: str,
+        store: TaskObservationPort,
+        codex_session_id: str,
+        envelope: ObservationEnvelope,
+        batch: MaterializedObservationBatch,
+        *,
+        legacy_session_id: str | None,
+        legacy_writer_id: str | None,
+        legacy_writer_routes: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Keep a delivery's workspace fact when its call's result was recorded without it.
+
+        PR #1080 round 6. Two deliveries of one host call share the call-keyed result id, so the
+        later one appends no result and, before this, its fact was dropped: a stream copy recorded
+        first (no fingerprint) kept a harmless read material, and an ``unchanged`` recorded first
+        silently outweighed a later ``changed`` or ``unavailable``. When this delivery carries a
+        fact and the recorded result of its call states another fact (or none), one append-only
+        annotation row records it under the call's action
+        (``materialize_workspace_effect_annotation``). Its ids derive from the result and the fact,
+        so repeats and restarts append nothing more. The kernel folds every fact of the call, and
+        ``changed`` or ``unavailable`` always wins over ``unchanged``. A delivery whose own result
+        row was the one appended already carries its fact and needs nothing here.
+        """
+
+        effect = cast(Mapping[str, object], envelope.structural_payload).get(WORKSPACE_EFFECT_KEY)
+        if type(effect) is not str or effect not in WORKSPACE_EFFECTS:
+            return
+        core = next(
+            (
+                item.draft.payload
+                for item in batch.drafts
+                if type(item.draft.payload) is ResultRecordedPayload
+            ),
+            None,
+        )
+        if type(core) is not ResultRecordedPayload:
+            return
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            raise PublicOperationError(
+                PublicErrorCode.SERVICE_UNAVAILABLE,
+                "Observation workspace-effect projection is unavailable.",
+                retryable=True,
+            )
+        recorded = projection.state.results.get(core.result_id)
+        if (
+            recorded is not None
+            and recorded.payload is not None
+            and workspace_effect_from_result_summary(recorded.payload.summary) == effect
+        ):
+            return
+        target_action = (
+            recorded.payload.action_id
+            if recorded is not None and recorded.payload is not None
+            else core.action_id
+        )
+        action_row = projection.state.actions.get(target_action)
+        if action_row is None or action_row.payload is None:
+            # No committed call to attach the fact to: nothing was recorded for it, so nothing
+            # can read as unchanged either.
+            return
+        annotation = materialize_workspace_effect_annotation(
+            envelope,
+            task_id=runtime.task_id,
+            recorded_result_id=str(core.result_id),
+            action_event_id=str(action_row.source_event_id),
+            effect=effect,
+        )
+        if annotation.skip_reason is not None or not annotation.drafts:
+            return
+        if await observation_already_committed(
+            runtime.ledger, tuple(str(item.draft.event_id) for item in annotation.drafts)
+        ):
+            return
+        appended = await self._append_materialized(
+            runtime,
+            envelope,
+            annotation,
+            legacy_session_id=legacy_session_id,
+            legacy_writer_id=legacy_writer_id,
+            legacy_writer_routes=legacy_writer_routes,
+        )
+        if appended is None or isinstance(appended, _AlreadyCommitted):
+            return
+        operation_id, digest, append_result, mapping_version, draft_roles = appended
+        store.record_logical_identity_claim(
+            workspace=workspace,
+            logical_identity=observation_claim_identity(
+                envelope, draft_roles, mapping_version=mapping_version
+            ),
+            materialization_digest=digest,
+            operation_id=operation_id,
+            source_mask=2 if envelope.source is ObservationSource.CODEX_SESSION_STREAM else 1,
+            mapping_version=mapping_version,
+            materialized_at=timestamp_from_datetime(self.clock.now_utc()),
+        )
+        if append_result is not None:
+            await self._note_frontier_motion(runtime, workspace, codex_session_id, append_result)
+
     async def _align_codex_stream_generation(
         self,
         runtime: TaskRuntime,
@@ -4538,6 +4682,36 @@ class ObservationCoordinator:
             return _ActionLinkPlan(link, batch, False, variants)
         if not await action_event_committed(ledger, link.action_id, link.action_event_id):
             return _ActionLinkPlan(link, batch, False, variants)
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if projection is not None and type(projection.state) is ProjectionState:
+            prior = projection.state.actions.get(action_id(link.action_id))
+            incoming = next(
+                (
+                    item.draft.payload
+                    for item in batch.drafts
+                    if type(item.draft.payload) is ActionRecordedPayload
+                ),
+                None,
+            )
+            if (
+                prior is not None
+                and prior.payload is not None
+                and type(incoming) is ActionRecordedPayload
+            ):
+                before = (prior.payload.command or "").split(" ", 1)[0]
+                after = (incoming.command or "").split(" ", 1)[0]
+                if prior.payload.action_kind is not incoming.action_kind or (
+                    before.startswith("omitted:hmac-sha256:")
+                    and after.startswith("omitted:hmac-sha256:")
+                    and before != after
+                ):
+                    raise PublicOperationError(
+                        PublicErrorCode.EVENT_INVALID,
+                        "Observation replay conflicts with committed command identity.",
+                        retryable=False,
+                    )
         return _ActionLinkPlan(link, link.linked, not link.linked.drafts, variants)
 
     async def _append_materialized(
@@ -4553,12 +4727,14 @@ class ObservationCoordinator:
         replay_required: bool = False,
         replay_claims: tuple[tuple[ObservationLogicalIdentityClaim, tuple[str, ...]], ...] = (),
         replay_draft_role_sets: tuple[tuple[str, ...], ...] = (),
+        _overlap_retries: int = 1,
     ) -> tuple[str, str, AppendResult | None, str, tuple[str, ...]] | _AlreadyCommitted | None:
         writer_id = runtime.writer_id
         if writer_id is None:
             return None
         logical_identity = canonical_logical_identity(envelope)
         draft_roles = tuple(item.role for item in batch.drafts)
+        wanted_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
         candidate_role_sets = tuple(dict.fromkeys((draft_roles, *replay_draft_role_sets)))
         writer_routes = [(runtime.session_id, writer_id)]
         for route in legacy_writer_routes:
@@ -4595,6 +4771,12 @@ class ObservationCoordinator:
                     "Observation logical identity claim does not match its operation.",
                     retryable=False,
                 )
+            if (
+                claim_mapping_version == MATERIALIZATION_MAPPING_VERSION
+                and callable(getattr(runtime.ledger, "committed_event_ids", None))
+                and not await observation_already_committed(runtime.ledger, wanted_ids)
+            ):
+                continue
             return (
                 claim_operation_id,
                 claim_digest,
@@ -4631,6 +4813,12 @@ class ObservationCoordinator:
                     "Observation operation identity is already committed with other content.",
                     retryable=False,
                 )
+            if callable(
+                getattr(runtime.ledger, "committed_event_ids", None)
+            ) and not await observation_already_committed(runtime.ledger, wanted_ids):
+                # A smaller committed shape proves its core, not the later evidence. Let
+                # the overlap reconciliation below append that evidence instead of losing it.
+                continue
             return (
                 candidate_operation_id,
                 candidate_digest,
@@ -4708,8 +4896,44 @@ class ObservationCoordinator:
         # EVENT_INVALID and quarantined as a content refusal, losing the explicit outcome a
         # stream copy carries (#1027). An id derived from a source identity alone can be reused
         # by another call, so that collision stays a conflict and fails closed (#560).
-        draft_event_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
+        draft_event_ids = wanted_ids
         duplicate_by_events = observation_event_ids_call_keyed(envelope)
+        if duplicate_by_events:
+            overlap = await committed_event_ids(runtime.ledger, draft_event_ids)
+            if overlap and len(overlap) < len(draft_event_ids):
+                action_events, repeated_content = await self._validate_observation_overlap(
+                    runtime, envelope, batch, overlap
+                )
+                batch = replace(
+                    batch,
+                    drafts=tuple(
+                        item
+                        for item in batch.drafts
+                        if str(item.draft.event_id) not in overlap | repeated_content
+                    ),
+                )
+                if not batch.drafts:
+                    return _AlreadyCommitted(overlap)
+                enriched: list[MaterializedObservationDraft] = []
+                for item in batch.drafts:
+                    payload = item.draft.payload
+                    parents = set(map(str, item.draft.causal_parents)) & action_events
+                    if type(payload) is EvidenceRecordedPayload and len(parents) == 1:
+                        # Link only this new evidence, without rewriting a result or recording
+                        # a second execution. Provenance and F1 binding remain selection gates.
+                        payload = replace(payload, reference=next(iter(parents)))
+                        item = replace(
+                            item,
+                            draft=replace(item.draft, payload=payload),
+                            payload_bytes=canonical_encode(encode_payload(payload)),
+                        )
+                    enriched.append(item)
+                batch = replace(batch, drafts=tuple(enriched))
+                # Evidence roles alone do not distinguish different later source identities
+                # (two image enrichments both have observed_image_0). Bind the enrichment
+                # operation and its claim to the immutable event ids actually being appended.
+                draft_roles = tuple(f"{item.role}:{item.draft.event_id}" for item in batch.drafts)
+                draft_event_ids = tuple(str(item.draft.event_id) for item in batch.drafts)
         if (
             duplicate_by_events
             and await observation_already_committed(runtime.ledger, draft_event_ids)
@@ -4842,10 +5066,40 @@ class ObservationCoordinator:
             )
             raise
         except PublicOperationError as exc:
+            if duplicate_by_events and exc.code is PublicErrorCode.EVENT_INVALID:
+                raced = await committed_event_ids(runtime.ledger, draft_event_ids)
+                if raced and len(raced) < len(draft_event_ids):
+                    await self._validate_observation_overlap(runtime, envelope, batch, raced)
+                    await abandon_preappend_objects(
+                        runtime.objects,
+                        tuple(staged_objects),
+                        component="application.observation_coordinator",
+                        operation="observation_object_abandon_failed",
+                        request_id=operation_id,
+                    )
+                    if not _overlap_retries:
+                        raise PublicOperationError(
+                            PublicErrorCode.SERVICE_UNAVAILABLE,
+                            "Observation replay changed during reconciliation; retry delivery.",
+                            retryable=True,
+                        ) from exc
+                    return await self._append_materialized(
+                        runtime,
+                        envelope,
+                        batch,
+                        captured_content=captured_content,
+                        legacy_session_id=legacy_session_id,
+                        legacy_writer_id=legacy_writer_id,
+                        legacy_writer_routes=legacy_writer_routes,
+                        replay_required=replay_required,
+                        replay_claims=replay_claims,
+                        replay_draft_role_sets=replay_draft_role_sets,
+                        _overlap_retries=0,
+                    )
             # The ledger refused the batch for an event id it already holds. If every event of
             # the batch is committed (a delivery that committed between the check above and this
             # append), that refusal classifies the batch as a duplicate, never a content refusal
-            # to quarantine (#1027). Any other refusal, including a partial overlap, stands.
+            # to quarantine (#1027). A partial overlap is reconciled once above; other refusals stand.
             if (
                 not duplicate_by_events
                 or exc.code is not PublicErrorCode.EVENT_INVALID
@@ -4868,6 +5122,188 @@ class ObservationCoordinator:
             MATERIALIZATION_MAPPING_VERSION,
             draft_roles,
         )
+
+    async def _validate_observation_overlap(
+        self,
+        runtime: TaskRuntime,
+        envelope: ObservationEnvelope,
+        batch: MaterializedObservationBatch,
+        overlap: frozenset[str],
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """Validate immutable call facts before appending a later delivery's new evidence.
+
+        Delivery times, rendering and captured-evidence refs may differ. They cannot change
+        the action/command identity or an existing evidence object's digest. Stream outcome
+        differences use the existing append-only correction, including dedup_conflict. A
+        committed result that stated no outcome agrees with a copy that states one; two explicit
+        outcomes that differ do not.
+        """
+
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            raise PublicOperationError(
+                PublicErrorCode.SERVICE_UNAVAILABLE,
+                "Observation replay projection is unavailable.",
+                retryable=True,
+            )
+        state = projection.state
+        # Reconstruct the original core even on a retry already reduced to evidence drafts.
+        # Evidence ids alone are source-keyed and can collide across different call ids.
+        core = materialize_observation_envelope(envelope, task_id=runtime.task_id)
+        core_actions = {
+            payload.action_id: (str(item.draft.event_id), payload)
+            for item in core.drafts
+            if type(payload := item.draft.payload) is ActionRecordedPayload
+        }
+        action_ids = set(core_actions)
+        action_events = frozenset(
+            str(row.source_event_id)
+            for action in action_ids
+            if (row := state.actions.get(action)) is not None and row.payload is not None
+        )
+        if not action_ids or len(action_events) != len(action_ids):
+            raise PublicOperationError(
+                PublicErrorCode.EVENT_INVALID,
+                "Observation replay has no agreeing committed call core.",
+                retryable=False,
+            )
+        for action, (event, incoming_action) in core_actions.items():
+            row = state.actions[action]
+            prior_action = row.payload
+            before = "" if prior_action is None else (prior_action.command or "").split(" ", 1)[0]
+            after = (incoming_action.command or "").split(" ", 1)[0]
+            if (
+                prior_action is None
+                or str(row.source_event_id) != event
+                or prior_action.action_kind is not incoming_action.action_kind
+                or (
+                    before.startswith("omitted:hmac-sha256:")
+                    and after.startswith("omitted:hmac-sha256:")
+                    and before != after
+                )
+            ):
+                raise PublicOperationError(
+                    PublicErrorCode.EVENT_INVALID,
+                    "Observation replay conflicts with committed call core.",
+                    retryable=False,
+                )
+        recorded = {
+            str(record.source_event_id): record.payload
+            for family in (state.actions, state.results, state.evidence)
+            for record in family.values()
+        }
+        captured = {
+            payload.captured_object_id: row
+            for row in state.evidence.values()
+            if (payload := row.payload) is not None and payload.captured_object_id is not None
+        }
+        repeated_content: set[str] = set()
+        lineage_evidence: set[str] = set()
+        for item in batch.drafts:
+            incoming = item.draft.payload
+            if str(item.draft.event_id) not in overlap:
+                if (
+                    type(incoming) is EvidenceRecordedPayload
+                    and incoming.captured_object_id is not None
+                ):
+                    prior_row = captured.get(incoming.captured_object_id)
+                    if prior_row is not None and (prior_content := prior_row.payload) is not None:
+                        if (
+                            incoming.content_digest != prior_content.content_digest
+                            or incoming.digest_binding != prior_content.digest_binding
+                            or incoming.strength is not prior_content.strength
+                            or incoming.evidence_kind is not prior_content.evidence_kind
+                        ):
+                            raise PublicOperationError(
+                                PublicErrorCode.EVENT_INVALID,
+                                "Observation replay conflicts with committed content.",
+                                retryable=False,
+                            )
+                        # One captured object has one evidence association. Reusing it under
+                        # another delivery id would make authenticated resolution ambiguous.
+                        repeated_content.add(str(item.draft.event_id))
+                        lineage_evidence.add(str(prior_row.source_event_id))
+                continue
+            prior = recorded.get(str(item.draft.event_id))
+            agrees = False
+            if type(incoming) is ActionRecordedPayload and type(prior) is ActionRecordedPayload:
+                agrees = (
+                    incoming.action_id == prior.action_id
+                    and incoming.action_kind is prior.action_kind
+                    and incoming.command == prior.command
+                    and incoming.subject_state == prior.subject_state
+                )
+            elif type(incoming) is ResultRecordedPayload and type(prior) is ResultRecordedPayload:
+                agrees = (
+                    incoming.result_id == prior.result_id
+                    and incoming.action_id == prior.action_id
+                    and incoming.subject_state == prior.subject_state
+                    and (
+                        (incoming.outcome, incoming.exit_status)
+                        == (prior.outcome, prior.exit_status)
+                        or incoming.outcome is ResultOutcome.UNKNOWN
+                        or prior.outcome is ResultOutcome.UNKNOWN
+                        or envelope.source is ObservationSource.CODEX_SESSION_STREAM
+                    )
+                )
+            elif (
+                type(incoming) is EvidenceRecordedPayload and type(prior) is EvidenceRecordedPayload
+            ):
+                lineage_evidence.add(str(item.draft.event_id))
+                reference = incoming.reference
+                if reference is None and prior.reference in action_events:
+                    reference = prior.reference
+                agrees = (
+                    replace(incoming, observed_at=prior.observed_at, reference=reference) == prior
+                )
+            if not agrees:
+                raise PublicOperationError(
+                    PublicErrorCode.EVENT_INVALID,
+                    "Observation replay conflicts with committed facts.",
+                    retryable=False,
+                )
+        # Match the immutable original causal association, not just the evidence bytes. A
+        # different call's PreToolUse does not authorize its result to borrow this evidence.
+        for row in state.evidence.values():
+            if str(row.source_event_id) not in lineage_evidence:
+                continue
+            original = tuple(
+                [
+                    record
+                    async for record in runtime.ledger.load_events(
+                        runtime.session_id,
+                        after=row.source_frontier - 1,
+                        through=row.source_frontier,
+                    )
+                    if record.event_id == row.source_event_id
+                ]
+            )
+            payload = row.payload
+            if (
+                len(original) != 1
+                or not (set(map(str, original[0].causal_parents)) & action_events)
+                or payload is None
+                or (payload.reference is not None and payload.reference not in action_events)
+                or any(
+                    result.payload is not None
+                    and payload.evidence_id in result.payload.evidence_refs
+                    and result.payload.action_id not in action_ids
+                    for result in state.results.values()
+                )
+            ):
+                raise PublicOperationError(
+                    PublicErrorCode.EVENT_INVALID,
+                    "Observation replay evidence conflicts with its original call lineage.",
+                    retryable=False,
+                )
+        return action_events, frozenset(repeated_content)
 
     async def _append_inspection_snapshot(
         self,

@@ -11,10 +11,13 @@ service-authenticated values; missing material becomes an omission.
 from __future__ import annotations
 
 import hashlib
+import json
 import posixpath
 import re
+import shlex
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple, cast
 
@@ -25,6 +28,7 @@ from finishup.application.check import (
 )
 from finishup.application.missing_for_assessment import (
     CHECK_TIME_CHANGE_SOURCE_REF,
+    OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
     ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
@@ -33,10 +37,12 @@ from finishup.application.missing_for_assessment import (
     excerpt_span_covered,
     excerpt_span_key,
     excerpt_span_whole,
+    observed_enrichment_refs,
     observed_image_evidence,
     supplied_since,
     unsupported_data_type,
 )
+from finishup.domain.command_segments import command_structure, strip_wrappers
 from finishup.domain.events import (
     MAX_PRIOR_FINDING_LISTED_REFS,
     ActionKind,
@@ -62,6 +68,7 @@ from finishup.domain.observation import (
     ObservationSource,
 )
 from finishup.domain.observation_profiles import ORDINARY_CONTENT_CAPTURE_PROFILE_IDS
+from finishup.domain.observation_selection import command_is_verification
 from finishup.domain.privacy import (
     MAX_EGRESS_ENVELOPE_BYTES,
     REVIEW_PACKET_ITEM_ID,
@@ -88,6 +95,7 @@ from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP,
     check_time_change_unavailable_reason_gap,
 )
+from finishup.domain.repository_excerpt import credential_named_path
 from finishup.domain.task_statement import (
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
     TASK_STATEMENT_NOT_SUPPLIED_GAP,
@@ -104,6 +112,9 @@ from finishup.domain.values import (
     task_id,
     validate_commitment,
     validate_sha256_digest,
+)
+from finishup.domain.values import (
+    action_id as validate_action_id,
 )
 from finishup.domain.values import (
     evidence_id as validate_evidence_id,
@@ -150,7 +161,13 @@ from finishup.kernel.task_facts import (
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
 from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
-from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+from finishup.observability.privacy import (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
+    PrivacyFenceError,
+    ScanConfidence,
+    redact_sensitive_content,
+    scan_for_sensitive_content,
+)
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_TASK_INPUT_FILES,
@@ -190,6 +207,7 @@ from finishup.protocol.canonical import (
     strict_json_parse,
 )
 from finishup.protocol.coverage import LedgerFreshness, coverage_to_json
+from finishup.protocol.errors import ProtocolValueError
 from finishup.protocol.models import (
     MAX_REVIEW_OMISSION_TOTAL,
     MAX_REVIEW_OMISSIONS,
@@ -656,6 +674,9 @@ class CapturedSemanticContent:
     phase_identity: str
     capture_profile: str
     capture_gaps: tuple[str, ...] = ()
+    # Same-phase authenticated post-tool input, supplied by the resolver; never sent.
+    observed_command: str | None = dataclass_field(default=None, repr=False)
+    observed_command_identity: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -729,6 +750,9 @@ class _CapturedGroup:
     source_kind: _ExcerptKind
     digest_provenance: ExcerptDigestProvenance
     capture_gaps: tuple[str, ...]
+    redacted: bool = False
+    observed_command: str | None = dataclass_field(default=None, repr=False)
+    observed_command_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -827,17 +851,6 @@ def _check_time_change_part_limit(selection: ReviewSelectionPolicy) -> int:
         selection.max_excerpt_bytes,
         selection.max_total_excerpt_bytes,
         MAX_SEMANTIC_ITEM_BYTES,
-    )
-
-
-def _check_time_change_parts(text: bytes, part_limit: int) -> tuple[str, ...]:
-    """Split the rendered change into self-describing parts, preferring line boundaries."""
-
-    chunks = _check_time_change_chunks(text, part_limit)
-    count = len(chunks)
-    return tuple(
-        _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=count) + chunk.decode("utf-8")
-        for index, chunk in enumerate(chunks)
     )
 
 
@@ -1008,6 +1021,19 @@ def _check_time_change_cut(rest: bytes, chunk_limit: int) -> int:
     return cut
 
 
+def _check_time_change_label_body(part: str) -> tuple[str, str]:
+    """Leading FinishUP label lines of one part, and the change body after them."""
+
+    labels: list[str] = []
+    rest = part
+    while rest.startswith("[FinishUP"):
+        line, separator, rest = rest.partition("\n")
+        if not separator:
+            break
+        labels.append(line)
+    return "\n".join(labels), rest
+
+
 def _check_time_change_cut_part(
     part: str, index: int, count: int, room: int
 ) -> tuple[str, bool] | None:
@@ -1015,29 +1041,78 @@ def _check_time_change_cut_part(
 
     The marker line is replaced and the change bytes are cut on a line end where one lies in the
     second half of the room, so the part still starts exactly where the uncut part starts and the
-    shown-file record counts exactly the bytes it carries. The flag says the part was cut.
+    shown-file record counts exactly the bytes it carries. A fixed decisive-section note on the
+    first part is kept. The flag says the part was cut.
     """
 
-    _, _, chunk = part.partition("\n")
-    raw = chunk.encode("utf-8")
+    labels, body = _check_time_change_label_body(part)
+    raw = body.encode("utf-8")
+    note = "".join(line + "\n" for line in labels.split("\n")[1:] if line)
     cut_marker = _CHECK_TIME_CHANGE_CUT_MARKER.format(index=index, count=count)
-    chunk_limit = room - len(cut_marker.encode("ascii"))
+    prefix = cut_marker + note
+    chunk_limit = room - len(prefix.encode("utf-8"))
     if chunk_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
         return None
     if len(raw) <= chunk_limit:
         return part, False
-    return cut_marker + raw[: _check_time_change_cut(raw, chunk_limit)].decode("utf-8"), True
+    # A cut also narrows the interval advertised by the synthetic hunk header.
+    # Recompute room after updating decimal offsets; no header may claim an unseen tail.
+    interval = re.search(
+        r"selected original bytes (\d+):(\d+); skipped file intervals (\d+):\d+ and \d+:(\d+)", note
+    )
+    for _ in range(4):
+        cut = _check_time_change_cut(raw, chunk_limit)
+        if interval is not None:
+            low = int(interval[1])
+            high = low + cut
+            updated = (
+                note[: interval.start()]
+                + f"selected original bytes {low}:{high}; skipped file intervals {interval[3]}:{low} and {high}:{interval[4]}"
+                + note[interval.end() :]
+            )
+            prefix = cut_marker + updated
+        next_limit = room - len(prefix.encode("utf-8"))
+        if cut <= next_limit:
+            return prefix + raw[:cut].decode("utf-8"), True
+        chunk_limit = next_limit
+    return None
 
 
 def _check_time_change_part_chunk_bytes(content: bytes) -> int:
-    """The change bytes one part item carries: everything after its marker line."""
+    """The change bytes one part item carries, after every leading FinishUP label line.
 
-    return len(content) - (content.index(b"\n") + 1)
+    A part is one marker line plus the change bytes. A change that does not fit may add one
+    fixed label on its first part (the decisive-section note). Agent text cannot forge that
+    prefix: captured lines that look like a label are neutralised before they are stored.
+    """
+
+    rest = content
+    while rest.startswith(b"[FinishUP"):
+        newline = rest.find(b"\n")
+        if newline < 0:
+            return 0
+        rest = rest[newline + 1 :]
+    return len(rest)
 
 
 _CHECK_TIME_CHANGE_FILE_START: Final = re.compile(rb"^diff --git ", re.MULTILINE)
 _CHECK_TIME_CHANGE_BINARY: Final = re.compile(rb"^Binary files ", re.MULTILINE)
 _CHECK_TIME_CHANGE_DELETED: Final = re.compile(rb"^deleted file mode ", re.MULTILINE)
+# Issue #1079 item 2c. Fixed text, no path: when the change does not fit, file sections that
+# change a decision are admitted before boilerplate. The note rides the first part only.
+_DECISIVE_PREFERENCE_NOTE: Final = (
+    "[FinishUP: decision-changing sections are shown ahead of boilerplate; "
+    "sections that do not fit are not shown]\n"
+)
+_DECISION_LINE: Final = re.compile(
+    rb"^(?:if|elif|else|return|raise|assert|throw|catch|except|unless|switch|match|case)\b"
+    rb"|\bif\s*\("
+    rb"|\belse\s*:"
+)
+_BOILERPLATE_LINE: Final = re.compile(
+    rb"^(?:import|from|using|require|include|use)\b"
+    rb"|^(?:#|//|/\*|\*|--|<!--)"
+)
 # The markers capture-time redaction leaves in the stored change: a concrete credential shape
 # reads ``[REDACTED]``, a value that only looks like one the self-describing placeholder (tb4n5).
 # Both are withheld spans; every count and view below treats them alike. A change stored before
@@ -1046,6 +1121,282 @@ _REDACTION_MARKERS: Final = (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER)
 _CHECK_TIME_CHANGE_HUNK: Final = re.compile(rb"^@@ [^\n]*", re.MULTILINE)
 # Frozen legacy identifier (ADR-048): domain separator inside stored digests.
 _VIEW_DOMAIN: Final = b"yoetz/check-change-view/v1\x00"
+
+
+def _file_section_bounds(text: bytes) -> tuple[tuple[int, int], ...]:
+    """``(start, end)`` of each ``diff --git`` section, in file order."""
+
+    starts = [match.start() for match in _CHECK_TIME_CHANGE_FILE_START.finditer(text)]
+    return tuple(
+        (start, starts[index + 1] if index + 1 < len(starts) else len(text))
+        for index, start in enumerate(starts)
+    )
+
+
+def _changed_code_body(line: bytes) -> bytes | None:
+    """The code of one added or removed diff line, without the ``+``/``-`` prefix."""
+
+    if line.startswith((b"+++", b"---")) or not line.startswith((b"+", b"-")):
+        return None
+    return line[1:].strip()
+
+
+def _pure_license_notice(body: bytes) -> bool:
+    """A comment or header line that is a license or copyright notice, not code.
+
+    ``(c)`` and ``(C)`` are the copyright mark. Any other parenthesis or an assignment is code
+    that happens to name a license.
+    """
+
+    if _BOILERPLATE_LINE.match(body) is not None:
+        return True
+    if b"=" in body:
+        return False
+    notice = re.sub(rb"\([cC]\)", b"", body)
+    if b"(" in notice or b")" in notice:
+        return False
+    return re.fullmatch(rb"[A-Za-z0-9 \t.,:;/_*+-]*", notice) is not None
+
+
+def _boilerplate_body(body: bytes) -> bool:
+    """A changed line that is blank, a comment, an import, or a license notice.
+
+    A line that matches ``_DECISION_LINE`` is a decision even when it names a license. Only a
+    license or copyright comment or header is a notice; other code that mentions one is not.
+    """
+
+    if not body:
+        return True
+    if _DECISION_LINE.search(body) is not None:
+        return False
+    lowered = body.lower()
+    if (
+        b"copyright" in lowered
+        or b"license" in lowered
+        or b"all rights reserved" in lowered
+        or b"spdx-" in lowered
+    ) and _pure_license_notice(body):
+        return True
+    return _BOILERPLATE_LINE.match(body) is not None
+
+
+def _section_rank(section: bytes) -> int:
+    """0 when the section changes a decision, 1 for other code, 2 for boilerplate only.
+
+    A decision is a changed line that starts with a branch or result keyword (``if``,
+    ``return``, ``raise``, and the same shape in other languages), or an ``if (`` / ``else:``
+    form. It counts even when the line names a license. The rest of that section is the rule
+    the branch implements, so the whole section is kept from its start. Comments, imports and
+    license or copyright comment and header lines do not count.
+    """
+
+    rank = 2
+    for line in section.splitlines():
+        body = _changed_code_body(line)
+        if body is None or _boilerplate_body(body):
+            continue
+        if _DECISION_LINE.search(body) is not None:
+            return 0
+        rank = 1
+    return rank
+
+
+def _decisive_section_ranges(text: bytes) -> tuple[tuple[int, int], ...]:
+    """File sections a tight packet should admit, decision first, preamble last."""
+
+    sections = _file_section_bounds(text)
+    ranked = sorted(
+        (
+            (_section_rank(text[start:end]), order, start, end)
+            for order, (start, end) in enumerate(sections)
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    ranges = [(start, end) for _rank, _order, start, end in ranked]
+    if sections and sections[0][0] > 0:
+        ranges.append((0, sections[0][0]))
+    return tuple(ranges)
+
+
+def _decisive_intervals(text: bytes) -> tuple[tuple[int, int], ...]:
+    """Rank bounded line intervals inside hunks, preserving original byte coordinates.
+
+    Each decision gets three lines of context and its following rule. Splitting a huge hunk
+    keeps imports, comments and generated prefixes from consuming a tight packet. Unselected
+    intervals remain in the offer after the decisive intervals, with no duplicated bytes.
+    """
+
+    preferred: list[tuple[int, int]] = []
+    for start, end in _file_section_bounds(text):
+        first_decision = next(
+            (
+                match.start() + start
+                for match in re.finditer(rb"^[+-](.*)$", text[start:end], re.MULTILINE)
+                if (body := _changed_code_body(match.group())) is not None
+                and _DECISION_LINE.search(body) is not None
+            ),
+            None,
+        )
+        if first_decision is not None and first_decision - start <= 512:
+            preferred.append((start, end))
+            continue
+        hunks = list(_CHECK_TIME_CHANGE_HUNK.finditer(text, start, end))
+        for index, hunk in enumerate(hunks):
+            body_start = text.find(b"\n", hunk.start(), end) + 1
+            body_end = hunks[index + 1].start() if index + 1 < len(hunks) else end
+            if body_start <= hunk.start():
+                continue
+            lines = text[body_start:body_end].splitlines(keepends=True)
+            offsets = [body_start]
+            for line in lines:
+                offsets.append(offsets[-1] + len(line))
+            for line_index, line in enumerate(lines):
+                body = _changed_code_body(line)
+                if body is None or _DECISION_LINE.search(body) is None:
+                    continue
+                low, high = max(0, line_index - 3), min(len(lines), line_index + 5)
+                interval = (offsets[low], offsets[high])
+                if preferred and preferred[-1][1] >= interval[0] and preferred[-1][0] >= start:
+                    preferred[-1] = (preferred[-1][0], max(preferred[-1][1], interval[1]))
+                else:
+                    preferred.append(interval)
+    if not preferred:
+        return _decisive_section_ranges(text)
+    remainder: list[tuple[int, int]] = []
+    for low, high in _decisive_section_ranges(text):
+        cursor = low
+        for start, end in preferred:
+            if end <= low or start >= high:
+                continue
+            if cursor < start:
+                remainder.append((cursor, start))
+            cursor = max(cursor, end)
+        if cursor < high:
+            remainder.append((cursor, high))
+    return (*preferred, *remainder)
+
+
+def _interval_label(text: bytes, start: int, end: int) -> str:
+    """Self-describing context without pretending synthetic headers are captured bytes."""
+
+    section = next(
+        ((low, high) for low, high in _file_section_bounds(text) if low <= start < high), None
+    )
+    if section is None or start == section[0]:
+        return ""
+    low, high = section
+    file_line = text[low : text.find(b"\n", low, high)].decode("utf-8")
+    hunk = next(reversed(list(_CHECK_TIME_CHANGE_HUNK.finditer(text, low, start + 1))), None)
+    hunk_line = "" if hunk is None else hunk.group().decode("utf-8")
+    return (
+        f"[FinishUP file: {file_line}]\n"
+        f"[FinishUP hunk: {hunk_line}; selected original bytes {start}:{end}; "
+        f"skipped file intervals {low}:{start} and {end}:{high} in this excerpt]\n"
+    )
+
+
+def _prefer_decisive_sections(
+    text: bytes, linear_parts: Sequence[str], selection: ReviewSelectionPolicy
+) -> bool:
+    """Whether admitting the linear prefix would drop a decision behind boilerplate.
+
+    A change that fits is left byte-identical. Otherwise decisions can move ahead of
+    boilerplate within one file as well as across files.
+    """
+
+    sections = _file_section_bounds(text)
+    if not sections or not linear_parts:
+        return False
+    intervals = _decisive_intervals(text)
+    within_file = (
+        any(low < intervals[0][0] < high for low, high in sections) if intervals else False
+    )
+    cross_file = len({_section_rank(text[start:end]) for start, end in sections}) > 1
+    if not within_file and not cross_file:
+        return False
+    part_bytes = sum(len(part.encode("utf-8")) for part in linear_parts)
+    return (
+        len(linear_parts) > selection.max_excerpts or part_bytes > selection.max_total_excerpt_bytes
+    )
+
+
+def _chunks_with_first_limit(blob: bytes, first_limit: int, later_limit: int) -> tuple[bytes, ...]:
+    """``blob`` in line-bounded chunks; only the first chunk uses ``first_limit``."""
+
+    if not blob or first_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
+        return _line_chunks(blob, later_limit)
+    if len(blob) <= first_limit:
+        return (blob,)
+    cut = _check_time_change_cut(blob, first_limit)
+    head = blob[:cut]
+    return (head, *_line_chunks(blob[cut:], later_limit))
+
+
+def _check_time_change_offer(
+    text: bytes, selection: ReviewSelectionPolicy
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """Change parts and the original offset of each part's first change byte.
+
+    The linear offer is the historical prefix. When the change does not fit and its files are
+    not all the same kind, parts are rebuilt so a section that changes a decision precedes
+    boilerplate. Offsets are into ``text``, never into the reordered part stream, so the
+    shown-file record names the files that were actually carried.
+    """
+
+    part_limit = _check_time_change_part_limit(selection)
+    chunks = _check_time_change_chunks(text, part_limit)
+    if not chunks:
+        return (), ()
+    count = len(chunks)
+    linear_parts = tuple(
+        _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=count) + chunk.decode("utf-8")
+        for index, chunk in enumerate(chunks)
+    )
+    if not _prefer_decisive_sections(text, linear_parts, selection):
+        offsets: list[int] = []
+        cursor = 0
+        for chunk in chunks:
+            offsets.append(cursor)
+            cursor += len(chunk)
+        return linear_parts, tuple(offsets)
+
+    marker_room = len(_CHECK_TIME_CHANGE_MARKER.format(index=999, count=999).encode("ascii"))
+    body_limit = part_limit - marker_room
+    note = _DECISIVE_PREFERENCE_NOTE
+    note_room = len(note.encode("ascii"))
+    use_note = body_limit - note_room >= _CHECK_TIME_CHANGE_MIN_CHUNK
+    first_limit = body_limit - note_room if use_note else body_limit
+    pieces: list[tuple[int, bytes]] = []
+    for index, (start, end) in enumerate(_decisive_intervals(text)):
+        blob = text[start:end]
+        # Small file sections keep their original headers and historical representation.
+        if start != 0 and _interval_label(text, start, end):
+            label = _interval_label(text, start, end)
+        else:
+            label = ""
+        room = body_limit - len(label.encode("utf-8"))
+        ranged = (
+            _chunks_with_first_limit(blob, first_limit - len(label.encode("utf-8")), room)
+            if index == 0 and use_note
+            else _line_chunks(blob, room)
+        )
+        offset = start
+        for chunk in ranged:
+            pieces.append((offset, chunk))
+            offset += len(chunk)
+    if not pieces:
+        return (), ()
+    total = len(pieces)
+    parts: list[str] = []
+    for index, (_offset, chunk) in enumerate(pieces):
+        marker = _CHECK_TIME_CHANGE_MARKER.format(index=index + 1, count=total)
+        prefix = (
+            marker
+            + (note if index == 0 and use_note else "")
+            + _interval_label(text, _offset, _offset + len(chunk))
+        )
+        parts.append(prefix + chunk.decode("utf-8"))
+    return tuple(parts), tuple(offset for offset, _chunk in pieces)
 
 
 def _redaction_marker_offsets(text: bytes, start: int, visible_end: int, end: int) -> list[int]:
@@ -1143,12 +1494,9 @@ def check_time_change_shown_record(
 ) -> tuple[tuple[CheckTimeChangeShownFile, ...], bool]:
     """``check_time_change_shown_files`` and whether every shown file could be recorded truly.
 
-    A file's view is the run of its section from the section's start that reached the packet:
-    the leading ``shown_bytes`` and the ``served`` intervals together. A file the packet carried
-    other than as one such run (a gap inside what it showed, or a run not starting at the
-    section's start) has no truthful view in that representation: it is left out and the answer
-    is ``False``, so the caller records the inventory incomplete and the raising review's
-    coverage stays unknown rather than understated (tb4n5).
+    Leading views retain their original representation. Disjoint or interior views commit to
+    every original interval in a separate domain and never claim whole-file coverage. Their
+    clean-prefix count is zero, so they cannot stand in for a longer leading view.
     """
 
     if (
@@ -1176,15 +1524,12 @@ def check_time_change_shown_record(
         )
         if not reached:
             continue
-        run_end = start
+        merged: list[tuple[int, int]] = []
         for low, high in reached:
-            if low > run_end:
-                break
-            run_end = max(run_end, high)
-        if reached[0][0] != start or any(low > run_end for low, _high in reached):
-            # Shown, but not as one run from the section's start: no truthful view exists.
-            representable = False
-            continue
+            if merged and low <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+            else:
+                merged.append((low, high))
         line_end = text.find(b"\n", start, end)
         identity = text[start : end if line_end < 0 else line_end]
         section = text[start:end]
@@ -1192,6 +1537,43 @@ def check_time_change_shown_record(
             identity += b"\x00binary"
         if _CHECK_TIME_CHANGE_DELETED.search(section) is not None:
             identity += b"\x00deleted"
+        if len(merged) != 1 or merged[0][0] != start:
+            markers = [
+                max(low, offset)
+                for low, high in merged
+                for offset in _redaction_marker_offsets(text, start, high, end)
+                if offset >= low
+                or any(
+                    text.startswith(marker, offset) and offset + len(marker) > low
+                    for marker in _REDACTION_MARKERS
+                )
+            ]
+            view = b"yoetz/check-change-interval-view/v1\x00" + b"".join(
+                (low - start).to_bytes(4, "big")
+                + (high - start).to_bytes(4, "big")
+                + len(part).to_bytes(4, "big")
+                + part
+                for low, high in merged
+                for part in (
+                    _check_time_change_view(
+                        text, low, high, [m for m in markers if low <= m < high], False
+                    )
+                    + _interval_hunk_context(text, start, low, end),
+                )
+            )
+            files.append(
+                CheckTimeChangeShownFile(
+                    identity=identity,
+                    whole=False,
+                    shown_bytes=sum(high - low for low, high in merged),
+                    redactions=len(set(markers)),
+                    section_admitted=False,
+                    clean_bytes=0,
+                    view=view,
+                )
+            )
+            continue
+        run_end = merged[0][1]
         visible_end = run_end
         markers = _redaction_marker_offsets(text, start, visible_end, end)
         section_admitted = visible_end >= end
@@ -1208,6 +1590,28 @@ def check_time_change_shown_record(
             )
         )
     return tuple(files), representable
+
+
+def _interval_hunk_context(text: bytes, start: int, low: int, end: int) -> bytes:
+    """Bind the original hunk header repeated as context outside an interior byte interval."""
+
+    hunk = next(
+        (
+            match
+            for match in reversed(list(_CHECK_TIME_CHANGE_HUNK.finditer(text, start, end)))
+            if match.start() <= low
+        ),
+        None,
+    )
+    if hunk is None:
+        return b"\x00"
+    header = hunk.group()
+    return (
+        b"\x01"
+        + (hunk.start() - start).to_bytes(4, "big")
+        + len(header).to_bytes(4, "big")
+        + header
+    )
 
 
 def _check_time_change_links(
@@ -2125,6 +2529,50 @@ def _omit(
     )
 
 
+def _omission_subject_refs(source_ref: str, linked: Sequence[str]) -> tuple[str, ...]:
+    """Ledger subjects a dropped excerpt may name (issue #1077).
+
+    A check-time change excerpt's own source is the synthetic ``check-time-change`` token.
+    ``ReviewOmission`` accepts only ledger subject ids, so a dropped synthetic excerpt is
+    disclosed against the valid linked subjects it answers. A recorded source keeps its own ref.
+    Subject validation itself is unchanged.
+    """
+
+    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+        return (source_ref,)
+    seen: list[str] = []
+    for ref in linked:
+        if type(ref) is str and ref not in seen:
+            seen.append(ref)
+    return tuple(sorted(seen, key=str.encode))
+
+
+def _append_omission(
+    omissions: list[ReviewOmission],
+    source_ref: str,
+    linked: Sequence[str],
+    category: DataCategory,
+    source_kind: _SourceKind,
+    reason: _OmissionReason,
+) -> None:
+    """Record one omission per subject, mapping a synthetic excerpt onto its linked subjects.
+
+    A linked token that is not a ledger subject is skipped. The ``content_unselected`` gap the
+    caller already recorded stays the disclosure when no valid subject remains. A recorded
+    source still raises if its own ref is not a ledger subject.
+    """
+
+    subjects = _omission_subject_refs(source_ref, linked)
+    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+        omissions.append(_omit(subjects[0], category, source_kind, reason))
+        return
+    for subject in subjects:
+        try:
+            omissions.append(_omit(subject, category, source_kind, reason))
+        except ValueError:
+            continue
+
+
 def _fit_excerpts_within_case_bound(
     items: Sequence[SemanticCaseItem],
     targeted: list[TargetedExcerptRef],
@@ -2156,7 +2604,14 @@ def _fit_excerpts_within_case_bound(
         item = by_id[excerpt.excerpt_item_id]
         case_bytes -= item.content_bytes
         dropped_refs.add(item.source_ref)
-        omissions.append(_omit(item.source_ref, item.category, excerpt.source_kind, "not_selected"))
+        _append_omission(
+            omissions,
+            item.source_ref,
+            item.linked_subject_refs,
+            item.category,
+            excerpt.source_kind,
+            "not_selected",
+        )
     capture_gaps.add("content_unselected")
     if any(by_id[excerpt.excerpt_item_id].source_ref in dropped_refs for excerpt in targeted):
         # Later parts of a split excerpt were cut while its earlier parts stay.
@@ -2326,6 +2781,16 @@ def _captured_content_groups(
                 provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
             )
         group = _CapturedGroup(
+            redacted=any(item.manifest.redacted for _ref, item in rows),
+            observed_command=first_item.observed_command
+            if all(item.observed_command == first_item.observed_command for _ref, item in rows)
+            else None,
+            observed_command_identity=first_item.observed_command_identity
+            if all(
+                item.observed_command_identity == first_item.observed_command_identity
+                for _ref, item in rows
+            )
+            else None,
             evidence_refs=tuple(ref for ref, _item in rows),
             content=combined,
             source_kind=source_kind,
@@ -2728,7 +3193,12 @@ type _VerificationRun = tuple[str, ResultOutcome, str, str]
 
 def _verification_identities(
     projection: ProjectionState,
-) -> tuple[dict[str, _VerificationRun], dict[str, _VerificationRun], dict[str, tuple[int, str]]]:
+) -> tuple[
+    dict[str, _VerificationRun],
+    dict[str, _VerificationRun],
+    dict[str, tuple[int, str]],
+    frozenset[str],
+]:
     """Map evidence and result refs to the command whose run they record.
 
     Each run is ``(identity, outcome, action ref, result ref)``. Identity is the digest of the
@@ -2737,13 +3207,18 @@ def _verification_identities(
     request was answered by another run of the same command. A hook run recorded without a command
     identity (``omitted:structural``) identifies nothing, so unrelated commands never supersede
     each other. The third map holds, per identity, the newest recorded run (its frontier and result
-    ref), whether or not that run's output can be carried. The digest never leaves this function's
-    callers.
+    ref), whether or not that run's output can be carried. The fourth set is identities whose
+    newest run is a readable command action no readable result cites: a tombstoned result no
+    longer names that action, and an older capture of the command must not be sent in its place.
+    A tombstoned action has no command text and is absent here. The digest never leaves this
+    function's callers.
     """
 
     by_evidence: dict[str, _VerificationRun] = {}
+    enrichments = observed_enrichment_refs(projection)
     by_result: dict[str, _VerificationRun] = {}
     newest: dict[str, tuple[int, str]] = {}
+    cited_actions: set[object] = set()
     for result_ref, row in sorted(
         projection.results.items(),
         key=lambda pair: (pair[1].source_frontier, str(pair[0]).encode("ascii")),
@@ -2751,6 +3226,7 @@ def _verification_identities(
         payload = row.payload
         if payload is None or row.redacted:
             continue
+        cited_actions.add(payload.action_id)
         action = projection.actions.get(payload.action_id)
         if (
             action is None
@@ -2768,7 +3244,31 @@ def _verification_identities(
         newest[identity] = (row.source_frontier, str(result_ref))
         for evidence_ref in payload.evidence_refs:
             by_evidence[str(evidence_ref)] = run
-    return by_evidence, by_result, newest
+        for evidence_ref in enrichments.get(str(action.source_event_id), ()):
+            by_evidence[evidence_ref] = run
+    # A tombstoned result cannot cite its action. The action still names the command, and its
+    # frontier is the newest run when no readable result of that command is later.
+    redacted_newest: set[str] = set()
+    for action_ref, action_row in projection.actions.items():
+        if action_ref in cited_actions:
+            continue
+        action_payload = action_row.payload
+        if (
+            action_payload is None
+            or action_row.redacted
+            or action_payload.action_kind is not ActionKind.COMMAND
+        ):
+            continue
+        key = command_run_key(action_payload)
+        if key is None:
+            continue
+        identity = "command:" + hashlib.sha256("\x00".join(key).encode("utf-8")).hexdigest()
+        rank = (action_row.source_frontier, str(action_ref))
+        previous = newest.get(identity)
+        if previous is None or rank > previous:
+            newest[identity] = rank
+            redacted_newest.add(identity)
+    return by_evidence, by_result, newest, frozenset(redacted_newest)
 
 
 def _artifact_path(payload: EvidenceRecordedPayload) -> str | None:
@@ -2807,6 +3307,14 @@ _OBSERVED_IMAGE_NOTICE_MARKER: Final = (
     "[FinishUP: an image was observed (evidence {ref}); "
     "it was not sent and its content is not assessable from this packet]\n"
 )
+# Follow-up only (issue #1079). Prefixed after agent text is neutralised, so a capture cannot
+# forge the label. The bytes stay a repository excerpt: a selection that would not already send
+# one does not receive them.
+_OBSERVED_COMMAND_OUTPUT_MARKER: Final = (
+    "[FinishUP: observed command output captured from a command the agent ran; "
+    "not an agent-published result]\n"
+)
+_LEDGER_SUBJECT_PREFIXES: Final = ("evt_", "obl_", "clm_", "act_", "res_", "evd_", "fnd_")
 _BINARY_RENDERING_MARKER: Final = (
     "[FinishUP: agent-rendered text of {path} (evidence {ref}); the binary file itself is not"
     " sent]\n"
@@ -3213,6 +3721,580 @@ def _evidence_candidates(
     return candidates
 
 
+def _observed_span_refs(keys: Iterable[str]) -> frozenset[str]:
+    """Evidence refs whose observed-command-output spans ``keys`` name."""
+
+    prefix = OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX
+    refs: set[str] = set()
+    for key in keys:
+        if not key.startswith(prefix):
+            continue
+        span = excerpt_span(key)
+        if span is None:
+            continue
+        ref = span[0][len(prefix) :]
+        if ref.startswith("evd_"):
+            refs.add(ref)
+    return frozenset(refs)
+
+
+def _linked_observed_subjects(
+    existing: Sequence[str], targets: Sequence[str], allowed: frozenset[str]
+) -> tuple[str, ...]:
+    """Ledger subjects the marked command-output excerpt may name, within the 16-ref bound."""
+
+    seen: list[str] = []
+    for ref in (*existing, *targets):
+        if (
+            type(ref) is str
+            and ref in allowed
+            and ref.startswith(_LEDGER_SUBJECT_PREFIXES)
+            and ref not in seen
+        ):
+            seen.append(ref)
+    return tuple(sorted(seen, key=str.encode)[:MAX_SEMANTIC_ITEM_SUBJECT_REFS])
+
+
+# Auto-supply is only for commands ``command_runner_class`` already calls verification.
+# Anything else (a ``cat``, an environment dump wrapped beside pytest) is withheld whole.
+_PROC_ENVIRON: Final = re.compile(r"(?:^|/)proc/(?:self|[0-9]+)/environ\Z")
+_ENV_ASSIGNMENT: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_ENV_OPTIONS_WITH_OPERAND: Final = frozenset(
+    {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
+)
+# The disclosure scan matches a private-key BEGIN banner only. Capture redacts that banner and
+# leaves the body and the END line. Auto-supply drops the item when either remains.
+_PRIVATE_KEY_END: Final = re.compile(
+    rb"-{5}END[ \t]+(?:OPENSSH[ \t]+|RSA[ \t]+|EC[ \t]+|DSA[ \t]+|ENCRYPTED[ \t]+)?"
+    rb"PRIVATE KEY-{5}"
+)
+# Base64 of the OpenSSH private-key body magic (``openssh-key-v1``), not a BEGIN banner.
+_OPENSSH_KEY_BODY: Final = b"b3BlbnNzaC1rZXktdjE"
+_NESTED_NOT_SHOWN: Final = "its own change is not shown"
+
+
+def _argv_is_environment_dump(words: Sequence[str]) -> bool:
+    """Whether these argv words print the environment rather than run a verifier."""
+
+    if not words:
+        return False
+    for word in words:
+        if _PROC_ENVIRON.search(word.replace("\\", "/")) is not None:
+            return True
+    head = words[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if head == "printenv":
+        return True
+    if head in {"export", "declare", "typeset"} and "-p" in words[1:]:
+        return True
+    if head == "set":
+        rest = [word for word in words[1:] if word != "--"]
+        return all(word in {"-o", "+o", "-p"} or word.startswith("-o") for word in rest)
+    if head != "env":
+        return False
+    rest = list(words[1:])
+    while rest:
+        token = rest[0]
+        if _ENV_ASSIGNMENT.match(token) is not None:
+            rest.pop(0)
+            continue
+        if token == "--":
+            rest.pop(0)
+            break
+        if not token.startswith("-"):
+            return False
+        rest.pop(0)
+        bare = token.partition("=")[0]
+        if bare in _ENV_OPTIONS_WITH_OPERAND and "=" not in token and rest:
+            rest.pop(0)
+    return True
+
+
+def _command_words(text: str) -> tuple[str, ...] | None:
+    try:
+        return tuple(shlex.split(text, posix=True))
+    except ValueError:
+        return None
+
+
+def _command_dumps_environment(command: str) -> bool:
+    """Whether any simple command in ``command`` is an environment dump.
+
+    ``env pytest`` runs pytest; a bare ``env``, ``printenv``, ``set``, ``export -p`` or
+    ``/proc/self/environ`` prints the environment. A compound that also runs a verifier
+    (``pytest -q; printenv``) still dumps, so the whole capture is withheld.
+    """
+
+    structure = command_structure(command)
+    if structure is None:
+        words = _command_words(command)
+        return words is None or _argv_is_environment_dump(words)
+    if not structure.commands:
+        return True
+    for simple in structure.commands:
+        if _argv_is_environment_dump(simple.words):
+            return True
+        raw = _command_words(simple.text)
+        if raw is None or _argv_is_environment_dump(raw):
+            return True
+    return False
+
+
+def _header_not_shown_path(line: str) -> str | None:
+    """The repository-relative path on a check-time change header line that says it was not shown."""
+
+    if not line.startswith("  ") or " not shown:" not in line:
+        return None
+    _status, _space, remainder = line[2:].partition(" ")
+    if not remainder:
+        return None
+    path = remainder[: remainder.find(" not shown:")].strip()
+    count = path.rfind(" (+")
+    if count >= 0:
+        path = path[:count].strip()
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        path = path[1:-1]
+    path = path.strip().strip("/")
+    if not path or path.endswith("...") or "\x00" in path:
+        return None
+    return path
+
+
+def _refused_repository_paths(
+    capture: CheckChangeCapture | None,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Paths the frozen check-time change already refused to show, and nested prefixes it omitted.
+
+    Exact paths are header files marked ``not shown`` (credential name, nested repository, nested
+    untracked, and the other content withholdings). Prefixes are nested repositories whose own
+    change was not read. Gitignored paths are absent from that listing; a command that is not a
+    verifier never supplies them, and a verifier that names one of these refused paths is withheld.
+    """
+
+    if capture is None:
+        return frozenset(), frozenset()
+    try:
+        text = capture.text.decode("utf-8")
+    except UnicodeDecodeError:
+        return frozenset(), frozenset()
+    header, separator, _rest = text.partition("\nEnd of header. The unified diff follows.\n")
+    if not separator:
+        header = text
+    exact: set[str] = set()
+    prefixes: set[str] = set()
+    for line in header.splitlines():
+        if line.startswith("Nested repository ") and _NESTED_NOT_SHOWN in line:
+            raw = line.removeprefix("Nested repository ").split(":", 1)[0].strip().strip("/")
+            if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
+                raw = raw[1:-1]
+            if raw and not raw.endswith("..."):
+                prefixes.add(raw)
+            continue
+        path = _header_not_shown_path(line)
+        if path is not None:
+            exact.add(path)
+    return frozenset(exact), frozenset(prefixes)
+
+
+def _operand_pieces(word: str) -> tuple[str, ...]:
+    if word.startswith("-"):
+        if "=" not in word:
+            return ()
+        return (word.split("=", 1)[1],)
+    if "=" in word:
+        value = word.split("=", 1)[1]
+        return (word, value) if value else (word,)
+    return (word,)
+
+
+def _relative_operand(value: str, workspace_root: str | None) -> str | None:
+    """Workspace-relative form of one operand, or ``None`` when it is outside or cannot be proved in."""
+
+    if "\x00" in value:
+        return None
+    if value.startswith("/"):
+        if _outside_workspace(value, workspace_root) is not None or workspace_root is None:
+            return None
+        root = posixpath.normpath(workspace_root).rstrip("/") + "/"
+        path = posixpath.normpath(value)
+        if path == root[:-1]:
+            return ""
+        if not path.startswith(root):
+            return None
+        value = path[len(root) :]
+    parts = [part for part in value.replace("\\", "/").split("/") if part not in {"", "."}]
+    if ".." in parts:
+        return None
+    return "/".join(parts)
+
+
+def _operand_refused(
+    value: str,
+    *,
+    workspace_root: str | None,
+    exact: frozenset[str],
+    prefixes: frozenset[str],
+) -> bool:
+    """Whether a repository excerpt would withhold this command operand."""
+
+    if not value or "\x00" in value:
+        return False
+    folded = value.replace("\\", "/")
+    if credential_named_path(value) or credential_named_path(folded.rsplit("/", 1)[-1]):
+        return True
+    if _PROC_ENVIRON.search(folded) is not None:
+        return True
+    if value.startswith("/") and (
+        workspace_root is None or _outside_workspace(value, workspace_root) is not None
+    ):
+        return True
+    parts = [part for part in folded.split("/") if part not in {"", "."}]
+    if ".." in parts or ".git" in parts:
+        return True
+    relative = _relative_operand(value, workspace_root)
+    if relative is None:
+        return value.startswith("/") or ".." in parts
+    if not relative:
+        return False
+    if relative in exact:
+        return True
+    return any(
+        relative == prefix or relative.startswith(prefix + "/") or prefix.startswith(relative + "/")
+        for prefix in prefixes
+    )
+
+
+# Wrapper and tool options whose operand is a path (``env -C /tmp``, ``uv run --directory x``).
+# The program path itself is not one of these: ``/usr/bin/pytest`` is the tool, not a file the
+# repository excerpt would have shown.
+_PATH_OPTIONS: Final = frozenset({"-C", "--chdir", "--directory", "--project", "--env-file"})
+_REDIRECTION: Final = re.compile(
+    r"^(?:[0-9]+|&)?(?:>>|>\||>&|>|<<<|<<-|<<|<&|<>|<)(.*)$",
+    re.DOTALL,
+)
+
+
+def _program_path_refused(program: str) -> bool:
+    """Credential name, ``.git``, or ``/proc/*/environ`` on the program path itself.
+
+    An absolute tool path (``/usr/bin/pytest``) is outside the workspace and is not a repository
+    excerpt, so it is not refused for that reason.
+    """
+
+    if credential_named_path(program):
+        return True
+    folded = program.replace("\\", "/")
+    if _PROC_ENVIRON.search(folded) is not None:
+        return True
+    parts = [part for part in folded.split("/") if part not in {"", "."}]
+    return ".." in parts or ".git" in parts
+
+
+def _path_bearing_tokens(words: Sequence[str]) -> tuple[str, ...]:
+    """Redirection targets and path-option values, which wrapper stripping would otherwise drop."""
+
+    found: list[str] = []
+    pending_redirect = False
+    pending_option = False
+    for word in words:
+        if pending_redirect or pending_option:
+            if pending_redirect and word != "/dev/null" and not word.startswith("&"):
+                found.append(word)
+            if pending_option:
+                found.append(word)
+            pending_redirect = False
+            pending_option = False
+            continue
+        match = _REDIRECTION.fullmatch(word)
+        if match is not None:
+            target = match.group(1)
+            if target:
+                if target != "/dev/null" and not target.startswith("&"):
+                    found.append(target)
+            else:
+                pending_redirect = True
+            continue
+        name, separator, value = word.partition("=")
+        if name in _PATH_OPTIONS:
+            if separator:
+                found.append(value)
+            else:
+                pending_option = True
+    return tuple(found)
+
+
+def _command_operands(words: Sequence[str]) -> tuple[str, ...]:
+    """Arguments and path operands, not the program path ``strip_wrappers`` leaves at argv[0]."""
+
+    stripped = strip_wrappers(words)
+    program = stripped[0] if stripped else ""
+    arguments = stripped[1:] if program else ()
+    return (*arguments, *_path_bearing_tokens(words))
+
+
+def _command_names_refused_path(
+    command: str,
+    *,
+    workspace_root: str | None,
+    check_time_change: CheckChangeCapture | None,
+) -> bool:
+    exact, prefixes = _refused_repository_paths(check_time_change)
+    programs: list[str] = []
+    operands: list[str] = []
+    structure = command_structure(command)
+    if structure is None:
+        split = _command_words(command)
+        if split is None:
+            return True
+        stripped = strip_wrappers(split)
+        if stripped:
+            programs.append(stripped[0])
+        operands.extend(_command_operands(split))
+    else:
+        if not structure.commands:
+            return True
+        for simple in structure.commands:
+            raw = _command_words(simple.text)
+            if raw is None:
+                return True
+            stripped = strip_wrappers(raw)
+            if stripped:
+                programs.append(stripped[0])
+            operands.extend(_command_operands(raw))
+            # Canonical argv still names the file (``python -m pytest tests/id_rsa``).
+            operands.extend(simple.words[1:])
+    if any(_program_path_refused(program) for program in programs):
+        return True
+    for word in operands:
+        for piece in _operand_pieces(word):
+            if piece and _operand_refused(
+                piece, workspace_root=workspace_root, exact=exact, prefixes=prefixes
+            ):
+                return True
+    return False
+
+
+def _output_secret_reason(content: bytes) -> _OmissionReason | None:
+    """Drop the whole capture when check-time redaction, or a private-key body, would hit.
+
+    ``redact_sensitive_content`` is the disclosure scan the check-time change runs, heuristics
+    included. A hit withholds the item instead of shipping the redacted bytes. A private-key END
+    line or OpenSSH key body is the same decision: capture only replaces the BEGIN banner.
+    """
+
+    # Native tool results may themselves be serialized JSON. Scan their decoded string
+    # values too: an escaped newline must not hide a secret assignment from the scanner.
+    pending: list[tuple[bytes, int]] = [(content, 0)]
+    inspected = 0
+    while pending:
+        view, depth = pending.pop()
+        inspected += 1
+        if inspected > 4096:
+            return "redacted_never_send"
+        key_material = _PRIVATE_KEY_END.search(view) is not None or _OPENSSH_KEY_BODY in view
+        try:
+            findings = scan_for_sensitive_content(view)
+            _replaced, detected = redact_sensitive_content(
+                view, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+            )
+        except PrivacyFenceError, TypeError, ValueError:
+            return "redacted_never_send"
+        high = any(finding.confidence is not ScanConfidence.HEURISTIC for finding in findings)
+        if key_material or high:
+            return "redacted_never_send"
+        if detected or findings:
+            return "never_send_heuristic"
+        try:
+            # This is host output, not protocol JSON: native exec results include floats.
+            parsed: object = json.loads(view)
+        except RecursionError:
+            return "redacted_never_send"
+        except TypeError, ValueError:
+            continue
+        if depth >= 4:
+            # Deeper structured encodings are not needed by supported native hook shapes.
+            return "redacted_never_send"
+        values: list[object] = [parsed]
+        while values:
+            value = values.pop()
+            if type(value) is str:
+                pending.append((value.encode("utf-8"), depth + 1))
+            elif isinstance(value, Mapping):
+                values.extend(cast(Mapping[object, object], value).keys())
+                values.extend(cast(Mapping[object, object], value).values())
+            elif isinstance(value, (list, tuple)):
+                values.extend(cast(Sequence[object], value))
+    return None
+
+
+def _observed_command_text(projection: ProjectionState, action_ref: str | None) -> str | None:
+    if action_ref is None:
+        return None
+    try:
+        key = validate_action_id(action_ref)
+    except ProtocolValueError, ValueError:
+        return None
+    row = projection.actions.get(key)
+    if row is None or row.payload is None or row.redacted:
+        return None
+    return row.payload.command
+
+
+def _auto_supply_refusal(
+    command: str | None,
+    content: bytes,
+    *,
+    workspace_root: str | None,
+    check_time_change: CheckChangeCapture | None,
+    captured_command: str | None = None,
+    captured_identity: str | None = None,
+    capture_redacted: bool = False,
+) -> _OmissionReason | None:
+    """Why this capture must not be auto-supplied, or ``None`` when it may.
+
+    Layered and fail-closed: the command must already classify as verification; an environment
+    dump, a credential-named path, a path outside the workspace, a path the frozen change refused
+    (nested repository or other not-shown file), or a ``.git`` path withholds the item; the
+    disclosure scan then drops the whole item on any secret hit. A partially redacted capture is
+    not sent.
+    """
+
+    if capture_redacted:
+        return "redacted_never_send"
+    # The action's text is caller writable. Only a keyed identity matching the
+    # service-resolved command context may authorize automatic disclosure.
+    if (
+        command is None
+        or not command.startswith("omitted:hmac-sha256:")
+        or captured_identity != command
+        or captured_command is None
+    ):
+        return "withheld_by_policy"
+    command = captured_command
+    if not command.strip() or command.lstrip().startswith("omitted:"):
+        return "withheld_by_policy"
+    if not command_is_verification(command):
+        return "withheld_by_policy"
+    if _command_dumps_environment(command) or _command_names_refused_path(
+        command, workspace_root=workspace_root, check_time_change=check_time_change
+    ):
+        return "withheld_by_policy"
+    return _output_secret_reason(content)
+
+
+def _observed_command_clip(
+    encoded: bytes, limit: int
+) -> tuple[str, tuple[tuple[int, int], ...]] | None:
+    """Head and tail of ``encoded`` within ``limit``, with a cut-edge label prefixed again.
+
+    ``_head_tail_kept`` fills ``limit``. The elision marker ends on a newline, so the tail
+    (and a head that begins on a label) can start at ``[FinishUP`` even though the bytes were
+    prefixed before the cut. Those two edges are neutralised again. The elision marker stays
+    a FinishUP line. The caller reserves two ``(agent text) `` prefixes so the result still
+    fits the excerpt. Kept intervals index ``encoded``, not the prefixes added here.
+    """
+
+    if limit < 1:
+        return None
+    _clip, kept = _head_tail_kept(encoded, limit)
+    if not kept:
+        return None
+    if len(kept) == 1 and kept[0][0] == 0:
+        head = encoded[: kept[0][1]].decode("utf-8", errors="ignore")
+        return _neutralised_agent_text(head), kept
+    if len(kept) != 2 or kept[0][0] != 0:
+        return None
+    (_head_start, head_end), (tail_start, tail_end) = kept
+    head = encoded[:head_end].decode("utf-8", errors="ignore")
+    tail = encoded[tail_start:tail_end].decode("utf-8", errors="ignore")
+    elided = len(encoded) - head_end - (tail_end - tail_start)
+    body = (
+        _neutralised_agent_text(head)
+        + _elision_marker(elided, len(encoded))
+        + _neutralised_agent_text(tail)
+    )
+    return body, kept
+
+
+def _marked_observed_command_candidate(
+    candidate: _ExcerptCandidate,
+    content: bytes,
+    *,
+    targets: Sequence[str],
+    allowed: frozenset[str],
+    source_refs: frozenset[str],
+    excerpt_limit: int,
+) -> _ExcerptCandidate | None:
+    """The same capture, labelled observed, as one repository excerpt within the excerpt bound."""
+
+    marker = _OBSERVED_COMMAND_OUTPUT_MARKER
+    marker_bytes = len(marker.encode("ascii"))
+    if marker_bytes >= excerpt_limit or not content:
+        return None
+    body = _neutralised_agent_text(content.decode("utf-8", errors="replace"))
+    encoded = body.encode("utf-8")
+    room = excerpt_limit - marker_bytes
+    # One prefix on the head edge and one on the tail edge, after the cut.
+    prefix_room = 2 * len(_AGENT_TEXT_PREFIX.encode("ascii"))
+    clipped = len(encoded) > room
+    if clipped:
+        if room <= prefix_room:
+            return None
+        clipped_body = _observed_command_clip(encoded, room - prefix_room)
+        if clipped_body is None:
+            return None
+        clip, kept = clipped_body
+    else:
+        clip, kept = body, ((0, len(encoded)),) if encoded else ()
+    text = marker + clip
+    if len(text.encode("utf-8")) > excerpt_limit or not kept:
+        return None
+    span_refs = sorted(
+        {
+            ref
+            for ref in (candidate.source_ref, *candidate.identity_refs)
+            if ref.startswith("evd_") and ref in source_refs
+        },
+        key=str.encode,
+    )
+    if candidate.source_ref not in span_refs and candidate.source_ref.startswith("evd_"):
+        span_refs.append(candidate.source_ref)
+    total = len(encoded)
+    part_keys = tuple(
+        excerpt_span_key(f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{ref}", low, high, total)
+        for ref in span_refs
+        for low, high in kept
+        if low < high <= total
+    )
+    if not part_keys:
+        return None
+    linked = _linked_observed_subjects(candidate.linked, targets, allowed)
+    if not linked and candidate.source_ref in allowed:
+        linked = (candidate.source_ref,)
+    if not linked:
+        return None
+    item_base = f"observed-output-{candidate.source_ref}"
+    if len(item_base) > 128:
+        return None
+    return _ExcerptCandidate(
+        source_ref=candidate.source_ref,
+        item_base=item_base,
+        source_kind="command",
+        category=DataCategory.REPOSITORY_EXCERPT,
+        parts=(text,),
+        clipped=clipped,
+        linked=linked,
+        occurred_order=candidate.occurred_order,
+        content_visibility="available",
+        digest_provenance=candidate.digest_provenance,
+        identity_refs=candidate.identity_refs | frozenset(linked),
+        verification_identity=candidate.verification_identity,
+        verification_outcome=candidate.verification_outcome,
+        verification_action=candidate.verification_action,
+        verification_run=candidate.verification_run,
+        part_keys=(part_keys,),
+    )
+
+
 def _select_targeted_excerpts(
     *,
     projection: ProjectionState,
@@ -3231,6 +4313,7 @@ def _select_targeted_excerpts(
     workspace_root: str | None = None,
     follow_up: ReviewFollowUp | None = None,
     check_time_change: CheckChangeCapture | None = None,
+    supplied_refs: frozenset[str] = frozenset(),
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -3248,6 +4331,12 @@ def _select_targeted_excerpts(
 
     ``declared_output_refs`` (``declared_output_capture_refs``) rank with the current diff: they
     are the current state of a deliverable the check-time change cannot hold (tb4n2 R7).
+
+    ``supplied_refs`` are agent-published records that answer a still-pending missing-item
+    request (issue #1079). Their excerpts rank after the current diff and before other
+    recorded excerpts, inside the existing count and byte budgets. A result summary is added
+    only when this selection already allows an evidence or test excerpt and no excerpt of
+    that result exists yet. Nothing here widens the selection or the ceilings.
 
     ``follow_up`` (issue #1047) is the reviewer's own in-check request: the excerpts of its
     requested rows rank ahead of every other recorded excerpt, item by item in request order and
@@ -3291,9 +4380,14 @@ def _select_targeted_excerpts(
     part_limit = min(excerpt_limit, selection.max_total_excerpt_bytes)
     omissions: list[ReviewOmission] = []
     gaps: set[str] = set()
-    verification_by_evidence, verification_by_result, newest_runs = _verification_identities(
-        projection
-    )
+    (
+        verification_by_evidence,
+        verification_by_result,
+        newest_runs,
+        redacted_command_runs,
+    ) = _verification_identities(projection)
+    if follow_up is not None:
+        linked_subjects.update(follow_up.source_refs)
     candidates = _evidence_candidates(
         projection=projection,
         allowed=allowed,
@@ -3408,6 +4502,77 @@ def _select_targeted_excerpts(
                     identity_refs=frozenset(
                         {ref, str(record.payload.action_id), str(record.source_event_id)}
                     ),
+                    verification_identity=None if verification is None else verification[0],
+                    verification_outcome=None if verification is None else verification[1],
+                    verification_action=None if verification is None else verification[2],
+                    verification_run=None if verification is None else verification[3],
+                    part_keys=(_span_keys(ref, kept, encoded),),
+                )
+            )
+
+    # Agent-published output that answers a pending missing item (issue #1079). Failure rows
+    # are already candidates. A success or partial summary is the same evidence-excerpt
+    # category the selection already allows, never a new category and never hook capture
+    # (those refs are not in ``supplied_refs``).
+    summary_kind = (
+        "evidence"
+        if "evidence" in selection.excerpt_kinds
+        else "test"
+        if "test" in selection.excerpt_kinds
+        else None
+    )
+    if supplied_refs and summary_kind is not None:
+        present = {candidate.source_ref for candidate in candidates}
+        for result_id, record in sorted(projection.results.items(), key=lambda pair: str(pair[0])):
+            ref = str(result_id)
+            if ref not in supplied_refs or ref in present or ref not in allowed:
+                continue
+            if record.payload is None or record.redacted:
+                continue
+            summary = record.payload.summary
+            if summary is None or not summary.strip():
+                continue
+            linked = tuple(
+                sorted(
+                    {
+                        item
+                        for item in (
+                            ref,
+                            str(record.payload.action_id),
+                            str(record.source_event_id),
+                            *(str(item) for item in record.payload.evidence_refs),
+                        )
+                        if item in allowed
+                    },
+                    key=str.encode,
+                )
+            )[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]
+            if not linked:
+                continue
+            summary = _neutralised_agent_text(summary)
+            encoded = summary.encode("utf-8")
+            clipped = len(encoded) > excerpt_limit
+            clip, kept = (
+                _head_tail_kept(encoded, excerpt_limit)
+                if clipped
+                else (summary, ((0, len(encoded)),))
+            )
+            if not clip:
+                continue
+            verification = verification_by_result.get(ref)
+            candidates.append(
+                _ExcerptCandidate(
+                    source_ref=ref,
+                    item_base=f"excerpt-supplied-{ref}",
+                    source_kind=summary_kind,
+                    category=DataCategory.EVIDENCE_EXCERPT,
+                    parts=(clip,),
+                    clipped=clipped,
+                    linked=linked,
+                    occurred_order=record.source_frontier,
+                    content_visibility="available",
+                    digest_provenance=None,
+                    identity_refs=frozenset(linked),
                     verification_identity=None if verification is None else verification[0],
                     verification_outcome=None if verification is None else verification[1],
                     verification_action=None if verification is None else verification[2],
@@ -3532,6 +4697,23 @@ def _select_targeted_excerpts(
 
     # Issue #1047: what the reviewer asked for in this check, in request order, within its share.
     # tb4n5: chosen per part (see the docstring), so a partly shown source can still progress.
+    # Held-back indexes are newest hook-captured command outputs a verification-output follow-up
+    # must not send as a raw evidence excerpt (issue #1079), and older runs of a command whose
+    # newest run is a redacted occupancy (a tombstoned result whose action is still readable).
+    held_back: set[int] = set()
+    for index, candidate in enumerate(candidates):
+        if candidate.verification_identity not in redacted_command_runs:
+            continue
+        held_back.add(index)
+        gaps.add("content_unselected")
+        _append_omission(
+            omissions,
+            candidate.source_ref,
+            candidate.linked,
+            candidate.category,
+            candidate.source_kind,
+            "withheld_by_policy",
+        )
     requested: dict[int, int] = {}
     promoted: dict[int, tuple[int, ...]] = {}
     if follow_up is not None:
@@ -3563,6 +4745,22 @@ def _select_targeted_excerpts(
             requested[index] = len(requested)
             promoted[index] = tuple(chosen)
             return True
+
+        def observed_capture(index: int, source_refs: frozenset[str]) -> bool:
+            candidate = candidates[index]
+            if not candidate.identity_refs & source_refs:
+                return False
+            group = captured_groups.get(candidate.source_ref)
+            if (
+                group is None
+                or group.source_kind != "evidence"
+                or candidate.verification_identity is None
+                or candidate.verification_action is None
+                or candidate.verification_run is None
+            ):
+                return False
+            newest = newest_runs.get(candidate.verification_identity)
+            return newest is not None and newest[1] == candidate.verification_run
 
         served: set[int] = set()
         for follow_up_item in follow_up.items:
@@ -3603,7 +4801,90 @@ def _select_targeted_excerpts(
                             if not promote(len(candidates) - 1):
                                 # Only ever carried as the answer to this request.
                                 candidates.pop()
+            observed_indexes = {
+                index
+                for index in matching
+                if follow_up_item.kind == "verification_output"
+                and observed_capture(index, follow_up_item.source_refs)
+            }
             for index in matching:
+                if index not in observed_indexes or index in held_back:
+                    continue
+                held_back.add(index)
+                # A selection that would not already send a repository excerpt must not
+                # receive the capture, including through the raw evidence-excerpt path.
+                if not selection.carries_check_time_change:
+                    continue
+                raw = candidates[index]
+                prefix = f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{raw.source_ref}#"
+                if any(part.startswith(prefix) for part in follow_up.seen_parts):
+                    held_back.discard(index)
+                    continue
+                group = captured_groups.get(raw.source_ref)
+                assert group is not None
+                refusal = _auto_supply_refusal(
+                    _observed_command_text(projection, raw.verification_action),
+                    group.content,
+                    captured_command=group.observed_command,
+                    captured_identity=group.observed_command_identity,
+                    capture_redacted=group.redacted,
+                    workspace_root=workspace_root,
+                    check_time_change=check_time_change,
+                )
+                if refusal is not None:
+                    # The raw evidence excerpt stays held back. The omission says why the
+                    # capture was not sent; a secret hit is not reported as a byte-budget miss.
+                    gaps.add(
+                        "content_redacted"
+                        if refusal != "withheld_by_policy"
+                        else "content_unselected"
+                    )
+                    _append_omission(
+                        omissions,
+                        raw.source_ref,
+                        raw.linked,
+                        DataCategory.REPOSITORY_EXCERPT,
+                        "command",
+                        refusal,
+                    )
+                    continue
+                marked = _marked_observed_command_candidate(
+                    raw,
+                    group.content,
+                    targets=follow_up_item.target_refs,
+                    allowed=allowed,
+                    source_refs=follow_up_item.source_refs,
+                    excerpt_limit=excerpt_limit,
+                )
+                if marked is None:
+                    gaps.add("content_unselected")
+                    _append_omission(
+                        omissions,
+                        raw.source_ref,
+                        raw.linked,
+                        DataCategory.REPOSITORY_EXCERPT,
+                        "command",
+                        "not_selected",
+                    )
+                    continue
+                candidates.append(marked)
+                new_index = len(candidates) - 1
+                if promote(new_index):
+                    latest_for[new_index] = "command"
+                else:
+                    candidates.pop()
+                    gaps.add("content_unselected")
+                    _append_omission(
+                        omissions,
+                        marked.source_ref,
+                        marked.linked,
+                        marked.category,
+                        marked.source_kind,
+                        "not_selected",
+                    )
+            for index in matching:
+                if index in observed_indexes or index in held_back:
+                    continue
                 promote(index)
 
     def requested_rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
@@ -3630,6 +4911,21 @@ def _select_targeted_excerpts(
                 _RANK_CURRENT_DIFF,
                 0,
                 min(declared) - _DECLARED_ORDER_OFFSET,
+                0,
+                candidate.source_ref.encode("ascii"),
+                candidate.item_base.encode("ascii"),
+            )
+        # After the current diff, before other recorded excerpts: the answer the agent
+        # published for a still-pending missing item. The current diff keeps its place.
+        if (
+            supplied_refs
+            and index not in current_diffs
+            and (candidate.source_ref in supplied_refs or candidate.identity_refs & supplied_refs)
+        ):
+            return (
+                _RANK_CURRENT_DIFF,
+                1,
+                -candidate.occurred_order,
                 0,
                 candidate.source_ref.encode("ascii"),
                 candidate.item_base.encode("ascii"),
@@ -3703,6 +4999,8 @@ def _select_targeted_excerpts(
     omitted_indexes: set[int] = set()
     part_keys: list[tuple[str, str]] = []
     for entry_rank, index, part_indexes in entries:
+        if index in held_back:
+            continue
         candidate = candidates[index]
         if not lower_ranks_offered and entry_rank[0] >= _RANK_OLDER_EDIT:
             offer_lower_rank_room()
@@ -3723,13 +5021,13 @@ def _select_targeted_excerpts(
                 gaps.add("content_unselected")
                 if index not in omitted_indexes:
                     omitted_indexes.add(index)
-                    omissions.append(
-                        _omit(
-                            candidate.source_ref,
-                            candidate.category,
-                            candidate.source_kind,
-                            "not_selected",
-                        )
+                    _append_omission(
+                        omissions,
+                        candidate.source_ref,
+                        candidate.linked,
+                        candidate.category,
+                        candidate.source_kind,
+                        "not_selected",
                     )
                 break
             item_id = (
@@ -4101,6 +5399,81 @@ def _settled_finding_candidates(
         rows.append((response.source_frontier, ref, record))
     rows.sort(key=lambda row: (-row[0], row[1].encode("ascii")))
     return [(ref, record) for _order, ref, record in rows]
+
+
+def _observed_evidence(record: EvidenceProjectionRecord) -> bool:
+    """Whether one evidence row is hook-captured and readable."""
+
+    payload = record.payload
+    binding = None if payload is None else payload.digest_binding
+    return (
+        payload is not None
+        and not record.redacted
+        and binding is not None
+        and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+    )
+
+
+def _resolved_criterion_basis(
+    payload: ObligationPublishedPayload,
+    projection: ProjectionState,
+    allowed: frozenset[str],
+) -> dict[str, JsonValue] | None:
+    """Refs that let the reviewer judge one resolved obligation as one question.
+
+    The criterion stays the obligation's own text. This adds only refs already inside the
+    fence and closed tokens: the result the resolution cites, the newest hook-captured
+    verification of that result, and ``missing_input`` when either is not readable. No command
+    text, summary, or path is copied in, so the row stays obligation text the policy already
+    sends. A redacted result is not readable, so the evidence it cites is not walked.
+    """
+
+    if payload.status is not ObligationStatus.RESOLVED:
+        return None
+    results = {str(key): row for key, row in projection.results.items()}
+    evidence = {str(key): row for key, row in projection.evidence.items()}
+    claimed: list[str] = []
+    observed: list[tuple[int, str]] = []
+
+    def consider(token: str) -> None:
+        row = evidence.get(token)
+        if row is None or token not in allowed or not _observed_evidence(row):
+            return
+        observed.append((row.source_frontier, token))
+
+    for ref in payload.resolution_evidence_refs:
+        token = str(ref)
+        if token not in allowed:
+            continue
+        result = results.get(token)
+        if result is not None and result.payload is not None and not result.redacted:
+            claimed.append(token)
+            for evidence_ref in result.payload.evidence_refs:
+                consider(str(evidence_ref))
+            continue
+        # A resolution ref that is not a readable result may itself be observed evidence.
+        # A redacted result is neither: its payload is gone, so its evidence is not named.
+        if result is None:
+            consider(token)
+    claimed_refs: list[JsonValue] = []
+    for token in sorted(set(claimed), key=str.encode)[:16]:
+        claimed_refs.append(token)
+    newest: list[JsonValue] = []
+    for _frontier, token in sorted(set(observed), key=lambda item: (-item[0], item[1].encode())):
+        if token not in newest:
+            newest.append(token)
+        if len(newest) == 4:
+            break
+    missing: list[JsonValue] = []
+    if not claimed_refs:
+        missing.append("claimed_result")
+    if not newest:
+        missing.append("verification_output")
+    return {
+        "claimed_result_refs": claimed_refs,
+        "latest_observed_verification_refs": newest,
+        "missing_input": missing,
+    }
 
 
 def _obligation_disclosures(
@@ -4688,6 +6061,11 @@ def _build_semantic_case_once(
             # the obligation they cover, so the reviewer cannot read them as undisclosed.
             # Frozen legacy identifier (ADR-048): packet key; the recorded manifest is re-verified.
             obligation_json["yoetz_already_disclosed"] = cast(JsonValue, disclosed)
+        basis = _resolved_criterion_basis(payload, projection, allowed)
+        if basis is not None:
+            # Issue #1079: the criterion (this item), the claimed result, the latest observed
+            # verification and any missing input, as one object. Refs and closed tokens only.
+            obligation_json["resolved_basis"] = cast(JsonValue, basis)
         text, fit = _bounded_json(cast(Mapping[str, JsonValue], obligation_json))
         item = _content_item(
             item_id=f"obligation-{ref}",
@@ -5077,8 +6455,9 @@ def _build_semantic_case_once(
     prior_missing_item: SemanticCaseItem | None = None
     missing_answers: tuple[tuple[str, ...], ...] = ()
     pending_missing = projection.pending_missing_for_assessment
-    if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
-        answered = supplied_since(
+    answered_since: tuple[tuple[str, ...], ...] = ()
+    if pending_missing is not None:
+        answered_since = supplied_since(
             projection,
             pending_missing,
             frozenset(allowed),
@@ -5086,6 +6465,9 @@ def _build_semantic_case_once(
             _edit_paths_by_ref(captured_groups),
             workspace_root,
         )
+    supplied_answer_refs = frozenset(ref for group in answered_since for ref in group)
+    if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
+        answered = answered_since
         missing_answers = answered
         check_ref = str(pending_missing.source_check_event_id)
         prior_missing_item = _content_item(
@@ -5216,17 +6598,9 @@ def _build_semantic_case_once(
             capture_gap_set.add(CHECK_TIME_CHANGE_REDACTED_GAP)
         check_change_links = _check_time_change_links(projection, allowed)
         if check_change_links:
-            check_change_parts = _check_time_change_parts(
-                change.text, _check_time_change_part_limit(selection)
+            check_change_parts, check_change_offsets = _check_time_change_offer(
+                change.text, selection
             )
-            offsets: list[int] = []
-            cursor = 0
-            for chunk in _check_time_change_chunks(
-                change.text, _check_time_change_part_limit(selection)
-            ):
-                offsets.append(cursor)
-                cursor += len(chunk)
-            check_change_offsets = tuple(offsets)
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_links: tuple[str, ...] = ()
@@ -5438,6 +6812,7 @@ def _build_semantic_case_once(
             ),
             workspace_root=workspace_root,
             follow_up=follow_up,
+            supplied_refs=supplied_answer_refs,
             # A follow-up may answer from the frozen change, only when this recipe carries it.
             check_time_change=(
                 check_time_change.capture
@@ -6303,7 +7678,17 @@ def _manifest_section(
     selected = tuple(sorted(items, key=lambda item: item.item_id.encode("ascii")))
     refs = tuple(sorted(set(source_refs), key=str.encode))[:16]
     omitted = tuple(sorted(set(omitted_refs), key=str.encode))[:16]
-    reasons = tuple(sorted(set(omission_reasons), key=str.encode))
+    # Packet omissions distinguish heuristic hits; section manifests use their existing
+    # closed redaction reason, as the post-egress manifest does. Withholding must not crash.
+    reasons = tuple(
+        sorted(
+            {
+                "redacted_never_send" if reason == "never_send_heuristic" else reason
+                for reason in omission_reasons
+            },
+            key=str.encode,
+        )
+    )
     return ReviewInputSection(
         name=name,
         status=status,
@@ -6612,11 +7997,13 @@ def review_input_manifest(
                     )
                     & follow_up_item.source_refs
                 )
-                if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
-                    # A served current section answers its edit even when the first packet
-                    # showed that edit whole; any other excerpt adds only what it did not.
-                    refs -= follow_up.shown_refs
                 keys = placed.get(item.item_id, ())
+                if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF and not (
+                    _observed_span_refs(keys) & follow_up_item.source_refs
+                ):
+                    # A served current section, and a marked observed-command excerpt, answer
+                    # even when the first packet showed the underlying ref whole.
+                    refs -= follow_up.shown_refs
                 if refs and (
                     not keys
                     or any(not excerpt_span_covered(key, follow_up.shown_parts) for key in keys)
@@ -7277,13 +8664,17 @@ def follow_up_new_parts(
                 item.section, item.category.value, item.source_ref, item.linked_subject_refs
             )
         )
+        keys = placed.get(item.item_id)
+        observed = bool(_observed_span_refs(keys or ()) & follow_up.source_refs)
         if not refs & (
-            # A served current section answers the edit it links whatever was shown of the
-            # edit itself; whether its bytes are new is the part test below.
-            follow_up.source_refs if item.source_ref == _CHECK_TIME_CHANGE_SOURCE_REF else wanted
+            # A served current section, and a marked observed-command excerpt, answer even
+            # when the first packet showed the underlying ref whole. Whether the bytes are
+            # new is the part test below.
+            follow_up.source_refs
+            if item.source_ref == _CHECK_TIME_CHANGE_SOURCE_REF or observed
+            else wanted
         ):
             continue
-        keys = placed.get(item.item_id)
         if keys is None:
             new.add(item.item_id)
         else:
@@ -7325,9 +8716,11 @@ def _follow_up_supplied_item_ids(
             )
             & follow_up.source_refs
         )
-        if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
-            refs -= follow_up.shown_refs
         keys = placed.get(item.item_id, ())
+        if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF and not (
+            _observed_span_refs(keys) & follow_up.source_refs
+        ):
+            refs -= follow_up.shown_refs
         if refs and (
             not keys or any(not excerpt_span_covered(key, follow_up.shown_parts) for key in keys)
         ):
@@ -8555,14 +9948,30 @@ def check_time_change_parts_carried(
     return carried
 
 
+def _carried_change_spans(case: SemanticCase, carried: int) -> tuple[tuple[int, int], ...]:
+    """Original ``(start, end)`` of each carried ``change-check-time`` part that recorded one."""
+
+    wanted = {f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" for index in range(1, carried + 1)}
+    spans: list[tuple[int, int]] = []
+    for item_id, key in case.excerpt_parts:
+        if item_id not in wanted:
+            continue
+        span = excerpt_span(key)
+        if span is not None and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF:
+            spans.append((span[1], span[2]))
+    return tuple(spans)
+
+
 def check_time_change_sections_carried(
     case: SemanticCase, *, withheld_categories: Sequence[str] = ()
 ) -> tuple[tuple[int, int], ...]:
-    """The change intervals the current-file sections in the provider-facing envelope carry.
+    """The change intervals the provider-facing envelope carried outside its leading prefix.
 
-    Counted like ``check_time_change_parts_carried``: only sections whose catalog row
-    ``bounded_case_envelope`` kept, and none when the channel withholds ``repository_excerpt``.
-    A pure function of the frozen case and the withheld categories (tb4n5).
+    Current-file sections a follow-up served (``change-section-``) are included as before
+    (tb4n5). A check-time change part that is not inside the leading bytes
+    (``check_time_change_bytes_carried``) is included too, so a decision section admitted ahead
+    of the diff prefix is still a shown file. None when the channel withholds
+    ``repository_excerpt``. A pure function of the frozen case and the withheld categories.
     """
 
     if type(case) is not SemanticCase:
@@ -8574,8 +9983,6 @@ def check_time_change_sections_carried(
         for item_id, key in case.excerpt_parts
         if item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX)
     ]
-    if not sections:
-        return ()
     catalogued = _catalog_item_ids(
         cast(Mapping[str, JsonValue], strict_json_parse(bounded_case_envelope(case)))
     )
@@ -8584,7 +9991,15 @@ def check_time_change_sections_carried(
         span = excerpt_span(key)
         if item_id in catalogued and span is not None and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF:
             carried.append((span[1], span[2]))
-    return tuple(sorted(carried))
+    part_count = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    if part_count:
+        leading = check_time_change_bytes_carried(case, withheld_categories=withheld_categories)
+        for low, high in _carried_change_spans(case, part_count):
+            if low >= leading:
+                carried.append((low, high))
+            elif high > leading:
+                carried.append((leading, high))
+    return tuple(sorted(set(carried)))
 
 
 def check_time_change_bytes_carried(
@@ -8592,21 +10007,35 @@ def check_time_change_bytes_carried(
 ) -> int:
     """How many leading bytes of the stored change the provider-facing envelope carries (ADR-031).
 
-    The change bytes of the unbroken run of parts ``check_time_change_parts_carried`` counts, each
-    part's marker line excluded. This is what ``check_time_change_shown_files`` takes: it stays
-    exact whatever part size a narrowed selection chose and when the first part was cut to the
-    room left (issue #983), and it is a pure function of the frozen case and the withheld
-    categories, so a recovered job derives the same count.
+    The contiguous run from byte 0 of the parts ``check_time_change_parts_carried`` counts, each
+    part's marker line excluded. A part admitted from later in the change does not extend this
+    count; ``check_time_change_sections_carried`` reports that interval instead. This is what
+    ``check_time_change_shown_files`` takes: it stays exact whatever part size a narrowed
+    selection chose and when the first part was cut to the room left (issue #983), and it is a
+    pure function of the frozen case and the withheld categories, so a recovered job derives the
+    same count. A part with no recorded span falls back to summing change bytes, which is the
+    leading prefix those parts were.
     """
 
     carried = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
+    if not carried:
+        return 0
     by_id = {item.item_id: item for item in case.items}
-    return sum(
-        _check_time_change_part_chunk_bytes(
-            by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+    spans = _carried_change_spans(case, carried)
+    if len(spans) != carried:
+        return sum(
+            _check_time_change_part_chunk_bytes(
+                by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
+            )
+            for index in range(1, carried + 1)
+            if f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" in by_id
         )
-        for index in range(1, carried + 1)
-    )
+    end = 0
+    for low, high in sorted(spans):
+        if low > end:
+            break
+        end = max(end, high)
+    return end
 
 
 def semantic_case_to_candidate_context(

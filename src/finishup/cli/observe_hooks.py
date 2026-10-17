@@ -46,6 +46,7 @@ from finishup.adapters.integrations.observation_local import (
     ObservationOutboxRow,
     ObservationStoreLockEvent,
     ObservationStoreLockTimeout,
+    observation_dir,
     observation_store_lock_deadline,
     observation_store_lock_scope,
     self_observation_deliverable,
@@ -55,6 +56,7 @@ from finishup.adapters.workspace_binding import (
     canonical_workspace_locator,
     resolve_workspace_locator,
 )
+from finishup.adapters.workspace_fingerprint import WorkspaceEffectReading
 from finishup.cli import hook_io
 from finishup.cli.closure_gate import (
     ACCEPTANCE_RECHECK_ITEM,
@@ -101,8 +103,14 @@ from finishup.cli.hook_io import (
 )
 from finishup.cli.hook_timing import HookPassTiming, record_hook_pass_timing
 from finishup.cli.runtime_facts import SHELL_APPLY_PATCH as _SHELL_APPLY_PATCH
-from finishup.cli.runtime_facts import runtime_structural_facts
+from finishup.cli.runtime_facts import finishup_owned_roots, runtime_structural_facts
 from finishup.cli.runtime_facts import shell_heredocs as _shell_heredocs
+from finishup.cli.workspace_effect_hook import (
+    fingerprinted_tool,
+    host_call_complete,
+    owned_relative_paths,
+    workspace_fingerprint_pass,
+)
 from finishup.domain.advice_actions import STANDING_MACHINE_ACTIONS as _STANDING_MACHINE_ACTIONS
 from finishup.domain.command_segments import (
     COMMAND_COMPOSITIONS,
@@ -156,6 +164,7 @@ from finishup.domain.observation_selection import (
     compound_verification_gap_required,
     is_edit_tool_name,
     is_routine_read_candidate,
+    without_routine_read,
 )
 from finishup.domain.values import (
     JsonObject,
@@ -165,6 +174,7 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
+from finishup.domain.workspace_effect import WORKSPACE_EFFECT_KEY, WORKSPACE_UNCHANGED
 from finishup.ports.integrations import (
     FINISHUP_SUPPORT_TOOL_NAMES,
     FINISHUP_WORKFLOW_TOOL_NAMES,
@@ -331,6 +341,19 @@ def _hook_host_window_seconds(source: ObservationSource, event: str | None) -> i
     return 5
 
 
+# A pre-call fingerprint must be stored this long before the host's hook timeout: past it the
+# host may run the call while the snapshot is still being taken (PR #1080).
+_FINGERPRINT_HOST_MARGIN_SECONDS: Final = 1.0
+_FINGERPRINT_DIAGNOSED: Final = frozenset(
+    {
+        "too_large",
+        "timeout",
+        "unreadable",
+        "root_unusable",
+        "store_unusable",
+        "process_table_unreadable",
+    }
+)
 _TIMING_REPORT_EVENTS: Final = frozenset({"SessionStart", "Stop", "SessionEnd"})
 # The stages that partition one pass end to end, in order. Advice refresh is
 # deliberately outside the local capture batch, so it is accounted for as its
@@ -1533,8 +1556,13 @@ def map_hook_payload_to_envelope(
     source: ObservationSource = ObservationSource.CODEX_HOOK,
     classification: ObservationClassification | None = None,
     host_outcome: _NativeOutcomeFacts | None = None,
+    workspace_reading: WorkspaceEffectReading | None = None,
 ) -> ObservationEnvelope:
-    """Map a bounded hook payload to a structural ObservationEnvelope."""
+    """Map a bounded hook payload to a structural ObservationEnvelope.
+
+    ``workspace_reading`` is this live pass's before/after workspace fact (PR #1080); it is added
+    after extraction, so a host payload can never supply ``workspace_effect`` itself.
+    """
 
     if event_name not in SUPPORTED_HOOK_EVENTS:
         structural = JsonObject({"hook_name": "unsupported"})
@@ -1583,6 +1611,9 @@ def map_hook_payload_to_envelope(
         structural = JsonObject({**structural, **command_fields})
     identity = _source_identity(event_name, payload, structural, event_ordinal=event_ordinal)
     commitment = hook_source_commitment(key_material, identity)
+    if workspace_reading is not None:
+        # The closed before/after fact, after identity: it never changes the call's source.
+        structural = JsonObject({**structural, WORKSPACE_EFFECT_KEY: workspace_reading.effect})
     return ObservationEnvelope(
         session_commitment=session_commitment,
         event_kind=event_name,
@@ -2235,6 +2266,14 @@ def _visible_content_chunks(
                 "unsupported",
                 payload.get("visible_content") or payload.get("message"),
             )
+
+    # Authenticated post-tool command context stays local, never a provider excerpt.
+    if (
+        event_name == "PostToolUse"
+        and _is_command_tool(payload.get("tool_name"))
+        and command_runner_class(payload) in {"test", "build", "lint", "typecheck"}
+    ):
+        add(ObservationContentKind.TOOL_INPUT, "tool-input", payload.get("tool_input"))
 
     for key, kind, label in (
         ("diff", ObservationContentKind.WORKSPACE_DIFF, "diff"),
@@ -4242,6 +4281,16 @@ def _decide_closure_gate(
             pending = True
         # Blockers this session was already re-asked about are honoured without asking again.
         reasked = closure_gate_reasked_blockers(mapping.yoetz_session_id, _state=_state)
+        # A recorded code-mode ``exec`` cell is the capability signal (#1079). No cell, a store
+        # that cannot answer, or any error is the neutral close instruction. The host brand is not.
+        code_mode = False
+        try:
+            commitment = store.session_commitment(codex_session_id)
+            probe = getattr(store, "session_observed_code_mode", None)
+            if callable(probe):
+                code_mode = probe(workspace_commitment, commitment) is True
+        except Exception:
+            code_mode = False
 
         async def _read() -> ClosureGate | None:
             return await read_closure_gate(
@@ -4255,6 +4304,7 @@ def _decide_closure_gate(
                 active_stop=active_stop,
                 final_message=final_message,
                 host=harness_id,
+                code_mode=code_mode,
                 on_acceptance_covered=lambda: record_hook_diagnostic(
                     "closure_gate_acceptance_covered", "Stop", _state=_state
                 ),
@@ -4752,6 +4802,105 @@ def _compaction_recap_text(facts: RecapFacts, pending_rows: int | None) -> str:
         return ""
 
 
+def _workspace_fingerprint_hook_pass(
+    resolved_event: str,
+    payload: Mapping[str, JsonValue],
+    *,
+    source: ObservationSource,
+    host_session_id: str,
+    live_locator: str | None,
+    explicit: tuple[str | None, str | None],
+    workspace_commitment: str,
+    store: LocalObservationStore,
+    stages: dict[str, int],
+    monotonic: Callable[[], float],
+    entry_started: float,
+    content_payload: Mapping[str, JsonValue] | None,
+    _state: Path | None,
+) -> WorkspaceEffectReading | None:
+    """This live hook pass's half of the before/after workspace fingerprint (PR #1080).
+
+    ``PreToolUse`` stores the snapshot and returns ``None``; ``PostToolUse`` returns the reading
+    its envelope carries. Only a fingerprinted tool in a live pass with an explicit locator takes
+    part; an unavailable comparison leaves a ``workspace_fingerprint_<reason>`` diagnostic.
+    """
+
+    tool = payload.get("tool_name")
+    workspace, replayed_commitment = explicit
+    if (
+        resolved_event not in {"PreToolUse", "PostToolUse"}
+        or live_locator is None
+        or workspace is None
+        or replayed_commitment is not None
+        or not fingerprinted_tool(tool, finishup_owned=finishup_mcp_tool(tool))
+    ):
+        return None
+    started = monotonic()
+    reading: WorkspaceEffectReading | None = None
+    with contextlib.suppress(Exception):
+        _pairing_mode, correlation_kind = _pairing_contract(payload, source)
+        call = _pairing_correlation(payload, correlation_kind=correlation_kind)
+        outcome_facts = dict(payload)
+        # Claude Code and Cursor pass a structural payload; their tool input (the command text
+        # a background launch is read from) travels beside it in the content payload.
+        if "tool_input" not in outcome_facts and content_payload is not None:
+            tool_input = content_payload.get("tool_input")
+            if tool_input is not None:
+                outcome_facts["tool_input"] = tool_input
+        if source is ObservationSource.CODEX_HOOK and resolved_event == "PostToolUse":
+            _merge_outcome_facts(outcome_facts, _codex_post_tool_outcome(payload))
+        reading = workspace_fingerprint_pass(
+            resolved_event,
+            call_identity=None
+            if call is None
+            else f"{source.value}\x00{host_session_id}\x00{call}",
+            workspace_locator=live_locator,
+            workspace_commitment=workspace_commitment,
+            key_material=store.key_material(),
+            observation_root=observation_dir(_state=_state),
+            complete=host_call_complete(cast(Mapping[str, DomainJsonValue], outcome_facts)),
+            # FinishUP's own state (this pass's, too) changes on every hook pass.
+            excluded=owned_relative_paths(
+                live_locator,
+                (*finishup_owned_roots(), *(() if _state is None else (str(_state),))),
+            ),
+            # A pre-call snapshot must finish while the host is still waiting for this pass.
+            host_deadline=time.monotonic()
+            + (
+                entry_started
+                + _hook_host_window_seconds(source, resolved_event)
+                - _FINGERPRINT_HOST_MARGIN_SECONDS
+                - monotonic()
+            ),
+        )
+    if resolved_event == "PostToolUse" and reading is None:
+        reading = WorkspaceEffectReading("unavailable", "store_unusable")
+    if reading is not None and reading.fresh and reading.reason in _FINGERPRINT_DIAGNOSED:
+        # A degraded comparison is named once in ``observe status``. A call without a pre-call
+        # snapshot or still running is an ordinary per-call fact the result already carries,
+        # so it never evicts real failures from the bounded diagnostic window.
+        with contextlib.suppress(Exception):
+            record_hook_diagnostic(
+                f"workspace_fingerprint_{reading.reason}", resolved_event, _state=_state
+            )
+    stages["fingerprint"] = _elapsed_ms(started, monotonic())
+    # The pre-call half only stores its snapshot; nothing crosses the envelope.
+    return None if resolved_event == "PreToolUse" else reading
+
+
+def _classify_after_fingerprint(
+    payload: Mapping[str, JsonValue], event: str, reading: WorkspaceEffectReading | None
+) -> ObservationClassification:
+    """Classify one observation; a read-shaped shell call joins a routine-read summary only when
+    its fingerprint saw the workspace unchanged, otherwise it is recorded on its own with its
+    fact (PR #1080)."""
+
+    classification = classify_observation(payload, event)
+    if reading is None or reading.effect == WORKSPACE_UNCHANGED:
+        return classification
+    return without_routine_read(classification)
+
+
 def handle_observe(
     *,
     event_name: str | None,
@@ -5140,6 +5289,24 @@ def handle_observe(
         # commits so failures before either lifecycle path are named too.
         if resolved_event == "SessionEnd":
             session_end_uncommitted = True
+        # PR #1080: a before/after workspace fingerprint decides whether a call changed the
+        # workspace; the command's text never does. It runs here, before the store lock, and
+        # only in a live host pass with an explicit locator (replays carry no locator).
+        workspace_reading = _workspace_fingerprint_hook_pass(
+            resolved_event,
+            payload,
+            source=source,
+            host_session_id=host_session_id,
+            live_locator=workspace_locator,
+            explicit=(workspace, _workspace_commitment),
+            workspace_commitment=workspace_commitment,
+            store=store,
+            stages=stages,
+            monotonic=_monotonic,
+            entry_started=entry_started,
+            content_payload=_content_payload,
+            _state=_state,
+        )
         native_content_reservation = (
             not skip_service
             and capture_authority_known
@@ -5373,7 +5540,9 @@ def handle_observe(
             )
             if codex_outcome is not None:
                 _merge_outcome_facts(classification_payload, codex_outcome)
-            classification = classify_observation(classification_payload, resolved_event)
+            classification = _classify_after_fingerprint(
+                classification_payload, resolved_event, workspace_reading
+            )
             pressure = store.update_selection_pressure(workspace_commitment, session_commitment)
             selected_focused = pressure.effective_mode is ObservationMode.FOCUSED
             if pressure.transition is not None and pressure.transition.notice in {
@@ -5420,6 +5589,7 @@ def handle_observe(
                 source=source,
                 classification=classification,
                 host_outcome=codex_outcome,
+                workspace_reading=workspace_reading,
             )
             if _derived_runner_class is not None:
                 envelope = replace(

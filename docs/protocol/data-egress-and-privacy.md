@@ -168,8 +168,22 @@ confirmation records a private workspace commitment (never a raw path). Revocati
 ingestion and retains already-kept evidence. Never retain hidden reasoning or complete transcript
 prose. Sensitive bounded observation evidence lives only in encrypted objects; plaintext state is
 allowlisted structural fields plus commitments. Never create an unencrypted transcript spool on
-vault/service outage. AI-powered review receives only minimized approved packets. Secret-like
-command output never appears in status, logs, hook advice, or AI-powered review packets.
+vault/service outage. AI-powered review receives only minimized approved packets. High-confidence
+secrets are withheld from status, logs, and hook advice. Hook-captured output may appear in a
+follow-up review packet only when the reviewer asked for verification output, only for a command
+already classed as a test, build, lint, or typecheck, and only as a repository excerpt the
+owner's policy would already allow, within the existing excerpt limits (ADR-009). An environment
+dump, a credential-named path, a path outside the workspace, or a path the frozen check-time
+change refused is withheld whole. The check-time disclosure scan, including a private-key body
+or END line, drops the whole item on a hit; a partly redacted capture is not sent, and the
+omission records why. A gitignored path the change did not list is not read again. A value the
+scan does not recognise is not treated as a hit. Private sends nothing. Output of a command the
+targets do not name is never included. An agent-published result summary that answers a still-pending missing item may travel
+in the next packet as an evidence excerpt when an evidence or test excerpt is already allowed, within the
+existing excerpt limits. Private sends nothing. A resolved obligation item may also carry
+`resolved_basis`: result refs and hook-captured verification refs that obligation already cites,
+and a closed missing-input token when either is not readable. That basis stays inside the
+obligation-text item, copies no command, summary, or path, and adds no category (ADR-009).
 
 ## Outbound pipeline and state machine
 
@@ -406,3 +420,23 @@ runs the command can make the dialog appear but cannot answer it, so approve it 
 for the full receipt yourself. A process running as the owner's account that can already read the
 vault passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
 every passphrase reauthentication (ADR-008).
+
+Native verification-output follow-ups (issue #1079, F1): keyed `omitted:` command
+actions use service-authenticated post-tool command input bound to the output's exact
+capture phase and keyed action identity. Hooks retain this context locally under the
+existing capture consent and byte budget; the input is never sent to the reviewer.
+The same verification classification, environment/path refusal and whole-item secret
+gates apply. Absent, partial, redacted or differently bound context withholds the output.
+Private and repository-excerpt denial still send no auto-supplied output.
+Plaintext action commands cannot authorize it. The ledger retains keyed identities,
+closed outcome metadata, object/evidence references, digests and byte/part counts;
+command input stays in encrypted local capture objects under existing consent,
+redaction and retention limits, and is used only as local eligibility context.
+Capture-redacted output and secret hits in decoded native JSON strings drop the whole item.
+
+Unanswered acceptance invitations (issue #1079, F2) do not establish coverage.
+Delivery memory bounds Stop prompting only. Risky resolved obligations without an
+admissible observed verification link or recorded verification-limit decision retain
+the derived `unresolved_verification_limitation` check/readiness gap. The receipt and
+MCP summary explicitly name the affected obligations and the unresolved verification
+limitation. The receipt remains coverage-bounded after Stop is allowed.

@@ -45,7 +45,11 @@ from finishup.domain.observation_profiles import (
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
 from finishup.domain.values import JsonObject, Timestamp
-from finishup.kernel.later_material import LaterMaterialClass, classify_later_material
+from finishup.kernel.later_material import (
+    LaterMaterialClass,
+    classify_later_material,
+    workspace_effects,
+)
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import register_command_identity_key
 from finishup.protocol.canonical import canonical_encode
@@ -168,9 +172,22 @@ _CODEX_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
         _C.NO_TOOL_ACTIVITY,
     ),
     (
-        "codex cat (exploration)",
-        _codex("Bash", "call_x1", {"command": "cat results.json"}, '{"exit_code":0,"output":"{}"}'),
+        "codex cat (exploration: the workspace stayed unchanged)",
+        _codex(
+            "Bash",
+            "call_x1",
+            {"command": "cat results.json"},
+            '{"chunk_id":"a1","wall_time_seconds":0.1,"exit_code":0,'
+            '"original_token_count":1,"output":"{}"}',
+        ),
         _C.EXPLORATION,
+    ),
+    (
+        # PR #1080: without a completion fact the call may still be running, so FinishUP cannot
+        # establish that it left the workspace unchanged.
+        "codex cat with no stated exit (unavailable, so not proven read-only)",
+        _codex("Bash", "call_x2", {"command": "cat results.json"}, '{"exit_code":0,"output":"{}"}'),
+        _C.OTHER,
     ),
     (
         "codex pytest (a verification run is not proven read-only)",
@@ -235,9 +252,11 @@ _CLAUDE_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
         _C.NON_COUNTING_WRITE,
     ),
     (
-        "claude Bash python script",
+        # PR #1080: judged by what the call did. Nothing ran here, so the workspace stayed
+        # unchanged; ``test_a_script_that_writes_is_material_on_every_host`` writes in between.
+        "claude Bash python script that wrote nothing",
         _claude("Bash", {"command": "python gen.py"}, "toolu_b"),
-        _C.OTHER,
+        _C.EXPLORATION,
     ),
 )
 
@@ -281,6 +300,7 @@ def _ingest(
     monkeypatch: pytest.MonkeyPatch,
     handler: Callable[..., int],
     hook: _Hook,
+    between: Callable[[Path], object] | None = None,
 ) -> tuple[ObservationEnvelope, ...]:
     monkeypatch.setattr(LocalObservationStore, "key_material", _fixed_key)
     workspace = tmp_path / "app"
@@ -289,7 +309,9 @@ def _ingest(
     store = LocalObservationStore(_state=root)
     commitment = store.workspace_commitment(str(workspace.resolve()))
     store.grant_consent(commitment)
-    for event, payload, profile in hook:
+    for index, (event, payload, profile) in enumerate(hook):
+        if index == 1 and between is not None:
+            between(workspace)
         kwargs: dict[str, Any] = {}
         if handler is not observe_hooks.handle_observe:
             kwargs["observation_profile"] = profile
@@ -327,7 +349,13 @@ def _classes(envelopes: tuple[ObservationEnvelope, ...]) -> tuple[_C, ...]:
     records = ledger.prefix
     assert records, "the hook produced no action or result row"
     projection = replay(records)
-    return tuple(classify_later_material(record, projection).material_class for record in records)
+    # PR #1080: a shell command is read-only only by the hook's before/after workspace fact, which
+    # the real hooks above recorded around the call and the materializer put on its result.
+    effects = workspace_effects(records, projection)
+    return tuple(
+        classify_later_material(record, projection, effects=effects).material_class
+        for record in records
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -534,3 +562,33 @@ def test_recorded_legacy_tool_names_classify_as_the_current_spelling_after_repla
     legacy_classes = _classes(_ingest(tmp_path / "legacy", monkeypatch, handler, hook(legacy)))
     assert set(current_classes) == {_C.FINISHUP_OWN_CALL}, (name, current_classes)
     assert legacy_classes == current_classes, (name, legacy_classes)
+
+
+@pytest.mark.parametrize(
+    ("handler", "hook"),
+    [
+        (
+            observe_hooks.handle_observe,
+            _codex(
+                "Bash",
+                "call_w9",
+                {"command": "python gen.py"},
+                '{"chunk_id":"a1","wall_time_seconds":0.1,"exit_code":0,'
+                '"original_token_count":1,"output":""}',
+            ),
+        ),
+        (observe_hooks.handle_claude_observe, _claude("Bash", {"command": "python gen.py"}, "t9")),
+        (observe_hooks.handle_cursor_observe, _cursor("Shell", {"command": "python gen.py"}, "c9")),
+    ],
+    ids=["codex", "claude", "cursor"],
+)
+def test_a_script_that_writes_is_material_on_every_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, handler: Callable[..., int], hook: _Hook
+) -> None:
+    """PR #1080: the same command is material when the workspace changed across it."""
+
+    def write(workspace: Path) -> None:
+        (workspace / "out.json").write_text("{}")
+
+    classes = _classes(_ingest(tmp_path, monkeypatch, handler, hook, between=write))
+    assert set(classes) == {_C.OTHER}

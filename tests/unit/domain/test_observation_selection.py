@@ -97,7 +97,6 @@ def test_ambiguous_or_dangerous_shell_is_not_routine(command: str) -> None:
     [
         "rg -n observation src tests",
         "head -n 20 README.md",
-        "git status --short",
         "git show HEAD",
         "git log --oneline -5",
     ],

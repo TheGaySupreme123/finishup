@@ -60,6 +60,7 @@ from finishup.protocol.canonical import JsonValue
 __all__ = [
     "INSTALL_TARGET_VALUES",
     "SHELL_APPLY_PATCH",
+    "finishup_owned_roots",
     "install_target_class",
     "runtime_structural_facts",
     "shell_apply_patch_paths",
@@ -366,6 +367,12 @@ def _owned_roots() -> tuple[str, ...]:
             roots.append(str(isolated))
         roots.append(str(state_dir()))
     return tuple(roots)
+
+
+def finishup_owned_roots() -> tuple[str, ...]:
+    """FinishUP's own state and isolation roots (the workspace fingerprint skips them)."""
+
+    return _owned_roots()
 
 
 def _edit_paths(

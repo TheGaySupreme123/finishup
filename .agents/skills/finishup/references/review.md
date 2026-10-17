@@ -36,13 +36,15 @@ review status as reported, not as proof that the underlying code is correct. Det
 limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mode-and-ai-powered-review-coverage).
 
 A check before your first material edit runs the local plan checks only and sends nothing
-(`semantic_review_deferred_before_first_edit`); the next check after an edit reviews as configured.
+(`semantic_review_deferred_before_first_edit`). AI-powered review is on; it starts after your first edit.
+The next check after an edit reviews as configured.
 If the work needs no edit and review is required, readiness asks for the closing review instead.
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
 back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
 you set yourself beyond the task's stated scope: fix it, or narrow it with `respond` `acknowledged`
 and the reason (a disclosed limitation that does not block); a `finishup-verification-limit` decision
 does not narrow it.
+If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Hook-captured output FinishUP may include on a verification follow-up is observed, not something you supplied.
 
 Before the receipt, run the closing review: `check` with `final_review: true`. It judges each stated
 requirement and requested output against the task, with or without a completion claim; closure
@@ -71,6 +73,12 @@ Read the finding's row in `status view=findings` and find its case below before 
 | `requested_next_step` `state_unresolved_limitation` | `acknowledged` with the reason when the requirement may be met but cannot be verified here; `acknowledged_not_done` only when you know it is not met. |
 | You dispute an AI-powered finding | `rejected` with the reason, then `check` with `final_review: true` so the reviewer rules. |
 | You truly will not or cannot do it | `acknowledged_not_done` with the reason. Keep the working deliverable. |
+
+A supported rebuttal is a `rejected` or `acknowledged` answer that cites evidence. The next
+review packet carries that answer. The reviewer must check that a recommended input or state is
+reachable under the interface the packet shows, and must judge a resolved obligation together
+with the result it cites, the latest observed verification, and any missing input. Do not treat
+a match as shown while one of those is missing.
 
 ## Turn on AI-powered review for a task when local checks cannot judge it
 

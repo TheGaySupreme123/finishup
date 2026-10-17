@@ -61,7 +61,7 @@ from finishup.protocol.guidance_uris import (
 from finishup.protocol.guidance_uris import (
     canonical_guidance_uri as _canonical_guidance_uri,
 )
-from finishup.protocol.ids import IdKind, validate_actor_id, validate_id
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind, validate_actor_id, validate_id
 from finishup.protocol.redacted_values import (
     MAX_SEMANTIC_REDACTED_VALUE_ITEMS,
     MAX_SEMANTIC_REDACTED_VALUE_LINE,
@@ -391,6 +391,9 @@ class SemanticStatus(str, Enum):  # noqa: UP042 - exact public wire enum base
 
 class SemanticReason(str, Enum):  # noqa: UP042 - exact public wire enum base
     DETERMINISTIC_MODE = "deterministic_mode"
+    # Pre-edit deferral (#1046). Distinct from DETERMINISTIC_MODE so a reader does not
+    # treat an AI-powered setting as ignored. Admitted on check-result / check-recorded 1.5.0.
+    DEFERRED_BEFORE_FIRST_EDIT = "deferred_before_first_edit"
     NO_MATERIAL_SEMANTIC_CASE = "no_material_semantic_case"
     PROVIDER_NOT_CONFIGURED = "provider_not_configured"
     LOCAL_MODEL_NOT_CONFIGURED = "local_model_not_configured"
@@ -457,7 +460,11 @@ VALID_SEMANTIC_REASONS: Final[Mapping[SemanticStatus, frozenset[SemanticReason]]
     MappingProxyType(
         {
             SemanticStatus.NOT_REQUESTED: frozenset(
-                {SemanticReason.DETERMINISTIC_MODE, SemanticReason.NO_MATERIAL_SEMANTIC_CASE}
+                {
+                    SemanticReason.DETERMINISTIC_MODE,
+                    SemanticReason.DEFERRED_BEFORE_FIRST_EDIT,
+                    SemanticReason.NO_MATERIAL_SEMANTIC_CASE,
+                }
             ),
             SemanticStatus.NOT_CONFIGURED: frozenset(
                 {SemanticReason.PROVIDER_NOT_CONFIGURED, SemanticReason.LOCAL_MODEL_NOT_CONFIGURED}
@@ -1556,6 +1563,51 @@ class CheckScopeModel(_ClosedModel):
         return self
 
 
+def _context_with_received_prefix(
+    context: dict[str, object], document: object, path: tuple[str | int, ...]
+) -> dict[str, object]:
+    """Attach a closed id prefix when the value at ``path`` starts with one."""
+
+    prefix = _received_id_prefix(document, path)
+    if prefix is not None:
+        context["received_prefix"] = prefix
+    return context
+
+
+def _received_id_prefix(document: object, path: tuple[str | int, ...]) -> str | None:
+    """The closed id prefix at one schema path, or nothing.
+
+    Schema failures re-raise with ``input`` cleared so a caller value cannot ride the error.
+    Only a prefix that is already one of ``PREFIX_BY_KIND`` is returned; the rest of the value
+    stays in the dumped document and is not copied onto the error.
+    """
+
+    current: object = document
+    for segment in path:
+        if type(segment) is int:
+            if type(current) is not list:
+                return None
+            items = cast(list[object], current)
+            if not 0 <= segment < len(items):
+                return None
+            current = items[segment]
+        elif type(segment) is str:
+            if type(current) is not dict:
+                return None
+            mapping = cast(dict[str, object], current)
+            if segment not in mapping:
+                return None
+            current = mapping[segment]
+        else:
+            return None
+    if type(current) is not str or len(current) < 4:
+        return None
+    prefix = current[:4]
+    if prefix not in PREFIX_BY_KIND.values():
+        return None
+    return prefix
+
+
 def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
     from pydantic import ValidationError as PydanticValidationError
 
@@ -1588,13 +1640,17 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
                         "type": "value_error",
                         "loc": tuple(path),
                         "input": None,
-                        "ctx": {
-                            "error": ValueError(reason),
-                            "schema_name": exc.family,
-                            "schema_version": exc.family_version,
-                            "condition_field": exc.condition_field,
-                            "condition_value": exc.condition_value,
-                        },
+                        "ctx": _context_with_received_prefix(
+                            {
+                                "error": ValueError(reason),
+                                "schema_name": exc.family,
+                                "schema_version": exc.family_version,
+                                "condition_field": exc.condition_field,
+                                "condition_value": exc.condition_value,
+                            },
+                            dumped,
+                            tuple(path),
+                        ),
                     }
                     for path, reason in exc.location_reasons
                 ],
@@ -1606,30 +1662,37 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
             # generic token (issue #240). The version rides along because a family may have
             # several admitted versions, and naming the wrong one hands back the wrong contract
             # (issue #239).
+            located = tuple(exc.absolute_path)
             raise PydanticValidationError.from_exception_data(
                 type(model).__name__,
                 [
                     {
                         "type": "value_error",
-                        "loc": tuple(exc.absolute_path),
+                        "loc": located,
                         "input": None,
-                        "ctx": {
-                            "error": ValueError(exc.reason or "schema_instance_invalid"),
-                            "schema_name": exc.family,
-                            "schema_version": exc.family_version,
-                            "count": exc.unknown_count or None,
-                            # Frozen schema vocabulary, never a caller-invented key: the validator
-                            # admits it only when it byte-equals a catalogued payload property
-                            # name, so MCP can name the field's one legal owner (issue #266).
-                            "misplaced_field": exc.misplaced_field,
-                            # Schema-listed required names the instance lacks (frozen schema
-                            # vocabulary), so the hint names the absent key, not the whole list.
-                            "missing_fields": exc.missing_fields or None,
-                            # tb4n5 (#1049): the frozen const of the sibling that narrowed this
-                            # value (``evidence_kind`` for ``digest_binding/subject``).
-                            "condition_field": exc.condition_field,
-                            "condition_value": exc.condition_value,
-                        },
+                        "ctx": _context_with_received_prefix(
+                            {
+                                "error": ValueError(exc.reason or "schema_instance_invalid"),
+                                "schema_name": exc.family,
+                                "schema_version": exc.family_version,
+                                "count": exc.unknown_count or None,
+                                # Frozen schema vocabulary, never a caller-invented key: the
+                                # validator admits it only when it byte-equals a catalogued
+                                # payload property name, so MCP can name the field's one legal
+                                # owner (issue #266).
+                                "misplaced_field": exc.misplaced_field,
+                                # Schema-listed required names the instance lacks (frozen schema
+                                # vocabulary), so the hint names the absent key, not the whole
+                                # list.
+                                "missing_fields": exc.missing_fields or None,
+                                # tb4n5 (#1049): the frozen const of the sibling that narrowed
+                                # this value (``evidence_kind`` for ``digest_binding/subject``).
+                                "condition_field": exc.condition_field,
+                                "condition_value": exc.condition_value,
+                            },
+                            dumped,
+                            located,
+                        ),
                     }
                 ],
             ) from None
@@ -2801,6 +2864,7 @@ _PUBLISH_FIXED_SUMMARY: Final[Mapping[tuple[str, str], str]] = MappingProxyType(
         ("check_recorded", "1.2.0"): "check_recorded",
         ("check_recorded", "1.3.0"): "check_recorded",
         ("check_recorded", "1.4.0"): "check_recorded",
+        ("check_recorded", "1.5.0"): "check_recorded",
         ("receipt_recorded", "1.0.0"): "receipt_recorded",
         ("coordination_context_recorded", "1.0.0"): "coordination_context_recorded",
         ("coordination_obligation_declared", "1.0.0"): "coordination_obligation_declared",
@@ -5302,6 +5366,27 @@ class StatusUndeclaredReferenceModel(_ClosedModel):
         return self
 
 
+class StatusAdmissibleVerificationModel(_ClosedModel):
+    """Observed evidence or result ids linked to one flagged obligation (#1079).
+
+    Service-minted ids only. An id is here only when it is an observed verification (hook-captured
+    or observation-captured evidence, or a result of an observed command) linked to that
+    obligation. The Stop gate accepts a
+    ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line only when the cited id
+    is in this list for that obligation. An agent-asserted id is absent. Absence never means a
+    well-formed id is linked.
+    """
+
+    obligation_id: ObligationIdWire
+    refs: Annotated[tuple[EvidenceOrResultIdWire, ...], Field(min_length=1, max_length=8)]
+
+    @model_validator(mode="after")
+    def _validate_admissible_refs(self) -> StatusAdmissibleVerificationModel:
+        if self.refs != tuple(sorted(set(self.refs), key=str.encode)):
+            raise ValueError("admissible_verification_refs_invalid")
+        return self
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -5388,6 +5473,17 @@ class StatusClosureReadinessModel(_ClosedModel):
     undeclared_references: tuple[StatusUndeclaredReferenceModel, ...] | None = Field(
         default=None, max_length=16
     )
+    # #1079: evd_ or res_ ids that are a recorded link for a flagged obligation. Optional on the
+    # unreleased 1.4.0 wire: omitted when none were computed, and from an earlier 0.3 build.
+    # Absence never means a cited id is linked.
+    admissible_verification: tuple[StatusAdmissibleVerificationModel, ...] | None = Field(
+        default=None, max_length=8
+    )
+    # Newest material closing-review input's ingestion sequence, or ``"0"`` when this build
+    # computed none. Optional on the unreleased 1.4.0 wire: an earlier build omits it, and the
+    # Stop gate then keeps its older once-per-obligation-set memory. ``"0"`` is distinct from
+    # omission.
+    closing_material_frontier: CanonicalUInt64Wire | None = None
 
     optional_non_null_fields = frozenset(
         {
@@ -5409,6 +5505,8 @@ class StatusClosureReadinessModel(_ClosedModel):
             "blocked_obligations",
             "limitation_refs_required",
             "limitation_refs_required_count",
+            "admissible_verification",
+            "closing_material_frontier",
         }
     )
 
@@ -5429,6 +5527,11 @@ class StatusClosureReadinessModel(_ClosedModel):
             _require_unique(
                 tuple(item.obligation_id for item in self.blocked_obligations), limit=64
             )
+        if self.admissible_verification is not None:
+            admissible_ids = tuple(item.obligation_id for item in self.admissible_verification)
+            _require_unique(admissible_ids, limit=8)
+            if admissible_ids != tuple(sorted(admissible_ids, key=str.encode)):
+                raise ValueError("closure_readiness_admissible_verification_invalid")
         _validate_fact_lineage_models(self.fact_lineage)
         self._validate_checklist()
         # Absent counts mean the compact singleton could not be read (an unreadable task title
@@ -7279,6 +7382,11 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             *(f"fact_lineage/*/{leaf}" for leaf in _FACT_LINEAGE_LEAVES),
             # tb4n4 (#1044): service-minted ids and counts; each path is repository-excerpt
             # content (``_STATUS_COMMON_CONTENT_RULES``) and a withheld one is the omission marker.
+            # #1079: service-minted ids only. A cited acceptance id is linked only when it is here.
+            "admissible_verification/*/obligation_id",
+            "admissible_verification/*/refs/*",
+            # Ingestion sequence of the newest material closing-review input, or "0".
+            "closing_material_frontier",
             "undeclared_references/*/obligation_id",
             "undeclared_references/*/item_index",
             "undeclared_references/*/total",
@@ -8097,11 +8205,12 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1626
+        len(result) != 1630
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
-        # ADR-049 +4 check / +8 status (review_mode)
+        # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,
+        # #1079 +2 admissible_verification, +1 closing_material_frontier
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

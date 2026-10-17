@@ -88,6 +88,22 @@ def test_the_switch_draft_is_never_reused_verbatim() -> None:
     assert "switch back to local before the closing review, not after it" in section
 
 
+def test_a_supported_rebuttal_and_a_resolved_criterion_are_one_judgement() -> None:
+    """Issue #1079: the agent page states the same reviewer duty the prompt states."""
+
+    page = _collapsed(_REVIEW)
+    assert (
+        "A supported rebuttal is a `rejected` or `acknowledged` answer that cites evidence. "
+        "The next review packet carries that answer. The reviewer must check that a recommended "
+        "input or state is reachable under the interface the packet shows, and must judge a "
+        "resolved obligation together with the result it cites, the latest observed verification, "
+        "and any missing input. Do not treat a match as shown while one of those is missing."
+        in page
+    )
+    for hint in ("numba", "llvmlite", "vigenere"):
+        assert hint not in page, hint
+
+
 def test_the_card_points_at_the_section_and_keeps_the_pinned_review_rule() -> None:
     card = _collapsed(_CARD)
     assert "Tasks may start local; `review.md`: when to turn on AI-powered review." in card

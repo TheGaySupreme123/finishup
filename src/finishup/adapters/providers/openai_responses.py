@@ -335,6 +335,15 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "for more only when a specific artifact is missing, and name it exactly: the diff hunk or "
         "path, the test or doctest, or the command output, each named in the packet or justified by "
         "the changed files shown. Never invent a path or command absent from the packet. "
+        # Issue #1079: a recommendation must be reachable, and a resolved criterion is one question.
+        "Before you recommend a change to an input, a guard, or a state, check that the visible "
+        "interface in the packet can reach it: the types, conditions, and contracts the excerpts "
+        "show. If that interface cannot produce the input or state, do not recommend the change; "
+        "say what the interface allows. "
+        "A resolved obligation carries resolved_basis beside its own text. Judge that criterion, "
+        "its claimed_result_refs, its latest_observed_verification_refs, and missing_input as one "
+        "question. Do not say the work matches a contract while missing_input is not empty, or "
+        "while a cited result or verification contradicts the criterion. "
         # Every distinct problem (issue #906). Never lower the challenge cap to shorten the loop.
         f"Report every distinct material problem you find, up to {MAX_REVIEW_CHALLENGES} "
         "challenges, in this one review: do not stop at the first, merge restatements of one "
@@ -481,6 +490,11 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = (
         "Newer means evidence, results or actions about that concern recorded after the agent's "
         "answer: citations you already made, the agent's republished claims or obligations, its "
         "answers and the evidence it cited in them do not count. "
+        # Issue #1079: a supported rebuttal stays in the follow-up packet; address it.
+        "A follow-up packet still carries a supported rebuttal: a prior-finding response that "
+        "cites evidence. Address that rebuttal. Do not recommend a change the rebuttal shows the "
+        "visible interface cannot reach, and do not repeat the finding unless material newer than "
+        "the rebuttal shows the problem remains. "
         # Issue #980: a re-raise names the finding it restates, so it stays one item.
         "Whenever a challenge raises again the same problem, of the same finding_kind, as a "
         "finding listed in review_packet.prior_finding_refs or in a yoetz.settled-finding/1 row, "

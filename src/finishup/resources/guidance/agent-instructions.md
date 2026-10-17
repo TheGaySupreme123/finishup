@@ -30,9 +30,9 @@ Tasks may start local; `review.md`: when to turn on AI-powered review. Select `s
 
 Writes return frontier, ids, errors; a prior `status` read or `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s). Give each action a `result_recorded` naming its `act_` id. Cite IDs you published; find native captures with `view=evidence` filter `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim. Omitted descriptions are a privacy setting, not missing evidence. What is left and why: `check` `mode: inspect` (records nothing).
 
-`check` after the plan and each milestone; cite observed runs (`status view=results`). Publish claim/evidence before the final check; answer findings, check, and inspect resolved state. On a finding, change the work or record what it names; an unchanged recheck returns it. Recheck only after repair/material record. After `insufficient_packet`, go to the receipt; never use `deterministic_only` merely to shorten closure.
+`check` after the plan and each milestone; cite observed runs (`status view=results`). Publish claim/evidence before the final check; answer findings, check, and inspect resolved state. On a finding, change the work or record what it names; an unchanged recheck returns it. Recheck only after repair/material record. After `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Verification follow-ups include observed test, build, lint, or typecheck output only when a repository excerpt would be sent; it never counts as agent-supplied.
 
-Final prose and receipts lead with scope: what checks covered, what was not verified, frontier, review status/reason, coverage limits; then actionable-unresolved, unanswered, and resolved-history counts. Never headline "no findings", "zero findings", "clean", or "verified". Keep the final answer no stronger than the receipt's weakest coverage.
+Lead final prose with the receipt's scope and limits; never headline "no findings", "clean", or "verified".
 
 # Review dialogue
 
@@ -40,8 +40,8 @@ Before the receipt, run the closing `check` with `final_review: true`. Answer ea
 
 # Multi-agent work
 
-Before delegating, read the multi-agent sections of `finishup://guidance/workflow.md` and `delegation.md`; a helper without a selector does no FinishUP work.
+Before delegating, read the multi-agent sections of `finishup://guidance/workflow.md` and `delegation.md`.
 
 # Read more
 
-This card is `finishup://guidance/agent-instructions.md`; on demand only: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; request bodies, setup: one section of `finishup://guidance/request-templates.md`.
+This card is `finishup://guidance/agent-instructions.md`; on demand only: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; publish `#publish-shapes`; setup `finishup://guidance/request-templates.md`.

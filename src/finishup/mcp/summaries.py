@@ -20,13 +20,20 @@ from finishup.domain.bounded_text import (
 from finishup.domain.closure import PREPARATION_REMEDIATIONS
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from finishup.domain.receipts import (
+    COORDINATOR_FAILURE_LIMITATION,
+    DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+    UNRESOLVED_VERIFICATION_GAP,
+    UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    limitations_name_coordinator_failure,
 )
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
+    publish_exactly,
     render_review_input_manifest_compact,
 )
 from finishup.domain.review_mode_render import (
@@ -34,6 +41,7 @@ from finishup.domain.review_mode_render import (
     review_mode_continuation,
     status_review_mode_line,
 )
+from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
 from finishup.mcp.errors import VALIDATION_REASON_TOKENS
@@ -48,9 +56,11 @@ from finishup.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.readiness_text import (
     READINESS_STATES,
+    admissible_verification_sentence,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    coordinator_failure_note,
     obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
@@ -137,6 +147,13 @@ _CORRELATION_ID: Final = re.compile(
 )
 # Closed shape for the frontier head: either the genesis sentinel or a canonical digest.
 _HEAD_DIGEST: Final = re.compile(r"^(?:genesis|sha256:[0-9a-f]{64})$", re.ASCII)
+_PAIRING_ID: Final = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_PAIRING_REF: Final = rf"(?:evd_|res_){_PAIRING_ID}"
+_PAIRING_LINE: Final = re.compile(
+    rf"obl_{_PAIRING_ID} [a-z_]+(?:,[a-z_]+)* "
+    rf"(?:verification_limit(?: linked {_PAIRING_REF}(?:,{_PAIRING_REF})*)?"
+    rf"|no_verification_limit|linked {_PAIRING_REF}(?:,{_PAIRING_REF})*)"
+)
 # Closed shape of a packaged guidance URI, the only location a guidance pointer may name. A
 # caller that read in the legacy ``yoetz://`` scheme is answered in it (ADR-048).
 _GUIDANCE_URI: Final = re.compile(r"^(?:finishup|yoetz)://guidance/[a-z0-9-]{1,64}\.md$", re.ASCII)
@@ -723,7 +740,13 @@ def _missing_items_part(source: Mapping[str, JsonValue]) -> Part | None:
             else ()
         )
         target = f"[{','.join(safe_refs)}]" if safe_refs else ""
-        tokens.append(f"{kind}={availability}{target}")
+        instruction = (
+            publish_exactly(kind)
+            if availability == "agent_suppliable" and type(kind) is str
+            else ""
+        )
+        published = f": {instruction}" if instruction else ""
+        tokens.append(f"{kind}={availability}{target}{published}")
     if not tokens:
         return None
     limit_note = (
@@ -859,6 +882,18 @@ def _safe_status_gap_codes(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     return tuple(
         gap for gap in raw_gaps if type(gap) is str and _GAP_CODE.fullmatch(gap) is not None
     )
+
+
+def _deferral_sentence(reason: object, source: Mapping[str, JsonValue]) -> str:
+    """The pre-edit deferral sentence, including older records that still name the other reason."""
+
+    if (
+        reason == "deferred_before_first_edit"
+        or SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in _safe_gap_codes(source)
+        or SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in _safe_status_gap_codes(source)
+    ):
+        return DEFERRED_BEFORE_FIRST_EDIT_TEXT
+    return ""
 
 
 def _semantic_withheld_item_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
@@ -1427,17 +1462,14 @@ def _check_lead_variants(
         and status == "not_requested"
         and reason == "deterministic_mode"
     )
-    if status == "not_requested" and (
-        "semantic_review_deferred_before_first_edit" in _safe_gap_codes(source)
-    ):
+    if _deferral_sentence(reason, source):
         # Issue #1046: a pre-work check ran the local plan checks only; nothing was sent.
+        # Every length keeps the exact sentence so a budget clip cannot restore the old wording.
+        sentence = DEFERRED_BEFORE_FIRST_EDIT_TEXT
         return (
-            "AI-powered review deferred until the first material edit (no edit is recorded "
-            "yet; the next check after one reviews, and the closing review is never deferred); "
-            f"local plan check verdict: {verdict}; {counts}",
-            "AI-powered review deferred until the first edit; local plan check verdict: "
-            f"{verdict}; {counts}",
-            f"AI-powered review deferred; local check verdict: {verdict};",
+            f"{sentence} local plan check verdict: {verdict}; {counts}",
+            f"{sentence} local plan check verdict: {verdict};",
+            f"{sentence}",
         )
     if status == "not_requested" and (
         "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
@@ -1630,6 +1662,8 @@ def summary_for_check(envelope: object) -> str:
                 priority=_P_ACTION,
             )
         )
+    if UNRESOLVED_VERIFICATION_GAP in _safe_gap_codes(source):
+        parts.append(_req(UNRESOLVED_VERIFICATION_LIMITATION))
     checklist = source.get("finding_checklist")
     at_budget = isinstance(checklist, Mapping) and (
         cast(Mapping[str, JsonValue], checklist).get("next") == "decide_at_budget"
@@ -1677,7 +1711,14 @@ def summary_for_check(envelope: object) -> str:
     )
     parts.extend(
         (
-            _req(f"AI-powered review status/reason: {status}/{reason};"),
+            _req(
+                COORDINATOR_FAILURE_LIMITATION
+                if reason == "coordinator_failure"
+                else (
+                    _deferral_sentence(reason, source)
+                    or f"AI-powered review status/reason: {status}/{reason};"
+                )
+            ),
             _req(f"{_frontier_clause(source)}."),
             _opt(
                 *render.variants(
@@ -2043,6 +2084,9 @@ def summary_for_status(envelope: object) -> str:
         if recipe:
             parts.append(_opt(*recipe, priority=_P_STATE))
     parts.append(_req(f"unanswered findings: {unanswered}; reported gaps: {gaps}."))
+    deferral = _deferral_sentence(source.get("semantic_reason"), source)
+    if deferral:
+        parts.append(_req(deferral))
     parts.extend(_closure_section(render, source))
     page = source.get("page")
     if isinstance(page, Mapping):
@@ -2294,6 +2338,17 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     announced = recheck_note(readiness, host=_SUMMARY_HOST.get())
     if announced is not None:
         parts.append(Part((announced, _RECHECK_SHORT), priority=_P_BOILERPLATE))
+    failure = coordinator_failure_note(readiness)
+    if failure is not None:
+        parts.append(Part((failure,), priority=_P_BOILERPLATE))
+    admissible = admissible_verification_sentence(readiness)
+    if admissible:
+        # Keep the limitation explicit even when the id pairing cannot fit the summary.
+        parts.append(
+            Part((admissible, UNRESOLVED_VERIFICATION_LIMITATION), required=True, priority=_P_STATE)
+            if "Unresolved verification limitation" in admissible
+            else Part((admissible,), priority=_P_STATE)
+        )
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
     )
@@ -2421,12 +2476,63 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     return _compose(parts)
 
 
-def summary_for_receipt(envelope: object) -> str:
-    """Compose the receipt text: conclusion, frontier and limitation count first.
+def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]:
+    """The receipt's claim-verification header and one required line per flagged obligation.
 
-    Open obligation ids, withheld-from-review lists, gap codes and the historical (cleared) gaps
-    are granted room by priority; the suppressed-finding count and the fixed redaction line close
-    the text (tb4n3 RC-2).
+    The evidence section joins those lines with spaces. Only the fixed header and a line whose
+    tokens are an obligation id, closed reason tokens, and ``verification_limit``,
+    ``no_verification_limit``, or ``linked`` plus ``evd_`` / ``res_`` ids is copied. Other
+    evidence prose is left in the structured document.
+    """
+
+    if document is None:
+        return []
+    sections = document.get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return []
+    body = ""
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        text = section.get("body")
+        if section.get("key") == "evidence_and_claim_basis" and type(text) is str:
+            body = text
+            break
+    header_at = body.find(CLAIM_VERIFICATION_HEADER)
+    if header_at < 0:
+        return []
+    tail = body[header_at + len(CLAIM_VERIFICATION_HEADER) :]
+    parts = [_req(CLAIM_VERIFICATION_HEADER)]
+    parts.extend(_req(match.group(0)) for match in _PAIRING_LINE.finditer(tail))
+    unresolved = [
+        match.group(0).split(" ", 1)[0]
+        for match in _PAIRING_LINE.finditer(tail)
+        if match.group(0).endswith("no_verification_limit")
+    ]
+    if unresolved:
+        parts.append(
+            Part(
+                (
+                    "Unresolved verification limitation for "
+                    + ", ".join(unresolved)
+                    + ": no admissible observed verification link or recorded verification limit.",
+                    UNRESOLVED_VERIFICATION_LIMITATION,
+                ),
+                required=True,
+                priority=_P_STATE,
+            )
+        )
+    return parts
+
+
+def summary_for_receipt(envelope: object) -> str:
+    """Compose the receipt text: conclusion, frontier, limitation count and pairing first.
+
+    The claim-verification header and one line per flagged obligation are required, ahead of
+    droppable gap codes. Open obligation ids, withheld-from-review lists, gap codes and the
+    historical (cleared) gaps are granted room by priority; the suppressed-finding count and the
+    fixed redaction line close the text (tb4n3 RC-2).
     """
 
     render = _Render("receipt")
@@ -2447,6 +2553,8 @@ def summary_for_receipt(envelope: object) -> str:
         _req(f"Receipt conclusion: {conclusion};"),
         _req(f"{_frontier_clause(source)};"),
         _req(f"coverage limitations: {limitations};"),
+        # The pairing is required and sits ahead of droppable gap codes (#1079).
+        *_claim_pairing_parts(typed_document),
     ]
     if typed_document is not None:
         document_source = typed_document
@@ -2473,6 +2581,12 @@ def summary_for_receipt(envelope: object) -> str:
             )
         )
     parts.append(_list_part("gap codes: ", gap_codes, priority=_P_DISCLOSURE))
+    if typed_document is not None and limitations_name_coordinator_failure(
+        typed_document.get("sections")
+    ):
+        # The gap code stays semantic_relevance_review_not_run. Name the fault (issue #1077).
+        # Required: a tight summary must not drop the fault sentence (issue #1077).
+        parts.append(_req(COORDINATOR_FAILURE_LIMITATION))
     parts.append(
         _opt(
             render.text("review_mode", lambda: _receipt_review_mode_clause(source)),
@@ -2910,10 +3024,13 @@ def _minimal_summary(envelope: object, builder: str) -> str:
             retry = "yes" if error.get("retryable") is True else "no"
             return f"Error {code}; retryable: {retry};"
         if builder == "check":
+            reason = _safe_token(source.get("semantic_reason"))
+            deferral = _deferral_sentence(reason, source)
+            if deferral:
+                return f"Check verdict: {_safe_token(source.get('verdict'))}; {deferral}"
             return (
                 f"Check verdict: {_safe_token(source.get('verdict'))}; AI-powered review "
-                f"status/reason: {_safe_token(source.get('semantic_status'))}/"
-                f"{_safe_token(source.get('semantic_reason'))};"
+                f"status/reason: {_safe_token(source.get('semantic_status'))}/{reason};"
             )
         if builder == "status":
             return f"Status view: {_safe_token(source.get('view'))};"

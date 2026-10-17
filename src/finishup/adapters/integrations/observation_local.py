@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import threading
@@ -6664,6 +6665,25 @@ class LocalObservationStore:
             entry = (state.codex_tool_hooks or {}).get(session_commitment)
             return 0 if entry is None else entry.touched
 
+    @_read_mostly
+    def session_observed_code_mode(self, workspace: str, session_commitment: str) -> bool:
+        """Whether this session has a recorded code-mode ``exec`` cell (#1038, #1079).
+
+        Positive observation only: a cell whose stored session matches. A bad argument, a
+        workspace with no cells, or a cell stored before the session field was recorded is false.
+        """
+
+        if type(workspace) is not str or type(session_commitment) is not str:
+            return False
+        if not workspace or not session_commitment:
+            return False
+        with self._reading():
+            state = self._load(workspace)
+            return any(
+                cell.session == session_commitment
+                for cell in (state.code_mode_cells or {}).values()
+            )
+
     def settle_code_mode_pass(self, workspace: str, session_commitment: str, snapshot: int) -> None:
         """Record that a stream pass started at ``snapshot`` read the rollout completely.
 
@@ -11732,6 +11752,13 @@ class LocalObservationStore:
                 _rotate_content_capture_epoch(state)
             state.consent = next_consent
             self._save(command.workspace_commitment, state)
+            # Revoking observation also removes the workspace's before/after fingerprint
+            # snapshots (keyed path and content digests only; PR #1080).
+            from finishup.adapters.workspace_fingerprint import workspace_fingerprint_dir
+
+            fingerprints = workspace_fingerprint_dir(self._root, command.workspace_commitment)
+            if fingerprints is not None and fingerprints.is_dir() and not fingerprints.is_symlink():
+                shutil.rmtree(fingerprints, ignore_errors=True)
             return self._status_unlocked(command.workspace_commitment)
 
     def batched(self, workspace_commitment: str) -> _ObservationBatch:

@@ -9,9 +9,15 @@ from typing import Final, cast
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.findings import SELF_VERIFIED_GUIDANCE
 from finishup.domain.receipts import (
+    COORDINATOR_FAILURE_LIMITATION,
+    DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    UNRESOLVED_VERIFICATION_GAP,
+    UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    limitations_name_coordinator_failure,
+    review_deferred_before_first_edit,
     semantic_redacted_value_text,
 )
 from finishup.domain.review_input_render import (
@@ -59,9 +65,11 @@ from finishup.protocol.models import (
     StatusSuccessModel,
 )
 from finishup.protocol.readiness_text import (
+    admissible_verification_sentence,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
+    coordinator_failure_note,
     obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
@@ -368,8 +376,10 @@ def _render_overall_next(
 ) -> str:
     if next_step.action == "supply_missing_input":
         action = (
-            "Supply the named review input as new records tied to the named refs "
-            "(never change your work to fit the reviewer)"
+            "If `missing_for_assessment` names an `agent_suppliable` item you can supply, "
+            "publish exactly that item once, linked to its target, then `check` again. If it "
+            "is already supplied, or it is a packet, type or authority limit, go to the receipt "
+            "and state that specific limit. Never change your work to fit the reviewer"
         )
     elif next_step.action == "disclose_limitations":
         action = (
@@ -419,10 +429,11 @@ def render_human_check(result: CheckSuccessModel) -> str:
 
     if type(result) is not CheckSuccessModel:
         raise TypeError("check_result_invalid")
+    deferred = review_deferred_before_first_edit(result.semantic_reason, result.coverage.known_gaps)
     scoped_local_verdict = (
         result.verdict == "no_issue_detected"
         and result.semantic_status == "not_requested"
-        and result.semantic_reason == "deterministic_mode"
+        and (result.semantic_reason == "deterministic_mode" or deferred)
     )
     verdict_line = (
         "Verdict: no issue detected within local coverage"
@@ -430,9 +441,22 @@ def render_human_check(result: CheckSuccessModel) -> str:
         else f"Verdict: {result.verdict}"
     )
     review_line = (
-        f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})"
+        DEFERRED_BEFORE_FIRST_EDIT_TEXT
+        if deferred
+        else (
+            COORDINATOR_FAILURE_LIMITATION
+            if result.semantic_reason == "coordinator_failure"
+            else (
+                f"AI-powered review: {_token(result.semantic_status)} "
+                f"({_token(result.semantic_reason)})"
+            )
+        )
     )
-    if result.semantic_status == "not_requested" and result.semantic_route_required is False:
+    if (
+        not deferred
+        and result.semantic_status == "not_requested"
+        and result.semantic_route_required is False
+    ):
         # Issue #986 (owner decision E2): disclosed, never a receipt blocker on such a route.
         review_line += "; the route did not require it, so it does not block a clean receipt"
     lines = [
@@ -530,13 +554,6 @@ def render_human_check(result: CheckSuccessModel) -> str:
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
     lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
-    if "semantic_review_deferred_before_first_edit" in tuple(result.coverage.known_gaps):
-        # Issue #1046: a pre-work check runs the local plan checks only.
-        lines.append(
-            "AI-powered review deferred: no material edit is recorded yet, so this check ran the "
-            "local plan checks only and sent nothing. The next check after your first edit "
-            "reviews as configured; the closing review is never deferred."
-        )
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
@@ -547,6 +564,8 @@ def render_human_check(result: CheckSuccessModel) -> str:
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
         lines.extend(_check_time_change_sentences(result.coverage.known_gaps))
+        if UNRESOLVED_VERIFICATION_GAP in result.coverage.known_gaps:
+            lines.append(UNRESOLVED_VERIFICATION_LIMITATION)
         lines.extend(lineage_lines(result.fact_lineage))
         # The strict ceiling blocked this process while the last install applied the policy
         # route (issue #537). A ceiling with no applied-policy record keeps today's terminal
@@ -656,6 +675,12 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         announced = recheck_note(readiness, host="generic")
         if announced is not None:
             lines.append(announced)
+        failure = coordinator_failure_note(readiness)
+        if failure is not None:
+            lines.append(failure)
+        admissible = admissible_verification_sentence(readiness)
+        if admissible:
+            lines.append(admissible)
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
     if readiness.check_cause is not None and readiness.state != "unknown":
@@ -960,6 +985,8 @@ def render_human_status(result: StatusSuccessModel) -> str:
         if recipe:
             lines.append(recipe[0])
     gaps = tuple(result.gaps) + tuple(result.coverage.known_gaps)
+    if review_deferred_before_first_edit(None, gaps):
+        lines.append(DEFERRED_BEFORE_FIRST_EDIT_TEXT)
     lines.append("Gaps: " + (", ".join(dict.fromkeys(gaps)) if gaps else "none"))
     lines.extend(_check_time_change_sentences(tuple(dict.fromkeys(gaps))))
     return "\n".join(lines)
@@ -1049,11 +1076,20 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     lines = [f"Conclusion: {result.conclusion}"]
     if result.human_text is not None:
         lines.append(_projected_text(result.human_text))
+    document = result.document
+    shown = result.human_text if isinstance(result.human_text, str) else ""
+    if (
+        isinstance(document, Mapping)
+        and limitations_name_coordinator_failure(document.get("sections"))
+        and COORDINATOR_FAILURE_LIMITATION not in shown
+    ):
+        # JSON receipts keep the sentence in the document section. Markdown and text already
+        # carry it in human_text (issue #1077).
+        lines.append(COORDINATOR_FAILURE_LIMITATION)
     # The result's coverage names live gaps only (issue #1017); a JSON receipt also lists the
     # gaps a later check cleared, apart, and markdown/text carry them in ``human_text``.
     limitations = tuple(result.coverage.known_gaps)
     lines.append("Limitations: " + (", ".join(limitations) if limitations else "none declared"))
-    document = result.document
     if isinstance(document, Mapping) and result.human_text is None:
         # ADR-049: a JSON receipt names the task's review-mode switches in its limitations
         # section; markdown and text already carry that section in ``human_text``.

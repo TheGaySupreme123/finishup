@@ -1,10 +1,10 @@
-"""The Codex `check` cell deadline is repeated where closure asks for that check (tb4n5 P6).
+"""The code-mode `check` cell deadline is repeated only when that capability was observed.
 
 In tb4n5, 5 of 9 S attempts ran FinishUP-only `check` cells that yielded (no `yield_time_ms`, or
 1,000 ms); the yielded `exec` cell landed after the check and made it stale in 6 of 9, bounding the
-receipt in 3. The pragma lived only in `startup.md`, read at start and forgotten by closure. The
-Codex Stop gate's close instruction and the status `check_cause` sentence for an `exec` cause now
-repeat it; Claude Code and Cursor text is unchanged.
+receipt in 3. The pragma lived only in `startup.md`. Issue #1079: the Stop gate repeats it when a
+code-mode cell was positively observed (`code_mode=True`, or `check_cause.tool == "exec"`), not
+because the host is Codex. The status sentence still repeats it for an `exec` cause only.
 """
 
 from __future__ import annotations
@@ -52,7 +52,9 @@ def _readiness(tokens: tuple[str, ...]) -> Any:
     )
 
 
-def test_the_codex_close_instruction_survives_the_host_bound_for_every_token_set() -> None:
+def test_the_observed_code_mode_close_instruction_survives_the_host_bound() -> None:
+    """The longer cell sentence still fits; the host brand alone does not select it."""
+
     checked = 0
     for size in (1, 2, 3, len(_TOKENS) - 1, len(_TOKENS)):
         for tokens in itertools.combinations(_TOKENS, size):
@@ -62,6 +64,7 @@ def test_the_codex_close_instruction_survives_the_host_bound_for_every_token_set
                 frontier_digest=_DIGEST,
                 observation_pending=False,
                 host="codex",
+                code_mode=True,
             )
             assert decision is not None
             assert len(decision.text) <= 2000, tokens
@@ -69,9 +72,19 @@ def test_the_codex_close_instruction_survives_the_host_bound_for_every_token_set
             assert gate._CLOSE_TEXT not in decision.text  # pyright: ignore[reportPrivateUsage]
             checked += 1
     assert checked > 100
+    plain = closure_gate_from_readiness(
+        _readiness(("closing_review_required",)),
+        frontier_sequence="9",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        host="codex",
+    )
+    assert plain is not None
+    assert gate._CLOSE_TEXT in plain.text  # pyright: ignore[reportPrivateUsage]
+    assert "yield_time_ms" not in plain.text
 
 
-@pytest.mark.parametrize("host", (None, "claude", "cursor"))
+@pytest.mark.parametrize("host", (None, "codex", "claude", "cursor"))
 def test_other_hosts_keep_the_unchanged_close_instruction(host: str | None) -> None:
     decision = closure_gate_from_readiness(
         _readiness(("closing_review_required",)),
@@ -82,6 +95,32 @@ def test_other_hosts_keep_the_unchanged_close_instruction(host: str | None) -> N
     )
     assert decision is not None
     assert gate._CLOSE_TEXT in decision.text  # pyright: ignore[reportPrivateUsage]
+    assert "yield_time_ms" not in decision.text
+
+
+def test_an_exec_check_cause_selects_the_cell_instruction_on_any_host() -> None:
+    readiness = _readiness(("closing_review_required",))
+    readiness.check_cause = SimpleNamespace(tool="exec")
+    for host in (None, "codex", "claude", "cursor"):
+        decision = closure_gate_from_readiness(
+            readiness,
+            frontier_sequence="9",
+            frontier_digest=_DIGEST,
+            observation_pending=False,
+            host=host,
+        )
+        assert decision is not None
+        assert CODEX_CHECK_CELL_PRAGMA in decision.text
+    shell = _readiness(("closing_review_required",))
+    shell.check_cause = SimpleNamespace(tool="exec_command")
+    decision = closure_gate_from_readiness(
+        shell,
+        frontier_sequence="9",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        host="codex",
+    )
+    assert decision is not None
     assert "yield_time_ms" not in decision.text
 
 

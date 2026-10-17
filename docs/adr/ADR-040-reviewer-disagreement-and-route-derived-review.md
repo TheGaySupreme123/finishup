@@ -500,14 +500,22 @@ its schema and a parent JSON receipt that failed validation (review of #1043).
 
 ### 4. No review before the first material edit (#1046)
 
-A check runs the local checks only and records `not_requested`/`deterministic_mode` with the new
+A check runs the local checks only and records `not_requested`/`deferred_before_first_edit`
+(check-result and check-recorded 1.5.0; 1.4.0 still replays `deterministic_mode`) with the
 standing gap `semantic_review_deferred_before_first_edit` (G7, semantic-only for absence proofs; its
 effect follows the route the check recorded, below) when all hold: the phase is routine; the mode,
 the `policy` route and the configured reviewer would dispatch a review (`semantic_required`
 included); the frozen prefix records no material edit (`material_edit_recorded`: a counting
 observed edit or shell write under ADR-042/045, whether or not its result arrived, so a Codex shell
 `apply_patch <<EOF` counts by the files its patch names, or an agent-published `edit` action); and
-the check-time capture did not observe a workspace change. Nothing is composed or sent. The deferral
+the check-time capture did not observe a workspace change. Nothing is composed or sent.
+There is no supported downgrade over a ledger that holds a projected check-recorded 1.5.0 row.
+An older build raises `unknown_event_schema` while opening that row, and the open fails as
+`STORAGE_CORRUPT`; it does not skip the row. Unknown schemas stay in the ledger only when they
+were written `unknown_unprojected`. `admissible_verification` is an optional field on the
+unreleased status-result 1.4.0 (absent when no flagged obligation has a recorded link; absence
+never means a cited id is linked).
+The deferral
 comes before the review's own admission, so a pre-work check asks for no repository grant,
 disclosure decision or review input either, and a missing provider or a policy block
 (`not_configured`, `blocked_by_policy`) is reported by the first check after the edit. A resumed
@@ -535,8 +543,9 @@ Where the check recorded `semantic_route_required: false`, a deferral asks for n
 a `deterministic_only` check on that route: counting it as a use there would leave an optional
 reviewer that cannot answer (a missing credential, a provider timeout: neither current nor
 undeliverable) demanding the closing review at every Stop, and the check's own next step would
-disagree with status. The CLI, the MCP check lead and the
-receipt's limitations sentence say "AI-powered review deferred".
+disagree with status. The CLI, MCP check text, status text, and the receipt limitations section say
+"AI-powered review is on; it starts after your first edit." Older records that still carry
+`deterministic_mode` beside the deferral gap render that same sentence.
 
 ### 5. A cited `fixed` ruling closes its finding despite environment facts (#1046)
 

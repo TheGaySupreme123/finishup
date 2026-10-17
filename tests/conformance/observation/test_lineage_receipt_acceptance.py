@@ -318,6 +318,11 @@ async def _drain_lineage(service: object) -> None:
 
 
 async def _publish_clean_work(service: object, task: StartInternalResult) -> None:
+    """A fixture review with its verification boundary explicitly recorded (F2).
+
+    These are agent-published protocol records, not observed execution. Keep the lineage
+    scenario clean within that stated boundary instead of implying observed verification.
+    """
     obligation_id = new_id(IdKind.OBLIGATION)
     action_id = new_id(IdKind.ACTION)
     result_id = new_id(IdKind.RESULT)
@@ -389,6 +394,14 @@ async def _publish_clean_work(service: object, task: StartInternalResult) -> Non
                     "requested_items": (),
                     "status": "resolved",
                     "resolution_evidence_refs": (result_id,),
+                },
+            ),
+            _event(
+                "decision_recorded",
+                {
+                    "statement": f"finishup-verification-limit:{obligation_id}",
+                    "rationale": "Protocol-fixture review only; no observed execution verification is claimed.",
+                    "authority": "harness:lineage-receipt-acceptance",
                 },
             ),
         ),

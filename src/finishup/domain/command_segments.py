@@ -79,6 +79,7 @@ __all__ = [
     "command_structure",
     "planned_segments",
     "requested_command_shape",
+    "strip_one_wrapper",
     "strip_wrappers",
     "wrapped_shell_argument",
 ]
@@ -437,6 +438,10 @@ class SimpleCommand:
     text: str
     words: tuple[str, ...]
     writes: bool = False
+    # Preserve executable/environment spelling for read-only classification. Canonical argv
+    # intentionally erases it for verification matching; that is not execution provenance.
+    sources: tuple[str, ...] = ()
+    nested: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,7 +487,11 @@ def _collect(
             if commands is not None and inner is None:
                 commands.append(
                     SimpleCommand(
-                        normalized, canonical_words(_split_words(normalized)), cleaned.writes
+                        normalized,
+                        canonical_words(_split_words(normalized)),
+                        cleaned.writes,
+                        (segment,),
+                        depth > 0,
                     )
                 )
             if inner is not None and depth < _MAX_DEPTH:
@@ -546,7 +555,13 @@ def command_structure(normalized: str) -> CommandStructure | None:
             distinct[item.text] = (
                 item
                 if previous is None
-                else SimpleCommand(item.text, item.words, previous.writes or item.writes)
+                else SimpleCommand(
+                    item.text,
+                    item.words,
+                    previous.writes or item.writes,
+                    (*previous.sources, *item.sources),
+                    previous.nested or item.nested,
+                )
             )
     composition = "masked" if masked else "and_chain" if chained else "single"
     compound = masked or chained or len(distinct) > 1
@@ -708,6 +723,12 @@ def _strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
                 words.pop(0)
         return True
     return False
+
+
+def strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
+    """Remove one canonical wrapper, allowing callers to inspect each original layer first."""
+
+    return _strip_one_wrapper(words, launchers=launchers)
 
 
 def strip_wrappers(words: Sequence[str], *, launchers: bool = True) -> list[str]:

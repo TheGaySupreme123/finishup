@@ -1224,3 +1224,90 @@ retry. Only `outcome_unknown` keeps the provider identity. The coordinator also 
 candidate built for a review-context profile that is no longer in force (`scope_mismatch`); the
 next admission rebuilds it from the current profile. The gateway's own consume fence for a switch
 after authorization is unchanged and not re-tested here (the provider gateway is faked).
+
+### Observed command output in a verification follow-up (2026-10-15, issue #1079)
+
+Maintainer acknowledgement: auto-supply of captured verification output is approved for this
+design-gated privacy change, and only on the terms below.
+
+When an AI-powered review returns `missing_for_assessment` for `verification_output`, a follow-up
+packet may include hook-captured output of a command the named targets ran. The bytes are the
+newest readable run of that command. A readable command action that no readable result cites
+occupies the command, so a tombstoned newest result does not fall back to an older capture. A
+tombstoned action has no command text left and cannot occupy a key. A command with no run key
+(`omitted:structural`) is not auto-supplied. Native keyed `omitted:` actions qualify only
+when the service authenticates complete, unredacted post-tool input and output from the same
+capture phase, binds the envelope's keyed command identity to the action, and runs all gates
+below on that input. Native hooks retain this input locally under the existing capture consent
+and aggregate byte budget; it is eligibility context and never a provider excerpt. Missing,
+truncated, redacted, pre-tool, or differently bound input fails closed. Older captures without
+this context remain withheld; no agent assertion can substitute for it.
+Plaintext action commands also remain ineligible for auto-supply: their text is
+agent-writable and cannot authenticate the command that produced a captured output.
+The task ledger stores only the keyed command identity, closed outcome metadata,
+object/evidence references, content digests and byte/part counts. The new post-tool
+input is encrypted local capture material, not raw command text in the ledger;
+it uses the same capture consent, redaction and retention limits as other native input.
+Capture-redacted output is withheld as a whole. The disclosure scan also examines decoded
+string values inside native JSON results (including exec envelopes with numeric timing fields),
+so JSON escaping cannot hide a secret hit. Unsupported encoding depth or scan capacity fails
+closed; this changes no provider byte budget.
+
+The item is sent only when every gate below passes. It is one repository excerpt, inside the
+existing per-excerpt and total excerpt limits. This does not widen consent or add authority.
+Private, and any selection that would not already send a repository excerpt, sends nothing. A
+channel that withholds `repository_excerpt` drops the item. Output of a command the targets do
+not name is never included. The packet labels the excerpt as observed capture, not an
+agent-published result. Hook capture still does not count as the agent having supplied the
+missing item. A refused capture is not sent as a raw evidence excerpt either.
+
+- The command must already class as test, build, lint, or typecheck (`command_is_verification`,
+  the same classes `command_runner_class` uses). A compound is included only when that
+  classifier's strongest class is one of those four. Anything else, including a `cat` or a file
+  read, is withheld whole.
+- An environment dump is withheld whole, including when it is composed with a verifier
+  (`pytest -q; printenv`). The dump shapes are `printenv`, `export -p`, `declare -p`,
+  `typeset -p`, `set` with no arguments or only `-o` / `+o` / `-p`, a bare `env` (assignments
+  and options, and no command after them), and any `/proc/<self-or-pid>/environ` operand.
+  `env pytest` runs pytest and is not a dump. `set -e` is not a dump.
+- A path operand is withheld whole when a repository excerpt would withhold it: a credential
+  file name (the same names as the check-time change), an absolute path outside the workspace
+  (or any absolute path when the workspace root is unknown), a `..` or `.git` component, or a
+  path the frozen check-time change marked `not shown` or as a nested repository whose own
+  change was not read (including a parent of that nested prefix). The program path
+  (`/usr/bin/pytest`) is the tool, not a repository file. Wrapper directory options (`-C`,
+  `--chdir`, `--directory`) and redirection targets count as paths. This gate does not call
+  Git. Gitignored paths are absent from the frozen change, so a verifier that names an unlisted
+  ignored path, and whose output the scan below does not hit, can still be sent.
+- The output then takes the check-time change scan (`redact_sensitive_content`, heuristics
+  included) plus a private-key END line or OpenSSH key-body check. The capture store only
+  replaces a BEGIN banner, so those two are checked here. Any hit drops the whole item. A
+  partly redacted capture is not sent. A value the scan does not recognise (for example
+  `DB_PASS=`) is not a hit by itself.
+
+A class, dump, or path withhold is omission reason `withheld_by_policy` and gap
+`content_unselected`. A high-confidence secret, a private-key body or END line, or a scanner
+failure is `redacted_never_send` and gap `content_redacted`. A heuristic-only hit is
+`never_send_heuristic` and the same gap. An item that does not fit the excerpt budget is
+`not_selected` and gap `content_unselected`. Older output held back because a newer run is a
+redacted occupancy is `withheld_by_policy` and gap `content_unselected`.
+
+### Resolved criterion, shown as one question (2026-10-15, issue #1079)
+
+A resolved obligation's packet item gains `resolved_basis`: the result refs its resolution
+already cites, the newest hook-captured verification refs of those results, and closed
+`missing_input` tokens when either is not readable. The criterion remains the obligation text
+in that same item. The basis copies no summary, command, or path, and it does not add a
+category or raise a ceiling. A channel that withholds obligation text withholds the basis with
+it. Private sends nothing.
+
+### Published answers in the next packet (2026-10-15, issue #1079)
+
+When the agent publishes material that answers a still-pending `missing_for_assessment` item, the
+next review packet carries that material inside the existing excerpt budgets. A result summary is
+added only when the effective selection already allows an evidence or test excerpt, only for a
+result `supplied_since` already counts (agent-published, tied to the named target), and only up to
+the existing per-excerpt and total limits. It is an evidence excerpt, the category a failure
+summary already uses. It does not widen consent, add a category, or raise a ceiling. A summary
+that does not fit is omitted and the omission is reported. Private sends nothing. Output the
+request does not name is not added.

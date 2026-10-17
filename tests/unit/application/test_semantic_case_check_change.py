@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -28,7 +29,9 @@ from finishup.application.semantic_case import (
     build_semantic_case,
     check_time_change_bytes_carried,
     check_time_change_parts_carried,
+    check_time_change_sections_carried,
     check_time_change_shown_files,
+    check_time_change_shown_record,
     semantic_case_to_prepared_payload,
 )
 from finishup.domain.events import (
@@ -921,3 +924,264 @@ def test_the_channel_ceiling_planner_keeps_the_change_and_its_accounting(limit: 
 
     assert rounds > 1
     _assert_change_leads_and_is_accounted(planned, text)
+
+
+def _diff_file(path: str, lines: tuple[bytes, ...]) -> bytes:
+    head = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n".encode()
+    return head + b"".join(lines)
+
+
+def _tight_decision_selection(total: int) -> ReviewSelectionPolicy:
+    expanded = ReviewSelectionPolicy.for_profile(
+        ReviewContextProfile.EXPANDED, preset_version="1.1.0"
+    )
+    return replace(expanded, max_excerpts=4, max_excerpt_bytes=4_096, max_total_excerpt_bytes=total)
+
+
+def test_a_tight_change_shows_the_decision_section_ahead_of_boilerplate() -> None:
+    """Issue #1079: when the change does not fit, keep the branch and the rule it implements."""
+
+    header = b"FinishUP check-time change: header\nFiles:\nEnd of header.\n"
+    license_file = _diff_file(
+        "LICENSE",
+        (b"+# Copyright 2020 the authors\n", b"+# SPDX-License-Identifier: MIT\n")
+        + tuple(b"+# license notice line\n" for _ in range(400)),
+    )
+    decision = _diff_file(
+        "src/rule.py",
+        (b"+# reject a non-positive amount\n", b"+if value > 0:\n", b"+    return value\n"),
+    )
+    text = header + license_file + decision
+    decision_at = text.index(b"diff --git a/src/rule.py")
+    # Room for the decision section and its labels, not for a 256-byte boilerplate chunk.
+    selection = _tight_decision_selection(700)
+    semantic = _build(
+        _case_with_material(),
+        ReviewContextProfile.CUSTOM,
+        change=_change(text),
+        selection=selection,
+    )
+
+    parts = [
+        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    ]
+    assert parts
+    body = b"".join(item.content for item in parts)
+    assert b"if value > 0:" in body
+    assert b"return value" in body
+    assert b"reject a non-positive amount" in body
+    assert b"Copyright 2020" not in body
+    assert b"decision-changing sections are shown ahead of boilerplate" in parts[0].content
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
+    assert sum(item.content_bytes for item in semantic.packet.targeted_excerpts) <= 700
+
+    leading = check_time_change_bytes_carried(semantic)
+    served = check_time_change_sections_carried(semantic)
+    assert leading == 0
+    assert (decision_at, decision_at + len(decision)) in served
+    files, representable = check_time_change_shown_record(_change(text).capture, leading, served)
+    assert representable
+    identities = {file.identity for file in files}
+    assert b"diff --git a/src/rule.py b/src/rule.py" in identities
+    assert all(b"LICENSE" not in identity for identity in identities)
+    (shown,) = files
+    assert shown.whole and shown.section_admitted
+    assert (
+        check_time_change_sections_carried(semantic, withheld_categories=("repository_excerpt",))
+        == ()
+    )
+    assert (
+        check_time_change_bytes_carried(semantic, withheld_categories=("repository_excerpt",)) == 0
+    )
+
+
+def test_a_change_that_fits_keeps_its_leading_prefix() -> None:
+    header = b"FinishUP check-time change: header\nEnd of header.\n"
+    license_file = _diff_file("LICENSE", (b"+# Copyright 2020\n",))
+    decision = _diff_file("src/rule.py", (b"+if value > 0:\n", b"+    return value\n"))
+    text = header + license_file + decision
+
+    semantic = _build(_case_with_material(), change=_change(text))
+
+    first = next(
+        item for item in semantic.items if item.item_id == f"{CHECK_TIME_CHANGE_ITEM_PREFIX}001"
+    )
+    assert b"decision-changing sections" not in first.content
+    body = first.content.split(b"\n", 1)[1]
+    assert text.startswith(body)
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in semantic.packet.coverage.known_gaps
+
+
+@pytest.mark.parametrize(
+    "prefix", (b"+import module\n", b"+# generated boilerplate\n", b"+// license notice\n")
+)
+@pytest.mark.parametrize("path", ("src/rule.py", "src/règle.py"))
+@pytest.mark.parametrize("separate_hunk", (False, True))
+def test_a_tight_single_file_selects_the_decision_interval(
+    prefix: bytes, path: str, separate_hunk: bool
+) -> None:
+    text = b"FinishUP check-time change: header\nEnd of header.\n" + _diff_file(
+        path,
+        (prefix,) * 400
+        + ((b"@@ -600,2 +1000,3 @@\n",) if separate_hunk else ())
+        + (b"+# reject non-positive values\n", b"+if value > 0:\n", b"+    return value\n"),
+    )
+    semantic = _build(
+        _case_with_material(),
+        ReviewContextProfile.CUSTOM,
+        change=_change(text),
+        selection=_tight_decision_selection(700),
+    )
+    parts = [
+        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    ]
+    body = b"".join(item.content for item in parts)
+    assert b"if value > 0:" in body and b"return value" in body
+    assert b"reject non-positive values" in body
+    assert f"diff --git a/{path} b/{path}".encode() in body
+    assert b"[FinishUP hunk: @@" in body
+    assert b"skipped file intervals" in body
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
+    assert sum(item.content_bytes for item in semantic.packet.targeted_excerpts) <= 700
+    leading = check_time_change_bytes_carried(semantic)
+    served = check_time_change_sections_carried(semantic)
+    assert leading == 0 and served
+    decision_at = text.index(b"+if value > 0:")
+    assert any(low <= decision_at < high for low, high in served)
+    files, representable = check_time_change_shown_record(_change(text).capture, leading, served)
+    assert representable and len(files) == 1
+    shown = files[0]
+    assert not shown.whole and not shown.section_admitted
+    assert shown.clean_bytes == 0
+    assert shown.shown_bytes == sum(high - low for low, high in served)
+    assert shown.view.startswith(b"yoetz/check-change-interval-view/v1\x00")
+    # A different interval cannot authorize the same repair view.
+    other, _ = check_time_change_shown_record(
+        _change(text).capture, 0, ((served[0][0] - 1, served[0][1]),)
+    )
+    assert other[0].view != shown.view
+    # Copied context is part of the shown view too, even outside the selected interval.
+    old_header, new_header = (
+        (b"@@ -600,2 +1000,3 @@", b"@@ -601,2 +1001,3 @@")
+        if separate_hunk
+        else (b"@@ -1 +1 @@", b"@@ -2 +2 @@")
+    )
+    relabeled, _ = check_time_change_shown_record(
+        _change(text.replace(old_header, new_header)).capture, leading, served
+    )
+    assert relabeled[0].view != shown.view
+    assert (
+        check_time_change_sections_carried(semantic, withheld_categories=("repository_excerpt",))
+        == ()
+    )
+
+
+def test_cut_interior_hunk_header_counts_only_the_bytes_that_reached_the_packet() -> None:
+    from finishup.application.semantic_case import (
+        _check_time_change_cut_part,  # pyright: ignore[reportPrivateUsage]
+        _check_time_change_label_body,  # pyright: ignore[reportPrivateUsage]
+        _check_time_change_offer,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    text = _diff_file(
+        "src/règle.py",
+        (b"+import module\n",) * 400
+        + (b"+if value > 0:\n", b"+    return value\n")
+        + (b"+detail = '" + b"x" * 150 + b"'\n",) * 5,
+    )
+    parts, offsets = _check_time_change_offer(text, _tight_decision_selection(1800))
+    result = _check_time_change_cut_part(parts[0], 1, len(parts), 700)
+    assert result is not None and result[1]
+    part = result[0].encode()
+    assert b"cut to the packet's room" in part
+    assert b"if value > 0:" in part and b"return value" in part
+    match = re.search(rb"selected original bytes (\d+):(\d+)", part)
+    assert match is not None
+    _labels, body = _check_time_change_label_body(result[0])
+    assert int(match[1]) == offsets[0]
+    assert text[int(match[1]) : int(match[2])] == body.encode()
+    assert len(part) <= 700
+
+
+def test_other_code_ranks_after_a_decision_and_ahead_of_a_license() -> None:
+    header = b"FinishUP check-time change: header\nEnd of header.\n"
+    license_file = _diff_file(
+        "LICENSE",
+        tuple(b"+# Copyright notice\n" for _ in range(300)),
+    )
+    helper = _diff_file("src/total.py", (b"+total = left + right\n",))
+    decision = _diff_file("src/rule.py", (b"+if ready:\n", b"+    return total\n"))
+    text = header + license_file + helper + decision
+    # Just above the decision part (labels included) and below that part plus the helper.
+    selection = _tight_decision_selection(420)
+    semantic = _build(
+        _case_with_material(),
+        ReviewContextProfile.CUSTOM,
+        change=_change(text),
+        selection=selection,
+    )
+
+    body = b"".join(
+        item.content
+        for item in semantic.items
+        if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    )
+    assert b"if ready:" in body and b"return total" in body
+    assert b"total = left + right" not in body
+    assert b"Copyright notice" not in body
+
+
+def test_a_decision_that_names_a_license_outranks_an_assignment() -> None:
+    """A line matching ``_DECISION_LINE`` ranks first even when it contains ``license``.
+
+    With one excerpt, the decision file is the part offered and the preference note is true:
+    the assignment beside it is the section left out.
+    """
+
+    header = b"FinishUP check-time change: header\nEnd of header.\n"
+    assignment = _diff_file(
+        "src/total.py",
+        tuple(b"+total = left + right\n" for _ in range(200)),
+    )
+    decision = _diff_file("src/gate.py", (b"+if not self.has_license:\n",))
+    text = header + assignment + decision
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED, preset_version="1.1.0"),
+        max_excerpts=1,
+        max_excerpt_bytes=4_096,
+        max_total_excerpt_bytes=8_192,
+    )
+    semantic = _build(
+        _case_with_material(),
+        ReviewContextProfile.CUSTOM,
+        change=_change(text),
+        selection=selection,
+    )
+
+    parts = [
+        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    ]
+    assert len(parts) == 1
+    body = parts[0].content
+    assert b"if not self.has_license:" in body
+    assert b"total = left + right" not in body
+    assert b"decision-changing sections are shown ahead of boilerplate" in body
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in semantic.packet.coverage.known_gaps
+
+
+def test_a_structural_recipe_does_not_send_the_decision_section() -> None:
+    header = b"FinishUP check-time change: header\nEnd of header.\n"
+    text = header + _diff_file("src/rule.py", (b"+if value > 0:\n", b"+    return value\n"))
+    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.STRUCTURAL)
+
+    semantic = _build(
+        _case_with_material(),
+        ReviewContextProfile.CUSTOM,
+        change=_change(text),
+        selection=selection,
+    )
+
+    assert not any(
+        item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX) for item in semantic.items
+    )
+    assert b"if value > 0:" not in b"".join(item.content for item in semantic.items)

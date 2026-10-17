@@ -21,6 +21,7 @@ from finishup.domain.events import (
 )
 from finishup.domain.findings import FindingKind, FindingOrigin
 from finishup.domain.observation_selection import command_runner_class
+from finishup.domain.receipts import UNRESOLVED_VERIFICATION_GAP
 from finishup.domain.values import (
     EventId,
     EvidenceId,
@@ -948,6 +949,10 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
         "freshness_gap_present": set(),
     }
     for gap in case.gaps:
+        if gap.code == UNRESOLVED_VERIFICATION_GAP:
+            # The once-delivered acceptance invite is bounded. Its unanswered verification
+            # pairing bounds coverage, but must not mint a stale-ledger finding and reblock Stop.
+            continue
         if gap.code in CALLER_DIGEST_PROVENANCE_GAPS:
             # A caller-asserted digest the service did not verify is a disclosed provenance
             # label, not a ledger defect: it stays in case coverage and the receipt names it once

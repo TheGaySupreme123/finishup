@@ -20,8 +20,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
-from finishup.domain.command_segments import command_structure, strip_wrappers
-from finishup.domain.observation import normalize_observed_command
+from finishup.domain.command_segments import command_structure, strip_one_wrapper, strip_wrappers
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import strict_json_parse
 from finishup.protocol.errors import ProtocolValueError
@@ -502,6 +501,10 @@ def _routine_shell_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineF
         ):
             return _RoutineFacts(False, "unsafe_shell")
     subcommand = argv[1]
+    if subcommand == "status":
+        # A successful status can still have run fsmonitor, post-index-change or clean filters.
+        # It must remain individually observed, rather than disappearing as a routine read.
+        return _RoutineFacts(False, "unsafe_shell")
     if subcommand not in {"diff", "log", "rev-parse", "show", "status"}:
         return _RoutineFacts(False, _routine_shell_reason(command, argv))
     if subcommand == "diff" and "--check" in argv[2:]:
@@ -534,7 +537,89 @@ def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
 _TOOL_DIRECTORY_RE: Final = re.compile(r"(?:^|/)s?bin/[^/]+$", re.ASCII)
 
 
+_SYSTEM_EXECUTABLE_RE: Final = re.compile(r"^/(?:usr/)?s?bin/[^/]+$", re.ASCII)
+_READ_WRAPPERS: Final = frozenset(
+    {"command", "exec", "nice", "timeout", "ionice", "setsid", "stdbuf", "time"}
+)
+_INERT_ASSIGNMENTS: Final = frozenset({"TZ", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR"})
+
+
+def _read_executable_resolved(argv: list[str]) -> bool:
+    """Keep every original executable layer and resolution-changing environment visible.
+
+    Canonical verification matching deliberately drops wrappers and paths. A read exemption
+    cannot use that identity: arbitrary bin directories, PATH/loader/config overrides and
+    unresolved wrappers stay material. nohup itself may create nohup.out. Shell initializers
+    and privileged/package launchers are not transparent reads either.
+    """
+
+    rest = list(argv)
+    for _ in range(8):
+        if not rest:
+            return False
+        name, equals, _value = rest[0].partition("=")
+        if equals:
+            if name not in _INERT_ASSIGNMENTS:
+                return False
+            rest.pop(0)
+            continue
+        word = rest[0]
+        if "\\" in word or ("/" in word and _SYSTEM_EXECUTABLE_RE.fullmatch(word) is None):
+            return False
+        name = word.rsplit("/", 1)[-1]
+        if name == "env":
+            rest.pop(0)
+            if rest and rest[0].startswith("-"):
+                return False
+            continue
+        if name in _READ_WRAPPERS:
+            if not strip_one_wrapper(rest, launchers=False):
+                return False
+            continue
+        return name not in _SHELL_WRAPPERS | {"nohup", "sudo", "builtin"}
+    return False
+
+
+_WORKFLOW_OPTIONS: Final[Mapping[str, bool]] = MappingProxyType(
+    {"--input": True, "--request": True, "--deadline-ms": True, "--json": False, "--help": False}
+)
+_READ_WORKFLOW_VERBS: Final[Mapping[str, Mapping[str, bool]]] = MappingProxyType(
+    {
+        "status": _WORKFLOW_OPTIONS,
+        "publish-work": _WORKFLOW_OPTIONS,
+        "respond": _WORKFLOW_OPTIONS,
+        "check": MappingProxyType({**_WORKFLOW_OPTIONS, "--await-observations": False}),
+        "receipt": MappingProxyType(
+            {**_WORKFLOW_OPTIONS, "--owner-view": False, "--use-passphrase": False}
+        ),
+        "start": MappingProxyType({**_WORKFLOW_OPTIONS, "--task-statement-file": True}),
+        "closure-prepare": MappingProxyType(
+            {"--session-id": True, "--writer-id": True, "--input": True, "--help": False}
+        ),
+    }
+)
+
+
+def _read_workflow_call(argv: list[str]) -> bool:
+    options = _READ_WORKFLOW_VERBS.get(argv[1]) if len(argv) > 1 else None
+    if options is None:
+        return False
+    index = 2
+    while index < len(argv):
+        option, equals, _value = argv[index].partition("=")
+        takes_value = options.get(option)
+        if takes_value is None or (equals and not takes_value):
+            return False
+        index += 1 if equals or not takes_value else 2
+    return index == len(argv)
+
+
 def _classify_argv(argv: list[str]) -> RunnerClass | None:
+    result = _classify_resolved_argv(argv)
+    return "other" if result == "exploration" and not _read_executable_resolved(argv) else result
+
+
+def _classify_resolved_argv(argv: list[str]) -> RunnerClass | None:
     if not argv:
         return None
     # Wrappers (``timeout 600``, ``nice``, ``env FOO=1``, ``nohup``, ``stdbuf``) and leading
@@ -549,6 +634,24 @@ def _classify_argv(argv: list[str]) -> RunnerClass | None:
         # script by its own name, otherwise unclassified.
         return "test" if _test_script(argv[0]) else "other"
     command = argv[0].rsplit("/", 1)[-1].casefold()
+    # Closed, non-setting date invocations (the timestamp FinishUP publications use).
+    if command == "date" and all(
+        argument in {"-u", "--utc", "--universal"} or argument.startswith("+")
+        for argument in argv[1:]
+    ):
+        return "exploration"
+    if command in {"finishup", "yoetz"} and _read_workflow_call(argv):
+        # Its task effects are the cooperative records, including review-mode switches.
+        # Shell writes/redirections are still classified separately at the host boundary.
+        return "exploration"
+    if (
+        command == "sed"
+        and len(argv) >= 3
+        and argv[1] == "-n"
+        and re.fullmatch(r"(?:[0-9]+|\$)(?:,(?:[0-9]+|\$))?p", argv[2], re.ASCII)
+        and all(not argument.startswith("-") for argument in argv[3:])
+    ):
+        return "exploration"
     if command in _SHELL_WRAPPERS and len(argv) >= 3 and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]):
         return command_runner_class({"command": argv[2]})
     wrapped = _run_wrapper_target(command, argv)
@@ -902,6 +1005,40 @@ def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerCla
     return _runner_class_for_argv(argv)
 
 
+def command_is_verification(command: str) -> bool:
+    """Whether ``command_runner_class`` already calls this command a test, build, lint, or typecheck.
+
+    A compound is included when that classifier's strongest class is one of those four
+    (``pytest -q | tail -5``). Information-only runs (``--help``, ``--version``) are not.
+    """
+
+    if type(command) is not str or not command:
+        return False
+    return command_runner_class({"command": command}) in _VERIFYING_CLASSES
+
+
+def native_command_runner_class(value: CanonicalJsonValue) -> RunnerClass | None:
+    """Classify native argv while retaining executable provenance beyond one host shell.
+
+    The host's exact argv may name its ordinary system shell. Only that one outer layer can
+    be unwrapped for classification; recursive identity normalization could erase a nested
+    agent-owned shell executable. Keyed identity normalization remains separate.
+    """
+
+    if isinstance(value, (list, tuple)) and value and all(type(word) is str for word in value):
+        argv = cast(list[str], list(value))
+        shell = argv[0].rsplit("/", 1)[-1]
+        if (
+            len(argv) == 3
+            and shell in _SHELL_WRAPPERS
+            and ("/" not in argv[0] or _SYSTEM_EXECUTABLE_RE.fullmatch(argv[0]) is not None)
+            and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]) is not None
+        ):
+            return command_runner_class({"command": argv[2]})
+        return command_runner_class({"command": shlex.join(argv)})
+    return command_runner_class({"command": value})
+
+
 _SHELL_COMPOSITION_MARKERS: Final = ("\n", "\r", ";", "&", "|", ">", "<", "`", "$(")
 # Strongest first: a compound that runs several verifiers is classed by the first of these.
 _VERIFYING_PRIORITY: Final = ("test", "build", "lint", "typecheck")
@@ -917,14 +1054,15 @@ def _compound_runner_class(raw: str) -> RunnerClass:
     ``cd /app && pytest -q 2>&1 | tail -5`` runs a test: classing it ``compound`` (which
     ``edited_after_last_verification`` ignores) left that fact dormant in about 70% of real runs.
     Each simple command is classified on its canonical argv (wrappers dropped); a command that
-    redirects into a file is not exploration (``cat > f`` writes). A composition with no
-    verifying command stays ``compound``: an outer exit status does not establish each nested
-    command's outcome (#968), and that gap is raised separately by
-    ``compound_verification_gap_required``.
+    redirects into a file is not exploration (``cat > f`` writes). A composition without a
+    verifier stays ``compound`` unless every component is proven read-only. An outer exit
+    status does not establish each nested command's outcome (#968), and that gap is raised
+    separately by ``compound_verification_gap_required``.
     """
 
-    normalized = normalize_observed_command(raw)
-    structure = None if normalized is None else command_structure(normalized)
+    # Segmentation itself normalizes each leaf. Keep the outer spelling so a shell wrapper's
+    # executable cannot be erased before the read-only provenance check sees it.
+    structure = command_structure(raw)
     if structure is None or not structure.commands:
         return "compound"
     classes: set[RunnerClass] = set()
@@ -938,6 +1076,23 @@ def _compound_runner_class(raw: str) -> RunnerClass:
     for verifying in _VERIFYING_PRIORITY:
         if verifying in classes:
             return cast(RunnerClass, verifying)
+    if classes == {"exploration"} and not any(marker in raw for marker in ("$(", "`", "<<", "&")):
+        try:
+            # Canonical words erase executable paths. Recheck the original argv so an
+            # agent-owned ./date or ./finishup cannot acquire a harmless tool's identity.
+            if all(
+                not command.writes
+                and not command.nested
+                and bool(command.sources)
+                and all(
+                    _runner_class_for_argv(shlex.split(source, posix=True)) == "exploration"
+                    for source in command.sources
+                )
+                for command in structure.commands
+            ):
+                return "exploration"
+        except ValueError:
+            pass
     return "compound"
 
 
@@ -1050,6 +1205,33 @@ def classify_observation(
     )
 
 
+def without_routine_read(classification: ObservationClassification) -> ObservationClassification:
+    """The same observation as an individually recorded call, never a routine-read summary.
+
+    PR #1080: a shell command's text cannot prove it read only. A shell read-shaped call (``ls``,
+    ``head``, ``rg``, ``git log``) may join a routine-read summary only when the hook's
+    before/after workspace fingerprint saw the workspace unchanged across it; otherwise it is
+    demoted here and delivered with its own action, result and fingerprint fact, exactly like any
+    other command. The Codex session stream, which has no fingerprint, always demotes shell calls.
+    """
+
+    if not classification.routine_candidate:
+        return classification
+    reasons = [
+        token
+        for token in classification.reason_tokens
+        if token not in {"routine_candidate", "routine_success", "routine_shell", "routine_tool"}
+    ]
+    return ObservationClassification(
+        protected=True,
+        routine_candidate=False,
+        proven_routine_success=False,
+        content_role=ObservationContentRole.BOTH,
+        reason_tokens=("unsafe_shell", *reasons),
+        version=classification.version,
+    )
+
+
 def _is_edit_tool_token(lowered: str) -> bool:
     return lowered in _EDIT_TOOL_HINTS or any(
         hint in lowered for hint in ("edit", "write", "patch")
@@ -1115,6 +1297,8 @@ __all__ = [
     "classify_observation",
     "compound_verification_gap_required",
     "command_runner_class",
+    "native_command_runner_class",
+    "without_routine_read",
     "envelope_outcome_state",
     "is_edit_tool_name",
     "is_routine_read_candidate",

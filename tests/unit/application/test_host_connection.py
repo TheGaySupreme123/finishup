@@ -672,3 +672,102 @@ def test_claude_disconnect_of_a_yoetz_era_only_project_lists_only_what_it_remove
 
     assert plan.body["changes"] == ["remove_legacy_plugin"]
     assert plan.disclosure["shared_with"] == [str(other)]
+
+
+def test_typed_mcp_error_survives_connection_lock_and_releases_it(tmp_path: Path) -> None:
+    from finishup.application.host_connection import ConnectionPlan
+    from finishup.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
+
+    digest = "sha256:" + "d" * 64
+    failure = McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})
+
+    def fail() -> None:
+        raise failure
+
+    body = {
+        "config_root": str(tmp_path),
+        "preview_digest": digest,
+        "changes": ["remove_mcp_registration"],
+        "requires_os_presence": False,
+    }
+    from finishup.protocol.canonical import JsonValue
+
+    plan = ConnectionPlan(cast(dict[str, JsonValue], body), lambda: {}, fail)
+    with pytest.raises(McpRegistrationError) as caught:
+        apply_connection(
+            plan, accepted_digest=digest, refresh=lambda: plan, authority=None, review=Review()
+        )
+    assert caught.value is failure
+    # Reacquiring the same real lock proves the failure released it.
+    succeeding = ConnectionPlan(plan.body, lambda: {}, lambda: None)
+    assert (
+        apply_connection(
+            succeeding,
+            accepted_digest=digest,
+            refresh=lambda: succeeding,
+            authority=None,
+            review=Review(),
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_cursor_connection_upgrades_pristine_prior_skill_but_preserves_edits(
+    tmp_path: Path, host: str
+) -> None:
+    import hashlib
+    import json
+
+    from finishup.adapters.integrations.host_discovery import SetupHost
+    from finishup.protocol.canonical import canonical_digest, canonical_encode
+
+    project, config = tmp_path / "project", tmp_path / "cursor"
+    project.mkdir(mode=0o700)
+    launcher = tmp_path / "finishup"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    installation = HostInstallation(cast(SetupHost, host), launcher, "2026.09.19", config, "Cursor")
+
+    def prepare():
+        return prepare_connection(
+            REQUEST,
+            installation,
+            project,
+            action="connect",
+            route="strict",
+            launcher=(str(launcher),),
+        )
+
+    def apply() -> None:
+        plan = prepare()
+        apply_connection(
+            plan,
+            accepted_digest=plan.digest,
+            refresh=prepare,
+            authority=ArtifactAuthority("review_only", plan.digest, "test"),
+            review=Review(),
+        )
+
+    apply()
+    destination = config / "plugins/local/finishup"
+    skill = destination / "skills/finishup/SKILL.md"
+    current = skill.read_bytes()
+    skill.write_bytes(b"# Earlier shipped Cursor skill\n")
+    marker_path = destination / ".yoetz-cursor-plugin-install.json"
+    marker = json.loads(marker_path.read_bytes())
+    for row in marker["managed_files"]:
+        data = (destination / row["relative_path"]).read_bytes()
+        row["sha256"] = "sha256:" + hashlib.sha256(data).hexdigest()
+        row["size"] = len(data)
+    marker["artifact_digest"] = "sha256:" + "a" * 64
+    marker.pop("marker_digest")
+    marker["marker_digest"] = canonical_digest(marker)
+    marker_path.write_bytes(canonical_encode(marker))
+    apply()
+    assert skill.read_bytes() == current
+    assert prepare().unchanged
+    skill.write_bytes(b"# My own changes\n")
+    with pytest.raises(ConnectionError, match="connection_modified_plugin"):
+        prepare()
+    assert skill.read_bytes() == b"# My own changes\n"

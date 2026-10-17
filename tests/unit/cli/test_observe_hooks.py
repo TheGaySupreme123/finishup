@@ -634,7 +634,7 @@ def test_identical_tool_calls_remain_distinct(tmp_path: Path) -> None:
     [
         ("Read", {"path": "ignored"}, True),
         ("exec_command", {"cmd": "rg -n observation src tests"}, True),
-        ("exec_command", {"cmd": "git status --short"}, True),
+        ("exec_command", {"cmd": "git status --short"}, False),
         ("exec_command", {"cmd": "sed -n '1,20p' README.md"}, False),
         ("exec_command", {"cmd": "sed -i s/a/b/ README.md"}, False),
         ("exec_command", {"cmd": "rg --pre ./prepare term src"}, False),

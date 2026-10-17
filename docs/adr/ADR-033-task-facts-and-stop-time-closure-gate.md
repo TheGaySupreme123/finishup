@@ -532,7 +532,8 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    `HOST_OBSERVATION_GUARDED_GAPS` as advisory only when the applicable check's own coverage
    carried them. Full-check completeness (`application.check.full_check_gaps_clean`) reads the
    same list. `semantic_review_not_requested` still bounds the
-   receipt: a check records only `deterministic_mode` or `no_material_semantic_case` with it, never
+   receipt: a check records `deterministic_mode`, `deferred_before_first_edit`, or
+   `no_material_semantic_case` with it, never
    whether the serving route required AI-powered review (a strict route records
    `blocked_by_policy`/`route_semantic_ceiling` and its own gap instead), so the receipt cannot
    apply the route rule without reading live configuration, which would break replay.
@@ -1016,8 +1017,11 @@ payload (status and `loop_count` only) can never carry to the gate.
 2. **Host-aware text, no new record.** The acceptance re-read sentence and the re-check note take
    the host. On `cursor` they say that Cursor passes FinishUP no final answer, that a met criterion
    stays resolved and is confirmed in the final answer, and that the re-read is not asked again for
-   the set; that is the existing per-session, per-key memory, so the continued Stop passes and a
-   later Stop with the same flagged set is not asked. The MCP bridge passes its host profile to
+   the set while `closing_material_frontier` is unchanged. That memory is the per-session file
+   `observation/closure-gate-blockers.json`, so the continued Stop passes and a later Stop with the
+   same flagged set and the same material frontier is not asked. A later material closing-review
+   input asks it again (amendment of 2026-10-15, below). Status that omits the field keeps the
+   older once-per-set memory. The MCP bridge passes its host profile to
    `closure_prepare` and to the status and `closure_prepare` summary text (so Cursor's summary
    fallback and a generic bridge follow it too); the CLI and TUI, which do not know the agent's host, name Codex and Claude
    Code as the hosts that read the line. Codex and Claude Code text is unchanged. No protocol,
@@ -1028,3 +1032,332 @@ Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the ho
 `tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host),
 `tests/integration/application/test_closure_composer.py` (the `closure_prepare` host) and
 `tests/unit/mcp/test_tb4n3_closure_verdict_text.py` (the MCP summaries per host).
+
+## Amendment (2026-10-15, issue #1079 item 3): a new closing review needs a material delta
+
+tb4n5 asked for a closing review 5 times across trials where the only later records were
+bookkeeping or dispositions. `closing_review_required` now goes stale only after a material task
+or verification change (`kernel/closing_review_delta`): an observed edit or shell write, an
+unclassified observed command or its result, a cooperative edit or command, or a
+`decision_recorded` whose `review_mode` is set (ADR-049: switching review mode after the closing
+review makes that review stale). Claims, a decision that leaves `review_mode` unset, plans,
+responses, coordination, assignments, findings, and evidence publication do not. An
+unchanged newest check that failed with reason `coordinator_failure` does not ask for the same
+`final_review` again; readiness adds the standing code `semantic_coordinator_failure` and the
+status, closure-prepare, and receipt text name that FinishUP limit. A material change after the
+failure asks again and clears the code. `invalidates_recorded_check` is unchanged, so a real edit
+still makes the check inapplicable and still re-arms the closing review. The code is a readiness
+token, not a coverage gap and not a new wire field.
+
+## Amendment (2026-10-15, issue #1079 item 3): the check-cell pragma follows the capability
+
+The Stop gate used to repeat `// @exec: {"yield_time_ms": 300000}` whenever the host was Codex.
+Plain Codex exec and the benchmark host expose direct MCP calls plus `exec_command` and
+`write_stdin`, which are not code-mode cells, and FinishUP's MCP server records no `clientInfo`
+that says the client uses cells. The close instruction is now the neutral sentence unless code
+mode was positively observed: a recorded `exec` cell for this session
+(`LocalObservationStore.session_observed_code_mode`), or `check_cause.tool == "exec"`. Claude Code
+and Cursor do not record those cells, so they keep the neutral sentence. `guidance/startup.md`
+says the pragma and `yield_time_ms` apply only to a JavaScript `exec` cell.
+
+## Amendment (2026-10-15, issue #1079 item 7): a risky completion claim names its verification
+
+In 6 of 28 smoke trials the agent resolved a criterion or said every criterion was met when the
+external verifier showed that was false. `acceptance_risk` still checks attempt and evidence
+lineage, not whether the claim is true. This step does not reject a claim at publish time and
+does not grade the sentence.
+
+For rule `resolved_obligations_acceptance_risk`, the Stop re-read is answered only by
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or
+`finishup-verification-limit:<obligation id>` (the `yoetz-` spellings too). A bare `:met` and a
+generic all-met claim do not answer it. The legacy rule `resolved_obligations_acceptance_reread`
+still accepts a bare `:met`, and still ends an alone re-read with the confirmation sentence.
+Codex and Claude Code read those lines in the final message. Cursor's `stop` carries no final
+message, so its text never contains `finishup-acceptance`: the agent publishes the
+verification-limit decision or links the observed id in a record. The re-read is asked again only
+after `closing_material_frontier` advances (amendment below). Status that omits the field keeps
+the older once-per-flagged-set memory. An obligation that already has a `verification_limit` disclosure leaves the
+recheck; the receipt still lists it.
+
+`kernel.claim_verification.claim_verification_lines` appends that pairing to the receipt evidence
+section in JSON, markdown and text: a header that a generic all-met claim does not stand in, then
+one line per flagged obligation with its reason tokens and `verification_limit`,
+`verification_limit linked <ids>`, `linked <ids>`, or `no_verification_limit`. `<ids>` are the
+admissible observed `evd_` or `res_` ids. A final-message line does not create the ledger link the receipt
+reports. Compact receipt wording is unchanged. A projection hole does not fail the receipt: the
+pairing for that obligation is omitted and the limitations section says the pairing could not
+be read, naming only the obligation id when the scope can still be read.
+
+## Amendment (2026-10-15, issue #1079 item 7): the cited id must be an observed verification
+
+`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` does not pass because the id is
+well-formed. Status carries `closure_readiness.admissible_verification` for a flagged
+obligation when `kernel.verification_link` finds a readable `evd_` or `res_` row at or before
+the closing frontier that the obligation cites, that `source_actions` ties to the obligation or
+to one of its requested items, or that an effective claim's `supporting_refs` names because the
+claim lists that obligation, and that row is an observed verification or is linked to one.
+A claim with empty `obligation_refs` does not lend its supporting ids to any obligation.
+Observed means hook-captured or observation-captured evidence, or a result of an observed
+command. An id the agent only asserted is unattested, including a self-asserted id named in
+`supporting_refs`. The gate accepts the line only when the cited id is in that list. A missing
+id, or one linked only to another obligation, is unattested, and the re-read says
+`` `<id>` is not linked to obligation `<obligation id>`. `` The
+`finishup-verification-limit:<obligation id>` line remains the honest alternative and does not
+need a row. There is still no truth grade and no publish-time rejection. The receipt line names
+each admissible id (`linked evd_…` or `linked res_…`) beside `verification_limit` when a
+disclosure is also recorded, and in place of `no_verification_limit` when the ids are the only
+pairing. Cursor still has no final message: a published verification-limit decision leaves the
+recheck, and a nonempty admissible list for an obligation is the observed link that answers it.
+An absent list does not.
+
+## Amendment (2026-10-15, issue #1079 item 3): an acceptance re-read returns only after a material delta
+
+Stop hooks are a fresh process on Codex, Claude Code and Cursor. The "already asked" memory is
+not process-local: `record_closure_gate_delivered` writes owner-only
+`observation/closure-gate-blockers.json`, and the next Stop in the same session reads it back
+through `closure_gate_reasked_blockers`. The file is keyed by the FinishUP session id.
+
+The acceptance entry used to be `accept:<h8>@<invite frontier>`, and any later entry with that
+prefix counted as already asked, so the frontier suffix was ignored. The same flagged set was
+never asked again, including after a material closing-review input. When status names
+`closure_readiness.closing_material_frontier` (the newest `closing_review_delta` ingestion
+sequence at or before the projection frontier, or `"0"` when none exists), the stored key is
+`accept:<h8>@<invite frontier>@m<material frontier>`. The gate matches that `@m` suffix. A newer
+ledger frontier of bookkeeping does not ask again. A higher material frontier does, including a
+`decision_recorded` whose `review_mode` is set (ADR-049). A memory entry written before the
+suffix existed does not match a known material frontier: the next Stop asks once, then stores
+the new key. Status that omits the field (an earlier build, or a hand-built fact set) keeps the
+prefix match. `closing_material_frontier` of `None` on `ClosureReadinessFacts` is that omission;
+`0` was computed. The wire field is optional on unreleased status-result 1.4.0 and is emitted
+including `"0"`.
+
+The acknowledgement re-check still reads the invite frontier as the decimal before `@m`, so an
+acknowledgement published after the invite is not challenged.
+
+### Bounded unanswered acceptance invitations (issue #1079, F2)
+
+Delivery memory suppresses repeated Stop invitations at an unchanged material frontier;
+it never supplies verification. A risky resolved obligation with neither an admissible
+observed verification link nor a recorded verification-limit decision carries
+`unresolved_verification_limitation`, with the obligation named in the check basis,
+status rechecks, receipt limitation and MCP summary. It bounds the receipt as insufficient
+coverage even after the second Stop is allowed. A recorded link or limit removes this
+derived limitation; a generic all-met claim does not. Final-message attestations are not
+ledger evidence. No invitation loop or new blocking Stop is introduced.
+The owning gap-effect table classifies this code under G13 as a standing limitation,
+bounding on both local and AI-powered receipt routes. It adds one recorded code to the
+unreleased classification version `8` (222 total rows including readiness-only tokens).
+Check text uses a fixed limitation sentence; status and receipt pairings name obligation ids.
+It is also a proof-tolerated code for both local and AI-powered findings: it says nothing about
+whether the rows a local pack judges were readable or what a reviewer was shown, so it never
+keeps any repaired finding open (which would reblock Stop); the receipt stays bounded by it.
+
+## Amendment (2026-10-16, PR #1080): closing currency by workspace change, and native verification
+
+Owner decision (2026-10-16, PR #1080 round 5): whether a command observed after the closing review
+is a new review input is decided by whether the project workspace actually changed across it,
+never by parsing its text. Rounds 3 and 4 of this PR recognized read-only spellings (`date -u`,
+bounded `sed -n`, `rg`, FinishUP CLI verbs, wrappers); each adversarial review found a spelling that
+wrote while looking like a read (an executable `PATH` or `bin` shadow, `closure-prepare --output`,
+a Git fsmonitor or a case-sensitive clean-filter collision run by `git status`, a quoted `-C ~`
+path, zsh glob qualifiers that execute code, `nohup.out`). Those exemptions no longer affect
+closure currency.
+
+**The fact.** The live host hook takes a fingerprint of the workspace in its `PreToolUse` pass
+(the host waits for that pass before it runs the call) and another in the `PostToolUse` pass, and
+sends one closed structural token, `workspace_effect`: `unchanged`, `changed` or `unavailable`
+(`adapters/workspace_fingerprint`, `cli/workspace_effect_hook`, `domain/workspace_effect`).
+Materialization appends it to the observed result's summary as ` (workspace unchanged|changed|
+unverified)`; the kernel reads it back only from service-stamped observation results
+(`kernel/later_material.workspace_effects`). A host payload cannot supply the key, and an
+agent-published result carrying the suffix is ignored.
+
+*One call, several deliveries (round 6).* A Codex session-stream copy carries no fingerprint, and a
+hook pass may repeat; both mint the call-keyed result id the first delivery committed, so the later
+one appends no result. Its fact is not dropped: when it states a fact the recorded result does not,
+the coordinator appends one observation-authored, metadata-only evidence row under the call's
+action whose description is exactly `Observed workspace effect=<token>`
+(`materialize_workspace_effect_annotation`), with ids derived from the result and the token, so a
+repeat, a restart or a third delivery adds nothing. The kernel folds every fact of the call: it is
+`unchanged` only when some delivery said `unchanged` and none said `changed` or `unavailable`,
+whatever the arrival order. A stream copy recorded first is therefore enriched by the hook's
+`unchanged`; if no hook fact ever arrives the call stays material. An annotation is judged as its
+call at the position it arrived, so a `changed` or `unavailable` that lands after a closing review
+re-arms it.
+
+**What is material.** An observed shell command, or its result, is a closing-review delta unless
+a result of that call reports `unchanged`, no result of it reports `changed` or `unavailable`, and
+it is neither a verification run (a `test`, `build`, `lint` or `typecheck` runner class, or a run of
+a command an effective obligation requests, matched under ADR-045 or linked by the agent) nor a
+package install (an `install` runtime token: the environment is not walked). When the task
+requests a command but no installation key is registered to match runs, no command is quiet.
+Real edits (edit tools, lexical shell writes), review-mode switches and cooperative edit or command
+actions keep the #1079 rule. Another observed tool that is not FinishUP's own and not a host-native
+read (a third-party MCP tool, a subagent, Codex `write_stdin`, Claude Code `BashOutput`) is a
+delta when its result reports `changed`, and keeps its earlier bookkeeping reading otherwise.
+Receipt, work-close and lifecycle records, FinishUP's own MCP calls and host-native reads remain
+bookkeeping. The later-material classifier applies the same rule to the receipt's
+check-currency disclosure (`observed_workspace_unchanged`), and a read-shaped shell call joins a
+routine-read summary only when its fingerprint is `unchanged` (the Codex session stream, which
+has no fingerprint, never summarizes shell calls). Runner classes are unchanged and still keep
+failed exploratory reads out of failure accounting and advice; they no longer exempt anything from
+currency.
+
+**Conservative fallback.** `unavailable` reads exactly like `changed`. It is recorded when there is
+no pre-call snapshot (a post-only profile, a lost or killed pre pass, the synchronous legacy Codex
+spool path, a session-stream copy), when the host has not reported that the call ended (a Codex
+process still running behind a session id, a Claude Code `run_in_background` launch: later writes
+would fall outside the window), when the command text backgrounds or detaches a process (a lone
+`&`, `nohup`, `setsid`, `disown`; text can only make a call less trusted, never more), when the walk
+exceeds 60,000 entries or 64 directory levels, when the pass exceeds its time bound, when a
+directory cannot be read or the root is unusable, and when the snapshot store is unusable or its
+record fails its keyed MAC. The hook names a degraded comparison (`too_large`, `timeout`,
+`unreadable`, `root_unusable`, `store_unusable`, `process_table_unreadable`) once as a
+`workspace_fingerprint_<reason>`
+diagnostic in `observe status`; a workspace that exceeded a walk bound is not walked again for ten
+minutes (two after a walk timeout). A missing pre-call snapshot or a call still running is an
+ordinary per-call fact on the result, kept out of the bounded diagnostic window. The Stop text
+names the case: the latest material input may be "a command FinishUP could not establish left the
+workspace unchanged".
+
+*Quiescence (round 6).* A host's completion fact says the process it started ended, not that
+nothing that process started is still writing: an ordinary program can start a child in a new
+session, exit 0 and leave the child to write after the post-call snapshot, with no background word
+in its text. Before it walks, the post-call pass therefore reads the process table
+(`adapters/process_lifetime`: `libproc` on macOS, `/proc` on Linux and WSL 2). A process of the
+same user that started during the call window (less 50 ms of clock slack), is still running, is not
+parented by this hook's own chain or by the host that ran it, and has its working directory or a
+file open for writing inside the workspace makes the call `unavailable` (`call_incomplete`); so does
+such a process whose directory or descriptors cannot be read, and so does a process table the hook
+cannot read at all (`process_table_unreadable`, a standing condition diagnosed once per ten
+minutes: a host that sandboxed its hooks this way would leave every call unverified, and
+`observe status` says so). The host's own other children (its parallel hooks and tool calls) are its ongoing work and
+are judged by their own calls. After the walk the pass re-reads the modification time of every
+directory it entered (VCS metadata and bytecode caches excepted): an entry created, removed or
+renamed while the workspace was being compared makes the call `unavailable` too. The probe adds
+about 1-3 ms; no process is signalled, attached to or killed.
+
+*Host window (round 6).* A pre-call snapshot is published only when its whole capture (walk and
+hashing) finished before the host could stop waiting for the hook (the host timeout less one
+second). A late capture may already hold the call's writes, so it is never stored: neither a
+concurrent post-call pass nor a pre-call process killed at the host timeout can leave a usable late
+snapshot. The record also carries its capture-completion time and the host deadline under its
+keyed MAC, and the post-call pass re-checks them.
+
+*Budget (round 6).* The 0.75 s bound covers the whole pass, not only the walk: loading the digest
+cache, expiring pending records, walking, hashing (checked before every 256 KiB read), the
+directory re-read and persisting the record. A pass that overruns it is `unavailable` (`timeout`);
+a hashing or persistence overrun does not start the walk back-off. One blocking read of a regular
+file is the largest step that can run past the bound before it is noticed; a filesystem that
+blocks a single read indefinitely is not bounded by this pass.
+
+**What the workspace covers.** Every entry beneath the hook's canonical workspace root, tracked and
+untracked alike; ignore files are not consulted. Honouring them would mean running Git in the hook
+(which executes repository-configured programs and resolves `git` through the agent's `PATH`, the
+round-4 hazards) or re-implementing ignore semantics, where a mistake hides a real change; ignored
+paths can hold graded output, and many task workspaces are not repositories. Counting them is the
+conservative direction. Round 5 recorded whole directories by identity only; round 6 narrowed that
+after the review showed a script writing `venv/answer.txt` or `__pycache__/answer.txt` read as
+`unchanged`:
+
+- *VCS metadata* (`.git`, `.hg`, `.svn`) is walked except its exact internal churn: the object
+  store, reflogs, refs, LFS objects, `fsmonitor--daemon`, `rr-cache`, submodule and worktree
+  administration, `git fsck` `lost-found` and Cursor's `cursor` checkpoint store are recorded by
+  identity only; the index files directly in the metadata root (Git's own, split and temporary
+  indexes, and private index copies tools keep there), `HEAD`-style pointer files, `packed-refs`,
+  commit and merge messages, maintenance logs and lock files are skipped (Mercurial's `store`,
+  `dirstate`, and Subversion's `pristine` and `wc.db` likewise). A commit, a fetch, a branch or an
+  index refresh by `git status` is not a change; a write to `config`, `hooks/`, `info/attributes`
+  or any other file there is.
+- *Dependency environments and tool caches* (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`,
+  `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.hypothesis`) are compared at their first level:
+  a file directly inside one is compared like any other file, a subdirectory by its identity. A
+  full walk is not affordable on every call: measured on this machine a plain walk costs 24-27 µs
+  per entry under load (a 10,186-entry `node_modules` 276 ms, a 5,119-entry `.venv` 123 ms), and
+  typical environments hold tens to hundreds of thousands of entries, so walking them would exceed
+  the whole 0.75 s bound and make every call `unavailable`. Package installs stay material through
+  the `install` runtime fact; lexical writes (`sed -i`, redirections) stay material whatever their
+  target.
+- *Bytecode caches* (`__pycache__`) are walked, but the interpreter's `.pyc` files (and their
+  temporary names) and the directory's own creation by an import are not changes; any other file
+  in one is compared.
+- *Declared deliveries the walk cannot fully see.* The hook does not read obligations. When an
+  effective obligation names a non-input `file` or `directory` inside the workspace where the walk
+  does not compare it, the kernel treats no command as `unchanged`
+  (`domain/workspace_effect.path_beyond_workspace_fingerprint`,
+  `kernel/task_facts.declared_path_beyond_fingerprint`). The rule is the walk's own, read from the
+  same domain constants the adapter walks by: a path inside a VCS store recorded by identity only
+  (`.git/objects`, `refs`, `logs`, ...) or a VCS bookkeeping file the walk skips (`HEAD`, the
+  metadata-root index, `*.lock`, ...), anything below the first level of a dependency environment
+  or tool cache, a bytecode file in `__pycache__`, a saved receipt or export name, or a declared
+  directory that is itself VCS metadata or a dependency environment. VCS files the walk compares
+  (`.git/config`, `.git/hooks/*`) and files directly inside a dependency environment
+  (`node_modules/x.js`, `venv/report.txt`) do not trigger it (round 7). A relative path is read
+  against the workspace root. An absolute path is judged by its part below the task's root, the
+  one absolute `workspace_ref` every `session_opened` of the task names
+  (`kernel/task_facts.task_workspace_root`; hook auto-attach sends the canonical root the walk
+  uses), and a path outside that root, or a relative one that leaves it, is out of scope like any
+  other effect outside the root (`/usr/local/lib/node_modules/...` installed globally does not
+  trigger it). With no such root (no session names one, sessions disagree, or a ref is not an
+  absolute path) an absolute path triggers the rule when it would for any of its ancestors as the
+  root, so an in-root `/app/node_modules/pkg/index.js` stays covered. The judgment is lexical and
+  replay-stable: no path is resolved and no filesystem is read.
+
+A commit leaves the closing review's base-to-working-tree change capture (ADR-031) unchanged, which
+is why the VCS internals stay out. FinishUP's saved receipts and exports (ADR-042) and its state or
+isolation root inside the workspace are skipped. Links are not followed; a link compares by its
+target text.
+
+**Comparison and cost.** An entry is unchanged when its kind, permission bits, size, modification
+and change times, inode and device match; the change time cannot be set back by an unprivileged
+process, so a write that restores the modification time is still seen. Content is hashed only for
+an entry whose metadata moved since the last snapshot, so a rewrite of identical bytes or a `touch`
+is not a change once its digest is known, and is conservatively a change otherwise. An entry whose
+timestamps fall within two seconds of the pre-call snapshot is hashed before the call, so a
+coarse-timestamp filesystem cannot hide a same-second write. Hashing is bounded (8 MiB per file,
+64 MiB per snapshot). Measured on macOS (APFS): a 2,580-entry checkout costs about 20 ms per
+snapshot and a 19,700-entry tree about 160 ms warm (about 620 ms cold); the bound makes larger trees
+`unavailable`. Round 6, measured as an alternating A/B of the round-5 and round-6 adapters on the
+same trees under the same (loaded) machine: this repository's worktree 32/32 ms pre/post before
+and 35/36 ms after; the primary checkout without `.claude/` (now walking 121 `.git` and 55
+`node_modules` entries) 40/41 ms before and 66/74 ms after; synthetic steady-state trees of 1,000,
+5,000, 20,000 and 50,000 entries 13/12, 48/49, 181/193 and 513/529 ms before and 12/15, 50/51,
+185/185 and 513/547 ms after. Snapshots are stored in an owner-only directory beside the local observation
+store, holding only keyed path and content digests and a keyed MAC; pending snapshots expire after
+a day, and revoking observation for the workspace removes the directory.
+
+**Limits.** Effects outside the workspace root are out of scope for this signal, as before:
+databases, `/tmp`, the network, other repositories, and a deliverable path outside the root that an
+obligation names (the hook does not read obligations; a lexically visible write outside the root
+still records `write outside_workspace` and stays material). Round 6 states the remaining
+guarantee explicitly. The fact covers what the call did to the walked workspace before its post-call
+pass began, plus anything a process it started was still able to do while that process ran in the
+workspace. It does not cover: an in-place rewrite of an already compared file during or after the
+post-call walk by a process that was not started during the call (an editor, another agent, a dev
+server started by an earlier call); a process the call started that moved its working directory out
+of the workspace, holds no workspace file open for writing, and later opens one by absolute path; a
+background job still parented by a long-lived process the host owns (a persistent terminal shell;
+the background-operator text rule still covers `cmd &`); a host that makes itself a subreaper; a
+deep in-place edit inside a dependency environment or tool cache by a command that is neither an
+install nor a lexical write (unless the task declares a delivery there); and filesystems that do
+not maintain change times. The first fingerprinted call after a FinishUP service start can read
+`unavailable` once, because the service it started keeps running in the workspace. Two concurrent
+calls each see the other's writes and processes, which can only make a call material.
+
+Native Codex `CommandExecution.command` runner classification unwraps only one ordinary host
+shell, preserving any nested executable paths. Keyed identity retains its existing normalization.
+`finalize` and `*_regression` names alone do not establish verification: they can generate output without checking it. The task's explicitly requested
+verification command can credit such an observed run through the existing ADR-045 matching and
+ordering rules. An undeclared generator retains a real stale-verification gap. A verifier after
+an edit in one command counts at that completed command's result frontier. A native completed
+command also counts when the agent later retrieves its result through `write_stdin`; a poll does not replace the original command's
+identity. Shell compositions that can mask individual outcomes still disclose that uncertainty.
+Runner classification establishes an observed run, never that its assertions are correct. The
+stale-verification rule (`edited_after_last_verification`) still counts only edits and lexical
+shell writes; the workspace fact feeds closing-review and check currency only.
+
+Returning a server timestamp is deferred to a versioned workflow-result change; `date -u` leaves
+the workspace unchanged and is harmless closure traffic. The CLI, MCP/status, TUI and receipt
+currency all derive from the same observed facts and kernel predicates. Codex, Claude Code
+(ordinary profile) and Cursor (ordinary profile) fingerprint through the shared `handle_observe`
+path; their structural profiles observe no shell calls.

@@ -277,6 +277,8 @@ def test_a_broken_reference_mirror_names_the_field_and_the_rule(
     # The pointer names the exact list to fix, not just which draft failed.
     assert details["field"] == f"/event_drafts/1/{envelope_field}"
     assert envelope_field in error.message
+    assert "example:" in error.message
+    assert "0000000000ff" not in error.message
     assert "finishup://guidance/publication-policy.md" in error.message
     assert error.message != "The event batch is invalid. Correct the event payload before retrying."
 

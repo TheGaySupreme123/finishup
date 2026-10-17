@@ -2645,16 +2645,46 @@ def _selection_stream_fixture(
     return store, workspace, session, target, CodexSessionStreamLocator(home)
 
 
-def test_stream_selects_shell_candidate_from_original_arguments_and_flushes_on_boundary(
+def test_stream_never_summarizes_a_shell_read(tmp_path: Path) -> None:
+    """PR #1080: the stream has no workspace fingerprint, so a shell read stays individual."""
+
+    session_id = "stream-selection-shell"
+    rows = (
+        session_meta(session_id=session_id),
+        function_call(name="shell", call_id="shell-read", arguments='{"command":"ls"}'),
+        function_call_output(call_id="shell-read", exit_code=0),
+    )
+    store, workspace, session, _target, locator = _selection_stream_fixture(
+        tmp_path, rows=rows, session_id=session_id
+    )
+    result = reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=locator,
+    )
+    assert result["accepted"] == 3
+    outbox = store.list_pending_outbox_rows(workspace)
+    assert not [row for row in outbox if row.envelope.event_kind == "RoutineReadSummary"]
+    assert store.selection_accounting(workspace)["buffered_successful_call_count"] == 0
+    assert [
+        row.envelope.structural_payload.get("action")
+        for row in outbox
+        if row.envelope.structural_payload.get("tool_call_id") == "shell-read"
+    ] == ["function_call", "function_call_output"]
+
+
+def test_stream_selects_read_candidate_from_original_arguments_and_flushes_on_boundary(
     tmp_path: Path,
 ) -> None:
     session_id = "stream-selection-summary"
     rows = (
         session_meta(session_id=session_id),
         function_call(
-            name="shell",
+            name="read_file",
             call_id="selection-read",
-            arguments='{"command":"ls"}',
+            arguments='{"path":"README.md"}',
         ),
         function_call_output(call_id="selection-read", exit_code=0),
     )
@@ -2721,9 +2751,9 @@ def test_stream_candidate_marker_survives_store_restart(tmp_path: Path) -> None:
     target_rows = (
         session_meta(session_id=session_id),
         function_call(
-            name="shell",
+            name="read_file",
             call_id="restart-read",
-            arguments='{"command":"pwd"}',
+            arguments='{"path":"README.md"}',
         ),
     )
     store, workspace, session, target, locator = _selection_stream_fixture(

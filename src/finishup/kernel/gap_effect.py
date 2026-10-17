@@ -177,6 +177,15 @@ GAP_EFFECT_WHY: Final[Mapping[str, str]] = MappingProxyType(
 
 _FAMILIES: Final[tuple[_Family, ...]] = (
     _Family(
+        rule="G13",
+        family="readiness_only",
+        readiness="S",
+        d_route="B",
+        review_route="B",
+        changed=True,
+        codes=("unresolved_verification_limitation",),
+    ),
+    _Family(
         rule="G0",
         family="agent_actionable",
         readiness="A",
@@ -849,6 +858,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "task_statement_not_supplied",
         "task_statement_unavailable",
         "unpaired_event",
+        "unresolved_verification_limitation",
         "verification_only_as_root",
         "write_outside_workspace",
     }

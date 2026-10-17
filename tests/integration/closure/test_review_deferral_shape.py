@@ -38,13 +38,13 @@ from finishup.cli.closure_gate import closure_gate_from_readiness
 from finishup.domain.receipts import (
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
+    UNRESOLVED_VERIFICATION_GAP,
 )
 from finishup.domain.task_fact_tokens import STOP_GATE_TOKENS
 from finishup.domain.values import JsonObject
 from finishup.protocol.models import CheckRequest, SemanticReason, SemanticStatus
 from integration.application import test_respond_status_receipt as h
 from integration.closure.test_closure_shapes import (
-    _CLEAN,
     _INSUFFICIENT,
     _NO_FINDINGS,
     _obligation,
@@ -177,10 +177,13 @@ async def test_a_deferral_where_review_is_optional_reads_like_a_local_only_check
     assert reviewer.calls == []
     assert {_DEFERRED, SEMANTIC_REVIEW_NOT_REQUESTED_GAP} <= set(deferred.coverage.known_gaps)
     assert deferred.semantic_route_required is False
-    assert deferred.verdict.value == "no_issue_detected"
+    # The fixture's resolution is agent-published metadata, with no observed link or limit.
+    # F2 now bounds that pairing independently of the optional review's deferral.
+    assert deferred.verdict.value == "insufficient_coverage"
+    assert UNRESOLVED_VERIFICATION_GAP in deferred.coverage.known_gaps
 
     gathered = await _surfaces(run)
-    assert_surfaces_agree(gathered, conclusion=_CLEAN, counts=_NO_FINDINGS, check=deferred)
+    assert_surfaces_agree(gathered, conclusion=_INSUFFICIENT, counts=_NO_FINDINGS, check=deferred)
     # Disclosed and nothing asked for, like the local-only control: no closing review either.
     readiness = gathered.status["compact"].closure_readiness
     assert (readiness.state, tuple(readiness.agent_actionable or ())) == (
@@ -196,14 +199,14 @@ async def test_a_deferral_where_review_is_optional_reads_like_a_local_only_check
     assert effects[_DEFERRED] == effects[SEMANTIC_REVIEW_NOT_REQUESTED_GAP] != "bounds"
     for fmt in ("markdown", "text"):
         text = str(gathered.receipts[fmt].human_text)
-        assert "AI-powered review was deferred" in text, fmt
-        assert "none of these bounds the conclusion" in text, fmt
+        assert "AI-powered review is on; it starts after your first edit." in text, fmt
+        assert "Unresolved verification limitation" in text, fmt
 
     # The control: the same ledger checked local-only on the same route.
     control, _ = await _investigation(10_470, "optional")
     local = await _check(control, "deterministic_only")
     controlled = await _surfaces(control)
-    assert_surfaces_agree(controlled, conclusion=_CLEAN, counts=_NO_FINDINGS, check=local)
+    assert_surfaces_agree(controlled, conclusion=_INSUFFICIENT, counts=_NO_FINDINGS, check=local)
     assert not controlled.status["compact"].closure_readiness.agent_actionable
 
 
@@ -262,9 +265,10 @@ async def test_a_task_whose_work_is_not_an_edit_is_asked_for_the_closing_review(
     assert _DEFERRED not in closing.coverage.known_gaps
     after = await _surfaces(run)
     readiness = after.status["compact"].closure_readiness
-    assert readiness.state == "ready", readiness.agent_actionable
+    assert readiness.state == "ready_with_limitations", readiness.agent_actionable
+    assert UNRESOLVED_VERIFICATION_GAP in tuple(readiness.standing_limitations or ())
     assert _CLOSING not in _gate_items(after.status["compact"])
-    assert_surfaces_agree(after, conclusion=_CLEAN, counts=_NO_FINDINGS, check=closing)
+    assert_surfaces_agree(after, conclusion=_INSUFFICIENT, counts=_NO_FINDINGS, check=closing)
     assert closing.overall_next is not None
     assert closing.overall_next.status == readiness.state
 

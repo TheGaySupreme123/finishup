@@ -32,3 +32,15 @@ def test_error_fields_stay_frozen_and_equality_is_by_value() -> None:
         error.safe_details = {}  # type: ignore[misc]
     assert error == IntegrationError(IntegrationReason.SOURCE_INVALID, {"a": 1})
     assert str(error) == IntegrationReason.SOURCE_INVALID.value
+
+
+def test_mcp_error_propagates_without_unfreezing_port_fields() -> None:
+    from finishup.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
+
+    error = McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})
+    with pytest.raises(McpRegistrationError) as caught, _passthrough():
+        raise error
+    assert caught.value is error
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        error.reason = McpRegistrationReason.PARSE_FAILED  # type: ignore[misc]
+    assert error == McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})

@@ -1242,3 +1242,69 @@ def test_a_disconnect_kept_by_an_unread_input_says_why_and_names_the_way_out() -
     assert "/workspace/home/.yoetz-connected-projects.json" in lines
     assert "integrate codex mcp preview-remove --codex-path /opt/codex" in lines
     assert "your explicit choice" in lines
+
+
+@pytest.mark.parametrize("reason", ["modified_copy", "partial_install"])
+def test_codex_edited_skill_continuation_requires_preserving_the_directory(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    reason: str,
+) -> None:
+    from finishup.application.host_connection import ConnectionError
+
+    def failed(*_args: object, **_kwargs: object):
+        raise ConnectionError(
+            "connection_outcome_unknown",
+            status={
+                "reason": "skill_install_failed",
+                "skill": {"outcome": "failed", "reason": reason},
+            },
+        )
+
+    monkeypatch.setattr(cli, "apply_selected", failed)
+    code = cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=tmp_path / "codex",
+        project=tmp_path,
+        accept=True,
+        request_value=REQUEST,
+        preview_digest=prepared.digest,
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert "Move that directory outside .agents/skills" in report["next_step"]
+    assert "Rerunning without moving it will refuse again" in report["next_step"]
+
+
+def test_codex_mcp_error_is_rendered_as_its_typed_reason(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from finishup.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
+
+    def failed(*_args: object, **_kwargs: object):
+        raise McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})
+
+    monkeypatch.setattr(cli, "apply_selected", failed)
+    assert (
+        cli.run_host_connection(
+            host="codex",
+            executable=None,
+            config_root=tmp_path / "codex",
+            project=tmp_path,
+            accept=True,
+            request_value=REQUEST,
+            preview_digest=prepared.digest,
+            json_output=True,
+        )
+        == 1
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "preview_stale"
