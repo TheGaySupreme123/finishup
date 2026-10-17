@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Final
 
@@ -20,7 +20,7 @@ _PR_GET_CHILD_SUBREAPER: Final = 37
 
 
 @contextmanager
-def not_a_child_subreaper() -> Iterator[None]:
+def not_a_child_subreaper() -> Generator[None]:
     """Clear ``PR_SET_CHILD_SUBREAPER`` on this process for the block (Linux only)."""
 
     if not sys.platform.startswith("linux"):
