@@ -288,9 +288,10 @@ def _event(
     causal_parents: list[str] | None = None,
     evidence_refs: list[str] | None = None,
     occurred_at: str | None = None,
+    accepted_at: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     payload_bytes = canonical_encode(payload)
-    clock = gen.clock(sequence)
+    clock = accepted_at or gen.clock(sequence)
     preimage: dict[str, Any] = {
         "artifact_refs": [],
         "author": {"actor_id": author, "actor_type": "harness", "assurance": "harness_observed"},
@@ -342,12 +343,16 @@ def _make_run(
     description: str = "Observed pending command via Codex hook (tool Bash)",
     payload_hook: Callable[[str, dict[str, Any], _Gen], None] | None = None,
     seeded: bool = True,
+    captured: str | None = None,
 ) -> dict[str, Any]:
     """A synthetic replay record; ``payload_hook`` may edit each payload before it is sealed.
 
     ``seeded`` runs share one observation key (``--fixed-observation-key``): their observation-keyed
     values (command commitments, source identities) are the same in every seed, while identifiers
-    and vault-keyed payload commitments still differ.
+    and vault-keyed payload commitments still differ. ``captured`` (``"input-first"`` or
+    ``"output-first"``) adds a call's captured tool input and output evidence before its result,
+    in that order, as the materializer emits them in random object-id order (``"apart"``: input
+    first, each accepted at its own time).
     """
 
     gen = _Gen(seed)
@@ -396,23 +401,54 @@ def _make_run(
         },
         causal_parents=[event_ids[1]],
     )
+    refs, parents = [evidence], [event_ids[1], event_ids[2]]
+    if captured is not None:
+        shared = gen.clock(4)
+        kinds = [("tool_input", 33, "1"), ("tool_output", 144, "2")]
+        for kind, size, digit in kinds[::-1] if captured == "output-first" else kinds:
+            if captured == "apart":
+                shared = gen.clock(4 + len(refs))
+            refs.append(gen.id("evd"))
+            add(
+                "evidence_recorded",
+                {
+                    "captured_object_id": gen.id("obj"),
+                    "content_digest": "sha256:" + digit * 64,
+                    "description": f"Observation-captured {kind} bytes part=1/1",
+                    "digest_binding": {
+                        "byte_count": size,
+                        "content_availability": "captured",
+                        "provenance": "observation_captured",
+                        "subject": "bounded_excerpt",
+                    },
+                    "evidence_id": refs[-1],
+                    "evidence_kind": "other",
+                    "observed_at": shared,
+                    "strength": "immutable_snapshot",
+                },
+                causal_parents=[event_ids[1]],
+                accepted_at=shared,
+                occurred_at=shared,
+            )
+            parents.append(event_ids[-1])
     add(
         "result_recorded",
         {
             "action_id": action,
-            "evidence_refs": [evidence],
+            "evidence_refs": sorted(refs),
             "outcome": outcome,
             "result_id": result,
         },
-        causal_parents=[event_ids[1], event_ids[2]],
-        evidence_refs=[evidence],
+        causal_parents=parents,
+        evidence_refs=refs,
     )
+    position = len(event_ids)
     add(
         "finding_recorded",
         {
             "finding_id": finding,
-            "subject_frontier": {"head_digest": digests[3], "sequence": "4"},
-            "subject_refs": sorted([event_ids[1], event_ids[3]]),
+            "subject_frontier": {"head_digest": digests[-1], "sequence": str(position)},
+            "subject_refs": sorted([event_ids[1], event_ids[-1]]),
         },
     )
     head = {"head_digest": digests[-1], "sequence": str(len(digests))}
@@ -1290,3 +1326,43 @@ def test_runs_under_different_controls_or_an_unwritten_seed_are_refused() -> Non
     assert _compare(old, new)["refused"]["new"] == ["observation_key_not_seeded"]
     del new["controls"]
     assert _compare(old, new)["refused"]["new"] == ["controls_missing"]
+
+
+def test_captured_evidence_in_random_object_order_is_compared_as_a_multiset() -> None:
+    # The tool input and output evidence of one call are emitted in random ``obj_`` order, so two
+    # runs of one build put them in either order; their contents are still compared in full.
+    old = _make_run(1, captured="input-first")
+    assert _MODULE.captured_evidence_groups(old["export"]["tasks"][0]) == [(4, 5)]
+    same = _compare(old, _make_run(2, captured="input-first"))
+    assert same["identical"], same
+    swapped = _compare(old, _make_run(2, captured="output-first"))
+    assert swapped["identical"], swapped
+    assert swapped["workspaces"]["w"]["events"] == 7
+
+
+def test_a_real_difference_inside_a_captured_group_is_not_hidden() -> None:
+    old = _make_run(1, captured="input-first")
+
+    def digest(name: str, payload: dict[str, Any], _gen: _Gen) -> None:
+        if "tool_output" in cast(str, payload.get("description", "")):
+            payload["content_digest"] = "sha256:" + "3" * 64
+
+    result = _compare(old, _make_run(2, captured="output-first", payload_hook=digest))
+    assert not result["identical"]
+    parts = [m["part"] for m in result["workspaces"]["w"]["mismatches"]]
+    assert parts == ["w event[4-5] captured[1] payload"]
+
+    # Captured evidence accepted at different times is no such group and is compared by position.
+    apart = _make_run(2, captured="apart")
+    assert _MODULE.captured_evidence_groups(apart["export"]["tasks"][0]) == []
+    assert _compare(_make_run(1, captured="apart"), apart)["identical"]
+    assert not _compare(old, apart)["identical"]
+
+
+def test_a_captured_group_still_needs_an_intact_hash_chain() -> None:
+    old, new = _make_run(1, captured="input-first"), _make_run(2, captured="output-first")
+    event = new["export"]["tasks"][0]["events"][3]
+    event["canonical_entry"] = event["canonical_entry"].replace("hook_observed", "local_cli", 1)
+    result = _compare(old, new)
+    assert not result["identical"]
+    assert result["refused"]["new"]

@@ -1891,6 +1891,9 @@ def _event_of(argv: Sequence[str]) -> str:
 #
 # * ``chain``: a ``sha256:`` value that is a verified entry digest of the run is named by its chain
 #   position; any other ``sha256:`` value (content digests, payload digests) is compared exactly.
+# * captured groups: one call's captured-evidence events, emitted in random ``obj_`` order
+#   (``captured_evidence_groups``), are compared as a multiset ordered by content; their chain
+#   positions are compared once for the group, and their entry digests are named by the group.
 # * ``clock``: named service clock fields only, each checked to be a time inside the run's wall
 #   clock window: ``accepted_at``; ``occurred_at`` and evidence ``observed_at`` of events the
 #   service or its observation coordinator authored; observe-status times (``_CLOCK_KEYS``) and
@@ -2393,32 +2396,156 @@ def _parts(run: Mapping[str, Any], failures: list[str]) -> dict[str, list[_Part]
         bucket.append((f"{key} observe status", policed, _NO_SETS))
         stderr = cast(str, ledger["observe_status_stderr"])
         bucket.append((f"{key} observe status stderr", stderr, _NO_SETS))
-        entries = {_entry(event)["event_id"]: _entry(event) for event in task["events"]}
-        for index, row in enumerate(cast(list[dict[str, Any]], ledger["history"])):
+        events = cast(list[dict[str, Any]], task["events"])
+        entries = {_entry(event)["event_id"]: _entry(event) for event in events}
+        groups = captured_evidence_groups(task)
+        # Each grouped event is placed by its content (``_captured_order``), never its position.
+        member_key = {
+            _entry(events[position - 1])["event_id"]: _captured_order(events[position - 1])
+            for start, end in groups
+            for position in range(start, end + 1)
+        }
+        history = cast(list[dict[str, Any]], ledger["history"])
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for index, row in enumerate(history):
             policed = dict(row)
             policed["accepted_at"] = _CLOCK
             if entries[row["event_id"]]["author"]["actor_id"] in _SERVICE_AUTHORS:
                 policed["occurred_at"] = _CLOCK
-            bucket.append((f"{key} history[{index}]", policed, _NO_SETS))
+            rows.append((f"{key} history[{index}]", policed))
+        for start, end in groups:
+            span = range(start - 1, end)
+            ordered = sorted(span, key=lambda i: member_key[history[i]["event_id"]])
+            group_rows = [rows[i][1] for i in ordered]
+            for slot, (i, row) in enumerate(zip(span, group_rows, strict=True)):
+                row = {**row, "ingestion_sequence": _GROUP_POSITION}
+                rows[i] = (f"{key} history[{start - 1}-{end - 1}] captured[{slot}]", row)
+        bucket.extend((label, row, _NO_SETS) for label, row in rows)
         bucket.append((f"{key} history head", ledger["head_frontier"], _NO_SETS))
-        for index, event in enumerate(cast(list[dict[str, Any]], task["events"]), start=1):
-            entry = _entry(event)
-            policed_entry = _policy_entry(entry, window, failures)
-            bucket.append((f"{key} event[{index}] entry", policed_entry, _ENTRY_SETS))
-            payload = cast(dict[str, Any], json.loads(cast(str, event["payload"])))
-            policed_payload = _policy_payload(entry, payload, window, failures)
-            sets = _PAYLOAD_SETS.get(entry["schema"]["name"], _NO_SETS)
-            bucket.append((f"{key} event[{index}] payload", policed_payload, sets))
+        starts = dict(groups)
+        index = 1
+        while index <= len(events):
+            end = starts.get(index)
+            if end is None:
+                entry = _entry(events[index - 1])
+                policed_entry = _policy_entry(entry, window, failures)
+                bucket.append((f"{key} event[{index}] entry", policed_entry, _ENTRY_SETS))
+                bucket.append(
+                    (
+                        f"{key} event[{index}] payload",
+                        *_payload_part(events[index - 1], window, failures),
+                    )
+                )
+                index += 1
+                continue
+            members = events[index - 1 : end]
+            first = _entry(members[0])
+            bucket.append(
+                (
+                    f"{key} event[{index}-{end}] captured group",
+                    {
+                        "ingestion_sequences": [str(n) for n in range(index, end + 1)],
+                        "ledger_previous": first["ledger"]["previous_entry_digest"],
+                        "writer_previous": first["writer"]["previous_entry_digest"],
+                        "writer_sequences": [_entry(m)["writer"]["sequence"] for m in members],
+                    },
+                    _NO_SETS,
+                )
+            )
+            for slot, member in enumerate(sorted(members, key=_captured_order)):
+                entry = _entry(member)
+                policed_entry = _policy_entry(entry, window, failures)
+                for block in ("ledger", "writer"):
+                    policed_entry[block]["previous_entry_digest"] = _GROUP_POSITION
+                policed_entry["ledger"]["ingestion_sequence"] = _GROUP_POSITION
+                policed_entry["writer"]["sequence"] = _GROUP_POSITION
+                label = f"{key} event[{index}-{end}] captured[{slot}]"
+                bucket.append((f"{label} entry", policed_entry, _ENTRY_SETS))
+                bucket.append((f"{label} payload", *_payload_part(member, window, failures)))
+            index = end + 1
         bucket.append((f"{key} export head", task["head"], _NO_SETS))
     return parts
 
 
+def _payload_part(
+    event: Mapping[str, Any], window: _Window, failures: list[str]
+) -> tuple[dict[str, Any], frozenset[str]]:
+    entry = _entry(event)
+    payload = cast(dict[str, Any], json.loads(cast(str, event["payload"])))
+    policed = _policy_payload(entry, payload, window, failures)
+    return policed, _PAYLOAD_SETS.get(entry["schema"]["name"], _NO_SETS)
+
+
+# A captured-evidence group (see ``captured_evidence_groups``) is compared as a multiset: its
+# members are placed by this content key, and their positions in the ledger and writer chains are
+# replaced by ``_GROUP_POSITION`` (the group's own part keeps the positions and the links into the
+# group). The chains themselves are verified separately from the raw bytes (``chain_failures``).
+_GROUP_POSITION: Final = "<captured-group>"
+
+
+def _captured_order(event: Mapping[str, Any]) -> tuple[str, str, int]:
+    payload = cast(dict[str, Any], json.loads(cast(str, event["payload"])))
+    binding = cast(dict[str, Any], payload.get("digest_binding") or {})
+    return (
+        cast(str, payload.get("description", "")),
+        cast(str, payload.get("content_digest", "")),
+        cast(int, binding.get("byte_count", -1)),
+    )
+
+
+def captured_evidence_groups(task: Mapping[str, Any]) -> list[tuple[int, int]]:
+    """The 1-based inclusive spans of a task's captured-evidence groups.
+
+    A group is a maximal run of two or more consecutive ``evidence_recorded`` events that carry a
+    ``captured_object_id``, share one ``accepted_at`` and are cited by one ``result_recorded``.
+    Their relative order is provably nondeterministic: the content objects of one call (its tool
+    input and output) get ``obj_`` identifiers from a CSPRNG, and the materializer emits their
+    evidence in identifier order (``observation_materialize._eligible_captured_content`` sorts by
+    ``object_id``), so two runs of one build put the same members in either order.
+    """
+
+    events = cast(list[dict[str, Any]], task.get("events") or [])
+    entries = [_entry(event) for event in events]
+    payloads = [cast(dict[str, Any], json.loads(cast(str, e["payload"]))) for e in events]
+    cited: dict[str, int] = {}
+    for position, (entry, payload) in enumerate(zip(entries, payloads, strict=True), start=1):
+        if entry["schema"]["name"] == "result_recorded":
+            for ref in cast(list[str], payload.get("evidence_refs") or []):
+                cited.setdefault(ref, position)
+
+    def member(index: int) -> tuple[str, int] | None:
+        entry, payload = entries[index], payloads[index]
+        if entry["schema"]["name"] != "evidence_recorded" or "captured_object_id" not in payload:
+            return None
+        result = cited.get(cast(str, payload.get("evidence_id")))
+        return None if result is None else (cast(str, entry["ledger"]["accepted_at"]), result)
+
+    groups: list[tuple[int, int]] = []
+    index = 0
+    while index < len(events):
+        shared = member(index)
+        end = index + 1
+        while shared is not None and end < len(events) and member(end) == shared:
+            end += 1
+        if end - index >= 2:
+            groups.append((index + 1, end))
+        index = end
+    return groups
+
+
 def _chain_names(run: Mapping[str, Any]) -> dict[str, str]:
+    """Each verified entry digest named by its chain position (a captured group's by the group)."""
+
     bound, _ = bind_workspaces(run)
     names: dict[str, str] = {}
     for key, task in sorted(bound.items()):
+        group_of = {
+            position: f"{start}-{end}"
+            for start, end in captured_evidence_groups(task)
+            for position in range(start, end + 1)
+        }
         for index, event in enumerate(cast(list[dict[str, Any]], task["events"]), start=1):
-            names[_entry(event)["entry_digest"]] = f"<chain:{key}:{index}>"
+            names[_entry(event)["entry_digest"]] = f"<chain:{key}:{group_of.get(index, index)}>"
     return names
 
 
