@@ -255,8 +255,9 @@ How `compare` decides:
 - **Refusals.** A failed or partial read is never compared: a setup step or drain that exited
   nonzero, a status read that did not follow its workspace's last callback, a history page, the
   service stop or the ledger export failing, an exported hash chain that does not recompute from its
-  own bytes, two runs under different controls or work roots, or a fixed key that was asked for and
-  not written.
+  own bytes, two runs under different controls or work roots, two records whose pinned hook budgets
+  (`PINNED_HOOK_BUDGETS`, kept in each record) are missing or unequal, or a fixed key that was asked
+  for and not written.
 - **Exact comparison.** Every compared part must be equal after normalizing only values that differ
   between two runs of one build: identifiers that are random or digests over a run's random task
   ids, matched one-to-one by where they occur; vault-keyed payload commitments; routine-read

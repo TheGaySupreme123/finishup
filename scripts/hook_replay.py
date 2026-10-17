@@ -3044,12 +3044,38 @@ def lazy_catalog_coverage(
     return {**counts, "lazy_documents": sorted(documents)}, failures
 
 
+def pins_refusal(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    """Why two records' pinned hook budgets make their runs incomparable, or nothing.
+
+    The budgets in ``PINNED_HOOK_BUDGETS`` decide which branch a callback takes (a drain cut short,
+    ``hook_budget_exceeded``), and each record keeps the ones its replay ran under. Runs replayed
+    under two sets are two experiments, and a record without them cannot show they were equal.
+    """
+
+    pins = {"old": old.get("pins"), "new": new.get("pins")}
+    missing = [side for side, value in pins.items() if not isinstance(value, dict) or not value]
+    if missing:
+        return [
+            f"pins_missing:{side} (a record names the hook budgets it ran under)"
+            for side in missing
+        ]
+    old_pins, new_pins = cast(dict[str, Any], pins["old"]), cast(dict[str, Any], pins["new"])
+    differ = sorted(
+        name for name in set(old_pins) | set(new_pins) if old_pins.get(name) != new_pins.get(name)
+    )
+    if differ:
+        cause = "replay both builds with one PINNED_HOOK_BUDGETS"
+        return [f"pins_differ:{','.join(differ)} ({cause})"]
+    return []
+
+
 def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
     """The verdict on two replay records: their ``pinned`` runs compared, any other mode timed.
 
     Only ``pinned`` decides: its controls make a slower build take the branch a faster one takes.
     A ``shipped`` run, where a slower build may miss a budget the faster one meets, contributes a
-    latency table only. A missing ``pinned`` run or another corpus is a failure.
+    latency table only. A missing ``pinned`` run or another corpus is a failure, and records
+    replayed under missing or unequal hook budget pins are refused before any run is compared.
     """
 
     summary: dict[str, Any] = {
@@ -3063,6 +3089,11 @@ def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str,
     new_corpus = cast(dict[str, Any], new.get("corpus") or {})
     if not old_corpus.get("sha256") or old_corpus.get("sha256") != new_corpus.get("sha256"):
         summary["failures"].append("corpus_mismatch_or_missing")
+    pins_refused = pins_refusal(old, new)
+    if pins_refused:
+        summary["failures"] += pins_refused
+        summary["identical"] = False
+        return summary
     old_runs = cast(dict[str, Any], old.get("runs") or {})
     new_runs = cast(dict[str, Any], new.get("runs") or {})
     if "pinned" not in old_runs or "pinned" not in new_runs:

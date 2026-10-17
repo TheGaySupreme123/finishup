@@ -856,13 +856,16 @@ def test_observe_status_is_compared_except_named_clock_and_latency_fields() -> N
 
 def test_records_with_another_corpus_or_missing_modes_fail() -> None:
     corpus: dict[str, Any] = {"sha256": "sha256:" + "1" * 64, "generated_tokens": []}
+    pins = dict(_MODULE.PINNED_HOOK_BUDGETS)
     old: dict[str, Any] = {
         "corpus": corpus,
+        "pins": pins,
         "runs": {"pinned": _make_run(1)},
         "build": {"source_ref": "a"},
     }
     new: dict[str, Any] = {
         "corpus": corpus,
+        "pins": pins,
         "runs": {"pinned": _make_run(2)},
         "build": {"source_ref": "b"},
     }
@@ -1530,7 +1533,12 @@ def test_a_captured_group_still_needs_an_intact_hash_chain() -> None:
 
 def _record(run: dict[str, Any], ref: str) -> dict[str, Any]:
     corpus: dict[str, Any] = {"sha256": "sha256:" + "1" * 64, "generated_tokens": []}
-    return {"corpus": corpus, "runs": {"pinned": run}, "build": {"source_ref": ref}}
+    return {
+        "corpus": corpus,
+        "pins": dict(_MODULE.PINNED_HOOK_BUDGETS),
+        "runs": {"pinned": run},
+        "build": {"source_ref": ref},
+    }
 
 
 def test_the_proof_requires_the_new_build_to_take_the_lazy_path() -> None:
@@ -1574,6 +1582,34 @@ def test_runs_from_two_work_roots_are_refused_with_the_cause() -> None:
     ]
     del new["workspace_root"]
     assert _compare(old, new)["refused"]["new"] == ["workspace_root_missing"]
+
+
+def test_records_replayed_under_other_hook_budgets_are_refused_with_the_cause() -> None:
+    old, new = _record(_make_run(1, catalog="eager"), "old"), _record(_make_run(2), "new")
+    assert _MODULE.compare_records(old, new)["identical"]
+    # One raised budget less: a drain or Stop pass may now be cut short in one build only.
+    new["pins"]["_STOP_DRAIN_BUDGET_SECONDS"] = 2.5
+    summary = _MODULE.compare_records(old, new)
+    assert not summary["identical"]
+    assert summary["failures"] == [
+        "pins_differ:_STOP_DRAIN_BUDGET_SECONDS (replay both builds with one PINNED_HOOK_BUDGETS)"
+    ]
+    assert summary["modes"] == {}
+    report, _ = _MODULE.render_report(old, new)
+    assert "Verdict (pinned runs only): **DIFFERENT**." in report
+    assert "- record failure: `pins_differ:_STOP_DRAIN_BUDGET_SECONDS" in report
+    # A budget pinned on one side only differs too.
+    del new["pins"]["_STOP_DRAIN_BUDGET_SECONDS"]
+    assert _MODULE.compare_records(old, new)["failures"] == [
+        "pins_differ:_STOP_DRAIN_BUDGET_SECONDS (replay both builds with one PINNED_HOOK_BUDGETS)"
+    ]
+    # A record that does not say which budgets it ran under cannot show they were equal.
+    del old["pins"]
+    new["pins"] = {}
+    assert _MODULE.compare_records(old, new)["failures"] == [
+        "pins_missing:old (a record names the hook budgets it ran under)",
+        "pins_missing:new (a record names the hook budgets it ran under)",
+    ]
 
 
 def test_only_the_pinned_runs_decide_the_verdict() -> None:
