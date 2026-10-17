@@ -3220,6 +3220,8 @@ callbacks rebuilt from a synthetic rollout, and 9 malformed payloads, through th
 predecessor and this change on Linux x86_64. Every exit code, stdout and stderr byte, drain, status
 read and ledger event with its full payload was identical, and 15 of those callbacks parsed only
 their schemas in the new build.
+The MCP bridge (`mcp serve --host codex`) is not replayed: it builds the full catalog as it starts,
+so its validation is unchanged by this change.
 
 ## Expanded excerpt count (issue #907 Phase 1b)
 

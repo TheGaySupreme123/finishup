@@ -1441,3 +1441,26 @@ def test_only_the_pinned_runs_decide_the_verdict() -> None:
     summary = _MODULE.compare_records(old, new)
     assert not summary["identical"]
     assert summary["failures"] == ["pinned_run_missing:['shipped']:['shipped']"]
+
+
+def test_the_mcp_bridge_keeps_the_full_catalog_so_the_replay_need_not_drive_it() -> None:
+    # The runbooks leave the bridge out of the replay because lazy loading never reaches it: its
+    # tool descriptors are generated from the full catalog when the bridge module loads.
+    probe = (
+        "import json, sys\n"
+        "from finishup.protocol import schemas\n"
+        "before = schemas._load_catalog_state.cache_info().currsize\n"
+        "import finishup.mcp.server\n"
+        "after = schemas._load_catalog_state.cache_info().currsize\n"
+        "try:\n"
+        "    schemas.validate_schema_instance('status-request', sys.argv[1], {})\n"
+        "except schemas.SchemaInstanceInvalid:\n"
+        "    pass\n"
+        "print(json.dumps([before, after, len(schemas._lazy_catalog_slot)]))\n"
+    )
+    version = _MODULE._PROBE_VERSIONS["status-request"]
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", probe, version], capture_output=True, check=True
+    )
+    # No catalog before the import, the full catalog right after it, and never a lazy one.
+    assert json.loads(done.stdout) == [0, 1, 0]

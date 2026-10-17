@@ -237,6 +237,14 @@ How the replay runs:
   cannot raise them. The replay workspaces hold one empty commit, so the walk takes milliseconds
   on an idle machine. A walk that missed its deadline would record the call's workspace effect as
   unavailable, which `compare` reports as a difference rather than hiding it.
+- **Not replayed: the MCP bridge, which this change does not touch.** `finishup mcp serve` builds
+  the full schema catalog as it starts, because its tool descriptors are generated from it, so every
+  bridge validation takes the unchanged full-catalog path in both builds. The replay drives hook
+  callbacks, CLI requests and schema probes instead. `tests/unit/test_hook_replay.py` checks that a
+  bridge process keeps the full catalog; `tests/unit/protocol/test_lazy_schema_catalog.py` covers
+  the lazy path per schema: every schema's `$ref` closure resolves as in the full catalog, every
+  schema decides a corpus of workflow frames as the stock validator does, and every rejection
+  reports exactly what the full catalog reports.
 - **Cleanup.** The replay stops only the service it started, then disposes the snapshot.
 
 How `compare` decides:

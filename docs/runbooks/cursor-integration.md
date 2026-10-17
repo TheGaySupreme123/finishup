@@ -2264,6 +2264,8 @@ ordinary-profile callbacks, and 9 malformed payloads, through the merged predece
 change on Linux x86_64. Every exit code, stdout and stderr byte, drain, status read and ledger event
 with its full payload was identical, and 7 of those callbacks parsed only their schemas in the new
 build.
+The MCP bridge (`mcp serve --host cursor`) is not replayed: it builds the full catalog as it starts,
+so its validation is unchanged by this change.
 
 ## Expanded excerpt count (issue #907 Phase 1b)
 
