@@ -981,6 +981,46 @@ def test_pinned_only_flags_are_refused_before_any_instance_exists(
     assert not (tmp_path / "w").exists()
 
 
+@pytest.mark.parametrize(
+    ("command", "revisions", "replayed_root"),
+    [
+        ("replay", ["--revision", "HEAD", "--mode", "pinned"], "scratch"),
+        ("latency", ["--old-revision", "a", "--new-revision", "b"], "scratch/old"),
+    ],
+)
+def test_a_relative_work_root_reaches_the_replayer_as_an_absolute_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+    revisions: list[str],
+    replayed_root: str,
+) -> None:
+    # Instance commands run from ``<work root>/home`` and callbacks from their workspace, so a
+    # relative root would send ``observe grant`` to ``scratch/home/scratch/pinned/<workspace>``.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "corpus.json").write_text(json.dumps({"items": [], "transcripts": {}}))
+    roots: list[Path] = []
+
+    class Built(Exception):
+        pass
+
+    def provision(checkout: Path, _revision: str, base: Path, tag: str, _python: str) -> Any:
+        return _MODULE.Instance(tag, base, checkout, Path("/nonexistent/finishup"), {})
+
+    class Replayer:
+        def __init__(self, _instance: Any, work_root: Path, _log: Any) -> None:
+            roots.append(work_root)
+            raise Built
+
+    monkeypatch.setattr(_MODULE, "provision", provision)
+    monkeypatch.setattr(_MODULE, "Replayer", Replayer)
+    argv = [command, "--checkout", ".", "--tag", "t", "--corpus", "corpus.json", *revisions]
+    argv += ["--work-root", "scratch", "--out", "out.json"]
+    with pytest.raises(Built):
+        _MODULE.main(argv)
+    assert roots == [tmp_path.resolve() / replayed_root]
+
+
 def test_drain_and_setup_output_are_compared_parts() -> None:
     old, new = _make_run(1), _make_run(2)
     new["items"][0]["drain"]["stderr"] = "warning: drain retried\n"

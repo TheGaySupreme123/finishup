@@ -3159,6 +3159,18 @@ def _cmd_corpus(args: argparse.Namespace) -> int:
     return 0
 
 
+def absolute_work_root(value: str) -> Path:
+    """``--work-root`` as the absolute, symlink-free path every child process is handed.
+
+    Instance commands run from the scratch home and hook callbacks from their workspace, never from
+    the directory the replay was started in, so a relative root would name another directory in
+    each of them (``observe grant`` run from ``<root>/home`` would grant ``<root>/home/<root>/...``).
+    The resolved root is also the ``workspace_root`` a run records.
+    """
+
+    return Path(value).expanduser().resolve()
+
+
 def pinned_only_flag_error(args: argparse.Namespace) -> str | None:
     """Why the pinned-only experiment flags cannot be honored for these modes, or ``None``.
 
@@ -3182,7 +3194,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     if refusal is not None:
         raise SystemExit(refusal)
     corpus = json.loads(Path(args.corpus).read_text(encoding="utf-8"))
-    work_root = Path(args.work_root)
+    work_root = absolute_work_root(args.work_root)
     work_root.mkdir(parents=True, exist_ok=True)
     log_path = work_root / f"replay-{args.tag}.log"
 
@@ -3224,7 +3236,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             started_at = datetime.now(UTC).isoformat()
             entry["setup"] = replayer.start(pause_background=mode == "pinned")
             run = replayer.replay(corpus, mode)
-            run["workspace_root"] = str(work_root.resolve() / mode)
+            run["workspace_root"] = str(work_root / mode)
             run["started_at"] = started_at
             run["finished_at"] = datetime.now(UTC).isoformat()
             seeded = cast(dict[str, Any] | None, entry["setup"].get("observation_key_seeded"))
@@ -3258,7 +3270,7 @@ def _cmd_latency(args: argparse.Namespace) -> int:
     """
 
     corpus = json.loads(Path(args.corpus).read_text(encoding="utf-8"))
-    work_root = Path(args.work_root)
+    work_root = absolute_work_root(args.work_root)
     work_root.mkdir(parents=True, exist_ok=True)
     log_path = work_root / f"latency-{args.tag}.log"
 
