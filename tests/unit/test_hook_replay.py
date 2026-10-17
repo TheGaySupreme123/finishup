@@ -848,6 +848,17 @@ def test_the_admission_clock_control_sets_real_thresholds_in_a_fresh_process() -
     assert _MODULE._ADMISSION_CLOCK_CONTROL in _MODULE._SERVICE_BOOTSTRAP
 
 
+def test_the_fixed_observation_key_control_names_the_real_key_file() -> None:
+    from finishup.adapters.integrations import observation_local
+
+    compile(_MODULE._SEED_OBSERVATION_KEY, "seed-observation-key", "exec")
+    assert len(_MODULE.FIXED_OBSERVATION_KEY) == getattr(observation_local, "_KEY_BYTES")
+    assert callable(observation_local.observation_dir)
+    assert callable(getattr(observation_local, "_atomic_write"))
+    source = Path(observation_local.__file__).read_text(encoding="utf-8")
+    assert '"key-material.bin"' in source
+
+
 def test_the_paused_background_passes_exist_on_the_service() -> None:
     from finishup.service.daemon import ServiceDaemon
 

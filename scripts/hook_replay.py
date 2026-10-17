@@ -925,6 +925,30 @@ _ADMISSION_CLOCK_CONTROL: Final = (
     "            raise SystemExit('hook_replay_admission_unknown:' + _name)\n"
     "        setattr(_admission, _name, int(clock))\n"
 )
+# Experiment control, pinned mode only and identical for every build (``--fixed-observation-key``).
+# Every keyed observation value (workspace, session and command commitments, and through them the
+# ``hook:``/``stream:`` source identities and each failed command's advice ``detail_token``) is
+# keyed by one random 32-byte file, ``<state>/observation/key-material.bin``, made on first use.
+# Equal-priority advice candidates are ordered by that token, so with two unresolved failures
+# which one an instance advises first is decided by its random key. This control writes the same
+# fixed key into each disposable instance before its first service start, through the product's
+# own ``observation_local._atomic_write``; it refuses a path outside the instance or an existing
+# key. A test value only: never use it outside a disposable instance.
+FIXED_OBSERVATION_KEY: Final = hashlib.sha256(b"finishup.hook-replay.observation-key/1").digest()
+_SEED_OBSERVATION_KEY: Final = (
+    "import json, sys\n"
+    "from pathlib import Path\n"
+    "spec = json.loads(sys.stdin.read())\n"
+    "root = Path(spec['instance_root']).resolve(strict=True)\n"
+    "from finishup.adapters.integrations import observation_local\n"
+    "path = observation_local.observation_dir() / 'key-material.bin'\n"
+    "if root not in path.resolve().parents:\n"
+    "    raise SystemExit('seed_path_outside_instance')\n"
+    "if path.exists():\n"
+    "    raise SystemExit('seed_key_exists')\n"
+    "observation_local._atomic_write(path, bytes.fromhex(spec['key']))\n"
+    "print(json.dumps({'ok': True}))\n"
+)
 # Raised equally in every replayed build: a slower build then takes the branch a faster one takes.
 PINNED_HOOK_BUDGETS: Final[Mapping[str, float | int]] = {
     "_AUTO_ATTACH_RETRY_BUDGET_SECONDS": 30.0,
@@ -1303,6 +1327,8 @@ class Replayer:
         self.delay_seconds = 0.0
         # ``ADMISSION_CLOCKS`` key, pinned mode only; ``None`` leaves the product clock alone.
         self.admission_clock: str | None = None
+        # Pinned mode only: seed ``FIXED_OBSERVATION_KEY`` before the first service start.
+        self.fixed_observation_key = False
         # Held in memory for the post-run ledger export only; never written anywhere.
         self._passphrase: str | None = None
         self._ceremony = _load_by_path("hook_replay_ceremony", _HERE / "dogfood_ci" / "ceremony.py")
@@ -1352,6 +1378,9 @@ class Replayer:
             shutil.rmtree(self.home)
         (self.home / ".codex").mkdir(parents=True, mode=0o700)
         launcher = str(self.instance.launcher)
+        seeded: dict[str, Any] | None = None
+        if self.fixed_observation_key:
+            seeded = self._seed_observation_key()
         self._spawn_service([launcher, "service", "run"], f"service-{self.instance.tag}.log")
         status = self._wait_status(lambda s: True)
         if pause_background:
@@ -1395,7 +1424,26 @@ class Replayer:
         )
         if privacy.exit_code != 0:
             raise SystemExit(f"privacy setup failed: {privacy.transcript[-2000:]}")
-        return {"service_status": ready, "privacy_answered": privacy.answered}
+        return {
+            "service_status": ready,
+            "privacy_answered": privacy.answered,
+            "observation_key_seeded": seeded,
+        }
+
+    def _seed_observation_key(self) -> dict[str, Any]:
+        root = str(self.instance.provenance["isolated_root"])
+        done = subprocess.run(
+            [str(self.instance.launcher.parent / "python"), "-I", "-c", _SEED_OBSERVATION_KEY],
+            cwd=self.home,
+            env=self.env({"FINISHUP_ISOLATED_ROOT": root, "YOETZ_ISOLATED_ROOT": root}),
+            input=json.dumps({"instance_root": root, "key": FIXED_OBSERVATION_KEY.hex()}).encode(),
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        if done.returncode != 0:
+            raise SystemExit(f"observation key seed failed: {done.stderr[-2000:]!r}")
+        return {"returncode": done.returncode}
 
     def _wait_status(self, accept: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
         deadline = time.monotonic() + 120.0
@@ -2618,10 +2666,14 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         if args.admission_clock is not None and mode != "pinned":
             raise SystemExit("--admission-clock applies to --mode pinned only")
         replayer.admission_clock = args.admission_clock
+        if args.fixed_observation_key and mode != "pinned":
+            raise SystemExit("--fixed-observation-key applies to --mode pinned only")
+        replayer.fixed_observation_key = args.fixed_observation_key
         entry: dict[str, Any] = {
             "tag": tag,
             "delay_ms": args.delay_ms,
             "admission_clock": args.admission_clock,
+            "fixed_observation_key": args.fixed_observation_key,
         }
         record["instances"][mode] = entry
         try:
@@ -2738,6 +2790,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--admission-clock",
         choices=sorted(ADMISSION_CLOCKS),
         help="Pinned mode: decide the admission buffer's flush without the wall clock (experiments).",
+    )
+    replay.add_argument(
+        "--fixed-observation-key",
+        action="store_true",
+        help="Pinned mode: give every instance the same observation key (experiments).",
     )
     replay.set_defaults(handler=_cmd_replay)
     latency = commands.add_parser(
