@@ -344,6 +344,7 @@ def _make_run(
     payload_hook: Callable[[str, dict[str, Any], _Gen], None] | None = None,
     seeded: bool = True,
     captured: str | None = None,
+    catalog: str = "lazy",
 ) -> dict[str, Any]:
     """A synthetic replay record; ``payload_hook`` may edit each payload before it is sealed.
 
@@ -352,7 +353,8 @@ def _make_run(
     and vault-keyed payload commitments still differ. ``captured`` (``"input-first"`` or
     ``"output-first"``) adds a call's captured tool input and output evidence before its result,
     in that order, as the materializer emits them in random object-id order (``"apart"``: input
-    first, each accepted at its own time).
+    first, each accepted at its own time). ``catalog`` is how each callback loaded schemas: the
+    pinned catalog trace of a ``"lazy"`` or an ``"eager"`` build.
     """
 
     gen = _Gen(seed)
@@ -514,6 +516,11 @@ def _make_run(
                 "stdout": stdout,
                 "stderr": "",
                 "elapsed_ms": float(index + 1),
+                "catalog_trace": [
+                    {"full_catalog_built": False, "lazy_documents": 92}
+                    if catalog == "lazy"
+                    else {"full_catalog_built": True, "lazy_documents": None}
+                ],
                 "drain": {"returncode": 0, "stdout": '{"terminal":"drained"}\n', "stderr": ""},
             }
             for index, (label, stdout) in enumerate(items)
@@ -1366,3 +1373,40 @@ def test_a_captured_group_still_needs_an_intact_hash_chain() -> None:
     result = _compare(old, new)
     assert not result["identical"]
     assert result["refused"]["new"]
+
+
+def _record(run: dict[str, Any], ref: str) -> dict[str, Any]:
+    corpus: dict[str, Any] = {"sha256": "sha256:" + "1" * 64, "generated_tokens": []}
+    return {"corpus": corpus, "runs": {"pinned": run}, "build": {"source_ref": ref}}
+
+
+def test_the_proof_requires_the_new_build_to_take_the_lazy_path() -> None:
+    eager, lazy = _make_run(1, catalog="eager"), _make_run(2)
+    summary = _MODULE.compare_records(_record(eager, "old"), _record(lazy, "new"))
+    assert summary["identical"], summary
+    assert summary["lazy_catalog"] == {
+        "valid": 3,
+        "lazy": 3,
+        "no_schemas": 0,
+        "new_full": 0,
+        "old_full": 3,
+        "lazy_documents": [92],
+    }
+    report, _ = _MODULE.render_report(_record(eager, "old"), _record(lazy, "new"))
+    assert "3 parsed only their schemas (lazy documents: 92)" in report
+    # Two eager builds compare equal and still prove nothing about lazy loading.
+    summary = _MODULE.compare_records(
+        _record(eager, "old"), _record(_make_run(2, catalog="eager"), "new")
+    )
+    assert not summary["identical"]
+    assert "lazy_path_unexercised" in summary["failures"]
+    assert "full_catalog_built_in_new:codex/w/000/SessionStart" in summary["failures"]
+    # A callback that loaded schemas before and none now did not take the lazy path.
+    skipped = _make_run(2)
+    skipped["items"][1]["catalog_trace"] = [{"full_catalog_built": False, "lazy_documents": None}]
+    summary = _MODULE.compare_records(_record(eager, "old"), _record(skipped, "new"))
+    assert summary["failures"] == ["lazy_path_not_taken:codex/w/001/PostToolUse/Bash"]
+    # A missing trace is a failed read, never an empty one.
+    del skipped["items"][1]["catalog_trace"]
+    summary = _MODULE.compare_records(_record(eager, "old"), _record(skipped, "new"))
+    assert summary["failures"] == ["catalog_trace_missing:codex/w/001/PostToolUse/Bash"]

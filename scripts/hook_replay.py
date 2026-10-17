@@ -2888,6 +2888,54 @@ def latency_table(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[dict[s
     return rows
 
 
+_HOOK_HOSTS: Final = frozenset({"codex", "claude", "cursor"})
+
+
+def lazy_catalog_coverage(
+    old: Mapping[str, Any], new: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """How the new build's valid hook callbacks loaded schemas, and why that cannot prove anything.
+
+    Equal outputs prove nothing about lazy loading unless the new build's callbacks really took
+    the lazy path. From each pinned callback's catalog trace (``_PINNED_BOOTSTRAP``): no valid hook
+    callback of the new build may have built the full catalog, at least one must have parsed its
+    schemas lazily, and every callback that loaded schemas in the old build must have loaded them
+    lazily in the new one.
+    """
+
+    failures: list[str] = []
+    counts = {"valid": 0, "lazy": 0, "no_schemas": 0, "new_full": 0, "old_full": 0}
+    documents: set[int] = set()
+    old_items = {item["label"]: item for item in cast(list[dict[str, Any]], old.get("items") or [])}
+    for item in cast(list[dict[str, Any]], new.get("items") or []):
+        label = cast(str, item["label"])
+        if item["host"] not in _HOOK_HOSTS or "/invalid/" in label:
+            continue
+        counts["valid"] += 1
+        rows = cast(list[dict[str, Any]] | None, item.get("catalog_trace"))
+        old_rows = cast(list[dict[str, Any]], old_items.get(label, {}).get("catalog_trace") or [])
+        if not rows or len(rows) != 1 or len(old_rows) != 1:
+            failures.append(f"catalog_trace_missing:{label}")
+            continue
+        row, old_row = rows[0], old_rows[0]
+        lazy = row.get("lazy_documents")
+        if row.get("full_catalog_built") is not False:
+            counts["new_full"] += 1
+            failures.append(f"full_catalog_built_in_new:{label}")
+        if old_row.get("full_catalog_built") is True:
+            counts["old_full"] += 1
+        if type(lazy) is int:
+            counts["lazy"] += 1
+            documents.add(lazy)
+        else:
+            counts["no_schemas"] += 1
+            if old_row.get("full_catalog_built") or old_row.get("lazy_documents") is not None:
+                failures.append(f"lazy_path_not_taken:{label}")
+    if counts["lazy"] == 0:
+        failures.append("lazy_path_unexercised")
+    return {**counts, "lazy_documents": sorted(documents)}, failures
+
+
 def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
     """Compare two replay records mode by mode; any missing mode or other corpus is a failure."""
 
@@ -2915,6 +2963,10 @@ def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str,
             "comparison": compare_runs(old_run, new_run, exact),
             "latency": latency_table(old_run, new_run),
         }
+        if mode == "pinned":
+            coverage, uncovered = lazy_catalog_coverage(old_run, new_run)
+            summary["lazy_catalog"] = coverage
+            summary["failures"] += uncovered
     summary["identical"] = not summary["failures"] and all(
         entry["comparison"]["identical"] for entry in summary["modes"].values()
     )
@@ -2928,6 +2980,16 @@ def render_report(old: Mapping[str, Any], new: Mapping[str, Any]) -> tuple[str, 
     lines = [f"# Hook replay: {old_ref} against {new_ref}", ""]
     for failure in summary["failures"]:
         lines.append(f"- record failure: `{failure}`")
+    coverage = summary.get("lazy_catalog")
+    if coverage is not None:
+        lines.append(
+            f"Schema loading in the new build's {coverage['valid']} valid hook callbacks: "
+            f"{coverage['lazy']} parsed only their schemas (lazy documents: "
+            f"{', '.join(str(n) for n in coverage['lazy_documents']) or 'none'}), "
+            f"{coverage['no_schemas']} loaded none, {coverage['new_full']} built the full catalog. "
+            f"The old build built the full catalog in {coverage['old_full']} of them."
+        )
+        lines.append("")
     for mode, entry in summary["modes"].items():
         comparison = entry["comparison"]
         verdict = "identical" if comparison["identical"] else "DIFFERENT"
