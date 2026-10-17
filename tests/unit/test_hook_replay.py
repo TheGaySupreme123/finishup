@@ -470,6 +470,8 @@ def _make_run(
                 "mapping": {"session_id": session, "writer_id": writer},
                 "observe_status_returncode": 0,
                 "observe_status": json.dumps(status),
+                "observe_status_stderr": "",
+                "observe_status_read_after": items[-1][0],
                 "history": history,
                 "history_complete": True,
                 "head_frontier": head,
@@ -635,7 +637,9 @@ def test_the_collector_records_a_failed_history_read(tmp_path: Path) -> None:
         "ses_00000000-0000-4000-8000-000000000002 and writer_id "
         "wri_00000000-0000-4000-8000-000000000003"
     )
-    ledger = replayer._ledger(tmp_path, [{"workspace": "w", "stdout": mapped, "stderr": ""}], "w")
+    snapshot = {**_MODULE._completed(failing([])), "read_after": "codex/w/002/PostToolUse/Bash"}
+    records = [{"workspace": "w", "stdout": mapped, "stderr": ""}]
+    ledger = replayer._ledger(tmp_path, records, "w", snapshot)
     assert ledger["mapped"] is True
     assert ledger["history_error"]["reason"] == "status_exit_nonzero"
     assert ledger["history_complete"] is False and ledger["history"] == []
@@ -943,3 +947,77 @@ def test_an_unclean_pre_pause_stop_refuses_to_serve_a_second_service(tmp_path: P
     assert len(spawned) == 1  # The paused service was never started beside the first one.
     assert _MODULE.stop_unclean({"stop_returncode": 0, "exit_code": 0}) is False
     assert _MODULE.stop_unclean({"stop_returncode": 1, "exit_code": 0}) is True
+
+
+def test_each_workspace_status_is_read_right_after_its_own_last_item(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Lifecycle reads drain age against the wall clock, so the read must not wait for the
+    # workspaces replayed after this one.
+    calls: list[str] = []
+
+    def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        where = argv[argv.index("--workspace") + 1] if "--workspace" in argv else _kwargs["cwd"]
+        calls.append(" ".join(argv[1:3]) + " " + Path(where).name)
+        return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+
+    monkeypatch.setattr(_MODULE.subprocess, "run", run)
+    replayer = object.__new__(_MODULE.Replayer)
+    replayer.instance = cast(Any, type("I", (), {"launcher": tmp_path / "finishup"}))
+    replayer.home = tmp_path
+    replayer.admission_clock = None
+
+    def log(_message: str) -> None:
+        return None
+
+    replayer.log = log
+    items = [
+        {"label": label, "host": "codex", "workspace": key, "argv": ["hooks", "observe", "-x"]}
+        for label, key in (("a/1", "a"), ("a/2", "a"), ("b/1", "b"))
+    ]
+    state = _MODULE._ReplayState(
+        mode="shipped",
+        root=tmp_path,
+        items=items,
+        transcripts={},
+        workspaces=["a", "b"],
+        setup={},
+        transcript_written={},
+        transcript_paths={},
+        claude_transcript=tmp_path / "t.jsonl",
+        retained=tmp_path / "python",
+        trace_path=tmp_path / "trace.jsonl",
+        records=[],
+        last_item={"a": 2, "b": 3},
+        status_snapshots={},
+    )
+    for number, item in enumerate(items, start=1):
+        replayer.step(state, number, item)
+    assert calls == [
+        "hooks observe a",
+        "observe drain a",
+        "hooks observe a",
+        "observe drain a",
+        "observe status a",
+        "hooks observe b",
+        "observe drain b",
+        "observe status b",
+    ]
+    assert state.status_snapshots["a"]["read_after"] == "a/2"
+    assert state.status_snapshots["b"]["read_after"] == "b/1"
+
+
+def test_a_status_read_taken_after_another_item_is_refused() -> None:
+    old, new = _make_run(1), _make_run(2)
+    new["ledgers"]["w"]["observe_status_read_after"] = "codex/w/001/PostToolUse/Bash"
+    result = _compare(old, new)
+    assert result["refused"]["new"] == ["observe_status_not_after_last_item:w"]
+    # Lifecycle is compared exactly, never normalized.
+    old, new = _make_run(1), _make_run(2)
+    status = json.loads(new["ledgers"]["w"]["observe_status"])
+    status["status"] = {"lifecycle": "degraded"}
+    new["ledgers"]["w"]["observe_status"] = json.dumps(status)
+    status = json.loads(old["ledgers"]["w"]["observe_status"])
+    status["status"] = {"lifecycle": "active"}
+    old["ledgers"]["w"]["observe_status"] = json.dumps(status)
+    assert not _compare(old, new)["identical"]

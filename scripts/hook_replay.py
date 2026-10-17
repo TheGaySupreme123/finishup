@@ -1333,6 +1333,10 @@ class _ReplayState:
     retained: Path
     trace_path: Path
     records: list[dict[str, Any]]
+    # Each workspace's last corpus item (1-based), and the ``observe status`` read right after
+    # that item's drain (see ``Replayer.step``).
+    last_item: dict[str, int]
+    status_snapshots: dict[str, dict[str, Any]]
 
 
 class Replayer:
@@ -1547,6 +1551,9 @@ class Replayer:
         claude_transcript.touch()
         retained = self.instance.retained_python()
         trace_path = mode_root / "catalog-trace.jsonl"
+        last_item = {
+            cast(str, item["workspace"]): number for number, item in enumerate(items, start=1)
+        }
         return _ReplayState(
             mode=mode,
             root=mode_root,
@@ -1560,6 +1567,8 @@ class Replayer:
             retained=retained,
             trace_path=trace_path,
             records=[],
+            last_item=last_item,
+            status_snapshots={},
         )
 
     def step(self, state: _ReplayState, number: int, item: Item) -> dict[str, Any]:
@@ -1648,6 +1657,19 @@ class Replayer:
                 drained = self.finishup(drain_argv, cwd=workspace)
             # ``compare`` refuses a run with a failed drain and compares every drain's output.
             record["drain"] = _completed(drained)
+            if state.last_item[cast(str, item["workspace"])] == number:
+                # Observation lifecycle reads the age of the last successful drain against the
+                # wall clock (``observation_health``: degraded once a pending row's drain is more
+                # than 120 s old), so a read taken after every later workspace has run would
+                # depend on how fast the build replayed them. Read it right after this
+                # workspace's own last item and drain instead, and compare that read exactly.
+                observed = self.finishup(
+                    ["observe", "status", "--workspace", str(workspace), "--json"]
+                )
+                state.status_snapshots[cast(str, item["workspace"])] = {
+                    **_completed(observed),
+                    "read_after": item["label"],
+                }
         records.append(record)
         self.log(
             f"[{mode}] {number}/{len(items)} {item['label']} rc={done.returncode} {elapsed_ms:.0f}ms"
@@ -1658,7 +1680,7 @@ class Replayer:
         """Read every workspace's ledger back after the last item."""
 
         ledgers = {
-            key: self._ledger(state.root / key, state.records, key)
+            key: self._ledger(state.root / key, state.records, key, state.status_snapshots.get(key))
             for key in state.workspaces
             if key != "cli"
         }
@@ -1671,13 +1693,18 @@ class Replayer:
         return self.finish(state)
 
     def _ledger(
-        self, workspace: Path, records: Sequence[Mapping[str, Any]], key: str
+        self,
+        workspace: Path,
+        records: Sequence[Mapping[str, Any]],
+        key: str,
+        snapshot: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         """Read one workspace's ledger history back; any failed or partial read is recorded.
 
         ``compare`` refuses a run whose record carries ``history_error`` or lacks a complete,
         cursor-exhausted history ending at the reported head, so a failed read can never pass as
-        an empty history.
+        an empty history. ``snapshot`` is the ``observe status`` read taken right after the
+        workspace's last item; a missing one is recorded as a failed read.
         """
 
         mapping = None
@@ -1688,11 +1715,13 @@ class Replayer:
             if match:
                 mapping = {"session_id": match.group(2), "writer_id": match.group(3)}
                 break
-        observed = self.finishup(["observe", "status", "--workspace", str(workspace), "--json"])
+        observed = snapshot or {"returncode": None, "stdout": "", "stderr": "", "read_after": None}
         result: dict[str, Any] = {
             "mapped": mapping is not None,
-            "observe_status_returncode": observed.returncode,
-            "observe_status": observed.stdout.decode("utf-8", errors="replace"),
+            "observe_status_returncode": observed["returncode"],
+            "observe_status": observed["stdout"],
+            "observe_status_stderr": observed["stderr"],
+            "observe_status_read_after": observed["read_after"],
         }
         if mapping is None:
             return result
@@ -2104,6 +2133,7 @@ def run_failures(run: Mapping[str, Any]) -> list[str]:
     ledgers = cast(dict[str, dict[str, Any]], run.get("ledgers") or {})
     items = cast(list[dict[str, Any]], run.get("items") or [])
     workspaces = sorted({cast(str, item["workspace"]) for item in items} - {"cli"})
+    last_label = {cast(str, item["workspace"]): cast(str, item["label"]) for item in items}
     for item in items:
         drain = cast(dict[str, Any] | None, item.get("drain"))
         if item["workspace"] != "cli" and (drain is None or drain.get("returncode") != 0):
@@ -2131,6 +2161,8 @@ def run_failures(run: Mapping[str, Any]) -> list[str]:
             failures.append(f"head_frontier_missing:{key}")
         if ledger.get("observe_status_returncode") != 0:
             failures.append(f"observe_status_failed:{key}")
+        if ledger.get("observe_status_read_after") != last_label.get(key):
+            failures.append(f"observe_status_not_after_last_item:{key}")
         try:
             if not isinstance(json.loads(cast(str, ledger.get("observe_status") or "")), dict):
                 failures.append(f"observe_status_not_object:{key}")
@@ -2260,6 +2292,7 @@ def _parts(run: Mapping[str, Any], failures: list[str]) -> dict[str, list[_Part]
         bucket = parts.setdefault(key, [])
         status = json.loads(cast(str, ledger["observe_status"]))
         bucket.append((f"{key} observe status", _policy_status(status, window, failures)))
+        bucket.append((f"{key} observe status stderr", cast(str, ledger["observe_status_stderr"])))
         entries = {_entry(event)["event_id"]: _entry(event) for event in task["events"]}
         for index, row in enumerate(cast(list[dict[str, Any]], ledger["history"])):
             policed = dict(row)
