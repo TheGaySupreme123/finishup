@@ -51,6 +51,12 @@ from finishup.adapters.git_version import (
     git_version_supported,
 )
 from finishup.adapters.repository_identity import root_owned_checkout
+from finishup.adapters.task_input_read import (
+    MAX_TASK_INPUT_READ_BYTES,
+    read_ends_beneath,
+    task_input_from_bytes,
+    task_input_from_ends,
+)
 from finishup.config.foreign_write import owner_private_group
 from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.observability.logging import record_unexpected_exception_without_raising
@@ -60,7 +66,6 @@ from finishup.ports.change_capture import (
     MAX_NESTED_REPOSITORIES,
     MAX_PROBED_FILE_SIZE,
     MAX_TASK_INPUT_FILES,
-    MAX_TASK_INPUT_TEXT_BYTES,
     ChangeBaseKind,
     ChangeCaptureUnavailable,
     ChangeLineCount,
@@ -3176,12 +3181,9 @@ def _nested_lines(nested: Sequence[_NestedRead]) -> list[str]:
     return lines
 
 
-# A task input file larger than this is not read at all (issue #1045); one up to it keeps its head
-# and tail within ``MAX_TASK_INPUT_TEXT_BYTES``.
-_MAX_TASK_INPUT_READ_BYTES: Final = 1024 * 1024
-_TASK_INPUT_ELISION: Final = (
-    "\n[finishup: {elided} of {total} bytes elided here; head and tail kept]\n"
-)
+# A task input file up to this is read whole (issue #1045); a larger untracked one is summarized
+# from its two ends (issue #1082, ``finishup.adapters.task_input_read``).
+_MAX_TASK_INPUT_READ_BYTES: Final = MAX_TASK_INPUT_READ_BYTES
 
 
 def _task_input(
@@ -3195,7 +3197,10 @@ def _task_input(
 
     ``blob`` is the base commit's blob for a tracked input: the bytes read must hash to it
     exactly (no filter or line-ending conversion applied), so content Git did not compare, or
-    changed without Git noticing, is never carried as unchanged.
+    changed without Git noticing, is never carried as unchanged. Issue #1082: a binary input
+    becomes FinishUP's own bounded summary instead of being skipped, and an untracked input too
+    large to read whole is summarized from its two ends (a tracked one cannot be proven unchanged
+    without reading it whole, so it is still skipped).
     """
 
     try:
@@ -3205,6 +3210,12 @@ def _task_input(
         )
     except UnicodeDecodeError, _ChangedDuringCapture:
         return None
+    if outcome == "too_large" and blob is None:
+        owner = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+        ends = read_ends_beneath(pinned.descriptor, relative, owners=frozenset({owner}))
+        if ends is None or ends[2] != identity[3]:
+            return None
+        return task_input_from_ends(name, *ends)
     if outcome not in {"regular", "executable"} or not content:
         return None
     if blob is not None:
@@ -3212,24 +3223,7 @@ def _task_input(
         digest.update(content)
         if digest.hexdigest() != blob:
             return None
-    if b"\0" in content[:_BINARY_PROBE_BYTES]:
-        return None
-    total = len(content)
-    if total <= MAX_TASK_INPUT_TEXT_BYTES:
-        text = _decode(content)
-    else:
-        marker = _TASK_INPUT_ELISION.format(elided="0" * len(str(total)), total=total)
-        side = (MAX_TASK_INPUT_TEXT_BYTES - len(marker.encode("utf-8"))) // 2
-        head = content[:side].decode("utf-8", errors="ignore")
-        tail = content[total - side :].decode("utf-8", errors="ignore")
-        elided = total - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
-        text = _decode(
-            (head + _TASK_INPUT_ELISION.format(elided=elided, total=total) + tail).encode("utf-8")
-        )
-    try:
-        return TaskInputFile(name, text, total)
-    except ValueError:
-        return None
+    return task_input_from_bytes(name, content)
 
 
 def _header(

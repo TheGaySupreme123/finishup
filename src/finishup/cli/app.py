@@ -2331,6 +2331,127 @@ async def _run_conversation_review_status(json_output: bool) -> int:
     return 0
 
 
+async def _run_input_root_command(action: str, value: str, json_output: bool) -> int:
+    """Admit or remove an outside-workspace input root for this repository (issue #1082)."""
+
+    from finishup.cli.privacy_setup import run_input_root_change
+    from finishup.cli.unlock import HumanCeremonyCliError
+
+    try:
+        report = await run_input_root_change("add" if action == "add" else "remove", value)
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    except (HumanCeremonyCliError, OSError, ValueError) as error:
+        reason = getattr(error, "reason", None)
+        typer.echo(
+            f"privacy_input_roots_failed: {reason if type(reason) is str else 'invalid'}",
+            err=True,
+        )
+        return 20
+    if report.outcome == "failed":
+        typer.echo(f"privacy_input_roots_failed: {report.reason or 'invalid'}", err=True)
+        if report.reason == "input_root_invalid":
+            typer.echo(
+                "Name an existing directory by its absolute path, with no link on the way. The "
+                "filesystem root, hidden directories and system trees such as /etc are refused.",
+                err=True,
+            )
+        elif report.reason == "local_terminal_required":
+            typer.echo(
+                "Admitting a directory needs your approval in a local terminal: run this "
+                "command there.",
+                err=True,
+            )
+        return 20
+    if report.reason == "repository_privacy_grant_missing" and not json_output:
+        typer.echo(
+            "This repository has no privacy policy of its own yet, so nothing is sent for "
+            "AI-powered review here. Nothing changed; run 'finishup --privacy' first.",
+            err=True,
+        )
+    _human_or_json(
+        {
+            "action": action,
+            "scope": "repository",
+            "outcome": report.outcome,
+            **({"proposal_id": report.proposal_id} if report.proposal_id is not None else {}),
+            **({"reason": report.reason} if report.reason is not None else {}),
+        },
+        json_output=json_output,
+    )
+    return 0 if report.outcome in {"configured", "unchanged"} else 20
+
+
+async def _run_input_roots_status(json_output: bool) -> int:
+    from finishup.cli.privacy_setup import get_privacy_setup_snapshot
+
+    try:
+        snapshot = await get_privacy_setup_snapshot(Path.cwd())
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    except OSError, ValueError:
+        typer.echo("privacy_input_roots_failed: privacy_setup_unreadable", err=True)
+        return 20
+    roots = list(snapshot.composed_policy.admitted_input_roots)
+    if not json_output:
+        if not roots:
+            typer.echo(
+                "No directory outside the workspace is admitted for this repository's reviews."
+            )
+        else:
+            typer.echo(
+                "Files the task names beneath these directories may reach this repository's "
+                "AI-powered review packets as read-only task inputs:"
+            )
+            for root in roots:
+                typer.echo(f"  {root}")
+        return 0
+    _human_or_json(
+        {
+            "admitted_input_roots": cast(JsonValue, roots),
+            "scope": "repository",
+            "grant_state": snapshot.grant_state,
+        },
+        json_output=json_output,
+    )
+    return 0
+
+
+privacy_input_roots_app = typer.Typer(
+    help=(
+        "Admit directories outside the workspace (for example a shared specification or dataset "
+        "folder) whose files the task names, so AI-powered review can read them as read-only "
+        "task inputs. Admitting applies only after the trusted local approval on this terminal; "
+        "removing applies at once. Nothing is sent unless this repository's privacy policy "
+        "already sends repository excerpts."
+    ),
+    no_args_is_help=True,
+)
+privacy_app.add_typer(privacy_input_roots_app, name="input-roots")
+_ROOT_PATH = Annotated[str, typer.Argument(help="Absolute path of an existing directory.")]
+
+
+@privacy_input_roots_app.command("add")
+def privacy_input_roots_add(path: _ROOT_PATH, json_output: _JSON = False) -> None:
+    """Admit one directory for this repository (trusted local approval required)."""
+
+    _finish(run_async(lambda: _run_input_root_command("add", path, json_output)))
+
+
+@privacy_input_roots_app.command("remove")
+def privacy_input_roots_remove(path: _ROOT_PATH, json_output: _JSON = False) -> None:
+    """Stop admitting one directory for this repository (applies at once)."""
+
+    _finish(run_async(lambda: _run_input_root_command("remove", path, json_output)))
+
+
+@privacy_input_roots_app.command("status")
+def privacy_input_roots_status(json_output: _JSON = False) -> None:
+    """Show the directories this repository admits (read-only)."""
+
+    _finish(run_async(lambda: _run_input_roots_status(json_output)))
+
+
 privacy_credential_heuristic_app = typer.Typer(
     help=(
         "Turn the possible-credential filter for the external AI reviewer off or back on for "

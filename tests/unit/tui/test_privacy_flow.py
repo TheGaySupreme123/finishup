@@ -287,3 +287,22 @@ def test_an_unreadable_configuration_recommends_the_closed_posture() -> None:
         side_effect=ConfigError("unknown_config_env_var"),
     ):
         assert FinishUpRuntime().privacy_recommendation().recipe == "private"
+
+
+def test_the_privacy_screen_names_admitted_outside_workspace_roots() -> None:
+    """Issue #1082: the way in has a way to see it on every owner surface."""
+
+    from finishup.tui.models import PrivacyPosture
+
+    none = PrivacyPosture(profile="assisted_review", llm_inference_enabled=True, readable=True)
+    assert none.admitted_input_roots_summary is None
+    some = PrivacyPosture(
+        profile="assisted_review",
+        llm_inference_enabled=True,
+        readable=True,
+        admitted_input_roots=("/data", "/shared/legacy_app"),
+    )
+    summary = some.admitted_input_roots_summary
+    assert summary is not None
+    assert "/data, /shared/legacy_app" in summary
+    assert "finishup privacy input-roots" in summary

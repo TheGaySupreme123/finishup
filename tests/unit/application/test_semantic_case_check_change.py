@@ -1185,3 +1185,47 @@ def test_a_structural_recipe_does_not_send_the_decision_section() -> None:
         item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX) for item in semantic.items
     )
     assert b"if value > 0:" not in b"".join(item.content for item in semantic.items)
+
+
+def test_captured_edits_the_change_already_carries_whole_yield_to_the_latest_verification() -> None:
+    """Issue #1082: hook-captured hunks of files the check-time change already shows whole are
+    the same code again. They rank as older edits superseded by the change, so the latest
+    verification output takes their room first; they are still offered after it."""
+
+    from unit.application.test_semantic_case_selection import (
+        _PATHS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    text = b"".join(
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n+fixed\n".encode()
+        for path in _PATHS
+    )
+    semantic, ledger = _ledger_build(_change(text), ceiling=None, outputs=4)
+
+    by_id = {item.item_id: item for item in semantic.items}
+    order = [ref.excerpt_item_id for ref in semantic.packet.targeted_excerpts]
+    newest = {str(ref) for ref in ledger.newest_edit_for_path.values()}
+    edit_items = [
+        item for item in semantic.items if item.section == "excerpt" and item.source_ref in newest
+    ]
+    assert edit_items, "the captured edits are still offered"
+    assert all(item.superseded_by == ("check-time-change",) for item in edit_items)
+    assert all(item.latest_for is None for item in edit_items)
+    latest_pytest = str(ledger.verification["pytest"][-1])
+    verification = next(
+        item_id
+        for item_id, item in by_id.items()
+        if item.section == "excerpt" and item.source_ref == latest_pytest
+    )
+    first_edit = min(order.index(item.item_id) for item in edit_items)
+    assert order.index(verification) < first_edit
+
+    # A change that carries only some of a file's sections leaves its captured edits current.
+    partial, ledger = _ledger_build(_change(text.split(b"diff --git a/lib/")[0]), ceiling=None)
+    lib_refs = {
+        str(ref) for path, ref in ledger.newest_edit_for_path.items() if path.startswith("lib/")
+    }
+    lib_edits = [
+        item for item in partial.items if item.section == "excerpt" and item.source_ref in lib_refs
+    ]
+    assert lib_edits and all(item.superseded_by != ("check-time-change",) for item in lib_edits)

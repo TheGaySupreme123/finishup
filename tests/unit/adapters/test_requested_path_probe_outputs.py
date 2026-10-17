@@ -52,3 +52,23 @@ def test_declared_output_paths_order_outputs_first_and_skip_inputs() -> None:
     )
 
     assert declared_output_paths(projection) == ("/output/plan.json", "src", "notes.md")
+
+
+def test_a_requested_change_that_names_its_files_in_prose_declares_them_last() -> None:
+    """Issue #1082 (sglang, react-lead-form): obligations named their deliverables only inside
+    a requested ``change`` item's prose, so the change never rendered them first."""
+
+    projection = _items_projection(
+        RequestedItem(
+            RequestedItemKind.CHANGE,
+            "Parser fixes in python/sglang/parser.py and test/test_parser.py, see notes",
+        ),
+        RequestedItem(RequestedItemKind.FILE, "/output/plan.json", role=RequestedItemRole.OUTPUT),
+        RequestedItem(RequestedItemKind.COMMAND, "pytest tests/test_parser.py"),
+    )
+
+    assert declared_output_paths(projection) == (
+        "/output/plan.json",
+        "python/sglang/parser.py",
+        "test/test_parser.py",
+    )
