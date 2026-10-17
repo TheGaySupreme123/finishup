@@ -2213,7 +2213,8 @@ amendment's rejected-call record is host-agnostic: on the paired ordinary profil
 `mcp__plugin_yoetz_yoetz__*` attempt whose call FinishUP's MCP server answered with an error closes as
 `rejected_by_yoetz` (after a 5 s grace in which a post, if Claude Code sends one, still pairs, or at
 once when the session ends or its generation advances). The Claude Code adapter commits to the call
-(tool, FinishUP session, writer and `request_id`) from the hook's `tool_input` before structural
+(tool, FinishUP session, writer and `request_id`, or for a `publish_work` sent without one its
+canonical arguments; nothing else) from the hook's `tool_input` before structural
 normalization drops it, and passes only that commitment on; a body too large to keep its
 `tool_input` keeps the ordinary expiry;
 `observe status` names every ending under `pending_attempt_endings`, and local ring eviction is
@@ -2539,10 +2540,16 @@ so Claude Code takes the same path as every other host. What a Claude Code agent
 - The text summary carries the filled field names and up to eight minted event ids
   (`minted event ids: [index] evt_…`), and an id-less error names the minted request id, so an
   agent that reads only text can still cite a minted event id or retry by id.
-- The startup gate hook never sees a minted request id before the call, so it opens the write's
-  ticket at the post-call event from the result's echoed `request_id` (when the event carries the
-  result), and matches
-  minted event ids by position in `accepted_events`; a sparse first plan still releases the gate.
+- The startup gate hook never sees a minted request id before the call, so in required startup
+  mode an id-less `publish_work` is admitted with no pre-call ticket. Its ticket opens only at a
+  post-call event that carries the structured result naming the minted `request_id`, and minted
+  event ids are matched by position in `accepted_events`; a sparse first plan still releases the
+  gate. Claude Code delivers MCP error results to hooks as text only (or as `PostToolUseFailure`
+  with no `tool_response`), so an id-less publish that errors or loses its reply holds no ticket and
+  substantive tools are not held for it; a concurrent delegate's tool can pass while one is in
+  flight (each tool is still live-probed against the current accepted plan). The agent retries by
+  the minted id the error names, which takes a ticket again. Owners who need fail-closed tracking
+  have agents send their own `request_id` ([required startup](required-startup.md)).
 - Host tool-call ids are not used: none of the three hosts' MCP call identity is verified in this
   repository, so the bridge mints its own. The hook never sees that id, so a rejected id-less
   `publish_work` is matched to its pending hook attempt by a commitment to the agent's own

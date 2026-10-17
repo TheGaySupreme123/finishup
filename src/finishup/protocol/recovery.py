@@ -108,6 +108,9 @@ _SEMANTIC_COVERAGE: Final = (
 _PUBLICATION_RECOVERY: Final = (
     "finishup://guidance/publication-policy.md#operation-specific-recovery-and-templates"
 )
+_PUBLICATION_SERVICE_FILLED: Final = (
+    "finishup://guidance/publication-policy.md#service-filled-values"
+)
 
 _DIRECTIVES: Final = (
     RecoveryDirective(
@@ -265,7 +268,7 @@ _DIRECTIVES: Final = (
             "it succeed, it is recorded; to publish again, change the body or send a fresh "
             "request_id. Otherwise retry it: send replay_request_id as request_id."
         ),
-        guidance_uri=_PUBLICATION_RECOVERY,
+        guidance_uri=_PUBLICATION_SERVICE_FILLED,
         nudge=(
             "A fresh request_id is req_ plus a new lowercase UUIDv4. An id-less resend is never "
             "a retry."

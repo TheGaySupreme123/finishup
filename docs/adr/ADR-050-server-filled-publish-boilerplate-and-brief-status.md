@@ -246,9 +246,17 @@ a material transition, not typing UUIDs, timestamps and mirrors.
 
 - **Agent effort.** An ordinary batch is written as session, writer, actor, client and drafts of
   `schema` plus `payload`. Agents stop minting request and event ids, running `date -u`, mirroring
-  refs and sorting sets. The startup gate hook, which cannot see a host-minted id before the call,
-  opens the write's ticket at the post-call event from the echoed `request_id`, and matches minted
-  event ids by position.
+  refs and sorting sets.
+- **Required startup gate.** In the opt-in required startup mode (Claude Code and Cursor native
+  plugins), the gate hook cannot see a host-minted id before the call, so an id-less
+  `publish_work` is admitted with no pre-call ticket. Its ticket opens only at a post-call event
+  that carries the structured result naming the minted `request_id`; minted event ids are matched
+  by position. Claude Code delivers MCP error results to hooks as text only (or as
+  `PostToolUseFailure` with no `tool_response`), so there an id-less publish that errors or loses
+  its reply holds no ticket and substantive tools are not held for it, and a concurrent delegate's
+  tool can pass while one is in flight; each tool is still live-probed against the current accepted
+  plan. The agent retries by the minted id the error names, which takes a ticket again. The design
+  is kept; owners who need fail-closed tracking have agents send their own `request_id`.
 - **Host state.** None. The repeat guard lives in the bridge process's memory.
 - **Retry cost.** A lost reply now costs one explicit retry by id. A blind identical resend right
   after it is refused once and names the id, instead of being replayed automatically.

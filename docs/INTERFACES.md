@@ -331,8 +331,13 @@ advertised and catalog input schemas drop it from `required`).
   Dry runs and other writers' calls never drop it.
 - **No guard:** across a bridge restart, after the writer's next publish, after the hour, and for
   the CLI. An identical id-less body is then a new publication.
-- **Startup gate.** The startup-gate hook never saw a minted id, so it opens the write's ticket at
-  the post-call event from the result's echoed `request_id`.
+- **Startup gate.** The startup-gate hook never saw a minted id, so in required startup mode an
+  id-less publish is admitted with no pre-call ticket. Its ticket opens only at a post-call event
+  that carries the structured result naming the minted `request_id`. On Claude Code, whose hooks
+  receive MCP error results as text only (or `PostToolUseFailure` with no `tool_response`), an
+  id-less publish that errors or loses its reply holds no ticket, and a concurrent delegate's tool
+  can pass while one is in flight (still live-probed against the current accepted plan). A retry by
+  the minted id takes a ticket again; fail-closed tracking needs the caller's own `request_id`.
 
 Provenance: every success, reduced success and dry-run result carries `server_filled` (`request`:
 `expected_frontier` when omitted; `drafts`: groups of filled envelope `fields` with the batch

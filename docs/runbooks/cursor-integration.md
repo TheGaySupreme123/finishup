@@ -2301,7 +2301,8 @@ hook name). The same amendment's rejected-call record is host-agnostic: on the p
 profile, a pending `yoetz:*` (or `MCP:*` FinishUP-basename) attempt whose call FinishUP's MCP server
 answered with an error closes as `rejected_by_yoetz` after a 5 s grace (at once when the session
 ends or its generation advances). The Cursor adapter commits to the call (tool, FinishUP session,
-writer and `request_id`) from the hook's `tool_input` before structural normalization drops it,
+writer and `request_id`, or for a `publish_work` sent without one its canonical arguments; nothing
+else) from the hook's `tool_input` before structural normalization drops it,
 and passes only that commitment on; a body too large to keep its `tool_input` keeps the ordinary
 expiry; `observe status` names
 every ending under `pending_attempt_endings`, and local ring eviction is `local_retention`, never
@@ -2627,9 +2628,16 @@ so Cursor takes the same path as every other host. What a Cursor agent can rely 
 - Cursor's native plugin copies the canonical result JSON into the text channel, so
   `server_filled` and the minted ids reach the model unchanged; the minted-id line of an id-less
   error, and the earlier id a repeat refusal names, are separate text blocks. The project-local MCP route uses the same bridge.
-- The startup gate hook never sees a minted request id before the call, so it opens the write's
-  ticket at `afterMCPExecution` from the result's echoed `request_id`, and matches minted event ids
-  by position in `accepted_events`; a sparse first plan still releases the gate.
+- The startup gate hook never sees a minted request id before the call, so in required startup
+  mode an id-less `publish_work` is admitted with no pre-call ticket. Its ticket opens only when
+  `afterMCPExecution` carries the structured result naming the minted `request_id`, and minted
+  event ids are matched by position in `accepted_events`; a sparse first plan still releases the
+  gate. An id-less publish whose error or reply does not reach that hook as a structured result
+  holds no ticket, and a concurrent delegate's tool can pass while one is in flight (each tool is
+  still live-probed against the current accepted plan); whether Cursor delivers an error's
+  structured result there is not verified in this repository. The agent retries by the minted id
+  the error names, which takes a ticket again. Owners who need fail-closed tracking have agents
+  send their own `request_id` ([required startup](required-startup.md)).
 - Host tool-call ids are not used: none of the three hosts' MCP call identity is verified in this
   repository, so the bridge mints its own. The hook never sees that id, so a rejected id-less
   `publish_work` is matched to its pending hook attempt by a commitment to the agent's own
