@@ -2257,6 +2257,35 @@ with byte-identical pages and receipts. This host uses that path unchanged. Its 
 timing on macOS, Linux and WSL 2 is not yet measured; issue #916 owns it. See
 [status render performance](status-render-performance.md).
 
+## Hook schema loading (issue #1083)
+
+A Cursor hook process no longer builds the full schema catalog before its first control frame.
+It parses only the control envelopes' schemas and their `$ref` closures, 92 of 232 documents,
+with the same verdicts and errors ([interfaces](../INTERFACES.md)). Unchanged on this host:
+
+- `hooks cursor-observe` and `hooks startup-context --host cursor`;
+- hook registration, payloads, outputs, recorded events, ordering and timeouts.
+
+Host decision: supported, same code path.
+
+Latency: the #1083 replay drove 4 preToolUse and 3 postToolUse ordinary-profile callbacks from the
+repository's recorded shapes through the build before and after the change on macOS arm64 (single
+idle machine, shipped launcher). The median preToolUse fell from 1,926 to 1,284 ms and postToolUse
+from 2,002 to 1,388 ms. Linux and WSL 2 timings are not yet measured; issue #1083 owns them.
+
+Equivalence: the #1087 replay proof ([test instances](test-instances.md)) replayed the 13
+ordinary-profile callbacks, and 9 malformed payloads, on Linux x86_64 on 2026-10-17 through the
+merged predecessor (`0.3` at `c0198bb16`, with #1080 and #1086) and this change's head
+(`ea1f6eda4`). Every exit code, stdout and stderr byte, drain, status read and ledger event with
+its full payload compared identical after the normalization that runbook describes, which matches
+run-generated values, such as task, session and result ids, one-to-one: 157 compared parts in the
+Cursor workspace, including 13 ledger events. In the new build 7 of those callbacks parsed only
+their schemas and none built the full catalog; the old build built it in the same 7. A second
+replay of the new head compared identical with the first. One `postToolUse` payload carries no
+exit code, so its result reads "(workspace unverified)" in every run.
+The MCP bridge (`mcp serve --host cursor`) is not replayed: it builds the full catalog as it starts,
+so its validation is unchanged by this change.
+
 ## Expanded excerpt count (issue #907 Phase 1b)
 
 Decision for Cursor: nothing is host-specific, and the behaviour is identical on every host and OS.

@@ -1613,8 +1613,7 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
 
     from finishup.protocol.schemas import (
         SchemaInstanceInvalid,
-        load_schema_catalog,
-        request_result_schema_versions,
+        request_result_schema_version,
         validate_schema_instance,
     )
 
@@ -1626,7 +1625,7 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
     )
     dumped = _strip_optional_non_null_fields(model, cast(Mapping[str, JsonValue], raw_dump))
     try:
-        schema_version = request_result_schema_versions(load_schema_catalog())[schema_name]
+        schema_version = request_result_schema_version(schema_name)
         validate_schema_instance(schema_name, schema_version, cast(JsonValue, dumped))
     except SchemaInstanceInvalid as exc:
         # Re-raise with JSON Schema path(s) so MCP safe_details can name corrective fields.
@@ -6648,12 +6647,11 @@ def public_model_to_wire(model: object) -> dict[str, JsonValue]:
     if type(dumped) is not dict:
         raise TypeError("public_model_wrong_type")
     from finishup.protocol.schemas import (
-        load_schema_catalog,
-        request_result_schema_versions,
+        request_result_schema_version,
         validate_schema_instance,
     )
 
-    schema_version = request_result_schema_versions(load_schema_catalog())[schema_name]
+    schema_version = request_result_schema_version(schema_name)
     validate_schema_instance(schema_name, schema_version, cast(JsonValue, dumped))
     return dict(dumped)
 

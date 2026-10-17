@@ -47,11 +47,14 @@ __all__ = [
     "SchemaKind",
     "event_schema_versions",
     "load_schema_catalog",
+    "prepare_schemas",
+    "request_result_schema_version",
     "request_result_schema_versions",
     "schema_document_for",
     "schema_manifest_digest",
     "schema_path_for",
     "schema_uri",
+    "use_full_schema_catalog",
     "validate_schema_document",
     "validate_schema_instance",
 ]
@@ -646,28 +649,42 @@ def _validate_references(
 ) -> None:
     known_ids = frozenset(plain_by_id)
     for schema_id in sorted(plain_by_id, key=str.encode):
-        schema = plain_by_id[schema_id]
-        resolver = registry.resolver(schema_id)
-        for ref in _walk_refs(schema):
-            split = urlsplit(ref)
-            if split.query:
-                _protocol_error("schema_reference_unresolved")
-            if ref.startswith("#"):
-                admissible = split.scheme == split.netloc == split.path == ""
-            else:
-                base, _ = urldefrag(ref)
-                admissible = (
-                    bool(split.scheme)
-                    and bool(split.netloc)
-                    and base in known_ids
-                    and split.scheme == "https"
-                )
-            if not admissible:
-                _protocol_error("schema_reference_unresolved")
-            try:
-                resolver.lookup(ref)
-            except BaseException:
-                raise ProtocolValueError("schema_reference_unresolved") from None
+        _validate_document_references(schema_id, plain_by_id[schema_id], registry, known_ids)
+
+
+def _validate_document_references(
+    schema_id: str,
+    schema: dict[str, JsonValue],
+    registry: SchemaRegistry,
+    known_ids: frozenset[str],
+) -> None:
+    """Admit and resolve every ``$ref`` one catalog document carries.
+
+    *registry* must hold every document *known_ids* names that this document references; the full
+    catalog passes all of them, the lazy catalog the document's transitive reference closure.
+    """
+
+    resolver = registry.resolver(schema_id)
+    for ref in _walk_refs(schema):
+        split = urlsplit(ref)
+        if split.query:
+            _protocol_error("schema_reference_unresolved")
+        if ref.startswith("#"):
+            admissible = split.scheme == split.netloc == split.path == ""
+        else:
+            base, _ = urldefrag(ref)
+            admissible = (
+                bool(split.scheme)
+                and bool(split.netloc)
+                and base in known_ids
+                and split.scheme == "https"
+            )
+        if not admissible:
+            _protocol_error("schema_reference_unresolved")
+        try:
+            resolver.lookup(ref)
+        except BaseException:
+            raise ProtocolValueError("schema_reference_unresolved") from None
 
 
 def _plain_schema(data: bytes, *, digest_verified: bool = False) -> dict[str, JsonValue]:
@@ -693,6 +710,36 @@ def _plain_schema(data: bytes, *, digest_verified: bool = False) -> dict[str, Js
         except SchemaError:
             raise ProtocolValueError("schema_bytes_invalid") from None
     return schema
+
+
+type _CatalogEntry = tuple[str, str, SchemaKind, SchemaArtifactRole]
+
+
+def _request_result_versions(entries: Sequence[_CatalogEntry]) -> dict[str, str]:
+    """The highest version of each request/result schema name, from entries in manifest order."""
+
+    return {
+        name: version
+        for name, version, _kind, _role in sorted(
+            (entry for entry in entries if entry[2] is SchemaKind.REQUEST_RESULT),
+            key=lambda entry: (
+                entry[0].encode("ascii"),
+                tuple(int(part) for part in entry[1].split(".")),
+            ),
+        )
+    }
+
+
+def _event_payload_versions(entries: Sequence[_CatalogEntry]) -> dict[str, str]:
+    """Each event-payload family's version, from entries in manifest order."""
+
+    return {
+        name.replace("-", "_"): version
+        for name, version, _kind, _role in sorted(
+            (entry for entry in entries if entry[3] is SchemaArtifactRole.EVENT_PAYLOAD),
+            key=lambda entry: entry[0].replace("-", "_").encode("ascii"),
+        )
+    }
 
 
 @lru_cache(maxsize=1)
@@ -768,27 +815,17 @@ def _load_catalog_state() -> _CatalogState:
             ),
         )
     }
-    request_versions_dict = {
-        document.schema_name: document.schema_version
-        for document in sorted(
-            (item for item in ordered_documents if item.schema_kind is SchemaKind.REQUEST_RESULT),
-            key=lambda item: (
-                item.schema_name.encode("ascii"),
-                tuple(int(part) for part in item.schema_version.split(".")),
-            ),
+    entries = tuple(
+        (
+            document.schema_name,
+            document.schema_version,
+            document.schema_kind,
+            document.artifact_role,
         )
-    }
-    event_versions_dict = {
-        document.schema_name.replace("-", "_"): document.schema_version
-        for document in sorted(
-            (
-                item
-                for item in ordered_documents
-                if item.artifact_role is SchemaArtifactRole.EVENT_PAYLOAD
-            ),
-            key=lambda item: item.schema_name.replace("-", "_").encode("ascii"),
-        )
-    }
+        for document in ordered_documents
+    )
+    request_versions_dict = _request_result_versions(entries)
+    event_versions_dict = _event_payload_versions(entries)
     if len(request_versions_dict) != 54 or len(event_versions_dict) != 29:
         _protocol_error("schema_catalog_incomplete")
 
@@ -813,6 +850,10 @@ def load_schema_catalog() -> SchemaCatalog:
     """Load and validate the immutable packaged schema catalog."""
 
     return _load_catalog_state().catalog
+
+
+def _without_dialect_marker(plain: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    return {key: value for key, value in plain.items() if key != "$schema"}
 
 
 def _uses_dynamic_reference(value: JsonValue) -> bool:
@@ -841,7 +882,6 @@ class _ValidityChecker:
     the stock validator, which builds the exact diagnostic the caller always received.
     """
 
-    state: _CatalogState
     plain_by_id: Mapping[str, dict[str, JsonValue]]
     registry: SchemaRegistry
     verdicts: _ValidInstanceVerdicts
@@ -855,13 +895,24 @@ class _ValidityChecker:
             # Dynamic scope would make a resolved reference depend on the path taken to it.
             return None
         stripped = {
-            schema_id: {key: value for key, value in plain.items() if key != "$schema"}
+            schema_id: _without_dialect_marker(plain)
             for schema_id, plain in state.plain_by_id.items()
         }
+        return cls.over(stripped, _ValidInstanceVerdicts(_VALID_INSTANCE_MEMORY))
+
+    @classmethod
+    def over(
+        cls, stripped: Mapping[str, dict[str, JsonValue]], verdicts: _ValidInstanceVerdicts
+    ) -> _ValidityChecker:
+        """A checker over documents already stripped of ``$schema`` and free of dynamic refs.
+
+        *stripped* must be closed under ``$ref``: every document any member references is a
+        member, so each reference resolves exactly as it does against the whole catalog.
+        """
+
         document_roots = MappingProxyType(
             {id(plain): schema_id for schema_id, plain in stripped.items()}
         )
-        verdicts = _ValidInstanceVerdicts(_VALID_INSTANCE_MEMORY)
         extend = cast(Callable[..., Any], getattr(jsonschema_validators, "extend"))
 
         def validator_class(memory: _ValidInstanceVerdicts | None) -> Any:
@@ -875,7 +926,6 @@ class _ValidityChecker:
             )
 
         return cls(
-            state,
             MappingProxyType(stripped),
             _build_registry(stripped),
             verdicts,
@@ -926,6 +976,274 @@ def _validity_checker() -> _ValidityChecker | None:
             checker = None
         _validity_checker_slot[:] = [(state, checker)]
         return checker
+
+
+# Lazy schema loading (issue #1083). A hook is a fresh process per host callback, and its first
+# control frame used to build all 232 schemas (about 1.25 s, measured at the #1080 head) before the
+# hello reached the wire, which spent the hook's 1 s connect preflight on local work. Until a
+# process builds the full catalog for some other reason, validation parses only the requested
+# schema and its transitive ``$ref`` closure. Verdicts are decided exactly as before: the loaded
+# set is closed under ``$ref``, so every reference resolves to the same document it resolves to in
+# the full registry. Every rejection, and every case the lazy catalog cannot decide exactly as the
+# full catalog would, takes the unchanged full-catalog path and its exact diagnostic.
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestIndex:
+    """The packaged manifest and member bytes, checked as the full catalog checks them.
+
+    Building it reads every member and holds it to the manifest's byte length and SHA-256,
+    derives each member's identity, kind and role from its path and holds the manifest to them,
+    refuses duplicate identities and requires complete request/result and event-payload version
+    maps. Parsing, canonical form, ``$id`` and ``$ref`` resolution are left for the moment a
+    member is first needed; they are the expensive part.
+    """
+
+    member_bytes: Mapping[str, bytes]
+    known_ids: frozenset[str]
+    id_by_identity: Mapping[tuple[str, str], str]
+    request_result_versions: Mapping[str, str]
+
+
+def _build_manifest_index() -> _ManifestIndex:
+    root = _schema_root()
+    manifest_bytes = _read_resource(root.joinpath("manifest.json"), "schema_manifest_missing")
+    members = _parse_manifest(manifest_bytes)
+    expected_files = frozenset({"manifest.json", *(member.path for member in members)})
+    if _collect_files(root) != expected_files:
+        _protocol_error("schema_manifest_member_mismatch")
+    member_bytes: dict[str, bytes] = {}
+    id_by_identity: dict[tuple[str, str], str] = {}
+    entries: list[_CatalogEntry] = []
+    for member in members:
+        data = _read_resource(_resource_at(root, member.path), "schema_manifest_member_mismatch")
+        if len(data) != member.byte_length:
+            _protocol_error("schema_manifest_member_mismatch")
+        if f"sha256:{hashlib.sha256(data).hexdigest()}" != member.sha256:
+            _protocol_error("schema_digest_mismatch")
+        name, version = _derive_identity(member.path, member.schema_version)
+        expected_id = SCHEMA_NAMESPACE + member.path
+        if member.schema_id != expected_id:
+            _protocol_error("schema_id_mismatch")
+        if member.schema_kind is not _derive_kind(member.path):
+            _protocol_error("schema_kind_mismatch")
+        if member.artifact_role is not _derive_role(member.path):
+            _protocol_error("schema_artifact_role_mismatch")
+        if expected_id in member_bytes or (name, version) in id_by_identity:
+            _protocol_error("schema_duplicate_identity")
+        member_bytes[expected_id] = data
+        id_by_identity[(name, version)] = expected_id
+        entries.append((name, version, member.schema_kind, member.artifact_role))
+    request_versions = _request_result_versions(entries)
+    if len(request_versions) != 54 or len(_event_payload_versions(entries)) != 29:
+        _protocol_error("schema_catalog_incomplete")
+    return _ManifestIndex(
+        member_bytes=MappingProxyType(member_bytes),
+        known_ids=frozenset(member_bytes),
+        id_by_identity=MappingProxyType(id_by_identity),
+        request_result_versions=MappingProxyType(request_versions),
+    )
+
+
+class _LazyCatalogCannotDecide(Exception):
+    """The lazy catalog cannot answer exactly as the full catalog would; the caller falls back."""
+
+
+class _LazyCatalog:
+    """Schema documents parsed and checked on first use, each together with its ``$ref`` closure.
+
+    A loaded document passes the full catalog's own per-document checks (strict parse, canonical
+    bytes, draft 2020-12 dialect, ``$id``) and every ``$ref`` it carries is admitted and resolved
+    exactly as ``_validate_references`` does. The loaded set only ever grows by whole closures,
+    so it stays closed under ``$ref``. Its validity checker shares one verdict memory across the
+    rebuilds that growth needs; verdicts are a pure function of an immutable schema and the
+    instance's canonical bytes, so a remembered one stays true.
+    """
+
+    __slots__ = ("_checker", "_lock", "_plain", "_stripped", "_verdicts", "index")
+
+    def __init__(self, index: _ManifestIndex) -> None:
+        self.index = index
+        self._lock = threading.Lock()
+        self._plain: dict[str, dict[str, JsonValue]] = {}
+        self._stripped: dict[str, dict[str, JsonValue]] = {}
+        self._verdicts = _ValidInstanceVerdicts(_VALID_INSTANCE_MEMORY)
+        self._checker: _ValidityChecker | None = None
+
+    def is_valid(self, schema_id: str, instance: JsonValue, digest: bytes | None) -> bool:
+        """``_ValidityChecker.is_valid`` over the closure of *schema_id*; ``False`` if unsure."""
+
+        try:
+            checker = self._checker_for(schema_id)
+        except Exception:
+            return False
+        return checker.is_valid(schema_id, instance, digest)
+
+    def prepare(self, schema_id: str) -> None:
+        """Load the closure of *schema_id* now; a failure is left for first use to decide."""
+
+        try:
+            self._checker_for(schema_id)
+        except Exception:
+            return
+
+    def _checker_for(self, schema_id: str) -> _ValidityChecker:
+        checker = self._checker
+        if checker is not None and schema_id in checker.plain_by_id:
+            return checker
+        with self._lock:
+            checker = self._checker
+            if checker is not None and schema_id in checker.plain_by_id:
+                return checker
+            added = self._closure_of(schema_id)
+            plain = {**self._plain, **added}
+            registry = _build_registry(plain)
+            for document_id in sorted(added, key=str.encode):
+                _validate_document_references(
+                    document_id, added[document_id], registry, self.index.known_ids
+                )
+            # Commit only a closure that passed every check.
+            self._plain = plain
+            self._stripped = {
+                **self._stripped,
+                **{
+                    document_id: _without_dialect_marker(each)
+                    for document_id, each in added.items()
+                },
+            }
+            checker = _ValidityChecker.over(dict(self._stripped), self._verdicts)
+            self._checker = checker
+            return checker
+
+    def _closure_of(self, schema_id: str) -> dict[str, dict[str, JsonValue]]:
+        """Parse and check every not-yet-loaded document reachable from *schema_id*."""
+
+        added: dict[str, dict[str, JsonValue]] = {}
+        pending = [schema_id]
+        while pending:
+            document_id = pending.pop()
+            if document_id in self._plain or document_id in added:
+                continue
+            data = self.index.member_bytes.get(document_id)
+            if data is None:
+                raise _LazyCatalogCannotDecide
+            plain = _plain_schema(data, digest_verified=True)
+            if plain.get("$id") != document_id:
+                _protocol_error("schema_id_mismatch")
+            if _uses_dynamic_reference(plain):
+                # The full catalog builds no checker at all then; its stock path decides.
+                raise _LazyCatalogCannotDecide
+            added[document_id] = plain
+            for ref in _walk_refs(plain):
+                if not ref.startswith("#"):
+                    base, _ = urldefrag(ref)
+                    if base in self.index.known_ids:
+                        pending.append(base)
+        return added
+
+
+_LAZY_CATALOG_LOCK: Final = threading.Lock()
+# (the schema-root function it was read through, the lazy catalog or None when the manifest index
+# could not be built). Keyed on the function so a test that substitutes the root gets its own.
+_lazy_catalog_slot: list[tuple[object, _LazyCatalog | None]] = []
+# Set once by a long-lived process that keeps the full catalog (the service).
+_full_catalog_preferred: list[bool] = [False]
+
+
+def use_full_schema_catalog() -> None:
+    """Keep this process on the full catalog, exactly as before lazy loading existed (#1083).
+
+    The service calls this before it serves: it is long-lived, pays the full build once, and keeps
+    its validation path unchanged. Short-lived clients (hooks, CLI commands) never call it.
+    """
+
+    _full_catalog_preferred[0] = True
+
+
+def prepare_schemas(*identities: tuple[str, str]) -> None:
+    """Parse and check these schemas and their closures now, when this process loads lazily.
+
+    Only a timing choice: a client loads the control envelopes before its first frame, where the
+    full catalog used to be built, so no schema work lands inside a later delivery budget. It never
+    raises; whatever it cannot load is decided at first use exactly as it would have been.
+    """
+
+    lazy = _active_lazy_catalog()
+    if lazy is None:
+        return
+    for identity in identities:
+        schema_id = lazy.index.id_by_identity.get(identity)
+        if schema_id is not None:
+            lazy.prepare(schema_id)
+
+
+def _full_catalog_loaded() -> bool:
+    return _load_catalog_state.cache_info().currsize > 0
+
+
+def _active_lazy_catalog() -> _LazyCatalog | None:
+    """The lazy catalog while this process should use it; ``None`` means the full catalog."""
+
+    if _full_catalog_preferred[0] or _full_catalog_loaded():
+        return None
+    return _lazy_catalog()
+
+
+def _lazy_catalog() -> _LazyCatalog | None:
+    """This process's lazy catalog, or ``None`` when its manifest index cannot be built.
+
+    ``None`` sends every caller to the full catalog, which reports the exact failure it always
+    reported.
+    """
+
+    root_source: object = _schema_root
+    slot = _lazy_catalog_slot
+    if slot and slot[0][0] is root_source:
+        return slot[0][1]
+    with _LAZY_CATALOG_LOCK:
+        if _lazy_catalog_slot and _lazy_catalog_slot[0][0] is root_source:
+            return _lazy_catalog_slot[0][1]
+        try:
+            catalog: _LazyCatalog | None = _LazyCatalog(_build_manifest_index())
+        except Exception:
+            catalog = None
+        _lazy_catalog_slot[:] = [(root_source, catalog)]
+        return catalog
+
+
+def _instance_validity() -> _ValidityChecker | _LazyCatalog | None:
+    """What decides a valid instance: the lazy catalog until this process builds the full one."""
+
+    lazy = _active_lazy_catalog()
+    if lazy is not None:
+        return lazy
+    return _validity_checker()
+
+
+def _schema_id_for(name: str, version: str) -> str:
+    """``schema_document_for(name, version).schema_id`` without building the full catalog."""
+
+    identity = _validate_lookup_identity(name, version)
+    lazy = _active_lazy_catalog()
+    if lazy is not None:
+        schema_id = lazy.index.id_by_identity.get(identity)
+        if schema_id is None:
+            _protocol_error("schema_not_found")
+        return schema_id
+    return schema_document_for(name, version).schema_id
+
+
+def request_result_schema_version(name: str) -> str:
+    """The current version of one request/result schema; ``KeyError`` when the name has none.
+
+    Equal to ``request_result_schema_versions(load_schema_catalog())[name]``, without building the
+    full catalog in a process that has not built it (#1083).
+    """
+
+    lazy = _active_lazy_catalog()
+    if lazy is not None:
+        return lazy.index.request_result_versions[name]
+    return request_result_schema_versions(load_schema_catalog())[name]
 
 
 @lru_cache(maxsize=1)
@@ -1172,18 +1490,18 @@ class SchemaInstanceInvalid(ProtocolValueError):
 def validate_schema_instance(name: str, version: str, value: JsonValue) -> None:
     """Validate a canonical JSON value against one exact local schema."""
 
-    document = schema_document_for(name, version)
+    schema_id = _schema_id_for(name, version)
     # Encoding enforces the canonical profile exactly as ``ensure_canonical_value`` does, and its
     # bytes identify the instance for the checker's verdict memory.
     digest = hashlib.sha256(canonical_encode(value)).digest()
     instance, spliced = _plain_validation_instance(value)
-    checker = _validity_checker()
-    if checker is not None and checker.is_valid(
-        document.schema_id, instance, None if spliced else digest
-    ):
+    checker = _instance_validity()
+    if checker is not None and checker.is_valid(schema_id, instance, None if spliced else digest):
         return
+    # A rejection, or an answer the lazy catalog could not give, is decided here against the full
+    # catalog, exactly as before #1083.
     state = _load_catalog_state()
-    plain = state.plain_by_id[document.schema_id]
+    plain = state.plain_by_id[schema_id]
     validator = Draft202012Validator(
         plain,
         registry=state.registry,
