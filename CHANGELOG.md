@@ -339,8 +339,8 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   lost answer by sending that id, while a deliberate repeat is a new record (an identical id-less
   resend right after the same call is refused and names the earlier id). FinishUP guards an omitted frontier with the one it reads when it takes
   the request, orders reference-set lists (never text lists), marks a time it filled in history and
-  review inputs, and names every filled value in the result's `server_filled` and in the operation
-  record. A request that sends every value behaves exactly as before. Agent `status` reads are
+  review inputs, and names every other filled field in the result's `server_filled` and in the
+  operation record. A request that sends every value behaves exactly as before. Agent `status` reads are
   brief by default; `detail: full` returns the complete body, `limit` defaults to 20, and
   `view=results` accepts the filters agents already sent it (#1084, ADR-050).
 
