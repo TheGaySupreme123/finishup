@@ -1406,8 +1406,12 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   change parts show whole is ranked as an older edit superseded by `check-time-change`, so the
   latest verification output takes that room first. The edit is still offered after it.
 - **Supplied summaries.** The reviewer is told that an `excerpt-supplied-` item is the agent's
-  account of a run, not its output, so a verification-output request it answers stays unmet until
-  the output is carried. The #1079 published-answers behaviour is otherwise unchanged.
+  account of a run, not FinishUP's capture of it: it judges the summary as that account against
+  the code and any captured output, never as support alone, but does not list its
+  verification-output request again only because the answer is a summary. FinishUP's own remedy
+  for that request asks for a `result_recorded` summary, so an agent that follows it does not
+  spend the round's second `insufficient_packet`. The #1079 published-answers behaviour is
+  otherwise unchanged.
 - **Extra room, bounded.** Decisive material gets room by rank and by reclaiming duplicate edit
   bytes, never by exceeding the recipe's excerpt total (at most 128 KiB), the channel's prepared
   ceiling (at most 256 KiB) or the follow-up share (half the excerpt total across all rounds). A

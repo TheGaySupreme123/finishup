@@ -42,6 +42,7 @@ from finishup.domain.receipts import (
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
 )
+from finishup.domain.review_input_render import publish_exactly
 from finishup.kernel.finding_resolution import SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.models import MAX_REVIEW_CHALLENGES
@@ -685,11 +686,23 @@ def test_the_agents_framing_is_tested_not_adopted() -> None:
 
 def test_a_supplied_summary_is_the_agents_account_not_the_output() -> None:
     """Issue #1082 (packet investigation): a published result summary answered a
-    verification_output request as if it were the run's output."""
+    verification_output request as if it were the run's output.
 
-    assert (
+    The reviewer weighs the summary as the agent's account, never as support on its own, but it
+    must not re-list the request only because the answer is a summary: FinishUP's own remedy for
+    verification_output asks for exactly that summary, so re-listing it would spend the round's
+    second insufficient_packet on an agent that followed FinishUP's instruction."""
+
+    sentence = (
         "An excerpt whose item_id begins excerpt-supplied- is a result summary the agent "
-        "published to answer a request: it is the agent's account of the run, not the run's "
-        "output, so a verification_output item it answers stays unmet until the output itself is "
-        "carried." in _TEXT
+        "published to answer a request: the agent's account of the run, not FinishUP's capture "
+        "of it. Judge it as that account against the code and any captured output; alone it is "
+        "not support, but do not list its verification_output item again only because the "
+        "answer is a summary."
     )
+    assert sentence in _TEXT
+    # The reviewer rule and the agent-facing remedy agree on what answers the request.
+    assert "whose summary is the command output" in publish_exactly("verification_output")
+    assert "stays unmet until the output itself is carried" not in _TEXT
+    # The summary is never support alone; the grounding rule that says so still precedes it.
+    assert _TEXT.index("Support needs a witness.") < _TEXT.index(sentence)

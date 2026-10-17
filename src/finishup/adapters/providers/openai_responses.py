@@ -691,9 +691,10 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "excerpts FinishUP added to this packet for it (status pending: it could add none). "
             "Judge with them; list such an item again only if you cite those refs and say why they "
             "are still insufficient. An excerpt whose item_id begins excerpt-supplied- is a result "
-            "summary the agent published to answer a request: it is the agent's account of the "
-            "run, not the run's output, so a verification_output item it answers stays unmet "
-            "until the output itself is carried.",
+            "summary the agent published to answer a request: the agent's account of the run, not "
+            "FinishUP's capture of it. Judge it as that account against the code and any captured "
+            "output; alone it is not support, but do not list its verification_output item again "
+            "only because the answer is a summary.",
             # Gap glossaries (issue #906): packet limits apart from codes about the agent's record.
             "Packet limit codes and omission reasons name limits of what this packet could carry, "
             "never defects in the agent's work; an item they hide is not assessable. "
