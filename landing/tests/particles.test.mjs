@@ -122,6 +122,16 @@ test("offscreen and hidden documents stop rendering and resume without advancing
   assert.deepEqual(env.texts, ["work", "code"]);
 });
 
+test("a WebGL budget falls back to the 2D budget where WebGL is unavailable", (t) => {
+  const env = environment(t);
+  const art = env.mount({ count: 800, glCount: 50000 });
+  assert.equal(art.renderer, "2d");
+  env.intersect(true);
+  env.flush(0);
+  assert.equal(env.ctx.frames, 1);
+  assert.equal(env.ctx.draws.length, 800, "every dot of the 2D budget, drawn on the 2D canvas");
+});
+
 test("destroy cancels pending work and cannot be revived by font or observer callbacks", async (t) => {
   const env = environment(t);
   const art = env.mount();
