@@ -3218,8 +3218,9 @@ not yet measured; issue #1083 owns them.
 Equivalence: the #1087 replay proof ([test instances](test-instances.md)) replayed 20 Codex
 callbacks rebuilt from a synthetic rollout, and 9 malformed payloads, through the merged
 predecessor and this change on Linux x86_64. Every exit code, stdout and stderr byte, drain, status
-read and ledger event with its full payload was identical, and 15 of those callbacks parsed only
-their schemas in the new build.
+read and ledger event with its full payload compared identical after the normalization that runbook
+describes, which matches run-generated values, such as task, session and result ids, one-to-one.
+In the new build 15 of those callbacks parsed only their schemas.
 The MCP bridge (`mcp serve --host codex`) is not replayed: it builds the full catalog as it starts,
 so its validation is unchanged by this change.
 

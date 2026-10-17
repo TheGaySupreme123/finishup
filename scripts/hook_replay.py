@@ -34,6 +34,7 @@ background passes paused, so a build that is merely slower takes the same branch
 ``--admission-clock`` decides the admission buffer's flush without the wall clock, and
 ``--fixed-observation-key`` gives every instance one observation key, so keyed values and the
 advice finding ids and order they decide are the same in both builds and compared exactly.
+``compare`` refuses a verdict unless both records' pinned runs were replayed under both controls.
 ``compare``'s verdict is decided by the pinned runs alone; a ``shipped`` run (launcher untouched)
 only adds a latency table. Contributor tooling: it never targets an everyday installation, and
 every instance process gets a scratch ``HOME``/``CODEX_HOME`` and a keyring backend that refuses
@@ -3069,13 +3070,46 @@ def pins_refusal(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
     return []
 
 
+def proof_controls_refusal(old_runs: Mapping[str, Any], new_runs: Mapping[str, Any]) -> list[str]:
+    """Why two records' pinned runs cannot decide the proof for want of a control, or nothing.
+
+    Without ``--admission-clock`` whether a held admission row is delivered at one callback or a
+    later one depends on how fast the machine ran, and without ``--fixed-observation-key`` every
+    observation-keyed value is random per instance, so ``compare`` renames it instead of holding it
+    exact. Two pinned runs replayed without a control still compare (``compare_runs``), as an
+    experiment; the proof needs both controls set in both records. A record without a pinned run
+    is left to ``pinned_run_missing``.
+    """
+
+    failures: list[str] = []
+    cause = "replay both builds with --fixed-observation-key and --admission-clock"
+    for side, runs in (("old", old_runs), ("new", new_runs)):
+        run = cast(Mapping[str, Any] | None, runs.get("pinned"))
+        if not isinstance(run, Mapping):
+            continue
+        controls = run_controls(run)
+        clock = controls["admission_clock"]
+        unset = [
+            flag
+            for flag, is_set in (
+                ("--fixed-observation-key", controls["fixed_observation_key"] is True),
+                ("--admission-clock", isinstance(clock, str) and clock in ADMISSION_CLOCKS),
+            )
+            if not is_set
+        ]
+        if unset:
+            failures.append(f"proof_controls_unset:{side}:{','.join(unset)} ({cause})")
+    return failures
+
+
 def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
     """The verdict on two replay records: their ``pinned`` runs compared, any other mode timed.
 
     Only ``pinned`` decides: its controls make a slower build take the branch a faster one takes.
     A ``shipped`` run, where a slower build may miss a budget the faster one meets, contributes a
     latency table only. A missing ``pinned`` run or another corpus is a failure, and records
-    replayed under missing or unequal hook budget pins are refused before any run is compared.
+    replayed under missing or unequal hook budget pins, or a pinned run replayed without both
+    proof controls, are refused before any run is compared.
     """
 
     summary: dict[str, Any] = {
@@ -3098,6 +3132,11 @@ def compare_records(old: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str,
     new_runs = cast(dict[str, Any], new.get("runs") or {})
     if "pinned" not in old_runs or "pinned" not in new_runs:
         summary["failures"].append(f"pinned_run_missing:{sorted(old_runs)}:{sorted(new_runs)}")
+    controls_refused = proof_controls_refusal(old_runs, new_runs)
+    if controls_refused:
+        summary["failures"] += controls_refused
+        summary["identical"] = False
+        return summary
     exact = frozenset(
         cast(list[str], old_corpus.get("generated_tokens") or [])
         + cast(list[str], new_corpus.get("generated_tokens") or [])

@@ -256,17 +256,23 @@ How `compare` decides:
   nonzero, a status read that did not follow its workspace's last callback, a history page, the
   service stop or the ledger export failing, an exported hash chain that does not recompute from its
   own bytes, two runs under different controls or work roots, two records whose pinned hook budgets
-  (`PINNED_HOOK_BUDGETS`, kept in each record) are missing or unequal, or a fixed key that was asked
-  for and not written.
+  (`PINNED_HOOK_BUDGETS`, kept in each record) are missing or unequal, a pinned run replayed without
+  both proof controls (`--fixed-observation-key` and `--admission-clock`), or a fixed key that was
+  asked for and not written.
 - **Exact comparison.** Every compared part must be equal after normalizing only values that differ
   between two runs of one build: identifiers that are random or digests over a run's random task
-  ids, matched one-to-one by where they occur; vault-keyed payload commitments; routine-read
-  summary digests, which carry receipt times; named service clock fields, each checked to fall
-  inside the run; wall-time figures at named `observe status` paths, never counts, outcomes or
-  limits; and the order of one call's captured tool input and output evidence, which the
-  materializer emits in random object-id order and which is compared as a set of full events. With
-  the fixed key, observation-keyed values and the advice finding identifiers derived from them are
-  compared exactly, and a renamed value that is the same in both runs fails the comparison, so the
+  ids, matched one-to-one by where they occur; vault-keyed payload commitments; routine-read summary
+  digests, which carry receipt times; named service clock fields, each checked to fall inside the
+  run; wall-time figures and wall-time-derived values at named `observe status` paths; and the order
+  of one call's captured tool input and output evidence, which the materializer emits in random
+  object-id order and which is compared as a set of full events. The wall-time-derived values are
+  the delivery-lag and pass-timing histograms' bucket counts, `hard_cap_breach_count` and
+  `recent_hard_cap_breach_count` (passes over a wall-time cap), `dropped_sample_count` (timing
+  samples lost to a bounded lock wait), the `store_lock_long_hold` rows (a store lock held a second
+  or more) with their counts, and the selection state's byte size and utilization, which hold the
+  timing figures; every other count, outcome and limit is compared. With the fixed key,
+  observation-keyed values and the advice finding identifiers derived from them are compared
+  exactly, and a renamed value that is the same in both runs fails the comparison, so the
   self-control replay shows that everything renamed is generated per run. A list of identifiers is
   an unordered set only where its producer sorts it by value; an advice ranking is compared in
   order.

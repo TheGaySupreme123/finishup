@@ -2172,8 +2172,9 @@ from 1,457 to 1,190 ms. Linux and WSL 2 timings are not yet measured; issue #108
 Equivalence: the #1087 replay proof ([test instances](test-instances.md)) replayed the 19
 ordinary-profile callbacks, and 9 malformed payloads, through the merged predecessor and this
 change on Linux x86_64. Every exit code, stdout and stderr byte, drain, status read and ledger event
-with its full payload was identical, and 8 of those callbacks parsed only their schemas in the new
-build.
+with its full payload compared identical after the normalization that runbook describes, which
+matches run-generated values, such as task, session and result ids, one-to-one. In the new build 8
+of those callbacks parsed only their schemas.
 The MCP bridge (`mcp serve --host claude`) is not replayed: it builds the full catalog as it starts,
 so its validation is unchanged by this change.
 

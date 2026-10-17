@@ -1584,6 +1584,38 @@ def test_runs_from_two_work_roots_are_refused_with_the_cause() -> None:
     assert _compare(old, new)["refused"]["new"] == ["workspace_root_missing"]
 
 
+def test_a_proof_verdict_needs_both_proof_controls_in_both_records() -> None:
+    cause = "(replay both builds with --fixed-observation-key and --admission-clock)"
+    # Pinned runs replayed without the fixed key still compare equal, as an experiment ...
+    old_run, new_run = _make_run(1, catalog="eager", seeded=False), _make_run(2, seeded=False)
+    assert _compare(old_run, new_run)["identical"]
+    # ... but they are not the proof, and no run is compared for a verdict.
+    summary = _MODULE.compare_records(_record(old_run, "old"), _record(new_run, "new"))
+    assert not summary["identical"]
+    assert summary["failures"] == [
+        f"proof_controls_unset:old:--fixed-observation-key {cause}",
+        f"proof_controls_unset:new:--fixed-observation-key {cause}",
+    ]
+    assert summary["modes"] == {}
+    # The admission clock left to the wall clock on one side only.
+    old, new = _record(_make_run(1, catalog="eager"), "old"), _record(_make_run(2), "new")
+    assert _MODULE.compare_records(old, new)["identical"]
+    new["runs"]["pinned"]["controls"]["admission_clock"] = None
+    summary = _MODULE.compare_records(old, new)
+    assert not summary["identical"]
+    assert summary["failures"] == [f"proof_controls_unset:new:--admission-clock {cause}"]
+    report, _ = _MODULE.render_report(old, new)
+    assert "Verdict (pinned runs only): **DIFFERENT**." in report
+    assert "- record failure: `proof_controls_unset:new:--admission-clock" in report
+    # A record that names neither control names both, and a missing pinned run is still reported.
+    del new["runs"]["pinned"]["controls"]
+    old["runs"]["shipped"] = old["runs"].pop("pinned")
+    assert _MODULE.compare_records(old, new)["failures"] == [
+        "pinned_run_missing:['shipped']:['pinned']",
+        f"proof_controls_unset:new:--fixed-observation-key,--admission-clock {cause}",
+    ]
+
+
 def test_records_replayed_under_other_hook_budgets_are_refused_with_the_cause() -> None:
     old, new = _record(_make_run(1, catalog="eager"), "old"), _record(_make_run(2), "new")
     assert _MODULE.compare_records(old, new)["identical"]
