@@ -42,8 +42,9 @@ looks cleaner than the call it answers.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Final
 
 from finishup.domain.events import (
@@ -63,6 +64,7 @@ from finishup.domain.workspace_effect import (
     WORKSPACE_CHANGED,
     WORKSPACE_UNAVAILABLE,
     WORKSPACE_UNCHANGED,
+    workspace_effect_from_annotation,
     workspace_effect_from_result_summary,
 )
 from finishup.domain.write_scope import finishup_tree_overlap
@@ -75,9 +77,11 @@ from finishup.kernel.observed_failures import (
 )
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.task_facts import (
+    declared_path_beyond_fingerprint,
     effective_obligations,
     non_counting_edits_exempt,
     requested_verification_run_events,
+    task_workspace_root,
 )
 
 __all__ = [
@@ -177,16 +181,22 @@ _VERIFYING_RUNNERS: Final = frozenset({"test", "build", "lint", "typecheck"})
 class WorkspaceEffects:
     """What the hook's before/after workspace fingerprints established for a prefix (PR #1080).
 
-    ``quiet`` holds the observed actions a service-stamped result reports ``unchanged`` for, with
-    no result of the same action reporting ``changed`` or ``unavailable``, minus every run of a
+    ``quiet`` holds the observed actions some service-stamped fact reports ``unchanged`` for, with
+    no fact of the same action reporting ``changed`` or ``unavailable``, minus every run of a
     command the task itself requests (a verification run stays new input). ``changed`` holds the
-    actions a result reports ``changed`` for. An action in neither set has no usable fact: the
+    actions a fact reports ``changed`` for. An action in neither set has no usable fact: the
     pre-call snapshot was missing, the call had not ended, the workspace was beyond the walk
     bound, or the record predates the fact. It reads exactly like a change.
+
+    A fact is read from an observed result's summary suffix or, for a later delivery of a call
+    whose result was already recorded (round 6), from an observed evidence row under the call's
+    action with the exact annotation description. ``annotations`` maps each such evidence event to
+    its action, so the row is classified as the call it describes.
     """
 
     quiet: frozenset[ActionId] = frozenset()
     changed: frozenset[ActionId] = frozenset()
+    annotations: Mapping[EventId, ActionId] = field(default_factory=lambda: MappingProxyType({}))
 
 
 def workspace_effects(
@@ -194,8 +204,10 @@ def workspace_effects(
 ) -> WorkspaceEffects:
     """Read the workspace-effect facts of the observed results in this prefix.
 
-    Only service-stamped observation results count: an agent-published result cannot claim that
-    a command left the workspace unchanged. Records past the projection frontier are ignored.
+    Only service-stamped observation records count: an agent-published result or evidence row
+    cannot claim that a command left the workspace unchanged. Records past the projection frontier
+    are ignored. Every fact of one action is folded: ``unchanged`` only when no other delivery of
+    the same call said ``changed`` or ``unavailable``, whatever order they arrived in.
     """
 
     if type(projection) is not ProjectionState:
@@ -211,20 +223,56 @@ def workspace_effects(
     unchanged: set[ActionId] = set()
     contradicted: set[ActionId] = set()
     changed: set[ActionId] = set()
-    for record in prefix:
-        if record.schema.name != "result_recorded":
-            continue
-        payload = record.payload
-        if type(payload) is not ResultRecordedPayload or not is_observation_authored(record):
-            continue
-        effect = workspace_effect_from_result_summary(payload.summary)
+    annotations: dict[EventId, ActionId] = {}
+    observed_actions: dict[EventId, ActionId] | None = None
+
+    def note(action: ActionId, effect: str | None) -> None:
         if effect == WORKSPACE_UNCHANGED:
-            unchanged.add(payload.action_id)
+            unchanged.add(action)
         elif effect in {WORKSPACE_CHANGED, WORKSPACE_UNAVAILABLE}:
-            contradicted.add(payload.action_id)
+            contradicted.add(action)
             if effect == WORKSPACE_CHANGED:
-                changed.add(payload.action_id)
+                changed.add(action)
+
+    for record in prefix:
+        name = getattr(getattr(record, "schema", None), "name", None)
+        if name not in {"result_recorded", "evidence_recorded"}:
+            continue
+        payload = getattr(record, "payload", None)
+        if name == "result_recorded":
+            if type(payload) is not ResultRecordedPayload or not is_observation_authored(record):
+                continue
+            note(payload.action_id, workspace_effect_from_result_summary(payload.summary))
+        elif name == "evidence_recorded":
+            if type(payload) is not EvidenceRecordedPayload or not is_observation_authored(record):
+                continue
+            effect = workspace_effect_from_annotation(payload.description)
+            if effect is None:
+                continue
+            if observed_actions is None:
+                observed_actions = {
+                    event: action.action_id
+                    for event, action in observed_actions_by_event(prefix).items()
+                }
+            parents = {
+                observed_actions[parent]
+                for parent in record.causal_parents
+                if parent in observed_actions
+            }
+            if len(parents) != 1:
+                # An annotation must name exactly one observed call; anything else says nothing.
+                continue
+            (action,) = parents
+            annotations[record.event_id] = action
+            note(action, effect)
     quiet: set[ActionId] = unchanged - contradicted
+    if quiet and declared_path_beyond_fingerprint(
+        projection, workspace_root=task_workspace_root(prefix)
+    ):
+        # The task declares a delivery inside the workspace that the fingerprint does not compare
+        # (a VCS store or bookkeeping file, below a dependency environment's first level, a
+        # bytecode or saved-receipt name): no comparison can vouch for it, so no command is quiet.
+        quiet = set[ActionId]()
     if quiet:
         verifying = requested_verification_run_events(projection, prefix)
         if verifying is None:
@@ -238,7 +286,9 @@ def workspace_effects(
                 if (row := projection.actions.get(action)) is None
                 or row.source_event_id not in verifying
             }
-    return WorkspaceEffects(frozenset(quiet), frozenset(changed))
+    return WorkspaceEffects(
+        frozenset(quiet), frozenset(changed), MappingProxyType(dict(annotations))
+    )
 
 
 def supersession_exempt(projection: ProjectionState) -> frozenset[str]:
@@ -395,6 +445,19 @@ def classify_later_material(
         answered = _classify_action(action.payload, projection, exempt, effects)
         return LaterMaterial(answered.material_class, "result_of_action", answered.tool)
     if name == "evidence_recorded" and type(payload) is EvidenceRecordedPayload:
+        annotated = None if effects is None else effects.annotations.get(record.event_id)
+        if annotated is not None:
+            # A later delivery's workspace fact for a call already recorded (round 6): it is that
+            # call, classified with the folded fact; an edit's annotation never supersedes twice.
+            action_row = projection.actions.get(annotated)
+            if action_row is None or action_row.payload is None:
+                return LaterMaterial(LaterMaterialClass.OTHER, "result_without_readable_action")
+            answered = _classify_action(action_row.payload, projection, exempt, effects)
+            if answered.material_class is LaterMaterialClass.EDIT_OR_WRITE:
+                return LaterMaterial(LaterMaterialClass.OTHER, "evidence_of_edit", answered.tool)
+            return LaterMaterial(
+                answered.material_class, "workspace_effect_of_action", answered.tool
+            )
         if actions_by_event:
             for parent in record.causal_parents:
                 parent_action = actions_by_event.get(parent)

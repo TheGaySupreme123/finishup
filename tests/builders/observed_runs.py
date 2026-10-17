@@ -16,6 +16,7 @@ from finishup.application.check import CheckScope, run_deterministic_policies
 from finishup.application.observation_materialize import observation_author
 from finishup.domain.command_segments import command_segment_commitments
 from finishup.domain.events import (
+    EVIDENCE_SCHEMA_VERSION,
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -24,6 +25,8 @@ from finishup.domain.events import (
     ClaimRecordedPayloadV1_1,
     EventPayload,
     EventSchema,
+    EvidenceKind,
+    EvidenceRecordedPayload,
     LedgerChain,
     LedgerRecord,
     PayloadRef,
@@ -56,6 +59,7 @@ from finishup.domain.values import (
     actor_id,
     claim_id,
     event_id,
+    evidence_id,
     object_id,
     receipt_id,
     request_id,
@@ -65,7 +69,10 @@ from finishup.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from finishup.domain.workspace_effect import result_summary_with_workspace_effect
+from finishup.domain.workspace_effect import (
+    result_summary_with_workspace_effect,
+    workspace_effect_annotation,
+)
 from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     CaseGap,
@@ -131,7 +138,10 @@ def command_identity_for(command: str) -> str:
     )
 
 
-def _logical_key(payload: EventPayload, identifier: EventId) -> str:
+def _logical_key(payload: EventPayload, identifier: EventId) -> str | None:
+    if type(payload).__name__ == "SessionOpenedPayload":
+        # A session event projects no record of its own.
+        return None
     for name in ("result_id", "action_id", "claim_id", "obligation_id", "evidence_id"):
         value = getattr(payload, name, None)
         if value is not None:
@@ -383,6 +393,45 @@ class ObservedLedger:
             observed=True,
         )
         return result
+
+    def annotate_workspace_effect(
+        self, result: ResultId, effect: str, *, observed: bool = True
+    ) -> EventId:
+        """Append a later delivery's workspace fact for the call of *result* (PR #1080 round 6).
+
+        Mirrors ``materialize_workspace_effect_annotation``: one metadata-only evidence row whose
+        causal parent is the call's action event and whose description is the exact annotation.
+        """
+
+        action = next(
+            record.payload.action_id
+            for record in self.records
+            if isinstance(record, AcceptedEvent)
+            and isinstance(record.payload, ResultRecordedPayload)
+            and record.payload.result_id == result
+        )
+        action_event = next(
+            record.event_id
+            for record in self.records
+            if isinstance(record, AcceptedEvent)
+            and isinstance(record.payload, ActionRecordedPayload)
+            and record.payload.action_id == action
+        )
+        self.runs += 1
+        description = workspace_effect_annotation(effect)
+        assert description is not None
+        return self._append(
+            EventSchema("evidence_recorded", EVIDENCE_SCHEMA_VERSION),
+            EvidenceRecordedPayload(
+                evidence_id(f"evd_00000000-0000-4000-8000-{self.runs:012d}"),
+                EvidenceKind.OTHER,
+                EvidenceImmutability.METADATA_ONLY,
+                _NOW,
+                description=description,
+            ),
+            observed=observed,
+            causal_parents=(action_event,),
+        )
 
     def fail(self, command: str | None, *, exit_status: int = 1) -> ResultId:
         return self.run(command, ResultOutcome.FAILURE, exit_status=exit_status)

@@ -16,6 +16,10 @@ A later record requires a new closing review when:
   FinishUP could not establish that it left the workspace unchanged. Command text never decides;
 * it is another observed tool call whose result reports the workspace ``changed`` (a third-party
   MCP tool, a subagent, a process poll that wrote files);
+* it is a later delivery's workspace fact for an already recorded call (an observed evidence row
+  carrying ``Observed workspace effect=<token>``, round 6), judged as that call with every fact
+  of the call folded, so a ``changed`` or ``unavailable`` that arrives after a closing review
+  re-arms it;
 * an observed result has no readable action (fail closed);
 * it is a cooperative ``action_recorded`` of kind ``edit`` or ``command``, or the result of one,
   including a result whose action row cannot be read;
@@ -52,6 +56,7 @@ _OBSERVED_COMMAND_RULES = frozenset(
         "unclassified_observed_action",
         "result_of_action",
         "result_without_readable_action",
+        "workspace_effect_of_action",
     }
 )
 
@@ -77,6 +82,15 @@ def _observed_command(
         return _material_call(payload, effects)
     if name == "result_recorded" and type(payload) is ResultRecordedPayload:
         action = projection.actions.get(payload.action_id)
+        if action is None or action.payload is None:
+            return True
+        return _material_call(action.payload, effects)
+    annotated = effects.annotations.get(record.event_id)
+    if annotated is not None:
+        # A later delivery's workspace fact for a recorded call (round 6) is that call, judged at
+        # the position the fact arrived: a contradiction re-arms from here, not only from the
+        # call's original result.
+        action = projection.actions.get(annotated)
         if action is None or action.payload is None:
             return True
         return _material_call(action.payload, effects)

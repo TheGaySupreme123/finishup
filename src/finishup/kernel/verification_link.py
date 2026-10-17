@@ -37,6 +37,8 @@ def admissible_verification_refs(
     projection: ProjectionState,
     records: tuple[LedgerRecord, ...],
     obligations: Iterable[ObligationId],
+    *,
+    limit: int | None = MAX_ADMISSIBLE_OBLIGATIONS,
 ) -> tuple[tuple[ObligationId, tuple[str, ...]], ...]:
     """``(obligation, sorted evd_/res_ ids)`` for obligations that have an observed link.
 
@@ -50,8 +52,10 @@ def admissible_verification_refs(
     evidence (observation-authored ``evidence_recorded``) or a result of an observed command
     (``is_observed_run_record`` on the result or on its action), including an id whose
     ``source_actions`` reach such a row. An agent-asserted id with no such row is omitted.
-    A global action with no attempted item is not a link. At most eight obligations and eight
-    ids each, sorted. An obligation with no such id is omitted.
+    A global action with no attempted item is not a link. At most eight ids each, sorted. An
+    obligation with no such id is omitted. *limit* bounds the obligations walked (the first
+    eight in id order by default, for the bounded status field); ``None`` walks every one, as
+    the coverage judgement and the receipt pairing must.
     """
 
     if type(projection) is not ProjectionState or type(records) is not tuple:
@@ -62,7 +66,7 @@ def admissible_verification_refs(
     source_cache: dict[str, tuple[tuple[ActionRecordedPayload, EventId], ...]] = {}
     claim_refs = _claim_refs(projection, frontier, by_event)
     rows: list[tuple[ObligationId, tuple[str, ...]]] = []
-    for obligation in tuple(sorted(set(obligations), key=str.encode))[:MAX_ADMISSIBLE_OBLIGATIONS]:
+    for obligation in tuple(sorted(set(obligations), key=str.encode))[:limit]:
         refs = _refs_for(
             projection,
             frontier,

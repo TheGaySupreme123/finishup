@@ -858,6 +858,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "task_statement_not_supplied",
         "task_statement_unavailable",
         "unpaired_event",
+        "unresolved_verification_limitation",
         "verification_only_as_root",
         "write_outside_workspace",
     }
