@@ -2636,7 +2636,28 @@ def _cmd_corpus(args: argparse.Namespace) -> int:
     return 0
 
 
+def pinned_only_flag_error(args: argparse.Namespace) -> str | None:
+    """Why the pinned-only experiment flags cannot be honored for these modes, or ``None``.
+
+    Checked before any instance is provisioned, so a refused invocation leaves nothing behind.
+    """
+
+    if all(mode == "pinned" for mode in args.mode):
+        return None
+    for flag, value in (
+        ("--admission-clock", args.admission_clock is not None),
+        ("--fixed-observation-key", args.fixed_observation_key),
+        ("--delay-ms", args.delay_ms != 0),
+    ):
+        if value:
+            return f"{flag} applies to --mode pinned only"
+    return None
+
+
 def _cmd_replay(args: argparse.Namespace) -> int:
+    refusal = pinned_only_flag_error(args)
+    if refusal is not None:
+        raise SystemExit(refusal)
     corpus = json.loads(Path(args.corpus).read_text(encoding="utf-8"))
     work_root = Path(args.work_root)
     work_root.mkdir(parents=True, exist_ok=True)
@@ -2667,11 +2688,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         }
         replayer = Replayer(instance, work_root, log)
         replayer.delay_seconds = args.delay_ms / 1000.0
-        if args.admission_clock is not None and mode != "pinned":
-            raise SystemExit("--admission-clock applies to --mode pinned only")
         replayer.admission_clock = args.admission_clock
-        if args.fixed_observation_key and mode != "pinned":
-            raise SystemExit("--fixed-observation-key applies to --mode pinned only")
         replayer.fixed_observation_key = args.fixed_observation_key
         entry: dict[str, Any] = {
             "tag": tag,

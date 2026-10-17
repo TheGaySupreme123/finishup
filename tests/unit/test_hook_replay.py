@@ -871,3 +871,27 @@ def test_the_paused_background_passes_exist_on_the_service() -> None:
         assert callable(getattr(ServiceDaemon, name))
     compile(_MODULE._SERVICE_BOOTSTRAP, "service-bootstrap", "exec")
     compile(_MODULE._PINNED_BOOTSTRAP, "pinned-bootstrap", "exec")
+
+
+@pytest.mark.parametrize(
+    ("flags", "refusal"),
+    [
+        (["--admission-clock", "due"], "--admission-clock applies to --mode pinned only"),
+        (["--fixed-observation-key"], "--fixed-observation-key applies to --mode pinned only"),
+        (["--delay-ms", "50"], "--delay-ms applies to --mode pinned only"),
+    ],
+)
+def test_pinned_only_flags_are_refused_before_any_instance_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flags: list[str], refusal: str
+) -> None:
+    def provision(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("an instance was provisioned for a refused invocation")
+
+    monkeypatch.setattr(_MODULE, "provision", provision)
+    argv = ["replay", "--checkout", ".", "--revision", "HEAD", "--tag", "t"]
+    argv += ["--corpus", str(tmp_path / "absent.json"), "--work-root", str(tmp_path / "w")]
+    argv += ["--out", str(tmp_path / "out.json"), "--mode", "pinned", "--mode", "shipped"]
+    with pytest.raises(SystemExit) as refused:
+        _MODULE.main([*argv, *flags])
+    assert str(refused.value) == refusal
+    assert not (tmp_path / "w").exists()
