@@ -344,6 +344,10 @@ _SEMANTIC_PROOF_TOLERATED_GAPS: Final = (
     | _REVIEW_DIALOGUE_DISCLOSURE_GAPS
     | _EGRESS_VALUE_REDACTION_GAPS
     | _OWNER_DISCLOSURE_CHOICE_GAPS
+    # The derived unanswered-verification limit (#1079 F2, ADR-033) says nothing about what the
+    # reviewer was shown, so it never keeps a repaired AI-powered finding open either; it stays on
+    # the receipt through the gap-effect table.
+    | {UNRESOLVED_VERIFICATION_GAP}
 )
 # Read-only public names for ``kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`` (#986).
 DETERMINISTIC_PROOF_TOLERATED_GAPS: Final = _DETERMINISTIC_PROOF_TOLERATED_GAPS

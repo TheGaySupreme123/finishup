@@ -1148,9 +1148,9 @@ The owning gap-effect table classifies this code under G13 as a standing limitat
 bounding on both local and AI-powered receipt routes. It adds one recorded code to the
 unreleased classification version `8` (222 total rows including readiness-only tokens).
 Check text uses a fixed limitation sentence; status and receipt pairings name obligation ids.
-It is also a deterministic proof-tolerated code: it says nothing about whether the rows a
-local pack judges were readable, so it never keeps a repaired local finding open (which would
-reblock Stop); the receipt stays bounded by it.
+It is also a proof-tolerated code for both local and AI-powered findings: it says nothing about
+whether the rows a local pack judges were readable or what a reviewer was shown, so it never
+keeps any repaired finding open (which would reblock Stop); the receipt stays bounded by it.
 
 ## Amendment (2026-10-16, PR #1080): closing currency by workspace change, and native verification
 
