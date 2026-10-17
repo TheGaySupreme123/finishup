@@ -166,6 +166,7 @@ from finishup.domain.task_fact_tokens import (
     WRITE_OUTSIDE_WORKSPACE_GAP as WRITE_OUTSIDE_WORKSPACE_GAP,
 )
 from finishup.domain.values import EventId, ObligationId, obligation_id
+from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
 from finishup.domain.write_scope import finishup_artifact_name, notes_artifact_name, scratch_overlap
 from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.fact_lineage import (
@@ -230,6 +231,7 @@ __all__ = [
     "TaskFactSignals",
     "BlockerDeclaration",
     "acting_started",
+    "declared_path_beyond_fingerprint",
     "acknowledged_obligation_ids",
     "agent_linked_run_events",
     "observed_planned_commands",
@@ -1194,6 +1196,29 @@ def requested_verification_run_events(
             if run.action_event is not None and planned_match(run, planned) is not None
         )
     return frozenset(events)
+
+
+def declared_path_beyond_fingerprint(projection: ProjectionState) -> bool:
+    """Whether an effective obligation names a deliverable the workspace fingerprint cannot vouch for.
+
+    A requested non-input ``file`` or ``directory`` inside VCS metadata or a dependency environment
+    or tool cache, a bytecode file, or a saved receipt or export name
+    (``path_beyond_workspace_fingerprint``, PR #1080 round 6). The hook does not read obligations
+    and compares those places only in part or not at all; the kernel then withholds ``unchanged``
+    from every command rather than trust a comparison that may not have seen the delivery. Pure:
+    no filesystem is read.
+    """
+
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if item.item_kind not in _DECLARED_OUTPUT_KINDS or item.role is RequestedItemRole.INPUT:
+                continue
+            if path_beyond_workspace_fingerprint(item.value):
+                return True
+    return False
 
 
 def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:

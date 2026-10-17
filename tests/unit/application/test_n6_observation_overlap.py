@@ -133,7 +133,18 @@ async def test_plain_bash_f1_capture_and_stream_overlap(tmp_path: Path, stream_f
     assert store.list_pending_capture_tickets(runtime.task_id) == ()
     records = tuple([row async for row in ledger.load_events(runtime.session_id)])
     assert len([row for row in records if type(row.payload) is ResultRecordedPayload]) == 1
-    evidence = [row.payload for row in records if type(row.payload) is EvidenceRecordedPayload]
+    from finishup.domain.workspace_effect import workspace_effect_from_annotation
+
+    rows = [row.payload for row in records if type(row.payload) is EvidenceRecordedPayload]
+    # PR #1080 round 6: when the stream copy is recorded first, the hook post's workspace fact
+    # still reaches the call as one metadata-only annotation row; hook-first needs none.
+    annotations = [
+        effect
+        for item in rows
+        if (effect := workspace_effect_from_annotation(item.description)) is not None
+    ]
+    assert annotations == (["unchanged"] if stream_first else [])
+    evidence = [item for item in rows if workspace_effect_from_annotation(item.description) is None]
     # Both command input (eligibility context) and output survive even in stream-first order.
     assert len(evidence) == 2
     manifests = [
