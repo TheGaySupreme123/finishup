@@ -16,11 +16,10 @@ a { color: var(--accent-text); }
 a:hover { color: var(--ink); }
 img, svg { max-width: 100%; }
 :focus-visible { outline: 2px solid var(--deep-green); outline-offset: 3px; border-radius: var(--radius-sm); }
+/* main takes focus only as the skip link's target and the story's fallback; it gets no ring */
+#main-content:focus { outline: none; }
 .skip-link { position: fixed; top: 8px; left: 8px; z-index: 40; padding: 12px; background: var(--surface-card); transform: translateY(-200%); }
 .skip-link:focus { transform: none; }
-.motion-toggle { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-sm); color: var(--deep-green); background: var(--pale-mint); }
-.motion-toggle[hidden] { display: none; }
-.motion-toggle svg { width: 18px; height: 18px; }
 
 /* ---------- Type ---------- */
 .eyebrow {
@@ -55,7 +54,13 @@ img, svg { max-width: 100%; }
 }
 .display .accent { color: var(--accent-text); }
 .display strong { font-weight: 600; }
-.copy.foot .display { font-size: clamp(36px, 5vw, 64px); }
+/* The closing line: the lockup in dots above it is its subject, so "is free." is set big */
+.copy.foot .display { font-size: clamp(64px, min(10vw, 15vh), 136px); line-height: 0.95; }
+.end-title { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.dot-lockup { display: block; width: min(640px, 84vw); aspect-ratio: 24 / 5; }
+.story.animated .end-subject { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.story:not(.animated) .dot-lockup { display: none; }
+.story:not(.animated) .copy.foot .display { font-size: clamp(40px, 6vw, 80px); }
 
 /* ---------- Buttons ---------- */
 .btn {
@@ -78,20 +83,6 @@ img, svg { max-width: 100%; }
 .btn.quiet:hover { background: var(--highlight); color: var(--accent-text); }
 .btn svg { width: 18px; height: 18px; }
 .add-agent[hidden] { display: none; }
-.install-copy[hidden] { display: none; }
-
-/* ---------- Install ---------- */
-.install { position: relative; background: var(--surface-100); scroll-margin-top: 72px; }
-.install-inner { max-width: 1120px; margin: 0 auto; padding: 72px 24px; }
-.install .display { font-size: clamp(36px, 5vw, 64px); }
-.install-intro { max-width: 65ch; font-size: 17px; line-height: 1.5; color: var(--ink-muted); }
-.install-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin: 32px 0; }
-.install-option { padding: 24px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); }
-.install-option h3 { margin: 0 0 16px; font-size: 22px; }
-.install-option p { line-height: 1.5; color: var(--ink-muted); }
-.install pre, .toast pre { font: 400 14px/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.install pre { min-height: 3.2em; margin: 0 0 20px; }
-.install code { font-family: var(--font-mono); }
 .toast > div { min-width: 0; }
 
 /* ---------- Nav ---------- */
@@ -224,12 +215,14 @@ img, svg { max-width: 100%; }
 /* ---------- Hero: copy above and below the changing word ---------- */
 .stanza.center { margin: 0 auto; text-align: center; max-width: 760px; }
 .stanza.sub { font-size: clamp(24px, 2.6vw, 36px); color: var(--ink-muted); }
-.hero-top { position: absolute; left: 16px; right: 16px; top: calc(50% - 172px); transform: translateY(-100%); }
+/* The hero's lines are set larger than the story's, around a larger word in dots */
+.copy.hero .stanza { font-size: clamp(40px, 5.4vw, 76px); max-width: 1000px; }
+.hero-top { position: absolute; left: 16px; right: 16px; top: calc(50% - 186px); transform: translateY(-100%); }
 .hero-bottom {
   position: absolute;
   left: 16px;
   right: 16px;
-  top: calc(50% + 64px);
+  top: calc(50% + 84px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -246,14 +239,12 @@ img, svg { max-width: 100%; }
 .stanza .tag img { width: 0.8em; height: 0.8em; vertical-align: -0.06em; margin-right: 0.14em; }
 .stanza .nowrap { white-space: nowrap; }
 .copy-right.wide { max-width: 760px; }
-/* The tier word is drawn in dots by the artwork; this is the room the sentence leaves for it */
-.dot-word { display: block; width: 100%; height: 1.3em; margin-top: 0.04em; }
 .stanza .fup-mark { width: auto; height: 0.78em; vertical-align: -0.04em; margin-right: 0.1em; }
 
 .stanza .reveal { opacity: 0; transition: opacity 0.6s ease; }
 .stanza .reveal.on { opacity: 1; }
-.stanza .bench-dot { transition: opacity 0.3s ease; }
-.stanza .bench-dot.off { opacity: 0; }
+/* the second stop's sentence starts its own line, its room held from the first stop */
+.stanza .then { display: block; }
 
 /* ---------- Story copy: one fixed layer; the scroll sets each block's opacity ---------- */
 /* the spacer's height is the story's length, set from the plan in index.astro */
@@ -286,35 +277,37 @@ img, svg { max-width: 100%; }
 .story:not(.animated) .hero-bottom { margin-top: 32px; }
 .story:not(.animated) .copy-right { margin: 0 auto; align-items: center; text-align: center; }
 /* Without the artwork, both benchmark stops read at once from the figures written out below the line */
-.story:not(.animated) .dot-word, .story:not(.animated) .reveal { display: none; }
-.copy.foot { align-items: flex-end; justify-content: center; }
+.story:not(.animated) .reveal { display: none; }
+.copy.foot { align-items: center; justify-content: center; padding-top: 88px; padding-bottom: 32px; }
 .copy.hero { position: absolute; }
 .paper { display: inline-flex; align-items: center; gap: 6px; font: 500 15px/1 var(--font-sans); color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; padding: 8px 0; }
 .paper svg { width: 16px; height: 16px; }
 
-/* ---------- Phone: artwork up top, copy at the bottom, one column ---------- */
+/* ---------- Phone: artwork up top, copy just under it, one column ---------- */
 @media (max-width: 719px) {
-  .install { scroll-margin-top: 60px; }
-  .install-options { grid-template-columns: minmax(0, 1fr); }
-  .install-inner { padding: 48px 16px; }
   .nav-inner { height: 60px; padding: 0 16px; gap: 12px; }
   .lockup img { height: 26px; }
   .nav-links { gap: 8px; }
   .nav-links a.lnk { display: none; }
   .btn.sm { height: 36px; padding: 0 12px; font-size: 13px; }
-  .copy { align-items: flex-end; padding: 0 16px 56px; }
+  /* The copy starts just under the artwork's ground, whose near edge sits at 36% of the
+     height (the camera) plus 37% of the width (the ground's depth at the phone scale; see
+     SEA_Y and SEA_NEAR in particles.js). */
+  .copy { align-items: flex-start; padding: calc(36vh + 37vw + 20px) 16px 24px; padding-top: calc(36svh + 37vw + 20px); }
   .copy-right, .copy-right.wide { margin-left: 0; max-width: none; align-items: flex-start; text-align: left; }
   .stanza { font-size: clamp(26px, 8vw, 34px); text-align: left; }
   .stanza.center { text-align: center; }
   .stanza.sub { font-size: 20px; }
   .display { font-size: clamp(34px, 11vw, 44px); }
   .hero-top { top: calc(36% - 100px); }
-  .hero-bottom { top: auto; bottom: 80px; }
-  .copy.foot { padding-bottom: 56px; }
+  .copy.hero .stanza { font-size: clamp(30px, 8.6vw, 40px); }
+  /* like the story's copy, the hero's second line sits just under the ground */
+  .hero-bottom { top: calc(36vh + 37vw + 12px); top: calc(36svh + 37vw + 12px); bottom: auto; }
+  .copy.foot { padding-top: 72px; padding-bottom: 32px; }
+  .copy.foot .display { font-size: clamp(56px, 17vw, 80px); }
   .copy-center { gap: 16px; }
   .actions { gap: 10px; }
   .btn { height: 44px; padding: 0 16px; font-size: 15px; }
-  .dot-word { height: 1.3em; margin-top: 0.2em; }
   .paper { font-size: 14px; }
   .bench-result { text-align: left; }
   .story:not(.animated) .copy-right.wide { align-items: flex-start; }
