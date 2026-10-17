@@ -222,6 +222,9 @@ _REASONS: Final = frozenset(
         "workspace_fingerprint_unreadable",
         "workspace_fingerprint_root_unusable",
         "workspace_fingerprint_store_unusable",
+        # PR #1080 round 6: the post-call pass could not read the process table, so it could not
+        # rule out a process the call left running in the workspace.
+        "workspace_fingerprint_process_table_unreadable",
         # The Stop-time closure gate (#977): it continued the agent once, closure needed no
         # action, it already fired at this frontier, a Stop the gate had already continued this
         # turn ended with nothing more to say (the normal end of a continued turn, renamed from

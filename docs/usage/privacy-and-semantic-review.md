@@ -610,8 +610,14 @@ tokens.
   FinishUP compares the project's files before and after each command your agent runs, so a
   command that only reads (a timestamp, a search, a status check) does not ask for another closing
   review. A command whose effect FinishUP could not establish (one still running in the
-  background, a project too large to compare quickly) does, and the reminder says so. Effects
-  outside the project folder, such as a database or another directory, are not compared.
+  background, one that left a program it started still running in the project folder, a project
+  too large to compare quickly) does, and the reminder says so. To tell whether a program is still
+  running there, FinishUP looks at your own processes that started during the command: only their
+  working folder and the files they have open for writing, on this computer, kept nowhere and sent
+  nowhere. Inside version-control, package and cache folders it compares what matters (settings,
+  hooks, and the files directly inside a package or cache folder) and skips their routine
+  bookkeeping. Effects outside the project folder, such as a database or another directory, are
+  not compared.
 
 ### Cancelled background review
 

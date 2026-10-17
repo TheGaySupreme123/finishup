@@ -3823,3 +3823,46 @@ def test_a_retired_capture_handoff_never_vetoes_deterministic_proof() -> None:
         policy_id="research-evidence",
     )
     assert _resolves(research_finding, _check(coverage=coverage)) is True
+
+
+def test_an_unresolved_verification_limit_never_vetoes_deterministic_proof() -> None:
+    """#1079 F2 (ADR-033): the derived limit bounds the receipt, never a repaired local finding.
+
+    A resolved obligation with only the agent's own evidence carries it on every later check. A
+    repaired local finding must still prove absent there, or the limit would reopen the finding
+    and reblock Stop; the receipt stays bounded by the same code.
+    """
+
+    from finishup.domain.receipts import UNRESOLVED_VERIFICATION_GAP
+    from finishup.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+    from finishup.kernel.finding_resolution import DETERMINISTIC_PROOF_TOLERATED_GAPS
+    from finishup.kernel.gap_effect import gap_effect
+
+    gap = UNRESOLVED_VERIFICATION_GAP
+    assert gap in DETERMINISTIC_PROOF_TOLERATED_GAPS
+    assert gap not in CLEAN_COMPATIBLE_GAPS
+    assert gap_effect(gap).kind.bounds
+    coverage = _coverage(gaps=(gap, "semantic_review_not_requested"))
+    assert _blockers(_finding(), _check(coverage=coverage)) == ()
+    assert _resolves(_finding(), _check(coverage=coverage)) is True
+
+
+def test_an_unresolved_verification_limit_never_vetoes_a_repaired_ai_powered_finding() -> None:
+    """#1079 F2 (ADR-033): a later review that no longer returns the finding resolves it.
+
+    The limit says nothing about what the reviewer was shown, whether or not the finding was raised
+    under it; the receipt stays bounded by the same code.
+    """
+
+    from finishup.domain.receipts import UNRESOLVED_VERIFICATION_GAP
+    from finishup.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+
+    gap = UNRESOLVED_VERIFICATION_GAP
+    assert gap not in CLEAN_COMPATIBLE_GAPS
+    finding = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    later = _check(semantic=_SEMANTIC_OK, coverage=_coverage(gaps=(gap,), semantic=True))
+    assert _blockers(finding, later) == ()
+    assert _resolves(finding, later) is True
+    raised_under = replace(finding, coverage=_coverage(gaps=(gap,), semantic=True))
+    assert _blockers(raised_under, later) == ()
+    assert _resolves(raised_under, later) is True

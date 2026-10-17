@@ -10783,37 +10783,77 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   name or a requested non-input directory exists). Observation advice 0.1.8 adds the
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
-- **Workspace fingerprint (PR #1080 round 5).** `adapters/workspace_fingerprint.WorkspaceFingerprintStore(directory, key_material)`:
-  `capture_before(root, call_identity, *, deadline, excluded) -> reason | None` and
+- **Workspace fingerprint (PR #1080 rounds 5-6).** `adapters/workspace_fingerprint.WorkspaceFingerprintStore(directory, key_material, *, lingering=lingering_process)`:
+  `capture_before(root, call_identity, *, deadline, host_deadline=None, excluded) -> reason | None`
+  and
   `effect_after(root, call_identity, *, deadline, call_complete, excluded) -> WorkspaceEffectReading(effect, reason)`,
   `discard()`; `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
   `<observation>/workspace-fingerprints/<commitment digest>/` (`pending/` per open call,
   `latest.bin` for digest reuse; owner-only; keyed BLAKE2b path and content digests plus a keyed
-  MAC, never a path or byte of content; revoking observation removes it). The walk covers every
-  entry under the canonical workspace root without consulting ignore files, records
-  `OPAQUE_DIRECTORY_NAMES` (`.git`, `.hg`, `.svn`, `node_modules`, `.venv`, `venv`, `__pycache__`,
-  `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.hypothesis`, `.tox`, `.nox`) by identity only,
-  skips FinishUP receipt/export names and FinishUP state roots inside the workspace, never follows
-  links, and is bounded by `MAX_ENTRIES` (60,000), depth 64 and `SNAPSHOT_SECONDS` (0.75), hashing at
-  most `HASH_FILE_BYTES` (8 MiB) per file and `HASH_TOTAL_BYTES` (64 MiB) per snapshot. Reasons:
-  `no_pre_snapshot|call_incomplete|too_large|timeout|unreadable|root_unusable|store_unusable`;
+  MAC, never a path or byte of content; revoking observation removes it). Record format
+  `FUWF\x02`: the header adds the call window start (`process_lifetime.process_clock_ns`), the
+  capture-completion time and the host deadline (monotonic ns, 0 when absent), all under the MAC;
+  a version-1 record reads as `no_pre_snapshot`. The walk covers every entry under the canonical
+  workspace root without consulting ignore files. Inside `VCS_METADATA_DIRECTORIES` (`.git`,
+  `.hg`, `.svn`) it skips the exact internal churn (`domain/workspace_effect.VCS_OPAQUE_DIRECTORIES`
+  by identity: `objects`, `logs`, `refs`, `lfs`, `rr-cache`, `fsmonitor--daemon`, `modules`,
+  `worktrees`, `lost-found`, `cursor`, `store`, `cache`, `wcache`, `pristine`, `tmp`;
+  `vcs_bookkeeping_name`: `VCS_BOOKKEEPING_FILES`, `undo.*`, `*.lock`, and any `*index*` file
+  directly in the metadata root) and compares the rest;
+  `SHALLOW_DIRECTORY_NAMES` (`node_modules`, `.venv`, `venv`, `.tox`, `.nox`, `.pytest_cache`,
+  `.mypy_cache`, `.ruff_cache`, `.hypothesis`) are compared at their first level (files by content,
+  subdirectories by identity); `__pycache__` is walked without recording the directory itself or
+  its bytecode (`domain/workspace_effect.bytecode_artifact_name`). It skips FinishUP receipt/export
+  names (`saved_artifact_name`) and FinishUP state roots inside the workspace, never follows links,
+  and is bounded by `MAX_ENTRIES` (60,000), depth 64 and `SNAPSHOT_SECONDS` (0.75) over the whole
+  pass (cache load, cleanup, walk, hashing checked before every 256 KiB read, directory re-read,
+  persistence), hashing at most `HASH_FILE_BYTES` (8 MiB) per file and `HASH_TOTAL_BYTES` (64 MiB)
+  per snapshot. `capture_before` publishes nothing unless the capture finished before both the
+  deadline and `host_deadline`. `effect_after` returns `unavailable`/`call_incomplete` when
+  `lingering(window_ns, root)` is `True` (before the walk; `None` gives
+  `process_table_unreadable`) or a walked directory's
+  modification time moved during the walk, and `unavailable`/`timeout` when the record's capture
+  missed its host deadline or the pass overran. Reasons:
+  `no_pre_snapshot|call_incomplete|process_table_unreadable|too_large|timeout|unreadable|root_unusable|store_unusable`;
   `WorkspaceEffectReading(effect, reason, fresh)`. The degraded reasons (`too_large`, `timeout`,
-  `unreadable`, `root_unusable`, `store_unusable`) are recorded once, when `fresh`, as hook
+  `unreadable`, `root_unusable`, `store_unusable`, `process_table_unreadable`: a standing
+  condition marked once per ten minutes) are recorded once, when `fresh`, as hook
   diagnostics `workspace_fingerprint_<reason>`; a walk-bound back-off (`bounded` marker: ten
-  minutes, two after a timeout) skips walking meanwhile. `recently_bounded()`,
-  `invalidate(call_identity, reason)` (a pre-call snapshot finished within
-  `_FINGERPRINT_HOST_MARGIN_SECONDS` of the host hook timeout is withdrawn).
+  minutes, two after a walk timeout; hashing, persistence and host-window overruns start none)
+  skips walking meanwhile. `recently_bounded()`, `invalidate(call_identity, reason)`.
+  `adapters/process_lifetime`: `process_clock_ns() -> int | None` (wall clock on macOS, boot clock
+  on Linux, `None` elsewhere) and `lingering_process(window_ns, workspace_root) -> bool | None`
+  (`True` when a same-user process started since `window_ns - PROCESS_CLOCK_SLACK_NS` (50 ms),
+  still running, not a descendant of the hook's chain up to its host, has its working directory or
+  a write-open file inside the root, or cannot be read; `None` when the process table cannot be
+  read; never signals a process).
   `cli/workspace_effect_hook`: `fingerprinted_tool(tool_name, *, finishup_owned)` (shell/exec tools
   and every other tool except FinishUP's own, host-native reads, edits and a closed inert set),
   `host_call_complete(payload)` (an integer `exit_status`, a boolean `success` or `denied: true`,
   never with `run_in_background` or when `command_may_outlive_call(payload)` finds a background
   `&`, `nohup`, `setsid`, `disown` or similar in the command text: conservative only), `owned_relative_paths(workspace, roots)` and
   `workspace_fingerprint_pass(event, *, call_identity, workspace_locator, workspace_commitment,
-  key_material, observation_root, complete, excluded, seconds)`, called by `handle_observe` before
-  the observation store lock and only with an explicit locator (never on spool replay).
-  `kernel/later_material`: `WorkspaceEffects(quiet, changed)`, `workspace_effects(records,
-  projection)`, rule `observed_workspace_unchanged`; `classify_later_material(..., effects=)` and
-  `closing_review_delta(record, projection, *, effects=None)` (no effects: no command is quiet).
+  key_material, observation_root, complete, excluded, seconds, host_deadline)`, called by
+  `handle_observe` before the observation store lock and only with an explicit locator (never on
+  spool replay); `host_deadline` is the hook entry plus the host's hook window less
+  `_FINGERPRINT_HOST_MARGIN_SECONDS`.
+  `domain/workspace_effect`: `WORKSPACE_EFFECT_ANNOTATION_PREFIX` (`Observed workspace effect=`),
+  `workspace_effect_annotation(effect)`, `workspace_effect_from_annotation(description)`,
+  `path_beyond_workspace_fingerprint(value, *, directory=False, workspace_root=None)` (the walk's
+  own rules below the root; out of scope outside `workspace_root` or for a relative path that
+  leaves it; with no root, an absolute path is judged against each of its ancestors). `application/observation_materialize.materialize_workspace_effect_annotation(envelope, *, task_id, recorded_result_id, action_event_id, effect)`:
+  one metadata-only observed `evidence_recorded` row (role `workspace_effect_<token>`, ids from
+  the recorded result id and the token, causal parent the call's action event, no known gaps);
+  `ObservationCoordinator._reconcile_workspace_effect` appends it after an ingest whose delivery
+  carried a fact that the call's recorded result does not state.
+  `kernel/later_material`: `WorkspaceEffects(quiet, changed, annotations)`, `workspace_effects(records,
+  projection)` (folds result suffixes and annotations per action; `changed`/`unavailable` win; no
+  action is quiet when `kernel/task_facts.declared_path_beyond_fingerprint(projection, *,
+  workspace_root)` with `workspace_root=task_workspace_root(records)`, the one absolute
+  `session_opened.workspace_ref` all of the task's sessions name, else `None`), rules
+  `observed_workspace_unchanged` and `workspace_effect_of_action`; `classify_later_material(...,
+  effects=)` and `closing_review_delta(record, projection, *, effects=None)` (no effects: no
+  command is quiet; an annotation is judged as its call at its own position).
   `domain/observation_selection.without_routine_read(classification)` demotes a routine-read
   candidate to an individually recorded protected call.
 - **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are

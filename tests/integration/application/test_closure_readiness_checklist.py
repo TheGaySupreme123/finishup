@@ -716,7 +716,13 @@ async def _clean_local_session(
     *,
     semantic: Literal["disabled", "optional", "required"],
 ) -> tuple[_Session, CheckCommitResult]:
-    """Finished work with no hook rows: one obligation resolved with evidence, claimed, checked."""
+    """Finished work with no hook rows: one obligation resolved with evidence, claimed, checked.
+
+    The evidence is the agent's own metadata-only record, so the obligation also carries a
+    recorded ``finishup-verification-limit:`` decision. Without it the derived
+    ``unresolved_verification_limitation`` (#1079 F2, ADR-033) would bound the receipt, which
+    these route tests are not about; a disclosed limit is listed and never bounds.
+    """
 
     app, runtime, _ = workflow._build_app(  # pyright: ignore[reportPrivateUsage]
         seed_offset=986, ledger_backend=ledger_backend
@@ -753,6 +759,18 @@ async def _clean_local_session(
         session.draft(
             "obligation_published",
             {**open_obligation, "status": "resolved", "resolution_evidence_refs": [evidence]},
+        ),
+        session.draft(
+            "decision_recorded",
+            {
+                "statement": (
+                    "The focused test run is not observed here.\n"
+                    f"finishup-verification-limit:{obligation}"
+                ),
+                "rationale": "The run happened outside any observed host session.",
+                "authority": "harness:codex",
+                "affected_obligation_ids": [obligation],
+            },
         ),
         session.draft(
             "claim_recorded",
@@ -792,6 +810,9 @@ async def test_a_local_only_check_on_a_route_without_required_review_reaches_a_c
     assert readiness.agent_actionable == ()
     assert readiness.standing_limitations is not None
     assert "semantic_review_not_requested" not in readiness.standing_limitations
+    # The fixture's recorded verification limit is disclosed, and replaces the derived limitation.
+    assert "verification_limit_disclosed" in readiness.standing_limitations
+    assert "unresolved_verification_limitation" not in readiness.standing_limitations
     assert "semantic_review_not_requested" not in status.coverage.known_gaps
     assert "semantic_review_not_requested" not in summary_for_status(status.as_json())
     receipt = await session.app.receipt(

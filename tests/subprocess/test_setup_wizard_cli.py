@@ -20,6 +20,7 @@ from finishup.adapters.integrations.codex_marketplace import (
     ActivationInspection,
     ActivationPreview,
     ActivationState,
+    skill_tree_state,
 )
 from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
 from finishup.adapters.integrations.observation_local import (
@@ -46,6 +47,7 @@ from finishup.ports.integrations import (
     HarnessId,
     IntegrationError,
     IntegrationReason,
+    IntegrationScope,
     IntegrationState,
     IntegrationTarget,
     SkillSource,
@@ -58,6 +60,10 @@ _RUNNER = CliRunner()
 # ``wizard_env`` replaces the consent step with a canned report; the issue #835 composition
 # tests below restore this real one against a disposable observation store.
 _REAL_GRANT_OBSERVATION_CONSENT = _setup_module_at_import._grant_observation_consent  # pyright: ignore[reportPrivateUsage]
+# ``wizard_env`` also replaces the project-skill install with a canned report that writes
+# nothing. The ``finishup connect codex`` reconnect test restores this real one: a reconnect
+# is a no-op only when the project skill on disk is current.
+_REAL_INSTALL_PROJECT_SKILL = _setup_module_at_import._install_project_skill  # pyright: ignore[reportPrivateUsage]
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -3247,6 +3253,10 @@ def test_host_connection_codex_after_claude_keeps_claude_capture(
         lambda name="finishup": (pinned, "sha256:" + "cd" * 32),
     )
     cast(_CodexMcpHost, env["host"]).command = pinned
+    # The reconnect no-op also requires a current project skill, so the connection installs
+    # the real one into this disposable workspace instead of reporting a canned install.
+    monkeypatch.setattr("finishup.cli.setup._install_project_skill", _REAL_INSTALL_PROJECT_SKILL)
+    skill = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(env["workspace"]))
     _approve_claude_capture(env)
     selection = _select_detailed_largest(env)
     claude = _authority(env)
@@ -3254,6 +3264,7 @@ def test_host_connection_codex_after_claude_keeps_claude_capture(
     applied, status = _host_connect_codex(env)
 
     assert applied
+    assert skill_tree_state(skill) == IntegrationState.INSTALLED_EXACT.value
     assert status["configured"] is True
     assert _authority(env) == claude
     assert _still_current(env, claude)

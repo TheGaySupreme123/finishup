@@ -75,6 +75,7 @@ from finishup.application.observation_materialize import (
     materialize_observation_inspection_snapshot,
     materialize_observation_outcome_correction,
     materialize_selection_loss,
+    materialize_workspace_effect_annotation,
     media_type_for_schema,
     observation_author,
     observation_claim_identity,
@@ -178,6 +179,11 @@ from finishup.domain.values import (
     result_id,
     timestamp_from_datetime,
     timestamp_from_string,
+)
+from finishup.domain.workspace_effect import (
+    WORKSPACE_EFFECT_KEY,
+    WORKSPACE_EFFECTS,
+    workspace_effect_from_result_summary,
 )
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
 from finishup.observability.logging import record_unexpected_exception_without_raising
@@ -3326,6 +3332,18 @@ class ObservationCoordinator:
                             legacy_writer_id=predecessor_writer_id,
                             legacy_writer_routes=legacy_writer_routes,
                         )
+                        # Its workspace fact likewise reaches the recorded call (PR #1080 r6).
+                        await self._reconcile_workspace_effect(
+                            runtime,
+                            workspace,
+                            store,
+                            codex_session_id,
+                            envelope,
+                            batch,
+                            legacy_session_id=predecessor_session_id,
+                            legacy_writer_id=predecessor_writer_id,
+                            legacy_writer_routes=legacy_writer_routes,
+                        )
                         claim = None
                     if claim is not None:
                         (
@@ -3392,6 +3410,17 @@ class ObservationCoordinator:
                             resolved_mapping_version=resolved_mapping_version,
                             append_result=append_result,
                             already_committed=False,
+                            legacy_session_id=predecessor_session_id,
+                            legacy_writer_id=predecessor_writer_id,
+                            legacy_writer_routes=legacy_writer_routes,
+                        )
+                        await self._reconcile_workspace_effect(
+                            runtime,
+                            workspace,
+                            store,
+                            codex_session_id,
+                            envelope,
+                            batch,
                             legacy_session_id=predecessor_session_id,
                             legacy_writer_id=predecessor_writer_id,
                             legacy_writer_routes=legacy_writer_routes,
@@ -4395,6 +4424,115 @@ class ObservationCoordinator:
                         correction_result,
                     )
 
+    async def _reconcile_workspace_effect(
+        self,
+        runtime: TaskRuntime,
+        workspace: str,
+        store: TaskObservationPort,
+        codex_session_id: str,
+        envelope: ObservationEnvelope,
+        batch: MaterializedObservationBatch,
+        *,
+        legacy_session_id: str | None,
+        legacy_writer_id: str | None,
+        legacy_writer_routes: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Keep a delivery's workspace fact when its call's result was recorded without it.
+
+        PR #1080 round 6. Two deliveries of one host call share the call-keyed result id, so the
+        later one appends no result and, before this, its fact was dropped: a stream copy recorded
+        first (no fingerprint) kept a harmless read material, and an ``unchanged`` recorded first
+        silently outweighed a later ``changed`` or ``unavailable``. When this delivery carries a
+        fact and the recorded result of its call states another fact (or none), one append-only
+        annotation row records it under the call's action
+        (``materialize_workspace_effect_annotation``). Its ids derive from the result and the fact,
+        so repeats and restarts append nothing more. The kernel folds every fact of the call, and
+        ``changed`` or ``unavailable`` always wins over ``unchanged``. A delivery whose own result
+        row was the one appended already carries its fact and needs nothing here.
+        """
+
+        effect = cast(Mapping[str, object], envelope.structural_payload).get(WORKSPACE_EFFECT_KEY)
+        if type(effect) is not str or effect not in WORKSPACE_EFFECTS:
+            return
+        core = next(
+            (
+                item.draft.payload
+                for item in batch.drafts
+                if type(item.draft.payload) is ResultRecordedPayload
+            ),
+            None,
+        )
+        if type(core) is not ResultRecordedPayload:
+            return
+        projection = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        if (
+            projection is None
+            or type(projection.state) is not ProjectionState
+            or projection.lag != 0
+            or projection.rebuild_required
+        ):
+            raise PublicOperationError(
+                PublicErrorCode.SERVICE_UNAVAILABLE,
+                "Observation workspace-effect projection is unavailable.",
+                retryable=True,
+            )
+        recorded = projection.state.results.get(core.result_id)
+        if (
+            recorded is not None
+            and recorded.payload is not None
+            and workspace_effect_from_result_summary(recorded.payload.summary) == effect
+        ):
+            return
+        target_action = (
+            recorded.payload.action_id
+            if recorded is not None and recorded.payload is not None
+            else core.action_id
+        )
+        action_row = projection.state.actions.get(target_action)
+        if action_row is None or action_row.payload is None:
+            # No committed call to attach the fact to: nothing was recorded for it, so nothing
+            # can read as unchanged either.
+            return
+        annotation = materialize_workspace_effect_annotation(
+            envelope,
+            task_id=runtime.task_id,
+            recorded_result_id=str(core.result_id),
+            action_event_id=str(action_row.source_event_id),
+            effect=effect,
+        )
+        if annotation.skip_reason is not None or not annotation.drafts:
+            return
+        if await observation_already_committed(
+            runtime.ledger, tuple(str(item.draft.event_id) for item in annotation.drafts)
+        ):
+            return
+        appended = await self._append_materialized(
+            runtime,
+            envelope,
+            annotation,
+            legacy_session_id=legacy_session_id,
+            legacy_writer_id=legacy_writer_id,
+            legacy_writer_routes=legacy_writer_routes,
+        )
+        if appended is None or isinstance(appended, _AlreadyCommitted):
+            return
+        operation_id, digest, append_result, mapping_version, draft_roles = appended
+        store.record_logical_identity_claim(
+            workspace=workspace,
+            logical_identity=observation_claim_identity(
+                envelope, draft_roles, mapping_version=mapping_version
+            ),
+            materialization_digest=digest,
+            operation_id=operation_id,
+            source_mask=2 if envelope.source is ObservationSource.CODEX_SESSION_STREAM else 1,
+            mapping_version=mapping_version,
+            materialized_at=timestamp_from_datetime(self.clock.now_utc()),
+        )
+        if append_result is not None:
+            await self._note_frontier_motion(runtime, workspace, codex_session_id, append_result)
+
     async def _align_codex_stream_generation(
         self,
         runtime: TaskRuntime,
@@ -4996,7 +5134,9 @@ class ObservationCoordinator:
 
         Delivery times, rendering and captured-evidence refs may differ. They cannot change
         the action/command identity or an existing evidence object's digest. Stream outcome
-        differences use the existing append-only correction, including dedup_conflict.
+        differences use the existing append-only correction, including dedup_conflict. A
+        committed result that stated no outcome agrees with a copy that states one; two explicit
+        outcomes that differ do not.
         """
 
         projection = await runtime.ledger.load_projection(
@@ -5109,6 +5249,7 @@ class ObservationCoordinator:
                         (incoming.outcome, incoming.exit_status)
                         == (prior.outcome, prior.exit_status)
                         or incoming.outcome is ResultOutcome.UNKNOWN
+                        or prior.outcome is ResultOutcome.UNKNOWN
                         or envelope.source is ObservationSource.CODEX_SESSION_STREAM
                     )
                 )

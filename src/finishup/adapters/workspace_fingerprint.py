@@ -21,15 +21,30 @@ rules would mean running Git in the hook (which executes repository-configured p
 resolves through the agent's ``PATH``, the exact hazards of rounds 3 and 4) or re-implementing
 ignore semantics, where any mistake would hide a real change; ignored paths can also hold graded
 output, and many task workspaces are not repositories at all. Counting them is the conservative
-direction. Two closed exceptions keep the cost bounded:
+direction. Three closed rules keep the cost bounded without hiding a deliverable (round 6
+narrowed them; round 5 skipped whole directories by name):
 
-* *Opaque directories* (``OPAQUE_DIRECTORY_NAMES``: VCS metadata, dependency environments and
-  interpreter caches) are recorded by their own identity (kind, mode, inode) but not walked. A
-  commit, an index refresh by ``git status`` or a ``__pycache__`` write is not a workspace change;
-  creating, deleting or replacing such a directory is. Package installs into an environment are
-  separately material through the ``install_target`` runtime fact.
-* FinishUP's own material is skipped: a saved receipt or export file (ADR-042) and FinishUP's state
-  or isolation root when it lies inside the workspace.
+* *VCS metadata* (``.git``, ``.hg``, ``.svn``) is walked, except its exact internal churn: the
+  object store, reflogs, refs, LFS objects, submodule and worktree administration directories (and
+  ``lost-found`` and Cursor's ``cursor`` checkpoint store) are recorded by identity only, and the
+  index files in the metadata root, ``HEAD``-style pointer files, ``packed-refs``, lock files and the
+  like are skipped (``domain.workspace_effect.VCS_OPAQUE_DIRECTORIES`` and
+  ``vcs_bookkeeping_name``, which the kernel's ``path_beyond_workspace_fingerprint`` reads too). A
+  commit, a fetch or an index refresh by ``git status`` is therefore not a workspace change, while a
+  write to ``config``, ``hooks/``, ``info/attributes`` or any other file there is.
+* *Dependency environments and tool caches* (``SHALLOW_DIRECTORY_NAMES``: ``node_modules``,
+  ``.venv``, ``venv``, ``.tox``, ``.nox``, ``.pytest_cache``, ``.mypy_cache``, ``.ruff_cache``,
+  ``.hypothesis``) are compared at their first level: a file directly inside one is compared like
+  any other file, and each subdirectory by its identity (kind, mode, inode). A typical
+  ``node_modules`` or virtual environment holds tens to hundreds of thousands of entries; walking it
+  on every call would exceed the snapshot bound and make every call ``unavailable``. Package
+  installs stay material through the ``install`` runtime fact, and a declared output below the
+  first level makes the kernel withhold ``unchanged`` (``path_beyond_workspace_fingerprint``).
+* *Bytecode caches* (``__pycache__``) are walked, but the interpreter's ``.pyc`` files and the
+  directory's own creation are not changes; any other file inside one is compared.
+
+FinishUP's own material is skipped as well: a saved receipt or export file (ADR-042) and FinishUP's
+state or isolation root when it lies inside the workspace.
 
 Paths are never followed through symbolic links; a link is compared by its target text. Effects
 outside the root are out of scope for this signal, exactly as before: databases, ``/tmp``, the
@@ -47,10 +62,29 @@ pre-call snapshot is *racy*: a coarse-timestamp filesystem could hide a same-sec
 bytes are hashed at the pre-call snapshot and compared again after the call. Directory timestamps
 are not compared (their entries are).
 
-**Bounds.** One snapshot walks at most ``MAX_ENTRIES`` entries within ``SNAPSHOT_SECONDS`` (or the
-caller's tighter deadline) and hashes at most ``HASH_FILE_BYTES`` per file and ``HASH_TOTAL_BYTES``
-in all. Exceeding a walk bound makes the token ``unavailable``; exceeding a hashing bound leaves that
-entry's bytes unknown, which can only make the token ``changed``.
+**Bounds.** One snapshot walks at most ``MAX_ENTRIES`` entries and hashes at most
+``HASH_FILE_BYTES`` per file and ``HASH_TOTAL_BYTES`` in all. ``SNAPSHOT_SECONDS`` (or the
+caller's tighter deadline) bounds the whole pass, not just the walk: loading the cache, expiring
+pending records, walking, hashing (checked before every read chunk) and storing. A pass that
+overruns it is ``unavailable`` (``timeout``); exceeding a hashing byte bound leaves that entry's
+bytes unknown, which can only make the token ``changed``. One blocking read of a chunk
+(``_READ_CHUNK``) is the largest step that can run past the deadline before it is noticed.
+
+**Quiescence** (round 6). A host's completion fact says the process it started ended, not that
+nothing that process started is still writing. Before it walks, the post-call pass asks
+``adapters.process_lifetime`` whether a process of this user that started during the call window is
+still running with its working directory or a file open for writing inside the workspace; if so,
+the token is ``unavailable`` (``call_incomplete``); when the process table cannot be read it is
+``unavailable`` too (``process_table_unreadable``, diagnosed once in ``observe status``). After
+it walks, the pass re-reads the modification time of every directory it walked: one that changed
+during the walk means the workspace was still being written, and the token is ``unavailable`` as
+well. VCS metadata and bytecode caches are exempt from that re-read, as they are from the walk.
+
+**Host window** (round 6). A pre-call snapshot is published only when the whole capture finished
+before the host could stop waiting for the hook; the completion time and the host deadline are
+stored inside the authenticated record, and the post-call pass re-checks them. A late capture is
+never published, so it cannot be consumed even when the pre-call process is killed before it could
+withdraw anything.
 
 **Storage.** Snapshots live in an owner-only directory beside the local observation store, keyed by
 the workspace commitment: one pending snapshot per open call and one cache of the latest snapshot
@@ -70,25 +104,32 @@ import shutil
 import stat
 import struct
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
+from finishup.adapters.process_lifetime import lingering_process, process_clock_ns
 from finishup.config.paths import PathSafetyError, ensure_owner_only_dir
 from finishup.domain.workspace_effect import (
+    BYTECODE_CACHE_DIRECTORY,
+    SHALLOW_DIRECTORY_NAMES,
+    VCS_METADATA_DIRECTORIES,
+    VCS_OPAQUE_DIRECTORIES,
     WORKSPACE_CHANGED,
     WORKSPACE_UNAVAILABLE,
     WORKSPACE_UNCHANGED,
+    bytecode_artifact_name,
+    saved_artifact_name,
+    vcs_bookkeeping_name,
 )
-from finishup.domain.write_scope import finishup_artifact_name
 
 __all__ = [
     "FINGERPRINT_DIRECTORY",
     "HASH_FILE_BYTES",
     "HASH_TOTAL_BYTES",
     "MAX_ENTRIES",
-    "OPAQUE_DIRECTORY_NAMES",
+    "SHALLOW_DIRECTORY_NAMES",
     "SNAPSHOT_SECONDS",
     "UnavailableReason",
     "WorkspaceEffectReading",
@@ -97,26 +138,6 @@ __all__ = [
 ]
 
 FINGERPRINT_DIRECTORY: Final = "workspace-fingerprints"
-# Directory names recorded by identity only (never walked): VCS metadata, dependency environments
-# and interpreter caches. Their contents are not reviewed work; their creation, removal or
-# replacement still changes the fingerprint.
-OPAQUE_DIRECTORY_NAMES: Final = frozenset(
-    {
-        ".git",
-        ".hg",
-        ".svn",
-        "node_modules",
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".hypothesis",
-        ".tox",
-        ".nox",
-    }
-)
 MAX_ENTRIES: Final = 60_000
 SNAPSHOT_SECONDS: Final = 0.75
 HASH_FILE_BYTES: Final = 8 * 1024 * 1024
@@ -126,9 +147,18 @@ RACY_WINDOW_NS: Final = 2_000_000_000
 PENDING_TTL_SECONDS: Final = 24 * 3600
 MAX_PENDING: Final = 256
 
+# Walk modes of one directory: ordinary, inside VCS metadata, the first level of a dependency
+# environment or tool cache, or inside a bytecode cache.
+_MODE_NORMAL: Final = 0
+_MODE_VCS: Final = 1
+_MODE_SHALLOW: Final = 2
+_MODE_BYTECODE: Final = 3
+_MODE_VCS_ROOT: Final = 4
+
 UnavailableReason = Literal[
     "no_pre_snapshot",
     "call_incomplete",
+    "process_table_unreadable",
     "too_large",
     "timeout",
     "unreadable",
@@ -136,13 +166,16 @@ UnavailableReason = Literal[
     "store_unusable",
 ]
 
-_MAGIC: Final = b"FUWF\x01"
-_HEADER: Final = struct.Struct("<5sQQqI")
+# Version 2 adds the call window start (process clock), the capture completion time and the host
+# deadline (both monotonic, 0 when absent) to the authenticated header.
+_MAGIC: Final = b"FUWF\x02"
+_HEADER: Final = struct.Struct("<5sQQqqQQI")
 _ENTRY: Final = struct.Struct("<16sBIQqqQQB16s")
 _MAC_BYTES: Final = 32
 _HAS_DIGEST: Final = 1
 _RACY: Final = 2
-_READ_CHUNK: Final = 1024 * 1024
+# Small enough that one blocking read of a regular file is a short step past the deadline check.
+_READ_CHUNK: Final = 256 * 1024
 _KIND_FILE: Final = 1
 _KIND_DIR: Final = 2
 _KIND_LINK: Final = 3
@@ -223,21 +256,25 @@ class _Snapshot:
     started_ns: int
     entries: dict[bytes, _Entry]
     paths: dict[bytes, str]
+    # The pre-call pass's start on ``process_lifetime.process_clock_ns`` (0 when unknown), when its
+    # capture finished and the host deadline it had to meet (``time.monotonic`` nanoseconds, 0 when
+    # absent). A post-call walk leaves them 0.
+    window_ns: int = 0
+    captured_ns: int = 0
+    host_deadline_ns: int = 0
+    # The directories this walk entered with the modification time it saw (post-call re-read).
+    settle: tuple[tuple[str, int], ...] = ()
 
 
 class _Unavailable(Exception):
-    __slots__ = ("reason",)
+    __slots__ = ("backoff", "reason")
 
-    def __init__(self, reason: UnavailableReason) -> None:
+    def __init__(self, reason: UnavailableReason, *, backoff: bool = True) -> None:
         self.reason: UnavailableReason = reason
+        # A walk bound starts the back-off; a hashing or persistence overrun, or a missed host
+        # window, says nothing about the next walk and does not.
+        self.backoff = backoff
         super().__init__(reason)
-
-
-def _maybe_artifact(name: str) -> bool:
-    """A saved FinishUP receipt or export name (ADR-042), with a cheap substring guard first."""
-
-    lowered = name.lower()
-    return ("receipt" in lowered or "export" in lowered) and finishup_artifact_name(name)
 
 
 def _kind(mode: int) -> int:
@@ -250,8 +287,16 @@ def _kind(mode: int) -> int:
     return _KIND_OTHER
 
 
+def _past(deadline: float) -> bool:
+    return time.monotonic() >= deadline
+
+
 class _Hasher:
-    """Bounded keyed content hashing shared by one snapshot."""
+    """Bounded keyed content hashing shared by one snapshot.
+
+    The deadline is checked before every read chunk; passing it raises ``timeout`` (no back-off),
+    so a slow read can never let a pass report success after its budget.
+    """
 
     __slots__ = ("_content_key", "_deadline", "_remaining")
 
@@ -260,11 +305,14 @@ class _Hasher:
         self._remaining = HASH_TOTAL_BYTES
         self._deadline = deadline
 
+    def _check(self) -> None:
+        if _past(self._deadline):
+            raise _Unavailable("timeout", backoff=False)
+
     def digest(self, root: str, relative: str, entry: _Entry) -> bytes | None:
         """The keyed digest of one entry's bytes, or ``None`` when it cannot be read in bounds."""
 
-        if time.monotonic() >= self._deadline:
-            return None
+        self._check()
         path = os.path.join(root, relative)
         hasher = hashlib.blake2b(key=self._content_key, digest_size=16, person=b"fu-wf-content")
         if entry.kind == _KIND_LINK:
@@ -296,6 +344,7 @@ class _Hasher:
             hasher.update(b"F")
             read = 0
             while True:
+                self._check()
                 chunk = os.read(descriptor, _READ_CHUNK)
                 if not chunk:
                     break
@@ -303,6 +352,7 @@ class _Hasher:
                 if read > entry.size:
                     return None
                 hasher.update(chunk)
+            self._check()
             after = os.fstat(descriptor)
             if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
                 entry.size,
@@ -319,21 +369,33 @@ class _Hasher:
         return hasher.digest()
 
 
+LingeringProbe = Callable[[int, str], "bool | None"]
+
+
 class WorkspaceFingerprintStore:
     """Pre/post snapshots of one workspace, kept in an owner-only hook-local directory.
 
     ``observation_root`` is the local observation store's root; ``key_material`` its key. The
     store never raises to its caller: every failure becomes an ``unavailable`` reading.
+    ``lingering`` answers whether a process started since a window start still runs in the
+    workspace (``process_lifetime.lingering_process``; replaced only by tests).
     """
 
-    __slots__ = ("_content_key", "_directory", "_mac_key", "_path_key")
+    __slots__ = ("_content_key", "_directory", "_lingering", "_mac_key", "_path_key")
 
-    def __init__(self, directory: Path, key_material: bytes) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        key_material: bytes,
+        *,
+        lingering: LingeringProbe = lingering_process,
+    ) -> None:
         self._directory = directory
         base = hmac.new(key_material, b"finishup/workspace-fingerprint/v1", "sha256").digest()
         self._path_key = hmac.new(base, b"path", "sha256").digest()
         self._content_key = hmac.new(base, b"content", "sha256").digest()
         self._mac_key = hmac.new(base, b"record", "sha256").digest()
+        self._lingering = lingering
 
     # -- public surface -------------------------------------------------------------------------
 
@@ -348,13 +410,20 @@ class WorkspaceFingerprintStore:
         call_identity: str,
         *,
         deadline: float,
+        host_deadline: float | None = None,
         excluded: Iterable[str] = (),
     ) -> UnavailableReason | None:
-        """Snapshot *root* for one call before the host runs it; the reason when it could not."""
+        """Snapshot *root* for one call before the host runs it; the reason when it could not.
 
+        ``deadline`` (monotonic) bounds the whole capture. ``host_deadline`` (monotonic) is when
+        the host may stop waiting for this pass and run the call: a capture that has not finished
+        by then may already hold the call's writes, so it is never published (``timeout``).
+        """
+
+        window = process_clock_ns() or 0
         try:
             self._prepare()
-            self._expire_pending()
+            self._expire_pending(deadline)
             bounded = self._recently_bounded()
             if bounded is not None:
                 # The last walk of this workspace exceeded a bound moments ago: do not spend the
@@ -362,6 +431,8 @@ class WorkspaceFingerprintStore:
                 self._mark_failed(call_identity, bounded)
                 return bounded
             cache = self._load(self._cache_path(), delete=False)
+            if _past(deadline):
+                raise _Unavailable("timeout", backoff=False)
             snapshot = self._walk(root, deadline=deadline, excluded=excluded)
             hasher = _Hasher(self._content_key, deadline)
             for key, entry in snapshot.entries.items():
@@ -375,13 +446,33 @@ class WorkspaceFingerprintStore:
                     # Moved since the last snapshot, new since it, or racy: hash now so a later
                     # metadata-only change can be told apart from a content change.
                     entry.digest = hasher.digest(root, snapshot.paths[key], entry)
-            self._store(self._pending_path(call_identity), snapshot)
+            # Nothing is published unless the whole capture finished inside both bounds. A late
+            # capture may hold the call's own writes; publishing it first and withdrawing it
+            # afterwards would let a concurrent post-call pass consume it in between.
+            finished = time.monotonic()
+            if finished >= deadline:
+                raise _Unavailable("timeout", backoff=False)
+            if host_deadline is not None and finished > host_deadline:
+                raise _Unavailable("timeout", backoff=False)
+            snapshot.window_ns = window
+            snapshot.captured_ns = max(1, int(finished * 1_000_000_000))
+            snapshot.host_deadline_ns = (
+                0 if host_deadline is None else max(1, int(host_deadline * 1_000_000_000))
+            )
+            pending = self._pending_path(call_identity)
+            self._store(pending, snapshot)
+            if _past(deadline):
+                # Persisting took the pass past its budget. The stored bytes are still a pre-call
+                # state (the capture finished in time), but the pass reports its overrun.
+                with contextlib.suppress(OSError):
+                    pending.unlink()
+                raise _Unavailable("timeout", backoff=False)
             return None
         except _Unavailable as failure:
             with contextlib.suppress(OSError):
                 self._pending_path(call_identity).unlink()
             with contextlib.suppress(OSError, PathSafetyError, ValueError):
-                if failure.reason in _BACKOFF_SECONDS:
+                if failure.backoff and failure.reason in _BACKOFF_SECONDS:
                     _write_small(self._directory / "bounded", failure.reason.encode("ascii"))
                 self._mark_failed(call_identity, failure.reason)
             return failure.reason
@@ -411,9 +502,33 @@ class WorkspaceFingerprintStore:
                 before = None
             if before is None:
                 return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "no_pre_snapshot")
+            if before.captured_ns <= 0 or (
+                before.host_deadline_ns and before.captured_ns > before.host_deadline_ns
+            ):
+                # The authenticated record says its capture did not finish inside the host
+                # window (or does not say when it finished): it may hold the call's writes.
+                return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "timeout")
             if not call_complete:
                 # The host has not reported that the call ended (a background launch, a process
                 # still running behind a session id): later writes would be missed.
+                return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "call_incomplete")
+            if _past(deadline):
+                raise _Unavailable("timeout", backoff=False)
+            # The host's completion fact covers the process it started, not what that process
+            # started. A process of this user begun in the call window and still running in the
+            # workspace may write after this comparison; an unreadable process table cannot rule
+            # that out.
+            lingering = None if before.window_ns <= 0 else self._lingering(before.window_ns, root)
+            if lingering is None:
+                # This host or platform does not let the hook read the process table, so no
+                # lingering writer can be ruled out. A standing condition: named once per
+                # back-off period, unlike a lingering process (a per-call fact).
+                return WorkspaceEffectReading(
+                    WORKSPACE_UNAVAILABLE,
+                    "process_table_unreadable",
+                    fresh=self._note_standing("process-table-unreadable"),
+                )
+            if lingering:
                 return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "call_incomplete")
             after = self._walk(root, deadline=deadline, excluded=excluded)
             hasher = _Hasher(self._content_key, deadline)
@@ -441,12 +556,20 @@ class WorkspaceFingerprintStore:
                     or prior.mode != entry.mode
                 ):
                     changed = True
-            with contextlib.suppress(OSError, PathSafetyError, ValueError):
-                self._store(self._cache_path(), after)
+            if not changed:
+                if not self._settled(after.settle):
+                    # A directory gained, lost or replaced an entry while it was being compared:
+                    # the workspace was still being written, so this walk is not its final state.
+                    return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "call_incomplete")
+                if _past(deadline):
+                    raise _Unavailable("timeout", backoff=False)
+            if not _past(deadline):
+                with contextlib.suppress(OSError, PathSafetyError, ValueError):
+                    self._store(self._cache_path(), after)
             return WorkspaceEffectReading(WORKSPACE_CHANGED if changed else WORKSPACE_UNCHANGED)
         except _Unavailable as failure:
             with contextlib.suppress(OSError, PathSafetyError, ValueError):
-                if failure.reason in _BACKOFF_SECONDS:
+                if failure.backoff and failure.reason in _BACKOFF_SECONDS:
                     _write_small(self._directory / "bounded", failure.reason.encode("ascii"))
             return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, failure.reason)
         except OSError, PathSafetyError, ValueError:
@@ -481,10 +604,11 @@ class WorkspaceFingerprintStore:
         racy_from = started - RACY_WINDOW_NS
         entries: dict[bytes, _Entry] = {}
         paths: dict[bytes, str] = {}
-        pending: list[tuple[str, str, int]] = [("", root, 0)]
+        settle: list[tuple[str, int]] = [(root, facts.st_mtime_ns)]
+        pending: list[tuple[str, str, int, int]] = [("", root, 0, _MODE_NORMAL)]
         count = 0
         while pending:
-            relative_dir, directory, depth = pending.pop()
+            relative_dir, directory, depth, mode = pending.pop()
             try:
                 iterator = os.scandir(directory)
             except OSError as exc:
@@ -494,9 +618,10 @@ class WorkspaceFingerprintStore:
                     count += 1
                     if count > MAX_ENTRIES:
                         raise _Unavailable("too_large")
-                    if count & 0xFF == 0 and time.monotonic() >= deadline:
+                    if count & 0xFF == 0 and _past(deadline):
                         raise _Unavailable("timeout")
-                    relative = item.name if not relative_dir else f"{relative_dir}/{item.name}"
+                    name = item.name
+                    relative = name if not relative_dir else f"{relative_dir}/{name}"
                     if relative in skipped:
                         continue
                     try:
@@ -507,31 +632,76 @@ class WorkspaceFingerprintStore:
                     except OSError as exc:
                         raise _Unavailable("unreadable") from exc
                     kind = _kind(info.st_mode)
-                    if kind == _KIND_FILE and _maybe_artifact(item.name):
+                    if kind == _KIND_FILE and saved_artifact_name(name):
                         continue
-                    opaque = kind == _KIND_DIR and item.name in OPAQUE_DIRECTORY_NAMES
-                    entry = _Entry(
-                        _KIND_OPAQUE if opaque else kind,
-                        stat.S_IMODE(info.st_mode),
-                        info.st_size if kind in {_KIND_FILE, _KIND_LINK} else 0,
-                        info.st_mtime_ns,
-                        info.st_ctime_ns,
-                        info.st_ino,
-                        info.st_dev,
-                    )
-                    entry.racy = kind in {_KIND_FILE, _KIND_LINK} and (
-                        max(info.st_mtime_ns, info.st_ctime_ns) >= racy_from
-                    )
-                    key = self._key(relative)
-                    entries[key] = entry
-                    paths[key] = relative
-                    if kind == _KIND_DIR and not opaque:
+                    child_mode: int | None = None
+                    opaque = False
+                    record = True
+                    if mode in {_MODE_VCS, _MODE_VCS_ROOT}:
+                        if kind == _KIND_DIR and name in VCS_OPAQUE_DIRECTORIES:
+                            opaque = True
+                        elif kind != _KIND_DIR and vcs_bookkeeping_name(
+                            name, in_root=mode == _MODE_VCS_ROOT
+                        ):
+                            continue
+                        elif kind == _KIND_DIR:
+                            child_mode = _MODE_VCS
+                    elif mode == _MODE_SHALLOW:
+                        opaque = kind == _KIND_DIR
+                    elif mode == _MODE_BYTECODE:
+                        if kind == _KIND_FILE and bytecode_artifact_name(name):
+                            continue
+                        if kind == _KIND_DIR:
+                            child_mode = _MODE_BYTECODE
+                    elif kind == _KIND_DIR:
+                        if name in VCS_METADATA_DIRECTORIES:
+                            child_mode = _MODE_VCS_ROOT
+                        elif name in SHALLOW_DIRECTORY_NAMES:
+                            child_mode = _MODE_SHALLOW
+                        elif name == BYTECODE_CACHE_DIRECTORY:
+                            # Its creation by an import is not a change; what it holds besides
+                            # bytecode is.
+                            child_mode = _MODE_BYTECODE
+                            record = False
+                        else:
+                            child_mode = _MODE_NORMAL
+                    if record:
+                        entry = _Entry(
+                            _KIND_OPAQUE if opaque else kind,
+                            stat.S_IMODE(info.st_mode),
+                            info.st_size if kind in {_KIND_FILE, _KIND_LINK} else 0,
+                            info.st_mtime_ns,
+                            info.st_ctime_ns,
+                            info.st_ino,
+                            info.st_dev,
+                        )
+                        entry.racy = kind in {_KIND_FILE, _KIND_LINK} and (
+                            max(info.st_mtime_ns, info.st_ctime_ns) >= racy_from
+                        )
+                        key = self._key(relative)
+                        entries[key] = entry
+                        paths[key] = relative
+                    if child_mode is not None and not opaque:
                         if depth + 1 > MAX_DEPTH:
                             raise _Unavailable("too_large")
-                        pending.append((relative, item.path, depth + 1))
-        if time.monotonic() >= deadline:
+                        if child_mode in {_MODE_NORMAL, _MODE_SHALLOW}:
+                            settle.append((item.path, info.st_mtime_ns))
+                        pending.append((relative, item.path, depth + 1, child_mode))
+        if _past(deadline):
             raise _Unavailable("timeout")
-        return _Snapshot(facts.st_dev, facts.st_ino, started, entries, paths)
+        return _Snapshot(facts.st_dev, facts.st_ino, started, entries, paths, settle=tuple(settle))
+
+    @staticmethod
+    def _settled(directories: tuple[tuple[str, int], ...]) -> bool:
+        """Whether every directory a walk entered still has the modification time it saw."""
+
+        for path, mtime_ns in directories:
+            try:
+                if os.stat(path, follow_symlinks=False).st_mtime_ns != mtime_ns:
+                    return False
+            except OSError:
+                return False
+        return True
 
     def _key(self, relative: str) -> bytes:
         return hashlib.blake2b(
@@ -562,6 +732,22 @@ class WorkspaceFingerprintStore:
         if reason == "timeout" and 0 <= age < _BACKOFF_SECONDS["timeout"]:
             return "timeout"
         return None
+
+    def _note_standing(self, name: str) -> bool:
+        """Whether a standing condition is new: true at most once per back-off period."""
+
+        marker = self._directory / name
+        try:
+            if not marker.is_symlink():
+                age = time.time() - marker.stat().st_mtime
+                if 0 <= age < _BACKOFF_SECONDS["too_large"]:
+                    return False
+        except OSError:
+            pass
+        with contextlib.suppress(OSError, PathSafetyError, ValueError):
+            ensure_owner_only_dir(self._directory)
+            _write_small(marker, b"1")
+        return True
 
     def _failed_path(self, call_identity: str) -> Path:
         return self._directory / "pending" / f"{self.call_key(call_identity)}.fail"
@@ -597,7 +783,7 @@ class WorkspaceFingerprintStore:
     def _pending_path(self, call_identity: str) -> Path:
         return self._directory / "pending" / f"{self.call_key(call_identity)}.bin"
 
-    def _expire_pending(self) -> None:
+    def _expire_pending(self, deadline: float) -> None:
         directory = self._directory / "pending"
         try:
             names = os.listdir(directory)
@@ -607,7 +793,10 @@ class WorkspaceFingerprintStore:
             return
         now = time.time()
         aged: list[tuple[float, Path]] = []
-        for name in names:
+        for index, name in enumerate(names):
+            if index & 0x3F == 0 and _past(deadline):
+                # Cleanup is part of the pass's budget; the rest waits for the next pass.
+                return
             path = directory / name
             try:
                 modified = path.lstat().st_mtime
@@ -630,6 +819,9 @@ class WorkspaceFingerprintStore:
                 snapshot.root_dev,
                 snapshot.root_ino,
                 snapshot.started_ns,
+                snapshot.window_ns,
+                snapshot.captured_ns,
+                snapshot.host_deadline_ns,
                 len(snapshot.entries),
             )
         )
@@ -688,7 +880,9 @@ class WorkspaceFingerprintStore:
         body, mac = data[:-_MAC_BYTES], data[-_MAC_BYTES:]
         if not hmac.compare_digest(mac, hmac.new(self._mac_key, body, "sha256").digest()):
             return None
-        magic, root_dev, root_ino, started, count = _HEADER.unpack_from(body, 0)
+        magic, root_dev, root_ino, started, window, captured, host_deadline, count = (
+            _HEADER.unpack_from(body, 0)
+        )
         if magic != _MAGIC or len(body) != _HEADER.size + count * _ENTRY.size:
             return None
         entries: dict[bytes, _Entry] = {}
@@ -707,4 +901,13 @@ class WorkspaceFingerprintStore:
                 digest if flags & _HAS_DIGEST else None,
                 bool(flags & _RACY),
             )
-        return _Snapshot(root_dev, root_ino, started, entries, {})
+        return _Snapshot(
+            root_dev,
+            root_ino,
+            started,
+            entries,
+            {},
+            window_ns=window,
+            captured_ns=captured,
+            host_deadline_ns=host_deadline,
+        )
