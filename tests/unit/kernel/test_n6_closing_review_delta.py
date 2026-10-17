@@ -26,13 +26,15 @@ from finishup.domain.events import (
     RequestedItemKind,
     ResponseRecordedPayload,
     ResultOutcome,
+    ResultRecordedPayload,
     ReviewMode,
 )
-from finishup.domain.values import obligation_id
+from finishup.domain.values import obligation_id, result_id
 from finishup.kernel.closing_review_delta import (
     closing_material_frontier,
     closing_review_delta,
 )
+from finishup.kernel.later_material import workspace_effects
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import (
@@ -152,54 +154,178 @@ def test_closing_material_frontier_follows_a_review_mode_switch() -> None:
     assert closing_material_frontier(state, cast(tuple[LedgerRecord, ...], [prefix[0]])) == 0
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "date -u",
-        "date -u +%Y-%m-%dT%H:%M:%S.%3NZ",
-        "rg -n closing guidance/",
-        "sed -n '1,120p' guidance/receipt.md",
-        "finishup status --json",
-        "finishup receipt --json",
-        "rg closing guidance/receipt.md; sed -n '1,120p' guidance/receipt.md",
-    ],
+# The audited false-stale shapes (DLANE N6 issue 1): read-only traffic after the final review.
+_AUDITED_READS = (
+    "date -u",
+    "date -u +%Y-%m-%dT%H:%M:%S.%3NZ",
+    "rg -n closing guidance/",
+    "sed -n '1,120p' guidance/receipt.md",
+    "git status --short",
+    "finishup status --json",
+    "finishup receipt --json",
+    "rg closing guidance/receipt.md; sed -n '1,120p' guidance/receipt.md",
+    "date -u && git status --short",
 )
-def test_native_read_commands_do_not_rearm_final_review(command: str) -> None:
+
+
+@pytest.mark.parametrize("command", _AUDITED_READS)
+def test_unchanged_workspace_reads_do_not_rearm_final_review(command: str) -> None:
+    """PR #1080: the hook saw the workspace unchanged across the command, so it is not input."""
+
     ledger = ObservedLedger(records=list(_prefix()))
     start = len(ledger.records)
-    ledger.passes(command)
+    ledger.passes(command, workspace_effect="unchanged")
     state = replay(ledger.prefix)
-    assert all(not closing_review_delta(row, state) for row in ledger.records[start:])
+    effects = workspace_effects(ledger.prefix, state)
+    assert all(
+        not closing_review_delta(row, state, effects=effects) for row in ledger.records[start:]
+    )
     assert closing_material_frontier(state, ledger.prefix) <= start
 
 
-@pytest.mark.parametrize(
-    "command,scope",
-    [
-        ("sed -i '' s/a/b/ module.py", "workspace"),
-        ("rg x module.py > result.txt", "workspace"),
-        ("finishup status --json > result.txt", "workspace"),
-        ("python arbitrary.py", None),
-        ("date -u; python arbitrary.py", None),
-        ("rg --pre ./rewrite x module.py", None),
-        ("date -s tomorrow", None),
-        ("./date -u; date -u", None),
-        ("./finishup status --json; rg x module.py", None),
-        ("pytest -q", None),
-        ("git status --short", None),
-        ("env PATH=/agent/shadow date -u", None),
-        ("/agent/shadow/bin/date -u", None),
-        ("finishup closure-prepare --session-id s --writer-id w --output ./file", None),
-        ("nohup date -u", None),
-    ],
-)
-def test_writes_verifiers_and_unproven_commands_rearm(command: str, scope: str | None) -> None:
+@pytest.mark.parametrize("command", _AUDITED_READS)
+@pytest.mark.parametrize("effect", [None, "changed", "unavailable"])
+def test_command_text_alone_never_makes_a_command_harmless(
+    command: str, effect: str | None
+) -> None:
+    """Without an ``unchanged`` fingerprint the same read-looking command stays material."""
+
     ledger = ObservedLedger(records=list(_prefix()))
     start = len(ledger.records)
-    ledger.run(command, ResultOutcome.SUCCESS, write_scope=scope)
+    ledger.passes(command, workspace_effect=effect)
     state = replay(ledger.prefix)
-    assert all(closing_review_delta(row, state) for row in ledger.records[start:])
+    effects = workspace_effects(ledger.prefix, state)
+    assert all(closing_review_delta(row, state, effects=effects) for row in ledger.records[start:])
     assert closing_material_frontier(state, ledger.prefix) > start
+
+
+@pytest.mark.parametrize(
+    "command,scope,install",
+    [
+        ("sed -i '' s/a/b/ module.py", "workspace", None),
+        ("rg x module.py > result.txt", "workspace", None),
+        ("finishup status --json > result.txt", "workspace", None),
+        ("pytest -q", None, None),
+        ("npm run build", None, None),
+        ("ruff check .", None, None),
+        ("pytest -q 2>&1 | tail -5", None, None),
+        ("pip install requests", None, "workspace_env"),
+    ],
+)
+def test_writes_verifiers_and_installs_rearm_even_when_unchanged(
+    command: str, scope: str | None, install: str | None
+) -> None:
+    """Verification-run semantics, lexical writes and environment installs keep their #1079 rule."""
+
+    ledger = ObservedLedger(records=list(_prefix()))
+    start = len(ledger.records)
+    ledger.run(
+        command,
+        ResultOutcome.SUCCESS,
+        exit_status=0,
+        write_scope=scope,
+        install_target=install,
+        workspace_effect="unchanged",
+    )
+    state = replay(ledger.prefix)
+    effects = workspace_effects(ledger.prefix, state)
+    assert all(closing_review_delta(row, state, effects=effects) for row in ledger.records[start:])
+    assert closing_material_frontier(state, ledger.prefix) > start
+
+
+def test_a_declared_verifier_stays_material_when_it_writes_nothing() -> None:
+    ledger = ObservedLedger()
+    declare_verifier(ledger, "python check.py")
+    start = len(ledger.records)
+    ledger.passes("python check.py", workspace_effect="unchanged")
+    state = replay(ledger.prefix)
+    assert closing_material_frontier(state, ledger.prefix) > start
+    # The same unchanged run of a command no obligation requests is not input.
+    other = ObservedLedger()
+    declare_verifier(other, "python check.py")
+    begin = len(other.records)
+    other.passes("python inspect.py", workspace_effect="unchanged")
+    assert closing_material_frontier(replay(other.prefix), other.prefix) <= begin
+
+
+def test_unregistered_key_with_requested_command_keeps_every_command_material() -> None:
+    ledger = ObservedLedger()
+    declare_verifier(ledger, "python check.py")
+    start = len(ledger.records)
+    ledger.passes("date -u", workspace_effect="unchanged")
+    register_command_identity_key(None)
+    try:
+        state = replay(ledger.prefix)
+        assert closing_material_frontier(state, ledger.prefix) > start
+    finally:
+        register_command_identity_key(INSTALLATION_KEY)
+
+
+def test_a_contradicting_result_or_a_cooperative_claim_cannot_quiet_a_command() -> None:
+    ledger = ObservedLedger(records=list(_prefix()))
+    start = len(ledger.records)
+    result = ledger.passes("date -u", workspace_effect="unchanged")
+    # A second observed result of the same call (a stream correction) that saw a change wins.
+    ledger.correct_outcome(result, ResultOutcome.SUCCESS, exit_status=0)
+    action = next(
+        row.payload.action_id
+        for row in ledger.records
+        if isinstance(row.payload, ResultRecordedPayload) and row.payload.result_id == result
+    )
+    ledger.append(
+        EventSchema("result_recorded", "1.0.0"),
+        ResultRecordedPayload(
+            result_id("res_00000000-0000-4000-8000-000000108099"),
+            action,
+            ResultOutcome.SUCCESS,
+            exit_status=0,
+            summary="Observed result status=success (workspace changed)",
+        ),
+        observed=True,
+    )
+    state = replay(ledger.prefix)
+    assert closing_material_frontier(state, ledger.prefix) > start
+    # An agent-published result cannot claim the workspace was unchanged.
+    forged = ObservedLedger(records=list(_prefix()))
+    begin = len(forged.records)
+    forged.run("date -u", ResultOutcome.SUCCESS, exit_status=0)
+    forged_action = next(
+        row.payload.action_id
+        for row in forged.records[begin:]
+        if isinstance(row.payload, ActionRecordedPayload)
+    )
+    forged.append(
+        EventSchema("result_recorded", "1.0.0"),
+        ResultRecordedPayload(
+            result_id("res_00000000-0000-4000-8000-000000108098"),
+            forged_action,
+            ResultOutcome.SUCCESS,
+            exit_status=0,
+            summary="Observed result status=success (workspace unchanged)",
+        ),
+        observed=False,
+    )
+    forged_state = replay(forged.prefix)
+    assert workspace_effects(forged.prefix, forged_state).quiet == frozenset()
+    assert closing_material_frontier(forged_state, forged.prefix) > begin
+
+
+def test_another_tool_that_changed_the_workspace_rearms() -> None:
+    """A third-party MCP tool or a process poll that wrote files is input; an unchanged one is not."""
+
+    for effect, material in (("changed", True), ("unchanged", False), (None, False)):
+        ledger = ObservedLedger(records=list(_prefix()))
+        start = len(ledger.records)
+        ledger.run(
+            None,
+            ResultOutcome.SUCCESS,
+            kind=ActionKind.OTHER,
+            tool="write_stdin",
+            runner="other",
+            workspace_effect=effect,
+        )
+        state = replay(ledger.prefix)
+        assert (closing_material_frontier(state, ledger.prefix) > start) is material, effect
 
 
 @pytest.mark.parametrize(
@@ -266,3 +392,33 @@ def test_receipt_close_and_lifecycle_do_not_rearm() -> None:
     closed = _with_payload(source, cast(ActionRecordedPayload, WorkClosedPayload()))
     object.__setattr__(closed, "schema", EventSchema("work_closed", "1.0.0"))
     assert not closing_review_delta(closed, state)
+
+
+def test_check_currency_disclosure_follows_the_same_workspace_fact() -> None:
+    """The receipt's later-material suffix ignores an unchanged command and keeps the rest."""
+
+    from finishup.kernel.later_material import (
+        LaterMaterialClass,
+        classify_later_material,
+        counted_later_material,
+    )
+
+    ledger = ObservedLedger(records=list(_prefix()))
+    start = len(ledger.records)
+    ledger.passes("date -u", workspace_effect="unchanged")
+    quiet_rows = ledger.records[start:]
+    ledger.passes("rg x module.py")
+    loud_rows = ledger.records[start + len(quiet_rows) :]
+    state = replay(ledger.prefix)
+    counted = counted_later_material(ledger.records[start:], state, all_records=ledger.prefix)
+    assert set(counted) == set(loud_rows)
+    effects = workspace_effects(ledger.prefix, state)
+    assert {classify_later_material(row, state, effects=effects).rule for row in quiet_rows} == {
+        "observed_workspace_unchanged",
+        "result_of_action",
+    }
+    assert all(
+        classify_later_material(row, state, effects=effects).material_class
+        is LaterMaterialClass.EXPLORATION
+        for row in quiet_rows
+    )

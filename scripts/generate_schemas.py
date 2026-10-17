@@ -8225,6 +8225,14 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "type": "string",
         }
         fields["effective_user"] = {"enum": ["non_root", "root"], "type": "string"}
+        # Whether the hook's before/after workspace fingerprint saw the call change the workspace
+        # (PR #1080 round 5): the hook's own closed set, read from the domain module.
+        from finishup.domain.workspace_effect import WORKSPACE_EFFECTS
+
+        fields["workspace_effect"] = {
+            "enum": cast(list[JsonValue], sorted(WORKSPACE_EFFECTS)),
+            "type": "string",
+        }
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013): the
         # decoded image's SHA-256 and byte count, a sniffed media type, and header dimensions.
         # No pixel crosses the wire; the domain envelope admits exactly this shape.
