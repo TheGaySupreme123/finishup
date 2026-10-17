@@ -15,6 +15,7 @@ import asyncio
 import hmac
 import os
 import re
+import shlex
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, cast
@@ -22,11 +23,13 @@ from typing import Final, cast
 from finishup.application.semantic_case import CheckTimeChange, check_time_change_shown_record
 from finishup.domain.events import (
     MAX_CHECK_CHANGE_SHOWN_FILES,
+    ActionKind,
     CheckChangePartialFile,
     CheckChangeShownFiles,
     RequestedItemKind,
     RequestedItemRole,
 )
+from finishup.domain.observation_selection import command_is_verification
 from finishup.domain.privacy import ReviewSelectionPolicy
 from finishup.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
 from finishup.domain.values import ObligationId
@@ -44,6 +47,7 @@ from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER, redact
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_CHECK_CHANGE_TEXT_BYTES,
+    MAX_TASK_INPUT_FILES,
     MAX_TASK_INPUT_TEXT_BYTES,
     TASK_CHANGE_BASE_MEDIA_TYPE,
     ChangeCapturePort,
@@ -67,7 +71,10 @@ from finishup.protocol.canonical import JsonValue
 
 __all__ = [
     "declared_output_paths",
+    "OutsideInputReader",
+    "review_input_paths",
     "task_input_paths",
+    "verification_input_paths",
     "CheckChangeOutcome",
     "capture_structural_check_change",
     "capture_check_time_change",
@@ -366,7 +373,9 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
     """
 
     inputs = _redacted_inputs(capture.inputs)
-    if inputs != capture.inputs:
+    if inputs != capture.inputs or any(item.redacted for item in inputs):
+        # An input the reader already redacted (a summary that withheld a value, PR #1086 review
+        # R1-04) is disclosed like one this pass redacted.
         capture = replace(capture, inputs=inputs, redacted=True)
     text, redacted = _redacted_text(capture.text)
     if not redacted:
@@ -378,12 +387,111 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
     return replace(capture, text=text, redacted=True, truncated=truncated)
 
 
+def _workspace_relative(value: str, workspace: str) -> str:
+    """``value`` as a repository-relative path when it names one lexically; else unchanged."""
+
+    if value.startswith("/"):
+        root = os.path.normpath(workspace).rstrip("/") + "/"
+        path = os.path.normpath(value)
+        return path[len(root) :] if path.startswith(root) else value
+    return os.path.normpath(value)
+
+
+def _with_input_origins(
+    capture: CheckChangeCapture, verification_paths: frozenset[str], workspace: str
+) -> CheckChangeCapture:
+    """Mark each input only a verification command named (issue #1082); the bytes are unchanged."""
+
+    if not verification_paths or not capture.inputs:
+        return capture
+    oracle = {_workspace_relative(value, workspace) for value in verification_paths}
+    inputs = tuple(
+        replace(item, origin="verification")
+        if item.origin == "task" and item.path in oracle
+        else item
+        for item in capture.inputs
+    )
+    return capture if inputs == capture.inputs else replace(capture, inputs=inputs)
+
+
+# Reads the candidate paths beneath the owner's admitted outside-workspace roots (issue #1082):
+# ``(values, room, workspace)``. Bound by the service to the effective policy's roots, so this
+# layer never sees a root itself; the workspace is never read from, by path or by identity.
+type OutsideInputReader = Callable[[tuple[str, ...], int, str], tuple[TaskInputFile, ...]]
+
+
+def _within(path: str, workspace: str) -> bool:
+    """Whether ``path`` is the workspace or beneath it, compared case-folded (PR #1086 R1-02).
+
+    Case-folding errs toward refusing: on a case-insensitive file system ``/shared/caserepo``
+    is the workspace ``/shared/CaseRepo``, and on a case-sensitive one a differently cased
+    sibling is merely not read from outside.
+    """
+
+    folded = os.path.normpath(path).casefold()
+    root = os.path.normpath(workspace).casefold().rstrip("/")
+    return folded == root or folded.startswith(root + "/")
+
+
+def _with_outside_inputs(
+    capture: CheckChangeCapture,
+    input_paths: tuple[str, ...],
+    reader: OutsideInputReader | None,
+    workspace: str,
+    *,
+    verification_paths: frozenset[str],
+) -> CheckChangeCapture:
+    """Add inputs the task names beneath an admitted outside root, in the room left (#1082).
+
+    Only paths the task itself names (its statement or a ``role: input`` item) may be read
+    outside the workspace (ADR-009): ``verification_paths``, the candidates only an agent-recorded
+    verification command named, are oracle candidates for the repository read alone and are
+    never offered to the reader (PR #1086 review R1-05).
+
+    A path inside the workspace is never offered here, even beneath an admitted root: the
+    repository read alone decides those, because only it can prove a file unchanged since the
+    task started (the agent may have written it) and not ignored. The reader refuses the
+    workspace by device and inode at every level of its walk, so an admitted directory that
+    contains the workspace, or a differently spelled path to it, cannot enumerate its files
+    (PR #1086 review R1-02); every file the reader returns is checked here again.
+    """
+
+    room = MAX_TASK_INPUT_FILES - len(capture.inputs)
+    outside = tuple(
+        value
+        for value in input_paths
+        if value.startswith("/")
+        and value not in verification_paths
+        and not _within(value, workspace)
+    )
+    if reader is None or room < 1 or not outside:
+        return capture
+    present = {item.path for item in capture.inputs}
+    added: list[TaskInputFile] = []
+    for item in reader(outside, room, workspace):
+        if (
+            item.origin != "outside_workspace"
+            or not item.path.startswith("/")
+            or _within(item.path, workspace)
+            or item.path in present
+            or len(added) >= room
+        ):
+            continue
+        present.add(item.path)
+        added.append(item)
+    if not added:
+        return capture
+    return replace(capture, inputs=(*capture.inputs, *added))
+
+
 def _capture_redacted(
     port: ChangeCapturePort,
     workspace: str,
     base: TaskChangeBase | None,
     priority_paths: tuple[str, ...] = (),
     input_paths: tuple[str, ...] = (),
+    verification_paths: frozenset[str] = frozenset(),
+    outside_reader: OutsideInputReader | None = None,
 ) -> CheckChangeCapture:
     # A port without deliverable ordering or task inputs (an embedded or test port) is called
     # exactly as before when neither is asked for.
@@ -395,7 +503,17 @@ def _capture_redacted(
     capture = port.capture(workspace, base, **options)
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
-    return _redacted(capture)
+    capture = _with_input_origins(capture, verification_paths, workspace)
+    # Every input, inside the repository or beneath an admitted root, takes the same redaction.
+    return _redacted(
+        _with_outside_inputs(
+            capture,
+            input_paths,
+            outside_reader,
+            workspace,
+            verification_paths=verification_paths,
+        )
+    )
 
 
 async def capture_check_time_change(
@@ -408,11 +526,18 @@ async def capture_check_time_change(
     request_id: str,
     priority_paths: tuple[str, ...] = (),
     input_paths: tuple[str, ...] = (),
+    verification_paths: frozenset[str] = frozenset(),
+    outside_reader: OutsideInputReader | None = None,
 ) -> CheckChangeOutcome:
     """Capture, redact and store one check's change; every failure is a disclosed absence.
 
     ``priority_paths`` are the declared deliverables (``declared_output_paths``), rendered first.
-    ``input_paths`` are candidate task input files (``task_input_paths``, issue #1045).
+    ``input_paths`` are candidate task input files (``review_input_paths``, issues #1045 and
+    #1082); ``verification_paths`` are those only a recorded verification command named, whose
+    inputs are labelled as the verification's oracle and are never read outside the workspace.
+    ``outside_reader`` reads the task's own candidates beneath the outside-workspace roots the
+    owner admitted in the repository grant (#1082); the service passes it only when the effective
+    policy admits a root and the recipe carries task inputs.
     """
 
     if type(source) is not CheckWorkspaceSource:
@@ -436,7 +561,14 @@ async def capture_check_time_change(
         # Capture and every redaction pass run off the event loop: a parser-sized change needs
         # dozens of full scans, which would otherwise stall every other connection for seconds.
         capture = await asyncio.to_thread(
-            _capture_redacted, port, source.workspace, base, priority_paths, input_paths
+            _capture_redacted,
+            port,
+            source.workspace,
+            base,
+            priority_paths,
+            input_paths,
+            verification_paths,
+            outside_reader,
         )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
@@ -615,18 +747,25 @@ def declared_output_paths(projection: ProjectionState) -> tuple[str, ...]:
 
     declared: list[str] = []
     unroled: list[str] = []
+    described: list[str] = []
     for obligation in effective_obligations(projection):
         payload = projection.obligations[obligation].payload
         if payload is None:
             continue
         for item in payload.requested_items:
+            if item.item_kind is RequestedItemKind.CHANGE:
+                # Issue #1082 (sglang, react-lead-form): a requested change that names its
+                # files in prose ("parser fixes in a/b.py and c/d.py") names deliverables too.
+                # They rank after every literal declaration, and only order the change.
+                described.extend(_named_files(item.value))
+                continue
             if item.item_kind not in _PROBED_KINDS or not _plain_path(item.value):
                 continue
             if item.role is RequestedItemRole.OUTPUT:
                 declared.append(item.value)
             elif item.role is None:
                 unroled.append(item.value)
-    return tuple(dict.fromkeys((*declared, *unroled)))[:_MAX_REQUESTED_OUTPUT_PROBES]
+    return tuple(dict.fromkeys((*declared, *unroled, *described)))[:_MAX_REQUESTED_OUTPUT_PROBES]
 
 
 # Words of the task statement that name a file (issue #1045): a path with a slash, or a file name
@@ -656,6 +795,88 @@ def _statement_file_word(word: str) -> str | None:
     return value
 
 
+def _named_files(text: str) -> list[str]:
+    """The plain literal file paths ``text`` names, in order (the statement-word rule)."""
+
+    named: list[str] = []
+    for word in _STATEMENT_WORD.findall(text):
+        value = _statement_file_word(word)
+        if value is not None and _plain_path(value):
+            named.append(value)
+    return named
+
+
+# Issue #1082: a test or fixture file a recorded verification command names is the oracle the
+# reviewer needs beside the run's output. At most this many such paths are offered, newest
+# command first, and they compete for the same four task-input files.
+_MAX_VERIFICATION_INPUT_CANDIDATES: Final = 4
+_PYTEST_NODE_SUFFIX: Final = re.compile(r"::.*\Z")
+
+
+def verification_input_paths(projection: ProjectionState) -> tuple[str, ...]:
+    """Files the recorded verification commands name, newest command first (issue #1082).
+
+    A command counts only when ``command_is_verification`` classes it as a test, build, lint or
+    typecheck run and a readable result records that it ran. Its operands are split like a shell
+    would (an unparsable command names nothing); a pytest node id keeps only its file. Only plain
+    literal file paths count. The command text is the agent's own record, so it only selects
+    candidates: the adapter reads one only when it lies in the repository, is unchanged since the
+    task started, is not ignored and is not credential-named, exactly like a statement-named
+    input. A test the agent wrote or changed is therefore never read here; it is in the change.
+    """
+
+    # Each command is ranked by its latest run, so a re-run moves its files ahead of a command run
+    # in between.
+    latest: dict[str, int] = {}
+    for row in projection.results.values():
+        payload = row.payload
+        if payload is None or row.redacted:
+            continue
+        action = projection.actions.get(payload.action_id)
+        if (
+            action is None
+            or action.payload is None
+            or action.redacted
+            or action.payload.action_kind is not ActionKind.COMMAND
+            or action.payload.command is None
+        ):
+            continue
+        command = action.payload.command
+        if command not in latest and not command_is_verification(command):
+            continue
+        latest[command] = max(latest.get(command, row.source_frontier), row.source_frontier)
+    candidates: list[str] = []
+    for command, _ in sorted(latest.items(), key=lambda run: (-run[1], run[0])):
+        try:
+            words = shlex.split(command, posix=True)
+        except ValueError:
+            continue
+        for word in words[1:]:
+            if word.startswith("-"):
+                continue
+            value = _statement_file_word(_PYTEST_NODE_SUFFIX.sub("", word).removeprefix("./"))
+            if value is not None and _plain_path(value) and "." in value.rsplit("/", 1)[-1]:
+                candidates.append(value)
+    return tuple(dict.fromkeys(candidates))[:_MAX_VERIFICATION_INPUT_CANDIDATES]
+
+
+def review_input_paths(
+    projection: ProjectionState, statement: str | None
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """Candidate task input files in read order, and those only a verification command names.
+
+    Issue #1082: the task's own files come first, but the newest verification oracle takes the
+    fourth candidate place, so a statement that names many files cannot crowd out every test the
+    work was checked against. Order matters only while the four-file read bound binds.
+    """
+
+    named = task_input_paths(projection, statement)
+    oracle = tuple(path for path in verification_input_paths(projection) if path not in named)
+    ordered = (*named[:3], *oracle[:1], *named[3:], *oracle[1:])
+    bound = _MAX_STATEMENT_INPUT_CANDIDATES + _MAX_VERIFICATION_INPUT_CANDIDATES
+    return tuple(ordered)[:bound], frozenset(oracle)
+
+
 def task_input_paths(projection: ProjectionState, statement: str | None) -> tuple[str, ...]:
     """Candidate read-only task input files for the check-time read (issue #1045).
 
@@ -668,11 +889,24 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
     """
 
     candidates: list[str] = []
+    directories: list[str] = []
     if type(statement) is str:
         for word in _STATEMENT_WORD.findall(statement):
             value = _statement_file_word(word)
             if value is not None and _plain_path(value):
                 candidates.append(value)
+                continue
+            # Issue #1082: an absolute directory the statement names ("the legacy app in
+            # /shared/legacy_app/") is offered last; only an outside-workspace root the owner
+            # admitted lists it, and the repository read never opens a directory as an input.
+            folder = word.strip(_STATEMENT_WORD_EDGE)
+            if (
+                folder.startswith("/")
+                and folder.endswith("/")
+                and folder.count("/") >= 3
+                and _plain_path(folder)
+            ):
+                directories.append(folder)
     for obligation in effective_obligations(projection):
         payload = projection.obligations[obligation].payload
         if payload is None:
@@ -684,7 +918,7 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
                 and _plain_path(item.value)
             ):
                 candidates.append(item.value)
-    return tuple(dict.fromkeys(candidates))[:_MAX_STATEMENT_INPUT_CANDIDATES]
+    return tuple(dict.fromkeys((*candidates, *directories)))[:_MAX_STATEMENT_INPUT_CANDIDATES]
 
 
 async def requested_output_states(

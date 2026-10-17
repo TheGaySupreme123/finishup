@@ -57,6 +57,12 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 ### Added
 
+- **Review can read folders outside the workspace that you admit** (#1082). `finishup privacy
+  input-roots add <folder>` lets AI-powered review read files the task names in that folder (for
+  example a shared specification or the code being ported), after your approval in the trusted
+  terminal; `remove` takes it back at once and `status` lists what is admitted. Nothing is read
+  unless your review policy already sends repository excerpts, and Private sends nothing.
+
 - Codex stream parsing defers ledger mapping imports until needed, reducing cold hook startup
   work while preserving public import names, parser profiles and wire bytes.
 
@@ -332,6 +338,19 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   `error.recovery` (#828).
 
 ### Changed
+
+- **The AI-powered reviewer checks the agent's premises, not just its arithmetic** (#1082). Its
+  instruction is now a short procedure with named checks: the task's own definitions, boundaries
+  and thresholds, whether the agent's own validators measure what the task defines, the method a
+  result rests on, delivery risks such as private APIs or data files the deliverable does not ship,
+  and whether numbers are plausible. A visible problem is reported even when other content is
+  missing, and support is scoped to what the reviewer actually checked.
+- **Review packets carry what reviewers asked for** (#1082). Specification files the task names
+  travel ahead of the change; the test files a verification ran travel as its oracle; binary,
+  image and data inputs travel as FinishUP's own short description instead of being skipped; a
+  large data file sends its first and last lines; duplicate captured edits give their room to the
+  latest verification output; and an agent's digest of output FinishUP already captured now reaches
+  that output.
 
 - **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
   advice packet to your configured reviewer where every task uses AI-powered review and your

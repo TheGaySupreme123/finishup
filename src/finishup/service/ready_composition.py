@@ -78,15 +78,17 @@ from finishup.adapters.sqlite.migrations import (
 from finishup.adapters.sqlite.project_operations import SqliteProjectOperationJournal
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.adapters.task_input_read import read_outside_inputs
 from finishup.application.check import SEMANTIC_EVALUATION_GAPS, FinalSemanticEvaluation
 from finishup.application.check_change import (
     CheckChangeOutcome,
+    OutsideInputReader,
     capture_check_time_change,
     check_change_shown_files,
     check_time_change_selected,
     declared_output_paths,
     recover_check_time_change,
-    task_input_paths,
+    review_input_paths,
 )
 from finishup.application.coordination import (
     EncryptedCoordinationDetailStore,
@@ -297,7 +299,11 @@ from finishup.observability.semantic_context import (
     semantic_check_request,
     semantic_progress_sink,
 )
-from finishup.ports.change_capture import ChangeCapturePort, current_check_workspace_source
+from finishup.ports.change_capture import (
+    ChangeCapturePort,
+    TaskInputFile,
+    current_check_workspace_source,
+)
 from finishup.ports.clock import ClockPort
 from finishup.ports.control import ControlError, ControlMethod
 from finishup.ports.diagnostics import (
@@ -2628,6 +2634,22 @@ def _bootstrap_seed_digest(installation_id: str, *, revision: str | None) -> str
     return canonical_digest(payload)
 
 
+def _outside_input_reader(
+    roots: tuple[str, ...], protected: tuple[str, ...] = ()
+) -> OutsideInputReader:
+    """The check-time reader of task inputs beneath the admitted outside roots (issue #1082).
+
+    It never reads from the check's workspace or from ``protected`` (this service's own bundle
+    and state directories), by path or by device and inode, even when an admitted root contains
+    them (PR #1086 review R1-02).
+    """
+
+    def read(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+        return read_outside_inputs(roots, values, limit=room, excluded=(workspace, *protected))
+
+    return read
+
+
 def _semantic_prepared_byte_ceiling(policy: PrivacyPolicy) -> int | None:
     """The effective AI-powered review channel ceiling, in prepared-payload bytes (issue #907).
 
@@ -4695,6 +4717,7 @@ def _privacy_gated_semantic_evaluator(
     local_observation: object | None = None,
     attention: SemanticAttentionTracker | None = None,
     change_capture: ChangeCapturePort | None = None,
+    protected_directories: tuple[str, ...] = (),
 ):
     total_timeout = float(max(1, min(int(timeout_seconds), 3600)))
     # The fallback endpoint owns its own deadline share (#582): a primary that spends its whole
@@ -5099,6 +5122,16 @@ def _privacy_gated_semantic_evaluator(
                         )
                 else:
                     workspace_source = current_check_workspace_source()
+                    review_inputs: tuple[tuple[str, ...], frozenset[str]] = (
+                        review_input_paths(
+                            frozen.case.projection,
+                            None
+                            if frozen.case.task_statement is None
+                            else frozen.case.task_statement.text,
+                        )
+                        if carries_task_inputs(review_selection)
+                        else ((), frozenset())
+                    )
                     if workspace_source is not None and change_capture is not None:
                         check_change = await capture_check_time_change(
                             runtime=runtime,
@@ -5109,17 +5142,20 @@ def _privacy_gated_semantic_evaluator(
                             request_id=frozen.lease.operation_id,
                             # Declared deliverables first, so a clipped packet keeps them.
                             priority_paths=declared_output_paths(frozen.case.projection),
-                            # Read-only task inputs the statement names (#1045), only where the
-                            # recipe carries both the statement and repository excerpts.
-                            input_paths=(
-                                task_input_paths(
-                                    frozen.case.projection,
-                                    None
-                                    if frozen.case.task_statement is None
-                                    else frozen.case.task_statement.text,
+                            # Read-only task inputs the statement names (#1045) and the test
+                            # files a recorded verification ran (#1082), only where the recipe
+                            # carries both the statement and repository excerpts.
+                            input_paths=review_inputs[0],
+                            verification_paths=review_inputs[1],
+                            # Issue #1082: only roots the owner admitted in this repository's
+                            # grant, and only where the recipe carries task inputs at all.
+                            outside_reader=(
+                                _outside_input_reader(
+                                    policy.admitted_input_roots, protected_directories
                                 )
-                                if carries_task_inputs(review_selection)
-                                else ()
+                                if policy.admitted_input_roots
+                                and carries_task_inputs(review_selection)
+                                else None
                             ),
                         )
             test_edit_gaps = (
@@ -6693,6 +6729,8 @@ async def provide_service_ready_context(
             local_observation=local_observation,
             attention=semantic_attention,
             change_capture=change_capture,
+            # The service's own data is never an outside-workspace task input (#1086 R1-02).
+            protected_directories=(str(paths.bundle), str(paths.state)),
         )
 
     # attempt_id -> (physical request identity, provider identity) of the single in-flight

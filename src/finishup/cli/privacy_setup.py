@@ -35,6 +35,7 @@ from finishup.adapters.providers.openai_responses_factory import (
     endpoint_profile_data_use_reviewed,
 )
 from finishup.domain.privacy import (
+    MAX_ADMITTED_INPUT_ROOTS,
     AuthorizationScopeKind,
     ChannelPolicy,
     ConversationReview,
@@ -46,6 +47,7 @@ from finishup.domain.privacy import (
     ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    admitted_input_root_valid,
     conversation_review_widens,
 )
 from finishup.domain.task_statement import task_statement_disclosure_text
@@ -66,6 +68,9 @@ __all__ = [
     "recommended_ai_review_recipe",
     "run_conversation_review_change",
     "run_credential_heuristic_change",
+    "admitted_root_from_path",
+    "input_roots_candidate",
+    "run_input_root_change",
     "configured_bindings",
     "get_privacy_setup_snapshot",
     "propose_privacy_candidate",
@@ -2136,4 +2141,125 @@ async def run_conversation_review_change(
             grant_state=snapshot.grant_state,
             migration_state=snapshot.migration_state,
         )
+    return await _decided_report(proposal_id, candidate, current, snapshot)
+
+
+def input_roots_candidate(
+    current: PrivacyPolicy, roots: tuple[str, ...], *, now: datetime
+) -> PrivacyPolicy:
+    """The exact successor of ``current`` that changes only the admitted input roots (#1082).
+
+    Every disclosure dimension is copied unchanged, so the trusted ceremony renders this one line
+    and nothing else.
+    """
+
+    if type(current) is not PrivacyPolicy or type(roots) is not tuple:
+        raise TypeError("privacy_input_roots_candidate_invalid")
+    now = now.replace(microsecond=(now.microsecond // 1000) * 1000)
+    placeholder = replace(
+        current,
+        version=current.version + 1,
+        policy_digest="sha256:" + "0" * 64,
+        created_at=now,
+        supersedes_policy_digest=current.policy_digest,
+        admitted_input_roots=tuple(sorted(set(roots), key=str.encode)),
+    )
+    identity = encode_privacy_policy_json(placeholder)
+    identity.pop("policy_digest")
+    return replace(placeholder, policy_digest=canonical_digest(cast(JsonValue, identity)))
+
+
+def admitted_root_from_path(value: str) -> str | None:
+    """``value`` as an admissible root, or ``None`` (issue #1082).
+
+    The owner names an existing directory by its absolute, normalized path with no link on the
+    way, so the root recorded is exactly the directory the owner meant; the service reads beneath
+    it without following links. Hidden directories, the filesystem root and system trees such as
+    ``/etc``, ``/proc`` and ``/dev`` are refused.
+    """
+
+    if type(value) is not str or not value:
+        return None
+    path = os.path.normpath(value)
+    if not os.path.isabs(path) or not admitted_input_root_valid(path):
+        return None
+    try:
+        real = os.path.realpath(path, strict=True)
+    except OSError:
+        return None
+    if real != path or not os.path.isdir(real):
+        return None
+    return path
+
+
+_INPUT_ROOT_NOTICE: Final = (
+    "Files the task names beneath {root} may be read into this repository's AI-powered review "
+    "packets as read-only task inputs. Only a review policy that already sends repository "
+    "excerpts carries them; hidden and credential-named files are never read, links are never "
+    "followed, and every file is scanned for secrets before it can leave. Private sends nothing."
+)
+
+
+async def run_input_root_change(
+    action: Literal["add", "remove"],
+    value: str,
+    *,
+    workspace_locator: Path | None = None,
+) -> PrivacySetupReport:
+    """Admit or remove one outside-workspace input root for this repository (issue #1082).
+
+    The roots belong to the current repository's grant. Admitting one lets more content leave,
+    so it is proposed and applies only after the separately reauthenticated trusted-terminal
+    decision; it needs an existing grant and never creates one. Removing a root narrows the grant
+    and applies at once.
+    """
+
+    if action not in {"add", "remove"}:
+        raise TypeError("privacy_input_roots_action_invalid")
+    locator = Path.cwd() if workspace_locator is None else workspace_locator
+    snapshot = await get_privacy_setup_snapshot(locator)
+    current = snapshot.composed_policy
+
+    def report(
+        outcome: Literal["configured", "unchanged", "cancelled", "failed"],
+        reason: str | None = None,
+    ) -> PrivacySetupReport:
+        return PrivacySetupReport(
+            outcome,
+            current.profile.value,
+            reason=reason,
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
+
+    if action == "remove":
+        root = os.path.normpath(value) if value else value
+        if root not in current.admitted_input_roots:
+            return report("unchanged")
+        roots = tuple(item for item in current.admitted_input_roots if item != root)
+        candidate = input_roots_candidate(current, roots, now=datetime.now(UTC))
+        proposal_id = await _propose(
+            candidate, snapshot.authority_digest, workspace_locator=locator
+        )
+        if proposal_id is None:
+            return report("configured")
+        return await _decided_report(proposal_id, candidate, current, snapshot)
+    root = admitted_root_from_path(value)
+    if root is None:
+        return report("failed", "input_root_invalid")
+    if root in current.admitted_input_roots:
+        return report("unchanged")
+    if snapshot.grant_state != "granted":
+        return report("unchanged", "repository_privacy_grant_missing")
+    if len(current.admitted_input_roots) >= MAX_ADMITTED_INPUT_ROOTS:
+        return report("failed", "input_roots_limit")
+    if not _interactive_terminal():
+        return report("failed", "local_terminal_required")
+    candidate = input_roots_candidate(
+        current, (*current.admitted_input_roots, root), now=datetime.now(UTC)
+    )
+    typer.echo(_INPUT_ROOT_NOTICE.format(root=root))
+    proposal_id = await _propose(candidate, snapshot.authority_digest, workspace_locator=locator)
+    if proposal_id is None:
+        return report("configured")
     return await _decided_report(proposal_id, candidate, current, snapshot)

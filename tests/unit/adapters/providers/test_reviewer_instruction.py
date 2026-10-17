@@ -42,6 +42,7 @@ from finishup.domain.receipts import (
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
 )
+from finishup.domain.review_input_render import publish_exactly
 from finishup.kernel.finding_resolution import SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.models import MAX_REVIEW_CHALLENGES
@@ -232,10 +233,13 @@ def test_the_task_statement_wins_over_the_plan() -> None:
 
     assert (
         "When the packet carries the user's task statement, it wins over the agent's goal, "
-        "plan, and obligations" in _TEXT
+        "plan, obligations and claims: they do not define the requirements." in _TEXT
     )
-    assert "a plan that omits or contradicts a stated requirement is a discrepancy" in _TEXT
-    assert "you never ask for behavior the task statement excludes" in _TEXT
+    assert (
+        "A plan or diff that omits or contradicts a stated requirement is a material discrepancy"
+        in _TEXT
+    )
+    assert "Never request behaviour the task statement excludes" in _TEXT
 
 
 def test_the_review_phase_matches_the_packet_question_set() -> None:
@@ -649,3 +653,56 @@ def test_pre_rename_markers_and_labels_read_as_their_finishup_forms() -> None:
         "an excerpt and only when the evidence id it names equals that excerpt's own source ref"
         in _TEXT
     )
+
+
+def test_the_agents_framing_is_tested_not_adopted() -> None:
+    """Issue #1082 (N6 audit): nine of ten investigated misses adopted the agent's premise, method
+    or self-written validator. The role, the deterministic-results rule and the grounding rules
+    now say whose material is evidence and when a verdict must be withheld."""
+
+    for rule in (
+        "The agent's plan, claims, checks and explanations are what you test, never the standard "
+        "you test them against.",
+        "Deterministic results are FinishUP's own checks; a validator, test or audit the agent "
+        "wrote or ran is the agent's evidence, which you judge.",
+        "Support needs a witness.",
+        "An aggregate pass count, an agent's PASS line, or a caveat the agent disclosed is not by "
+        "itself support.",
+        "When you cannot judge a requirement, abstain: mark it not_assessable and say why. Never "
+        "guess a verdict to fill a row.",
+        "A concrete problem the readable material shows always outranks what is missing: return "
+        "challenges_returned with it",
+    ):
+        assert rule in _TEXT, rule
+    # The visible-defect rule never weakens insufficient_packet's own honesty rule.
+    assert _TEXT.index("Use insufficient_packet with reviewer_challenges=[]") < _TEXT.index(
+        "A concrete problem the readable material shows always outranks what is missing"
+    )
+    final = _collapsed(REVIEW_PHASE_QUESTIONS["final"])
+    assert "a result that holds only under the agent's own premise or validator is not support" in (
+        final
+    )
+
+
+def test_a_supplied_summary_is_the_agents_account_not_the_output() -> None:
+    """Issue #1082 (packet investigation): a published result summary answered a
+    verification_output request as if it were the run's output.
+
+    The reviewer weighs the summary as the agent's account, never as support on its own, but it
+    must not re-list the request only because the answer is a summary: FinishUP's own remedy for
+    verification_output asks for exactly that summary, so re-listing it would spend the round's
+    second insufficient_packet on an agent that followed FinishUP's instruction."""
+
+    sentence = (
+        "An excerpt whose item_id begins excerpt-supplied- is a result summary the agent "
+        "published to answer a request: the agent's account of the run, not FinishUP's capture "
+        "of it. Judge it as that account against the code and any captured output; alone it is "
+        "not support, but do not list its verification_output item again only because the "
+        "answer is a summary."
+    )
+    assert sentence in _TEXT
+    # The reviewer rule and the agent-facing remedy agree on what answers the request.
+    assert "whose summary is the command output" in publish_exactly("verification_output")
+    assert "stays unmet until the output itself is carried" not in _TEXT
+    # The summary is never support alone; the grounding rule that says so still precedes it.
+    assert _TEXT.index("Support needs a witness.") < _TEXT.index(sentence)

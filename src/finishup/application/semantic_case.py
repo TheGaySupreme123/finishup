@@ -172,6 +172,7 @@ from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_TASK_INPUT_FILES,
     CheckChangeCapture,
+    TaskInputFile,
 )
 from finishup.ports.objects import ObjectKind, ObjectRef
 from finishup.ports.semantic import (
@@ -355,12 +356,16 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
             "and requested output (path), say whether the change and its recorded verification "
             "deliver it, and challenge each one they do not. A requirement only a hidden "
             "evaluator or an artifact the agent cannot obtain can establish is a not_assessable "
-            "row, not a challenge, once the packet shows the agent disclosed it."
+            "row, not a challenge, once the packet shows the agent disclosed it. For each "
+            "requirement, name the assumption, method or check its result rests on and judge that "
+            "against the task: a result that holds only under the agent's own premise or "
+            "validator is not support (issue #1082)."
         ),
     }
 )
 _REVIEW_QUESTIONS: Final = (
-    "What did you verify against the task and the change, and with what result?",
+    "What did you verify against the task and the change, how (the code path, output or recorded "
+    "check you read), and with what result? What could you not check?",
     "Which distinct material problems, if any, does the readable material show, and which "
     "case-bound refs support each?",
     "For anything you could not assess, which exact artifact is missing?",
@@ -412,7 +417,9 @@ _MAX_BLOCKER_LISTING_BYTES: Final = 1_536
 # privacy-gated packet item (``obligation-<id>``); this fixed text never carries agent or user
 # content.
 BLOCKER_REVIEW_INSTRUCTION: Final = (
-    "For each blocker, first quote the blocked obligation's own description and evidence"
+    "A blocker's kind and the agent's account of it are its claim, not evidence that an authority,"
+    " a dependency or data is missing (issue #1082)."
+    " For each blocker, first quote the blocked obligation's own description and evidence"
     " expectation from its packet item obligation-<obligation id> (say so if the packet does not"
     " carry it), then verify the blocker once against the task statement and the work. You must"
     " challenge it (one finding citing whichever of its decision and obligation ids citable_refs"
@@ -442,7 +449,8 @@ def acknowledged_obligation_rows(projection: ProjectionState) -> tuple[str, ...]
 
 # Fixed text appended when the agent acknowledged obligations as not done (#997).
 ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
-    "For each obligation acknowledged as not done, quote its own description from its packet"
+    "An acknowledgement is the agent's claim, not evidence that the work cannot be done."
+    " For each obligation acknowledged as not done, quote its own description from its packet"
     " item obligation-<obligation id>, then verify the acknowledgement against the task statement"
     " and the work: challenge it (one finding citing the obligation id, naming the work the agent"
     " can still do) when the task statement requires that work and the readable material shows"
@@ -781,16 +789,74 @@ class CheckTimeChange:
 # Item ids sort ahead of every other case item, so the provider document lists the change first.
 CHECK_TIME_CHANGE_ITEM_PREFIX: Final = "change-check-time-"
 _CHECK_TIME_CHANGE_SOURCE_REF: Final = CHECK_TIME_CHANGE_SOURCE_REF
-# Read-only task input files the same service read carried (issue #1045): one excerpt each, ranked
-# with the change's leftover parts ahead of older edits and general output, within at most a
-# quarter of the recipe's excerpt bytes on that first offer.
+# Read-only task input files the same service read carried (issue #1045): one excerpt each. Issue
+# #1082: they rank first, ahead of the check-time change, within a quarter of the packet's excerpt
+# budget; what does not fit backfills after every other excerpt.
 TASK_INPUT_ITEM_PREFIX: Final = "task-input-"
 _TASK_INPUT_SOURCE_REF: Final = "task-input"
 _TASK_INPUT_SHARE_DIVISOR: Final = 4
+# Excerpt slots the first task-input offer leaves per decisive verification run: its output and
+# the failure summary or command that travels beside it. One run when no follow-up is open (the
+# latest), else one per item the reviewer asked for (PR #1086 review R1-06).
+_DECISIVE_RUN_SLOTS: Final = 2
 _TASK_INPUT_LABEL: Final = (
     "[FinishUP task input file {path} ({size} bytes{cut}): named by the task, unchanged since the "
     "task started, read by the FinishUP service when this check ran; not the agent's work]\n"
 )
+# Issue #1082: who named the input, or where it was read, changes only the label's middle clause.
+_TASK_INPUT_VERIFICATION_LABEL: Final = (
+    "[FinishUP task input file {path} ({size} bytes{cut}): named by a recorded verification "
+    "command, unchanged since the task started, read by the FinishUP service when this check ran; "
+    "not the agent's work]\n"
+)
+_TASK_INPUT_OUTSIDE_LABEL: Final = (
+    "[FinishUP task input file {path} ({size} bytes{cut}): named by the task, outside the "
+    "workspace beneath a root the owner admitted, read by the FinishUP service when this check "
+    "ran; not the agent's work]\n"
+)
+_TASK_INPUT_SUMMARY_LABEL: Final = (
+    "[FinishUP summary of task input file {path} ({size} bytes): FinishUP's own bounded "
+    "description of a binary or data file it did not send whole; not the file itself and not the "
+    "agent's work]\n"
+)
+
+
+def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
+    """The labelled excerpt text of one task input, and whether it is a partial view."""
+
+    cut = len(item.text) < item.size and not item.summary
+    if item.summary:
+        label = _TASK_INPUT_SUMMARY_LABEL
+    elif item.origin == "verification":
+        label = _TASK_INPUT_VERIFICATION_LABEL
+    elif item.origin == "outside_workspace":
+        label = _TASK_INPUT_OUTSIDE_LABEL
+    else:
+        label = _TASK_INPUT_LABEL
+    head = label.format(
+        path=_marker_path(item.path),
+        size=item.size,
+        cut=", head and tail shown" if cut else "",
+    )
+    return head + _neutralised_agent_text(item.text.decode("utf-8")), cut
+
+
+def _first_task_input_slots(
+    selection: ReviewSelectionPolicy, change_parts: int, follow_up_items: int
+) -> int:
+    """Excerpt slots the first task-input offer may take (PR #1086 review R1-06).
+
+    The offer is bounded in count as well as in bytes. It leaves the check-time change the slots
+    its reservation would use (``_check_time_change_reservation``, at most one per part it has)
+    and leaves the decisive verification two slots per run (the latest run, or each run a
+    follow-up asked for: its output and its failure summary or command), so small inputs can
+    never take the room of the change and the run that decides it. What the offer cannot take
+    backfills after every other excerpt; the recipe's own count and bytes are never exceeded.
+    """
+
+    change = min(_check_time_change_reservation(selection, 0)[0], change_parts)
+    decisive = _DECISIVE_RUN_SLOTS * max(1, follow_up_items)
+    return max(0, min(MAX_TASK_INPUT_FILES, selection.max_excerpts - change - decisive))
 
 
 def carries_task_inputs(selection: ReviewSelectionPolicy) -> bool:
@@ -900,6 +966,35 @@ def _check_time_change_sections(
         for path in sorted(paths):
             by_path.setdefault(path, []).append((start, end, ordinal))
     return by_path
+
+
+def _wholly_shown_change_paths(
+    capture: CheckChangeCapture, part_keys: Sequence[tuple[str, str]]
+) -> frozenset[str]:
+    """Paths every section of which the admitted check-time change parts carry (issue #1082)."""
+
+    intervals = sorted(
+        (span[1], span[2])
+        for item_id, key in part_keys
+        if item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+        and (span := excerpt_span(key)) is not None
+        and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF
+    )
+    merged: list[tuple[int, int]] = []
+    for low, high in intervals:
+        if merged and low <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+        else:
+            merged.append((low, high))
+
+    def covered(start: int, end: int) -> bool:
+        return any(low <= start and end <= high for low, high in merged)
+
+    return frozenset(
+        path
+        for path, sections in _check_time_change_sections(capture).items()
+        if sections and all(covered(start, end) for start, end, _ in sections)
+    )
 
 
 def current_section_parts(
@@ -3447,6 +3542,8 @@ def _evidence_candidates(
     candidates: list[_ExcerptCandidate] = []
     # Each admitted capture's bytes digest, mapped to its candidate's index.
     admitted_capture_digests: dict[bytes, int] = {}
+    # Issue #1082: agent-published digest-only rows, by candidate index and asserted digest.
+    digest_only_rows: list[tuple[int, bytes]] = []
     for evidence_id, record in sorted(
         projection.evidence.items(),
         key=lambda pair: (pair[1].source_frontier, str(pair[0]).encode("ascii")),
@@ -3685,6 +3782,16 @@ def _evidence_candidates(
         verification = verification_by_evidence.get(ref)
         if capture_digest is not None:
             admitted_capture_digests[capture_digest] = len(candidates)
+        elif (
+            payload.content_digest is not None
+            and payload.digest_binding is not None
+            and payload.digest_binding.content_availability
+            is EvidenceContentAvailability.DIGEST_ONLY
+            and payload.content_digest.startswith("sha256:")
+        ):
+            digest_only_rows.append(
+                (len(candidates), bytes.fromhex(payload.content_digest.removeprefix("sha256:")))
+            )
         candidates.append(
             _ExcerptCandidate(
                 source_ref=ref,
@@ -3718,7 +3825,58 @@ def _evidence_candidates(
                 part_keys=part_keys,
             )
         )
-    return candidates
+    return _alias_digest_only_rows(candidates, admitted_capture_digests, digest_only_rows)
+
+
+def _alias_digest_only_rows(
+    candidates: list[_ExcerptCandidate],
+    captured: Mapping[bytes, int],
+    digest_only: Sequence[tuple[int, bytes]],
+) -> list[_ExcerptCandidate]:
+    """Carry captured bytes for an agent row that published only their digest (issue #1082).
+
+    An agent often records a run's output as a digest-only evidence row while a host hook already
+    captured those exact bytes under the owner's capture consent. When the asserted SHA-256 equals
+    an admitted capture's content digest and both rows record the same verification run (one
+    result of one command identity: the result that cites the row is the run the capture is bound
+    to), the capture's excerpt also answers to the row's ref and links, so a claim or a reviewer
+    request citing the row reaches the bytes and lends them its rank. The row keeps its own
+    excerpt (the agent's description of those bytes). Nothing new is read or sent; a withheld row,
+    or a digest no capture matches, stays exactly as before.
+
+    A digest proves byte equality, never who ran which command (PR #1086 review R1-01). A row
+    bound to no run, to another command, or to another run of the same command is not aliased,
+    so a caller's assertion can never make a capture answer for a run it did not record, nor
+    lend it that run's freshness or a request's completion.
+    """
+
+    merged: dict[int, int] = {}
+    for index, digest in digest_only:
+        target = captured.get(digest)
+        if target is None or target == index:
+            continue
+        row, lead = candidates[index], candidates[target]
+        if (
+            row.verification_identity is None
+            or row.verification_run is None
+            or (row.verification_identity, row.verification_run)
+            != (lead.verification_identity, lead.verification_run)
+        ):
+            continue
+        merged[index] = target
+    if not merged:
+        return candidates
+    updated = list(candidates)
+    for index, target in merged.items():
+        row = candidates[index]
+        lead = updated[target]
+        members = sorted(lead.linked, key=str.encode)
+        extra = sorted(set(row.linked) - set(members), key=str.encode)
+        linked = tuple(sorted([*members, *extra][:MAX_SEMANTIC_ITEM_SUBJECT_REFS], key=str.encode))
+        updated[target] = replace(
+            lead, identity_refs=lead.identity_refs | row.identity_refs, linked=linked
+        )
+    return updated
 
 
 def _observed_span_refs(keys: Iterable[str]) -> frozenset[str]:
@@ -4314,6 +4472,7 @@ def _select_targeted_excerpts(
     follow_up: ReviewFollowUp | None = None,
     check_time_change: CheckChangeCapture | None = None,
     supplied_refs: frozenset[str] = frozenset(),
+    change_shown_paths: frozenset[str] = frozenset(),
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -4337,6 +4496,12 @@ def _select_targeted_excerpts(
     recorded excerpts, inside the existing count and byte budgets. A result summary is added
     only when this selection already allows an evidence or test excerpt and no excerpt of
     that result exists yet. Nothing here widens the selection or the ceilings.
+
+    ``change_shown_paths`` (issue #1082) are the repository-relative paths whose every section
+    the check-time change parts already admitted carry whole. A captured edit of only such paths
+    is the same code again, older or equal: it is ranked as an older edit superseded by the
+    check-time change, so the room it held goes to the latest verification and other decisive
+    material first. The edit is still offered after them; nothing is withheld.
 
     ``follow_up`` (issue #1047) is the reviewer's own in-check request: the excerpts of its
     requested rows rank ahead of every other recorded excerpt, item by item in request order and
@@ -4600,6 +4765,15 @@ def _select_targeted_excerpts(
                 newest_for_path[path] = index
     for index, candidate in enumerate(candidates):
         if candidate.edit_paths is None:
+            continue
+        relative = _relative_edit_paths(candidate.edit_paths, workspace_root)
+        if (
+            relative
+            and len(relative) == len(candidate.edit_paths)
+            and change_shown_paths >= set(relative)
+        ):
+            # Issue #1082: the check-time change already carries these files whole.
+            superseded_by[index] = (_CHECK_TIME_CHANGE_SOURCE_REF,)
             continue
         newer = {newest_for_path[path] for path in candidate.edit_paths} - {index}
         if not candidate.edit_paths or len(newer) < len(
@@ -6604,7 +6778,7 @@ def _build_semantic_case_once(
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_links: tuple[str, ...] = ()
-    task_inputs_admitted = 0
+    task_inputs_admitted: set[int] = set()
     if check_time_change is not None and carries_task_inputs(selection):
         statement_links: set[str] = (
             {str(recorded_statement.source_event_id)} & allowed
@@ -6615,36 +6789,31 @@ def _build_semantic_case_once(
             :MAX_SEMANTIC_ITEM_SUBJECT_REFS
         ]
         if task_input_links:
-            task_inputs = tuple(
-                (
-                    _TASK_INPUT_LABEL.format(
-                        path=_marker_path(item.path),
-                        size=item.size,
-                        cut="" if len(item.text) >= item.size else ", head and tail shown",
-                    )
-                    + _neutralised_agent_text(item.text.decode("utf-8")),
-                    len(item.text) < item.size,
-                )
-                for item in check_time_change.capture.inputs
-            )
+            task_inputs = tuple(_task_input_text(item) for item in check_time_change.capture.inputs)
 
     def task_input_excerpts(
         slot_limit: int, byte_limit: int
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
-        """The next task input files that fit, one excerpt each (issue #1045)."""
+        """The task input files not yet admitted that fit, one excerpt each (issue #1045).
 
-        nonlocal task_inputs_admitted
+        Issue #1082: an input too large for this offer is skipped, not a stop, so a smaller
+        input the task names later still ranks first; the skipped one waits for the backfill.
+        """
+
         admitted_items: list[SemanticCaseItem] = []
         admitted_refs: list[TargetedExcerptRef] = []
         bytes_used = 0
         limit = min(selection.max_excerpt_bytes, MAX_SEMANTIC_ITEM_BYTES)
-        while task_inputs_admitted < len(task_inputs) and len(admitted_refs) < slot_limit:
-            text, cut = task_inputs[task_inputs_admitted]
+        for index, (text, cut) in enumerate(task_inputs):
+            if len(admitted_refs) >= slot_limit:
+                break
+            if index in task_inputs_admitted:
+                continue
             size = min(len(text.encode("utf-8")), limit)
             if bytes_used + size > byte_limit:
-                break
+                continue
             item = _content_item(
-                item_id=f"{TASK_INPUT_ITEM_PREFIX}{task_inputs_admitted + 1:02d}",
+                item_id=f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}",
                 section="excerpt",
                 category=DataCategory.REPOSITORY_EXCERPT,
                 source_kind="repository",
@@ -6669,26 +6838,16 @@ def _build_semantic_case_once(
                 )
             )
             bytes_used += item.content_bytes
-            task_inputs_admitted += 1
+            task_inputs_admitted.add(index)
         return tuple(admitted_items), tuple(admitted_refs)
 
     def lower_rank_room(
         slot_limit: int, byte_limit: int
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
-        """Room the reserved excerpt classes leave: task inputs (within their share), then the
-        change's remaining parts, all ahead of older edits and general output (#983, #1045)."""
+        """Room the reserved excerpt classes leave: the change's remaining parts, ahead of older
+        edits and general output (#983). Task inputs took their share first (issue #1082)."""
 
-        input_items, input_refs = task_input_excerpts(
-            min(slot_limit, MAX_TASK_INPUT_FILES),
-            min(byte_limit, selection.max_total_excerpt_bytes // _TASK_INPUT_SHARE_DIVISOR),
-        )
-        used = sum(ref.content_bytes for ref in input_refs)
-        if not check_change_parts:
-            return input_items, input_refs
-        change_items, change_refs = check_time_change_parts(
-            max(0, slot_limit - len(input_refs)), max(0, byte_limit - used)
-        )
-        return (*input_items, *change_items), (*input_refs, *change_refs)
+        return check_time_change_parts(slot_limit, byte_limit)
 
     def check_time_change_parts(
         slot_limit: int, byte_limit: int
@@ -6779,7 +6938,23 @@ def _build_semantic_case_once(
         excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
 
     if "targeted_excerpts" in sections and selection.max_excerpts > 0:
-        # The service-captured change takes its reserved share first; see
+        # Issue #1082: the controlling inputs the task names (a specification, a dataset, a test
+        # the verification runs) rank first, within a quarter of this packet's excerpt budget, so
+        # a large change can no longer push the specification out. Their slots are bounded too,
+        # so the change and the decisive verification output always keep room (PR #1086 review
+        # R1-06). What does not fit backfills after every other excerpt, as before.
+        input_items, input_refs = task_input_excerpts(
+            _first_task_input_slots(
+                selection,
+                len(check_change_parts),
+                0 if follow_up is None else len(follow_up.items),
+            ),
+            total_excerpt_budget // _TASK_INPUT_SHARE_DIVISOR,
+        )
+        items.extend(input_items)
+        targeted.extend(input_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in input_refs)
+        # The service-captured change takes its reserved share next; see
         # ``_check_time_change_reservation`` for how the rest of the budget is shared.
         admit_check_time_change(
             *_check_time_change_reservation(
@@ -6790,6 +6965,11 @@ def _build_semantic_case_once(
         # Recorded excerpts then fill what the change left, most valuable first (#907). The
         # change's remaining parts take the room the reserved classes leave, ahead of older edit
         # hunks and general output (#983), so a planned case narrows those first.
+        change_shown_paths: frozenset[str] = (
+            _wholly_shown_change_paths(check_time_change.capture, excerpt_part_keys)
+            if check_time_change is not None and check_change_admitted
+            else frozenset()
+        )
         excerpts = _select_targeted_excerpts(
             projection=projection,
             allowed=allowed,
@@ -6800,7 +6980,7 @@ def _build_semantic_case_once(
             captured_group_leader=captured_group_leader,
             excerpt_count_budget=selection.max_excerpts - len(targeted),
             excerpt_byte_budget=(max(0, total_excerpt_budget - excerpt_bytes_used)),
-            before_lower_ranks=lower_rank_room if check_change_parts or task_inputs else None,
+            before_lower_ranks=lower_rank_room if check_change_parts else None,
             declared_output_refs=declared_output_capture_order(projection, allowed, workspace_root),
             # A suffix-less binary the change marked (a compiled ``solver``) gets the same
             # "not sent" notice as a named binary type (tb4n2 P1-12).
@@ -6813,6 +6993,7 @@ def _build_semantic_case_once(
             workspace_root=workspace_root,
             follow_up=follow_up,
             supplied_refs=supplied_answer_refs,
+            change_shown_paths=change_shown_paths,
             # A follow-up may answer from the frozen change, only when this recipe carries it.
             check_time_change=(
                 check_time_change.capture

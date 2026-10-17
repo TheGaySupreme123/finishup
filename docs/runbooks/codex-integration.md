@@ -3166,6 +3166,20 @@ under that same request ID. Never mint a replacement write ID to recover an unkn
 A lost first `start` still uses exact same-body replay because session/writer IDs may be absent.
 This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers may set `--deadline-ms`.
 
+## Reviewer packets and admitted outside-workspace inputs (issue #1082)
+
+Decision for Codex: supported, service-side, identical on every host. The reviewer instruction,
+the packet ranking (task inputs first, the verification oracle, FinishUP's summaries of binary
+inputs, redundant captured edits yielding to the latest verification) and the digest-only alias
+are composed by the service from the ledger and the check-time read; Codex needs no host step and
+nothing new is captured from it. `admitted_input_roots` is a field of the current repository's
+privacy grant: `finishup privacy input-roots add <dir>` is a widening that applies only after the
+trusted-terminal decision, `remove` is an immediate tightening, and `status`, `finishup privacy
+show` and `/privacy` show it. Codex sessions, MCP tools and hooks have no write path to it; an
+agent learns from the review guidance that only the owner can admit a folder. No Codex
+capability gap. The consent-gated local copy of each outbound packet is not part of this change
+(#1085).
+
 ## Possible-credential filter opt-out (issue #982)
 
 Decision for Codex: supported, service-side, identical on every host. `credential_heuristic` is a

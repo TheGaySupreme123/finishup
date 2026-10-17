@@ -160,6 +160,34 @@ in the never-send set. Serving the static
 `guidance/` documents over MCP resources is not a disclosure sink at all — those bytes carry no
 ledger, task, or user content and are identical for every installation.
 
+### Task inputs and admitted outside-workspace roots (issue #1082)
+
+The never-send set excludes files outside the selected scope. A repository grant may widen that
+scope only by naming directories in `admitted_input_roots` (at most eight absolute paths with no
+hidden component, never the filesystem root or a system tree). Adding a root is a widening that
+needs the trusted decision; removing one is a tightening that applies at once; the installation
+row cannot admit a root for every repository. Files the task itself names (its statement or a
+`role: input` item, never a path only an agent-recorded verification command names) beneath an
+admitted root, and outside the workspace, are read only when the review recipe already carries
+task inputs (the check-time change, the task statement and the `repository` excerpt kind), never
+through a link, never hidden, credential-named, multiply linked or writable by another account,
+and at most four task inputs in all. The root is opened one component at a time from `/` without
+following a link, and every directory on the way must belong to the service user or root and be
+writable by no other account unless it is sticky; group write counts only for the owner's
+user-private group. The workspace and FinishUP's own data directories are never read this way,
+even inside an admitted root, and are recognized by device and inode as well as by path. They
+leave as `repository_excerpt` items under the same redaction, gateway and never-send scan as a
+repository task input; a channel that withholds `repository_excerpt` drops them, and Private sends
+nothing.
+
+A binary, image or data task input never leaves as bytes, whether its type shows as a NUL byte or
+as a recognized signature (an all-ASCII PDF). FinishUP sends its own bounded description instead
+(format, size, digest, dimensions, a page estimate, workbook sheet names and first rows, archive
+member names, array dtype and shape), labelled as FinishUP's description and redacted like any
+task input. Each value it quotes is scanned whole before it is shortened and is quoted only as a
+redaction marker when flagged, and no head-and-tail cut of a long text splits a recognized
+credential. Nothing here adds a category or raises a ceiling.
+
 ## Live harness observation retention
 
 First-party Codex live observation (ADR-010) is local control, not a network egress channel and not

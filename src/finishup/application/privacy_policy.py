@@ -713,6 +713,12 @@ def _enum_labels(values: tuple[Enum, ...]) -> PrivacyPolicyChangeValue:
     return PrivacyPolicyChangeValue.of_labels(tuple(str(item.value) for item in values))
 
 
+def _root_labels(roots: tuple[str, ...]) -> tuple[str, ...]:
+    """One ``dir:<root>`` label per admitted outside-workspace input root (issue #1082)."""
+
+    return tuple(f"dir:{root}" for root in roots)
+
+
 def _scope_labels(scope: AuthorizationScope) -> PrivacyPolicyChangeValue:
     parts = [f"kind:{scope.kind.value}", f"installation:{scope.installation_id}"]
     for name, value in (
@@ -1028,6 +1034,18 @@ def privacy_policy_changes(
         PrivacyPolicyChangeValue.of_labels((current_conversations.value,)),
         PrivacyPolicyChangeValue.of_labels((candidate_conversations.value,)),
         conversation_review_widens(current_conversations, candidate_conversations),
+    )
+    # Admitting an outside-workspace root lets files beneath it reach a review packet: a widening
+    # through the trusted decision. Removing a root is a tightening that applies directly (issue
+    # #1082). The labels name each root so the trusted screen shows exactly what is admitted.
+    _append(
+        changes,
+        "global",
+        "admitted_input_roots",
+        None,
+        PrivacyPolicyChangeValue.of_labels(_root_labels(current.admitted_input_roots)),
+        PrivacyPolicyChangeValue.of_labels(_root_labels(candidate.admitted_input_roots)),
+        bool(set(candidate.admitted_input_roots) - set(current.admitted_input_roots)),
     )
     _review_changes(changes, candidate.review_selection, current.review_selection)
     for new, old in zip(candidate.channel_policies, current.channel_policies, strict=True):

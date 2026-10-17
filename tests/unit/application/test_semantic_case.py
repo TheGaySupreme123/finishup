@@ -81,7 +81,7 @@ from finishup.kernel.deterministic_checks import (
     DeterministicCase,
     build_deterministic_case,
 )
-from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.kernel.projections import EvidenceProjectionRecord, ProjectionRecord
 from finishup.kernel.reducers import replay
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
 from finishup.ports.semantic import ExcerptDigestProvenance, SemanticCase
@@ -1740,6 +1740,118 @@ def test_reused_native_evidence_survives_mixed_digest_and_item_limits(profile: s
     assert b"synthetic matching native evidence" in prepared
 
 
+def test_a_digest_only_row_of_captured_bytes_reaches_those_bytes() -> None:
+    """Issue #1082: an agent recorded a run's output as a digest-only row while a hook captured
+    the same bytes of the same run; the capture's excerpt now answers to the agent's row. PR #1086
+    review R1-01: a digest proves byte equality, never which command produced the bytes, so a row
+    bound to no run, to another command or to another run of the same command is not aliased,
+    and a row whose digest matches nothing captured is left exactly as it was."""
+
+    case, captured, scope = _captured_case_values(b"synthetic matching native evidence")
+    native = case.projection.evidence[evd(1)].payload
+    assert native is not None and native.digest_binding is not None
+    same_bytes = replace(
+        native,
+        evidence_id=evd(2),
+        captured_object_id=None,
+        strength=EvidenceImmutability.CONTENT_DIGEST,
+        description="Agent digest of the captured run",
+        digest_binding=replace(
+            native.digest_binding,
+            content_availability=EvidenceContentAvailability.DIGEST_ONLY,
+            provenance=EvidenceDigestProvenance.CALLER_ASSERTED,
+        ),
+    )
+    other_bytes = replace(
+        same_bytes,
+        evidence_id=evd(3),
+        content_digest="sha256:" + "e" * 64,
+        description="Agent digest of other bytes",
+    )
+    withheld = replace(
+        same_bytes,
+        evidence_id=evd(4),
+        description="Agent withheld these bytes",
+        digest_binding=replace(
+            same_bytes.digest_binding,
+            content_availability=EvidenceContentAvailability.WITHHELD,
+        )
+        if same_bytes.digest_binding is not None
+        else None,
+    )
+    unbound = replace(same_bytes, evidence_id=evd(5), description="Agent digest, no run")
+    other_command = replace(same_bytes, evidence_id=evd(6), description="Agent says: ruff output")
+    other_run = replace(same_bytes, evidence_id=evd(7), description="Agent says: later pytest run")
+
+    def command(number: int, text: str) -> ProjectionRecord[ActionRecordedPayload]:
+        return record(
+            ActionRecordedPayload(act(number), ActionKind.COMMAND, "ran", command=text), 8
+        )
+
+    def result(number: int, *refs: EvidenceId) -> ProjectionRecord[ResultRecordedPayload]:
+        return record(
+            ResultRecordedPayload(
+                res(number), act(number), ResultOutcome.SUCCESS, 0, evidence_refs=tuple(refs)
+            ),
+            9 + number,
+        )
+
+    mixed = make_case(
+        plans=case.projection.plans,
+        obligations=case.projection.obligations,
+        claims=case.projection.claims,
+        # One pytest run records the capture and the agent's digest of it; a ruff run and a
+        # second pytest run each claim the same digest.
+        actions={
+            act(1): command(1, "pytest -q"),
+            act(2): command(2, "ruff check"),
+            act(3): command(3, "pytest -q"),
+        },
+        results={
+            res(1): result(1, evd(1), evd(2)),
+            res(2): result(2, evd(6)),
+            res(3): result(3, evd(7)),
+        },
+        evidence={
+            evd(1): case.projection.evidence[evd(1)],
+            evd(2): evidence_record(same_bytes, 5),
+            evd(3): evidence_record(other_bytes, 6),
+            evd(4): evidence_record(withheld, 7),
+            evd(5): evidence_record(unbound, 7),
+            evd(6): evidence_record(other_command, 7),
+            evd(7): evidence_record(other_run, 7),
+        },
+        extra_refs=(
+            clm(1),
+            obl(1),
+            *(evd(number) for number in range(1, 8)),
+            *(act(number) for number in range(1, 4)),
+            *(res(number) for number in range(1, 4)),
+        ),
+    )
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=mixed,
+        dependency_digest="sha256:" + "b" * 64,
+        findings=_findings_for(mixed),
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        captured_content=(captured,),
+        captured_content_scope=scope,
+    )
+
+    native_excerpt = next(item for item in semantic.items if item.item_id == f"excerpt-{evd(1)}")
+    assert native_excerpt.content == captured.content
+    assert str(evd(2)) in native_excerpt.linked_subject_refs
+    for ref in (evd(3), evd(4), evd(5), evd(6), evd(7)):
+        assert str(ref) not in native_excerpt.linked_subject_refs, ref
+    # Each agent row keeps its own description excerpt.
+    for ref in (evd(2), evd(3), evd(4), evd(5), evd(6), evd(7)):
+        assert any(item.item_id == f"excerpt-{ref}" for item in semantic.items), ref
+
+
 def test_unreserved_excerpts_compete_by_recency_before_link_class() -> None:
     """Outside the reserved room, newer material wins the last slot (issue #907, step 3.4).
 
@@ -1893,9 +2005,11 @@ def test_no_review_question_presupposes_a_defect_or_hands_back_the_next_step() -
         assert "smallest next step" not in joined
         assert "next step" not in joined
         assert "If so" not in joined
-        assert "What did you verify against the task and the change, and with what result?" in (
-            questions
-        )
+        # Issue #1082: the question asks how each result was checked and what was not.
+        assert (
+            "What did you verify against the task and the change, how (the code path, output or "
+            "recorded check you read), and with what result? What could you not check?"
+        ) in questions
         assert any("if any" in question for question in questions)
     with pytest.raises(ValueError, match="semantic_budget_profile_invalid"):
         review_question_set(cast(SemanticBudgetProfile, "completion"))
