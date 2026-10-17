@@ -160,6 +160,7 @@ from finishup.protocol.models import (
 )
 from finishup.protocol.publish_boilerplate import server_filled_from_json
 from finishup.protocol.recovery import READ_ONLY_CHECK_MODES
+from finishup.protocol.schemas import use_full_schema_catalog
 from finishup.service.check_waits import EXPLICIT_CONTROL_CANCEL, CheckReadWindow, CheckWaits
 from finishup.service.confidential_protocol import (
     HUMAN_PROTOCOL_MAGIC,
@@ -5095,6 +5096,9 @@ async def run_service(startup_correlation_id: str | None = None) -> Never:
     ``startup_correlation_id`` is the id a spawning process will look a startup failure up under.
     """
 
+    # The long-lived service keeps validating against the full schema catalog it has always built;
+    # loading only the needed schemas is for short-lived clients such as hooks (#1083).
+    use_full_schema_catalog()
     stage = "configuration"
     daemon: ServiceDaemon | None = None
     try:

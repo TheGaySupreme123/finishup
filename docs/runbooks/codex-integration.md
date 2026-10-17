@@ -3213,6 +3213,35 @@ with byte-identical pages and receipts. This host uses that path unchanged. Its 
 timing on macOS, Linux and WSL 2 is not yet measured; issue #916 owns it. See
 [status render performance](status-render-performance.md).
 
+## Hook schema loading (issue #1083)
+
+A Codex hook process no longer builds the full schema catalog before its first control frame.
+It parses only the control envelopes' schemas and their `$ref` closures, 92 of 232 documents,
+with the same verdicts and errors ([interfaces](../INTERFACES.md)). Unchanged on this host:
+
+- `hooks observe`, `hooks user-prompt-submit` and `hooks post-tool-use`;
+- hook registration, payloads, outputs, recorded events, ordering and timeouts.
+
+Host decision: supported, same code path.
+
+Latency: the #1083 replay drove 48 PreToolUse and 48 PostToolUse callbacks rebuilt from two
+recorded TB4 D-lane rollouts through the build before and after the change on macOS arm64 (single
+idle machine, shipped launcher). The median PreToolUse fell from 1,891 to 1,259 ms and PostToolUse
+from 1,921 to 1,261 ms (p90 2,173 to 1,527 ms and 2,141 to 1,564 ms). Linux and WSL 2 timings are
+not yet measured; issue #1083 owns them.
+
+Equivalence: the #1087 replay proof ([test instances](test-instances.md)) replayed 20 Codex
+callbacks rebuilt from a synthetic rollout of 8 tool calls, and 9 malformed payloads, on Linux
+x86_64 on 2026-10-17 through the merged predecessor (`0.3` at `c0198bb16`, with #1080 and #1086)
+and this change's head (`ea1f6eda4`). Every exit code, stdout and stderr byte, drain, status read
+and ledger event with its full payload compared identical after the normalization that runbook
+describes, which matches run-generated values, such as task, session and result ids, one-to-one:
+231 compared parts in the Codex workspace, including 26 ledger events. In the new build 15 of those
+callbacks parsed only their schemas and none built the full catalog; the old build built it in the
+same 15. A second replay of the new head compared identical with the first.
+The MCP bridge (`mcp serve --host codex`) is not replayed: it builds the full catalog as it starts,
+so its validation is unchanged by this change.
+
 ## Expanded excerpt count (issue #907 Phase 1b)
 
 Decision for Codex: nothing is host-specific, and the behaviour is identical on every host and OS.

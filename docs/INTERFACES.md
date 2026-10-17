@@ -927,6 +927,24 @@ runtime category `request_result|event|config|version_manifest`.
 The reviewed `schemas/manifest.json` owns the closed path-to-artifact-role mapping, and catalog
 loading fails closed on an unknown or path-incompatible role.
 
+Catalog loading is lazy in short-lived clients (issue #1083). Until a process builds the full
+catalog for another reason (`load_schema_catalog()`, `schema_document_for()`, or a rejection's
+diagnostic), `validate_schema_instance` parses only the requested schema and its transitive `$ref`
+closure. The rest of the catalog's checks stay eager: the manifest, the exact file set, and every
+member's byte length and SHA-256.
+
+- Each loaded document passes the full catalog's own per-document checks, and every reference in a
+  closure resolves to the same contents as in the full registry.
+- Every rejection, and anything the lazy catalog cannot decide exactly, takes the full-catalog path.
+  Error codes and `SchemaInstanceInvalid` fields are therefore unchanged.
+- `client_handshake` loads the four control-envelope closures before writing the hello, where the
+  full catalog used to be built.
+- The service calls `use_full_schema_catalog()` before it serves and keeps the full catalog.
+
+One boundary is narrower than before. A member outside every loaded closure whose bytes still match
+the manifest digest, but are not canonical or carry a wrong `$id`, is no longer refused by a hook.
+The service still refuses it, and so does any later full load.
+
 The independent exhaustive path-to-`SchemaKind` map is: `events/* -> event`,
 `config/* -> config`, `version/* -> version_manifest`, and
 `common/*|operations/*|findings/*|receipts/*|privacy/*|service/* -> request_result`. The manifest

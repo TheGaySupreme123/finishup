@@ -175,6 +175,128 @@ unlabeled ADR-026 root. If a holder does not release within the window
 Expiry is a serving limit, not a sweeper: an expired snapshot refuses to start until disposed.
 Disposal deletes files; it is not secure erasure.
 
+## Replay recorded hook payloads through two builds (#1083)
+
+`scripts/hook_replay.py` proves that a change to the hook path does not change what hooks do. It
+feeds the same recorded payloads through two revisions, each in its own disposable snapshot, and
+compares every exit code, stdout and stderr byte, the `observe drain` after each callback, each
+workspace's `observe status` read right after its own last callback, its ledger history read back
+through `status`, and every accepted ledger event with the payload bytes it binds, exported from
+the stopped snapshot.
+
+The proof is one `replay` per build, the old build being the merged predecessor and the new one the
+change's head. Run them one after the other, never at the same time, on an otherwise idle machine,
+with one shared `--work-root`:
+
+```text
+uv run python -I scripts/hook_replay.py corpus --rollout <codex-rollout.jsonl> \
+    [--rollout ...] --max-calls 24 --out corpus.json
+uv run python -I scripts/hook_replay.py replay --checkout . --revision <old> --tag rpo \
+    --python <python3.14> --base <instances> --corpus corpus.json --work-root <work> \
+    --mode pinned --admission-clock due --fixed-observation-key --out old.json
+uv run python -I scripts/hook_replay.py replay --checkout . --revision <new> --tag rpn \
+    --python <python3.14> --base <instances> --corpus corpus.json --work-root <work> \
+    --mode pinned --admission-clock due --fixed-observation-key --out new.json
+uv run python -I scripts/hook_replay.py compare old.json new.json --report report.md
+```
+
+`compare` exits 0 only when its verdict is IDENTICAL. Workspace paths are hashed into keyed
+commitments and recorded in each session, so `compare` refuses two records replayed under different
+work roots and names that cause.
+
+What the corpus holds:
+
+- Codex callbacks are rebuilt from a rollout, in the shapes pinned by
+  `fixtures/observations/codex-post-tool-outcomes-0.157.1.case.json`. Each callback fires at the
+  rollout position where its call or output landed, and its `transcript_path` names a copy of the
+  rollout that has grown to that point. Stop fires after the turn's final reply and carries it as
+  `last_assistant_message`, as Codex sends it; when `--max-calls` cuts the turn short, Stop fires
+  right after the last selected output instead, so give `--max-calls` at least the turn's replayed
+  call count for the proof.
+- Claude Code and Cursor sessions use the ordinary profiles, built from the repository's recorded
+  shapes.
+- Malformed stdin for each host, invalid workflow requests through the CLI, and schema-validation
+  probes in fresh installed-runtime processes cover the rejection paths.
+
+Both builds use the same workspace paths, which are fresh `git` repositories with a fixed commit.
+
+How the replay runs:
+
+- **Isolation.** Every instance process gets a scratch `HOME` and `CODEX_HOME`, and
+  `PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring`, so it never reads host configuration or
+  the OS keychain. The vault is initialized and the Private privacy recipe chosen through
+  `scripts/dogfood_ci/ceremony.py`, with a passphrase generated for the run and never written down.
+- **Pinned controls, equal for both builds.** Each callback runs through the retained interpreter
+  with the hook budgets in `PINNED_HOOK_BUDGETS` raised, the end-to-end
+  `_HOOK_TOTAL_BUDGET_SECONDS` included. The service runs with its background observation sweep,
+  lineage recovery and coordination retry paused, so every row reaches the ledger through the
+  callback itself or the `observe drain` that follows it, in replay order. `--admission-clock due`
+  makes every held admission row due at the next flush instead of after two or five wall-clock
+  seconds. `--fixed-observation-key` writes one observation key into each snapshot before its first
+  service start, so keyed commitments, source identities and the advice order they decide are the
+  same in both builds. A build that is merely slower then takes the branch a faster one takes.
+- **No setting for the workspace fingerprint.** The pre-call workspace walk has its own 0.75 s
+  budget and must finish before the host's hook timeout; neither has a setting, so pinned mode
+  cannot raise them. The replay workspaces hold one empty commit, so the walk takes milliseconds
+  on an idle machine. A walk that missed its deadline would record the call's workspace effect as
+  unavailable, which `compare` reports as a difference rather than hiding it.
+- **Not replayed: the MCP bridge, which this change does not touch.** `finishup mcp serve` builds
+  the full schema catalog as it starts, because its tool descriptors are generated from it, so every
+  bridge validation takes the unchanged full-catalog path in both builds. The replay drives hook
+  callbacks, CLI requests and schema probes instead. `tests/unit/test_hook_replay.py` checks that a
+  bridge process keeps the full catalog; `tests/unit/protocol/test_lazy_schema_catalog.py` covers
+  the lazy path per schema: every schema's `$ref` closure resolves as in the full catalog, every
+  schema decides a corpus of workflow frames as the stock validator does, and every rejection
+  reports exactly what the full catalog reports.
+- **Cleanup.** The replay stops only the service it started, then disposes the snapshot.
+
+How `compare` decides:
+
+- **Refusals.** A failed or partial read is never compared: a setup step or drain that exited
+  nonzero, a status read that did not follow its workspace's last callback, a history page, the
+  service stop or the ledger export failing, an exported hash chain that does not recompute from its
+  own bytes, two runs under different controls or work roots, two records whose pinned hook budgets
+  (`PINNED_HOOK_BUDGETS`, kept in each record) are missing or unequal, a pinned run replayed without
+  both proof controls (`--fixed-observation-key` and `--admission-clock`), or a fixed key that was
+  asked for and not written.
+- **Exact comparison.** Every compared part must be equal after normalizing only values that differ
+  between two runs of one build: identifiers that are random or digests over a run's random task
+  ids, matched one-to-one by where they occur; vault-keyed payload commitments; routine-read summary
+  digests, which carry receipt times; named service clock fields, each checked to fall inside the
+  run; wall-time figures and wall-time-derived values at named `observe status` paths; and the order
+  of one call's captured tool input and output evidence, which the materializer emits in random
+  object-id order and which is compared as a set of full events. The wall-time-derived values are
+  the delivery-lag and pass-timing histograms' bucket counts, `hard_cap_breach_count` and
+  `recent_hard_cap_breach_count` (passes over a wall-time cap), `dropped_sample_count` (timing
+  samples lost to a bounded lock wait), the `store_lock_long_hold` rows (a store lock held a second
+  or more) with their counts, and the selection state's byte size and utilization, which hold the
+  timing figures; every other count, outcome and limit is compared. With the fixed key,
+  observation-keyed values and the advice finding identifiers derived from them are compared
+  exactly, and a renamed value that is the same in both runs fails the comparison, so the
+  self-control replay shows that everything renamed is generated per run. A list of identifiers is
+  an unordered set only where its producer sorts it by value; an advice ranking is compared in
+  order.
+- **The lazy path was taken.** The verdict also requires that no valid hook callback of the new
+  build built the full schema catalog, that at least one parsed its schemas lazily, and that every
+  callback that loaded schemas in the old build loaded them lazily in the new one.
+- **Pinned only.** Only the pinned runs decide. `--mode shipped` and the `latency` command run the
+  launcher untouched and give latency figures only.
+
+**Result (#1087).** The proof ran on 2026-10-17 on Linux x86_64 (a shared 4-CPU container, Python
+3.14.6), with its three replays (old, new and a second new) run one after the other. The old build
+was the merged predecessor, `0.3` at `c0198bb169a0fcb3411476f93bc060bcf9f15a19` (with #1080 and
+#1086); the new build was this change's head at `ea1f6eda4ad9a02a45a758b7bf7f97acfe601aaa`, which
+merges that revision. Both were built from clean trees. The corpus held 106 items: 20 Codex
+callbacks rebuilt from a synthetic rollout of 8 tool calls (`--max-calls 24`), the 19 Claude Code
+and 13 Cursor ordinary-profile callbacks, 27 malformed hook payloads, 8 invalid CLI requests and 19
+schema probes. The two builds compared IDENTICAL: 677 compared parts, including 59 ledger events
+with their full payloads. In the new build 30 of the 52 valid hook callbacks parsed only their
+schemas (92 documents) and none built the full catalog; the old build built it in the same 30. A
+second replay of the new head compared IDENTICAL with the first, over the same 677 parts and 59
+events. In every run one result reads "(workspace unverified)": a Cursor `postToolUse` whose payload
+carries no exit code, so the host outcome is unavailable. The payload decides it, not a fingerprint
+deadline.
+
 ## Recovering a workstation whose everyday service was replaced
 
 Symptom: every everyday `finishup` command answers `service_incompatible` and points at

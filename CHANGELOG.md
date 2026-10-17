@@ -1053,6 +1053,20 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   1,000-event Codex ledger shows ~8x less CPU per page and `closure-prepare` in a few seconds
   (#916).
 
+- A hook no longer spends about a second building the whole 232-schema catalog before its first
+  service call. A short-lived client now parses only the schemas its frames use (92 of 232), with
+  the same verdicts and errors; the service keeps the full catalog. Latency only, measured in an
+  earlier session: recorded Codex, Claude Code and Cursor hooks replayed through the builds before
+  and after the change on an idle macOS arm64 machine took a median 1.26 s per tool callback instead
+  of 1.90 s. Equivalence: on Linux x86_64, with the timing and key controls pinned, 106 items (20
+  Codex hooks rebuilt from a synthetic rollout, the 19 recorded Claude Code and 13 Cursor hooks, 27
+  malformed hook payloads, 8 invalid CLI requests and 19 schema probes) were replayed through the
+  build before the change (0.3 with #1080 and #1086 merged) and the build with it. All 677 compared
+  parts, including every hook output, drain and status read and 59 ledger events with full
+  payloads, were identical once values generated per run, such as ids and wall-time figures, were
+  set aside, and a second replay of the build with the change matched the first. In that build 30
+  of the 52 valid hook callbacks parsed only their schemas and none built the full catalog (#1083).
+
 - A later run of the same command (only its latest run is judged), or a later observed edit, now
   retires an earlier hook-observed failure before a completion claim. Such a failure no longer
   raises `failed_work_omitted`, `material_limitation_omitted` or `failed_command_unresolved` advice,
