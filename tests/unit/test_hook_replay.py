@@ -166,13 +166,61 @@ def test_codex_callbacks_follow_the_rollout_and_its_recorded_shapes() -> None:
         "isError": True,
         "structuredContent": {"ok": False},
     }
-    assert payloads[6]["last_assistant_message"] == ""
+    # Every replayable call is selected, so Stop fires after the turn's final reply, as in Codex.
+    assert payloads[6]["last_assistant_message"] == "Done."
     assert payloads[6]["stop_hook_active"] is False
     uptos = [item["transcript"]["upto"] for item in items]
     assert uptos == sorted(uptos)
-    assert len(transcript) == uptos[-1]
+    assert len(transcript) == uptos[-1] == len(_rollout())
     assert json.loads(transcript[0])["payload"]["cwd"] == _MODULE.WORKSPACE
     assert json.loads(transcript[1])["payload"]["workspace_roots"] == [_MODULE.WORKSPACE]
+    assert json.loads(transcript[-1])["payload"]["role"] == "assistant"
+
+
+def test_stop_carries_the_final_reply_only_when_the_selection_reaches_the_turn_end() -> None:
+    rollout = [
+        *_rollout(),
+        _line("event_msg", {"message": "Done.", "type": "agent_message"}),
+        _line("event_msg", {"last_agent_message": "Done.", "type": "task_complete"}),
+        _line("turn_context", {"cwd": "/app", "turn_id": "turn-2"}),
+        _line(
+            "response_item",
+            {
+                "content": [{"text": "Next", "type": "input_text"}],
+                "role": "user",
+                "type": "message",
+            },
+        ),
+        _line(
+            "response_item",
+            {
+                "content": [{"text": "Later.", "type": "output_text"}],
+                "role": "assistant",
+                "type": "message",
+            },
+        ),
+    ]
+    # Two replayable calls (write_stdin is not one), both selected: the copy Stop reads ends
+    # before the ``task_complete`` Codex writes once Stop returns, and never reaches the next turn.
+    items, transcript = _MODULE.codex_corpus(
+        rollout, name="codex1", workspace="codex1", max_calls=2
+    )
+    assert items[-2]["label"].endswith("/Stop")
+    assert json.loads(items[-2]["stdin"])["last_assistant_message"] == "Done."
+    assert items[-2]["transcript"]["upto"] == len(transcript) == len(_rollout()) + 1
+    assert json.loads(transcript[-1])["payload"]["type"] == "agent_message"
+    # ``max_calls`` cuts the turn before the status call: Stop still fires right after the last
+    # selected output, before any reply was recorded.
+    items, transcript = _MODULE.codex_corpus(
+        rollout, name="codex1", workspace="codex1", max_calls=1
+    )
+    assert json.loads(items[-2]["stdin"])["last_assistant_message"] == ""
+    assert items[-2]["transcript"]["upto"] == len(transcript)
+    assert json.loads(transcript[-1])["payload"] == {
+        "call_id": "c1",
+        "output": "Process exited with code 1\nOutput:\nFAILED\n",
+        "type": "function_call_output",
+    }
 
 
 def test_codex_start_calls_also_reach_the_start_correlation_hook() -> None:

@@ -209,7 +209,10 @@ What the corpus holds:
 - Codex callbacks are rebuilt from a rollout, in the shapes pinned by
   `fixtures/observations/codex-post-tool-outcomes-0.157.1.case.json`. Each callback fires at the
   rollout position where its call or output landed, and its `transcript_path` names a copy of the
-  rollout that has grown to that point.
+  rollout that has grown to that point. Stop fires after the turn's final reply and carries it as
+  `last_assistant_message`, as Codex sends it; when `--max-calls` cuts the turn short, Stop fires
+  right after the last selected output instead, so give `--max-calls` at least the turn's replayed
+  call count for the proof.
 - Claude Code and Cursor sessions use the ordinary profiles, built from the repository's recorded
   shapes.
 - Malformed stdin for each host, invalid workflow requests through the CLI, and schema-validation

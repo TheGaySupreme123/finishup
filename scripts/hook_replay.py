@@ -17,8 +17,10 @@ Corpus sources:
   PreToolUse/PostToolUse pair Codex sends for it, in the shape pinned by
   ``fixtures/observations/codex-post-tool-outcomes-0.157.1.case.json``, preceded by SessionStart
   and UserPromptSubmit and followed by Stop and SessionEnd. ``transcript_path`` names a copy of the
-  rollout that grows to the point the callback fired at. Calls with no recorded hook shape in this
-  repository (``write_stdin``, ``view_image``, MCP resource listing) are left out.
+  rollout that grows to the point the callback fired at; unless ``--max-calls`` cuts the turn short,
+  Stop fires after the turn's final reply and carries it as ``last_assistant_message``, as Codex
+  sends it. Calls with no recorded hook shape in this repository (``write_stdin``, ``view_image``,
+  MCP resource listing) are left out.
 * Claude Code and Cursor: the ordinary-profile session assembled from the repository's recorded
   shapes (``fixtures/observations/*-outcomes.case.json`` and the host test payloads).
 * Malformed hook stdin for every host, invalid workflow requests through the CLI, and schema
@@ -90,6 +92,11 @@ _CODEX_UNRECORDED_TOOLS: Final = frozenset(
         "read_mcp_resource",
     }
 )
+# Rollout events written after Stop returns (``task_complete``, ``turn_aborted``) or as the next
+# turn starts; a copy Stop reads never holds them.
+_CODEX_TURN_BOUNDARY_EVENTS: Final = frozenset(
+    {"task_complete", "turn_aborted", "task_started", "user_message"}
+)
 _CWD_FIELDS: Final = {
     "session_meta": ("cwd", "runtime_workspace_roots"),
     "turn_context": ("cwd", "workspace_roots"),
@@ -142,6 +149,23 @@ def _message_text(payload: Mapping[str, Any]) -> str:
         if part.get("type") in {"input_text", "output_text"}
     ]
     return "".join(parts)
+
+
+def _ends_turn(record: Mapping[str, Any]) -> bool:
+    """Whether a rollout record is written once the turn Stop closes is over (or a new one began)."""
+
+    payload = cast(dict[str, Any], record.get("payload") or {})
+    kind = record.get("type")
+    if kind == "turn_context":
+        return True
+    if kind == "event_msg":
+        return payload.get("type") in _CODEX_TURN_BOUNDARY_EVENTS
+    return (
+        kind == "response_item"
+        and payload.get("type") == "message"
+        and payload.get("role") == "user"
+        and not _message_text(payload).startswith("<")
+    )
 
 
 def mcp_tool_response(output: str) -> dict[str, Any]:
@@ -241,10 +265,9 @@ def codex_corpus(
     callbacks: list[tuple[int, int, str, list[str], dict[str, Any]]] = []
     replayed = 0
     last = prompt_index + 1
+    truncated = False
     for index, record in enumerate(records):
         payload = cast(dict[str, Any], record.get("payload") or {})
-        if replayed >= max_calls:
-            break
         if record.get("type") != "response_item" or payload.get("type") != "function_call":
             continue
         call_name = cast(str, payload.get("name"))
@@ -264,6 +287,9 @@ def codex_corpus(
             tool_response = mcp_tool_response(output)
         else:
             continue
+        if replayed >= max_calls:
+            truncated = True
+            break
         call = {
             **base,
             "tool_input": tool_input,
@@ -300,6 +326,19 @@ def codex_corpus(
         last = max(last, output_index + 1)
     for upto, _sequence, label, argv, payload in sorted(callbacks, key=lambda c: (c[0], c[1])):
         add(label, argv, payload, upto)
+    if not truncated:
+        # Every replayable call is selected, so Stop fires where the host fires it: after the
+        # turn's final reply, which Codex records before it runs Stop. Stop can continue the turn
+        # (codex-rs ``turn.rs``), so the ``task_complete`` that closes it is written only after
+        # Stop returns: the copy Stop reads runs up to the record that ends the turn, and its
+        # ``last_assistant_message`` is that final reply. When ``max_calls`` cuts the turn short,
+        # no host Stop fires at that point; Stop keeps firing right after the last selected
+        # output, with the last reply recorded before it (usually none, so the message-dependent
+        # closure checks are not exercised).
+        last = next(
+            (index for index in range(last, len(records)) if _ends_turn(records[index])),
+            len(records),
+        )
     last_message = ""
     for record in records[:last]:
         payload = cast(dict[str, Any], record.get("payload") or {})
