@@ -3506,20 +3506,22 @@ so Codex takes the same path as every other host. What a Codex agent can rely on
 
 - `publish_work` may omit `request_id`, `expected_frontier`, and each draft's `event_id`,
   `occurred_at`, `causal_parents`, `artifact_refs` and `evidence_refs`. The service still
-  requires `request_id`: the FinishUP MCP bridge (or `finishup publish-work`) mints one per call and
-  records it under the user state directory (`publish-calls/`, commitments and ids only) before
-  sending. The service mints event ids from the task, writer, request id, position and preview
+  requires `request_id`: the FinishUP MCP bridge (or `finishup publish-work`) mints a fresh one
+  per call and names it in every result and error (the CLI prints it on stderr before sending);
+  nothing is persisted. The service mints event ids from the task, writer, request id, position and preview
   role, records its own clock, copies the payload mirrors, and guards an omitted frontier with the
   one it reads on admission. The result's `server_filled` names every filled value, and
   `status view=operation` shows the committed operation's record. Reference-set fields are sorted
   and de-duplicated; text lists are kept as sent. A request that sends every value behaves exactly
   as before.
-- After an unknown outcome, resend the identical body (or send the request id the error names):
-  the bridge reuses that call's id and the service replays, and the result carries
-  `replay_notice` (`unresolved_call_resumed`). Once an outcome was delivered, the identical body
-  is a new publication, so a `finishup-blocker` confirmation or a review-mode switch back is simply
-  published again. If the bridge cannot record a minted id it sends nothing and asks for an
-  explicit `request_id`.
+- After an unknown outcome, retry by sending the `request_id` the error names; the service
+  replays. An id-less resend is never a retry. Right after the same writer's id-less call, the
+  bridge refuses an identical id-less body (`publish_repeat_unconfirmed`, continuation
+  `publish_identity_choice`) and names the earlier id as `replay_request_id`. Otherwise it is a
+  new publication, so a `finishup-blocker` confirmation or a review-mode switch back is simply
+  published again. The guard lives in the bridge's memory, so there is none after a bridge
+  restart, after the writer's next publish, after an hour, or for the CLI. An agent that must
+  retry across those sends its own `request_id`.
 - A cooperative write that lands while an id-less, frontier-less batch is in flight returns
   `FRONTIER_CONFLICT`; hook observations do not. Send `expected_frontier` when the batch rests on
   something read earlier and another writer shares the task.
@@ -3533,13 +3535,13 @@ so Codex takes the same path as every other host. What a Codex agent can rely on
   `server_filled`. In code mode a sandbox without `crypto` no longer needs a UUIDv4 helper for
   `publish_work` (it still does for `start`, `check`, `respond` and `receipt`). Codex has no
   startup gate hook; its observation hooks are unchanged.
-- Host tool-call ids are not used for the binding: none of the three hosts' MCP call identity is
-  verified in this repository, so the bridge mints its own and the binding is keyed by the FinishUP
-  session, writer and body. A rejected id-less call cannot be matched to its pending hook attempt
+- Host tool-call ids are not used: none of the three hosts' MCP call identity is verified in this
+  repository, so the bridge mints its own. A rejected id-less call cannot be matched to its pending hook attempt
   (the hook never sees the minted id), so that attempt still expires as before.
 
 Verification: `tests/integration/application/test_publish_server_filled.py`,
-`tests/unit/mcp/test_server_filled_bridge.py`, `tests/unit/cli/test_startup_gate.py`,
+`tests/unit/mcp/test_server_filled_bridge.py`, `tests/unit/mcp/test_publish_identity_guard.py`,
+`tests/unit/cli/test_startup_gate.py`, `tests/unit/protocol/test_publish_server_filled_fixture.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Codex session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.

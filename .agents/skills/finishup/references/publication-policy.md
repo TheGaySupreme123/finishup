@@ -427,19 +427,32 @@ used unchanged; a sent mirror that disagrees with its payload is still refused.
 
 | Omitted | FinishUP records | Retry and provenance |
 | --- | --- | --- |
-| `request_id` | a fresh id the MCP bridge (or `finishup publish-work`) mints for this call and records before sending | after an unknown outcome, the identical body resumes this id and replays; once an outcome reached you, the same body is a new publication |
+| `request_id` | a fresh id the MCP bridge (or `finishup publish-work`) mints for this call; every result and error names it, and the CLI prints it before sending | retry an unknown outcome by sending this id; an id-less resend is never a retry |
 | `expected_frontier` | the frontier FinishUP reads when it admits the batch | a cooperative write landing in flight is a `FRONTIER_CONFLICT`; send one to also refuse earlier changes |
 | draft `event_id` | an id minted from the task, writer, request id, draft position and whether it is a dry run | a dry run never mints its commit's ids; two operations never share one |
 | draft `occurred_at` | the service clock when the batch is published | never your assertion: history and review inputs mark it `occurred_at_source: service_clock` |
 | `causal_parents`, `artifact_refs`, `evidence_refs` | an empty set, or the payload's own mirror | the payload stays the assertion |
 
-The request id is never derived from the body, so a deliberate repeat, such as confirming a
-`finishup-blocker` line again or switching review mode back, is simply published again. Only the
-next call from the same writer with the identical body, after a call whose outcome never reached
-you, resumes that call; its result then carries `replay_notice` (`unresolved_call_resumed`:
-nothing new appended). Keep the request id an error names: resending the body or that id are the
-same retry. If FinishUP cannot record a minted id it sends nothing and asks for your own
-`request_id`.
+The request id is never derived from the body and never resumed by content, so a deliberate
+repeat, such as confirming a `finishup-blocker` line again or switching review mode back, is
+published again. To retry a call whose outcome you did not see, send its `request_id` (the error
+names it; read `status view=operation` with it when unsure). As a guard, the MCP bridge refuses an
+id-less body identical to your writer's previous id-less publish that could have been recorded
+(`publish_repeat_unconfirmed`, continuation `publish_identity_choice`): nothing is sent, and the
+refusal names the earlier id as `replay_request_id`. Send that id to retry, or a fresh `request_id`
+to publish again.
+
+That guard is best effort, and only the request id is a guarantee. The guard does not exist:
+
+- after the bridge process restarted (a host restart or a crashed bridge);
+- after another publish by the same writer;
+- an hour after the call;
+- for `finishup publish-work`, which runs as a new process each time and prints the minted id
+  on stderr before sending.
+
+In those cases an identical id-less body is a new publication. If you need a retry that survives
+them, send your own `request_id`; when you hold no id, read `status view=history` before
+publishing again.
 
 Reference-set fields are also sorted and de-duplicated; text lists are kept exactly as sent.
 Every accepted or previewed result lists what was

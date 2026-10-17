@@ -2970,16 +2970,6 @@ class PublishWorkBlockerNoticeModel(_ClosedModel):
 # recorded that no ``result_recorded`` names yet. It carries no caller value; the act_ id rides
 # beside it. 15 of 15 tb4n5 ``action_without_result`` findings were agent-published actions whose
 # result followed only after the check asked for it.
-# Issue #1084 (ADR-050 decision 2): the MCP bridge or the CLI minted the request_id of a call that
-# omitted one. It reuses that id only for the identical body of an earlier call by the same writer
-# whose outcome was never delivered, and the service then replays the stored outcome. The notice
-# makes that resumption visible; it never changes what replays.
-PUBLISH_RESUMED_CALL_NOTICE_TEXT: Final = (
-    "This call resent the body of an earlier publish_work call whose outcome was not delivered, so"
-    " it ran under that call's request_id: FinishUP returned the stored outcome and appended"
-    " nothing new. Publishing the same body again now records a new publication."
-)
-
 PUBLISH_ACTION_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "result_not_linked": (
@@ -3006,19 +2996,6 @@ class PublishWorkActionNoticeModel(_ClosedModel):
     def _validate_fixed_text(self) -> PublishWorkActionNoticeModel:
         if self.text != PUBLISH_ACTION_NOTICE_TEXTS[self.notice]:
             raise ValueError("publish_action_notice_text_mismatch")
-        return self
-
-
-class PublishWorkReplayNoticeModel(_ClosedModel):
-    """Issue #1084: a host-minted request_id resumed an undelivered call; nothing was appended."""
-
-    notice: Literal["unresolved_call_resumed"]
-    text: str
-
-    @model_validator(mode="after")
-    def _validate_fixed_text(self) -> PublishWorkReplayNoticeModel:
-        if self.text != PUBLISH_RESUMED_CALL_NOTICE_TEXT:
-            raise ValueError("publish_replay_notice_text_mismatch")
         return self
 
 
@@ -3073,13 +3050,8 @@ class PublishWorkSuccessModel(_ClosedModel):
     action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
     # Issue #1084: present only when the service filled an omitted value.
     server_filled: PublishWorkServerFilledModel | None = None
-    # Issue #1084: present only when the MCP bridge or the CLI resumed an earlier call of the same
-    # body whose outcome was not delivered, and the service replayed it. The host adds it.
-    replay_notice: PublishWorkReplayNoticeModel | None = None
 
-    optional_non_null_fields = frozenset(
-        {"blocker_notices", "action_notices", "server_filled", "replay_notice"}
-    )
+    optional_non_null_fields = frozenset({"blocker_notices", "action_notices", "server_filled"})
 
     @model_validator(mode="after")
     def _validate_publish_success(self) -> PublishWorkSuccessModel:
@@ -3124,12 +3096,11 @@ class PublishWorkAcceptedProjectionUnavailableModel(_ClosedModel):
     result_frontier: FrontierModel
     accepted_events: tuple[PublishWorkAcceptedMinimalEventModel, ...]
     # Issue #1084 (review R1): the reduced envelope keeps the structural provenance of the
-    # operation it reports and the resumed-call notice, so a degraded response says what a full
-    # one would have said about filled values and resumption.
+    # operation it reports, so a degraded response says what a full one would have said about
+    # filled values.
     server_filled: PublishWorkServerFilledModel | None = None
-    replay_notice: PublishWorkReplayNoticeModel | None = None
 
-    optional_non_null_fields = frozenset({"server_filled", "replay_notice"})
+    optional_non_null_fields = frozenset({"server_filled"})
 
     @model_validator(mode="after")
     def _validate_publish_accepted_projection_unavailable(
@@ -7201,7 +7172,6 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
         ("action_id", "notice", "text"),
     )
     # Issue #1084: a closed code and fixed repository text only.
-    + _prefix_leaf_patterns("/replay_notice", ("notice", "text"))
     # Issue #1084: closed field names and a batch position the service writes, never content.
     + ("/server_filled/request/*",)
     + _prefix_leaf_patterns("/server_filled/drafts/*", ("fields/*", "indexes/*"))
@@ -8433,15 +8403,14 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1643
+        len(result) != 1641
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,
         # #1079 +2 admissible_verification, +1 closing_material_frontier,
         # #1084 +3 (publish server_filled), +3 (status operation server_filled),
-        # +4 (status brief: detail and closure_state), +2 (publish replay_notice),
-        # +1 (status history occurred_at_source)
+        # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -58,7 +58,6 @@ from finishup.ports.ledger import CheckAwaitingHuman, CheckCommitResult, CheckVe
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
 from finishup.protocol.models import (
-    PUBLISH_RESUMED_CALL_NOTICE_TEXT,
     CheckAwaitingHumanModel,
     CheckChecklistCountsModel,
     CheckChecklistItemModel,
@@ -85,7 +84,6 @@ from finishup.protocol.models import (
     PublishWorkAcceptedEventModel,
     PublishWorkAcceptedProjectionUnavailableModel,
     PublishWorkDryRunModel,
-    PublishWorkReplayNoticeModel,
     PublishWorkRequest,
     PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
@@ -300,11 +298,11 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     # Issue #1084: server_filled is absent for a complete caller body.
     (
         PublishWorkSuccessModel,
-        frozenset({"blocker_notices", "action_notices", "server_filled", "replay_notice"}),
+        frozenset({"blocker_notices", "action_notices", "server_filled"}),
     ),
     (PublishWorkDryRunModel, frozenset({"blocker_notices", "action_notices", "server_filled"})),
-    # Issue #1084 (review R1): the reduced success keeps provenance and the resumed-call notice.
-    (PublishWorkAcceptedProjectionUnavailableModel, frozenset({"server_filled", "replay_notice"})),
+    # Issue #1084 (review R1): the reduced success keeps the operation's provenance.
+    (PublishWorkAcceptedProjectionUnavailableModel, frozenset({"server_filled"})),
     # Issue #1084: the brief status body omits whatever it does not need, and its closure state
     # keeps readiness's own optional checklist leaves.
     (
@@ -1953,13 +1951,9 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
         covered[model, "action_notices"] = "test_publish_accepted_events_omit_unset_summary"
         covered[model, "server_filled"] = "test_server_filled_and_brief_fields_omit_when_unset"
-    covered["PublishWorkSuccessModel", "replay_notice"] = (
+    covered["PublishWorkAcceptedProjectionUnavailableModel", "server_filled"] = (
         "test_server_filled_and_brief_fields_omit_when_unset"
     )
-    for field in ("server_filled", "replay_notice"):
-        covered["PublishWorkAcceptedProjectionUnavailableModel", field] = (
-            "test_server_filled_and_brief_fields_omit_when_unset"
-        )
     covered["StatusHistoryItemV14Model", "occurred_at_source"] = (
         "test_server_filled_and_brief_fields_omit_when_unset"
     )
@@ -2154,7 +2148,7 @@ def test_server_filled_and_brief_fields_omit_when_unset() -> None:
                 "server_filled": None,
             }
         )
-    # Review R1 of PR #1088: the reduced success's provenance and resumed-call notice.
+    # Review R1 of PR #1088: the reduced success's provenance.
     frontier = {"sequence": "2", "head_digest": "sha256:" + "2" * 64}
     reduced_body: dict[str, Any] = {
         "protocol_version": "0.1",
@@ -2180,16 +2174,16 @@ def test_server_filled_and_brief_fields_omit_when_unset() -> None:
     }
     reduced = PublishWorkAcceptedProjectionUnavailableModel.model_validate(reduced_body)
     dumped = reduced.model_dump(mode="json", exclude_unset=True)
-    assert "server_filled" not in dumped and "replay_notice" not in dumped
-    for field in ("server_filled", "replay_notice"):
-        with pytest.raises(ValidationError):
-            PublishWorkAcceptedProjectionUnavailableModel.model_validate(
-                {**reduced_body, field: None}
-            )
-    success_notice = PublishWorkReplayNoticeModel.model_validate(
-        {"notice": "unresolved_call_resumed", "text": PUBLISH_RESUMED_CALL_NOTICE_TEXT}
-    )
-    assert success_notice.notice == "unresolved_call_resumed"
+    assert "server_filled" not in dumped
+    with pytest.raises(ValidationError):
+        PublishWorkAcceptedProjectionUnavailableModel.model_validate(
+            {**reduced_body, "server_filled": None}
+        )
+    # Round 2 of the review retired the resumed-call notice: nothing is resumed by content.
+    with pytest.raises(ValidationError):
+        PublishWorkAcceptedProjectionUnavailableModel.model_validate(
+            {**reduced_body, "replay_notice": {"notice": "unresolved_call_resumed", "text": "x"}}
+        )
     # Review R7: an unlabelled history row omits occurred_at_source and refuses null.
     row: dict[str, Any] = {
         "event_id": protocol_id("evt_", 1086),

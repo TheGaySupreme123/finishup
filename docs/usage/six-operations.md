@@ -63,9 +63,12 @@ formatting, and per-file mechanics.
 
 Write each fact once. A publish needs only your session and writer, your actor and client, and
 events made of a `schema` and a `payload`. FinishUP fills the rest when you leave it out. It gives
-each call its own request id and records it before sending, so after an answer that never arrived
-you send the same request again and it is the safe retry; once an answer arrived, the same request
-again is a new record (switching review back on, for example). It also fills each event id, the
+each call its own request id and names it in every answer, including errors (the command line
+prints it before sending). If an answer never arrived, retry by sending that request id: FinishUP
+returns the stored result instead of recording twice. Sending the same request again without the
+id is a new record (switching review back on, for example). Right after the same call, FinishUP
+asks you to choose instead, naming the earlier id. If you need a retry that holds even after FinishUP
+restarts, send your own request id. It also fills each event id, the
 event time (FinishUP's clock, never your claim, and marked as such in history), empty reference
 lists and the reference lists that repeat the payload's, and the frontier: the one it reads when it
 takes the request, so a change another participant makes meanwhile is refused. Reference lists are

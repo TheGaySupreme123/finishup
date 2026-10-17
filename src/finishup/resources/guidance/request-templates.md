@@ -29,8 +29,8 @@ required by the operation. Also replace every illustrative task string, referenc
 frontier sequence, and digest. In `publish_work`, drop instead of replacing: omit `request_id`,
 `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
 `artifact_refs` and `evidence_refs`, and FinishUP fills them (`publication-policy.md#service-filled-values`):
-the request id is minted per call, so after an unknown outcome resend the identical body, and any
-other call (even an identical body after its outcome reached you) is a new publication.
+the request id is minted per call and named in every result and error. After an unknown outcome,
+retry by sending that `request_id`; an id-less resend is never a retry.
 A frontier you do send is the one you already hold: the `frontier` `start`
 returned for the first plan, then the `result_frontier` of your latest accepted write; read
 `status` for one only when you hold none or after `frontier_changed`. Never send

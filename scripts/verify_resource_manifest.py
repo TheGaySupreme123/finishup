@@ -437,6 +437,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/server-filled-brief-status-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/status-check-admission-1.4.0.case.json",
         "canonical_vector",
         "application/json",

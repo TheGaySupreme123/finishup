@@ -15,10 +15,11 @@ batch. `work_closed` closes work; a receipt never does. A `publish_work` body ma
 `request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
 `artifact_refs` and `evidence_refs`. FinishUP mints a request id for that one call, mints event
 ids, records its own clock, copies the payload mirrors, guards the batch with the frontier it reads
-when it admits it, and names every filled value in the result's `server_filled`. After an unknown
-outcome, resend the identical body: it runs under the same request id and replays instead of
-appending twice. Any other call, including the same body after its outcome reached you, is a new
-publication. Send a value only when you need it: an explicit `expected_frontier` (the `frontier`
+when it admits it, and names every filled value in the result's `server_filled`. Every result and
+error names that request id. After an unknown outcome, retry by sending that `request_id` with the
+body: it replays instead of appending twice. Resending the body without it is never a retry: right
+after the same call FinishUP refuses it and names the id, and otherwise it is a new publication.
+Send a value only when you need it: an explicit `expected_frontier` (the `frontier`
 `start` returned for the first plan, then the `result_frontier` of your last accepted write) also
 refuses a change made since you read it; a `causal_parents` entry cites an earlier event id.
 

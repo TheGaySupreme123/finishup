@@ -8798,32 +8798,14 @@ def _add_publish_server_filled(document: dict[str, JsonValue]) -> None:
     field still receives its earlier result shape.
     """
 
-    from finishup.protocol.models import PUBLISH_RESUMED_CALL_NOTICE_TEXT
-
     definitions = cast(dict[str, JsonValue], document["$defs"])
     definitions["server_filled"] = _server_filled_schema()
+    # The reduced success keeps the provenance of the operation it reports (review R1).
     for branch in ("success", "accepted_projection_unavailable", "dry_run"):
         properties = cast(
             dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
         )
         properties["server_filled"] = {"$ref": "#/$defs/server_filled"}
-    # A host-minted request_id that resumed an earlier call of the same body, whose outcome was
-    # not delivered, says so when the service replayed it; never on a dry run, which replays
-    # nothing. The reduced success keeps it too (review R1).
-    definitions["replay_notice"] = {
-        "additionalProperties": False,
-        "properties": {
-            "notice": {"const": "unresolved_call_resumed"},
-            "text": {"const": PUBLISH_RESUMED_CALL_NOTICE_TEXT},
-        },
-        "required": ["notice", "text"],
-        "type": "object",
-    }
-    for branch in ("success", "accepted_projection_unavailable"):
-        properties = cast(
-            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
-        )
-        properties["replay_notice"] = {"$ref": "#/$defs/replay_notice"}
 
 
 def _add_publish_action_notices(document: dict[str, JsonValue]) -> None:

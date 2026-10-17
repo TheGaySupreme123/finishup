@@ -19,9 +19,9 @@ compute the same values from the same body:
   like ids, is kept exactly as sent.
 
 The operation identity is never derived here. ``request_id`` stays caller- or host-owned: the MCP
-bridge and the CLI mint one for a call that omits it and bind it durably before sending
-(``finishup.adapters.integrations.publish_call_identity``), so a lost reply is retried safely and
-a deliberate identical repeat is still a new publication. The time-dependent half (``occurred_at``
+bridge and the CLI mint a fresh one for a call that omits it and name it in every result and
+error (``finishup.mcp.publish_identity``); retrying an unknown outcome means sending that id, so a
+deliberate identical repeat is always a new publication. The time-dependent half (``occurred_at``
 from the service clock and the admission frontier guard) belongs to the service. Every value the
 service fills is named in the result's ``server_filled`` record, which is also stored with the
 operation, so a filled value is never presented as a caller assertion.

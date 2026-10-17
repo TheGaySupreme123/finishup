@@ -22,7 +22,7 @@ Author `start` from its schema: a fresh `req_` UUIDv4, the user's whole `task_st
 
 # Essential boundaries
 
-Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never move, split, shrink, delete, `git add -N` or git-ignore (incl. `.git/info/exclude`) a deliverable for review: FinishUP redacts, and you verify what it cannot show. On `retryable: false`, follow only the typed `continuation`; retry an unknown write unchanged. If FinishUP is unavailable, say no record or receipt exists.
+Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never move, split, shrink, delete, `git add -N` or git-ignore (incl. `.git/info/exclude`) a deliverable for review: FinishUP redacts, and you verify what it cannot show. On `retryable: false`, follow only the typed `continuation`; retry an unknown write by its request id. If FinishUP is unavailable, say no record or receipt exists.
 
 # Review and closure
 

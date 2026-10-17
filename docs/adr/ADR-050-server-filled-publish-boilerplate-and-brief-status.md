@@ -9,6 +9,12 @@ omitted frontier with the admission-time frontier, decision 3 seeds minting with
 operation scope, decision 7 canonicalizes only an explicit field allowlist, decision 8 returns the
 committed operation's provenance on replay and labels a filled time in history and review inputs,
 and decision 10 keeps the closure instructions in the brief text.
+**Amended 2026-10-17, round 2** of the same review: decision 2 drops the durable body-keyed
+binding and its automatic resumption. The bridge cannot verify that a result reached the caller,
+and the record's own failure modes duplicated or suppressed publications. Each id-less call now
+gets a fresh, named id: retry means sending it, and an in-memory guard refuses an identical
+id-less resend instead of guessing. The `replay_notice` field is retired. Golden vectors are added
+(CAN-022).
 
 This ADR widens unreleased 0.3 schema versions in place:
 
@@ -26,8 +32,8 @@ destructive-action authority.
 
 - `src/finishup/protocol/publish_boilerplate.py`: minting (`DraftMintScope`), the set-field
   allowlist (`PAYLOAD_SET_FIELDS`), canonicalization and the `ServerFilled` record.
-- `src/finishup/adapters/integrations/publish_call_identity.py`: the host-owned request identity
-  of an id-less call (`PublishCallIdentities`), shared by the MCP bridge and the CLI.
+- `src/finishup/mcp/publish_identity.py`: the in-memory repeat guard for id-less calls
+  (`PublishRepeatGuard`).
 - `src/finishup/protocol/models.py`:
   - `PublishWorkRequestModel`, including the omitted-frontier marker;
   - the `server_filled` result models;
@@ -42,8 +48,10 @@ destructive-action authority.
   `AppendCommand`, the stored result, and `ResultsProjectionFilter`.
 - `src/finishup/application/status.py`: `brief_status_body`, the results filter, and the operation
   page.
-- `src/finishup/mcp/server.py`: minting and binding an id-less call's request id, the resumed-call
-  notice and the brief default; `src/finishup/cli/app.py` does the same for `finishup publish-work`.
+- `src/finishup/mcp/server.py`: minting an id-less call's request id, naming it, the repeat
+  refusal and the brief default. `src/finishup/cli/app.py` mints and names it for
+  `finishup publish-work`.
+- `scripts/generate_publish_server_filled_fixture.py`: the CAN-022 golden vectors.
 - `src/finishup/mcp/descriptors.py`, `src/finishup/mcp/summaries.py` and
   `src/finishup/mcp/status_streak.py`.
 - `src/finishup/cli/startup_gate.py` and `src/finishup/adapters/integrations/startup_gate.py`.
@@ -96,32 +104,54 @@ a material transition, not typing UUIDs, timestamps and mirrors.
    (decision 2) and the service keeps requiring it. A value the caller sends is used unchanged. A
    request that sends every value keeps its earlier validation, request digest, recorded events and
    result bytes.
-2. **The request id is caller- or host-owned, never derived from the body.**
+2. **The request id is caller- or host-owned. It is never derived from the body, and never resumed
+   by content.**
    - **Why (round-1 review, R1):** a content hash is a deduplication key, not an operation
      identity. The round-1 design derived `request_id` from the body, so a deliberate identical
      repeat (`ai_powered` -> `local` -> `ai_powered`, a repeated blocker confirmation after new
-     evidence) replayed the first operation: the third switch was never recorded and the
-     conversation stayed `local`. The degraded reduced success did not even carry the notice.
+     evidence) replayed the first operation. The third switch was never recorded.
+   - **Why not a durable binding (round-2 review, N1-N6):** the round-1 fix minted an id per call,
+     bound it to a body commitment in a state file, and resumed it for the next identical body
+     until an outcome was "delivered". A host cannot verify delivery: settlement happened before
+     the result reached the caller. The record could also fail in ways that cost identity:
+     - a failed cleanup, a short write, a corrupt or full record;
+     - a wall-clock step;
+     - a same-id call by another writer or a dry run.
+
+     Each failure duplicated or suppressed a publication.
    - **Decision:** when an agent omits `request_id`, the MCP bridge (and `finishup publish-work`)
-     mints a fresh `req_` UUIDv4 for that call and records a binding before sending it:
-     commitments over the FinishUP session and writer and over the canonical body, the minted id,
-     an owner token and process id, in an owner-only state folder, written atomically and fsynced.
-     Every retry the host makes for the call reuses the id (reconnect, the timeout probe and its
-     replay). A delivered `ok: true` outcome closes the binding and every unresolved binding of
-     that writer; any other end leaves it resumable. The next call from the same writer with the
-     identical body resumes an unresolved binding, or one whose owner process died mid-call, for
-     up to one hour, so a lost reply is retried safely and the service replays. A call still in
-     flight in a live process is never shared, so concurrent identical calls stay two operations.
-     A delivered call that sends a bound id itself closes the binding too.
-   - **Disclosure:** a resumed call that the service replayed carries the closed `replay_notice`
-     (`unresolved_call_resumed`, fixed text), also on the reduced `accepted_projection_unavailable`
-     success; an id-less error names the minted id in its text. When the binding cannot be written
-     the call is refused (`STORAGE_UNSAFE`) and nothing is sent.
-   - **Rejected alternatives:** random service minting after receipt (a lost reply loses the id),
-     clock-derived or frontier-dependent identity, and a timestamp in the retry body: each loses
-     safe recovery after a lost reply or makes it depend on state the caller cannot reproduce.
-     Binding a host tool-call id was preferred where available, but no host's MCP tool-call
-     identity is verified in this repository, so the bridge-minted nonce is the mechanism.
+     mints a fresh `req_` UUIDv4 for that one call. The bridge's own transport retries reuse it
+     (reconnect, and the timeout probe with its replay). Every result and error names it: the
+     structured `request_id`, plus a fixed text line on an id-less error. The CLI prints it on
+     stderr before sending. **Retrying an unknown outcome means sending that id.** A deliberate
+     identical repeat is always a new publication.
+   - **Guard, not guess:** the bridge keeps, in memory, each writer's previous id-less publish
+     that could have committed. An id-less body identical to it is refused before anything is
+     sent (`INVALID_REQUEST`, `publish_repeat_unconfirmed`, continuation
+     `publish_identity_choice`, `replay_request_id` naming the earlier id). The caller then sends
+     that id to retry, or a fresh `request_id` to publish again.
+     - The record is replaced by the writer's next id-less publish.
+     - It is dropped by the writer's explicit-id publish that could have committed, by a certain
+       pre-append rejection of that call, and after one hour of monotonic time.
+     - Dry runs and other writers never touch it.
+     - Being in memory, it has no file to corrupt, short-write or leave stale, and no wall clock.
+   - **Stated limits (no guard):**
+     - after a bridge restart;
+     - after the writer's next publish;
+     - after the hour;
+     - beyond 4,096 writers per bridge;
+     - for the CLI.
+
+     An identical id-less body is then a new publication. Agents that need a retry to survive
+     those cases send their own `request_id`. An agent holding no id reads `status view=history`
+     before republishing.
+   - **Rejected alternatives:**
+     - random service minting after receipt, clock- or frontier-derived identity, and a timestamp
+       in the body: each loses safe recovery after a lost reply;
+     - a durable body-keyed binding with automatic resumption: it needs a delivery acknowledgement
+       no host provides;
+     - binding a host tool-call id: no host's MCP tool-call identity is verified in this
+       repository.
 3. **Event ids are minted from the whole operation scope.** An omitted draft `event_id` is minted
    from `(task_id, writer_id, request_id, draft position, preview or commit)`. The operation key is
    `(task, writer, request_id)`, so two writers reusing one explicit `request_id` never mint the
@@ -214,11 +244,14 @@ a material transition, not typing UUIDs, timestamps and mirrors.
   refs and sorting sets. The startup gate hook, which cannot see a host-minted id before the call,
   opens the write's ticket at the post-call event from the echoed `request_id`, and matches minted
   event ids by position.
-- **Host state.** The bridge writes one small owner-only record under the user state directory.
-  Only commitments and minted ids enter it; a record it cannot write stops the id-less call.
-- **Residual identity limit.** If an outcome was delivered to the host but lost there (the host
-  crashed after the bridge answered), the binding is already closed and an identical resend is a
-  new publication. An agent that needs that guarantee sends its own `request_id`.
+- **Host state.** None. The repeat guard lives in the bridge process's memory.
+- **Retry cost.** A lost reply now costs one explicit retry by id. A blind identical resend right
+  after it is refused once and names the id, instead of being replayed automatically.
+- **Residual identity limit.** When the caller never saw the minted id, an identical id-less resend
+  is a new publication rather than a retry. That happens when the bridge restarted, the host lost
+  the whole tool result, or it is a CLI re-run whose stderr was lost. Agents that need a retry to
+  survive those cases send their own `request_id`. The ready-to-file follow-ups are listed in the
+  PR #1088 round-2 fix report.
 - **Version skew.** An older service refuses a sparse body as `INVALID_REQUEST` before any append.
   A schema-manifest change supersedes an older holder through the existing handshake.
 - **Downgrade.** An older 0.3 build that replays a sparse operation would refuse its stored
@@ -233,10 +266,11 @@ a material transition, not typing UUIDs, timestamps and mirrors.
   - **Status responses:** the 796 status responses fall from 2,167,374 to 1,584,139 tokens
     (−583,235, −26.9%). That is fresh model input.
   - **Publish responses:** `server_filled` adds 23,650 tokens to the publish responses. Re-estimated
-    for the amended design with the same method: 26,010 tokens. `server_filled` no longer lists
-    `request_id` (22,438 tokens), and the 76 recorded publish errors would each carry the 47-token
-    minted-id line (3,572 tokens). Publish arguments, status responses and arguments, and the
-    removed `date` commands are unchanged, because the agent omits the same fields.
+    for the amended design with the same method: 26,238 tokens. `server_filled` no longer lists
+    `request_id` (22,438 tokens), and the 76 recorded publish errors would each carry the 50-token
+    minted-id line (3,800 tokens). Publish arguments, status responses and arguments, and the
+    removed `date` commands are unchanged, because the agent omits the same fields. Not counted:
+    the extra round trip of a refused blind resend after an unknown outcome.
   - **Not modelled:** reasoning tokens, fewer status calls, fewer rejected batches, and resends
     after an admission-guard `FRONTIER_CONFLICT` (zero frontier conflicts were seen in 3,698
     DeepSWE single-writer calls, #919).

@@ -319,7 +319,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
         None,
     ): 442,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
     # #1047 +1 follow_up_round; ADR-049 +4 review_mode
-    ("publish_work", None): 69,  # #1084 +3 server_filled, +2 replay_notice
+    ("publish_work", None): 67,  # #1084 +3 server_filled
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
@@ -2589,12 +2589,12 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1615
+        len(derived_patterns) == 1613
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification,
     # +1 closing_material_frontier, #1084 +10 server_filled and brief status,
-    # +1 history occurred_at_source (review R7 of PR #1088)
+    # +1 history occurred_at_source (review R7 of PR #1088), -2 replay_notice retired (round 2)
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2604,9 +2604,9 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1643  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        len(rules) == 1641  # n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
-        # +1 history occurred_at_source (review R7)
+        # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2)
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification
@@ -2619,7 +2619,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1615
+        len(registry_patterns) == 1613
     )  # #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification
     assert registry_patterns == derived_patterns
@@ -3349,9 +3349,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_098
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_096
     )  # #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
-    # +3 (review of PR #1088: reduced success server_filled and the shared replay_notice),
+    # +1 (review of PR #1088: reduced success server_filled),
     # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
     # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),

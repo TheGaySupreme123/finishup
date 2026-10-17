@@ -335,9 +335,9 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 - **Agents write each fact once.** A `publish_work` request may leave out its request id, its
   frontier, and each event's id, time, empty lists and repeated references. The MCP tool and
-  `finishup publish-work` give each call its own request id and record it before sending, so
-  sending the same request again after a lost answer is still the safe retry while a deliberate
-  repeat is a new record. FinishUP guards an omitted frontier with the one it reads when it takes
+  `finishup publish-work` give each call its own request id and name it in every answer: retry a
+  lost answer by sending that id, while a deliberate repeat is a new record (an identical id-less
+  resend right after the same call is refused and names the earlier id). FinishUP guards an omitted frontier with the one it reads when it takes
   the request, orders reference-set lists (never text lists), marks a time it filled in history and
   review inputs, and names every filled value in the result's `server_filled` and in the operation
   record. A request that sends every value behaves exactly as before. Agent `status` reads are

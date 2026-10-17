@@ -1,9 +1,11 @@
-"""Issue #1084 at the MCP bridge: host-owned publish identity and the brief status default.
+"""Issue #1084 at the MCP bridge: the request identity of an id-less publish, and brief status.
 
-ADR-050 decision 2 (review R1 of PR #1088): when an agent omits ``request_id`` the bridge mints one
-per call and binds it durably before sending. The service still requires it. A lost reply is
-retried safely by resending the identical body (the bridge resumes that call's id and the service
-replays), while a deliberate identical repeat after a delivered outcome is a new publication.
+ADR-050 decision 2, as revised by round 2 of the PR #1088 review: when an agent omits
+``request_id`` the bridge mints a fresh one for that call. Its own transport retries reuse it and
+every result and error names it; retrying an unknown outcome means sending that id. Nothing is
+resumed by content and nothing is persisted. An id-less body identical to the writer's previous
+id-less call that could have committed is refused, naming that call's id, so the caller chooses
+(review N1-N6 of round 2 are pinned here as regressions).
 
 The end-to-end cases drive the real ready application through the real disclosure boundary
 (``project_case``); only the control-channel transport is replaced.
@@ -14,10 +16,8 @@ The end-to-end cases drive the real ready application through the real disclosur
 from __future__ import annotations
 
 import dataclasses
-import json
-import os
+import time
 from collections.abc import Awaitable, Callable, Mapping
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -32,17 +32,13 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from finishup.adapters.integrations.publish_call_identity import (
-    PUBLISH_CALLS_DIRECTORY,
-    PublishCallIdentities,
-)
 from finishup.domain.privacy import ConversationReview
 from finishup.kernel.review_mode import conversation_review_mode
+from finishup.mcp.publish_identity import PUBLISH_REPEAT_WINDOW_SECONDS, PublishRepeatGuard
 from finishup.ports.control import ControlError, ControlMethod
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
-from finishup.protocol.ids import IdKind, is_valid_id
+from finishup.protocol.ids import IdKind, is_valid_id, new_id
 from finishup.protocol.models import (
-    PUBLISH_RESUMED_CALL_NOTICE_TEXT,
     PublishWorkRequest,
     PublishWorkResultModel,
     StatusRequest,
@@ -82,25 +78,17 @@ def _sparse_publish() -> dict[str, object]:
     }
 
 
-def _runtime(root: Path) -> bridge.BridgeRuntime:
+def _runtime(guard: PublishRepeatGuard | None = None) -> bridge.BridgeRuntime:
+    """A fresh bridge runtime: a new bridge process, with an empty guard unless one is given."""
+
     return dataclasses.replace(
-        bridge.build_bridge_runtime(), publish_calls=PublishCallIdentities(state_root=root)
+        bridge.build_bridge_runtime(),
+        publish_guard=PublishRepeatGuard() if guard is None else guard,
     )
 
 
-def _record(root: Path) -> list[dict[str, Any]]:
-    path = root / PUBLISH_CALLS_DIRECTORY / "calls.json"
-    if not path.exists():
-        return []
-    return cast(list[dict[str, Any]], json.loads(path.read_text())["entries"])
-
-
-def _capture(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    root: Path | None = None,
-    seen_records: list[list[dict[str, Any]]] | None = None,
-) -> list[BaseModel]:
+def _capture(monkeypatch: pytest.MonkeyPatch, runtime: bridge.BridgeRuntime) -> list[BaseModel]:
+    del runtime
     seen: list[BaseModel] = []
 
     async def ensure(_runtime: object = bridge.BRIDGE_RUNTIME, **_kwargs: object) -> object:
@@ -114,13 +102,10 @@ def _capture(
         **_kwargs: object,
     ) -> object:
         seen.append(request)
-        if root is not None and seen_records is not None:
-            seen_records.append(_record(root))
         raise PublicOperationError(
-            PublicErrorCode.EVENT_INVALID,
-            "The event batch is invalid.",
-            False,
-            safe_details={"reason_code": "invalid_event_value_type"},
+            PublicErrorCode.OPERATION_PENDING,
+            "The operation is still pending.",
+            True,
         )
 
     monkeypatch.setattr(bridge, "ensure_service_client", ensure)
@@ -128,13 +113,19 @@ def _capture(
     return seen
 
 
+def _text(result: types.CallToolResult) -> str:
+    return "\n".join(block.text for block in result.content if isinstance(block, types.TextContent))
+
+
+def _error(result: types.CallToolResult) -> Mapping[str, Any]:
+    assert result.isError is True and result.structuredContent is not None
+    return cast(Mapping[str, Any], result.structuredContent["error"])
+
+
 @pytest.mark.anyio
-async def test_an_idless_publish_is_bound_to_a_minted_id_before_it_is_sent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    records: list[list[dict[str, Any]]] = []
-    seen = _capture(monkeypatch, root=tmp_path, seen_records=records)
-    runtime = _runtime(tmp_path)
+async def test_an_idless_publish_gets_a_fresh_named_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    seen = _capture(monkeypatch, runtime)
 
     result = await bridge.dispatch_publish_work(_sparse_publish(), runtime)
 
@@ -142,30 +133,20 @@ async def test_an_idless_publish_is_bound_to_a_minted_id_before_it_is_sent(
     assert isinstance(forwarded, PublishWorkRequest)
     minted = forwarded.request_id
     assert is_valid_id(IdKind.REQUEST, minted)
-    # The binding was durable and in flight before the body reached the service.
-    ((entry,),) = records
-    assert entry["request_id"] == minted and entry["state"] == "in_flight"
-    assert entry["pid"] == os.getpid()
-    # Only commitments and the minted id cross the record: never the body.
-    raw = (tmp_path / PUBLISH_CALLS_DIRECTORY / "calls.json").read_text()
-    assert "Keep the adapter." not in raw and _SESSION not in raw and _WRITER not in raw
-    # The service refused the body: nothing was delivered, so the call stays resumable.
-    assert result.isError is True
+    # The outcome is unknown: the error and its text name the id to retry with.
     assert result.structuredContent is not None
     assert result.structuredContent["request_id"] == minted
-    text = cast(types.TextContent, result.content[0]).text
-    assert f"FinishUP minted request_id {minted} for this call" in text
-    (after,) = _record(tmp_path)
-    assert after["request_id"] == minted and after["state"] == "unresolved"
+    assert f"FinishUP minted request_id {minted} for this call" in _text(result)
+    assert "resending the body without it is not a retry" in _text(result)
     await bridge.close_bridge_runtime(runtime)
 
 
 @pytest.mark.anyio
-async def test_an_invalid_idless_body_is_never_bound_or_sent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_an_invalid_idless_body_is_never_sent_or_remembered(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen = _capture(monkeypatch)
-    runtime = _runtime(tmp_path)
+    runtime = _runtime()
+    seen = _capture(monkeypatch, runtime)
     arguments = _sparse_publish()
     drafts = cast(list[dict[str, object]], arguments["event_drafts"])
     drafts[0]["schema"] = {"name": "decision_recorded", "version": "9.9.9"}
@@ -173,48 +154,35 @@ async def test_an_invalid_idless_body_is_never_bound_or_sent(
     result = await bridge.dispatch_publish_work(arguments, runtime)
 
     assert seen == []
-    assert _record(tmp_path) == []
-    assert result.isError is True
-    assert result.structuredContent is not None
-    assert result.structuredContent.get("request_id") is None
-    error = cast(dict[str, object], result.structuredContent["error"])
-    assert error["code"] == PublicErrorCode.INVALID_REQUEST.value
+    assert runtime.publish_guard.previous_request_id(arguments) is None
+    assert cast(Mapping[str, Any], result.structuredContent).get("request_id") is None
+    assert _error(result)["code"] == PublicErrorCode.INVALID_REQUEST.value
     await bridge.close_bridge_runtime(runtime)
 
 
 @pytest.mark.anyio
-async def test_an_idless_dry_run_is_never_bound(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    seen = _capture(monkeypatch)
-    runtime = _runtime(tmp_path)
+async def test_an_idless_dry_run_touches_no_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    seen = _capture(monkeypatch, runtime)
+    arguments = {**_sparse_publish(), "dry_run": True}
 
-    await bridge.dispatch_publish_work({**_sparse_publish(), "dry_run": True}, runtime)
+    await bridge.dispatch_publish_work(arguments, runtime)
+    await bridge.dispatch_publish_work(arguments, runtime)
 
-    (forwarded,) = seen
-    assert isinstance(forwarded, PublishWorkRequest)
-    assert is_valid_id(IdKind.REQUEST, forwarded.request_id)
-    assert _record(tmp_path) == []
+    first, second = seen
+    assert isinstance(first, PublishWorkRequest) and isinstance(second, PublishWorkRequest)
+    assert first.request_id != second.request_id
+    assert runtime.publish_guard.previous_request_id(_sparse_publish()) is None
     await bridge.close_bridge_runtime(runtime)
 
 
-@pytest.mark.anyio
-async def test_an_unwritable_identity_record_refuses_to_send(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    seen = _capture(monkeypatch)
-    blocked = tmp_path / "state"
-    blocked.write_text("not a directory")
-    runtime = _runtime(blocked)
+def test_the_guard_is_memory_only() -> None:
+    """Review N2/N3: there is no record to corrupt, short-write or leave stale after cleanup."""
 
-    result = await bridge.dispatch_publish_work(_sparse_publish(), runtime)
+    import finishup.mcp.publish_identity as module
 
-    assert seen == []
-    assert result.isError is True
-    assert result.structuredContent is not None
-    error = cast(dict[str, object], result.structuredContent["error"])
-    assert error["code"] == PublicErrorCode.STORAGE_UNSAFE.value
-    await bridge.close_bridge_runtime(runtime)
+    for name in ("os", "Path", "state_dir", "fcntl", "json"):
+        assert not hasattr(module, name), name
 
 
 @pytest.mark.anyio
@@ -222,8 +190,8 @@ async def test_an_unwritable_identity_record_refuses_to_send(
 async def test_status_asks_for_the_brief_detail_unless_the_agent_names_one(
     monkeypatch: pytest.MonkeyPatch, sent: str | None, expected: str
 ) -> None:
-    seen = _capture(monkeypatch)
-    runtime = bridge.build_bridge_runtime()
+    runtime = _runtime()
+    seen = _capture(monkeypatch, runtime)
     arguments: dict[str, object] = {
         **_ENVELOPE,
         "request_id": "req_00000000-0000-4000-8000-000000001084",
@@ -337,21 +305,48 @@ def _decision_modes(app: Any) -> list[str]:
     ]
 
 
+def _refusal(result: types.CallToolResult) -> str:
+    """The earlier request id a repeat refusal names (structured and in the text)."""
+
+    error = _error(result)
+    assert error["code"] == PublicErrorCode.INVALID_REQUEST.value
+    details = cast(Mapping[str, Any], error["safe_details"])
+    assert details["reason_code"] == "publish_repeat_unconfirmed"
+    assert details["continuation"] == "publish_identity_choice"
+    previous = cast(str, details["replay_request_id"])
+    assert f"The previous identical call ran under request_id {previous}" in _text(result)
+    # The refusal names no request id of its own, so nothing (a host hook included) mistakes it
+    # for the outcome of the earlier call.
+    assert cast(Mapping[str, Any], result.structuredContent).get("request_id") is None
+    return previous
+
+
+async def _lose_one(
+    service: _Service, runtime: bridge.BridgeRuntime, body: Mapping[str, Any]
+) -> str:
+    """Commit ``body`` and lose its reply; return the id the error named."""
+
+    service.lose_next_publish_reply = True
+    lost = await bridge.dispatch_publish_work(body, runtime)
+    assert lost.isError is True
+    minted = cast(str, cast(Mapping[str, Any], lost.structuredContent)["request_id"])
+    assert f"FinishUP minted request_id {minted} for this call" in _text(lost)
+    return minted
+
+
 @pytest.mark.anyio
 async def test_a_deliberate_identical_repeat_through_the_bridge_is_recorded(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Review R1 end to end: ai -> local -> ai, each an id-less call, records three switches."""
 
     service, _started, envelope = await _service(monkeypatch, 12000)
-    runtime = _runtime(tmp_path)
+    runtime = _runtime()
     outcomes: list[object] = []
     for mode in ("ai_powered", "local", "ai_powered"):
         result = await bridge.dispatch_publish_work(_switch(envelope, mode), runtime)
         assert result.isError is not True
-        assert result.structuredContent is not None
-        outcomes.append(result.structuredContent["outcome"])
-        assert "replay_notice" not in result.structuredContent
+        outcomes.append(cast(Mapping[str, Any], result.structuredContent)["outcome"])
     assert outcomes == ["accepted", "accepted", "accepted"]
     assert len(set(service.publish_ids)) == 3
     assert _decision_modes(service.app) == ["ai_powered", "local", "ai_powered"]
@@ -363,122 +358,255 @@ async def test_a_deliberate_identical_repeat_through_the_bridge_is_recorded(
         setting_explicit=True,
     )
     assert resolved.mode.value == "ai_powered"
-    # Every delivered call closed its binding.
-    assert _record(tmp_path) == []
     await bridge.close_bridge_runtime(runtime)
 
 
 @pytest.mark.anyio
-async def test_a_lost_reply_is_retried_under_the_same_identity(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_a_lost_reply_is_retried_by_its_named_id_never_by_content(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A committed call whose reply was lost replays when the agent resends the same body."""
+    """A committed call whose reply was lost: a blind resend is refused, the named id replays."""
 
     service, _started, envelope = await _service(monkeypatch, 12100)
-    runtime = _runtime(tmp_path)
+    runtime = _runtime()
     body = _switch(envelope, "local")
+    minted = await _lose_one(service, runtime, body)
 
-    service.lose_next_publish_reply = True
-    lost = await bridge.dispatch_publish_work(body, runtime)
-    assert lost.isError is True
-    assert lost.structuredContent is not None
-    first_id = cast(str, lost.structuredContent["request_id"])
-    assert service.publish_ids == [first_id]
-    assert _decision_modes(service.app) == ["local"]
+    refused = await bridge.dispatch_publish_work(body, runtime)
+    assert _refusal(refused) == minted
+    assert service.publish_ids == [minted]  # nothing was sent
 
-    retried = await bridge.dispatch_publish_work(body, runtime)
-    assert retried.isError is not True
+    retried = await bridge.dispatch_publish_work({**body, "request_id": minted}, runtime)
     wire = cast(Mapping[str, Any], retried.structuredContent)
-    assert wire["request_id"] == first_id
-    assert wire["outcome"] == "replayed"
-    assert wire["replay_notice"] == {
-        "notice": "unresolved_call_resumed",
-        "text": PUBLISH_RESUMED_CALL_NOTICE_TEXT,
-    }
-    text = "\n".join(
-        block.text for block in retried.content if isinstance(block, types.TextContent)
-    )
-    assert "Resumed an earlier undelivered call" in text or PUBLISH_RESUMED_CALL_NOTICE_TEXT in text
+    assert wire["request_id"] == minted and wire["outcome"] == "replayed"
     assert _decision_modes(service.app) == ["local"]
 
-    # The outcome is delivered now: the same body again is a deliberate repeat, recorded.
+    # The explicit retry settled it: the identical id-less body is now a new publication.
     again = await bridge.dispatch_publish_work(body, runtime)
-    assert again.isError is not True
     again_wire = cast(Mapping[str, Any], again.structuredContent)
-    assert again_wire["outcome"] == "accepted"
-    assert again_wire["request_id"] != first_id
+    assert again_wire["outcome"] == "accepted" and again_wire["request_id"] != minted
     assert _decision_modes(service.app) == ["local", "local"]
     await bridge.close_bridge_runtime(runtime)
 
 
 @pytest.mark.anyio
-async def test_a_call_orphaned_by_a_dead_bridge_is_resumed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_a_result_lost_after_dispatch_still_guards_the_resend(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bridge that died mid-call left an in-flight binding; the next bridge resumes it."""
+    """Round 2 N1: a fault after the result was built, before it reaches the host."""
 
-    _service_handle, _started, envelope = await _service(monkeypatch, 12200)
+    service, _started, envelope = await _service(monkeypatch, 12150)
+    runtime = _runtime()
     body = _switch(envelope, "local")
-    previous = PublishCallIdentities(state_root=tmp_path, owner="a" * 32)
-    orphan = previous.bind(body)
-    # The previous owner's process is gone: rewrite its pid to one that does not exist.
-    record_path = tmp_path / PUBLISH_CALLS_DIRECTORY / "calls.json"
-    document = json.loads(record_path.read_text())
-    document["entries"][0]["pid"] = 2**22 + 12345
-    record_path.write_text(json.dumps(document))
-    runtime = _runtime(tmp_path)
+    with pytest.MonkeyPatch.context() as patch:
 
-    result = await bridge.dispatch_publish_work(body, runtime)
+        def fail(*_args: object) -> types.CallToolResult:
+            raise OSError("simulated failure before the result reaches the transport")
 
-    assert result.isError is not True
-    assert cast(Mapping[str, Any], result.structuredContent)["request_id"] == orphan.request_id
+        patch.setattr(bridge, "_with_status_streak_nudge", fail)
+        with pytest.raises(OSError):
+            await bridge.call_tool("publish_work", body, runtime)
+    (committed,) = service.publish_ids
+
+    refused = await bridge.call_tool("publish_work", body, runtime)
+    assert _refusal(refused) == committed
+    retried = await bridge.call_tool("publish_work", {**body, "request_id": committed}, runtime)
+    assert cast(Mapping[str, Any], retried.structuredContent)["outcome"] == "replayed"
+    assert _decision_modes(service.app) == ["local"]
     await bridge.close_bridge_runtime(runtime)
 
 
 @pytest.mark.anyio
-async def test_a_concurrent_identical_call_gets_its_own_identity(tmp_path: Path) -> None:
-    """An identical call while the first is still in flight in a live process is not merged."""
+async def test_a_new_bridge_process_records_a_deliberate_switch_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2 N2: no stale state survives a bridge to swallow ai -> local -> ai."""
 
-    calls = PublishCallIdentities(state_root=tmp_path)
-    first = calls.bind(_sparse_publish())
-    second = calls.bind(_sparse_publish())
-    assert first.request_id != second.request_id
-    assert not first.resumed and not second.resumed
+    service, _started, envelope = await _service(monkeypatch, 12200)
+    first = _runtime()
+    accepted = await bridge.dispatch_publish_work(_switch(envelope, "ai_powered"), first)
+    assert cast(Mapping[str, Any], accepted.structuredContent)["outcome"] == "accepted"
+    await bridge.close_bridge_runtime(first)
+    second = _runtime()
+    outcomes = [
+        cast(
+            Mapping[str, Any],
+            (await bridge.dispatch_publish_work(_switch(envelope, mode), second)).structuredContent,
+        )["outcome"]
+        for mode in ("local", "ai_powered")
+    ]
+    assert outcomes == ["accepted", "accepted"]
+    assert _decision_modes(service.app) == ["ai_powered", "local", "ai_powered"]
+    await bridge.close_bridge_runtime(second)
 
 
 @pytest.mark.anyio
-async def test_a_caller_retry_with_the_bound_id_closes_the_binding(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_other_writers_never_displace_a_writers_guard(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An agent that follows "retry with the same request_id" settles the host binding too."""
+    """Round 2 N4: hundreds of other writers' id-less calls keep this writer's record."""
+
+    service, _started, envelope = await _service(monkeypatch, 12250)
+    runtime = _runtime()
+    body = _switch(envelope, "local")
+    minted = await _lose_one(service, runtime, body)
+    for _ in range(300):
+        runtime.publish_guard.record(
+            {**body, "writer_id": new_id(IdKind.WRITER)}, new_id(IdKind.REQUEST)
+        )
+    assert _refusal(await bridge.dispatch_publish_work(body, runtime)) == minted
+    assert _decision_modes(service.app) == ["local"]
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_a_backward_wall_clock_step_keeps_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round 2 N5: the guard's window runs on monotonic time; a wall-clock step does nothing."""
 
     service, _started, envelope = await _service(monkeypatch, 12300)
-    runtime = _runtime(tmp_path)
+    runtime = _runtime()
     body = _switch(envelope, "local")
-    service.lose_next_publish_reply = True
-    lost = await bridge.dispatch_publish_work(body, runtime)
-    first_id = cast(str, cast(Mapping[str, Any], lost.structuredContent)["request_id"])
+    minted = await _lose_one(service, runtime, body)
+    wall = time.time()
+    monkeypatch.setattr(time, "time", lambda: wall - 1_000.0)
+    assert _refusal(await bridge.dispatch_publish_work(body, runtime)) == minted
+    assert _decision_modes(service.app) == ["local"]
+    await bridge.close_bridge_runtime(runtime)
 
-    explicit = await bridge.dispatch_publish_work({**body, "request_id": first_id}, runtime)
-    assert cast(Mapping[str, Any], explicit.structuredContent)["outcome"] == "replayed"
-    assert _record(tmp_path) == []
 
-    later = await bridge.dispatch_publish_work(body, runtime)
-    later_wire = cast(Mapping[str, Any], later.structuredContent)
-    assert later_wire["outcome"] == "accepted" and later_wire["request_id"] != first_id
+@pytest.mark.anyio
+async def test_another_writers_reuse_of_the_id_keeps_the_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2 N6 (A): writer B publishing under A's unknown id never settles A's call."""
+
+    service, started, envelope = await _service(monkeypatch, 12350)
+    other = await service.app.start(
+        start_request(12351, mode="attach", session_id=started.session_id)
+    )
+    assert other.task_id == started.task_id and other.writer_id != started.writer_id
+    runtime = _runtime()
+    body = _switch(envelope, "local")
+    minted = await _lose_one(service, runtime, body)
+    other_body = {
+        **_switch(envelope, "ai_powered"),
+        "session_id": other.session_id,
+        "writer_id": other.writer_id,
+        "request_id": minted,
+    }
+    accepted = await service.app.publish_work(PublishWorkRequest.model_validate(other_body))
+    assert accepted.outcome == "accepted"
+    runtime.publish_guard.explicit(other_body)  # the bridge's own call for B's delivery
+    assert _refusal(await bridge.dispatch_publish_work(body, runtime)) == minted
+    assert _decision_modes(service.app) == ["local", "ai_powered"]
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_a_same_id_preview_keeps_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round 2 N6 (B): a dry run under the unknown call's id appends nothing and settles nothing."""
+
+    service, _started, envelope = await _service(monkeypatch, 12400)
+    runtime = _runtime()
+    body = _switch(envelope, "local")
+    minted = await _lose_one(service, runtime, body)
+    base_invoke = service.invoke
+
+    async def invoke(
+        _runtime: object, request: BaseModel, _call: Any, *args: object, **kwargs: object
+    ) -> object:
+        if isinstance(request, PublishWorkRequest) and request.dry_run is True:
+            return await service.app.publish_work(request)
+        return await base_invoke(_runtime, request, _call, *args, **kwargs)
+
+    monkeypatch.setattr(bridge, "_invoke_with_reconnect", invoke)
+    preview = await bridge.dispatch_publish_work(
+        {**body, "request_id": minted, "dry_run": True}, runtime
+    )
+    assert cast(Mapping[str, Any], preview.structuredContent)["outcome"] == "dry_run"
+    assert _refusal(await bridge.dispatch_publish_work(body, runtime)) == minted
+    assert _decision_modes(service.app) == ["local"]
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_the_guard_is_bounded_to_the_writers_previous_call_and_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stated limits: after another publish, or after the window, the body is new."""
+
+    service, _started, envelope = await _service(monkeypatch, 12450)
+    now = [1_000.0]
+    runtime = _runtime(PublishRepeatGuard(clock=lambda: now[0]))
+    body = _switch(envelope, "ai_powered")
+    await _lose_one(service, runtime, body)
+    switched = await bridge.dispatch_publish_work(_switch(envelope, "local"), runtime)
+    assert cast(Mapping[str, Any], switched.structuredContent)["outcome"] == "accepted"
+    after_other = await bridge.dispatch_publish_work(body, runtime)
+    assert cast(Mapping[str, Any], after_other.structuredContent)["outcome"] == "accepted"
+    assert _decision_modes(service.app) == ["ai_powered", "local", "ai_powered"]
+
+    lost_again = await _lose_one(service, runtime, _switch(envelope, "local"))
+    now[0] += PUBLISH_REPEAT_WINDOW_SECONDS + 1
+    expired = await bridge.dispatch_publish_work(_switch(envelope, "local"), runtime)
+    expired_wire = cast(Mapping[str, Any], expired.structuredContent)
+    assert expired_wire["outcome"] == "accepted" and expired_wire["request_id"] != lost_again
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_an_immediate_deliberate_repeat_is_asked_not_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Identical id-less bodies back to back: the second is refused, a fresh id records it."""
+
+    service, _started, envelope = await _service(monkeypatch, 12500)
+    runtime = _runtime()
+    body = _switch(envelope, "local")
+    first = await bridge.dispatch_publish_work(body, runtime)
+    first_id = cast(str, cast(Mapping[str, Any], first.structuredContent)["request_id"])
+    assert _refusal(await bridge.dispatch_publish_work(body, runtime)) == first_id
+    fresh = protocol_id("req_", 12501)
+    again = await bridge.dispatch_publish_work({**body, "request_id": fresh}, runtime)
+    assert cast(Mapping[str, Any], again.structuredContent)["outcome"] == "accepted"
     assert _decision_modes(service.app) == ["local", "local"]
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_a_certainly_rejected_call_does_not_guard_its_resend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal before any append wrote nothing, so the identical resend is simply sent."""
+
+    service, started, envelope = await _service(monkeypatch, 12550)
+    runtime = _runtime()
+    first = await bridge.dispatch_publish_work(_switch(envelope, "ai_powered"), runtime)
+    assert first.isError is not True
+    stale = {
+        **_switch(envelope, "local"),
+        "expected_frontier": {
+            "sequence": started.frontier.sequence,
+            "head_digest": started.frontier.head_digest,
+        },
+    }
+    conflict = await bridge.dispatch_publish_work(stale, runtime)
+    assert _error(conflict)["code"] == PublicErrorCode.FRONTIER_CONFLICT.value
+    resend = await bridge.dispatch_publish_work(stale, runtime)
+    assert _error(resend)["code"] == PublicErrorCode.FRONTIER_CONFLICT.value
+    assert len(service.publish_ids) == 3
     await bridge.close_bridge_runtime(runtime)
 
 
 @pytest.mark.anyio
 async def test_brief_status_text_keeps_the_closure_instructions(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Review R5: a brief obligations read names the closure state and its action tokens."""
 
-    _service_handle, started, envelope = await _service(monkeypatch, 12400)
-    runtime = _runtime(tmp_path)
-    obligation = protocol_id("obl_", 12401)
+    _service_handle, started, envelope = await _service(monkeypatch, 12600)
+    runtime = _runtime()
+    obligation = protocol_id("obl_", 12601)
     plan = await bridge.dispatch_publish_work(
         {
             **envelope,
@@ -510,7 +638,7 @@ async def test_brief_status_text_keeps_the_closure_instructions(
     for detail in ("brief", "full"):
         arguments: dict[str, object] = {
             **envelope,
-            "request_id": protocol_id("req_", 12402 if detail == "brief" else 12403),
+            "request_id": protocol_id("req_", 12602 if detail == "brief" else 12603),
             "view": "obligations",
         }
         if detail == "full":
@@ -528,3 +656,80 @@ async def test_brief_status_text_keeps_the_closure_instructions(
     assert "detail: brief" in texts["brief"]
     del started
     await bridge.close_bridge_runtime(runtime)
+
+
+async def _run_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    service: _Service,
+    body: Mapping[str, Any],
+    *,
+    broken_stdout: bool = False,
+) -> tuple[int, list[str], list[str]]:
+    """Run ``finishup publish-work`` in process against the real application."""
+
+    import json
+
+    import finishup.cli.app as cli
+
+    events: list[str] = []
+    errors: list[str] = []
+
+    class Client:
+        async def publish_work(self, request: PublishWorkRequest, **_kwargs: object) -> object:
+            events.append(f"sent {request.request_id}")
+            return await service.invoke(None, request, cast(Any, None))
+
+        async def close(self) -> None:
+            return None
+
+    async def build() -> Client:
+        return Client()
+
+    def stderr(text: str) -> None:
+        events.append("stderr")
+        errors.append(text)
+
+    def stdout(_wire: object) -> None:
+        if broken_stdout:
+            raise OSError("simulated broken stdout pipe")
+
+    monkeypatch.setattr(cli, "build_service_client", build)
+    monkeypatch.setattr(cli, "_stderr", stderr)
+    monkeypatch.setattr(cli, "_stdout_json", stdout)
+    code = await cli._call_workflow(
+        "publish_work", PublishWorkRequest, None, json.dumps(body), True, None
+    )
+    return code, events, errors
+
+
+@pytest.mark.anyio
+async def test_the_cli_names_the_minted_id_before_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``finishup publish-work`` keeps the bridge's contract, and states the id before sending."""
+
+    service, _started, envelope = await _service(monkeypatch, 12700)
+    code, events, errors = await _run_cli(monkeypatch, service, _switch(envelope, "local"))
+    assert code == 0
+    (minted,) = service.publish_ids
+    assert events[:2] == ["stderr", f"sent {minted}"]
+    assert errors[0].startswith(f"request_id {minted}: minted by FinishUP for this publish-work")
+
+
+@pytest.mark.anyio
+async def test_a_cli_output_failure_keeps_the_identity_and_is_not_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2 N1 (CLI): the write committed and only printing it failed."""
+
+    from finishup.cli.exits import exit_code_for
+
+    service, _started, envelope = await _service(monkeypatch, 12750)
+    body = _switch(envelope, "ai_powered")
+    code, _events, errors = await _run_cli(monkeypatch, service, body, broken_stdout=True)
+    (minted,) = service.publish_ids
+    assert code == exit_code_for(PublicErrorCode.INTERNAL_ERROR)
+    assert any(minted in line and "minted by FinishUP" in line for line in errors)
+    assert any(line.startswith("result_output_failed:") and minted in line for line in errors)
+    retried, _events, _errors = await _run_cli(monkeypatch, service, {**body, "request_id": minted})
+    assert retried == 0
+    assert service.publish_ids == [minted, minted]
+    assert _decision_modes(service.app) == ["ai_powered"]

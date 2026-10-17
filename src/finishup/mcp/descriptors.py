@@ -1340,8 +1340,8 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
     if isinstance(request_id, dict):
         request_id["description"] = (
             # Issue #1084 (ADR-050 decision 2): the bridge mints one per id-less publish call.
-            "Optional: omit it and FinishUP mints one for this call. After an unknown outcome, "
-            "resend the identical body to retry; any other call is a new publication."
+            "Optional: omit it and FinishUP mints one for this call and names it in the result. "
+            "After an unknown outcome, retry by sending that id; an id-less resend is not a retry."
             if name == "publish-work-request"
             else "Use a fresh req_ prefixed random UUID for each request."
         )
@@ -1958,7 +1958,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "or run an AI-powered evaluation. Omit request_id, expected_frontier and each draft's "
         "event_id, occurred_at, empty lists and mirrored refs: FinishUP mints the call's id, "
         "guards the batch with the frontier it reads on admission, and names the filled values in "
-        "server_filled. After an unknown outcome resend the identical body; any other call is new. "
+        "server_filled. Every result names the call's request_id: retry an unknown outcome by "
+        "sending it; an id-less resend is never a retry. "
         "Reference sets are sorted and de-duplicated for you. attempted_items belongs only on the "
         "action_recorded payload; copy each requested_items value exactly and never place it on "
         "claim_recorded. decision_recorded.authority is a structural actor id, not approval prose; "
@@ -2233,7 +2234,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "policy": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:e8773d5594be663f5108f6e5338497d10359eaee1684720c7431d2f3c4d5a213",
+                "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
                 "check": "sha256:d1c5018a531b794062485d475432f89902ca81fa598b1e992a8a158cd5ff1632",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
                 "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
@@ -2245,7 +2246,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "strict": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:e8773d5594be663f5108f6e5338497d10359eaee1684720c7431d2f3c4d5a213",
+                "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
                 "check": "sha256:4374e8f3ddb53fa9bf07c6de45dca86a689d37ae70b5d4c0a55ad96750a426e4",
                 "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
                 "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
@@ -2258,8 +2259,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:c88392f8924d9d9dea28dc50498cc9f9ab09e5455db6a2b5511374112e674dd5",
-        "strict": "sha256:b4959529296d8f1b218b44cdf0ce9afd4e72c40692976c90d44e600c2a2b56bb",
+        "policy": "sha256:73febdec57969d915948bfed2ffed6cfc8e8de96182127f420921461db22da84",
+        "strict": "sha256:b17a0c6544e3efc3ba895fe31108ccafb739ef21f7b78d8280e9bc5dc8ae9ed6",
     }
 )
 

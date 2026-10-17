@@ -3020,35 +3020,9 @@ def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     if accepted is not None:
         parts.append(_req(f"accepted events: {_item_count(accepted)};"))
     parts.append(_req(f"{identity}{_frontier_clause(source)}."))
-    parts.append(_replay_notice_part(source))
     parts.append(_server_filled_part(source))
     parts.append(_frontier_next_part(source))
     return _compose(parts)
-
-
-def _replay_notice_part(source: Mapping[str, JsonValue]) -> Part | None:
-    """Say that a resumed id-less call replayed its earlier outcome (issue #1084).
-
-    Rendered only when the closed code and the fixed repository text both match exactly.
-    """
-
-    from finishup.protocol.models import PUBLISH_RESUMED_CALL_NOTICE_TEXT
-
-    notice = source.get("replay_notice")
-    if not isinstance(notice, Mapping):
-        return None
-    entry = cast(Mapping[str, JsonValue], notice)
-    if (
-        entry.get("notice") != "unresolved_call_resumed"
-        or entry.get("text") != PUBLISH_RESUMED_CALL_NOTICE_TEXT
-    ):
-        return None
-    return _opt(
-        PUBLISH_RESUMED_CALL_NOTICE_TEXT,
-        "Resumed an earlier undelivered call; nothing new appended. Publish again to record it "
-        "again.",
-        priority=_P_ACTION,
-    )
 
 
 _OBLIGATION_ID: Final = re.compile(

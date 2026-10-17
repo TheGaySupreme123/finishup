@@ -279,7 +279,6 @@ async def test_a_retry_replays_the_committed_operations_provenance() -> None:
     assert cast(Mapping[str, Any], retry.as_json()["server_filled"])["drafts"] == (
         {"fields": _ALL_FILLED, "indexes": ("0",)},
     )
-    assert "replay_notice" not in retry.as_json()
     assert len([row for row in _records(app) if row.schema.name == "decision_recorded"]) == 1
 
     # The operation page, the other public recovery route, names the same provenance.

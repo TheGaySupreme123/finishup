@@ -254,6 +254,19 @@ _DIRECTIVES: Final = (
         guidance_uri=_PUBLICATION_RECOVERY,
         nudge="Read status for a frontier only when you hold none.",
     ),
+    # Issue #1084 (ADR-050 decision 2): an id-less publish never resumes an earlier call by its
+    # content. An identical id-less resend of the writer's previous, possibly committed call is
+    # refused so the caller decides what it is.
+    RecoveryDirective(
+        token="publish_identity_choice",
+        directive=(
+            "Nothing was sent: this body repeats your previous publish_work without request_id, "
+            "whose outcome may be recorded. To retry that call, send replay_request_id as "
+            "request_id; to publish the same facts again, send a fresh request_id."
+        ),
+        guidance_uri=_PUBLICATION_RECOVERY,
+        nudge="An id-less resend is never treated as a retry.",
+    ),
     RecoveryDirective(
         token="session_rebind_required",
         directive=(

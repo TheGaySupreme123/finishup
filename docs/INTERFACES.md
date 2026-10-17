@@ -297,25 +297,40 @@ required at the service. The pure half lives in `finishup.protocol.publish_boile
   disagrees is still `ref_mirror_mismatch`, and a request that sends every value keeps its earlier
   identity, digest and result bytes.
 
-Host-owned request identity (ADR-050 decision 2). The MCP `publish_work` tool, and
-`finishup publish-work`, admit a body without `request_id` (the advertised and catalog input
-schemas drop it from `required`). The host side mints one `req_` UUIDv4 per call through
-`finishup.adapters.integrations.publish_call_identity.PublishCallIdentities` and binds it before
-sending: the body is first validated under a provisional id (an invalid body is never bound or
-sent), a dry run gets a fresh unbound id, and a real call writes an `in_flight` binding to
-`<state_dir>/publish-calls/calls.json` (owner-only folder, atomic fsynced replace, file lock) holding
-only SHA-256 commitments over the FinishUP session and writer and over the canonical body, the
-minted id, an owner token, a process id and a time. Every retry the host makes for that call reuses
-the id. A delivered `ok: true` outcome deletes the binding and every `unresolved` binding of the
-same session and writer, and so does a delivered call that sends a bound id itself. Any other end
-(an error, a cancelled call) marks it `unresolved`. The next call with the identical body from the
-same writer reuses an `unresolved` binding, or an `in_flight` one whose owner process is gone,
-within one hour; a binding still in flight in a live process is never shared. The resumed call's
-success then carries the closed `replay_notice` (`unresolved_call_resumed` plus fixed text) when the
-service replayed it, also on the reduced `accepted_projection_unavailable` success. When the binding
-cannot be written the call is refused as `STORAGE_UNSAFE` and nothing is sent. An id-less error
-result names the minted id in its text. The startup-gate hook, which never saw the id, opens the
-write's ticket at the post-call event from the result's echoed `request_id`.
+Host-owned request identity (ADR-050 decision 2, revised by round 2 of the PR #1088 review).
+The MCP `publish_work` tool, and `finishup publish-work`, admit a body without `request_id` (the
+advertised and catalog input schemas drop it from `required`).
+
+- **Minting.** The host mints a fresh `req_` UUIDv4 for every such call. The body is first
+  validated under a provisional id, so an invalid body is never sent. A dry run gets its own
+  fresh id. Nothing is persisted and nothing is resumed by content.
+- **Reuse.** The bridge's own transport retries (reconnect, and the timeout probe with its
+  replay) reuse the id.
+- **Disclosure.** Every result and error carries it. An id-less error's text adds the line
+  `FinishUP minted request_id … for this call`. `finishup publish-work` prints
+  `request_id …: minted by FinishUP` on stderr before sending. When a write's result cannot be
+  written to stdout, it reports `result_output_failed` with that id instead of a usage error.
+- **Retry contract.** Retrying an unknown outcome means sending that id.
+- **Repeat guard.** `finishup.mcp.publish_identity.PublishRepeatGuard` keeps, in the bridge
+  process only, each writer's previous id-less publish that could have committed: a commitment
+  over the canonical body, the id, and a monotonic time. An id-less body identical to it is
+  refused before sending as `INVALID_REQUEST` with `reason_code: publish_repeat_unconfirmed`,
+  continuation `publish_identity_choice`, and `safe_details.replay_request_id` naming the earlier
+  id. The envelope `request_id` is absent, so no hook reads the refusal as the earlier call's
+  outcome.
+- **Forgetting.** The record is replaced by the writer's next id-less publish. It is dropped by:
+  - the writer's explicit-id publish that could have committed;
+  - a certain pre-append rejection of that call (`INVALID_REQUEST`, `EVENT_INVALID`,
+    `FRONTIER_CONFLICT`, `LIMIT_EXCEEDED`, `PROTOCOL_VERSION_UNSUPPORTED`, `SESSION_CONFLICT`,
+    `SESSION_NOT_FOUND`);
+  - one hour of monotonic time;
+  - the 4,096-writer bound.
+
+  Dry runs and other writers' calls never drop it.
+- **No guard:** across a bridge restart, after the writer's next publish, after the hour, and for
+  the CLI. An identical id-less body is then a new publication.
+- **Startup gate.** The startup-gate hook never saw a minted id, so it opens the write's ticket at
+  the post-call event from the result's echoed `request_id`.
 
 Provenance: every success, reduced success and dry-run result carries `server_filled` (`request`:
 `expected_frontier` when omitted; `drafts`: groups of filled envelope `fields` with the batch
