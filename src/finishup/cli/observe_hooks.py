@@ -1973,11 +1973,13 @@ def _finishup_request_commitment(event_name: str, payload: Mapping[str, JsonValu
     """The commitment to one FinishUP call on its pre-event (tb4n5, #1041).
 
     It covers the tool, the request's FinishUP ``session_id``/``writer_id`` and its ``request_id``,
-    read from the host's own ``tool_input``. FinishUP's MCP server records the same commitment when
-    it answers the call with an error, which a host sends no post for; the pending attempt then
-    closes as rejected by FinishUP instead of expiring. Only the commitment is kept: never an
-    identifier or any other argument. Every host adapter computes it from the payload the host
-    sent, before normalization drops ``tool_input`` (Claude Code and Cursor pass it in).
+    read from the host's own ``tool_input`` (an id-less ``publish_work``, whose id the bridge mints
+    after this event, commits to its canonical body instead, #1084). FinishUP's MCP server records
+    the same commitment when it answers the call with an error, which a host sends no post for;
+    the pending attempt then closes as rejected by FinishUP instead of expiring. Only the
+    commitment is kept: never an identifier or any other argument. Every host adapter computes it
+    from the payload the host sent, before normalization drops ``tool_input`` (Claude Code and
+    Cursor pass it in).
     """
 
     if event_name not in {"PreToolUse", "preToolUse"}:

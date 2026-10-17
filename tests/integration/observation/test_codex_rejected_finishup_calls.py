@@ -12,12 +12,15 @@ for the MCP server, in direct mode and nested in a code-mode cell.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import Mapping
 from typing import cast
 
 import pytest
+from mcp import types
 
+import finishup.mcp.server as bridge
 from builders.codex_replay import Replay as _Replay
 from builders.codex_replay import (
     exec_cell,
@@ -27,8 +30,10 @@ from builders.codex_replay import (
     session_start,
     sweep_all,
 )
+from finishup.adapters.integrations import finishup_call_rejections
 from finishup.adapters.integrations.finishup_call_rejections import record_rejected_finishup_call
 from finishup.domain.observation import ObservationStatusQuery
+from finishup.mcp.publish_identity import PublishRepeatGuard
 
 pytestmark = pytest.mark.anyio
 
@@ -147,3 +152,82 @@ async def test_a_missing_post_nobody_rejected_still_expires_with_its_identity(
     recent = cast(tuple[Mapping[str, object], ...], endings["recent"])
     assert sorted(str(entry["tool"]) for entry in recent) == ["Bash", "mcp__yoetz__status"]
     assert _EXPIRED in replay.store.status(ObservationStatusQuery(replay.commitment)).gaps
+
+
+# PR #1088 round 3: ``publish_work`` omits ``request_id`` by default (issue #1084). The bridge mints
+# the id after Codex's PreToolUse saw the call, so both sides commit to the agent's canonical body.
+_IDLESS_INVALID: dict[str, object] = {
+    "protocol_version": "0.1",
+    "schema_version": "1.0.0",
+    **_SCOPE,
+    "actor": {"actor_id": "harness:mcp", "actor_type": "harness"},
+    "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"},
+    "event_drafts": [{"schema": {"name": "decision_recorded", "version": "9.9.9"}}],
+}
+
+
+async def _idless_publish_through_the_bridge(
+    replay: _Replay, monkeypatch: pytest.MonkeyPatch, tool_use_id: str
+) -> types.CallToolResult:
+    """Codex's pre-event, then the real bridge entry point answering the agent's own arguments."""
+
+    root = replay.root
+    monkeypatch.setattr(finishup_call_rejections, "state_dir", lambda: root)
+    replay.hook(
+        "PreToolUse",
+        tool_name="mcp__finishup__publish_work",
+        tool_use_id=tool_use_id,
+        tool_input=dict(_IDLESS_INVALID),
+    )
+    runtime = dataclasses.replace(
+        bridge.build_bridge_runtime(host_profile="codex"), publish_guard=PublishRepeatGuard()
+    )
+    served = await bridge._handle_call_tool_request(
+        types.CallToolRequest(
+            method="tools/call",
+            params=types.CallToolRequestParams(
+                name="publish_work", arguments=dict(_IDLESS_INVALID)
+            ),
+        ),
+        runtime,
+    )
+    await bridge.close_bridge_runtime(runtime)
+    result = served.root
+    assert isinstance(result, types.CallToolResult) and result.isError is True
+    return result
+
+
+async def test_a_rejected_idless_publish_closes_without_the_expiry_gap(
+    replay: _Replay, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_start(replay, cli_version="0.159.3")
+    await _idless_publish_through_the_bridge(replay, monkeypatch, "call_idless")
+    # Codex sends no PostToolUse for the error. The next hook, past the grace, reconciles it.
+    replay.advance(30)
+    replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    replay.advance(900)
+    replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    await sweep_all(replay)
+
+    assert replay.store.pending_attempt_endings(replay.commitment)["counts"] == {
+        "rejected_by_yoetz": 1
+    }
+    assert _EXPIRED not in replay.store.status(ObservationStatusQuery(replay.commitment)).gaps
+
+
+async def test_two_identical_rejected_idless_publishes_pair_one_to_one(
+    replay: _Replay, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_start(replay, cli_version="0.159.3")
+    for tool_use_id in ("call_idless_first", "call_idless_second"):
+        await _idless_publish_through_the_bridge(replay, monkeypatch, tool_use_id)
+    replay.advance(30)
+    replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    replay.advance(900)
+    replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    await sweep_all(replay)
+
+    assert replay.store.pending_attempt_endings(replay.commitment)["counts"] == {
+        "rejected_by_yoetz": 2
+    }
+    assert _EXPIRED not in replay.store.status(ObservationStatusQuery(replay.commitment)).gaps

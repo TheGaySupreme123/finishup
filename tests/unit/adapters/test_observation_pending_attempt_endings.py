@@ -452,3 +452,130 @@ def test_the_bridge_records_served_reads_only_for_cursor_successes() -> None:
     server._record_served_read(cursor, "status", _ARGS, success)
     assert _REQUEST not in (root / "observation" / rejections.SERVED_READS_FILENAME).read_text()
     assert rejections.claim_served_finishup_read("MCP:status", _ARGS)
+
+
+# PR #1088 round 3: ``publish_work`` omits ``request_id`` by default (issue #1084), so the bridge
+# mints the id after the host's pre-event saw the call. Both sides commit to the canonical body.
+_IDLESS: dict[str, object] = {
+    "session_id": _FINISHUP_SESSION,
+    "writer_id": _WRITER,
+    "event_drafts": [
+        {
+            "schema": {"name": "decision_recorded", "version": "1.0.0"},
+            "payload": {"statement": "Keep it.", "rationale": "Covers it.", "authority": "a"},
+        }
+    ],
+}
+
+
+def test_an_idless_publish_commits_to_its_canonical_body() -> None:
+    commitment = rejections.rejected_call_commitment("publish_work", _IDLESS)
+    assert commitment is not None and commitment.startswith("sha256:") and len(commitment) == 71
+    # Every host spelling and any key order commit alike; any change to the body changes it.
+    reordered = dict(reversed(list(_IDLESS.items())))
+    for spelling in (
+        "mcp__yoetz__publish_work",
+        "mcp__finishup__publish_work",
+        "mcp__plugin_yoetz_yoetz__publish_work",
+        "yoetz:publish_work",
+        "MCP:publish_work",
+    ):
+        assert rejections.rejected_call_commitment(spelling, reordered) == commitment
+    assert rejections.rejected_call_commitment("publish_work", {**_IDLESS, "dry_run": True}) != (
+        commitment
+    )
+    # A new domain, distinct from the id domain from its first byte: never an id commitment.
+    assert rejections._BODY_DOMAIN[:1] != rejections._DOMAIN[:1]
+    with_id = {**_IDLESS, "request_id": _REQUEST}
+    assert rejections.rejected_call_commitment("publish_work", with_id) not in {None, commitment}
+    # Only an id-less publish_work has a body form: another tool, or a present but invalid
+    # request_id, still has no identity.
+    scope = {"session_id": _FINISHUP_SESSION, "writer_id": _WRITER}
+    assert rejections.rejected_call_commitment("check", scope) is None
+    assert rejections.rejected_call_commitment("publish_work", {**_IDLESS, "request_id": None}) is (
+        None
+    )
+
+
+def test_an_idless_body_without_a_canonical_form_has_no_commitment(tmp_path: Path) -> None:
+    (tmp_path / "observation").mkdir()
+    for body in (
+        {**_IDLESS, "ratio": 0.5},  # a float has no canonical form
+        {**_IDLESS, "event_drafts": float("nan")},
+        cast(dict[str, object], {**_IDLESS, 1: "non-string key"}),
+    ):
+        assert rejections.rejected_call_commitment("publish_work", body) is None
+        assert not rejections.record_rejected_finishup_call(
+            "publish_work", body, state_root=tmp_path
+        )
+    assert rejections.read_rejected_finishup_calls(tmp_path / "observation") == ()
+
+
+def test_the_served_read_proof_keeps_its_request_scope_only(tmp_path: Path) -> None:
+    """The id-less body form never reaches the served-read record Cursor's hook claims."""
+
+    (tmp_path / "observation").mkdir()
+    status = {"request_id": _REQUEST, "session_id": _FINISHUP_SESSION, "writer_id": _WRITER}
+    assert rejections._served_read_commitment("status", status) == (
+        rejections.rejected_call_commitment("status", status)
+    )
+    for tool, arguments in (
+        ("status", {"session_id": _FINISHUP_SESSION, "writer_id": _WRITER}),
+        ("publish_work", _IDLESS),
+    ):
+        assert rejections._served_read_commitment(tool, arguments) is None
+        assert not rejections.record_served_finishup_read(tool, arguments, state_root=tmp_path)
+        assert not rejections.claim_served_finishup_read(
+            f"MCP:{tool}", arguments, state_root=tmp_path
+        )
+
+
+def test_the_bridge_records_an_idless_rejected_publish(tmp_path: Path) -> None:
+    from mcp import types
+
+    from finishup.mcp import server
+
+    root = rejections.state_dir()
+    (root / "observation").mkdir(parents=True, exist_ok=True)
+    error = types.CallToolResult(content=[], structuredContent={"ok": False}, isError=True)
+    server._record_rejected_call("publish_work", _IDLESS, error)
+    (recorded,) = rejections.read_rejected_finishup_calls(root / "observation")
+    assert recorded[0] == rejections.rejected_call_commitment("publish_work", _IDLESS)
+    # Only the commitment and the moment are written: never an argument.
+    written = (root / "observation" / rejections.REJECTED_CALLS_FILENAME).read_text()
+    for value in (_FINISHUP_SESSION, _WRITER, "Keep it.", "decision_recorded"):
+        assert value not in written
+
+
+def test_two_identical_rejected_idless_bodies_pair_one_to_one(tmp_path: Path) -> None:
+    """The same id-less body rejected twice: each rejection closes the attempt it answered."""
+
+    store, workspace, session, clock = _store(tmp_path)
+    commitment = rejections.rejected_call_commitment("mcp__yoetz__publish_work", _IDLESS)
+    assert commitment is not None
+    for call in ("call_first", "call_second"):
+        _open(
+            store,
+            workspace,
+            session,
+            call,
+            "mcp__yoetz__publish_work",
+            request_commitment=commitment,
+        )
+        assert rejections.record_rejected_finishup_call(
+            "publish_work", _IDLESS, state_root=tmp_path, now_ms=int((clock.now + 0.2) * 1000)
+        )
+        clock.now += 1
+    clock.now += 10
+    _prune(store, workspace, session)
+    endings = store.pending_attempt_endings(workspace)
+    assert endings["counts"] == {"rejected_by_yoetz": 2}
+    assert endings["open"] == 0
+    claimants = [
+        claimant
+        for _, _, claimant in rejections.read_rejected_finishup_calls(tmp_path / "observation")
+    ]
+    assert len(claimants) == 2 and None not in claimants and len(set(claimants)) == 2
+    clock.now += 900
+    _prune(store, workspace, session)
+    assert _EXPIRED not in store.status(ObservationStatusQuery(workspace)).gaps

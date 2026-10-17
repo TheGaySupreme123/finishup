@@ -5736,9 +5736,13 @@ delivered no row within its budget) and old rows are read back under the new nam
 amendment of 2026-10-13). The FinishUP MCP bridge's rejection record (`record_rejected_finishup_call`,
 `observation/yoetz-rejected-calls.json`, schema `yoetz.rejected-calls/2`) holds per entry only
 `sha256("yoetz/rejected-call/v2", tool basename, session_id, writer_id, request_id)` (an absent
-or invalid session or writer commits as `-`), a millisecond time, and the opaque claimant digest
-of the one pending attempt that consumed it, 256 newest. A hook pre-event of a FinishUP tool keeps
-the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
+or invalid session or writer commits as `-`) or, for a `publish_work` whose arguments have no
+`request_id` key (issue #1084: the bridge mints that id after the host's pre-event),
+`sha256("finishup/rejected-call/body/v1", tool basename, session_id, writer_id,
+canonical_encode(arguments))` over the agent's own arguments (none when they have no canonical
+form; the served-read record keeps the `request_id` form only), a millisecond time, and the
+opaque claimant digest of the one pending attempt that consumed it, 256 newest. A hook pre-event
+of a FinishUP tool keeps the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
 Cursor adapters compute it from the host payload and pass it to the shared ingress as
 `_request_commitment`. `consume_rejected_finishup_call` claims an entry installation-wide under the
 record's lock and is idempotent for its claimant. On the Cursor host profile only, the bridge also

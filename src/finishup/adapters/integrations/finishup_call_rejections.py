@@ -13,8 +13,11 @@ The MCP bridge records each error result it returns for a FinishUP tool whose ar
 rejected by FinishUP instead of letting it expire. A call is identified by its operation scope, not
 its ``request_id`` alone (replay identity is ``(task, writer, request_id)``, INTERFACES): the
 commitment covers the tool's basename, the request's FinishUP ``session_id`` and ``writer_id`` when it
-names them, and the ``request_id``. Only that SHA-256 commitment and a millisecond time cross this
-file; no argument, message, session or workspace value is written. Each rejection is consumed
+names them, and the ``request_id``. A ``publish_work`` call that omits ``request_id`` (the default
+shape since issue #1084; the bridge mints the id after the hook saw the call) is committed to by its
+canonical body instead, under a separate domain, so an id-less rejected publish closes its attempt
+too. Only that SHA-256 commitment and a millisecond time cross this file; no argument, message,
+session or workspace value is written. Each rejection is consumed
 installation-wide, under the file's lock, by the first attempt it closes, so one rejection never
 closes attempts in two workspaces. The record is best-effort: a call it misses still expires as
 before, which remains a disclosed gap, never a silent one.
@@ -42,6 +45,7 @@ from finishup.domain.finishup_tools import (
     FINISHUP_READ_TOOL_BASENAMES,
     finishup_tool_spelling,
 )
+from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.ids import IdKind, is_valid_id, safe_request_id_from
 
 __all__ = [
@@ -64,6 +68,10 @@ REJECTED_CALLS_FILENAME: Final = "yoetz-rejected-calls.json"
 _LOCK_FILENAME: Final = ".yoetz-rejected-calls.lock"
 _SCHEMA: Final = "yoetz.rejected-calls/2"
 _DOMAIN: Final = b"yoetz/rejected-call/v2\x00"
+# Issue #1084 (PR #1088 round 3): an id-less ``publish_work`` commits to its canonical body. A new
+# domain, distinct from ``_DOMAIN`` from its first byte, so a body commitment never equals an id one.
+_BODY_DOMAIN: Final = b"finishup/rejected-call/body/v1\x00"
+_IDLESS_TOOL: Final = "publish_work"
 # A pending attempt lives at most ten minutes (``_OPEN_PRE_TTL_MS``); the newest entries cover far
 # more than that at any plausible rejection rate.
 _MAX_ENTRIES: Final = 256
@@ -105,12 +113,8 @@ def _scope_token(arguments: Mapping[object, object], key: str, kind: IdKind) -> 
     return value.encode("ascii") if type(value) is str and is_valid_id(kind, value) else b"-"
 
 
-def rejected_call_commitment(tool: object, arguments: object) -> str | None:
-    """The commitment both sides compute for one FinishUP call, or ``None`` when it has no identity.
-
-    ``arguments`` is the call's argument mapping as the host sent it (hook ``tool_input``, MCP
-    ``arguments``); only its ``request_id``, ``session_id`` and ``writer_id`` are read.
-    """
+def _request_commitment(tool: object, arguments: object) -> str | None:
+    """The commitment to a call that names a valid ``request_id``; ``None`` otherwise."""
 
     basename = finishup_tool_basename(tool)
     request = safe_request_id_from(arguments)
@@ -128,6 +132,47 @@ def rejected_call_commitment(tool: object, arguments: object) -> str | None:
         )
     ).hexdigest()
     return f"sha256:{digest}"
+
+
+def _body_commitment(basename: str, arguments: Mapping[object, object]) -> str | None:
+    """The commitment to an id-less ``publish_work`` call: its canonical body. Never raises."""
+
+    try:
+        if any(type(key) is not str for key in arguments):
+            return None
+        encoded = canonical_encode(cast(JsonValue, dict(arguments)))
+        digest = hashlib.sha256(
+            b"\x00".join(
+                (
+                    _BODY_DOMAIN + basename.encode("ascii"),
+                    _scope_token(arguments, "session_id", IdKind.SESSION),
+                    _scope_token(arguments, "writer_id", IdKind.WRITER),
+                    encoded,
+                )
+            )
+        ).hexdigest()
+    except Exception:  # noqa: BLE001 - a body with no canonical form simply has no commitment
+        return None
+    return f"sha256:{digest}"
+
+
+def rejected_call_commitment(tool: object, arguments: object) -> str | None:
+    """The commitment both sides compute for one FinishUP call, or ``None`` when it has no identity.
+
+    ``arguments`` is the call's argument mapping as the host sent it (hook ``tool_input``, MCP
+    ``arguments``); only its ``request_id``, ``session_id`` and ``writer_id`` are read, except for a
+    ``publish_work`` call with no ``request_id`` key, which is committed to by its whole canonical
+    body (issue #1084): the bridge mints that call's id after the host's pre-event, so the id cannot
+    join the two sides. Two identical id-less bodies share a commitment; each rejection closes the
+    oldest matching attempt received before it, so they still pair one to one.
+    """
+
+    basename = finishup_tool_basename(tool)
+    candidate: object = arguments
+    scope = cast(Mapping[object, object], candidate) if isinstance(candidate, Mapping) else None
+    if basename == _IDLESS_TOOL and scope is not None and "request_id" not in scope:
+        return _body_commitment(basename, scope)
+    return _request_commitment(tool, arguments)
 
 
 def _directory(state_root: Path | None) -> Path:
@@ -295,8 +340,9 @@ def record_rejected_finishup_call(
 ) -> bool:
     """Record that the FinishUP MCP server answered one call with an error. Never raises.
 
-    Nothing is written when the call names no FinishUP tool, carries no valid ``request_id``, or
-    observation was never set up under the state root (no hook can be waiting on it then).
+    Nothing is written when the call names no FinishUP tool, carries no valid ``request_id`` (an
+    id-less ``publish_work`` with a canonical body is committed to by that body), or observation
+    was never set up under the state root (no hook can be waiting on it then).
     """
 
     try:
@@ -313,9 +359,11 @@ def record_rejected_finishup_call(
 
 
 def _served_read_commitment(tool: object, arguments: object) -> str | None:
+    # A served read is proven only by its ``request_id`` scope; the id-less body form is for
+    # ``publish_work`` rejections alone.
     if finishup_tool_basename(tool) not in _READ_NAMES:
         return None
-    return rejected_call_commitment(tool, arguments)
+    return _request_commitment(tool, arguments)
 
 
 def record_served_finishup_read(

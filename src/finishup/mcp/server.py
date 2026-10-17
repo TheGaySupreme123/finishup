@@ -4021,6 +4021,8 @@ def _record_rejected_call(
     A host fires no ``PostToolUse`` for an error result, so the call's ``PreToolUse`` would
     otherwise expire as a pipeline loss. Only a commitment to the call (tool, FinishUP session,
     writer and ``request_id``) is written; the call is never delayed or failed by this record.
+    ``arguments`` are the agent's own, never the minted body: an id-less ``publish_work`` is
+    committed to by its canonical body, as the host's pre-event saw it (#1084).
     """
 
     if result.isError is not True:

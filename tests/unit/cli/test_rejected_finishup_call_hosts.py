@@ -37,33 +37,50 @@ _ARGUMENTS: dict[str, JsonValue] = {
     "writer_id": "wri_6f5e4d3c-2b1a-4c9d-8e7f-6a5b4c3d2e1f",
     "mode": "semantic_required",
 }
+# PR #1088 round 3: an id-less publish (the default shape since issue #1084) commits to its body.
+_IDLESS_PUBLISH: dict[str, object] = {
+    "session_id": "ses_1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+    "writer_id": "wri_6f5e4d3c-2b1a-4c9d-8e7f-6a5b4c3d2e1f",
+    "event_drafts": [
+        {
+            "schema": {"name": "decision_recorded", "version": "1.0.0"},
+            "payload": {"statement": "Keep it.", "rationale": "Covers it.", "authority": "a"},
+        }
+    ],
+}
+_CALLS: dict[str, tuple[str, Mapping[str, object]]] = {
+    "check": ("check", _ARGUMENTS),
+    "idless_publish": ("publish_work", _IDLESS_PUBLISH),
+}
 
 
 def _host(
-    host: str,
+    host: str, basename: str = "check"
 ) -> tuple[Callable[..., int], str, str, str, ObservationSource]:
     if host == "claude":
         return (
             observe_hooks.handle_claude_observe,
             "PreToolUse",
-            "mcp__plugin_yoetz_yoetz__check",
+            f"mcp__plugin_yoetz_yoetz__{basename}",
             CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
             ObservationSource.CLAUDE_HOOK,
         )
     return (
         observe_hooks.handle_cursor_observe,
         "preToolUse",
-        "yoetz:check",
+        f"yoetz:{basename}",
         CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
         ObservationSource.CURSOR_HOOK,
     )
 
 
+@pytest.mark.parametrize("call", sorted(_CALLS))
 @pytest.mark.parametrize("host", ["claude", "cursor"])
 def test_an_ordinary_host_attempt_finishup_rejected_closes_as_rejected(
-    host: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    host: str, call: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    handler, event, tool, profile, source = _host(host)
+    basename, arguments = _CALLS[call]
+    handler, event, tool, profile, source = _host(host, basename)
     state = tmp_path / "state"
     store = LocalObservationStore(_state=state)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -81,8 +98,8 @@ def test_an_ordinary_host_attempt_finishup_rejected_closes_as_rejected(
         "session_id": f"{host}-rejected-call",
         "conversation_id": f"{host}-rejected-conversation",
         "tool_name": tool,
-        "tool_use_id": f"{host}-call-check",
-        "tool_input": _ARGUMENTS,
+        "tool_use_id": f"{host}-call-{basename}",
+        "tool_input": arguments,
         "workspace_roots": [str(tmp_path)],
     }
     assert (
@@ -103,11 +120,13 @@ def test_an_ordinary_host_attempt_finishup_rejected_closes_as_rejected(
         if entry.source is source
     ]
     assert len(pending) == 1
-    assert pending[0].request_commitment == rejections.rejected_call_commitment("check", _ARGUMENTS)
+    commitment = rejections.rejected_call_commitment(basename, arguments)
+    assert commitment is not None
+    assert pending[0].request_commitment == commitment
 
     # What the bridge records when it answers that call with an error; no post follows.
     assert rejections.record_rejected_finishup_call(
-        "check", _ARGUMENTS, state_root=state, now_ms=int(time.time() * 1000) + 200
+        basename, arguments, state_root=state, now_ms=int(time.time() * 1000) + 200
     )
     offset[0] = 10.0
     # The next pairing read (any later hook of the session) reconciles the attempt.
