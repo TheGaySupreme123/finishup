@@ -318,32 +318,40 @@ MISSING_SUPPLY_SENTENCE: Final = (
     "specific limit. " + SUPPLY_COUNTS_SHORT
 )
 # One closed instruction per kind: what record answers it, naming the field that links it to the
-# target. No task content, no invented command.
-_PUBLISH_EXACTLY: Final = MappingProxyType(
+# target. No task content, no invented command. Each entry is its variants, longest first: the
+# first is the full instruction every surface prints; a shorter one keeps the record, the linking
+# field and any rule an agent would otherwise get wrong, for the bounded ``agent_next`` lead, which
+# reserves one variant per requested kind before any target list expands (W6, #1107).
+_PUBLISH_EXACTLY: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     {
         "command_identity": (
             "Publish one action_recorded whose command is the exact command text of the target "
-            "run. A re-run does not count: FinishUP records no command text for a run it observes."
+            "run. A re-run does not count: FinishUP records no command text for a run it observes.",
+            "Publish one action_recorded whose command is the exact command text of the target "
+            "run; a re-run does not count.",
         ),
         "current_diff_for_path": (
             "Publish evidence whose reference is that path, or one git diff result covering it. "
-            "Do not stage an untracked file."
+            "Do not stage an untracked file.",
+            "Publish evidence whose reference is that path, or one git diff result covering it.",
         ),
-        "other": "Publish evidence whose reference is the target id.",
+        "other": ("Publish evidence whose reference is the target id.",),
         "plan_or_claim_text": (
             "Publish one plan_revised, or a claim_recorded 1.1.0 whose supersedes_claim_refs "
-            "names the target claim."
+            "names the target claim.",
         ),
-        "prior_finding_context": "Publish one respond to that finding.",
+        "prior_finding_context": ("Publish one respond to that finding.",),
         "task_statement": (
             "Publish one plan_revised 1.1.0 whose task_statement is the user's whole request, "
-            "linked to the target."
+            "linked to the target.",
         ),
         "verification_output": (
             "Publish one result_recorded whose action_id is the target's action and whose "
             "summary is the command output, with its evidence_refs. Publish it even after a "
             "re-run: the output of a run FinishUP observes counts only once it reaches the "
-            "reviewer, which the owner's privacy settings may not allow."
+            "reviewer, which the owner's privacy settings may not allow.",
+            "Publish one result_recorded whose action_id is the target's action and whose "
+            "summary is the command output, with its evidence_refs, even after a re-run.",
         ),
     }
 )
@@ -354,7 +362,8 @@ def publish_exactly(kind: str) -> str:
 
     if type(kind) is not str:
         return ""
-    return _PUBLISH_EXACTLY.get(kind, "")
+    variants = _PUBLISH_EXACTLY.get(kind, ())
+    return variants[0] if variants else ""
 
 
 def render_missing_for_assessment_next(items: object) -> str:
@@ -496,6 +505,8 @@ _AGENT_NEXT_LIMIT_SHORT: Final = "FinishUP limit: {n} item(s); verify yourself, 
 _AGENT_NEXT_UNAVAILABLE: Final = (
     "{n} item(s) this host cannot carry: state that limit in the receipt."
 )
+# A missing item names at most this many targets (check-result ``missing_item.target_refs``).
+_MAX_ITEM_REFS: Final = 4
 
 
 def overall_next_instruction(action: str, status: str, *, limitation_requests: bool = False) -> str:
@@ -524,8 +535,34 @@ def _subject_refs(value: object) -> tuple[str, ...]:
     return tuple(ref for ref in _refs(value) if _SUBJECT_REF.fullmatch(ref) is not None)
 
 
-def _ref_list(refs: tuple[str, ...]) -> str:
-    return ",".join(refs) if refs else "(no packet ref)"
+def _agent_next_item(label: str, refs: tuple[str, ...], shown: int) -> tuple[str, ...]:
+    """One supply item naming at most ``shown`` of its targets, then its bare target count."""
+
+    if not refs:
+        return (f"{label}(no packet ref).",)
+    count = f"{label}{len(refs)} target(s)."
+    shown = min(shown, len(refs))
+    if shown <= 0:
+        return (count,)
+    more = f" (+{len(refs) - shown} more)" if shown < len(refs) else ""
+    return (f"{label}{','.join(refs[:shown])}{more}.", count)
+
+
+def _compose_agent_next(parts: list[Part], items: list[tuple[int, str, tuple[str, ...]]]) -> str:
+    """Compose under the bound, naming the same number of targets for every supply item.
+
+    The largest per-item bound at which every item's list fits wins; an item that could not
+    take it would read only its count while an earlier one named all of its targets.
+    """
+
+    shown = min(max((len(refs) for _index, _label, refs in items), default=0), _MAX_ITEM_REFS)
+    while True:
+        for index, label, refs in items:
+            parts[index] = Part(_agent_next_item(label, refs, shown), required=True, priority=1)
+        composition = compose_parts(parts, MAX_AGENT_NEXT_BYTES)
+        if shown <= 0 or not {index for index, _label, _refs in items} & set(composition.shortened):
+            return composition.text
+        shown -= 1
 
 
 def render_agent_next(
@@ -556,6 +593,8 @@ def _render_agent_next(overall_next: object, missing: object, *, limitation_requ
     ):
         return ""
     targets = _subject_refs(_field(overall_next, "target_refs"))
+    # Supply items as (part index, label, refs): ``_compose_agent_next`` bounds their target lists.
+    items: list[tuple[int, str, tuple[str, ...]]] = []
     parts: list[Part] = [Part((f"Next: {action} ({status}).",), required=True, priority=0)]
     if action == "supply_missing_input":
         rows = tuple(
@@ -570,23 +609,27 @@ def _render_agent_next(overall_next: object, missing: object, *, limitation_requ
                 (_AGENT_NEXT_SUPPLY_LEAD, _AGENT_NEXT_SUPPLY_LEAD_SHORT), required=True, priority=4
             )
         )
-        # Every item is named first (its refs, else their count); each kind's instruction then
-        # takes the room that remains, once per kind, in item order.
+        # Room is reserved before anything expands (W6, #1107): every item's kind and target
+        # count, one direction per requested kind (its shortest variant from the shared table) and
+        # every disclosed limit count are required. Target lists then expand, every item to the
+        # same bound with an explicit "+N more", and only after them the longer directions. A
+        # direction is never dropped to make room for a target id: the ids also ride in
+        # ``missing_for_assessment``, the direction only here.
         instructed: set[str] = set()
         for index, (kind, _availability, refs) in enumerate(own, start=1):
-            parts.append(
-                Part(
-                    (
-                        f"({index}) {kind} for {_ref_list(refs)}.",
-                        f"({index}) {kind} for {len(refs)} target(s).",
-                    ),
-                    required=True,
-                    priority=1,
-                )
-            )
-            if kind not in instructed:
+            label = f"({index}) {kind} for "
+            items.append((len(parts), label, refs))
+            parts.append(Part(_agent_next_item(label, refs, 0), required=True, priority=1))
+            directions = _PUBLISH_EXACTLY.get(kind, ())
+            if directions and kind not in instructed:
                 instructed.add(kind)
-                parts.append(Part((f"How: {publish_exactly(kind)}",), priority=2))
+                parts.append(
+                    Part(
+                        tuple(f"How: {direction}" for direction in directions),
+                        required=True,
+                        priority=2,
+                    )
+                )
         if not own and targets:
             parts.append(
                 Part(list_variants("Targets: ", targets, joiner=",", suffix="."), priority=1)
@@ -596,11 +639,14 @@ def _render_agent_next(overall_next: object, missing: object, *, limitation_requ
             parts.append(
                 Part(
                     (_AGENT_NEXT_LIMIT.format(n=limits), _AGENT_NEXT_LIMIT_SHORT.format(n=limits)),
+                    required=True,
                     priority=2,
                 )
             )
         if unavailable:
-            parts.append(Part((_AGENT_NEXT_UNAVAILABLE.format(n=unavailable),), priority=2))
+            parts.append(
+                Part((_AGENT_NEXT_UNAVAILABLE.format(n=unavailable),), required=True, priority=2)
+            )
     else:
         instruction = overall_next_instruction(
             action, status, limitation_requests=limitation_requests
@@ -626,7 +672,7 @@ def _render_agent_next(overall_next: object, missing: object, *, limitation_requ
                 priority=5,
             )
         )
-    text = compose_parts(parts, MAX_AGENT_NEXT_BYTES).text
+    text = _compose_agent_next(parts, items)
     if "\n" in text or not text.isascii() or not text.isprintable():
         return ""
     return text
