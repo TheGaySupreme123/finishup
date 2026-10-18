@@ -2384,6 +2384,46 @@ their smaller excerpt budget. If the remaining protected material cannot fit, eg
 the packet; a reduced floor is not used to manufacture a successful dispatch. This is packet
 coverage, not proof that the specification is complete or the verification establishes correctness.
 
+### The reviewer loop: one read or the final judgment per turn (2026-10-19, issue #1118 unit 2)
+
+Status: accepted for the controller, broker and reply contract; provider wiring is unit 3 and the
+old in-check follow-up loop stays the active path until unit 4 replaces it.
+
+FinishUP owns a small verifying loop. Each model turn returns exactly one reply under
+`findings/reviewer-reply-1.0.0`: `read_packet_section`, `read_ledger` or `read_file` (the round-1
+broker inputs, as JSON text FinishUP interprets, never provider tool registrations), or
+`final_judgment`, the existing provider judgment validated by `normalize_judgment(...,
+require_part2=True)`. The root is an object wrapper; with no read allowance left the same root
+offers only `FinalReply`. Strict wire form comes from `strict_output_schema`; the decoder still
+enforces what it drops, and reads a strict null as the field's default.
+
+The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all, shared through
+the review job's step slots (`<job>:read:<n>`, reserved before the read runs, never refunded; a
+denied or empty read spends its slot; the same step with different arguments conflicts). After the
+cap only the final judgment is offered, and a read anyway ends the review incomplete with no
+observation. One format repair is allowed per review, and the malformed text is not echoed back. A
+second malformed reply, a failed or uncertain model turn, the shared deadline, or a binding that no
+longer holds ends the review incomplete. Before every continuation the loop rechecks local-only
+review, the route's policy refusal and every outside root the conversation holds bytes from, so a
+removed root ends it.
+
+Each read result is one or more candidate items through `PrivacyCoordinator.admit_reviewer_read`:
+the packet's own classification, category and data-class ceiling, never-send rules, owner-chosen
+credential heuristic and root binding. Cut points move clear of a recognized credential before a
+result is clipped. Packet and ledger reads cover the frozen case's rendered records, including items
+the bounded packet cut. Bytes the case never kept are `not_retained`. File reads use the trusted
+descriptor walk beneath a service-issued alias: the workspace (minus ignored, hidden,
+credential-named and excluded paths), an owner-admitted outside root limited to the task-declared
+subset, or a kept snapshot. Citations are checked against the union of the packet and the admitted
+results; a file result adds text only under the subject refs its alias names. An admitted result is
+not a channel grant: each exchange that carries it is admitted at the gateway on its own.
+
+The controller is adapted from mini-swe-agent's `DefaultAgent` (MIT, Kilian A. Lieret and Carlos
+E. Jimenez, `src/minisweagent/agents/default.py` at `40fa36522015a6bc6cf14411382b662b42083bf1`).
+Its copyright and permission notice is kept in `application/reviewer_loop.py`. Its shell
+environment, model framework, templating and trajectory logging are removed. The instruction leads
+with the goal, done condition, evidence, clues and constraints, and replaces the old packet-only
+sentences. The rest of the review rules are unchanged.
 
 ### Residual requests, linked supply and required-review limits (#1118 unit 4)
 

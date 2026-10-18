@@ -9954,6 +9954,36 @@ authentication; selected excerpts are in the built packet. These counts precede 
 minimization and do not prove provider delivery or code correctness. The record contains no
 content, paths, or content hashes.
 
+### Reviewer loop (issue #1118 unit 2)
+
+Not yet wired to a provider route (unit 3); the in-check follow-up loop stays active until unit 4.
+
+- Reply contract: `schemas/findings/reviewer-reply-1.0.0.schema.json`, built by
+  `adapters.providers.reviewer_reply.reviewer_reply_schema(*, reads_allowed, strict=False)` from
+  `protocol.models.ReviewerActionModel` (`ReviewerPacketActionModel`, `ReviewerLedgerActionModel`,
+  `ReviewerFileActionModel` over `Read*ArgsModel`) and the provider judgment `$defs`. Root
+  `{"reply": PacketAction | LedgerAction | FileAction | FinalReply}`; with `reads_allowed=False`
+  only `FinalReply`. `decode_reviewer_reply(parsed) -> ReviewerActionModel | SemanticJudgment`
+  raises `ReviewerReplyInvalid(code)` (`envelope_invalid`, `action_invalid`, `judgment_<stage>`).
+  `REVIEWER_LOOP_INSTRUCTION` is the loop's system text.
+- Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
+  deadline, history_admissible, final_reserve_seconds=30.0).run() -> ReviewOutcome(status,
+  judgment, reason, history, model_turns)`. `ReviewerModel.complete(history, schema, *, deadline)
+  -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)` for a
+  failed, refused or uncertain turn. Incomplete reasons: `format_invalid`, `read_limit`,
+  `deadline`, `turn_limit`, `authorization_changed`, or the facade's code. At most five model turns.
+- Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit, scope,
+  provider_binding, request_id)`; `execute(action) -> str` returns the round-1 result envelope
+  (`tool_ref` `<job>:read:<n>`, `status`, closed `reason`, `citable_refs`, `result_utf8_bytes`,
+  `result_digest`, `bytes_remaining`, `data`). `ReadRoot(alias, path | snapshot, input_root,
+  declared, excluded, subject_refs, standing, baseline, refuse)` is a service-issued alias.
+  `ReviewerStepStore.reserve/record/usage` holds the step slots (`MemoryStepStore` in process).
+  `citations(packet_refs, packet_text)` returns the union fence for `validate_semantic_judgment`.
+  `history_roots` lists every outside root the conversation holds bytes from.
+- Admission: `PrivacyCoordinator.admit_reviewer_read(candidate) -> dict[str, bytes] | str` and
+  `egress.reviewer_history_admissible(policy, binding, scope_kind, roots) -> bool`. Reads:
+  `task_input_read.read_text_beneath`, `list_beneath` and `clear_cut`.
+
 ### Review dialogue record (issue #905)
 
 `finding_recorded` `1.3.0` (unreleased on the 0.3 line, extended in place) admits two optional

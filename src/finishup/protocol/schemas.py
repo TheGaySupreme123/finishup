@@ -64,7 +64,7 @@ __all__ = [
 SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"
-SCHEMA_MEMBER_COUNT: Final = 232  # n6 item 4: check-result 1.5.0, check-recorded 1.5.0
+SCHEMA_MEMBER_COUNT: Final = 233  # #1118 unit 2: reviewer-reply 1.0.0
 
 _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
 _SCHEMA_MEDIA_TYPE: Final = "application/schema+json"
@@ -521,7 +521,8 @@ def _derive_role(path: str) -> SchemaArtifactRole:
     if directory == "findings":
         if filename.startswith("finding-"):
             return SchemaArtifactRole.FINDING
-        if filename.startswith("provider-judgment-"):
+        # The reviewer reply carries the provider judgment as its final branch (#1118).
+        if filename.startswith(("provider-judgment-", "reviewer-reply-")):
             return SchemaArtifactRole.PROVIDER_JUDGMENT
         if filename.startswith(("semantic-provenance-", "runtime-attempt-evidence-")):
             return SchemaArtifactRole.SEMANTIC_PROVENANCE
@@ -826,7 +827,7 @@ def _load_catalog_state() -> _CatalogState:
     )
     request_versions_dict = _request_result_versions(entries)
     event_versions_dict = _event_payload_versions(entries)
-    if len(request_versions_dict) != 54 or len(event_versions_dict) != 29:
+    if len(request_versions_dict) != 55 or len(event_versions_dict) != 29:
         _protocol_error("schema_catalog_incomplete")
 
     catalog = SchemaCatalog(
@@ -1035,7 +1036,7 @@ def _build_manifest_index() -> _ManifestIndex:
         id_by_identity[(name, version)] = expected_id
         entries.append((name, version, member.schema_kind, member.artifact_role))
     request_versions = _request_result_versions(entries)
-    if len(request_versions) != 54 or len(_event_payload_versions(entries)) != 29:
+    if len(request_versions) != 55 or len(_event_payload_versions(entries)) != 29:
         _protocol_error("schema_catalog_incomplete")
     return _ManifestIndex(
         member_bytes=MappingProxyType(member_bytes),

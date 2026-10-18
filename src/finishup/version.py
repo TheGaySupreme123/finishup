@@ -119,8 +119,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # review-mode vectors (CAN-020). n6 item 4: +2 schemas (check-result 1.5.0,
 # check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021). #1084: +1
 # canonical server-filled publish and brief status vectors (CAN-022). W6 #1107: +1 canonical
-# check agent_next vectors (AGN-001), +1 status check_outcome vector (AGN-002).
-REVIEWED_RESOURCE_COUNT: Final = 318
+# check agent_next vectors (AGN-001), +1 status check_outcome vector (AGN-002). #1118 unit 2: +1
+# reviewer-reply 1.0.0 schema.
+REVIEWED_RESOURCE_COUNT: Final = 319
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -173,6 +174,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("respond-result", "1.1.0"),
     ("review-packet-row", "2.0.0"),
     ("review-result", "7.0.0"),
+    ("reviewer-reply", "1.0.0"),
     ("routine-read-summary", "1.0.0"),
     ("runtime-attempt-evidence", "1.1.0"),
     ("semantic-provenance", "1.2.0"),

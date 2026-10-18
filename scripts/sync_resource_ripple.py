@@ -230,6 +230,8 @@ def _write_pass(repo_root: Path) -> bool:
             "--only",
             "findings/provider-judgment-1.2.0.schema.json",
             "--only",
+            "findings/reviewer-reply-1.0.0.schema.json",
+            "--only",
             "operations/check-result-1.4.0.schema.json",
             "--only",
             "operations/read-guidance-request-1.1.0.schema.json",
