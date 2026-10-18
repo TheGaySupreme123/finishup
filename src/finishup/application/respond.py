@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Final, Literal, Protocol, cast
 
 from finishup.application.ledger_snapshot import projection_for_records
@@ -88,7 +89,12 @@ from finishup.protocol.coverage import (
     coverage_for_channel,
     coverage_to_json,
 )
-from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.protocol.errors import (
+    REASON_CODE_CONTINUATIONS,
+    ProtocolValueError,
+    PublicErrorCode,
+    PublicOperationError,
+)
 from finishup.protocol.ids import IdKind
 from finishup.protocol.models import (
     RespondAcceptedEventModel,
@@ -193,6 +199,61 @@ def _error(
     if blocking_reasons:
         details["blocking_reasons"] = blocking_reasons
     return PublicOperationError(code, message, retryable, safe_details=details or None)
+
+
+# n7 RC3b: payload fields a ``ProtocolValueError`` may name, mapped to their request pointers.
+# Frozen names only: ``exc.field`` is re-checked here, so caller data never reaches a pointer.
+_RESPONSE_FIELD_POINTERS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "duplicate_of_finding_id": "/duplicate_of_finding_id",
+        "evidence_refs": "/evidence_refs",
+        "reason": "/reason",
+        "waiver_expiry": "/waiver_expiry",
+    }
+)
+_RESPONSE_PAYLOAD_REFUSAL: Final = (
+    "The response is invalid: safe_details.reason_code names the rule it breaks and field, when "
+    "present, the request field. Nothing was recorded. Correct it and send the response again"
+    " under a new request_id."
+)
+# The corrective rule for the reasons the response payload raises, in the message itself: Codex
+# reads the structured error body, Claude Code and Cursor its text summary, and both carry it.
+_RESPONSE_PAYLOAD_HINTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "duplicate_set_member": " List each evidence_refs id once.",
+        "response_fields_invalid": (
+            " acknowledged_not_done, provenance_disputed, rejected, reopened, self_verified and"
+            " waived need a reason; self_verified needs evidence_refs; only waived takes"
+            " waiver_scope (required) and waiver_expiry; duplicate_of needs a"
+            " duplicate_of_finding_id naming another finding."
+        ),
+        "set_member_not_ascii": " Each evidence_refs member is an evd_ or res_ id.",
+        "unsorted_set_field": " List evidence_refs in ascending order.",
+    }
+)
+
+
+def _payload_refusal(exc: ProtocolValueError) -> PublicOperationError:
+    """The refusal for a response payload the domain rejected before anything was recorded.
+
+    It names the frozen reason token and, through the allowlist above, the request pointer, so
+    an agent corrects the one field instead of guessing (n7: 53 bare ``INVALID_REQUEST`` answers).
+    A reason without a directive of its own gets the caller-correction one, as ``publish_work``
+    does for the same situation; a mapped reason (set order) keeps its own.
+    """
+
+    field = _RESPONSE_FIELD_POINTERS.get(exc.field) if type(exc.field) is str else None
+    details: dict[str, str] = {"reason_code": exc.reason_code}
+    if field is not None:
+        details["field"] = field
+    if exc.reason_code not in REASON_CODE_CONTINUATIONS:
+        details["continuation"] = "input_correction_new_identity"
+    return PublicOperationError(
+        PublicErrorCode.INVALID_REQUEST,
+        _RESPONSE_PAYLOAD_REFUSAL + _RESPONSE_PAYLOAD_HINTS.get(exc.reason_code, ""),
+        False,
+        safe_details=details,
+    )
 
 
 def _mapping(value: JsonValue) -> Mapping[str, JsonValue]:
@@ -1167,38 +1228,43 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                     field="/evidence_refs",
                 )
             coverage = coverage_for_channel(_channel(request))
-            payload = ResponseRecordedPayload(
-                finding_id(request.finding_id),
-                finding_frontier,
-                ResponseDisposition(request.disposition),
-                request.reason,
-                None if request.waiver_scope is None else WaiverScope(request.waiver_scope),
-                None
-                if request.waiver_expiry is None
-                else timestamp_from_string(request.waiver_expiry),
-                tuple(
-                    evidence_id(ref) if ref.startswith("evd_") else result_id(ref)
-                    for ref in (() if request.evidence_refs is None else request.evidence_refs)
-                ),
-                None
-                if request.duplicate_of_finding_id is None
-                else finding_id(request.duplicate_of_finding_id),
-            )
-            now = app.clock.now_utc()
-            draft = EventDraft(
-                event_id(app.ids.new(IdKind.EVENT)),
-                EventSchema(
-                    "response_recorded",
-                    RESPONSE_EVENT_SCHEMA_VERSION
-                    if payload.disposition in RESPONSE_V1_1_DISPOSITIONS
-                    else "1.0.0",
-                ),
-                timestamp_from_datetime(now),
-                (finding_record.source_event_id,),
-                payload,
-                (),
-                payload.evidence_refs,
-            )
+            try:
+                payload = ResponseRecordedPayload(
+                    finding_id(request.finding_id),
+                    finding_frontier,
+                    ResponseDisposition(request.disposition),
+                    request.reason,
+                    None if request.waiver_scope is None else WaiverScope(request.waiver_scope),
+                    None
+                    if request.waiver_expiry is None
+                    else timestamp_from_string(request.waiver_expiry),
+                    tuple(
+                        evidence_id(ref) if ref.startswith("evd_") else result_id(ref)
+                        for ref in (() if request.evidence_refs is None else request.evidence_refs)
+                    ),
+                    None
+                    if request.duplicate_of_finding_id is None
+                    else finding_id(request.duplicate_of_finding_id),
+                )
+                now = app.clock.now_utc()
+                draft = EventDraft(
+                    event_id(app.ids.new(IdKind.EVENT)),
+                    EventSchema(
+                        "response_recorded",
+                        RESPONSE_EVENT_SCHEMA_VERSION
+                        if payload.disposition in RESPONSE_V1_1_DISPOSITIONS
+                        else "1.0.0",
+                    ),
+                    timestamp_from_datetime(now),
+                    (finding_record.source_event_id,),
+                    payload,
+                    (),
+                    payload.evidence_refs,
+                )
+            except ProtocolValueError as exc:
+                # Nothing is recorded before the append below, so this is certainly a refusal of
+                # the caller's response; the outer catch-all may also fire after the append.
+                raise _payload_refusal(exc) from exc
             payload_bytes = canonical_encode(encode_payload(payload))
             metadata = ObjectMetadata(
                 ObjectKind.EVENT_PAYLOAD,
@@ -1250,6 +1316,10 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
             )
         return await _public_result(request, runtime, result, answered_from)
     except ProtocolValueError as exc:
-        raise _error(PublicErrorCode.INVALID_REQUEST, "The response request is invalid.") from exc
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            "The response request is invalid.",
+            reason_code=exc.reason_code,
+        ) from exc
     finally:
         await app.runtime.release(runtime)

@@ -17,6 +17,10 @@ compute the same values from the same body:
 * the reference sets an explicit ``(family, version, field)`` allowlist names are sorted and
   de-duplicated instead of refused. Every other array, including free text that happens to look
   like ids, is kept exactly as sent.
+* a required payload reference set whose only meaning when omitted is the empty set (a 1.1.0
+  claim's ``limitation_refs`` and ``supersedes_claim_refs``; a plan's ``obligation_refs`` beside
+  ``no_obligations_reason``) is filled with ``[]`` instead of refused (n7 RC3a). Every other
+  required list keeps its exact refusal.
 
 The operation identity is never derived here. ``request_id`` stays caller- or host-owned: the MCP
 bridge and the CLI mint a fresh one for a call that omits it and name it in every result and
@@ -43,12 +47,15 @@ from finishup.protocol.errors import ProtocolValueError
 __all__ = [
     "FILLABLE_DRAFT_FIELDS",
     "FILLABLE_REQUEST_FIELDS",
+    "PAYLOAD_EMPTY_SET_DEFAULTS",
     "PAYLOAD_SET_FIELDS",
     "DraftMintScope",
     "ServerFilled",
     "ServerFilledDraft",
+    "canonical_reference_set",
     "canonicalize_publish_sets",
     "complete_draft_envelope",
+    "default_empty_payload_sets",
     "drop_ignored_decision_ids",
     "mint_draft_event_id",
     "normalize_publish_drafts",
@@ -111,6 +118,26 @@ PAYLOAD_SET_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = MappingPro
         ("plan_published", "1.1.0"): frozenset({"obligation_refs"}),
         ("result_recorded", "1.0.0"): frozenset({"evidence_refs"}),
     }
+)
+# Payload reference sets whose omission has exactly one admissible meaning, the empty set (n7
+# RC3a). Keyed by the exact ``(family, version)`` an agent publishes. Each entry is
+# ``(field, condition)``: condition ``None`` fills whenever the field is absent; a sibling key name
+# fills only when that key is present (beside ``no_obligations_reason`` a plan's only admissible
+# ``obligation_refs`` is empty). Every other required list (``supporting_refs``, a revision's
+# ``obligation_changes``, a plan's ``obligation_refs`` without a reason) keeps its exact refusal,
+# because there an omission is likelier a forgotten value than an empty one. A sent value is never
+# replaced.
+PAYLOAD_EMPTY_SET_DEFAULTS: Final[Mapping[tuple[str, str], tuple[tuple[str, str | None], ...]]] = (
+    MappingProxyType(
+        {
+            ("claim_recorded", "1.1.0"): (
+                ("limitation_refs", None),
+                ("supersedes_claim_refs", None),
+            ),
+            ("plan_published", "1.0.0"): (("obligation_refs", "no_obligations_reason"),),
+            ("plan_published", "1.1.0"): (("obligation_refs", "no_obligations_reason"),),
+        }
+    )
 )
 # Payload field whose value the envelope ``evidence_refs`` must mirror, by family.
 _EVIDENCE_MIRROR_FAMILIES: Final[frozenset[str]] = frozenset(
@@ -220,21 +247,70 @@ def drop_ignored_decision_ids(drafts: object) -> object:
     return adapted if isinstance(sequence, list) else tuple(adapted)
 
 
+def _defaulted_payload(draft: Mapping[object, object]) -> Mapping[object, object]:
+    schema_key = _schema_key(draft.get("schema"))
+    defaults = PAYLOAD_EMPTY_SET_DEFAULTS.get(schema_key) if schema_key is not None else None
+    payload: object = draft.get("payload")
+    if not defaults or not isinstance(payload, Mapping):
+        return draft
+    source = cast(Mapping[object, object], payload)
+    rebuilt: dict[object, object] | None = None
+    for field, condition in defaults:
+        if field in source or (condition is not None and condition not in source):
+            continue
+        rebuilt = dict(source) if rebuilt is None else rebuilt
+        rebuilt[field] = ()
+    if rebuilt is None:
+        return draft
+    replacement: dict[object, object] = dict(draft)
+    replacement["payload"] = rebuilt
+    return replacement
+
+
+def default_empty_payload_sets(drafts: object) -> object:
+    """Fill an omitted empty reference set :data:`PAYLOAD_EMPTY_SET_DEFAULTS` names (n7 RC3a).
+
+    Like set canonicalization this changes no assertion: the empty set is the field's only meaning
+    when absent (for a 1.1.0 claim, the ``claim_recorded/1.0.0`` meaning), and the domain's own
+    invariants still judge it (``limitation_refs_complete`` refuses a claim that leaves a live
+    non-success result out). It therefore enters neither ``server_filled`` nor the request
+    identity as a marker: an omitted set and an explicit ``[]`` are one request (one digest)
+    (ADR-050 decision 7). The same object is returned when nothing changes.
+    """
+
+    if not isinstance(drafts, list | tuple):
+        return drafts
+    sequence = cast(Sequence[object], drafts)
+    adapted: list[object] = []
+    changed = False
+    for draft in sequence:
+        replacement = draft
+        if isinstance(draft, Mapping):
+            replacement = _defaulted_payload(cast(Mapping[object, object], draft))
+            changed = changed or replacement is not draft
+        adapted.append(replacement)
+    if not changed:
+        return cast(object, drafts)
+    return adapted if isinstance(drafts, list) else tuple(adapted)
+
+
 def normalize_publish_drafts(drafts: object) -> object:
     """Apply every meaning-preserving draft normalization, in the order the request model does.
 
-    ``decision_id`` keys are dropped (#1049) and allowlisted reference sets canonicalized (#1084).
-    The same object is returned when nothing changes.
+    ``decision_id`` keys are dropped (#1049), allowlisted omitted empty payload sets filled (n7
+    RC3a) and allowlisted reference sets canonicalized (#1084). The same object is returned when
+    nothing changes.
     """
 
-    return canonicalize_publish_sets(drop_ignored_decision_ids(drafts))
+    return canonicalize_publish_sets(default_empty_payload_sets(drop_ignored_decision_ids(drafts)))
 
 
-def _canonical_reference_set(value: object) -> object:
+def canonical_reference_set(value: object) -> object:
     """Sort and de-duplicate one array of typed references; anything else is returned as is.
 
-    Only called for a field the contract defines as a reference set. A member that is not a typed
-    id leaves the array untouched, so the domain decoder reports the exact member error.
+    Only called for a field the contract defines as a reference set (``publish_work`` drafts and
+    ``respond`` ``evidence_refs``). A member that is not a typed id leaves the array untouched, so
+    the schema or the domain decoder reports the exact member error.
     """
 
     if not isinstance(value, list | tuple):
@@ -265,7 +341,7 @@ def _canonical_draft_sets(draft: Mapping[object, object]) -> Mapping[object, obj
     for key in _ENVELOPE_SETS:
         if key not in draft:
             continue
-        canonical = _canonical_reference_set(draft[key])
+        canonical = canonical_reference_set(draft[key])
         if canonical is not draft[key]:
             replacement = dict(draft) if replacement is None else replacement
             replacement[key] = canonical
@@ -279,7 +355,7 @@ def _canonical_draft_sets(draft: Mapping[object, object]) -> Mapping[object, obj
             if key not in source:
                 continue
             member = source[key]
-            canonical = _canonical_reference_set(member)
+            canonical = canonical_reference_set(member)
             if canonical is not member:
                 rebuilt = dict(source) if rebuilt is None else rebuilt
                 rebuilt[key] = canonical

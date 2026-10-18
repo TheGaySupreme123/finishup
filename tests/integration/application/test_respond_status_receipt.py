@@ -9210,3 +9210,236 @@ async def test_an_emptied_deliverable_tells_the_same_story_on_every_surface(
         assert why in rendered["text"].human_text
     finally:
         register_command_identity_key(None)
+
+
+# --- n7 RC3b (issue #1103): respond evidence_refs is a reference set -----------------------------
+
+
+async def _finding_with_two_evidence(
+    app: Application, *, seed: int
+) -> tuple[StartInternalResult, CheckCommitResult, PublishWorkInternalResult, str, str]:
+    """One finding plus two evidence records published after it (the n7 respond shape)."""
+
+    started, checked, _obligation = await _bootstrap_finding(app, seed=seed)
+    low, high = protocol_id("evd_", seed + 41), protocol_id("evd_", seed + 42)
+    drafts: list[dict[str, JsonValue]] = [
+        {
+            "schema": {"name": "evidence_recorded", "version": "1.0.0"},
+            "payload": {
+                "evidence_id": evidence,
+                "evidence_kind": "test_result",
+                "strength": "metadata_only",
+                "description": "12 passed",
+                "observed_at": "2026-07-19T12:00:05.000Z",
+            },
+        }
+        for evidence in (low, high)
+    ]
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 40)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "event_drafts": drafts,
+            }
+        )
+    )
+    assert isinstance(published, PublishWorkInternalResult)
+    return started, checked, published, low, high
+
+
+def _rejection_wire(
+    started: StartInternalResult,
+    checked: CheckCommitResult,
+    published: PublishWorkInternalResult,
+    request_id: str,
+    evidence_refs: list[str],
+) -> dict[str, JsonValue]:
+    return {
+        **_request_base(request_id),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "expected_frontier": _frontier(published.result_frontier),
+        "finding_id": checked.findings[0].finding_id,
+        "finding_frontier": _frontier(checked.result_frontier),
+        "disposition": "rejected",
+        "reason": "The finding names work outside this task.",
+        "evidence_refs": cast(JsonValue, evidence_refs),
+    }
+
+
+async def _response_events(runtime: _WorkflowRuntime, session_id: str) -> tuple[Any, ...]:
+    ledger, _objects = next(iter(runtime.resources.values()))
+    return tuple(
+        [
+            row
+            async for row in ledger.load_events(session_id)
+            if row.schema.name == "response_recorded"
+        ]
+    )
+
+
+async def test_unsorted_evidence_refs_are_accepted_and_recorded_sorted() -> None:
+    """n7: 53 answers listing evidence out of order were refused with a reason-free error."""
+
+    app, runtime, _ = _build_app(seed_offset=103)
+    started, checked, published, low, high = await _finding_with_two_evidence(app, seed=10300)
+    wire = _rejection_wire(
+        started, checked, published, protocol_id("req_", 10350), [high, low, high]
+    )
+    request = RespondRequest.model_validate(wire)
+    assert request.evidence_refs == (low, high)
+    answered = await app.respond(request)
+    assert answered.response.disposition == "rejected"
+    assert tuple(item.reference_id for item in answered.response.evidence) == (low, high)
+    (event,) = await _response_events(runtime, started.session_id)
+    assert event.payload.evidence_refs == (low, high)
+    assert event.evidence_refs == (low, high)
+
+
+async def test_unsorted_and_sorted_answers_are_one_request() -> None:
+    app, runtime, _ = _build_app(seed_offset=104)
+    started, checked, published, low, high = await _finding_with_two_evidence(app, seed=10400)
+    request_id = protocol_id("req_", 10450)
+    first = await app.respond(
+        RespondRequest.model_validate(
+            _rejection_wire(started, checked, published, request_id, [low, high])
+        )
+    )
+    # The same answer listed in another order, with a repeat, under the same request_id is the
+    # same request: it replays the committed answer instead of conflicting or appending again.
+    replayed = await app.respond(
+        RespondRequest.model_validate(
+            _rejection_wire(started, checked, published, request_id, [high, low, low])
+        )
+    )
+    assert replayed.accepted_event == first.accepted_event
+    assert replayed.result_frontier == first.result_frontier
+    assert len(await _response_events(runtime, started.session_id)) == 1
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "field", "details"),
+    [
+        (
+            "unsorted_set_field",
+            "evidence_refs",
+            # The reason's own directive is kept; the pointer is the request field.
+            {
+                "continuation": "sorted_set_required",
+                "field": "/evidence_refs",
+                "reason_code": "unsorted_set_field",
+            },
+        ),
+        (
+            "response_fields_invalid",
+            None,
+            {
+                "continuation": "input_correction_new_identity",
+                "reason_code": "response_fields_invalid",
+            },
+        ),
+        (
+            # A field outside the frozen pointer table is never echoed.
+            "set_member_not_ascii",
+            "finding_frontier",
+            {
+                "continuation": "input_correction_new_identity",
+                "reason_code": "set_member_not_ascii",
+            },
+        ),
+    ],
+)
+async def test_a_payload_refusal_names_its_reason_and_field(
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: str,
+    field: str | None,
+    details: dict[str, str],
+) -> None:
+    import finishup.application.respond as respond_module
+    from finishup.mcp.errors import tool_error_envelope
+    from finishup.mcp.server import result_from_public_model
+    from finishup.protocol.models import RespondResult
+
+    app, runtime, _ = _build_app(seed_offset=105)
+    started, checked, published, low, _high = await _finding_with_two_evidence(app, seed=10500)
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise ProtocolValueError(reason_code, field=field)
+
+    monkeypatch.setattr(respond_module, "ResponseRecordedPayload", refuse)
+    with pytest.raises(PublicOperationError) as caught:
+        await app.respond(
+            RespondRequest.model_validate(
+                _rejection_wire(started, checked, published, protocol_id("req_", 10550), [low])
+            )
+        )
+    error = caught.value
+    assert error.code is PublicErrorCode.INVALID_REQUEST
+    assert error.retryable is False
+    assert dict(error.safe_details or {}) == details
+    assert error.message.startswith(
+        "The response is invalid: safe_details.reason_code names the rule it breaks"
+    )
+    assert "Nothing was recorded." in error.message
+    # Nothing was appended for the refused answer.
+    assert await _response_events(runtime, started.session_id) == ()
+
+    # Codex reads the structured body, Claude Code the text: both carry the reason (W6/#579).
+    bound = error.bind_correlation_id("err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    envelope = tool_error_envelope(bound, request_id=protocol_id("req_", 10550))
+    for host in ("codex", "claude"):
+        rendered = result_from_public_model(
+            RespondResult.model_validate(envelope), host_profile=host
+        )
+        assert rendered.isError is True
+        structured = cast(dict[str, Any], rendered.structuredContent)
+        assert structured["error"]["safe_details"] == details
+        assert structured["error"]["message"] == error.message
+        text = cast(Any, rendered.content[0]).text
+        pointer = details.get("field")
+        expected = f"{reason_code} at {pointer}" if pointer is not None else reason_code
+        assert f"Reason: {expected}" in text
+        assert "The finding names work outside this task." not in text
+
+
+async def test_an_unsorted_set_refusal_carries_its_corrective_hint() -> None:
+    app, _runtime, _ = _build_app(seed_offset=106)
+    started, checked, published, low, high = await _finding_with_two_evidence(app, seed=10600)
+    # A request copied without validation reaches the domain unsorted: the refusal still says why.
+    request = RespondRequest.model_validate(
+        _rejection_wire(started, checked, published, protocol_id("req_", 10650), [low, high])
+    ).model_copy(update={"evidence_refs": (high, low)})
+    with pytest.raises(PublicOperationError) as caught:
+        await app.respond(request)
+    assert dict(caught.value.safe_details or {}) == {
+        "continuation": "sorted_set_required",
+        "field": "/evidence_refs",
+        "reason_code": "unsorted_set_field",
+    }
+    assert caught.value.message.endswith(" List evidence_refs in ascending order.")
+
+
+async def test_the_catch_all_keeps_its_message_and_names_the_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.application.respond as respond_module
+
+    app, _runtime, _ = _build_app(seed_offset=107)
+    started, checked, published, low, _high = await _finding_with_two_evidence(app, seed=10700)
+
+    async def broken(*_args: object, **_kwargs: object) -> object:
+        raise ProtocolValueError("stored_result_shape_invalid")
+
+    # Shaping the result runs after the append, so this refusal may not claim nothing was recorded.
+    monkeypatch.setattr(respond_module, "_public_result", broken)
+    with pytest.raises(PublicOperationError) as caught:
+        await app.respond(
+            RespondRequest.model_validate(
+                _rejection_wire(started, checked, published, protocol_id("req_", 10750), [low])
+            )
+        )
+    assert caught.value.code is PublicErrorCode.INVALID_REQUEST
+    assert caught.value.message == "The response request is invalid."
+    assert (caught.value.safe_details or {}).get("reason_code") == "stored_result_shape_invalid"
