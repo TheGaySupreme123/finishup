@@ -31,6 +31,7 @@ from finishup.kernel.observed_failures import (
     command_identity,
     observed_event_ids_from_records,
     observed_failure_states,
+    superseding_witnesses,
 )
 from finishup.kernel.reducers import build_replay_index, replay
 
@@ -506,3 +507,149 @@ def test_a_stream_corrected_unknown_hook_result_is_not_a_claim_limitation() -> N
         assert len(limiting) == expected_limiting
         if expected_limiting:
             assert limiting == (corrected,)
+
+
+# --- segment certification (#1104) -----------------------------------------------------------
+
+
+def test_a_passing_and_chain_containing_the_failed_command_supersedes_it() -> None:
+    ledger = ObservedLedger()
+    ledger.fail("pytest -q tests/x.py")
+    ledger.passes("cd /app && pytest -q tests/x.py")
+    ledger.claim(versioned=True)
+    assert omissions(ledger) == ()
+    state = replay(ledger.prefix)
+    observed = observed_event_ids_from_records(ledger.prefix)
+    assert set(observed_failure_states(state, observed, through=state.frontier).values()) == {
+        ObservedFailureState.SUPERSEDED
+    }
+
+
+@pytest.mark.parametrize(
+    "later", ["cd /app; pytest -q tests/x.py", "pytest -q tests/x.py | tail -5"]
+)
+def test_a_masked_composition_never_certifies_a_segment(later: str) -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q tests/x.py")
+    ledger.passes(later)
+    ledger.claim()
+    assert omitted_results(ledger) == (failed,)
+
+
+@pytest.mark.parametrize(
+    "later",
+    [
+        "exec true && pytest -q tests/x.py",
+        "exit 0 && pytest -q tests/x.py",
+        "return 0 && pytest -q tests/x.py",
+        "eval true && pytest -q tests/x.py",
+    ],
+)
+def test_a_chain_that_never_reached_the_failed_command_does_not_supersede_it(later: str) -> None:
+    """PR #1116 review: ``exec true && pytest -q`` exits zero without running ``pytest -q``
+    (``exec`` replaces the shell, ``exit``/``return`` end it, ``eval`` runs unseen text), so its
+    success proves nothing about the earlier failure."""
+
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q tests/x.py")
+    ledger.passes(later)
+    ledger.claim()
+    assert omitted_results(ledger) == (failed,)
+
+
+def test_a_failed_chain_is_superseded_only_by_its_own_whole_command() -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("cd /app && pytest -q")
+    ledger.passes("pytest -q")
+    ledger.claim()
+    assert omitted_results(ledger) == (failed,)
+
+    rerun = ObservedLedger()
+    rerun.fail("cd /app && pytest -q")
+    rerun.passes("cd /app && pytest -q")
+    rerun.claim(versioned=True)
+    assert omissions(rerun) == ()
+
+
+def test_canonical_commitments_never_retire_a_failure() -> None:
+    """``python3 -m pytest`` canonicalizes to ``pytest`` for planned-verification matching, but
+    canonical commitments are domain-separated from command identities."""
+
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q tests/x.py")
+    ledger.passes("python3 -m pytest -q tests/x.py")
+    ledger.claim()
+    assert omitted_results(ledger) == (failed,)
+
+
+def test_witness_is_the_earliest_certifying_success() -> None:
+    chain = frozenset({_A})
+    runs = (
+        _run(1, ResultOutcome.FAILURE, _A),
+        ObservedRun("r2", 2, ResultOutcome.SUCCESS, _B, certifies=chain),
+        _run(3, ResultOutcome.SUCCESS, _A),
+        _run(4, ResultOutcome.FAILURE, _B),
+    )
+    assert classify_observed_runs(runs)["r1"] is ObservedFailureState.SUPERSEDED
+    assert superseding_witnesses(runs) == {"r1": "r2"}
+
+
+def test_a_failure_never_uses_its_certified_segments() -> None:
+    runs = (
+        _run(1, ResultOutcome.FAILURE, _A),
+        ObservedRun("r2", 2, ResultOutcome.FAILURE, _B, certifies=frozenset({_A})),
+    )
+    assert classify_observed_runs(runs)["r1"] is ObservedFailureState.LIVE
+    assert superseding_witnesses(runs) == {}
+
+
+def test_certified_identities_are_bounded_keyed_commitments() -> None:
+    with pytest.raises(ValueError, match="observed_run_invalid"):
+        ObservedRun("r1", 1, ResultOutcome.SUCCESS, _A, certifies=frozenset({"pytest -q"}))
+    with pytest.raises(ValueError, match="observed_run_invalid"):
+        ObservedRun("r1", 1, ResultOutcome.SUCCESS, _A, certifies={_B})  # type: ignore[arg-type]
+
+
+# --- a stopped own background job (#1104) -----------------------------------------------------
+
+_SERVER = "python app.py & sleep 2; curl -s localhost:8000; kill $!; wait $!"
+
+
+@pytest.mark.parametrize(("exit_status", "omitted"), [(143, False), (1, True), (137, True)])
+def test_own_job_stopped_failure_needs_no_limitation_ref(exit_status: int, omitted: bool) -> None:
+    ledger = ObservedLedger()
+    # The stop shape travels inside the command's commitment list (#1104 round 1).
+    failed = ledger.run(_SERVER, ResultOutcome.FAILURE, exit_status=exit_status)
+    ledger.claim()
+    assert omitted_results(ledger) == ((failed,) if omitted else ())
+
+
+def test_a_stream_correction_states_the_stop_exit_for_a_codex_call() -> None:
+    """Codex: the hook result is unknown; the correction's exit decides the exemption."""
+
+    ledger = ObservedLedger()
+    unknown = ledger.run(_SERVER, ResultOutcome.UNKNOWN)
+    ledger.correct_outcome(unknown, ResultOutcome.FAILURE, exit_status=143)
+    ledger.claim()
+    assert omitted_results(ledger) == ()
+
+
+def test_the_stop_shape_rides_in_the_commitment_list_not_the_description() -> None:
+    """#1104 round 1: no description suffix and no envelope key; an older reader sees nothing new."""
+
+    from finishup.domain.events import ActionKind, ActionRecordedPayload
+    from finishup.domain.values import action_id
+    from finishup.kernel.observed_failures import observed_action_process_control
+
+    def action(command: str) -> ActionRecordedPayload:
+        return ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000001"),
+            ActionKind.COMMAND,
+            "Observed command via Codex hook (tool Bash) (runner compound)",
+            command=command_identity_for(command),
+        )
+
+    assert observed_action_process_control(action(_SERVER)) == "stop_own_job_term"
+    assert observed_action_process_control(action("server & sleep 1; kill $!; echo done")) is None
+    # A verifier stopped by its own kill keeps the ordinary duty: no marker is committed.
+    assert observed_action_process_control(action("pytest -q & sleep 1; kill $!; wait $!")) is None

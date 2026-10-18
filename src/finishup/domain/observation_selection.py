@@ -20,7 +20,15 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
-from finishup.domain.command_segments import command_structure, strip_one_wrapper, strip_wrappers
+from finishup.domain.command_segments import (
+    CommandStructure,
+    command_separators,
+    command_structure,
+    opens_files_without_a_command,
+    segment_words_without_redirections,
+    strip_one_wrapper,
+    strip_wrappers,
+)
 from finishup.domain.shell_writes import patch_command_words, shell_write_paths
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import strict_json_parse
@@ -529,16 +537,20 @@ def _routine_shell_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineF
 # Flags that make a verifier report on itself instead of verifying anything.
 _INFORMATION_FLAGS: Final = frozenset({"--help", "-h", "--version", "-V"})
 _VERIFYING_CLASSES: Final = frozenset({"test", "lint", "typecheck", "build"})
+# The runner classes that make a command a verifier (#1104 owner decision 2026-10-18 reads it).
+VERIFYING_RUNNER_CLASSES: Final[frozenset[str]] = _VERIFYING_CLASSES
 
 
-def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
+def _runner_class_for_argv(
+    argv: list[str], own_launchers: frozenset[str] = frozenset()
+) -> RunnerClass | None:
     """``_classify_argv`` with information-only invocations demoted (Codex review round 3).
 
     ``python -m unittest --help`` or ``ruff --version`` verifies nothing, so it never counts as a
     verification run.
     """
 
-    runner = _classify_argv(argv)
+    runner = _classify_argv(argv, own_launchers)
     if runner in _VERIFYING_CLASSES and any(
         argument in _INFORMATION_FLAGS for argument in argv[1:]
     ):
@@ -558,13 +570,16 @@ _READ_WRAPPERS: Final = frozenset(
 _INERT_ASSIGNMENTS: Final = frozenset({"TZ", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR"})
 
 
-def _read_executable_resolved(argv: list[str]) -> bool:
+def _read_executable_resolved(argv: list[str], own_launchers: frozenset[str] = frozenset()) -> bool:
     """Keep every original executable layer and resolution-changing environment visible.
 
     Canonical verification matching deliberately drops wrappers and paths. A read exemption
     cannot use that identity: arbitrary bin directories, PATH/loader/config overrides and
     unresolved wrappers stay material. nohup itself may create nohup.out. Shell initializers
-    and privileged/package launchers are not transparent reads either.
+    and privileged/package launchers are not transparent reads either. ``own_launchers`` are the
+    absolute paths of FinishUP's own installed console scripts, proven by the caller from this
+    runtime's install record (#1104); a word equal to one of them is resolved, and nothing else
+    changes: an agent-owned ``./finishup`` or ``/app/bin/finishup`` stays unresolved.
     """
 
     rest = list(argv)
@@ -578,6 +593,8 @@ def _read_executable_resolved(argv: list[str]) -> bool:
             rest.pop(0)
             continue
         word = rest[0]
+        if word in own_launchers:
+            return True
         if "\\" in word or ("/" in word and _SYSTEM_EXECUTABLE_RE.fullmatch(word) is None):
             return False
         name = word.rsplit("/", 1)[-1]
@@ -599,6 +616,10 @@ _WORKFLOW_OPTIONS: Final[Mapping[str, bool]] = MappingProxyType(
 )
 _READ_WORKFLOW_VERBS: Final[Mapping[str, Mapping[str, bool]]] = MappingProxyType(
     {
+        # Two-word read verbs (#1104): exactly the CLI's own options. ``observe status
+        # --codex-path`` runs the named Codex executable, so it is left out.
+        "observe status": MappingProxyType({"--workspace": True, "--json": False}),
+        "service status": MappingProxyType({"--json": False}),
         "status": _WORKFLOW_OPTIONS,
         "publish-work": _WORKFLOW_OPTIONS,
         "respond": _WORKFLOW_OPTIONS,
@@ -616,9 +637,12 @@ _READ_WORKFLOW_VERBS: Final[Mapping[str, Mapping[str, bool]]] = MappingProxyType
 
 def _read_workflow_call(argv: list[str]) -> bool:
     options = _READ_WORKFLOW_VERBS.get(argv[1]) if len(argv) > 1 else None
+    index = 2
+    if options is None and len(argv) > 2:
+        options = _READ_WORKFLOW_VERBS.get(f"{argv[1]} {argv[2]}")
+        index = 3
     if options is None:
         return False
-    index = 2
     while index < len(argv):
         option, equals, _value = argv[index].partition("=")
         takes_value = options.get(option)
@@ -628,9 +652,53 @@ def _read_workflow_call(argv: list[str]) -> bool:
     return index == len(argv)
 
 
-def _classify_argv(argv: list[str]) -> RunnerClass | None:
-    result = _classify_resolved_argv(argv)
-    return "other" if result == "exploration" and not _read_executable_resolved(argv) else result
+def _classify_argv(
+    argv: list[str], own_launchers: frozenset[str] = frozenset()
+) -> RunnerClass | None:
+    # FinishUP's own proven launcher (#1104) is classified by its program name, as the bare
+    # ``finishup`` on PATH is; only its read verbs are exploration.
+    resolved = (
+        [argv[0].rsplit("/", 1)[-1], *argv[1:]] if argv and argv[0] in own_launchers else argv
+    )
+    result = _classify_resolved_argv(resolved)
+    return (
+        "other"
+        if result == "exploration" and not _read_executable_resolved(argv, own_launchers)
+        else result
+    )
+
+
+# Read and inspection programs whose every invocation leaves the workspace unchanged.
+_EXPLORATION_COMMANDS: Final = frozenset(
+    {"cat", "cut", "find", "grep", "head", "less", "ls", "pwd", "rg", "tail", "wc"}
+)
+# Scene-setting and banner commands an agent chains around its reads (#1104): ``cd /app && ls``,
+# ``echo '--- files ---'; cat a``, ``printf '== %s ==' x``. None has a write option. Programs that
+# report a comparison by exit status (``test``, ``[``, ``diff``, ``cmp``, ``jq -e``) are left out:
+# their failure can be a failed verification, not a probe.
+_CHAIN_NEUTRAL_COMMANDS: Final = frozenset(
+    {
+        "cd",
+        "echo",
+        "printf",
+        "true",
+        ":",
+        "nl",
+        "stat",
+        "which",
+        "uname",
+        "whoami",
+        "id",
+        "printenv",
+        "du",
+        "realpath",
+        "readlink",
+        "basename",
+        "dirname",
+    }
+)
+# ``jq`` reads JSON; with an exit-status option its failure states a predicate, so it is not a read.
+_JQ_STATUS_OPTIONS: Final = frozenset({"-e", "--exit-status"})
 
 
 def _classify_resolved_argv(argv: list[str]) -> RunnerClass | None:
@@ -700,8 +768,18 @@ def _classify_resolved_argv(argv: list[str]) -> RunnerClass | None:
         for argument in argv[1:]
     ):
         return "other"
-    if command in {"cat", "cut", "find", "grep", "head", "less", "ls", "pwd", "rg", "tail", "wc"}:
+    if command in _EXPLORATION_COMMANDS or command in _CHAIN_NEUTRAL_COMMANDS:
         return "exploration"
+    if command == "jq":
+        return (
+            "other"
+            if any(
+                argument in _JQ_STATUS_OPTIONS
+                or (argument.startswith("-") and not argument.startswith("--") and "e" in argument)
+                for argument in argv[1:]
+            )
+            else "exploration"
+        )
     if command in {"pytest", "py.test"} and _non_executing_test_run(argv[1:]):
         return "other"
     module = _python_module(command, argv)
@@ -979,13 +1057,18 @@ def _raw_command(payload: Mapping[str, CanonicalJsonValue]) -> str | None:
     return raw
 
 
-def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerClass | None:
+def command_runner_class(
+    payload: Mapping[str, CanonicalJsonValue], *, own_launchers: frozenset[str] = frozenset()
+) -> RunnerClass | None:
     """Classify only closed command shapes; never inspect command output text.
 
     The class is a bounded internal hint used to keep known read/exploration failures out of
     completion accounting. Unknown commands remain ``other`` so they retain their ordinary
     failure duty. Shell composition is explicitly ``compound`` because an outer exit status does
-    not establish each nested command's outcome (#968).
+    not establish each nested command's outcome (#968), unless it runs a verifier (classed by its
+    strongest one) or every part is a proven read (``_compound_is_read_only``, #1104).
+    ``own_launchers`` are FinishUP's own installed launcher paths the hook proved
+    (``_read_executable_resolved``).
     """
 
     raw = _raw_command(payload)
@@ -1017,7 +1100,7 @@ def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerCla
         # then stays ``compound``.
         if not _is_shell_compound(raw):
             return "compound"
-        fallback = _compound_runner_class(raw)
+        fallback = _compound_runner_class(raw, own_launchers)
         if fallback in _VERIFYING_CLASSES:
             # One run is one ledger position, so its verification would cover its own writes.
             # A write after the last verifying command (``pytest -q && git apply <<EOF``, a
@@ -1048,8 +1131,28 @@ def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerCla
     if not argv:
         return None
     if _is_shell_compound(raw):
-        return _compound_runner_class(raw)
-    return _runner_class_for_argv(argv)
+        return _compound_runner_class(raw, own_launchers)
+    return _runner_class_for_argv(argv, own_launchers)
+
+
+# A shell word that is a path whose last component is FinishUP's launcher name (``/x/bin/finishup``,
+# ``./yoetz``): only such a word can be FinishUP's own absolute launcher (#1104). A path segment
+# (``src/finishup/kernel``) or a bare ``finishup`` resolved through ``PATH`` never matches.
+_LAUNCHER_WORD_RE: Final = re.compile(
+    r"(?:^|[\s;&|()<>'\"=])[^\s;&|()<>'\"=]*/(finishup|yoetz)(?=$|[\s;&|()<>'\"])"
+)
+
+
+def launcher_names_in(text: object) -> frozenset[str]:
+    """The launcher names (``finishup``, ``yoetz``) some path-shaped word of ``text`` ends with.
+
+    A cheap text test that gates the install-record proof (``codex_launcher.own_launcher_paths``),
+    so only a command that may name FinishUP's own launcher by path pays for it.
+    """
+
+    if type(text) is not str or "/" not in text:
+        return frozenset()
+    return frozenset(match.group(1) for match in _LAUNCHER_WORD_RE.finditer(text))
 
 
 def command_is_verification(command: str) -> bool:
@@ -1064,7 +1167,9 @@ def command_is_verification(command: str) -> bool:
     return command_runner_class({"command": command}) in _VERIFYING_CLASSES
 
 
-def native_command_runner_class(value: CanonicalJsonValue) -> RunnerClass | None:
+def native_command_runner_class(
+    value: CanonicalJsonValue, *, own_launchers: frozenset[str] = frozenset()
+) -> RunnerClass | None:
     """Classify native argv while retaining executable provenance beyond one host shell.
 
     The host's exact argv may name its ordinary system shell. Only that one outer layer can
@@ -1081,9 +1186,9 @@ def native_command_runner_class(value: CanonicalJsonValue) -> RunnerClass | None
             and ("/" not in argv[0] or _SYSTEM_EXECUTABLE_RE.fullmatch(argv[0]) is not None)
             and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]) is not None
         ):
-            return command_runner_class({"command": argv[2]})
-        return command_runner_class({"command": shlex.join(argv)})
-    return command_runner_class({"command": value})
+            return command_runner_class({"command": argv[2]}, own_launchers=own_launchers)
+        return command_runner_class({"command": shlex.join(argv)}, own_launchers=own_launchers)
+    return command_runner_class({"command": value}, own_launchers=own_launchers)
 
 
 _SHELL_COMPOSITION_MARKERS: Final = ("\n", "\r", ";", "&", "|", ">", "<", "`", "$(")
@@ -1095,16 +1200,16 @@ def _is_shell_compound(raw: str) -> bool:
     return any(marker in raw for marker in _SHELL_COMPOSITION_MARKERS)
 
 
-def _compound_runner_class(raw: str) -> RunnerClass:
+def _compound_runner_class(raw: str, own_launchers: frozenset[str] = frozenset()) -> RunnerClass:
     """The class of a shell composition: its strongest verification, else ``compound`` (ADR-045).
 
     ``cd /app && pytest -q 2>&1 | tail -5`` runs a test: classing it ``compound`` (which
     ``edited_after_last_verification`` ignores) left that fact dormant in about 70% of real runs.
     Each simple command is classified on its canonical argv (wrappers dropped); a command that
     redirects into a file is not exploration (``cat > f`` writes). A composition without a
-    verifier stays ``compound`` unless every component is proven read-only. An outer exit
-    status does not establish each nested command's outcome (#968), and that gap is raised
-    separately by ``compound_verification_gap_required``.
+    verifier stays ``compound`` unless every component is proven read-only
+    (``_compound_is_read_only``). An outer exit status does not establish each nested command's
+    outcome (#968), and that gap is raised separately by ``compound_verification_gap_required``.
     """
 
     # Segmentation itself normalizes each leaf. Keep the outer spelling so a shell wrapper's
@@ -1123,24 +1228,47 @@ def _compound_runner_class(raw: str) -> RunnerClass:
     for verifying in _VERIFYING_PRIORITY:
         if verifying in classes:
             return cast(RunnerClass, verifying)
-    if classes == {"exploration"} and not any(marker in raw for marker in ("$(", "`", "<<", "&")):
-        try:
-            # Canonical words erase executable paths. Recheck the original argv so an
-            # agent-owned ./date or ./finishup cannot acquire a harmless tool's identity.
-            if all(
-                not command.writes
-                and not command.nested
-                and bool(command.sources)
-                and all(
-                    _runner_class_for_argv(shlex.split(source, posix=True)) == "exploration"
-                    for source in command.sources
-                )
-                for command in structure.commands
-            ):
-                return "exploration"
-        except ValueError:
-            pass
+    if classes == {"exploration"} and _compound_is_read_only(raw, structure, own_launchers):
+        return "exploration"
     return "compound"
+
+
+# Text that runs a command the splitter does not see as a segment: command and process
+# substitution. Refused anywhere in the command, a here-document body included.
+_HIDDEN_EXECUTION_MARKERS: Final = ("$(", "`", "<(", ">(")
+
+
+def _compound_is_read_only(
+    raw: str, structure: CommandStructure, own_launchers: frozenset[str] = frozenset()
+) -> bool:
+    """Whether every part of a read-classified composition is a proven read (#972, #1104).
+
+    ``&&``, ``;``, ``||``, ``|``, line breaks, banners (``echo``, ``printf``), ``cd`` and a
+    here-document fed to a read program (``cat <<'EOF'``) qualify. Refused: a background job
+    (``&``, quote-aware), any command or process substitution, a write into a file (including a
+    segment that only redirects, ``exec >out.txt``, and a read-write ``<>``), a nested shell
+    (a wrapper argument or a here-document fed to a shell), and any part whose original words
+    (assignments and executable spelling kept, redirections dropped) are not a read: canonical
+    words erase executable paths, so an agent-owned ``./cat`` or ``./finishup`` cannot acquire a
+    harmless tool's identity.
+    """
+
+    separators = command_separators(raw)
+    if separators is None or "&" in separators:
+        return False
+    if any(marker in raw for marker in _HIDDEN_EXECUTION_MARKERS):
+        return False
+    if opens_files_without_a_command(raw):
+        # ``exec >out.txt`` (or ``<>``) leaves no command in the structure but writes a file.
+        return False
+    for command in structure.commands:
+        if command.writes or command.nested or not command.sources:
+            return False
+        for source in command.sources:
+            words = segment_words_without_redirections(source)
+            if not words or _runner_class_for_argv(words, own_launchers) != "exploration":
+                return False
+    return True
 
 
 def compound_verification_gap_required(payload: Mapping[str, CanonicalJsonValue]) -> bool:
@@ -1354,9 +1482,11 @@ __all__ = [
     "ROUTINE_READ_TOOLS",
     "SHELL_TOOLS",
     "RunnerClass",
+    "VERIFYING_RUNNER_CLASSES",
     "classify_observation",
     "compound_verification_gap_required",
     "command_runner_class",
+    "launcher_names_in",
     "native_command_runner_class",
     "without_routine_read",
     "envelope_outcome_state",

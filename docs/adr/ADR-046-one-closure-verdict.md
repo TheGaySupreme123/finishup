@@ -74,9 +74,27 @@ row, so a surface can say why.
 | `rejected_awaiting_ruling` | awaiting_ruling | unresolved_findings_remain |
 | `rejected_review_unavailable` | settled_disclosed | insufficient_coverage |
 | `acknowledged_not_done_requirement`, `limitation_acknowledged_not_done` | settled_unmet | unresolved_findings_remain |
-| `acknowledged_not_done_bookkeeping`, `self_verified`, `disputed_after_rebuttal`, `limitation_disclosed` | settled_disclosed | insufficient_coverage |
+| `acknowledged_not_done_bookkeeping`, `self_verified`, `disputed_after_rebuttal`, `limitation_disclosed`, `failed_run_disclosed` | settled_disclosed | insufficient_coverage |
 | `rejection_accepted` | settled_disclosed | none |
-| `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified` | resolved | none |
+| `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`, `retired_by_passing_run`, `retired_by_planned_verification` | resolved | none |
+
+**Observed failed-command findings (#1104, ADR-025 amendment).** `retired_by_passing_run` is the
+resolution of an observation-authored failed-command finding by a later hook-observed passing run
+of the same command (never worded as "a check proved"); its source is the passing result's event.
+`retired_by_planned_verification` is the same resolution by a later passing run of a planned
+verification that is not the command that failed (owner decisions 2026-10-18: a verifier run, of a
+command an obligation effective when it passed requests; ADR-025), named apart so no surface says
+the failed command itself passed.
+`failed_run_disclosed` is `acknowledged` on such a finding: the failure is expected or stays,
+disclosed on the receipt as "disclosed failed command", never clean. `acknowledged_not_done` on it
+is bookkeeping (`acknowledged_not_done_bookkeeping`), because the requirement-level duty stays with
+the work-integrity pack's claim-level finding. The three tokens were added in place to the unreleased
+status-result 1.4.0 and check-result 1.4.0/1.5.0 `closure_basis` enums. The receipt document
+carries them in its section text and counters sentence only: it gains no
+`failed_run_disclosed_finding_ids` or retired-id array beside the `self_verified`,
+`limitation_disclosed`, `disputed_after_rebuttal` and `acknowledged_not_done` arrays. A machine
+reader reads each finding's `closure_basis` from status or check instead; a receipt array is a
+follow-up (#1104) if a reader needs one.
 
 | Obligation basis | Class | Effect |
 |---|---|---|

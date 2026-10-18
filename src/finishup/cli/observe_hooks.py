@@ -165,6 +165,7 @@ from finishup.domain.observation_selection import (
     compound_verification_gap_required,
     is_edit_tool_name,
     is_routine_read_candidate,
+    launcher_names_in,
     without_routine_read,
 )
 from finishup.domain.shell_writes import codex_intercepts_shell_apply_patch
@@ -1109,7 +1110,7 @@ def _extract_structural(
     # summary construction revalidates the persisted envelope after process restart.
     if selected.proven_routine_success:
         fields["success"] = True
-    runner = command_runner_class(payload)
+    runner = _hook_runner_class(payload)
     if runner is not None and tool_name is not None:
         fields["runner_class"] = runner
     # Permission outcome aliases commonly seen in host payloads.
@@ -1125,6 +1126,31 @@ def _extract_structural(
                 validate_observed_images(payload.get(OBSERVED_IMAGES_KEY))
             )
     return JsonObject(fields)
+
+
+def _hook_command_text(payload: Mapping[str, JsonValue]) -> JsonValue:
+    nested = payload.get("tool_input")
+    source = cast(Mapping[str, JsonValue], nested) if isinstance(nested, Mapping) else payload
+    text = source.get("cmd")
+    return source.get("command") if type(text) is not str else text
+
+
+def _hook_runner_class(payload: Mapping[str, JsonValue]) -> RunnerClass | None:
+    """``command_runner_class`` with FinishUP's own proven launcher paths (#1104).
+
+    The proof (``codex_launcher.own_launcher_paths``) reads this runtime's install record, so it
+    is imported and run only for a command with a path-shaped word whose last component is
+    ``finishup`` or ``yoetz`` (``launcher_names_in``); any other command, ``cat
+    src/finishup/x.py`` included, is classified exactly as before, at no extra cost.
+    """
+
+    text = _hook_command_text(payload)
+    launchers: frozenset[str] = frozenset()
+    if launcher_names_in(text):
+        from finishup.adapters.integrations.codex_launcher import own_launcher_paths
+
+        launchers = own_launcher_paths(text)
+    return command_runner_class(payload, own_launchers=launchers)
 
 
 def _pairing_contract(
@@ -7821,7 +7847,7 @@ def _handle_claude_observe(
         if ordinary_profile and raw_event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}:
             _attach_command_commitment(structural, payload, _state=_state)
         derived_runner_class = (
-            command_runner_class(payload)
+            _hook_runner_class(payload)
             if ordinary_profile and raw_event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
             else None
         )
@@ -8331,7 +8357,7 @@ def _handle_cursor_observe(
             else None
         )
         derived_runner_class = (
-            command_runner_class(payload)
+            _hook_runner_class(payload)
             if ordinary_profile and raw_event in {"preToolUse", "postToolUse", "postToolUseFailure"}
             else None
         )

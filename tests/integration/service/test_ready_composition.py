@@ -999,6 +999,65 @@ async def test_startup_bundle_upgrade_precedes_lineage_and_runtime_composition(
 
 
 @pytest.mark.anyio
+async def test_installation_key_is_registered_before_the_startup_bundle_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1104: the projection fold reads the installation key (a passing planned verification
+    retires earlier observed failed-command findings), so a startup upgrade that replays or
+    rebuilds a task projection folds it exactly as the ready service later does."""
+
+    from finishup.kernel.task_facts import (
+        command_identity_key_registered,
+        register_command_identity_key,
+    )
+
+    seen: list[bool] = []
+
+    class _DB:
+        def close(self, *, force: bool = False) -> None:
+            assert force
+
+    class _Catalog:
+        _db = _DB()
+
+    class _Vault:
+        ready = True
+        generation = 2
+        _installation_id = _INSTALLATION_ID
+
+        def installation_mac_handle(self, _purpose: object) -> _Lookup:
+            return _Lookup()
+
+    async def open_catalog(_path: Path, **_kwargs: object) -> _Catalog:
+        return _Catalog()
+
+    async def upgrade(**_kwargs: object) -> None:
+        seen.append(command_identity_key_registered())
+        raise RuntimeError("stop_after_upgrade_probe")
+
+    monkeypatch.setattr(ready_composition_module, "ensure_owner_only_dir", _accept_private_path)
+    monkeypatch.setattr(ready_composition_module, "open_ready_catalog", open_catalog)
+    register_command_identity_key(None)
+    try:
+        with pytest.raises(RuntimeError, match="stop_after_upgrade_probe"):
+            await ready_composition_module.provide_service_ready_context(
+                1,
+                2,
+                lifecycle=_StartupLifecycle(),  # type: ignore[arg-type]
+                vault=_Vault(),  # type: ignore[arg-type]
+                config=FinishUpConfig(),
+                paths=_Paths(tmp_path),
+                clock=_Clock(),
+                secret_memory=object(),
+                startup_bundle_upgrade=upgrade,
+            )
+    finally:
+        register_command_identity_key(None)
+
+    assert seen == [True]
+
+
+@pytest.mark.anyio
 async def test_startup_bundle_upgrade_failure_closes_catalog_and_blocks_ready_graph(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

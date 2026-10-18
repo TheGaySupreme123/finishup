@@ -263,7 +263,15 @@ issue absent resolves the finding. When the reviewer asks you to state a limit (
 a hidden evaluator or something you cannot obtain could settle), that finding is a limitation
 request, not work: one reasoned `acknowledged` (or a `finishup-verification-limit:<obligation id>`
 decision) discloses it, with no repair attempt required, and the receipt lists the disclosed limit
-instead of reading clean. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
+instead of reading clean. A finding about a command FinishUP saw fail needs no answer once you
+rerun the same command, exactly as written, and it passes (alone or inside a passing `&&` chain
+whose earlier parts all hand control back: after `exec CMD`, `exit`, `eval` or `source`/`.`, as in
+`source .venv/bin/activate && pytest -q`, the pass retires nothing):
+the pass retires it. A passing run of a verification command your plan asks for retires it too,
+along with every other earlier failed-command finding; your completion claim still names such a
+failure in `limitation_refs`, because that command never passed.
+If the failure is expected or will stay, one `acknowledged` with the reason discloses it on the
+receipt. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
 cannot prove after a later check because of its own limits: say how you verified the repair in
 `reason` and cite at least one recorded evidence or result id in `evidence_refs` (list them in any
 order; FinishUP sorts them). It is final, is
@@ -323,11 +331,12 @@ finding stands. `to_do` is work you can still do (it includes `awaiting_ruling`,
 rejected with a reason that only a reviewer's ruling can settle; the next move for those is
 `check`); `unmet` are requirements you acknowledged as not done; `disclosed` are final items the
 receipt will disclose (a repair you verified yourself, a limit you stated, a bookkeeping finding
-you acknowledged); `to_disclose` are limits a reviewer asked you to state and that you have not
+you acknowledged, a failed command you acknowledged); `to_disclose` are limits a reviewer asked you to state and that you have not
 yet stated (answer once with `acknowledged`; it is not work). `receipt_blocking_finding_count`
 is `to_do` plus `unmet`: the findings that keep a receipt from concluding
 `no_unresolved_deterministic_findings` even after every response; only a later qualifying check
-of the repaired record shrinks `to_do`. Accordingly, `findings_unanswered` is answered;
+of the repaired record shrinks `to_do`, except for a command FinishUP saw fail, which a later
+passing run of the same command or of a planned verification retires and no check can. Accordingly, `findings_unanswered` is answered;
 `receipt_findings_unresolved` is repaired and rechecked once, and should not trigger another
 response loop. After that recheck, read the finding's `resolved` value. If the issue re-fires,
 or it does not re-fire but remains `resolved=false` because the check did not qualify, stop
@@ -384,7 +393,8 @@ data folder, or in a command whose working folder FinishUP cannot tell, also cou
 edit. A run matches when it is the planned command or contains it as one part, such as
 `cd /app && pytest -q && git diff --check`, `pytest -q > log 2>&1`, `time pytest -q`, or a line
 of a `bash <<'EOF'` script; when the run combined other
-commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested
+commands, its outcome counts for the planned command only if an `&&` chain succeeded whose earlier
+parts all hand control back (not after `exec CMD`, `exit`, `eval` or `source`/`.`). A requested
 command with a `<placeholder>` is refused when you publish it: write the concrete command; a requested output file that is missing (a
 unresolved finding, even if an action named it) or excluded from Git; one you recorded
 editing (an `edit` action naming it) that is still unchanged or lies outside the repository; and

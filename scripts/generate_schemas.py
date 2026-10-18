@@ -5780,6 +5780,7 @@ _FINDING_CLOSURE_BASES: Final = (
     "acknowledged_not_done_bookkeeping",
     "acknowledged_not_done_requirement",
     "disputed_after_rebuttal",
+    "failed_run_disclosed",
     "limitation_acknowledged_not_done",
     "limitation_disclosed",
     "limitation_requested",
@@ -5789,6 +5790,8 @@ _FINDING_CLOSURE_BASES: Final = (
     "rejected_review_unavailable",
     "rejection_accepted",
     "reopened",
+    "retired_by_passing_run",
+    "retired_by_planned_verification",
     "self_verified",
 )
 _OBLIGATION_CLOSURE_BASES: Final = (

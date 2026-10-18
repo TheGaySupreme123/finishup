@@ -38,7 +38,11 @@ later check). The proof rules themselves are unchanged.
     that is unreadable or whose returned findings are unreadable (FinishUP cannot tell whether the
     issue fired again; a new check answers it).
 
-Every other remaining reason is a FinishUP limit, so the finding is eligible. ``respond`` adds the
+Every other remaining reason is a FinishUP limit, so the finding is eligible. That includes
+``observed_failure_not_rerun`` (#1104): FinishUP retires an observed failed command only when the
+same command (alone, or as a segment run as is inside a passing ``&&`` chain) or a planned
+verification later passes, so an agent that verified the repair another way says so with
+``self_verified``. ``respond`` adds the
 field rules (``response_fields_invalid``) and the terminal-state rule (``finding_terminal``).
 """
 

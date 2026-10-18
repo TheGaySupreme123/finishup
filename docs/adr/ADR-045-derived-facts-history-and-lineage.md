@@ -158,6 +158,25 @@ exploration. A run that matches a command the task asked for (any match kind) is
 verification run for `edited_after_last_verification`, whatever its class: `sage solve.sage ... &&
 cmp ...` is composed and classes `compound`, yet it is the check the task named.
 
+**Segments also certify a pass (#1104, ADR-025 amendment).** A hook-observed *success* whose
+composition is `single` or `and_chain` certifies each of its exact segment commitments that ran
+exactly as listed, so a passing `cd /app && pytest -q` supersedes an earlier failed `pytest -q`
+and retires its observation finding, while `PYTEST_ADDOPTS=--co pytest -q` (listed as `pytest -q`
+for planned matching) certifies nothing. The hook marks each such segment with a derived
+commitment in the same list (`segment_certification_commitment`, ADR-025). A `masked` composition
+certifies nothing about a segment; that includes an `&&` chain whose earlier segment may not hand
+control back (`exec true && pytest -q`, `exit 0 && pytest -q`, ADR-025).
+Canonical commitments stay planned-verification matching only,
+and the derived markers come out of their budget, so the list stays within 80 commitments. A
+segment that only redirects (`exec >out.txt`) or a read-write `<>` also keeps a chain
+`compound`. A composition without a verifier is
+`exploration` (not `compound`) when every part is a proven read: `&&`, `;`, `||`, `|` and line
+breaks between reads, banners (`echo`, `printf`), `cd` and a few inert inspectors, a here-document
+fed to a read program, and FinishUP's own read verbs. A background `&`, any command or process
+substitution, a write into a file, a nested or here-document-fed shell, and any part whose original
+words are not a read (an agent-owned `./cat`, a `PATH=` override) keep it `compound`. That class
+only keeps a failed read out of failure accounting; it exempts nothing from closing-review currency.
+
 **Shell writes count as edits.** `domain/shell_writes` names the paths a command visibly writes
 (redirect targets, `tee`, `sed -i`, the destination of `cp`/`mv`/`install`/`rsync`, `touch`,
 `truncate`, `dd of=`) and classifies them like an edit tool's paths. A command whose attributable
@@ -321,7 +340,9 @@ docstring, prose) made the text unsplittable and classed a patch-then-test comma
 When the whole-text split fails, the quote-aware segmenter (`command_segments.command_structure`,
 which treats a non-shell heredoc body as data) now decides, as it already did for every balanced
 compound. An unterminated quote, substitution or heredoc still classes `compound`, and a heredoc
-command is never `exploration`. Segment matching and the planned side are unchanged.
+that writes or feeds a program or shell is never `exploration`; only a heredoc fed to a read
+(`cat <<'EOF'`, under the #1104 read-only chain rule) is. Segment matching and the planned side
+are unchanged.
 
 A heredoc-fed patch is a write (`domain.shell_writes.heredoc_patch_paths`): `apply_patch`/
 `applypatch` by its `*** Add|Update|Delete File:`/`*** Move to:` headers (as since #1046), and `git

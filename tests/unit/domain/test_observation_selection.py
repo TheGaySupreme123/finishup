@@ -161,7 +161,8 @@ def test_json_result_outcome_is_bounded_and_closed() -> None:
         ("find src -exec pytest {} +", "other"),
         # ADR-045: a composition is classed by its strongest verification, not left ``compound``.
         ("pytest tests/unit && ruff check src", "test"),
-        ("cd /app && ls src", "compound"),
+        # #1104: a chain of proven reads around ``cd`` is exploration, no longer ``compound``.
+        ("cd /app && ls src", "exploration"),
         ("cat notes.txt > copy.txt", "compound"),
         ("pytest tests/unit", "test"),
     ],
@@ -264,13 +265,15 @@ def test_heredoc_body_quote_does_not_hide_compound_verification(body: str, verif
         "echo 'oops && pytest -q",
         'pytest -q && echo "unterminated',
         "apply_patch <<'PATCH'\n*** Update File: a.py\n+# don't\npytest -q",
-        "cat <<'EOF'\nit's\nEOF",
-        "cat <<'EOF'\nit's\nEOF\nls",
+        # A here-document whose body is a write's content or a program's input (#1104 keeps a
+        # here-document fed to a read, such as ``cat <<'EOF'``, as exploration).
+        "cat > a.py <<'EOF'\nit's\nEOF",
+        "python3 - <<'PY'\n# it's a script\nPY\nls",
     ],
 )
 def test_unterminated_quote_or_heredoc_stays_compound(command: str) -> None:
     """The segmenter still refuses what the shell itself could not run as written, and a
-    heredoc command is never ``exploration`` (its body may be a write's content)."""
+    heredoc that writes or feeds a program is never ``exploration``."""
 
     assert command_runner_class({"command": command}) == "compound"
 
@@ -297,3 +300,135 @@ def test_a_write_after_the_test_in_an_odd_quote_command_stays_compound(command: 
     """
 
     assert command_runner_class({"command": command}) == "compound"
+
+
+# --- read-only chains and FinishUP's own CLI (#1104) -----------------------------------------
+
+
+def _runner(command: str, own_launchers: frozenset[str] = frozenset()) -> str | None:
+    return command_runner_class(
+        {"tool_name": "exec_command", "tool_input": {"cmd": command}}, own_launchers=own_launchers
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd /app && ls src",
+        "cd /app; ls",
+        "echo '--- files ---'; ls /app",
+        "printf '== %s ==\\n' x && cat /app/a.txt",
+        "cat <<'EOF'\nhello\nEOF",
+        # An odd quote in a read's here-document body does not hide the read (#1106 with #1104).
+        "cat <<'EOF'\nit's\nEOF",
+        "cat <<'EOF'\nit's\nEOF\nls",
+        "sed -n 1,20p a.py && sed -n 40,60p a.py",
+        "nl -ba x | sed -n '1,200p'",
+        "finishup status --json | jq .closure_readiness",
+        "finishup respond --input - <<'JSON'\n{}\nJSON",
+        "ls missing || echo none",
+        "ls > /dev/null && cat a",
+        "cat a.txt 2>/dev/null; echo '---'; head -n 5 b.txt",
+        "echo 'a & b' && ls",
+    ],
+)
+def test_read_only_chains_are_exploration(command: str) -> None:
+    assert _runner(command) == "exploration"
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # Data or shell here-documents.
+        ("python3 - <<'PY'\nprint(1)\nPY", "compound"),
+        ("bash <<'EOF'\nls\nEOF", "compound"),
+        # Writes.
+        ("cat a > b", "compound"),
+        ("echo hi > notes.txt", "compound"),
+        ("cat <<EOF > f\nx\nEOF", "compound"),
+        # Command or process substitution, anywhere.
+        ("cat <<EOF\n$(rm -rf x)\nEOF", "compound"),
+        ("echo `rm x`", "compound"),
+        ("cat <(rm x)", "compound"),
+        # Background jobs.
+        ("sleep 1 & wait", "compound"),
+        ("ls & rm -rf x", "compound"),
+        # Work inside the chain.
+        ("cd /app && python fix.py", "compound"),
+        ("finishup status && python fix.py", "compound"),
+        ("cat x | sh", "compound"),
+        # Agent-owned or unresolved executables.
+        ("./finishup status", "other"),
+        ("/tmp/bin/cat x && ls", "compound"),
+        ("PATH=/tmp/evil:$PATH ls && cat x", "compound"),
+        # A program that is not a read, and a nested shell kept conservative.
+        ("curl -s x | jq .", "compound"),
+        ("bash -lc 'cd /app && ls'", "compound"),
+        # A segment that only redirects, or a read-write open (#1104 round 1).
+        ("cd /app; exec 1>out.txt; ls", "compound"),
+        ("cd /app && exec > out.txt && ls", "compound"),
+        ("cd /app; ls <>f", "compound"),
+        # A comparison reports by exit status: its failure can be a failed check.
+        ("test -f x && cat x", "compound"),
+        ("jq -e .ok result.json", "other"),
+        # A verifier still wins.
+        ("cd /app && pytest -q", "test"),
+    ],
+)
+def test_chains_with_writes_background_substitution_or_work_stay_refused(
+    command: str, expected: str
+) -> None:
+    assert _runner(command) == expected
+
+
+def test_finishup_read_verbs_and_proven_launcher() -> None:
+    assert _runner("finishup observe status --json") == "exploration"
+    assert _runner("finishup observe status --workspace /app") == "exploration"
+    assert _runner("finishup service status") == "exploration"
+    # ``--codex-path`` runs the named executable: not a read.
+    assert _runner("finishup observe status --codex-path x --codex-home y") == "other"
+    assert _runner("finishup observe start") == "other"
+    launcher = "/opt/finishup-runtime/bin/finishup"
+    proven = frozenset({launcher})
+    assert _runner(f"{launcher} status --json", proven) == "exploration"
+    assert _runner(f"{launcher} observe status --json | jq .", proven) == "exploration"
+    # Only path equality to the proven script counts; never a name match.
+    assert _runner(f"{launcher} status --json") == "other"
+    assert _runner("./finishup status", proven) == "other"
+    assert _runner("/app/bin/finishup status", proven) == "other"
+    assert _runner(f"{launcher} status && python fix.py", proven) == "compound"
+    # The odd-quote fallback (#1106) keeps the proven launcher too.
+    odd = f"{launcher} status --json && cat <<'EOF'\nit's\nEOF"
+    assert _runner(odd, proven) == "exploration"
+    assert _runner(odd) == "compound"
+
+
+def test_quoted_ampersand_is_not_background() -> None:
+    from finishup.domain.command_segments import command_separators
+
+    assert command_separators("echo 'a & b' && ls") == frozenset({"&&"})
+    assert command_separators('echo "x&y"; ls') == frozenset({";"})
+    assert command_separators("sleep 1 & ls") == frozenset({"&"})
+    assert command_separators("bash -lc 'sleep 1 & ls'") == frozenset({"&"})
+    assert command_separators("echo 'unterminated") is None
+
+
+@pytest.mark.parametrize(
+    ("command", "names"),
+    [
+        ("/home/u/.venv/bin/finishup status --json", {"finishup"}),
+        ("./yoetz status", {"yoetz"}),
+        ("bash -lc '/opt/x/bin/finishup status'", {"finishup"}),
+        # A path segment or a bare name never triggers the install-record proof (#1104 round 1).
+        ("cat src/finishup/kernel/x.py", set[str]()),
+        ("pytest -q src/finishup/kernel/y.py", set[str]()),
+        ("finishup status", set[str]()),
+        ("ls /home/user/yoetzz", set[str]()),
+    ],
+)
+def test_only_a_path_ending_in_the_launcher_name_gates_the_proof(
+    command: str, names: set[str]
+) -> None:
+    from finishup.domain.observation_selection import launcher_names_in
+
+    assert launcher_names_in(command) == names

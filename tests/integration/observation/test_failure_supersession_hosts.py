@@ -14,6 +14,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from builders.codex_rollout import encode_lines, item_completed, session_meta
 from builders.observed_runs import ObservedLedger, omissions, omitted_results, receipt_limitations
 from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
@@ -30,6 +32,10 @@ from finishup.domain.observation_profiles import (
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
 from finishup.domain.values import JsonValue, ResultId
+from finishup.kernel.closure_class import finding_closure
+from finishup.kernel.finding_todo import FindingTodoState, finding_todo_state
+from finishup.kernel.observed_failures import observed_action_process_control
+from finishup.kernel.reducers import replay
 from finishup.protocol.canonical import canonical_encode
 
 _TASK = "tsk_00000000-0000-4000-8000-000000000909"
@@ -204,6 +210,128 @@ def test_claude_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path:
     red_result = list(_results(red_latest))[-1]
     red_latest.claim()
     assert omitted_results(red_latest) == (red_result,)
+
+
+def _planned_retirement(
+    tmp_path: Path,
+    build: Callable[[], ObservedLedger],
+    red: ObservedLedger,
+    planned: str,
+    *,
+    plan_after: bool = False,
+    retires: bool = True,
+) -> None:
+    """Replay the host's rows behind a plan requesting ``planned`` (after every row when
+    ``plan_after``), with the coordinator's finding after the failed call, and assert whether the
+    later pass retired it as the planned verification."""
+
+    from finishup.domain.values import EventId
+    from finishup.kernel.task_facts import register_command_identity_key
+
+    rows = build().records
+    register_command_identity_key(LocalObservationStore(_state=tmp_path / "state").key_material())
+    try:
+        ledger = ObservedLedger()
+        if not plan_after:
+            ledger.plan(planned)
+        appended = [
+            ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
+            for row in rows[: len(red.records)]
+        ]
+        finding = ledger.advice_finding(tuple(appended))
+        passing: list[EventId] = [
+            ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
+            for row in rows[len(red.records) :]
+        ]
+        if plan_after:
+            ledger.plan(planned)
+        state = replay(ledger.prefix)
+        if not retires:
+            assert state.findings[finding].retired_by_event_id is None
+            assert finding_todo_state(state, finding) is FindingTodoState.OPEN
+            return
+        assert state.findings[finding].retired_by_event_id == passing[-1]
+        assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
+        closure = finding_closure(state, finding)
+        assert closure is not None and closure.basis == "retired_by_planned_verification"
+    finally:
+        register_command_identity_key(None)
+
+
+def test_claude_passing_planned_verification_retires_an_unrelated_failure(
+    tmp_path: Path,
+) -> None:
+    """Owner decision 2026-10-18 (#1104): Claude Code states the exits in ``PostToolUseFailure``
+    and ``PostToolUse``; a failed ``pip install`` is retired by the plan's verification passing
+    later, and the finding names that kind of pass."""
+
+    emit, build = _host(tmp_path, "claude")
+    planned = f"pytest -q tests/{_CANARY}.py"
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-tests", f"cd /app && {planned}", failed=False)
+    _planned_retirement(tmp_path, build, red, planned)
+
+
+def test_claude_plan_published_after_the_pass_retires_nothing(tmp_path: Path) -> None:
+    """Owner decision 2026-10-18 (#1104): the obligation must be effective when the planned run
+    passed (its ``PostToolUse``); a plan published after it retires nothing."""
+
+    emit, build = _host(tmp_path, "claude")
+    planned = f"pytest -q tests/{_CANARY}.py"
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-tests", planned, failed=False)
+    _planned_retirement(tmp_path, build, red, planned, plan_after=True, retires=False)
+
+
+@pytest.mark.parametrize("planned", ["true", "ls -la"])
+def test_claude_planned_command_that_is_no_verifier_retires_nothing(
+    tmp_path: Path, planned: str
+) -> None:
+    """Owner decision 2026-10-18 (#1104): only a verifier (the hook's runner class test, build,
+    lint or typecheck) passing the planned command counts; the hook records ``true`` and ``ls``
+    as ``exploration``."""
+
+    emit, build = _host(tmp_path, "claude")
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-plan", planned, failed=False)
+    passing = [
+        action
+        for action in _results(build()).values()
+        if "(runner exploration)" in action.description
+    ]
+    assert len(passing) == 1
+    _planned_retirement(tmp_path, build, red, planned, retires=False)
+
+
+@pytest.mark.parametrize("ran", ["true && pytest -q", "true && ruff check --exit-zero ."])
+def test_claude_planned_no_op_chained_to_an_unplanned_verifier_retires_nothing(
+    tmp_path: Path, ran: str
+) -> None:
+    """#1104: the planned command the run passed must itself be a verifier, not only the run.
+    The hook classes ``true && <verifier>`` by its verifier; a planned ``true`` still clears
+    nothing."""
+
+    emit, build = _host(tmp_path, "claude")
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-chain", ran, failed=False)
+    _planned_retirement(tmp_path, build, red, "true", retires=False)
+
+
+def test_cursor_passing_planned_verification_retires_an_unrelated_failure(
+    tmp_path: Path,
+) -> None:
+    """The same decision on Cursor, whose ``postToolUse`` states ``exitCode``."""
+
+    emit, build = _host(tmp_path, "cursor")
+    planned = f"npm test -- {_CANARY}"
+    _cursor_shell(emit, "cursor-install", "npm ci", exit_code=1)
+    red = build()
+    _cursor_shell(emit, "cursor-tests", planned, exit_code=0)
+    _planned_retirement(tmp_path, build, red, planned)
 
 
 def test_claude_failure_then_observed_edit_stays_outstanding(tmp_path: Path) -> None:
@@ -392,3 +520,125 @@ def test_codex_patch_never_retires_a_failure_without_a_covering_rerun(tmp_path: 
     # A patch that states ``Exit code: 0`` still needs an explicit acknowledgement or rerun.
     assert red not in omitted_results(applied)
     assert "hook-observed failing" in receipt_limitations(applied)
+
+
+# --- failures that carry no failed-work duty (#1104) ------------------------------------------
+
+_SERVER = "python app.py & sleep 2; curl -s localhost:8000; kill $!; wait $!"
+
+
+def _codex_shell(emit: _Emit, call: str, command: str, *, exit_code: int) -> None:
+    """A Codex shell hook pair whose post states its exit in the host-structured result object.
+
+    A text ``Process exited`` header on hook stdin is the command's own output and records no
+    outcome (n7 RC1, #1105); the 0.159 stream-joined exit is pinned by
+    ``tests/integration/application/test_codex_failed_command_retirement.py``.
+    """
+
+    base = {"session_id": "codex-1104", "turn_id": "turn-1", "tool_name": "Bash"}
+    tool_input = {"command": command}
+    emit(
+        "PreToolUse",
+        {**base, "hook_event_name": "PreToolUse", "tool_use_id": call, "tool_input": tool_input},
+    )
+    emit(
+        "PostToolUse",
+        {
+            **base,
+            "hook_event_name": "PostToolUse",
+            "tool_use_id": call,
+            "tool_input": tool_input,
+            "tool_response": {
+                "chunk_id": "5e0c7a",
+                "exit_code": exit_code,
+                "original_token_count": 4,
+                "output": _CANARY,
+            },
+        },
+    )
+
+
+def _run_on(host: str, emit: _Emit, call: str, command: str, exit_code: int) -> None:
+    if host == "claude":
+        _claude_bash(emit, call, command, failed=exit_code != 0, exit_code=exit_code)
+    elif host == "cursor":
+        _cursor_shell(emit, call, command, exit_code=exit_code)
+    else:
+        _codex_shell(emit, call, command, exit_code=exit_code)
+
+
+@pytest.mark.parametrize("host", ["claude", "cursor", "codex"])
+def test_read_only_chain_failure_carries_exploration_runner_class(
+    tmp_path: Path, host: str
+) -> None:
+    emit, build = _host(tmp_path, host)
+    _run_on(host, emit, "call-read", f"cd /app && ls {_CANARY}-missing", 2)
+    ledger = build()
+    (action,) = _results(ledger).values()
+    assert "(runner exploration)" in action.description
+    ledger.claim()
+    assert omissions(ledger) == ()
+
+
+@pytest.mark.parametrize("host", ["claude", "cursor", "codex"])
+@pytest.mark.parametrize(("exit_code", "omitted"), [(143, False), (1, True)])
+def test_background_kill_failure_carries_process_control(
+    tmp_path: Path, host: str, exit_code: int, omitted: bool
+) -> None:
+    emit, build = _host(tmp_path, host)
+    _run_on(host, emit, "call-server", _SERVER, exit_code)
+    ledger = build()
+    ((result, action),) = _results(ledger).items()
+    # The shape rides inside the command's commitment list, not the description (#1104 round 1).
+    assert observed_action_process_control(action) == "stop_own_job_term"
+    assert "(process" not in action.description
+    ledger.claim()
+    # Claude Code's ``PostToolUseFailure`` states no exit status (only error text, which FinishUP
+    # never parses), so the exemption, which needs exactly 128 + signal, never applies there.
+    stated = host != "claude"
+    assert omitted_results(ledger) == ((result,) if omitted or not stated else ())
+
+
+# --- retire on pass from each host's real handler (#1104 round 1) -----------------------------
+
+
+@pytest.mark.parametrize("host", ["claude", "cursor", "codex"])
+@pytest.mark.parametrize(
+    ("passing", "retired"),
+    [
+        (f"pytest -q tests/{_CANARY}.py", True),
+        (f"cd /app && pytest -q tests/{_CANARY}.py > log.txt 2>&1", True),
+        # A segment run behind an assignment is a different command.
+        (f"PYTEST_ADDOPTS=--collect-only pytest -q tests/{_CANARY}.py", False),
+        # A pass of another command never retires it.
+        ("pytest -q tests/other.py", False),
+    ],
+)
+def test_a_later_pass_retires_the_hosts_failed_command_finding(
+    tmp_path: Path, host: str, passing: str, retired: bool
+) -> None:
+    """Fail, then pass, through each host's real handler; the finding is the coordinator's shape
+    (observation-authored, naming the failed call's action and result events)."""
+
+    emit, build = _host(tmp_path, host)
+    _run_on(host, emit, "call-red", f"pytest -q tests/{_CANARY}.py", 1)
+    red = build()
+    (failed,) = _results(red)
+    _run_on(host, emit, "call-green", passing, 0)
+    ledger = ObservedLedger()
+    finding = None
+    for record in build().records:
+        ledger.append(record.schema, cast(EventPayload, record.payload), observed=True)
+        payload = record.payload
+        if type(payload) is ResultRecordedPayload and payload.result_id == failed:
+            finding = ledger.advice_finding(ledger.events_of(failed))
+    assert finding is not None
+    state = replay(ledger.prefix)
+    closure = finding_closure(state, finding)
+    assert closure is not None
+    if retired:
+        assert closure.basis == "retired_by_passing_run"
+        assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
+    else:
+        assert closure.basis == "open_unanswered"
+        assert finding_todo_state(state, finding) is FindingTodoState.OPEN

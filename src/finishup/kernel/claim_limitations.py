@@ -20,7 +20,7 @@ from finishup.domain.events import ActionRecordedPayload, ResultOutcome, ResultR
 from finishup.domain.values import ActionId, EventId, ObligationId, ResultId
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
-    observed_action_is_exploratory,
+    observed_failure_exempt,
     observed_failure_states_from_records,
 )
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
@@ -121,7 +121,7 @@ def required_limitation_result_ids(
             (action := actions.get(record.payload.action_id)) is not None
             and action.payload is not None
             and action.source_event_id in observed_event_ids
-            and observed_action_is_exploratory(action.payload)
+            and observed_failure_exempt(action.payload, record.payload)
         )
         and result_is_relevant_to_claim_scope(
             claim_scope,

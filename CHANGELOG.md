@@ -793,6 +793,30 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   - A verification started in the background and polled from a later call is still recorded only
     when it starts; FinishUP's guidance now asks agents to run verification in the foreground.
 
+- A failed-command finding is retired by a later passing run of the same command, alone or as a
+  segment of a passing `&&` chain whose earlier segments hand control back (after `exec CMD`,
+  `exit`, `eval`, `source`/`.` or an unresolvable command word the chain is `masked` and retires
+  nothing) (closure basis `retired_by_passing_run`, added in place to the
+  unreleased status-result 1.4.0 and check-result 1.4.0/1.5.0), and no check can resolve it
+  (`observed_failure_not_rerun`). `acknowledged` on it settles it as a disclosed failed command
+  (`failed_run_disclosed`, never clean) instead of a no-op, and `acknowledged_not_done` as
+  bookkeeping. Read-only chains (`&&`, `;`, `||`, `|`, banners, `cd`, a here-document fed to a read),
+  FinishUP's own read verbs and installed launcher, and a command that stops its own background job
+  with exactly that stop's exit (`process_control`, added in place to the unreleased
+  control-request 2.9.0) carry no failed-work duty. An unknown outcome never retires anything; on
+  Codex the pass's exit comes from the session stream (#1104).
+- A later passing run of a verification command the plan requests (an effective obligation's
+  `command` item, matched by the keyed commitment or segment rule) also retires every earlier
+  failed-command finding, even for another command, as the owner decided on 2026-10-18 (closure
+  basis `retired_by_planned_verification`, added in place to the same unreleased results). The
+  passing run must be a verifier (runner class test, build, lint or typecheck, so a planned `true`
+  or `ls` retires nothing) and the obligation must have been effective when it passed (a plan
+  published after the pass retires nothing). A later waiver or `acknowledged_not_done` reopens what
+  only it retired; a later plan revision does not. A planned segment counts only run as is, a
+  planned command that masks its exit never counts, an obligation acknowledged as not done plans
+  nothing, and a pass begun before the failed call finished retires nothing. The service
+  registers the installation key before its startup bundle upgrade, since the projection fold
+  reads it. The status advice view drops a failed-command item the ledger already retired (#1104).
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a

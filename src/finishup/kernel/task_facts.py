@@ -49,13 +49,14 @@ Requested-output facts need a check-time workspace read and live in ``requested_
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import posixpath
 import re
 import threading
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Final, cast
 
@@ -80,6 +81,7 @@ from finishup.domain.events import (
     is_observation_authored,
 )
 from finishup.domain.observation import normalize_observed_command, observed_command_commitment
+from finishup.domain.observation_selection import VERIFYING_RUNNER_CLASSES, command_runner_class
 from finishup.domain.task_fact_tokens import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS as AGENT_ACTIONABLE_TASK_FACT_GAPS,
 )
@@ -194,9 +196,14 @@ from finishup.kernel.observed_failures import (
     observed_event_ids_from_records,
     observed_shell_write_counts,
     observed_write_stales_verification,
+    success_certified_identities,
 )
 from finishup.kernel.plan_scope import current_plan_scope
-from finishup.kernel.projections import ProjectionState
+from finishup.kernel.projections import (
+    ObligationProjectionRecord,
+    PlanProjectionRecord,
+    ProjectionState,
+)
 from finishup.protocol.coverage import Coverage, PublicationChannel
 
 __all__ = [
@@ -266,11 +273,14 @@ __all__ = [
     "command_identity_key_registered",
     "declared_output_items",
     "deliverable_path_identity",
+    "effective_obligation_ids",
     "effective_obligations",
     "material_edit_recorded",
     "open_effective_obligations",
     "register_command_identity_key",
     "planned_match",
+    "planned_verification_commands",
+    "planned_verification_passed",
     "requested_command_identities",
     "requested_command_identity",
     "requested_planned_command",
@@ -385,6 +395,9 @@ def requested_command_identities(value: str) -> tuple[str, frozenset[str], str |
     planned ``X > log`` or ``cd /app && X`` also matches a run that shares those parts. The
     composition (``single``, ``and_chain``, ``masked``; ``None`` for a simple command) says
     whether the planned command's own outcome is its one segment's (``! X`` or ``X &`` is not).
+    It is read from the planned text's separators alone (``reachability=False``): a planned
+    ``source .venv/bin/activate && pytest -q`` stays ``and_chain``, so a plain ``pytest -q`` run
+    still names its outcome; the observed run's reachability rule is the run's own (#1104).
     """
 
     key = _COMMAND_IDENTITY_KEY[0]
@@ -395,7 +408,7 @@ def requested_command_identities(value: str) -> tuple[str, frozenset[str], str |
         return None
     try:
         whole = observed_command_commitment(key, normalized)
-        segments = exact_segment_commitments(key, normalized)
+        segments = exact_segment_commitments(key, normalized, reachability=False)
     except ValueError:
         return None
     if segments is None:
@@ -410,12 +423,16 @@ class PlannedCommand:
     ``whole``, ``segments`` and ``composition`` are ``requested_command_identities``;
     ``probes`` holds, for each simple command the planned text runs, its canonical probes
     (wrappers and ``python3`` normalised away, leading-argument prefixes and flag sets).
+    ``verifier`` is whether the planned text itself classifies as a verifier
+    (``observation_selection.command_runner_class`` in ``VERIFYING_RUNNER_CLASSES``); only such a
+    planned command can retire a failure (#1104).
     """
 
     whole: str
     segments: frozenset[str]
     composition: str | None
     probes: tuple[PlannedSegment, ...]
+    verifier: bool
 
 
 # How a planned command matched an observed run, strongest first. ``exact`` and ``normalized``
@@ -444,7 +461,8 @@ def requested_planned_command(value: str) -> PlannedCommand | None:
         probes = planned_segments(key, normalized) or ()
     except ValueError:
         probes = ()
-    return PlannedCommand(identities[0], identities[1], identities[2], probes)
+    verifier = command_runner_class({"command": value}) in VERIFYING_RUNNER_CLASSES
+    return PlannedCommand(identities[0], identities[1], identities[2], probes, verifier)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -762,13 +780,25 @@ def disclosure_declarations(projection: ProjectionState) -> tuple[DisclosureDecl
 def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ...]:
     """Effective, readable, unwaived obligations of the current plan chain."""
 
-    scope = current_plan_scope(projection.plans, projection.coverage_gaps)
+    return effective_obligation_ids(
+        projection.plans, projection.obligations, projection.coverage_gaps
+    )
+
+
+def effective_obligation_ids(
+    plans: Mapping[int, PlanProjectionRecord],
+    obligations: Mapping[ObligationId, ObligationProjectionRecord],
+    coverage_gaps: tuple[str, ...],
+) -> tuple[ObligationId, ...]:
+    """``effective_obligations`` over the collections the reducer folds (#1104)."""
+
+    scope = current_plan_scope(plans, coverage_gaps)
     if scope.effective_obligation_refs is None:
         return ()
     return tuple(
         obligation
         for obligation in scope.effective_obligation_refs
-        if (record := projection.obligations.get(obligation)) is not None
+        if (record := obligations.get(obligation)) is not None
         and record.payload is not None
         and record.plan_change is not ObligationChangeKind.WAIVED
     )
@@ -1489,20 +1519,132 @@ def passing_verification_observed(
     )
 
 
-def observed_run_from_command(command: str | None) -> _ObservedRun | None:
+def observed_run_from_command(
+    command: str | None, *, outcome: ResultOutcome = ResultOutcome.UNKNOWN
+) -> _ObservedRun | None:
     """A minimal observed run read off an action's ``command`` field, or ``None`` (unkeyed).
 
     Only the identity and segment commitments are known from a bare command field; the outcome
-    is unknown. ``command_attempts`` uses it to ask whether an observed action the agent linked
-    to a planned command is a run of that command, with no position or outcome claimed.
+    is unknown unless the caller read it off the run's own result. ``command_attempts`` uses it
+    to ask whether an observed action the agent linked to a planned command is a run of that
+    command, with no position or outcome claimed.
     """
 
     identity = command_identity(command)
     if identity is None:
         return None
     segments, composition = _segment_fields(command)
-    return _ObservedRun(
-        0, ResultOutcome.UNKNOWN, identity, None, frozenset(), segments, composition
+    return _ObservedRun(0, outcome, identity, None, frozenset(), segments, composition)
+
+
+@functools.lru_cache(maxsize=512)
+def _cached_planned_command(value: str, generation: int) -> PlannedCommand | None:
+    # ``generation`` is part of the cache key only: a re-registered key never reuses a row.
+    del generation
+    return requested_planned_command(value)
+
+
+def planned_verification_commands(
+    plans: Mapping[int, PlanProjectionRecord],
+    obligations: Mapping[ObligationId, ObligationProjectionRecord],
+    coverage_gaps: tuple[str, ...],
+    *,
+    effective_at: int | None = None,
+) -> tuple[PlannedCommand, ...]:
+    """The planned verifications of the effective plan, ready to match observed runs (#1104).
+
+    Every effective obligation's requested item of kind ``command`` that names an observable
+    command, in plan order, each once. An obligation the agent acknowledged as not done
+    (``acknowledged_not_done``) requests nothing here, as the planned-verification task facts
+    skip it; an obligation with a recorded blocker still does (a blocker decision is not a plan
+    event, and its command passing is still the planned verification passing). Empty without the
+    installation key: a process that cannot compute the identity never treats a run as the
+    planned verification.
+
+    ``effective_at`` (owner decision 2026-10-18) reads the plan as it was effective just before
+    that ledger sequence: only the plan events recorded before it make up the scope, and only an
+    obligation first published (``introduced_frontier``) before it counts, so an obligation
+    published, or introduced by a plan revision, after that point requests nothing there. The
+    obligation's status and waiver are read as the ledger records them now (a later
+    ``acknowledged_not_done`` or waiver is the agent's own statement that it is not being done).
+    """
+
+    if not command_identity_key_registered():
+        return ()
+    if effective_at is not None:
+        plans = {
+            version: record
+            for version, record in plans.items()
+            if record.source_frontier < effective_at
+        }
+    generation = command_identity_key_generation()
+    seen: set[str] = set()
+    planned: list[PlannedCommand] = []
+    for obligation in effective_obligation_ids(plans, obligations, coverage_gaps):
+        record = obligations[obligation]
+        payload = record.payload
+        assert payload is not None
+        if payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            continue
+        if (
+            effective_at is not None
+            and (record.introduced_frontier or record.source_frontier) >= effective_at
+        ):
+            continue
+        for item in payload.requested_items:
+            if (
+                item.item_kind is not RequestedItemKind.COMMAND
+                or item.value in seen
+                or requested_command_shape(item.value) != "command"
+            ):
+                continue
+            seen.add(item.value)
+            command = _cached_planned_command(item.value, generation)
+            if command is not None:
+                planned.append(command)
+    return tuple(planned)
+
+
+def planned_verification_passed(command: str | None, planned: Iterable[PlannedCommand]) -> bool:
+    """Whether a passing run of the observed ``command`` passed a planned verification (#1104).
+
+    Only the recorded rule counts (``planned_match`` kind ``exact``: the ADR-033 keyed command
+    commitment, or the planned command as a segment of the run), and the outcome it establishes
+    for the planned command must be a success: a ``single`` run or a successful ``&&`` chain. A
+    canonical, prefix or flag match, an agent link, a masked composition and a masked planned
+    command never count. The caller supplies a run whose own recorded outcome is a success.
+
+    Retirement reads segments the way the same-command rule does: only a segment the success
+    certifies (``observed_failures.success_certified_identities``, one that ran exactly as
+    listed) can be the planned command, so ``PYTEST_ADDOPTS=--co pytest -q``, ``exec pytest -q``
+    or ``pytest -q < answers.txt`` never passes a planned ``pytest -q``. A planned command whose
+    own composition masks its outcome (``X | tail``, ``! X``, ``X || true``, ``X &``, ``X; Y``)
+    never counts either, even run exactly as planned: its recorded exit is not the planned
+    work's. The task facts keep their looser ADR-033 reading. A run the hook recorded as
+    ``masked`` never counts even when its text is the planned text: the planned side reads its
+    composition from separators alone (``requested_command_identities``), so a planned
+    ``exec true && pytest -q`` run exactly as planned is refused by the run's own reachability
+    rule, which never reached ``pytest -q``.
+
+    The matched planned command must itself be a verifier (``PlannedCommand.verifier``): the
+    caller's check reads the whole run's class, which a compound takes from its strongest
+    verifier, so a planned ``true`` matched as a segment of ``true && pytest -q`` would otherwise
+    let a verifier the plan never asked for retire failures.
+    """
+
+    run = observed_run_from_command(command, outcome=ResultOutcome.SUCCESS)
+    if run is None:
+        return False
+    if run.composition == "masked":
+        return False
+    run = replace(run, segments=success_certified_identities(command))
+    return any(
+        item.verifier
+        and item.composition != "masked"
+        and (match := planned_match(run, item)) is not None
+        and match.kind == MATCH_EXACT
+        and match.outcome is ResultOutcome.SUCCESS
+        for item in planned
     )
 
 

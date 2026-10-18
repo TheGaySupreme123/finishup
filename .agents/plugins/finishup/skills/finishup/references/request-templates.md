@@ -885,6 +885,17 @@ only a finding that is still open: one a check already resolved (`verified_resol
 answer is final (`disputed_after_rebuttal`, `self_verified`) shows `next_actions: ["none"]` and
 takes no response, and nothing is recorded for one.
 
+A failed-command finding ("Unresolved failed command observed") needs no response once you rerun
+the same command after the fix, exactly as written, and it passes, alone or inside a passing `&&`
+chain: the pass retires it. A leading `VAR=value`, `env`, `nohup`, `exec` or `time` makes it a
+different command that retires nothing, and so does a chain whose earlier part can end the shell
+or runs text FinishUP cannot read (`exec CMD`, `exit`, `eval`, `source`/`.`). A passing test, build, lint or typecheck run of a command
+your plan already requested when it passed retires it too, and every other earlier failed-command
+finding with it; name such a failure in your completion claim's `limitation_refs` all the same,
+since that command never passed. If the failure is expected or will stay, respond `acknowledged`
+with a `reason` that says why: it is then disclosed on the receipt (never clean), and a later
+passing run still retires it.
+
 `acknowledged` on an AI-powered finding needs one concrete resolution attempt you recorded after
 the finding, cited in `evidence_refs`: the `evd_` or `res_` id of the repair, requested evidence or
 verification result (ids named only in `reason` do not count). A limitation request or an

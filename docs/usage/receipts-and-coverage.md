@@ -231,7 +231,8 @@ No disposition resolves a finding. Agents can record `acknowledged`, `acknowledg
 `self_verified`, `provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human. Each records what was decided
 and what evidence was attached; none clears the finding for receipt purposes. A readable response
 does clear the status surface's `unanswered_finding_count`, while the actionable finding remains in
-`receipt_blocking_finding_count` (except `self_verified`, below).
+`receipt_blocking_finding_count` (except `self_verified`, below, and `acknowledged` on a command
+FinishUP saw fail, which is disclosed instead).
 
 Observation-authored, non-actionable findings (such as "Observation coverage is incomplete or
 stale") are disclosed coverage limitations: they never count in `unanswered_finding_count` and need
@@ -352,6 +353,34 @@ Two more things decide what the receipt will say, and status tells you before yo
   a disclosed limitation and reads at best `insufficient_coverage`; it never blocks. Only your answer
   narrows it; a `finishup-verification-limit` decision does not. While it is open, the check's next
   step is `work_open_findings`, not `disclose_limitations`.
+- **A command FinishUP saw fail.** When FinishUP observes a command fail, it records a finding
+  ("Unresolved failed command observed") right away. Rerun the same command after the fix, alone or
+  inside a passing `&&` chain such as `cd /app && pytest -q`, exactly as written (`FOO=1 pytest -q`,
+  or `pytest -q` behind `env`, `nohup` or `time`, is a different command; a chain whose earlier
+  part can end the shell or runs text FinishUP cannot read, such as `exec CMD`, `exit`, `eval`, or
+  `source`/`.` in `source .venv/bin/activate && pytest -q`, retires nothing and names no outcome
+  for a planned command): when that run passes, the finding is
+  retired by itself (`verified_resolved`, basis `retired_by_passing_run`) and stays in the history.
+  A later passing run of a verification command your plan asks for retires it as well, together
+  with every other earlier failed-command finding, even for a command you never reran (basis
+  `retired_by_planned_verification`; the receipt says the planned verification passed, not the
+  command that failed). It counts only when FinishUP classes the run as a test, build, lint or
+  typecheck (a planned `true`, `ls` or `echo ok` retires nothing) and your plan already asked for
+  it when the run passed (a plan you publish after the pass retires nothing; run it again). The
+  planned command counts only run as written (no added `FOO=1`, `env` or `exec`, no input
+  redirection), with an exit that is its own (a planned `pytest -q | tail -5` or
+  `pytest -q || true` never counts), and only when it began after the failure. If you later waive
+  it or acknowledge it as not done, what only it retired opens again; a later plan that replaces
+  it does not reopen anything. An edit does not retire it, a passing run of an unplanned
+  different command does not, a run whose outcome FinishUP never learned does not, and a check
+  cannot prove it absent. If the failure is expected or
+  will stay, answer `acknowledged` with the reason: the receipt lists it as a disclosed failed
+  command and reads at best `insufficient_coverage`, and a later passing run still retires it. A
+  failed read or inspection (including a chain of reads with banners and `cd`), a failed FinishUP
+  status read, and a command that stopped the background job it started itself with exactly the
+  exit that stop produces do not raise one at all. Your completion claim must still name in
+  `limitation_refs` any failure that stays, and any failure only a planned verification retired:
+  the failed command itself never passed.
 
 While the work is in progress, the reviewer judges incomplete work only (something marked done that
 is not, verification you planned and did not run, a missing or emptied output, a claim the record

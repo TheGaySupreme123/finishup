@@ -458,6 +458,16 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     evidence or action id) of the re-raises recorded on a settled item; they widen its concern so
     a later re-raise naming only what the first re-raise added still folds onto it instead of
     minting a new item (formal-crypto S: the open obligation first appeared in a re-raise).
+    The retirement facts (#1104, ADR-025 amendment) are replay-derived by
+    ``kernel.finding_retirement``. ``observed_failed_command`` marks an observation-authored
+    ``failed_work_omitted`` finding that names no claim (an observed failed-command finding);
+    ``failed_run_result_id`` is the one hook-observed failed result it names, when exactly one is
+    named; ``retired_by_event_id`` and ``retired_frontier`` name the earliest later hook-observed
+    *passing* run of the same command identity (or a passing ``single``/``and_chain`` command whose
+    segments include it), or of a planned verification (a verifier run of a command an
+    obligation effective when it passed requests), which retires the finding;
+    ``retired_by_planned_verification`` says it was the second kind (owner decisions 2026-10-18). A retirement is a proof like a check's: redacting the passing run or the failed
+    run drops it, and nothing is deleted.
     ``duplicate_link_broken_by_check_event_ids`` (issue #996) names, in fold order, every later
     check that raised this finding's issue again (returned it, or the reviewer ruled it
     ``still_present`` or ``answered_not_fixed``) while its latest response was ``duplicate_of``.
@@ -483,11 +493,51 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     last_ruling_frontier: int | None = None
     resolution_frontier: int | None = None
     absorbed_refs: tuple[str, ...] = ()
+    observed_failed_command: bool = False
+    failed_run_result_id: ResultId | None = None
+    retired_by_event_id: EventId | None = None
+    retired_frontier: int | None = None
+    retired_by_planned_verification: bool = False
+
+    @property
+    def proof_event_id(self) -> EventId | None:
+        """The event that resolved this finding by proof: the proving check, else the passing run."""
+
+        return self.resolved_by_check_event_id or self.retired_by_event_id
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.payload is not None and type(self.payload) is not Finding:
             raise _invalid()
+        if type(self.observed_failed_command) is not bool:
+            raise _invalid()
+        if self.failed_run_result_id is not None:
+            if not self.observed_failed_command:
+                raise _invalid()
+            try:
+                object.__setattr__(
+                    self, "failed_run_result_id", result_id(self.failed_run_result_id)
+                )
+            except ValueError as exc:
+                raise _invalid() from exc
+        if (self.retired_by_event_id is None) is not (self.retired_frontier is None):
+            raise _invalid()
+        if type(self.retired_by_planned_verification) is not bool or (
+            self.retired_by_planned_verification and self.retired_by_event_id is None
+        ):
+            raise _invalid()
+        if self.retired_by_event_id is not None:
+            if self.failed_run_result_id is None:
+                raise _invalid()
+            try:
+                object.__setattr__(self, "retired_by_event_id", event_id(self.retired_by_event_id))
+            except ValueError as exc:
+                raise _invalid() from exc
+            if (
+                type(self.retired_frontier) is not int
+                or not 1 <= self.retired_frontier <= _MAX_SQLITE_SIGNED_INTEGER
+            ):
+                raise _invalid()
         if (
             type(self.absorbed_refs) is not tuple
             or len(self.absorbed_refs) > MAX_ABSORBED_REFS
@@ -1389,6 +1439,18 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             result["resolution_frontier"] = record.resolution_frontier
         if record.absorbed_refs:
             result["absorbed_refs"] = list(record.absorbed_refs)
+        # Issue #1104 retirement facts: emitted only when set, so a task without an observed
+        # failed-command finding keeps its exact snapshot bytes.
+        if record.observed_failed_command:
+            result["observed_failed_command"] = True
+        if record.failed_run_result_id is not None:
+            result["failed_run_result_id"] = record.failed_run_result_id
+        if record.retired_by_event_id is not None:
+            result["retired_by_event_id"] = record.retired_by_event_id
+        if record.retired_frontier is not None:
+            result["retired_frontier"] = record.retired_frontier
+        if record.retired_by_planned_verification:
+            result["retired_by_planned_verification"] = True
         # Issue #996: emitted only when a check broke a ``duplicate_of`` link.
         if record.duplicate_link_broken_by_check_event_ids:
             result["duplicate_link_broken_by_check_event_ids"] = list(
@@ -1695,6 +1757,11 @@ def _record_from_snapshot(
                 "last_ruling_frontier",
                 "resolution_frontier",
                 "absorbed_refs",
+                "observed_failed_command",
+                "failed_run_result_id",
+                "retired_by_event_id",
+                "retired_frontier",
+                "retired_by_planned_verification",
             }
         )
     else:
@@ -1827,11 +1894,17 @@ def _record_from_snapshot(
             if type(raw_absorbed) not in {list, tuple} or not raw_absorbed:
                 raise _invalid()
             absorbed = tuple(cast(list[str], raw_absorbed))
-        for frontier_name in ("last_ruling_frontier", "resolution_frontier"):
+        for frontier_name in ("last_ruling_frontier", "resolution_frontier", "retired_frontier"):
             if frontier_name in source:
                 frontier_raw = source[frontier_name]
                 if type(frontier_raw) is not int or frontier_raw < 1:
                     raise _invalid()
+        for flag in ("observed_failed_command", "retired_by_planned_verification"):
+            if flag in source and source[flag] is not True:
+                raise _invalid()
+        for name in ("failed_run_result_id", "retired_by_event_id"):
+            if name in source and type(source[name]) is not str:
+                raise _invalid()
 
         def event_ids(name: str) -> tuple[EventId, ...]:
             raw = source.get(name)
@@ -1883,6 +1956,11 @@ def _record_from_snapshot(
             last_ruling_frontier=cast(int | None, source.get("last_ruling_frontier")),
             resolution_frontier=cast(int | None, source.get("resolution_frontier")),
             absorbed_refs=absorbed,
+            observed_failed_command="observed_failed_command" in source,
+            failed_run_result_id=cast(ResultId | None, source.get("failed_run_result_id")),
+            retired_by_event_id=cast(EventId | None, source.get("retired_by_event_id")),
+            retired_frontier=cast(int | None, source.get("retired_frontier")),
+            retired_by_planned_verification="retired_by_planned_verification" in source,
         )
     return ProjectionRecord(
         payload=payload,

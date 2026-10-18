@@ -39,8 +39,8 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
-    observed_action_is_exploratory,
     observed_event_ids_from_coverage,
+    observed_failure_exempt,
     observed_failure_states,
 )
 from finishup.kernel.outcome_corrections import superseded_unknown_results
@@ -299,7 +299,7 @@ def _limiting_refs(
             action is not None
             and action.payload is not None
             and action.source_event_id in observed
-            and observed_action_is_exploratory(action.payload)
+            and observed_failure_exempt(action.payload, record.payload)
         ):
             continue
         if (

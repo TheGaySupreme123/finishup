@@ -1767,6 +1767,95 @@ accepts both the structured and the header forms. Source tests do not establish 
 acceptance on macOS, Linux or Windows through WSL 2. Dogfood confirmation per platform is owed on
 the same issue.
 
+## Failed-command findings (issue #1104)
+
+A failed shell call becomes an observation finding (`failed_command_unresolved`, kind
+`failed_work_omitted`) seconds after FinishUP records the failure. Decisions for Codex:
+
+- **Retire on pass: supported.** A later passing run of the same command, alone or as a segment
+  of a passing `&&` chain (`cd /app && pytest -q`), retires the finding (`verified_resolved`,
+  closure basis `retired_by_passing_run`). The segment must run as is: behind a leading
+  assignment, `env`, `nohup`, `exec`, `time` or an input redirection it is a different command
+  and retires nothing (ADR-025). A chain whose earlier segment may not hand control back
+  (`exec CMD`, `exit`, `eval`, `source`/`.`, an unsafe `set` or `shopt -o`, an unresolvable
+  command word such as `$RUN`, `exec>log` or `{exit,0}`) is recorded `masked` and retires
+  nothing. FinishUP reads the outcome it finally records for the passing call. On Codex 0.159 the `PostToolUse` of a shell call states no exit, so that outcome
+  is the session stream's: an outcome correction joined to the hook's call, or the stream copy
+  when it committed first. A rerun whose exit never reaches FinishUP stays `unknown` and retires
+  nothing. That is the main pilot risk: count `retired_by_passing_run` against open failed-command
+  findings. Pinned by `tests/integration/application/test_codex_failed_command_retirement.py`
+  (direct `exec_command` and code-mode `exec` cell shapes, with the exit removed from the recorded
+  0.157.1 shapes; a raw 0.159 hook stdin capture is still owed on #1104). Advice itself raises a
+  Codex failure only from envelopes that carry the exit under a command tool name; stream-side
+  command identity for `function_call` rows is #1092/W2's work.
+- **Retire on a passing planned verification: supported** (owner decision 2026-10-18, ADR-025).
+  A later passing run of a command an effective obligation requests (the ADR-033 keyed commitment,
+  or as a segment of a passing `single` run or `&&` chain) retires every earlier failed-command
+  finding, even one for another command (closure basis `retired_by_planned_verification`). The
+  same outcome rule applies: on 0.159 the planned run is a known success only through the session
+  stream's correction joined by call id or a stream-first copy, never from the outcome-less hook
+  post. Pinned by `test_a_passing_planned_verification_joined_from_the_stream_retires_another_failure`
+  and `test_an_unknown_planned_verification_never_retires_another_failure` in
+  `tests/integration/application/test_codex_failed_command_retirement.py`. Order is by the call,
+  not by its correction: a call whose hook was recorded before the failed call's hook began before
+  the failure and retires nothing, though its exit lands after it, while both exits may lag for a
+  call begun after it (`test_a_lagging_correction_retires_only_a_pass_begun_after_the_failure`).
+  A planned segment must have run as is (a leading assignment, `env`, `exec`, `nohup`, `time` or an
+  input redirection passes nothing), a planned command that masks its own exit (`| tail`, `!`,
+  `|| true`, `&`, `;`) never counts, and the passing call must have begun after the failed call
+  finished. A failure it retires must still be named in a completion claim's `limitation_refs`.
+  The passing run must be a verifier (the runner class the hook or the stream records: `test`,
+  `build`, `lint` or `typecheck`; a planned `true` or `ls` retires nothing), and the obligation
+  must have been effective when the run passed, which on 0.159 is when its outcome-less
+  `PostToolUse` landed: a plan published after it, even before the joined exit, retires nothing
+  (`test_a_plan_published_after_the_pass_retires_nothing` and
+  `test_a_planned_command_that_is_no_verifier_retires_nothing` in the same file; owner decision
+  2026-10-18, #1104 comment 6252094173).
+  Known gap (follow-up on #1104): the hook-side advice can still list the retired item until the
+  observation evidence changes; `status view=advice`, the Stop gate, check and the receipt read
+  the ledger and do not.
+- **No check resolves it** (`observed_failure_not_rerun`). An edit never retires it either.
+- **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
+  clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
+- **Read-only chains: supported.** `cd`, `echo`/`printf` banners, `&&`/`;`/`||`/`|` chains of
+  reads, `sed -n`, `nl`, `jq` and a here-document fed to `cat` are exploration, so a failed read
+  raises nothing. The read Codex agents make of the skill path is one of them (below).
+- **FinishUP's own CLI: supported** through its installed launcher path (proven from the install
+  record, never by name), `observe status`, `service status`, and `| jq`.
+- **Stopping its own background job: supported in one command.** `server & ...; kill $!;
+  wait $!` exiting `143` (or `130`/`137` for `-INT`/`-KILL`) carries no duty. The shape is a
+  marker inside the command's keyed commitment list, which the hook and the session stream both
+  compute from the command text, so a hook-first call (the hook's copy carries the shape and no
+  exit, the joined stream correction states the exit) and a stream-first call (the stream copy
+  carries both) are judged alike by the ledger readers and the advice rule. Any other exit, or an
+  unknown one, keeps the duty, and a stopped verifier (`pytest -q & ...; kill $!; wait $!`) never
+  carries the shape. Pinned by `test_a_stopped_own_job_is_judged_by_the_joined_stream_exit` and
+  `test_a_stopped_own_job_committed_stream_first_keeps_the_same_judgment`; through the real
+  hook handler the Codex variants of `fixtures/observations/failed-command-exemptions.case.json`
+  (OUT-006, 0.157.1 header shape) pin the recorded class and stop shape, with an unknown hook
+  outcome because hook text is the command's own output (n7 RC1). Known limit: a host
+  timeout that terminates the whole command with `SIGTERM` exits `143` too; Codex states no
+  timeout flag for a shell call, so FinishUP cannot tell the two apart. Deferred: a `write_stdin`
+  interrupt of a running session and a separate `kill PID` call (no recorded payload), owned by
+  #1104.
+- **Doubled skill path: not fixed here.** Codex lists the skill under
+  `<codex-home>/plugins/cache/finishup/finishup/<version>/skills/finishup/SKILL.md` because the
+  marketplace and the plugin are both named `finishup`. Agents that collapse the doubled segment
+  read a path that does not exist. That read is now exploration and raises no finding. Renaming
+  the marketplace is a host-registration migration, owed as a packaging follow-up on #1104.
+- **Version skew.** No observation key, outbox shape or control-request field was added: the
+  stop shape and the segment-certification markers are extra entries of the existing
+  `command_segment_commitments` list, which every 0.3 build accepts as inert commitments. The
+  local observation store and outbox are shared on disk by every build running during an
+  upgrade (an older service's outbox sweeper reads them directly, with no handshake, and hooks
+  run from retained release copies), and an older reader refuses a whole workspace document that
+  holds an envelope key it does not know; a new key would have stopped its sweeps for every
+  workspace. An older reader of these rows simply keeps the ordinary failure duty and certifies
+  no segment. The in-place `status-result` 1.4.0 and `check-result` 1.5.0 closure-basis values
+  still change the schema manifest digest, so a hook of this build is refused by an older
+  running service at the handshake (`service_incompatible`) and its rows wait in the outbox until
+  `finishup service restart`, or the next `start`, supersedes the older holder.
+
 ## Smart observation selection (issue #687)
 
 The Codex native hook path applies the shared deterministic observation selector before optional

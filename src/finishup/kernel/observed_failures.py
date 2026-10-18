@@ -9,8 +9,13 @@ failure history instead of an omission:
   can replace the earlier disclosure duty. An unknown outcome does not certify repair. The
   identity is the installation-keyed ``hmac-sha256:`` command commitment the hook computes and
   materialization stores as ``omitted:<commitment>`` in the action's ``command`` field; the raw
-  command text never reaches the ledger. Any other command, and any unkeyed or structural
-  placeholder, supersedes nothing.
+  command text never reaches the ledger. A later *success* also certifies each exact segment
+  commitment that ran exactly as listed when its composition is ``single`` or ``and_chain``
+  (#1104, ADR-045, ``certified_identities``): every simple command of a passing
+  ``cd /app && pytest -q`` exited zero, so it retires a failed ``pytest -q``, while a passing
+  ``PYTEST_ADDOPTS=--co pytest -q`` ran a different command and retires nothing. A ``masked`` composition (``;``, ``||``, ``|``, ``&``, a shell heredoc) certifies
+  no segment, and a failed chain is retired only by its own whole identity. Any other command,
+  and any unkeyed or structural placeholder, supersedes nothing.
 * **No edit inference.** A workspace edit changes the state being verified, but it does not prove
   that a failed validation was repaired or passed. A failed run therefore stays live until a
   later qualifying run of the same keyed command identity (or an explicit claim acknowledgement)
@@ -36,7 +41,10 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Final, cast
 
-from finishup.domain.command_segments import MAX_COMMAND_COMMITMENTS
+from finishup.domain.command_segments import (
+    MAX_COMMAND_COMMITMENTS,
+    segment_certification_commitment,
+)
 from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -46,6 +54,8 @@ from finishup.domain.events import (
     ResultRecordedPayload,
     is_observation_authored,
 )
+from finishup.domain.observation_selection import VERIFYING_RUNNER_CLASSES
+from finishup.domain.process_control import process_control_from_commitments, stopped_own_job
 from finishup.domain.values import ActionId, EventId, ResultId, event_id
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
 from finishup.protocol.coverage import Coverage, PublicationChannel
@@ -61,6 +71,7 @@ __all__ = [
     "ObservedFailureState",
     "ObservedRun",
     "ObservedRunFacts",
+    "certified_identities",
     "classify_observed_runs",
     "command_identity",
     "command_segment_identities",
@@ -72,12 +83,17 @@ __all__ = [
     "observed_failure_states_from_records",
     "observed_action_description",
     "observed_action_is_exploratory",
+    "observed_action_is_verifier",
+    "observed_action_process_control",
+    "observed_failure_exempt",
     "observed_action_runner_class",
     "observed_action_runtime_tokens",
     "observed_action_tool",
     "INSTALL_TARGET_CLASSES",
     "RUNTIME_SUFFIX_TOKENS",
     "observed_run_facts",
+    "success_certified_identities",
+    "superseding_witnesses",
 ]
 
 # Hook materialization writes a command action's ``command`` as ``omitted:<digest>``; only an
@@ -161,7 +177,9 @@ class ObservedRun:
     ``position`` orders runs (ledger ingestion sequence, or envelope order for advice). ``edit``
     marks an edit tool call for callers that need to retain that structural fact. Edits never
     supersede a failed validation: only a qualifying rerun of the same keyed command identity can
-    establish that the earlier failure has been rerun or passed.
+    establish that the earlier failure has been rerun or passed. ``certifies`` are the further
+    identities a *success* of this run proves passed (``success_certified_identities``: the exact
+    segment commitments of a ``single`` or ``and_chain`` command); a failure ignores it.
     """
 
     ref: str
@@ -169,6 +187,7 @@ class ObservedRun:
     outcome: ResultOutcome
     identity: str | None = None
     edit: bool = False
+    certifies: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if (
@@ -178,6 +197,12 @@ class ObservedRun:
             or type(self.outcome) is not ResultOutcome
             or (self.identity is not None and _COMMITMENT_PATTERN.fullmatch(self.identity) is None)
             or type(self.edit) is not bool
+            or type(self.certifies) is not frozenset
+            or len(self.certifies) > _MAX_SEGMENT_IDENTITIES
+            or any(
+                type(item) is not str or _COMMITMENT_PATTERN.fullmatch(item) is None
+                for item in self.certifies
+            )
         ):
             raise ValueError("observed_run_invalid")
 
@@ -217,6 +242,41 @@ def command_segment_identities(command: object) -> tuple[frozenset[str], str] | 
     return frozenset(segments), parts[1]
 
 
+def certified_identities(segments: object, composition: object) -> frozenset[str]:
+    """The segment commitments a *success* with this composition proves passed, else empty.
+
+    Only ``single`` and ``and_chain`` (every segment ran and exited zero for the whole to exit
+    zero) certify, and only the segments that ran exactly as listed: those the hook marked with
+    ``domain.command_segments.segment_certification_commitment``. A segment the hook listed after
+    dropping a leading assignment, ``env``, ``time``, ``nohup``, ``exec`` or an input redirection
+    (``PYTEST_ADDOPTS=--co pytest -q``) ran a different command and certifies nothing. A
+    ``masked`` composition can exit zero while a segment failed, so it certifies none (the hook
+    also records an ``&&`` chain as ``masked`` when an earlier segment may not hand control back:
+    ``exec true && pytest -q``, ``exit 0 && pytest -q``), and a list written before the marker
+    existed certifies none. A malformed list never widens a match:
+    anything but bounded keyed commitments certifies none.
+    """
+
+    if composition not in {"single", "and_chain"} or not isinstance(segments, (list, tuple)):
+        return frozenset()
+    items = cast(list[object] | tuple[object, ...], segments)
+    if len(items) > _MAX_SEGMENT_IDENTITIES or any(
+        type(item) is not str or _COMMITMENT_PATTERN.fullmatch(item) is None for item in items
+    ):
+        return frozenset()
+    listed = frozenset(cast(list[str] | tuple[str, ...], items))
+    return frozenset(item for item in listed if segment_certification_commitment(item) in listed)
+
+
+def success_certified_identities(command: object) -> frozenset[str]:
+    """``certified_identities`` for the ``command`` field of an observed command action."""
+
+    parsed = command_segment_identities(command)
+    if parsed is None:
+        return frozenset()
+    return certified_identities(tuple(parsed[0]), parsed[1])
+
+
 def observed_command_field(
     commitment: str, segments: tuple[str, ...] | None = None, composition: str | None = None
 ) -> str:
@@ -242,8 +302,9 @@ def classify_observed_runs(runs: Iterable[ObservedRun]) -> Mapping[str, Observed
     """Classify every failed or partial run against the runs that follow it.
 
     One backward pass. Only the latest *limiting* run of a command identity can be live: a failure
-    is ``SUPERSEDED`` when a later run with the same identity succeeded, else ``RERUN`` when a
-    later failure or partial run with the same identity follows it (that later run is the one
+    is ``SUPERSEDED`` when a later run with the same identity succeeded (or a later success
+    certified that identity as one of its segments, ``ObservedRun.certifies``), else ``RERUN`` when
+    a later failure or partial run with the same identity follows it (that later run is the one
     judged), else ``LIVE``. A later failure of the same identity is a new failure in its own
     right; it never revives an earlier superseded one. Edits or other workspace-state changes do
     not retire a failure because neither proves that the failed validation was covered. The caller
@@ -264,13 +325,39 @@ def classify_observed_runs(runs: Iterable[ObservedRun]) -> Mapping[str, Observed
                 states[run.ref] = ObservedFailureState.RERUN
             else:
                 states[run.ref] = ObservedFailureState.LIVE
-        if run.identity is not None and (
-            run.outcome in _FAILED_OUTCOMES or run.outcome is ResultOutcome.SUCCESS
-        ):
+        if run.outcome is ResultOutcome.SUCCESS:
+            proven = run.certifies if run.identity is None else run.certifies | {run.identity}
+            ran_after.update(proven)
+            passed_after.update(proven)
+        elif run.identity is not None and run.outcome in _FAILED_OUTCOMES:
             ran_after.add(run.identity)
-            if run.outcome is ResultOutcome.SUCCESS:
-                passed_after.add(run.identity)
     return MappingProxyType(states)
+
+
+def superseding_witnesses(runs: Iterable[ObservedRun]) -> Mapping[str, str]:
+    """Map each ``SUPERSEDED`` failure ref to the ref of the earliest later success proving it.
+
+    The same backward pass and the same identities as ``classify_observed_runs``: the witness is
+    the first success after the failure (in ``position`` order) whose identity or certified
+    segments include the failure's identity. A failure that is not superseded has no entry.
+    """
+
+    ordered = sorted(runs, key=lambda run: run.position, reverse=True)
+    if len({run.position for run in ordered}) != len(ordered):
+        raise ValueError("observed_run_invalid")
+    first_pass_after: dict[str, str] = {}
+    witnesses: dict[str, str] = {}
+    for run in ordered:
+        if run.outcome in _FAILED_OUTCOMES and run.identity is not None:
+            witness = first_pass_after.get(run.identity)
+            if witness is not None:
+                witnesses[run.ref] = witness
+        if run.outcome is ResultOutcome.SUCCESS:
+            proven = run.certifies if run.identity is None else run.certifies | {run.identity}
+            for identity in proven:
+                # Walking backward, a later overwrite is an earlier success.
+                first_pass_after[identity] = run.ref
+    return MappingProxyType(witnesses)
 
 
 def is_observed_run_record(record: LedgerRecord) -> bool:
@@ -323,11 +410,13 @@ def _projection_runs(
         ):
             continue
         identity: str | None = None
+        certifies: frozenset[str] = frozenset()
         edit = False
         action = actions.get(payload.action_id)
         if action is not None and action.payload is not None and action.source_event_id in observed:
             if action.payload.action_kind is ActionKind.COMMAND:
                 identity = command_identity(action.payload.command)
+                certifies = success_certified_identities(action.payload.command)
             elif action.payload.action_kind is ActionKind.EDIT:
                 edit = True
         runs.append(
@@ -337,6 +426,7 @@ def _projection_runs(
                 outcome=payload.outcome,
                 identity=identity,
                 edit=edit,
+                certifies=certifies,
             )
         )
     return tuple(runs)
@@ -392,8 +482,8 @@ def observed_action_description(
 ) -> str:
     """Append bounded host facts to an observed action description, when known.
 
-    The suffix order is fixed (tool, runner, install, write, user) so each reader can strip the
-    later suffixes before parsing an earlier one. Every value is a closed token.
+    The suffix order is fixed (tool, runner, install, write, user) so each reader can
+    strip the later suffixes before parsing an earlier one. Every value is a closed token.
     """
 
     result = base
@@ -497,6 +587,59 @@ def observed_action_runner_class(description: str) -> str | None:
     without_runtime, _tokens = _split_runtime_suffixes(description)
     match = _RUNNER_SUFFIX_RE.search(without_runtime)
     return None if match is None else match.group(1)
+
+
+def observed_action_process_control(action: ActionRecordedPayload) -> str | None:
+    """The own-background-job stop shape (#1104) an observed command's ``command`` field carries.
+
+    Read from the keyed commitment list materialization copied from the envelope
+    (``domain.process_control.process_control_from_commitments``), never from the description:
+    the shape travels inside the commitments every build already accepts, so neither the local
+    store nor the wire gained a key. ``None`` for any other action.
+    """
+
+    if action.action_kind is not ActionKind.COMMAND:
+        return None
+    whole = command_identity(action.command)
+    parsed = command_segment_identities(action.command)
+    if whole is None or parsed is None:
+        return None
+    return process_control_from_commitments(whole, parsed[0])
+
+
+def observed_failure_exempt(
+    action: ActionRecordedPayload, result: ResultRecordedPayload | None = None
+) -> bool:
+    """Whether an observed command's failure carries no failed-work duty (#972, #1104).
+
+    A known read or exploration (``observed_action_is_exploratory``), or a command that stopped
+    the background job it launched itself and whose recorded exit is exactly that stop's status
+    (``domain.process_control.stopped_own_job``). The exit is read from the result being judged,
+    so a Codex call's stream outcome correction decides it like a hook-stated exit; an unknown
+    or any other exit keeps the duty. Every failure-accounting reader uses this one predicate.
+    """
+
+    if observed_action_is_exploratory(action):
+        return True
+    return (
+        result is not None
+        and action.action_kind is ActionKind.COMMAND
+        and stopped_own_job(observed_action_process_control(action), result.exit_status)
+    )
+
+
+def observed_action_is_verifier(action: ActionRecordedPayload) -> bool:
+    """Whether a service-derived command's recorded runner class is a verifier (#1104).
+
+    The class the hook boundary derived (``observation_selection.command_runner_class``) and
+    materialization appended to the description: ``test``, ``build``, ``lint`` or ``typecheck``.
+    A read, ``vcs``, ``other`` or unclassified command never is.
+    """
+
+    return (
+        action.action_kind is ActionKind.COMMAND
+        and observed_action_runner_class(action.description) in VERIFYING_RUNNER_CLASSES
+    )
 
 
 def observed_action_is_exploratory(action: ActionRecordedPayload) -> bool:

@@ -185,8 +185,8 @@ from finishup.kernel.limitation import limitation_standing
 from finishup.kernel.lineage import LineageEvaluation, evaluate_recorded_lineage
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
-    observed_action_is_exploratory,
     observed_event_ids_from_coverage,
+    observed_failure_exempt,
     observed_failure_states,
 )
 from finishup.kernel.plan_scope import current_plan_scope
@@ -1098,7 +1098,7 @@ async def _current_task_findings(
         finding
         for item in projection.findings.values()
         if not item.redacted
-        and item.resolved_by_check_event_id is None
+        and item.proof_event_id is None
         and type(finding := item.payload) is Finding
     )
 
@@ -2009,7 +2009,7 @@ def _recorded_work_refs(
         action_payload = action.payload
         if action_payload.action_kind is not ActionKind.COMMAND:
             continue
-        if observed_action_is_exploratory(action_payload):
+        if observed_failure_exempt(action_payload, payload):
             continue
         if action_payload.obligation_refs and not active_obligations.intersection(
             action_payload.obligation_refs
@@ -3400,7 +3400,7 @@ def prior_finding_ids(projection: ProjectionState) -> dict[FindingIdentity, Find
     for key, record in projection.findings.items():
         if (
             record.payload is None
-            or record.resolved_by_check_event_id is not None
+            or record.proof_event_id is not None
             or record.payload.origin is not FindingOrigin.DETERMINISTIC
             or finding_todo_state(projection, key) is FindingTodoState.SELF_VERIFIED
         ):

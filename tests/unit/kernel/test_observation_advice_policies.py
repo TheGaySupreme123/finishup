@@ -1190,3 +1190,120 @@ def test_an_edit_post_event_without_a_stated_success_does_not_retire_a_failure()
     )
     unresolved = _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), unknown_edit)
     assert [item.evidence_refs for item in unresolved] == [("hook:toolu-1:1",)]
+
+
+# --- segment certification and stopped own background jobs (#1104) ---------------------------
+
+
+def _shell_post(
+    pos: int, call: str, *, exit_status: int | None, commitment: str, **extra: object
+) -> ObservationEnvelope:
+    payload: dict[str, object] = {
+        "tool_name": "Bash",
+        "tool_call_id": call,
+        "command_commitment": commitment,
+        **extra,
+    }
+    if exit_status is not None:
+        payload["exit_status"] = exit_status
+    return _envelope("PostToolUse", pos=pos, identity=f"hook:{call}:{pos}", payload=payload)
+
+
+def _certified(*segments: str) -> list[str]:
+    from finishup.domain.command_segments import segment_certification_commitment
+
+    return sorted({*segments, *(segment_certification_commitment(item) for item in segments)})
+
+
+def _stop_marked(commitment: str) -> list[str]:
+    from finishup.domain.process_control import process_control_commitment
+
+    return [process_control_commitment("stop_own_job_term", commitment)]
+
+
+def test_failed_command_rule_honors_segment_certification() -> None:
+    chain = "hmac-sha256:" + "3" * 64
+    failed = _bash(1, "toolu-1", success=False, commitment=_PYTEST_X)
+    certified = _shell_post(
+        2,
+        "toolu-2",
+        exit_status=0,
+        commitment=chain,
+        command_segment_commitments=_certified(_PYTEST_X, _PYTEST_Y),
+        command_composition="and_chain",
+    )
+    assert not _unresolved(failed, certified)
+    # The same chain without the markers listed ``pytest`` after dropping a leading assignment
+    # (``PYTEST_ADDOPTS=--co pytest ...``): it ran a different command and certifies nothing.
+    conditioned = _shell_post(
+        2,
+        "toolu-2",
+        exit_status=0,
+        commitment=chain,
+        command_segment_commitments=[_PYTEST_X, _PYTEST_Y],
+        command_composition="and_chain",
+    )
+    assert len(_unresolved(failed, conditioned)) == 1
+    masked = _shell_post(
+        2,
+        "toolu-2",
+        exit_status=0,
+        commitment=chain,
+        command_segment_commitments=_certified(_PYTEST_X, _PYTEST_Y),
+        command_composition="masked",
+    )
+    assert len(_unresolved(failed, masked)) == 1
+
+
+@pytest.mark.parametrize(
+    ("exit_status", "raised"), [(143, False), (1, True), (137, True), (None, False)]
+)
+def test_failed_command_rule_honors_a_stopped_own_job(
+    exit_status: int | None, raised: bool
+) -> None:
+    stopped = _shell_post(
+        1,
+        "toolu-1",
+        exit_status=exit_status,
+        commitment=_PYTEST_X,
+        command_segment_commitments=_stop_marked(_PYTEST_X),
+        command_composition="masked",
+        runner_class="compound",
+    )
+    assert bool(_unresolved(stopped)) is raised
+
+
+def test_a_stream_copy_is_judged_by_the_shape_its_hook_copy_recorded() -> None:
+    """Codex: the hook post carries the shape but no exit; the stream item states the exit."""
+
+    hook = _shell_post(
+        1,
+        "call-1",
+        exit_status=None,
+        commitment=_PYTEST_X,
+        command_segment_commitments=_stop_marked(_PYTEST_X),
+        command_composition="masked",
+    )
+    stream_stopped = _shell_post(2, "exec-1", exit_status=143, commitment=_PYTEST_X)
+    assert not _unresolved(hook, stream_stopped)
+    stream_crashed = _shell_post(2, "exec-1", exit_status=1, commitment=_PYTEST_X)
+    assert len(_unresolved(hook, stream_crashed)) == 1
+
+
+def test_failed_command_detail_text_is_fixed_and_bounded() -> None:
+    from finishup.application.observation_advice import (
+        _RULE_DETAILS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    detail = _RULE_DETAILS["failed_command_unresolved"]
+    assert "A passing rerun of it" in detail
+    assert "a verification your plan requests" in detail
+    assert "an edit does not" in detail
+    assert "acknowledged" in detail
+    assert "completed edit followed" not in detail
+    from finishup.domain.observation import (
+        _ADVICE_TEXT_RE,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # The advice item's own bound: 240 characters of the closed advice alphabet.
+    assert _ADVICE_TEXT_RE.fullmatch(detail) is not None

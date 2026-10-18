@@ -1158,6 +1158,59 @@ call's result `evidence_refs`, with the description `Observed image tool result 
 can cite the evidence id as its own inspection of the output. This holds at every body size up to
 the 8 MiB skim cap.
 
+### Failed-command findings (issue #1104)
+
+A failed `Bash` call becomes an observation finding (`failed_command_unresolved`, kind
+`failed_work_omitted`) seconds after it is recorded. Decisions for Claude Code:
+
+- **Retire on pass: supported.** `PostToolUse` states success and `PostToolUseFailure` states
+  failure (`fixtures/observations/claude-code-bash-outcomes.case.json`), so a later passing run of
+  the same command, alone or as a segment of a passing `&&` chain run as is (no leading
+  assignment, `env`, `nohup`, `exec`, `time` or input redirection, ADR-025), retires the finding
+  (closure basis `retired_by_passing_run`). A chain whose earlier segment may not hand control
+  back (`exec CMD`, `exit`, `eval`, `source`/`.`, an unsafe `set` or `shopt -o`, an unresolvable
+  command word such as `$RUN`, `exec>log` or `{exit,0}`) is recorded `masked` and retires
+  nothing. Pinned end to end, from the real hook handler through
+  the coordinator's own finding to status and the receipt, by
+  `tests/integration/application/test_failed_command_retirement_e2e.py`, and per host by
+  `tests/integration/observation/test_failure_supersession_hosts.py`. An edit never retires it, and no check resolves it
+  (`observed_failure_not_rerun`).
+- **Retire on a passing planned verification: supported** (owner decision 2026-10-18, ADR-025).
+  A later `PostToolUse` success of a command an effective obligation requests (the ADR-033 keyed
+  commitment, or as a segment of a passing `single` run or `&&` chain) retires every earlier
+  failed-command finding, even one for another command (closure basis
+  `retired_by_planned_verification`). Pinned with the real Claude Code hook handler by
+  `test_claude_passing_planned_verification_retires_an_unrelated_failure` in
+  `tests/integration/observation/test_failure_supersession_hosts.py`, and through status and the
+  receipt by `test_failed_install_then_planned_verification_pass_retires_it` in
+  `tests/integration/application/test_failed_command_retirement_e2e.py`. A parallel call whose
+  `PreToolUse` was recorded before the other call's failure began before it and retires nothing.
+  A planned segment must have run as is (a leading assignment, `env`, `exec`, `nohup`, `time` or an
+  input redirection passes nothing), a planned command that masks its own exit (`| tail`, `!`,
+  `|| true`, `&`, `;`) never counts, and the passing call must have begun after the failed call
+  finished. A failure it retires must still be named in a completion claim's `limitation_refs`.
+  The passing run must be a verifier (the hook's runner class `test`, `build`, `lint` or
+  `typecheck`; a planned `true` or `ls` retires nothing), and the obligation must have been
+  effective when its `PostToolUse` landed: a plan published after the pass retires nothing, one
+  published while the call ran counts (`test_claude_plan_published_after_the_pass_retires_nothing`
+  and `test_claude_planned_command_that_is_no_verifier_retires_nothing` in
+  `tests/integration/observation/test_failure_supersession_hosts.py`; owner decision 2026-10-18,
+  #1104 comment 6252094173).
+  Known gap (follow-up on #1104): the hook-side advice can still list the retired item until the
+  observation evidence changes; `status view=advice`, the Stop gate, check and the receipt read
+  the ledger and do not.
+- **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
+  clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
+- **Read-only chains and FinishUP's own CLI: supported**, as on every host (`cd`, banners,
+  chains of reads, a here-document fed to `cat`, `| jq`, the installed launcher path).
+- **Stopping its own background job: not exempt on Claude Code.** The exemption needs the exact
+  exit `128 + signal`, and `PostToolUseFailure` states no exit status (only error text, which
+  FinishUP never parses). Such a failure keeps the ordinary duty: rerun the probe without the
+  kill, or acknowledge it. `KillShell` and `BashOutput` are not read (payload unverified). Both
+  decisions are pinned through the real handler by the Claude Code variants of
+  `fixtures/observations/failed-command-exemptions.case.json` (OUT-006).
+- **Doubled skill path:** not applicable (a Codex cache layout).
+
 ### Smart observation selection (issue #687)
 
 Claude's shared hook ingress applies the selector only to the generic tool stream exposed by the

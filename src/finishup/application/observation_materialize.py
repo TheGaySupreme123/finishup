@@ -400,7 +400,10 @@ def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
     commitment = structural.get("command_commitment")
     if type(commitment) is str:
         # A compound or wrapped command also carries its simple commands' keyed commitments
-        # (#977): planned-verification matching reads them; failure supersession does not.
+        # (#977): planned-verification matching reads them. The list also carries the derived
+        # markers of #1104 (``domain.command_segments._derived_markers``): which segments a
+        # passing ``single`` or ``and_chain`` run certifies, and an own-background-job stop
+        # shape; failure accounting reads them back from this field.
         segments = structural.get("command_segment_commitments")
         composition = structural.get("command_composition")
         return observed_command_field(

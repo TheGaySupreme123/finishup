@@ -2064,7 +2064,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "is final (next_actions none) takes no response. Acknowledging an AI-powered finding "
         "cites in evidence_refs an evd_ or res_ recorded after it; evidence_refs is a set: any "
         "order, sorted for you. "
-        "For an unresolved finding: repair it and check first. "
+        "For an unresolved finding: repair it and check first; for an observed failed command "
+        "(Unresolved failed command observed), rerun the same command or the planned verification "
+        "instead; a completion claim still names in limitation_refs a failure only the planned "
+        "verification retired. "
         "If you repaired it and FinishUP still cannot confirm it (a FinishUP limit), verify it yourself, "
         "record that evidence, and respond self_verified saying how you checked it, with the "
         "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
@@ -2085,6 +2088,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "receipt_blocking_finding_count (except self_verified, which is disclosed and keeps the "
         "receipt from reading clean), erasing its historical record, or closing an independent "
         "coverage gap; only a later qualifying check of the repaired record resolves a finding. "
+        "An observed failed command is the exception: a later passing run of the same command, or "
+        "of a verification command the plan requests (that one retires every earlier observed "
+        "failure), retires it with no response, no check can, and acknowledged on it is "
+        "disclosed on the receipt instead of blocking it (never clean). "
         "Disposition older findings before the final check. Call once per finding: a readable "
         "response to a finding returned by that check, or acknowledging a non-actionable "
         "observation-authored one, needs no recheck; another response to an older finding, a "
@@ -2121,7 +2128,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "Finding detail explains qualification. Read closure_readiness before spending a check or "
         "receipt: unanswered_finding_count needs responses, while receipt_blocking_finding_count "
         "needs repair or a limited receipt; only a later qualifying check resolves one, never a "
-        "response. Answer findings_unanswered; repair and recheck receipt_findings_unresolved once, "
+        "response (an observed failed command: a passing rerun of it or of the planned verification "
+        "retires it, and acknowledged discloses it instead of blocking). Answer findings_unanswered; repair and recheck receipt_findings_unresolved once, "
         "then disclose if unchanged state still limits coverage. At state ready_with_limitations "
         "nothing is left to do: request the receipt; predicted_receipt names its conclusion. "
         "After resume or compaction, read status once; keep the returned obligations and "
@@ -2240,8 +2248,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:d1c5018a531b794062485d475432f89902ca81fa598b1e992a8a158cd5ff1632",
-                "respond": "sha256:0f481d010bc55a22b4bd665fcac302d97208c36e69af6c3a2b844b14c895bf0b",
-                "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
+                "respond": "sha256:3696c9ecc9574038a50493ee75aede8ab8acc14fd17a93f7c4a9d78639ceb3e7",
+                "status": "sha256:0893b0779a8ea1a854bbe748c5acad12d284dbbf5d3cf2577c319fa6d0cafe48",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:93373a5db28a0eff648e93b961f8621b4c3527eb210ebf497d070526bfaf3e97",
@@ -2252,8 +2260,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:4374e8f3ddb53fa9bf07c6de45dca86a689d37ae70b5d4c0a55ad96750a426e4",
-                "respond": "sha256:0f481d010bc55a22b4bd665fcac302d97208c36e69af6c3a2b844b14c895bf0b",
-                "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
+                "respond": "sha256:3696c9ecc9574038a50493ee75aede8ab8acc14fd17a93f7c4a9d78639ceb3e7",
+                "status": "sha256:0893b0779a8ea1a854bbe748c5acad12d284dbbf5d3cf2577c319fa6d0cafe48",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:93373a5db28a0eff648e93b961f8621b4c3527eb210ebf497d070526bfaf3e97",
@@ -2263,8 +2271,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:eac179fa752a3394a87346ae366a1b4961658732cb3c881bf69d60ddf737f856",
-        "strict": "sha256:37dbe63aae11db3910948fa6ea50cf2d310d132383ee45282c435a9704a7bb99",
+        "policy": "sha256:860f80b173a9dd0244f0cfb5f6bae08c5668dd6fc3df0bf799726d3923912ef9",
+        "strict": "sha256:26f47dd43659360c81a91560c92527ca52ec5d096f73efc6f901b394e896a255",
     }
 )
 

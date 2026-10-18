@@ -1256,6 +1256,70 @@ or `patch` (after `sudo`, or `git -C <dir>`) writes the files its patch headers 
 #1106 r3), and a heredoc body's quotes never decide a command's
 runner class (ADR-045 amendment of 2026-10-18).
 
+**Segment certification, retire-on-pass and failure exemptions (#1104, ADR-025 amendment).**
+`ObservedRun` gains `certifies: frozenset[str]` (bounded keyed commitments, validated): the extra
+identities a *success* of the run proves passed. `success_certified_identities(command)` (ledger
+side, from the action's `command` field) and `certified_identities(segments, composition)`
+(envelope side) return the exact segment commitments of a `single` or `and_chain` command that
+carry their certification marker (`domain.command_segments.segment_certification_commitment`, the
+hook commits one beside each segment that ran exactly as listed: no leading assignment, `env`,
+`time`, `nohup`, `exec`, keyword or input redirection), else the empty set; a failure never uses
+them. `superseding_witnesses(runs)` maps each `superseded`
+failure ref to the earliest later success that proves it. `observed_failure_exempt(action,
+result=None)` is the one failure-exemption predicate the work-integrity and research-evidence
+packs, `claim_limitations`, `check_totals` and check's live-failure accounting read:
+`observed_action_is_exploratory(action)`, or a command whose `command` field lists the stop marker
+for its whole commitment (`observed_action_process_control(action)` through
+`domain.process_control.process_control_from_commitments`; the marker is
+`process_control_commitment(token, commitment)`, committed inside `command_segment_commitments` by
+`domain.command_segments.command_segment_commitments`, so no envelope, outbox, wire or description
+shape changed) and whose result's `exit_status` is exactly that stop's `128 + signal`
+(`domain.process_control.stopped_own_job`). `kernel/finding_retirement.py`
+owns the observed failed-command finding (`is_observed_failed_command_shape(finding)`: deterministic,
+`work-integrity`, `failed_work_omitted`, no `clm_` subject ref; `is_observed_failed_command_finding(
+record)` adds observation authorship stamped at replay), `failed_run_of(...)`, `retirement_witness(
+failed, results, actions, observed, planned=no_planned_verifications) -> Witness | None` with
+`Witness = (event_id, frontier, planned_verification)`, and the reducer entry points
+`on_finding_recorded`, `on_observed_result`, `on_plan_changed` and `recompute_all` (after a
+redaction). A witness is a later hook-observed success of another call whose action was recorded
+after the failed call's first hook-observed result (`_call_floors`), of the same command or, since
+the owner decisions of 2026-10-18, of a **planned verification**, which retires every earlier
+observed failed command. A planned verification counts only when the passing run is a verifier
+(`observed_failures.observed_action_is_verifier(action)`: the recorded runner class is in
+`observation_selection.VERIFYING_RUNNER_CLASSES`, `test`, `build`, `lint`, `typecheck`) and the
+obligation naming it was effective at the run's pass point (the passing call's first hook-observed
+result, its `_call_floors` entry). The planned verifications at a point are read by
+`task_facts.planned_verification_commands(plans, obligations, coverage_gaps, *, effective_at=None)`
+(effective obligations' requested `command` items, through `effective_obligation_ids`, skipping an
+`acknowledged_not_done` obligation; empty without the installation key; with `effective_at`, the
+plan scope of the plan events recorded before that sequence and only obligations whose
+`introduced_frontier` precedes it, with status and waiver read as now) and matched by
+`task_facts.planned_verification_passed(command, planned)` (`planned_match` kind `exact` with a
+`success` outcome for the planned command, over the run's certified segments only, the
+same-command bare-segment rule; a masked planned command never counts). Every entry point takes
+the planned verifications as a lazy
+`PlannedVerifications = Callable[[int], Sequence[PlannedCommand]]` of the pass point; the reducer
+re-derives the linked candidates in `on_plan_changed` after every plan, obligation or unknown
+event (a later `acknowledged_not_done` or waiver un-retires; a later plan or revision neither adds
+nor undoes a retirement), so the fact stays a pure function of the current projection and the key
+(the service registers the key before its startup bundle upgrade, so every projection it stores or
+compares is folded with it). The same command wins when one run is both.
+`finding_resolution.retired_failed_command_finding_ids(state)` names the retired, resolved
+observed failed-command findings; the status advice view drops their `failed_command_unresolved`
+items.
+`FindingProjectionRecord` gains `observed_failed_command`, `failed_run_result_id`,
+`retired_by_event_id`, `retired_frontier` (set together with the event id) and
+`retired_by_planned_verification` (only with a retirement), each emitted into
+the projection snapshot only when set, so tasks without such a finding keep their exact snapshot
+bytes; `proof_event_id` is the proving check, else the passing run. `finding_is_resolved` accepts
+either proof; for the `acknowledged_not_done`/`self_verified` reverse edge the later proof frontier
+decides. A retirement reads the outcome the ledger finally records for the passing call (a
+hook-stated exit, a joined Codex stream correction, or a stream-first copy); an `unknown` outcome
+never retires. `resolution_blockers` names `OBSERVED_FAILURE_NOT_RERUN`
+(`observed_failure_not_rerun`) for every observed failed-command shape, so no check can prove it
+absent; `self_verification` treats it as a FinishUP limit. `closure_class.is_bookkeeping_finding(state,
+finding_id)` is `BOOKKEEPING_KINDS` or an observed failed-command finding.
+
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
 `rejected`, or `waived`.
 Waiver-only fields are forbidden on other dispositions. `finding_frontier` is always the full
@@ -8258,7 +8322,13 @@ ledger prefix and never stored. Names:
   `self_verified`, `disputed_after_rebuttal`, `rejection_accepted`, `limitation_disclosed`,
   `limitation_acknowledged_not_done` (`settled_unmet`: a limitation request the agent answered
   `acknowledged_not_done`, owner decision 2026-10-12),
-  `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`).
+  `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`,
+  and since #1104 `retired_by_passing_run` (`resolved`: a later passing run of the same command
+  retired an observed failed-command finding), `retired_by_planned_verification` (`resolved`: a
+  later passing verifier run of a planned verification whose obligation was effective when it
+  passed retired it, owner decisions 2026-10-18) and
+  `failed_run_disclosed` (`settled_disclosed`,
+  `insufficient_coverage`: `acknowledged` on such a finding); `is_bookkeeping_finding`).
 - `finishup.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
   tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
   `gap_effect`, `judge_gaps`. `GAP_CLASSIFICATION` is a view of it; `GAP_CLASSIFICATION_VERSION`
@@ -10188,7 +10258,10 @@ under closed keys for effective-plan obligations, obligation-scoped requested-it
 service-observed commands, evidence strength, and returned/suppressed findings. The current
 finding-disposition counts remain in `finding_checklist`, distinguished from frozen-work totals.
 Failed exploration stays in historical command counts. A later qualifying run of the same keyed
-command identity can retire a failure; unrelated edits and unknown reruns cannot. A disclosed test
+command identity can retire a failure, as can a passing `single` or `and_chain` command one of whose
+segments ran exactly as that identity (#1104, ADR-025); unrelated edits and unknown reruns cannot. A
+stopped own background job whose exit is exactly its `128 + signal` carries no failure duty
+(`observed_failure_exempt`, #1104). A disclosed test
 failure remains live until rerun green. An attempted item or linked evidence record is an assertion
 or link, not a claim that the requirement was verified. Totals survive event replay and operation
 recovery without recounting newer work, and carry no command text, paths, or caller-defined keys.
@@ -10839,7 +10912,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   simple); `command_segment_commitments(key, normalized) -> (sorted commitments, composition) |
   None` keys them, excludes the whole commitment and keeps at most `MAX_SEGMENT_COMMITMENTS` (32:
   first and last 16 distinct in command order). `COMMAND_COMPOSITIONS` = `single`, `and_chain`,
-  `masked`. `requested_command_shape(value) -> "command" | "placeholder" | "prose"`. Hooks put
+  `masked`; an `&&` chain is `masked` when a segment before its last may not hand control back
+  to the shell (`exec` with a command, `exit`, `return`, `eval`, `source`, an unsafe `set` or
+  `shopt -o`, an unresolvable command word such as `$RUN`, `exec>log` or `{exit,0}`; ADR-025).
+  `exact_segment_commitments(..., reachability=False)` is the planned side's reading: its
+  composition comes from separators alone.
+  `requested_command_shape(value) -> "command" | "placeholder" | "prose"`. Hooks put
   the result on the structural fields `command_segment_commitments` and `command_composition`
   (control-request 2.9.0, hook spool, Codex session stream);
   `kernel.observed_failures.observed_command_field(commitment, segments, composition)` writes the
@@ -11137,7 +11215,24 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   executable resolution and closed non-writing arguments, independent of canonical verification
   matching. Since PR #1080 round 5 the exploration class of a shell command keeps failed exploratory
   reads out of failure accounting and advice only; it exempts nothing from closing-review or check
-  currency, which follow the `workspace_effect` fact below. `RecordedPolicyVersionWire`,
+  currency, which follow the `workspace_effect` fact below. Since #1104 a composition without a
+  verifier is `exploration` when `_compound_is_read_only` holds: `command_separators(raw)` (new in
+  `domain/command_segments`, quote-aware, every depth) has no `&`; no `$(`, backtick, `<(` or `>(`
+  appears anywhere; no part writes a file or nests a shell; no top-level segment only redirects
+  (`exec >out.txt`) and no word opens `<>` (`opens_files_without_a_command`); and every part's original words
+  (`segment_words_without_redirections`, assignments and executable spelling kept) classify
+  `exploration`. `_CHAIN_NEUTRAL_COMMANDS` (`cd`, `echo`, `printf`, `true`, `:`, `nl`, `stat`,
+  `which`, `uname`, `whoami`, `id`, `printenv`, `du`, `realpath`, `readlink`, `basename`,
+  `dirname`) and `jq` without `-e`/`--exit-status` join the exploration programs; `test`, `[`,
+  `diff` and `cmp` report a comparison by exit status and stay `other`. FinishUP's read verbs gain
+  `observe status` (`--workspace`, `--json`) and `service status` (`--json`).
+  `command_runner_class(payload, *, own_launchers=frozenset())` and
+  `native_command_runner_class(value, *, own_launchers=...)` accept the absolute paths of this
+  runtime's installed console scripts, which the hook proves lazily
+  (`adapters/integrations/codex_launcher.own_launcher_paths(command)`, RECORD-owned, no PATH probe)
+  only for a command with a path-shaped word whose last component is `finishup` or `yoetz`
+  (`domain/observation_selection.launcher_names_in`; `src/finishup/x.py` never triggers it); an agent-owned `./finishup` or
+  `/app/bin/finishup` stays `other`. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
   `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
   `work-integrity/0.2.0` generation.

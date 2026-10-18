@@ -173,3 +173,154 @@ def test_redirections_and_short_leaders_are_commands(value: str) -> None:
 )
 def test_template_placeholders_stay_placeholders(value: str) -> None:
     assert requested_command_shape(value) == "placeholder"
+
+
+# --- certification markers (#1104 round 1) ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "certified"),
+    [
+        ("cd /app && pytest -q", {"cd /app", "pytest -q"}),
+        ("pytest -q > log.txt 2>&1", {"pytest -q"}),
+        ("bash -lc 'pytest -q'", {"pytest -q"}),
+        ("PYTEST_ADDOPTS=--co pytest -q", set[str]()),
+        ("cd /app && FOO=1 pytest -q", {"cd /app"}),
+        ("env FOO=1 pytest -q", set[str]()),
+        ("nohup pytest -q", set[str]()),
+        ("exec pytest -q", set[str]()),
+        ("time pytest -q", set[str]()),
+        ("python run.py < input.txt", set[str]()),
+        ("FOO=1 pytest -q && pytest -q", {"pytest -q"}),
+        # A masked composition certifies nothing, so it carries no marker.
+        ("cd /app; pytest -q", set[str]()),
+    ],
+)
+def test_only_segments_that_ran_exactly_as_listed_carry_a_marker(
+    command: str, certified: set[str]
+) -> None:
+    from finishup.domain.command_segments import (
+        command_segment_commitments,
+        segment_certification_commitment,
+    )
+    from finishup.domain.observation import observed_command_commitment
+
+    committed = command_segment_commitments(_KEY, command)
+    assert committed is not None
+    listed = set(committed[0])
+    marked = {
+        text
+        for text in ("cd /app", "pytest -q", "python run.py")
+        if segment_certification_commitment(observed_command_commitment(_KEY, text)) in listed
+    }
+    assert marked == certified
+
+
+# --- chains that may not reach their later segments (#1104, PR #1116 review) -----------------
+
+_NEVER_REACHED = [
+    # ``exec`` replaces the shell and ``exit``/``return`` end it: the chain exits zero without
+    # running ``pytest -q``.
+    "exec true && pytest -q",
+    "exit 0 && pytest -q",
+    "return 0 && pytest -q",
+    "logout && pytest -q",
+    "command exit 0 && pytest -q",
+    "FOO=1 exit 0 && pytest -q",
+    "exec -a name true && pytest -q",
+    # Unseen text: it may exit, or redefine what ``pytest`` runs.
+    "eval true && pytest -q",
+    "source env.sh && pytest -q",
+    ". env.sh && pytest -q",
+    "trap 'exit 0' DEBUG && pytest -q",
+    "hash -p /bin/true pytest && pytest -q",
+    "$RUN && pytest -q",
+    # ``set -n`` reads the rest but never runs it; ``shopt -o`` sets the same options.
+    "set -n && pytest -q",
+    "set -o noexec && pytest -q",
+    "shopt -os noexec && pytest -q",
+    "shopt -s -o noexec && pytest -q",
+    # A redirection written against the command word: bash still runs ``exec``/``exit``.
+    "exec>log true && pytest -q",
+    "exec</dev/null true && pytest -q",
+    "exec>&2 true && pytest -q",
+    "exit>/dev/null && pytest -q",
+    "exit>&2 0 && pytest -q",
+    "eval>x true && pytest -q",
+    "source<x && pytest -q",
+    # A brace-expanded command word: ``{exit,0}`` runs ``exit 0``.
+    "{exit,0} && pytest -q",
+    "{exec,true} && pytest -q",
+    # ``mapfile -C`` evaluates its callback text in the current shell.
+    "mapfile -C 'exit 0' -c 1 lines < f && pytest -q",
+    # The same chain inside a shell wrapper or after another segment.
+    "bash -lc 'exit 0 && pytest -q'",
+    "cd /app && exec true && pytest -q",
+]
+
+
+@pytest.mark.parametrize("command", _NEVER_REACHED)
+def test_a_chain_that_may_not_reach_a_later_segment_is_masked_and_certifies_nothing(
+    command: str,
+) -> None:
+    from finishup.domain.command_segments import segment_certification_commitment
+
+    segments = _segments(command)
+    assert segments is not None
+    assert segments[1] == "masked"
+    committed = command_segment_commitments(_KEY, command)
+    assert committed is not None
+    assert committed[1] == "masked"
+    listed = set(committed[0])
+    pytest_q = observed_command_commitment(_KEY, "pytest -q")
+    # Still listed for planned matching, never certified as having passed.
+    assert pytest_q in listed
+    assert not any(segment_certification_commitment(item) in listed for item in listed)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd /app && pytest -q",
+        "exec >log.txt && pytest -q",
+        "pytest -q && exit 0",
+        "set -euo pipefail && pytest -q",
+        "bash -lc 'exit 0' && pytest -q",
+        "export CI=1 && pytest -q",
+        "shopt -s nullglob && pytest -q",
+        "shopt -os pipefail && pytest -q",
+        "[ -d .venv ] && pytest -q",
+        "[[ -d .venv ]] && pytest -q",
+        "mapfile -t lines < f && pytest -q",
+        # A shell a signal ends exits with a failure, which certifies nothing anyway.
+        "pkill -f uvicorn && pytest -q",
+        "kill $$ && pytest -q",
+    ],
+)
+def test_a_chain_whose_earlier_segments_return_control_still_certifies(command: str) -> None:
+    from finishup.domain.command_segments import segment_certification_commitment
+
+    committed = command_segment_commitments(_KEY, command)
+    assert committed is not None
+    assert committed[1] == "and_chain"
+    listed = set(committed[0])
+    pytest_q = observed_command_commitment(_KEY, "pytest -q")
+    assert segment_certification_commitment(pytest_q) in listed
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["exec true && pytest -q", "source .venv/bin/activate && pytest -q", "{exit,0} && pytest -q"],
+)
+def test_a_planned_command_reads_its_composition_from_separators_alone(command: str) -> None:
+    """The reachability rule reads an observed run; a planned chain stays ``and_chain``."""
+
+    normalized = normalize_observed_command(command)
+    assert normalized is not None
+    observed = command_segments(normalized)
+    planned = command_segments(normalized, reachability=False)
+    assert observed is not None
+    assert planned is not None
+    assert observed.composition == "masked"
+    assert planned.composition == "and_chain"
+    assert planned.segments == observed.segments

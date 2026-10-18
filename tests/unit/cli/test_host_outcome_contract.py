@@ -1,4 +1,4 @@
-"""Host tool-outcome contract tests driven by the OUT-001..OUT-004 payload fixtures (#910).
+"""Host tool-outcome contract tests driven by the OUT-001..OUT-004 and OUT-006 fixtures (#910).
 
 Every host adapter has, per tool-result event it consumes, at least one test driven by a recorded
 or documented payload shape (``fixtures/observations/*-outcomes*.case.json``). The fixtures are
@@ -1044,3 +1044,97 @@ def test_codex_stream_mcp_item_failure_wins(
     envelope = reader.advance(path).envelopes[-1]
     assert envelope.event_kind == "item_completed"
     assert _result(materialize_observation_envelope(envelope, task_id=_TASK)).outcome is outcome
+
+
+# --- OUT-006: failed shell calls that carry no failed-work duty (#1104) -----------------------
+
+_EXEMPTIONS: Final = "observations/failed-command-exemptions.case.json"
+
+
+@pytest.mark.parametrize("variant", _hook_variants(_EXEMPTIONS))
+def test_failed_command_exemption_fixture_through_each_hosts_handler(
+    tmp_path: Path, variant: str
+) -> None:
+    """Each host's real handler records the read-chain class and the own-job stop shape, and the
+    shared kernel predicate decides the failed-work duty from the outcome the ledger records."""
+
+    from finishup.domain.events import ActionRecordedPayload
+    from finishup.kernel.observed_failures import (
+        observed_action_process_control,
+        observed_action_runner_class,
+        observed_failure_exempt,
+    )
+
+    case = _case(_EXEMPTIONS)
+    item = case["input"]["hook"][variant]
+    expected = case["expected"]["hook"][variant]
+    assert item["provenance"] in {
+        case["provenance"]["capture"],
+        "derived_from_documented_host_shape",
+    }
+    payload = _in_workspace(cast(dict[str, Any], item["payload"]), tmp_path)
+    state = tmp_path / "state"
+    store = LocalObservationStore(_state=state)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    host = cast(str, item["host"])
+    pre_event = {"codex": "PreToolUse", "claude": "PreToolUse", "cursor": "preToolUse"}[host]
+    pre = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"tool_response", "tool_output", "error", "is_interrupt", "duration"}
+    }
+    pre["hook_event_name"] = pre_event
+    for event, body in ((pre_event, pre), (cast(str, item["event"]), payload)):
+        encoded = canonical_encode(cast(JsonValue, body))
+        if host == "codex":
+            code = handle_observe(
+                event_name=event,
+                stdin_bytes=encoded,
+                stdout=io.BytesIO(),
+                workspace=str(tmp_path),
+                _state=state,
+                skip_service=True,
+                source=ObservationSource.CODEX_HOOK,
+            )
+        else:
+            handler = handle_claude_observe if host == "claude" else handle_cursor_observe
+            code = handler(
+                event_name=event,
+                stdin_bytes=encoded,
+                stdout=io.BytesIO(),
+                workspace=str(tmp_path),
+                _state=state,
+                skip_service=True,
+                observation_profile=(
+                    CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+                    if host == "claude"
+                    else CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
+                ),
+            )
+        assert code == 0
+    actions: dict[object, ActionRecordedPayload] = {}
+    results: list[ResultRecordedPayload] = []
+    for envelope in LocalObservationStore(_state=state).list_envelopes(workspace):
+        # No structural key of its own: an older reader of this store keeps working (#1104).
+        assert "process_control" not in envelope.structural_payload
+        for draft in materialize_observation_envelope(envelope, task_id=_TASK).drafts:
+            if type(draft.draft.payload) is ActionRecordedPayload:
+                actions[draft.draft.payload.action_id] = draft.draft.payload
+            elif type(draft.draft.payload) is ResultRecordedPayload:
+                results.append(draft.draft.payload)
+    (result,) = results
+    action = actions[result.action_id]
+    assert result.outcome is ResultOutcome(expected["outcome"])
+    assert observed_action_runner_class(action.description) == expected["runner_class"]
+    assert observed_action_process_control(action) == expected["process_control"]
+    if expected["failure_duty"] is None:
+        # A Codex hook leg (n7 RC1): its text is the command's output, so no exit is recorded
+        # and an unknown exit never clears the duty; the joined stream exit decides it
+        # (``test_a_stopped_own_job_is_judged_by_the_joined_stream_exit``).
+        assert result.exit_status is None
+        assert observed_failure_exempt(action, result) is False
+    else:
+        assert observed_failure_exempt(action, result) is not expected["failure_duty"]
+    command = cast(dict[str, Any], payload["tool_input"])["command"]
+    assert command.encode() not in _state_bytes(state)
