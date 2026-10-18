@@ -59,7 +59,6 @@ from finishup.adapters.workspace_binding import (
 from finishup.adapters.workspace_fingerprint import WorkspaceEffectReading
 from finishup.cli import hook_io
 from finishup.cli.closure_gate import (
-    ACCEPTANCE_RECHECK_ITEM,
     BLOCKER_RECHECK_ITEM,
     MAX_GATE_BLOCKS_PER_TURN,
     ClosureGate,
@@ -625,13 +624,6 @@ def _token_or_none(value: object) -> str | None:
     if value[0] in "._:/+-":
         return None
     return value
-
-
-def _payload_text(payload: Mapping[str, JsonValue], name: str) -> str | None:
-    """A free-text host field read transiently (never stored): the string, or ``None``."""
-
-    value = payload.get(name)
-    return value if type(value) is str and value else None
 
 
 def _consistent_alias_token(
@@ -4222,20 +4214,17 @@ def _decide_closure_gate(
     remaining_seconds: float,
     _state: Path | None,
     active_stop: bool = False,
-    final_message: str | None = None,
 ) -> ClosureGate | None:
     """Decide the Stop-time closure gate for one mapped session (#977). Never raises.
 
-    ``final_message`` is the agent's last message when the host's Stop payload carries one
-    (Codex and Claude Code ``last_assistant_message``; Cursor's ``stop`` has none). It only
-    decides which resolved obligations the acceptance re-read names (#1050) and never leaves
-    this process: it is not stored, sent or recorded in a diagnostic.
+    The agent's final message is not read on any host (ADR-033, owner decision D1): no Stop item
+    is answered by it, and acceptance-provenance risk is never a Stop item.
 
     Reads the service's compact status for the mapped session; the gate fires at most once per
     session and ledger frontier. Every outcome lands in the bounded hook diagnostics so an
     operator (or a benchmark export of ``finishup observe status``) can see what the gate decided.
     On an ``active_stop`` (the host already continued this turn) only a re-check key not yet
-    asked (blocker, acknowledgement, acceptance re-read) or a withdrawn deliverable not yet
+    asked (blocker, acknowledgement, premise) or a withdrawn deliverable not yet
     voiced may continue the agent, within the per-turn cap; the caller records the outcome
     (#985, tb4n3 RC-8).
     """
@@ -4304,12 +4293,7 @@ def _decide_closure_gate(
                 observation_pending=pending,
                 reasked_blockers=reasked,
                 active_stop=active_stop,
-                final_message=final_message,
-                host=harness_id,
                 code_mode=code_mode,
-                on_acceptance_covered=lambda: record_hook_diagnostic(
-                    "closure_gate_acceptance_covered", "Stop", _state=_state
-                ),
             )
 
         decided = cast(ClosureGate | None, run(_read))
@@ -4408,8 +4392,6 @@ def _record_closure_gate_emitted(
         record_hook_diagnostic("closure_gate_continued", event, _state=_state)
         if BLOCKER_RECHECK_ITEM in closure_gate.items:
             record_hook_diagnostic("closure_gate_blocker_rechecked", event, _state=_state)
-        if ACCEPTANCE_RECHECK_ITEM in closure_gate.items:
-            record_hook_diagnostic("closure_gate_acceptance_rechecked", event, _state=_state)
         if active_stop:
             record_hook_diagnostic("closure_gate_active_stop_rechecked", event, _state=_state)
 
@@ -4928,7 +4910,6 @@ def handle_observe(
     _include_recap: bool = True,
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
-    _stop_final_message: str | None = None,
     _request_commitment: str | None = None,
     _proven_finishup_read: bool = False,
 ) -> int:
@@ -6304,13 +6285,6 @@ def handle_observe(
                 ),
                 _state=_state,
                 active_stop=stop_already_active,
-                # #1050: Codex hands this reader its raw Stop body; Claude Code's adapter passes
-                # the message beside its structural envelope; Cursor's stop carries none.
-                final_message=(
-                    _payload_text(payload, "last_assistant_message")
-                    if source is ObservationSource.CODEX_HOOK
-                    else _stop_final_message
-                ),
             )
             if closure_gate is not None:
                 # The gate is the whole Stop message: it names what remains, and ordinary
@@ -7608,11 +7582,6 @@ def _handle_claude_observe(
             _derived_runner_class=derived_runner_class,
             _ingress_gap=claude_ingress_gap,
             _pass_timing=_pass_timing,
-            # #1050: Claude Code's Stop payload names the final message; it decides only which
-            # acceptance re-reads the gate asks and never enters the structural envelope.
-            _stop_final_message=(
-                _payload_text(payload, "last_assistant_message") if raw_event == "Stop" else None
-            ),
             # The structural envelope drops ``tool_input``; commit to a FinishUP call here so a
             # pending attempt FinishUP rejected can still close as rejected (tb4n5).
             _request_commitment=_finishup_request_commitment(event_map[raw_event], payload),

@@ -65,7 +65,7 @@ from finishup.protocol.models import (
     StatusSuccessModel,
 )
 from finishup.protocol.readiness_text import (
-    admissible_verification_sentence,
+    acceptance_risk_note,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
@@ -671,16 +671,16 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         # The rejected findings that wait for a reviewer ruling and the re-reads a Stop will ask
         # once (tb4n3 RC-8), so "nothing further to do" is never followed by a surprise gate.
         lines.extend(awaiting_ruling_variants(readiness)[:1])
-        # The CLI and the TUI do not know the agent's host: name which hosts read the line.
         announced = recheck_note(readiness, host="generic")
         if announced is not None:
             lines.append(announced)
         failure = coordinator_failure_note(readiness)
         if failure is not None:
             lines.append(failure)
-        admissible = admissible_verification_sentence(readiness)
-        if admissible:
-            lines.append(admissible)
+        # ADR-033 (D1): acceptance-provenance risk, once, as a receipt coverage limit.
+        provenance = acceptance_risk_note(readiness)
+        if provenance:
+            lines.append(provenance)
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
     if readiness.check_cause is not None and readiness.state != "unknown":

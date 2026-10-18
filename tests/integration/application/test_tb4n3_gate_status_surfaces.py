@@ -1,13 +1,14 @@
-"""The Stop gate, status and closure_prepare answer the same question (tb4n3 RC-8, #1031).
+"""The Stop gate, status and closure_prepare answer the same question (tb4n3 RC-8, ADR-033 D1).
 
 Producer to consumers through the real application: a task whose obligation is resolved and
-claimed (the bandit B shape of ``test_closure_readiness_checklist``) reads
-``ready_with_limitations`` ("Nothing further to do") and announces exactly one re-check, the
-acceptance re-read of the resolved obligation, in ``closure_readiness.rechecks``. The Stop gate
-asks that and nothing else, closure_prepare's notes name it, and an obligation the agent then
-acknowledges after the invite was delivered is announced by status but, being the answer to the
-invite, is not challenged. Before this change the gate asked nothing here (the re-read rode on
-other tokens) and the status line promised nothing.
+claimed on self-asserted evidence (the bandit B shape of ``test_closure_readiness_checklist``)
+reads ``ready_with_limitations`` ("Nothing further to do"). Before D1 it announced the acceptance
+re-read and the Stop gate asked it. Since D1 status announces no re-check here: it names the
+acceptance-provenance risk once, as a receipt coverage limit (``closure_readiness.acceptance_risk``
+and the standing ``unresolved_verification_limitation``), closure_prepare's notes say the same
+sentence, and the Stop gate lets the agent stop. An honest downgrade of that resolved obligation
+to ``acknowledged_not_done`` is not re-checked (replay-derived), while an acknowledgement of work
+never claimed still is, once.
 """
 
 from __future__ import annotations
@@ -17,12 +18,11 @@ from typing import Literal
 import pytest
 
 from finishup.cli.closure_gate import (
-    ACCEPTANCE_RECHECK_ITEM,
     ACKNOWLEDGEMENT_RECHECK_ITEM,
     closure_gate_from_readiness,
 )
 from finishup.domain.closure import recheck_note
-from finishup.protocol.readiness_text import readiness_directive
+from finishup.protocol.readiness_text import acceptance_risk_note, readiness_directive
 from integration.application.test_closure_readiness_checklist import (
     _bandit_b,  # pyright: ignore[reportPrivateUsage]
     _wire,  # pyright: ignore[reportPrivateUsage]
@@ -50,7 +50,7 @@ def _gate(readiness: object, sequence: str, memory: frozenset[str], *, active: b
 
 
 @pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))
-async def test_status_closure_prepare_and_the_gate_name_the_same_rechecks(
+async def test_status_names_acceptance_provenance_once_and_the_gate_lets_the_agent_stop(
     ledger_backend: Literal["memory", "sqlite"],
 ) -> None:
     session, _checked = await _bandit_b(ledger_backend)
@@ -67,43 +67,48 @@ async def test_status_closure_prepare_and_the_gate_name_the_same_rechecks(
     )
     assert directive.startswith("Nothing further to do.")
 
-    # ... and it announces the one re-check the Stop will ask.
+    # No re-check is announced: acceptance provenance is a coverage limit, not a Stop item.
     assert readiness.rechecks is not None
-    assert [item.kind for item in readiness.rechecks] == ["acceptance"]
-    announced = readiness.rechecks[0]
-    assert announced.key.startswith("accept:")
+    assert [item.kind for item in readiness.rechecks] == []
+    assert recheck_note(readiness) is None
+    assert readiness.admissible_verification is None
+    assert readiness.acceptance_risk is not None
+    (row,) = readiness.acceptance_risk
+    assert row.reasons == ("evidence_self_asserted_only",)
+    assert "unresolved_verification_limitation" in readiness.standing_limitations
+    note = acceptance_risk_note(readiness)
+    assert note.startswith("Acceptance provenance (a receipt coverage limit, not a Stop item):")
+    assert str(row.obligation_id) in note
 
-    # closure_prepare names it; the Stop gate asks exactly it, once.
-    note = recheck_note(readiness)
-    assert note is not None and "acceptance criteria" in note
     sequence = status.head_frontier.sequence
-    gate = _gate(readiness, sequence, frozenset())
-    assert gate is not None
-    assert gate.items == (ACCEPTANCE_RECHECK_ITEM,)
-    # #1079: a named closing_material_frontier is part of the remembered key, so a later
-    # bookkeeping frontier does not ask the same flagged set again.
-    material = readiness.closing_material_frontier
-    expected_key = f"{announced.key}@{sequence}"
-    if material is not None:
-        expected_key = f"{expected_key}@m{material}"
-    assert gate.blocker_keys == (expected_key,)
-    assert "acceptance_criteria" in gate.text
-    assert _gate(readiness, sequence, frozenset(gate.blocker_keys)) is None
-    assert _gate(readiness, sequence, frozenset(gate.blocker_keys), active=True) is None
+    for active in (False, True):
+        assert _gate(readiness, sequence, frozenset(), active=active) is None
 
 
 @pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))
-async def test_an_acknowledgement_published_after_the_invite_is_announced_but_not_challenged(
+async def test_an_honest_downgrade_is_not_rechecked_and_a_never_claimed_acknowledgement_is(
     ledger_backend: Literal["memory", "sqlite"],
 ) -> None:
     session, _checked = await _bandit_b(ledger_backend)
     first = _wire(await session.status()).closure_readiness
-    sequence = _wire(await session.status()).head_frontier.sequence
-    invite = _gate(first, sequence, frozenset())
-    assert invite is not None
-    memory = frozenset(invite.blocker_keys)
+    assert first.acceptance_risk is not None
+    (row,) = first.acceptance_risk
+    resolved = str(row.obligation_id)
 
-    # The agent answers the invite by acknowledging an obligation it did not do.
+    # The agent's output does not meet the resolved obligation's criteria: it republishes that
+    # obligation acknowledged_not_done (the downgrade the status note offers), and acknowledges
+    # an optional obligation it never claimed.
+    downgrade = session.draft(
+        "obligation_published",
+        {
+            "obligation_id": resolved,
+            "description": "Add interprocedural taint checks.",
+            "evidence_expectation": "The focused test run passes.",
+            "status": "acknowledged_not_done",
+            "acknowledged_not_done_reason": "The checks miss cross-module flows.",
+        },
+    )
+    downgrade["schema"] = {"name": "obligation_published", "version": "1.1.0"}
     other = session.next("obl_")
     acknowledged = session.draft(
         "obligation_published",
@@ -116,31 +121,26 @@ async def test_an_acknowledgement_published_after_the_invite_is_announced_but_no
         },
     )
     acknowledged["schema"] = {"name": "obligation_published", "version": "1.1.0"}
-    assert first.rechecks is not None
     # The new obligation joins the plan (an unplanned obligation is not effective work).
     plan = session.draft(
         "plan_published",
         {
             "plan_version": 2,
             "summary": "Taint checks and polish",
-            "obligation_refs": [*first.rechecks[0].subjects, other],
+            "obligation_refs": [resolved, other],
         },
     )
-    await session.publish(acknowledged, plan)
+    await session.publish(downgrade, acknowledged, plan)
     after = _wire(await session.status())
     readiness = after.closure_readiness
     assert readiness.rechecks is not None
-    kinds = {item.kind for item in readiness.rechecks}
-    assert kinds == {"acceptance", "acknowledgement"}
-    ack = next(item for item in readiness.rechecks if item.kind == "acknowledgement")
-    assert ack.key == f"ack:{other}"
-    # Status announces it (honestly: it is an acknowledged obligation) ...
-    assert int(ack.since_frontier) > int(sequence)
-    # ... but it answers the invite the gate already delivered, so the Stop does not challenge it.
-    assert _gate(readiness, after.head_frontier.sequence, memory) is None
-    assert _gate(readiness, after.head_frontier.sequence, memory, active=True) is None
-    # Without the invite in memory, the same acknowledgement is asked once (the pretrain S rescue).
-    challenged = _gate(readiness, after.head_frontier.sequence, frozenset())
-    assert challenged is not None
-    assert ACKNOWLEDGEMENT_RECHECK_ITEM in challenged.items
-    assert other in challenged.text
+    # The downgrade is not challenged; the never-claimed acknowledgement is announced once.
+    assert [item.key for item in readiness.rechecks] == [f"ack:{other}"]
+    # Nothing resolved is flagged any more, so the coverage limit is gone too.
+    assert readiness.acceptance_risk is None
+    gate = _gate(readiness, after.head_frontier.sequence, frozenset())
+    assert gate is not None
+    assert gate.items == (ACKNOWLEDGEMENT_RECHECK_ITEM,)
+    assert other in gate.text
+    assert resolved not in gate.text
+    assert _gate(readiness, after.head_frontier.sequence, frozenset(gate.blocker_keys)) is None

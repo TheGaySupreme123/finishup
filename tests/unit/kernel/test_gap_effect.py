@@ -124,7 +124,7 @@ _CHANGED = frozenset(
         "semantic_review_deferred_before_first_edit",
         # tb4n5 (#1044 follow-up): a new disclosure, counted on the receipt, never agent work.
         "deliverable_references_ambiguous_name",
-        # #1079 F2: an unanswered acceptance invite bounds coverage without blocking Stop.
+        # #1079 F2, ADR-033 D1: unestablished acceptance provenance bounds coverage, never Stop.
         "unresolved_verification_limitation",
     }
 )

@@ -1,13 +1,12 @@
 """Which resolved obligations the ledger flags as risky to call met (tb4n5, issue #1050, ADR-033).
 
-The Stop gate's acceptance re-read (A-12) asks the agent to read each resolved obligation's
-``acceptance_criteria`` against its final output, so an outcome that is infeasible, skipped or
-partial is downgraded to ``acknowledged_not_done`` (or disclosed as a verification limit) instead
-of standing as resolved. tb4n4 asked it for every resolved obligation; #1050 then suppressed it when
-the final message restated two thirds of a criterion's words, which no real final message did
-(tb4n5: 18 of 18 attempts asked, 1 of 110 obligations covered). The owner's rule (2026-10-13): ask
-only for the obligations whose recorded resolution the ledger itself flags, from facts the record
-already holds:
+The flags read provenance (attempts and evidence lineage), never outputs or test results. Until
+owner decision D1 (2026-10-18) they drove a Stop-time acceptance re-read; in n7 agents answered it
+by re-attesting "met" in 43 of 49 Stops and it never caught a failed obligation. Since D1 a flagged
+obligation with no admissible observed link and no recorded verification limit is a receipt
+coverage limit (``claim_verification.unresolved_acceptance_risk``), named once in status, and is
+never a Stop item. The owner's rule (2026-10-13) for which resolutions are flagged, from facts the
+record already holds:
 
 * ``requested_item_never_attempted``: an output, command or other non-input item the obligation
   requested has no attempt (no ``attempted_items`` entry in any spelling, and, for a command, no
@@ -258,7 +257,7 @@ def acceptance_risk(
     """``(obligation, reasons)`` for each *resolved* obligation the ledger flags, in id order.
 
     ``resolved`` is the closure verdict's resolved set (basis ``resolved``); an obligation whose
-    payload is unreadable is flagged with every reason (fail closed: the re-read is asked). The
+    payload is unreadable is flagged with every reason (fail closed: it bounds the receipt). The
     inventories are indexed once per call, and an identical call is answered from memory.
     """
 

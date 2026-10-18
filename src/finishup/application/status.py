@@ -125,7 +125,7 @@ from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.models import (
     FactLineageModel,
     SemanticProgressPhase,
-    StatusAdmissibleVerificationModel,
+    StatusAcceptanceRiskModel,
     StatusAdvicePageModel,
     StatusAssignmentFilterModel,
     StatusAssignmentPageModel,
@@ -2022,13 +2022,16 @@ async def _closure_readiness(
             FactLineageModel.model_validate(lineage_to_wire(item))
             for item in facts.fact_lineage[:64]
         )
-    if facts.admissible_verification:
-        # #1079: the Stop gate accepts a cited evd_ or res_ id only when it is in this list.
-        # The list is observed verification only. Omitted when empty, so an older client and a
-        # task with no observed link keep the same bytes. The gate treats absence as "not linked".
-        optional_fields["admissible_verification"] = tuple(
-            StatusAdmissibleVerificationModel(obligation_id=obligation, refs=refs)
-            for obligation, refs in facts.admissible_verification
+    if facts.unresolved_acceptance_risk:
+        # ADR-033 (owner decision D1): the receipt's coverage-limit set, named once in closure
+        # guidance and never a Stop item. Omitted when empty, so a status without it keeps its
+        # bytes. ``admissible_verification`` is no longer emitted (its only reader was the
+        # retired final-message attestation).
+        optional_fields["acceptance_risk"] = tuple(
+            StatusAcceptanceRiskModel.model_validate(
+                {"obligation_id": str(obligation), "reasons": reasons}
+            )
+            for obligation, reasons in facts.unresolved_acceptance_risk[:64]
         )
     if facts.closing_material_frontier is not None:
         # Including "0": the Stop gate tells a computed empty frontier from an omitted field.

@@ -63,7 +63,6 @@ def test_the_observed_code_mode_close_instruction_survives_the_host_bound() -> N
                 frontier_sequence="999999",
                 frontier_digest=_DIGEST,
                 observation_pending=False,
-                host="codex",
                 code_mode=True,
             )
             assert decision is not None
@@ -77,21 +76,20 @@ def test_the_observed_code_mode_close_instruction_survives_the_host_bound() -> N
         frontier_sequence="9",
         frontier_digest=_DIGEST,
         observation_pending=False,
-        host="codex",
     )
     assert plain is not None
     assert gate._CLOSE_TEXT in plain.text  # pyright: ignore[reportPrivateUsage]
     assert "yield_time_ms" not in plain.text
 
 
-@pytest.mark.parametrize("host", (None, "codex", "claude", "cursor"))
-def test_other_hosts_keep_the_unchanged_close_instruction(host: str | None) -> None:
+def test_without_a_recorded_cell_the_close_instruction_is_unchanged() -> None:
+    # The gate takes no host since ADR-033 D1: the decision is the same on Codex, Claude Code and
+    # Cursor, so no host brand can select the cell sentence.
     decision = closure_gate_from_readiness(
         _readiness(("closing_review_required",)),
         frontier_sequence="9",
         frontier_digest=_DIGEST,
         observation_pending=False,
-        host=host,
     )
     assert decision is not None
     assert gate._CLOSE_TEXT in decision.text  # pyright: ignore[reportPrivateUsage]
@@ -101,16 +99,14 @@ def test_other_hosts_keep_the_unchanged_close_instruction(host: str | None) -> N
 def test_an_exec_check_cause_selects_the_cell_instruction_on_any_host() -> None:
     readiness = _readiness(("closing_review_required",))
     readiness.check_cause = SimpleNamespace(tool="exec")
-    for host in (None, "codex", "claude", "cursor"):
-        decision = closure_gate_from_readiness(
-            readiness,
-            frontier_sequence="9",
-            frontier_digest=_DIGEST,
-            observation_pending=False,
-            host=host,
-        )
-        assert decision is not None
-        assert CODEX_CHECK_CELL_PRAGMA in decision.text
+    decision = closure_gate_from_readiness(
+        readiness,
+        frontier_sequence="9",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+    )
+    assert decision is not None
+    assert CODEX_CHECK_CELL_PRAGMA in decision.text
     shell = _readiness(("closing_review_required",))
     shell.check_cause = SimpleNamespace(tool="exec_command")
     decision = closure_gate_from_readiness(
@@ -118,7 +114,6 @@ def test_an_exec_check_cause_selects_the_cell_instruction_on_any_host() -> None:
         frontier_sequence="9",
         frontier_digest=_DIGEST,
         observation_pending=False,
-        host="codex",
     )
     assert decision is not None
     assert "yield_time_ms" not in decision.text

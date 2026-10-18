@@ -30,6 +30,7 @@ from finishup.protocol.models import (
     public_model_to_wire,
 )
 from finishup.protocol.readiness_text import (
+    acceptance_risk_note,
     coordinator_failure_note,
     predicted_receipt_variants,
     recheck_note,
@@ -141,8 +142,7 @@ async def prepare_closure(
     ``scope_to_selection`` limits a draft phase's echoed inventory to the selected rows (the MCP
     path; the CLI keeps the complete inventory for its local ``--output`` file). Validation always
     runs against the complete pinned inventory. ``host`` is the MCP bridge's host profile (the
-    CLI's ``generic``); it only decides how the re-check note says an acceptance re-read is
-    answered (``recheck_note``).
+    CLI's ``generic``); since ADR-033 D1 no note depends on it (``recheck_note`` ignores it).
     """
 
     base = _base(
@@ -224,6 +224,10 @@ async def prepare_closure(
     failure = coordinator_failure_note(compact.closure_readiness)
     if failure is not None:
         cast(list[str], output["notes"]).append(failure)
+    # ADR-033 (D1): the same one acceptance-provenance sentence status prints.
+    provenance = acceptance_risk_note(compact.closure_readiness)
+    if provenance:
+        cast(list[str], output["notes"]).append(provenance)
     # The same predicted receipt conclusion every surface prints (owner decision Q1), appended
     # after the notes above and never edited into them.
     readiness_state = getattr(compact.closure_readiness, "state", None)

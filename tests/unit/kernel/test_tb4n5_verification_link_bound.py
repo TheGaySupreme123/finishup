@@ -1,10 +1,10 @@
 """Coverage reads every flagged obligation's verification link, not the first eight (#1079).
 
-``closure_readiness.admissible_verification`` is a bounded status field: at most eight
-obligations. The coverage judgement (``unresolved_verification_limitation``) and the receipt
-pairing lines read the same links, and must not inherit that bound. These build nine flagged
-resolved obligations, each citing its own observed run, and check that none is reported
-unlinked while the status field stays at eight rows.
+``admissible_verification_refs`` bounds its walk to eight obligations by default. The coverage
+judgement (``unresolved_verification_limitation``), the receipt pairing lines and, since ADR-033
+D1, status's standing limitation all read every link. These build nine flagged resolved
+obligations, each citing its own observed run, and check that none is reported unlinked on any
+surface (the R5 regression: status once read the eight-capped list).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from finishup.kernel.claim_verification import (
     claim_verification_lines,
     unresolved_verification_obligations,
 )
-from finishup.kernel.closure_readiness import closure_readiness_facts
+from finishup.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import register_command_identity_key
 from finishup.kernel.verification_link import (
@@ -128,5 +128,8 @@ def test_every_flagged_obligation_past_the_status_bound_keeps_its_observed_link(
 
     facts = closure_readiness_facts(state, ledger.prefix)
     assert facts.acceptance_risk_obligation_ids == _FLAGGED
-    assert facts.admissible_verification is not None
-    assert len(facts.admissible_verification) <= MAX_ADMISSIBLE_OBLIGATIONS
+    # D1: status no longer computes the capped list; its standing reads the receipt's own set.
+    assert facts.admissible_verification is None
+    assert facts.unresolved_acceptance_risk == ()
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert "unresolved_verification_limitation" not in split.standing_limitations

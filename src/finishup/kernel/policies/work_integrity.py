@@ -950,8 +950,8 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
     }
     for gap in case.gaps:
         if gap.code == UNRESOLVED_VERIFICATION_GAP:
-            # The once-delivered acceptance invite is bounded. Its unanswered verification
-            # pairing bounds coverage, but must not mint a stale-ledger finding and reblock Stop.
+            # Unestablished acceptance provenance bounds coverage (ADR-033 D1), but must not mint
+            # a stale-ledger finding and block Stop: it is never a Stop item.
             continue
         if gap.code in CALLER_DIGEST_PROVENANCE_GAPS:
             # A caller-asserted digest the service did not verify is a disclosed provenance

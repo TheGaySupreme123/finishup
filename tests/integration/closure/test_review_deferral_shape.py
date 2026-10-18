@@ -200,7 +200,7 @@ async def test_a_deferral_where_review_is_optional_reads_like_a_local_only_check
     for fmt in ("markdown", "text"):
         text = str(gathered.receipts[fmt].human_text)
         assert "AI-powered review is on; it starts after your first edit." in text, fmt
-        assert "Unresolved verification limitation" in text, fmt
+        assert "Acceptance provenance not established" in text, fmt
 
     # The control: the same ledger checked local-only on the same route.
     control, _ = await _investigation(10_470, "optional")

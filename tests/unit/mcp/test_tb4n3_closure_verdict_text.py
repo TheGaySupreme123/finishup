@@ -10,8 +10,6 @@ counters that explain it follow it.
 
 from __future__ import annotations
 
-import pytest
-
 from finishup.mcp.summaries import summary_for_status
 
 _HEAD = "sha256:" + "a" * 64
@@ -81,6 +79,7 @@ def test_a_status_from_a_build_without_the_verdict_never_prints_the_old_phrase()
 
 
 _FINDING = "fnd_28afe22a-9741-4830-b4eb-84af6faf0262"
+# The ``acceptance`` entries are what an earlier 0.3 service sent (ADR-033 D1 retired them).
 _RECHECKS = [
     {
         "kind": "acceptance",
@@ -97,23 +96,38 @@ _RECHECKS = [
         "since_frontier": "6",
     },
 ]
+_FLAGGED = [
+    {
+        "kind": "acceptance",
+        "key": "accept:1a2b3c4d",
+        "subjects": ["obl_00000000-0000-4000-8000-000000000001"],
+        "rule": "resolved_obligations_acceptance_risk",
+        "since_frontier": "5",
+    }
+]
 
 
-def test_status_and_checklist_name_admissible_observed_ids() -> None:
-    """CLI, the terminal interface and the MCP status text list the observed ids, not prose."""
+def _prepared(**readiness: object) -> dict[str, object]:
+    status = _status(**readiness)
+    return {
+        "preparatory_only": True,
+        "frontier": status["head_frontier"],
+        "closure_readiness": status["closure_readiness"],
+        "inventory": {},
+        "request": None,
+        "notes": [],
+    }
 
-    from finishup.cli.render import render_closure_readiness_lines
+
+_RISKY = "obl_00000000-0000-4000-8000-0000000000c4"
+_RISK_ROWS = [{"obligation_id": _RISKY, "reasons": ["evidence_self_asserted_only"]}]
+_NOTE_HEAD = "Acceptance provenance"
+
+
+def _readiness_model(**fields: object) -> object:
     from finishup.protocol.models import StatusClosureReadinessModel
-    from finishup.protocol.readiness_text import admissible_verification_sentence
 
-    obligation = "obl_00000000-0000-4000-8000-0000000000c4"
-    ref = "res_00000000-0000-4000-8000-0000000000d5"
-    sentence = f"Admissible verification: {obligation} linked {ref}."
-    text = summary_for_status(
-        _status(admissible_verification=[{"obligation_id": obligation, "refs": [ref]}])
-    )
-    assert sentence in text
-    model = StatusClosureReadinessModel.model_validate(
+    return StatusClosureReadinessModel.model_validate(
         {
             "declared_obligation_count": "1",
             "no_obligations_reason": None,
@@ -121,19 +135,109 @@ def test_status_and_checklist_name_admissible_observed_ids() -> None:
             "unanswered_finding_count": "0",
             "receipt_blocking_finding_count": "0",
             "blocking_conditions": [],
-            "state": "ready",
+            "state": "ready_with_limitations",
             "gap_classification_version": "8",
             "agent_actionable": [],
-            "standing_limitations": [],
+            "standing_limitations": ["unresolved_verification_limitation"],
             "acknowledged_not_done": [],
             "acknowledged_not_done_count": "0",
-            "admissible_verification": [{"obligation_id": obligation, "refs": [ref]}],
+            **fields,
         }
     )
-    assert sentence in render_closure_readiness_lines(model)
+
+
+def test_acceptance_risk_note_once_and_host_independent() -> None:
+    """ADR-033 D1: the MCP, CLI, TUI and closure_prepare texts say the provenance limit once.
+
+    The sentence is the same on every host, names the flagged id and its reason, says the Stop
+    is not blocked, and never names the retired ``finishup-acceptance`` line or a Stop re-read.
+    """
+
+    from typing import cast
+
+    from finishup.cli.render import render_closure_readiness_lines
+    from finishup.mcp.summaries import render_safe_compact_summary_detailed
+    from finishup.protocol.models import StatusClosureReadinessModel
+    from finishup.protocol.readiness_text import acceptance_risk_note
+
+    readiness = {
+        "standing_limitations": ["unresolved_verification_limitation"],
+        "acceptance_risk": _RISK_ROWS,
+        "rechecks": _RECHECKS,  # an older service's acceptance entry beside a real one
+    }
+    note = acceptance_risk_note(readiness)
+    assert note.startswith(_NOTE_HEAD + " (a receipt coverage limit, not a Stop item)")
+    assert f"{_RISKY} (evidence_self_asserted_only)" in note
+    assert "Stopping is not blocked" in note and "acknowledged_not_done" in note
+    for wire in (_status(**readiness), _prepared(**readiness)):
+        texts = {
+            host: render_safe_compact_summary_detailed(wire, host=host).text
+            for host in (None, "codex", "claude", "cursor", "generic")
+        }
+        assert len(set(texts.values())) == 1, texts
+        text = texts[None]
+        assert text.count(_NOTE_HEAD) == 1
+        assert note in text
+        assert "finishup-acceptance" not in text
+        assert "At Stop you will be asked once to re-read: the acceptance" not in text
+        assert "acceptance criteria" not in text
+    model = cast(StatusClosureReadinessModel, _readiness_model(acceptance_risk=_RISK_ROWS))
+    lines = render_closure_readiness_lines(model)
+    assert sum(line.count(_NOTE_HEAD) for line in lines) == 1
+    assert note in lines
+    # Nothing flagged: no sentence. A malformed row adds nothing.
+    assert acceptance_risk_note({"acceptance_risk": [], "standing_limitations": []}) == ""
+    assert acceptance_risk_note({"acceptance_risk": [{"obligation_id": "hello"}]}) == ""
     assert (
-        admissible_verification_sentence({"admissible_verification": [{"refs": ["hello"]}]}) == ""
+        acceptance_risk_note(
+            {"acceptance_risk": [{"obligation_id": _RISKY, "reasons": ["it_passed"]}]}
+        )
+        == ""
     )
+
+
+def test_acceptance_risk_note_bounds_the_named_ids() -> None:
+    from finishup.protocol.readiness_text import acceptance_risk_note
+
+    rows = [
+        {
+            "obligation_id": f"obl_00000000-0000-4000-8000-{index:012x}",
+            "reasons": ["requested_item_never_attempted", "evidence_self_asserted_only"],
+        }
+        for index in range(1, 11)
+    ]
+    note = acceptance_risk_note({"acceptance_risk": rows})
+    assert note.count("obl_") == 8
+    assert "; and 2 more" in note
+    short = acceptance_risk_note({"acceptance_risk": rows}, short=True)
+    assert "10 obligation(s)" in short and "obl_" not in short
+
+
+def test_older_service_acceptance_recheck_is_not_announced() -> None:
+    """An earlier 0.3 service still sends an ``acceptance`` re-check and no ``acceptance_risk``.
+
+    No surface announces the acceptance re-read; the standing code still yields the fixed receipt
+    sentence once, without ids.
+    """
+
+    from finishup.domain.receipts import UNRESOLVED_VERIFICATION_LIMITATION
+    from finishup.protocol.readiness_text import acceptance_risk_note, recheck_note
+
+    older = [_FLAGGED[0]]
+    readiness = {
+        "standing_limitations": ["unresolved_verification_limitation"],
+        "rechecks": older,
+    }
+    assert recheck_note(readiness) is None
+    for host in ("codex", "claude", "cursor", "generic"):
+        assert recheck_note(readiness, host=host) is None
+    assert acceptance_risk_note(readiness) == UNRESOLVED_VERIFICATION_LIMITATION
+    text = summary_for_status(_status(**readiness))
+    assert text.count(_NOTE_HEAD) == 1
+    assert "At Stop you will be asked once to re-read" not in text
+    assert "finishup-acceptance" not in text
+    # Without the standing code there is nothing to fall back to.
+    assert acceptance_risk_note({"rechecks": older, "standing_limitations": []}) == ""
 
 
 def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> None:
@@ -145,7 +249,8 @@ def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> N
     readiness = _status(rechecks=_RECHECKS)["closure_readiness"]
     sentence = shared(readiness)
     assert sentence is not None
-    assert "the acceptance criteria of your resolved obligations" in sentence
+    # ADR-033 D1: an ``acceptance`` entry is never announced; the acknowledgement re-check is.
+    assert "acceptance" not in sentence
     assert "obligations you recorded as not done" in sentence
     assert recheck_note is shared  # closure_prepare, status text, CLI and TUI say the same thing
     text = summary_for_status(_status(rechecks=_RECHECKS))
@@ -182,68 +287,3 @@ def test_findings_awaiting_a_ruling_are_named_with_the_frontier_of_the_rejection
     # A count without ids still says that something waits, and where to see it.
     bare = awaiting_ruling_variants({"finding_counts": counts})
     assert bare and "status view=findings lists them" in bare[0]
-
-
-_FLAGGED = [
-    {
-        "kind": "acceptance",
-        "key": "accept:1a2b3c4d",
-        "subjects": ["obl_00000000-0000-4000-8000-000000000001"],
-        "rule": "resolved_obligations_acceptance_risk",
-        "since_frontier": "5",
-    }
-]
-_LINE = "`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`"
-
-
-def _prepared(**readiness: object) -> dict[str, object]:
-    status = _status(**readiness)
-    return {
-        "preparatory_only": True,
-        "frontier": status["head_frontier"],
-        "closure_readiness": status["closure_readiness"],
-        "inventory": {},
-        "request": None,
-        "notes": [],
-    }
-
-
-def test_the_mcp_summary_names_the_acceptance_line_only_where_the_host_can_deliver_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#1050 follow-up: the bridge's host reaches the status and closure_prepare summaries. Cursor
-    (no final answer at Stop) gets the Cursor wording, a generic bridge names which hosts read the
-    line, and Codex and Claude Code text is byte-identical to the host-less render."""
-
-    from finishup.mcp import server
-    from finishup.mcp.summaries import render_safe_compact_summary_detailed
-
-    for wire in (_status(rechecks=_FLAGGED), _prepared(rechecks=_FLAGGED)):
-        unhosted = render_safe_compact_summary_detailed(wire).text
-        assert _LINE in unhosted
-        for host in ("codex", "claude"):
-            assert render_safe_compact_summary_detailed(wire, host=host).text == unhosted
-            assert server._result_text(wire, host_profile=host) == unhosted  # pyright: ignore[reportPrivateUsage]
-        cursor = render_safe_compact_summary_detailed(wire, host="cursor").text
-        assert "finishup-acceptance" not in cursor
-        assert "Cursor passes FinishUP no final answer" in cursor
-        generic = render_safe_compact_summary_detailed(wire, host="generic").text
-        assert f"on Codex and Claude Code a line {_LINE}" in generic
-        assert "Cursor passes no final answer" in generic
-        assert server._result_text(wire, host_profile="generic") == generic  # pyright: ignore[reportPrivateUsage]
-        # Cursor's bridge normally sends the canonical JSON copy; its summary fallback (when that
-        # encoding fails) carries the Cursor wording too.
-        with monkeypatch.context() as patch:
-
-            def refuse(_value: object) -> bytes:
-                raise ValueError("encode_failed")
-
-            patch.setattr(server, "canonical_encode", refuse)
-
-            def unrecorded(*_args: object, **_kwargs: object) -> str:
-                return ""
-
-            patch.setattr(server, "_record_summary_degradation", unrecorded)
-            fallback = server._result_text(wire, host_profile="cursor")  # pyright: ignore[reportPrivateUsage]
-        assert "finishup-acceptance" not in fallback
-        assert "Cursor passes FinishUP no final answer" in fallback

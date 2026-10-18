@@ -35,16 +35,22 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
-from finishup.domain.events import CheckRecordedPayload, LedgerRecord
+from finishup.domain.events import (
+    CheckRecordedPayload,
+    LedgerRecord,
+    ObligationPublishedPayload,
+    ObligationStatus,
+)
 from finishup.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
 )
 from finishup.domain.values import EventId, FindingId, ObligationId
 from finishup.kernel import finding_todo as _finding_todo_module
-from finishup.kernel.acceptance_risk import acceptance_risk
+from finishup.kernel.acceptance_risk import ACCEPTANCE_RISK_REASONS, acceptance_risk
 from finishup.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from finishup.kernel.claim_limitations import required_limitation_ids_for_projection
+from finishup.kernel.claim_verification import unresolved_acceptance_risk
 from finishup.kernel.claims import completion_claim_present
 from finishup.kernel.closing_review_delta import (
     closing_material_frontier,
@@ -98,7 +104,6 @@ from finishup.kernel.task_facts import (
     open_effective_obligations,
     task_fact_signals,
 )
-from finishup.kernel.verification_link import admissible_verification_refs
 from finishup.protocol.models import SemanticReason, SemanticStatus
 
 # L5's D7 predicate (#984, D7a), looked up by name so this module works on a build without it:
@@ -388,9 +393,8 @@ class ClosureReadinessFacts:
     undeclared_references: tuple[UndeclaredReferenceRow, ...] = ()
     # tb4n5 (#1050, ADR-033): the resolved obligations the ledger flags as risky to call met
     # (``kernel.acceptance_risk``: a requested item never attempted, evidence not linked to a
-    # declared item, or only self-asserted evidence), sorted. The Stop gate's acceptance re-read
-    # asks only for these. ``None`` marks a hand-built fact set that predates the rule: the
-    # re-read then names every resolved obligation, exactly as before.
+    # declared item, or only self-asserted evidence), sorted. Since D1 this is never a Stop item.
+    # ``None`` marks a hand-built fact set that predates the rule.
     acceptance_risk_obligation_ids: tuple[ObligationId, ...] | None = None
     # Issue #1079 item 3: the newest check failed with ``coordinator_failure`` and no material
     # task or verification change followed it, and no current closing review covers this state.
@@ -399,15 +403,26 @@ class ClosureReadinessFacts:
     coordinator_failure_unchanged: bool = False
     # #1079: recorded ``evd_`` / ``res_`` ids that are admissible verification for a flagged
     # obligation (an observed verification row linked to that obligation, its target, or the
-    # task, at or before this frontier). An agent-asserted id is omitted. ``None`` is a
-    # hand-built fact set: the Stop gate then does not treat a well-formed id as linked. An
-    # empty tuple was computed and found no such id.
+    # task, at or before this frontier). An agent-asserted id is omitted. Since D1 the derivation
+    # no longer computes it (its only readers were the retired final-message attestation and a
+    # duplicate status sentence), so status omits the field; a hand-built fact set may still carry
+    # it for the older standing rule below.
     admissible_verification: tuple[tuple[ObligationId, tuple[str, ...]], ...] | None = None
     # Newest ``closing_review_delta`` ingestion sequence at or before this frontier, or 0 when
-    # none exists. ``None`` is a hand-built fact set: status omits the field and the Stop gate
-    # keeps the older once-per-obligation-set memory. ``0`` was computed and found no material
-    # record, which is distinct from an omitted field.
+    # none exists. ``None`` is a hand-built fact set: status omits the field. ``0`` was computed
+    # and found no material record, which is distinct from an omitted field.
     closing_material_frontier: int | None = None
+    # ADR-033 (owner decision D1): ``(obligation, reasons)`` for each flagged resolved obligation
+    # with neither an admissible observed link nor a recorded verification limit, in id order
+    # (``claim_verification.unresolved_acceptance_risk``): the receipt's own coverage-limit set,
+    # uncapped, so status, the check and the receipt agree (ADR-046). ``None`` is a hand-built
+    # fact set: standing then falls back to the older linked/limited rule.
+    unresolved_acceptance_risk: tuple[tuple[ObligationId, tuple[str, ...]], ...] | None = None
+    # ADR-033 (D1): acknowledged obligations whose effective ``acknowledged_not_done``
+    # publication directly followed a ``resolved`` one (an honest downgrade), sorted. The
+    # acknowledgement re-check does not challenge them: the status note invites exactly that
+    # downgrade for an output that does not meet its criteria.
+    downgraded_obligation_ids: tuple[ObligationId, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -497,6 +512,27 @@ class ClosureReadinessFacts:
             raise ValueError("closure_readiness_facts_invalid")
         material = self.closing_material_frontier
         if material is not None and (type(material) is not int or material < 0):
+            raise ValueError("closure_readiness_facts_invalid")
+        unresolved = self.unresolved_acceptance_risk
+        if unresolved is not None and (
+            type(unresolved) is not tuple
+            or any(type(item) is not tuple or len(item) != 2 for item in unresolved)
+            or tuple(item[0] for item in unresolved)
+            != tuple(sorted({item[0] for item in unresolved}, key=str.encode))
+            or any(
+                type(reasons) is not tuple
+                or not reasons
+                or reasons
+                != tuple(reason for reason in ACCEPTANCE_RISK_REASONS if reason in reasons)
+                for _obligation, reasons in unresolved
+            )
+            or (risky is not None and not {item[0] for item in unresolved} <= set(risky))
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        downgraded = self.downgraded_obligation_ids
+        if type(downgraded) is not tuple or downgraded != tuple(
+            sorted(set(downgraded), key=str.encode)
+        ):
             raise ValueError("closure_readiness_facts_invalid")
 
     @property
@@ -804,6 +840,58 @@ def _open_obligations_unreadable(state: ProjectionState) -> bool:
     )
 
 
+def _downgraded_from_resolved(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    acknowledged: Iterable[ObligationId],
+) -> tuple[ObligationId, ...]:
+    """Acknowledged obligations whose effective publication downgraded a ``resolved`` one (D1).
+
+    For each obligation in *acknowledged*, its ``obligation_published`` records at or before the
+    projection frontier are read in ingestion order: it is a downgrade when the newest one is
+    ``acknowledged_not_done`` and the one right before it is ``resolved``. An unreadable
+    publication on either side is not a downgrade (fail toward asking). An acknowledgement of
+    work never claimed (``open`` to ``acknowledged_not_done``) is not one either. Pure over the
+    projection and the prefix, so it replays to the same set.
+    """
+
+    wanted = frozenset(acknowledged)
+    if not wanted:
+        return ()
+    versions: dict[ObligationId, list[ObligationPublishedPayload | None]] = {}
+    for record in sorted(records, key=lambda row: row.ledger.ingestion_sequence):
+        if (
+            record.schema.name != "obligation_published"
+            or record.ledger.ingestion_sequence > state.frontier
+        ):
+            continue
+        payload = record.payload
+        typed = payload if type(payload) is ObligationPublishedPayload else None
+        obligation = None if typed is None else typed.obligation_id
+        if obligation is None:
+            # An unreadable publication may be any obligation's: it breaks every chain it could
+            # belong to, so a later acknowledgement is not exempted on the strength of an older
+            # resolved version.
+            for chain in versions.values():
+                chain.append(None)
+            continue
+        if obligation in wanted:
+            versions.setdefault(obligation, []).append(typed)
+    found: list[ObligationId] = []
+    for obligation, chain in versions.items():
+        if len(chain) < 2:
+            continue
+        newest, previous = chain[-1], chain[-2]
+        if (
+            newest is not None
+            and previous is not None
+            and newest.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
+            and previous.status is ObligationStatus.RESOLVED
+        ):
+            found.append(obligation)
+    return tuple(sorted(found, key=str.encode))
+
+
 def closure_readiness_facts(
     state: ProjectionState, records: tuple[LedgerRecord, ...]
 ) -> ClosureReadinessFacts:
@@ -928,10 +1016,12 @@ def closure_readiness_facts(
         undeclared_references=current_undeclared_references(state, records, applicability),
         acceptance_risk_obligation_ids=tuple(obligation for obligation, _reasons in risky_pairs),
         coordinator_failure_unchanged=coordinator_failure,
-        admissible_verification=admissible_verification_refs(
-            state, records, (obligation for obligation, _reasons in risky_pairs)
-        ),
         closing_material_frontier=closing_material_frontier(state, records),
+        # D1: the receipt's own coverage-limit set, walked without the status cap (R5).
+        unresolved_acceptance_risk=unresolved_acceptance_risk(state, records, flagged=risky_pairs),
+        downgraded_obligation_ids=_downgraded_from_resolved(
+            state, records, acknowledged_obligations
+        ),
     )
 
 
@@ -1152,7 +1242,13 @@ def derive_closure_readiness(
         if item not in actionable:
             actionable.append(item)
     standing.update(split.standing_limitations)
-    if facts is not None and facts.acceptance_risk_obligation_ids:
+    if facts is not None and facts.unresolved_acceptance_risk is not None:
+        # ADR-033 (D1): the receipt's coverage-limit set itself, so status names the limit
+        # exactly when the check and the receipt do (ADR-046), past any status cap.
+        if facts.unresolved_acceptance_risk:
+            standing.add("unresolved_verification_limitation")
+    elif facts is not None and facts.acceptance_risk_obligation_ids:
+        # A hand-built fact set without the computed set: the older linked/limited rule.
         linked = dict(facts.admissible_verification or ())
         limited = {
             obligation
