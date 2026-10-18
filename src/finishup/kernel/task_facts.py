@@ -1795,7 +1795,16 @@ def task_fact_signals(
         markers.add((INSTALL_INTO_PRIVATE_ENV_GAP, None))
     if "write outside_workspace" in state.edit_tokens | state.command_tokens:
         markers.add((WRITE_OUTSIDE_WORKSPACE_GAP, None))
-    if verification_runs and all("user root" in run.tokens for run in verification_runs):
+    # Decided over the runs that state a user. A Codex call first recorded from its session
+    # stream carries no ``effective_user`` (only the hook process knows it), and letting that
+    # silence count as "not root" would make the disclosure depend on which copy arrived first
+    # (#1106 r1). A run stated ``non_root`` still clears it.
+    stated_users = [
+        "user non_root" not in run.tokens
+        for run in verification_runs
+        if "user root" in run.tokens or "user non_root" in run.tokens
+    ]
+    if stated_users and all(stated_users):
         markers.add((VERIFICATION_ONLY_AS_ROOT_GAP, None))
 
     # Declared blockers on obligations that are still open: confirmed ones are disclosed, a

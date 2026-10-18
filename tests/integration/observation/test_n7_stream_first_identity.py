@@ -12,12 +12,14 @@ recorded actions and results back.
 from __future__ import annotations
 
 import json
+import os
 from typing import cast
 
 import pytest
 
 from builders.codex_replay import Replay, replay_cell, rollout_row, session_start, sweep_all
 from builders.observed_runs import ObservedLedger
+from finishup.cli import runtime_facts
 from finishup.domain.events import (
     AcceptedEvent,
     ActionRecordedPayload,
@@ -28,6 +30,7 @@ from finishup.domain.events import (
 from finishup.kernel.reducers import replay as reduce_replay
 from finishup.kernel.task_facts import (
     EDITED_AFTER_LAST_VERIFICATION_GAP,
+    VERIFICATION_ONLY_AS_ROOT_GAP,
     register_command_identity_key,
     task_fact_signals,
 )
@@ -38,6 +41,7 @@ __all__ = ["replay_cell"]
 _CALLS = {
     "call_n7_test": "python -m pytest -q",
     "call_n7_ls": "ls src",
+    "call_n7_lint": "ruff check src",
 }
 
 
@@ -158,3 +162,58 @@ async def test_parallel_calls_keep_identity_runner_and_exit_in_either_order(
         register_command_identity_key(None)
     assert not any(code.startswith("planned_verification") for code in codes), codes
     assert EDITED_AFTER_LAST_VERIFICATION_GAP not in codes
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stream_first", [True, False])
+@pytest.mark.parametrize("euid", [0, 1000], ids=["root", "non_root"])
+async def test_root_only_verification_does_not_depend_on_which_copy_came_first(
+    replay: Replay, stream_first: bool, euid: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1106 r1: a stream-first action states no user, but the disclosure stays the same.
+
+    Only the hook process knows its effective user; a call whose session-stream row defined the
+    action carries none. Root verification is still disclosed, and a non-root run still is not.
+    """
+
+    # Only the hook's own user fact is faked: the state directory's ownership checks keep
+    # reading the real effective user.
+    class _Os:
+        def __getattr__(self, name: str) -> object:
+            return getattr(os, name)
+
+        def geteuid(self) -> int:
+            return euid
+
+    monkeypatch.setattr(runtime_facts, "os", _Os())
+    session_start(replay, cli_version="0.159.0")
+    calls = ("call_n7_test", "call_n7_lint")
+    if stream_first:
+        replay.append(_call_row(calls[0], 1), _call_row(calls[1], 2))
+    for call_id in calls:
+        _hook(replay, "PreToolUse", call_id)
+    if not stream_first:
+        replay.append(_call_row(calls[0], 1), _call_row(calls[1], 2))
+    replay.append(
+        _output_row(calls[1], 2, "Process exited with code 0"),
+        _output_row(calls[0], 1, "Process exited with code 0"),
+    )
+    for call_id in reversed(calls):
+        _hook(replay, "PostToolUse", call_id)
+    replay.hook("Stop", stop_hook_active=False)
+    recorder = await sweep_all(replay)
+    assert recorder.refused == []
+
+    register_command_identity_key(replay.store.key_material())
+    try:
+        ledger = ObservedLedger()
+        for row in replay.ledger._state.records:  # noqa: SLF001
+            if type(row) is AcceptedEvent and row.schema.name in {
+                "action_recorded",
+                "result_recorded",
+            }:
+                ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
+        codes = task_fact_signals(reduce_replay(ledger.prefix), ledger.prefix).codes
+    finally:
+        register_command_identity_key(None)
+    assert (VERIFICATION_ONLY_AS_ROOT_GAP in codes) is (euid == 0), codes

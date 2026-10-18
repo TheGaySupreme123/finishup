@@ -414,6 +414,28 @@ def test_verification_only_as_root() -> None:
     assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(ledger)
 
 
+@pytest.mark.parametrize("stream_first", [True, False])
+def test_verification_only_as_root_ignores_runs_that_state_no_user(stream_first: bool) -> None:
+    """#1106 r1: a Codex call recorded first from its session stream states no user.
+
+    Whichever copy of a call arrived first, a root run plus a run with no user token is still
+    "only as root"; a run that states ``non_root`` clears it, and runs with no user say nothing.
+    """
+
+    ledger = ObservedLedger()
+    if stream_first:
+        ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0)
+    ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0, effective_user="root")
+    if not stream_first:
+        ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0)
+    assert VERIFICATION_ONLY_AS_ROOT_GAP in _codes(ledger)
+    ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0, effective_user="non_root")
+    assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(ledger)
+    silent = ObservedLedger()
+    silent.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0)
+    assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(silent)
+
+
 def test_description_suffixes_round_trip_with_tool_and_runner() -> None:
     description = observed_action_description(
         "Observed command via Codex hook",
