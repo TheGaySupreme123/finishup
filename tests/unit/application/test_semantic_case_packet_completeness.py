@@ -364,6 +364,39 @@ def test_each_task_input_origin_and_summary_carries_its_own_label() -> None:
     assert "head and tail shown" not in summary
 
 
+def test_a_directory_listing_and_a_chosen_member_carry_their_own_labels() -> None:
+    """Issue #1102 (RC6d): a listing is FinishUP's own text, and a member FinishUP picked is never
+    labelled as named by the task."""
+
+    listing = b"FinishUP listing of dedup/: 2 files beneath it are unchanged\ndedup/config.py\n"
+    member = b"raise ValueError('threshold must be > 0')\n"
+    change = _change(
+        inputs=(
+            TaskInputFile("dedup/", listing, len(listing), summary=True),
+            TaskInputFile("dedup/config.py", member, len(member), origin="task_directory"),
+        )
+    )
+
+    semantic = _build(_statement_case(), change=change)
+
+    texts = {
+        item.item_id: item.content.decode("utf-8")
+        for item in semantic.items
+        if item.item_id.startswith(TASK_INPUT_ITEM_PREFIX)
+    }
+    first, second = (texts[f"{TASK_INPUT_ITEM_PREFIX}0{index}"] for index in (1, 2))
+    assert first.startswith(
+        "[FinishUP summary of task input directory dedup/: FinishUP's own listing of the files "
+        "beneath a directory the task names"
+    )
+    assert second.startswith(
+        f"[FinishUP task input file dedup/config.py ({len(member)} bytes): beneath a directory "
+        "the task names, chosen by FinishUP for the names it shares with the change"
+    )
+    assert "threshold must be > 0" in second
+    assert "named by the task" not in second
+
+
 # --- Item 4: the latest run per probe or path wins --------------------------------------------
 
 

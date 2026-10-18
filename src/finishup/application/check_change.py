@@ -30,8 +30,9 @@ from finishup.domain.events import (
     RequestedItemRole,
 )
 from finishup.domain.observation_selection import command_is_verification
-from finishup.domain.privacy import ReviewSelectionPolicy
+from finishup.domain.privacy import ReviewSelectionPolicy, admitted_input_root_valid
 from finishup.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
+from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.domain.values import ObligationId
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.task_facts import (
@@ -72,6 +73,7 @@ from finishup.protocol.canonical import JsonValue
 __all__ = [
     "declared_output_paths",
     "OutsideInputReader",
+    "outside_inputs_not_admitted",
     "review_input_paths",
     "task_input_paths",
     "verification_input_paths",
@@ -777,6 +779,20 @@ _STATEMENT_FILE_NAME: Final = re.compile(
     r"(?P<stem>[A-Za-z0-9_@+~=-][A-Za-z0-9_.@+~=-]*)\.(?P<extension>[A-Za-z0-9]{1,10})"
 )
 _MAX_STATEMENT_INPUT_CANDIDATES: Final = 16
+# Issue #1102 (RC6d): a path the statement quotes or escapes keeps its spaces
+# (``"/app/My Docs/spec.md"``, ``/app/My\ Docs/spec.md``). One token is a quoted span or a word,
+# and a word may hold ``\ ``. Unquoted, unescaped text splits exactly as ``_STATEMENT_WORD`` does,
+# and a quoted span still yields those same words, after the spaced path it holds when it is one.
+# An apostrophe inside a word (``don't``) never opens a span.
+_STATEMENT_TOKEN: Final = re.compile(
+    r"`(?P<tick>[^`\n]{1,1024})`"
+    r"|\"(?P<double>[^\"\n]{1,1024})\""
+    r"|(?<![A-Za-z0-9])'(?P<single>[^'\n]{1,1024})'(?![A-Za-z0-9])"
+    r"|(?P<word>(?:\\ |[^\s`'\"()<>\[\]{},;])+)"
+)
+_SPACED_NOT_PLAIN: Final = re.compile(r"[\t\n\r\f\v*?\[\]{}~$`]|://|  ")
+_SPACED_FILE_NAME: Final = re.compile(r"[^/]*[A-Za-z0-9_)]\.(?P<extension>[A-Za-z0-9]{1,10})")
+_MAX_PATH_SPACES: Final = 8
 
 
 def _statement_file_word(word: str) -> str | None:
@@ -793,6 +809,91 @@ def _statement_file_word(word: str) -> str | None:
     if len(match.group("extension")) == 1 and len(match.group("stem")) < 2:
         return None
     return value
+
+
+def _names_a_file(word: str) -> bool:
+    """Whether one space-free word ends in a file name with a lettered extension."""
+
+    match = _STATEMENT_FILE_NAME.fullmatch(word.rsplit("/", 1)[-1])
+    return match is not None and any(char.isalpha() for char in match.group("extension"))
+
+
+def _spaced_path(value: str) -> str | None:
+    """One literal read-only path holding single spaces, or ``None`` (issue #1102, RC6d).
+
+    The value must have a directory part or end in ``/``, or end in a file name with a lettered
+    extension; hold one to eight single spaces and no other whitespace, glob, brace, home or
+    variable expansion, backtick or URL; and be at most 1024 characters. Prose ahead of an
+    absolute path (``see /app/My Docs/spec.md``) is dropped, and a span whose earlier words
+    already name a whole file (``docs/a.md and docs/b.md``) is prose, never one path.
+    """
+
+    value = value.strip(_STATEMENT_WORD_EDGE)
+    if " /" in value:
+        value = value[value.index(" /") + 1 :]
+    if (
+        " " not in value
+        or value != value.strip(" ")
+        or value.count(" ") > _MAX_PATH_SPACES
+        or len(value) > 1_024
+        or _SPACED_NOT_PLAIN.search(value) is not None
+        or any(_names_a_file(word) for word in value.split(" ")[:-1])
+    ):
+        return None
+    name = value.rstrip("/").rsplit("/", 1)[-1]
+    if not name or name.startswith("-"):
+        return None
+    if "/" in value.strip("/") or value.endswith("/"):
+        return value
+    match = _SPACED_FILE_NAME.fullmatch(name)
+    if match is None or not any(char.isalpha() for char in match.group("extension")):
+        return None
+    return value
+
+
+def _statement_words(text: str) -> list[str]:
+    """The statement's words, a quoted or escaped path with spaces kept whole (issue #1102)."""
+
+    words: list[str] = []
+    for match in _STATEMENT_TOKEN.finditer(text):
+        word = match.group("word")
+        if word is not None:
+            words.append(word.replace("\\ ", " "))
+            continue
+        content = match.group("tick") or match.group("double") or match.group("single") or ""
+        spaced = _spaced_path(content)
+        if spaced is not None:
+            # Ahead of its words, which still count: a quoted command (``pytest -q t/a.py``)
+            # can pass for a spaced path, and the file it names must not be lost.
+            words.append(spaced)
+        words.extend(_STATEMENT_WORD.findall(content))
+    return words
+
+
+def _input_path(value: str) -> bool:
+    """Whether a read-only input value is one literal path: plain, or with single spaces.
+
+    Read-only inputs only. A requested output keeps ``_plain_path``: a requested value with
+    whitespace is prose and is never reported absent (#977).
+    """
+
+    return _plain_path(value) or _spaced_path(value) == value
+
+
+def _statement_directory(value: str) -> bool:
+    """Whether a statement word names a directory the read may list (issues #1082, #1102).
+
+    A word ending in ``/`` (``src/dedup/``, ``/shared/legacy_app/``), or an absolute path of one
+    component (``/app``, the commonest way a task names its whole workspace). Never ``/`` or
+    ``./`` and never a word without a letter. Whether it is a directory at all is the read's
+    business: a value that is not one is skipped there.
+    """
+
+    if not value or value in {"/", "./"} or not any(char.isalpha() for char in value):
+        return False
+    if not value.endswith("/") and not (value.startswith("/") and value.count("/") == 1):
+        return False
+    return _input_path(value)
 
 
 def _named_files(text: str) -> list[str]:
@@ -855,7 +956,7 @@ def verification_input_paths(projection: ProjectionState) -> tuple[str, ...]:
             if word.startswith("-"):
                 continue
             value = _statement_file_word(_PYTEST_NODE_SUFFIX.sub("", word).removeprefix("./"))
-            if value is not None and _plain_path(value) and "." in value.rsplit("/", 1)[-1]:
+            if value is not None and _input_path(value) and "." in value.rsplit("/", 1)[-1]:
                 candidates.append(value)
     return tuple(dict.fromkeys(candidates))[:_MAX_VERIFICATION_INPUT_CANDIDATES]
 
@@ -878,47 +979,90 @@ def review_input_paths(
 
 
 def task_input_paths(projection: ProjectionState, statement: str | None) -> tuple[str, ...]:
-    """Candidate read-only task input files for the check-time read (issue #1045).
+    """Candidate read-only task input files and directories for the check-time read (#1045).
 
     The files the task statement names (a spec, the source to port, a rulebook, ``DESIGN.md``) in
-    the order it names them, then the ``role: input`` requested files of effective obligations.
-    Only plain literal paths count, at most 16. The statement is read in process only to find
-    these words; nothing here is stored or logged, and the adapter reads a candidate only when it
-    lies inside the repository, is unchanged by the task, is not ignored and is not
-    credential-named.
+    the order it names them, then the ``role: input`` requested files of effective obligations,
+    then the directories either names (issues #1082, #1102). A path the statement quotes or
+    escapes keeps its spaces; otherwise only plain literal paths count, at most 16 in all. The
+    statement is read in process only to find these words; nothing here is stored or logged, and
+    the adapter reads a candidate only when it lies inside the repository, is unchanged by the
+    task, is not ignored and is not credential-named.
     """
 
     candidates: list[str] = []
     directories: list[str] = []
     if type(statement) is str:
-        for word in _STATEMENT_WORD.findall(statement):
-            value = _statement_file_word(word)
-            if value is not None and _plain_path(value):
+        for word in _statement_words(statement):
+            value = _spaced_path(word) if " " in word else _statement_file_word(word)
+            if value is not None and not value.endswith("/") and _input_path(value):
                 candidates.append(value)
                 continue
-            # Issue #1082: an absolute directory the statement names ("the legacy app in
-            # /shared/legacy_app/") is offered last; only an outside-workspace root the owner
-            # admitted lists it, and the repository read never opens a directory as an input.
-            folder = word.strip(_STATEMENT_WORD_EDGE)
-            if (
-                folder.startswith("/")
-                and folder.endswith("/")
-                and folder.count("/") >= 3
-                and _plain_path(folder)
-            ):
+            # Issue #1102: a directory the statement names ("the code lives in src/dedup/", "the
+            # legacy app in /shared/legacy_app/", the workspace "/app") is offered after every
+            # file, so named files keep priority. Inside the repository the read lists its
+            # unchanged files and reads the ones most related to the change; outside it, only a
+            # root the owner admitted lists one. A no-slash ``/app/vllm`` keeps its place above:
+            # the read decides by what the path is.
+            folder = word.strip(_STATEMENT_WORD_EDGE) if value is None else value
+            if _statement_directory(folder):
                 directories.append(folder)
     for obligation in effective_obligations(projection):
         payload = projection.obligations[obligation].payload
         if payload is None:
             continue
         for item in payload.requested_items:
-            if (
-                item.item_kind is RequestedItemKind.FILE
-                and item.role is RequestedItemRole.INPUT
-                and _plain_path(item.value)
-            ):
+            if item.role is not RequestedItemRole.INPUT or not _input_path(item.value):
+                continue
+            if item.item_kind is RequestedItemKind.FILE:
                 candidates.append(item.value)
+            elif item.item_kind is RequestedItemKind.DIRECTORY:
+                directories.append(item.value)
     return tuple(dict.fromkeys((*candidates, *directories)))[:_MAX_STATEMENT_INPUT_CANDIDATES]
+
+
+# Issue #1102 (RC6f): absolute trees that hold the system's own programs and libraries. A task that
+# names ``/usr/bin/python3`` names a tool, not an input the reviewer lacks.
+_SYSTEM_TREES: Final = ("/bin", "/lib", "/lib32", "/lib64", "/nix", "/sbin", "/snap", "/usr")
+
+
+def outside_inputs_not_admitted(
+    candidates: Iterable[str],
+    oracle: frozenset[str],
+    workspace: str,
+    admitted_roots: Iterable[str],
+    outputs: Iterable[str],
+) -> bool:
+    """Whether the task names an input outside the workspace no admitted root covers (#1102).
+
+    ``candidates`` are ``review_input_paths``' candidates and ``oracle`` those only a recorded
+    verification command named, which are never read outside the workspace and so never count.
+    A candidate counts when it is absolute, lies outside ``workspace`` (case-folded, as the
+    outside read compares it), has at least two components, is neither a declared output nor in
+    a system tree, could lie beneath a root the owner may admit (``admitted_input_root_valid``
+    of its parent, so never hidden or a device, process or host-configuration tree), and is at
+    or beneath none of ``admitted_roots``. A closed yes or no: no path is returned or kept.
+    """
+
+    roots = tuple(os.path.normpath(root) for root in admitted_roots)
+    declared = {os.path.normpath(value) for value in outputs if value.startswith("/")}
+    for value in candidates:
+        if not value.startswith("/") or value in oracle or "\x00" in value:
+            continue
+        path = os.path.normpath(value)
+        parent = path.rsplit("/", 1)[0]
+        if (
+            path.count("/") < 2
+            or path in declared
+            or _within(path, workspace)
+            or any(path == tree or path.startswith(tree + "/") for tree in _SYSTEM_TREES)
+            or not admitted_input_root_valid(parent)
+            or credential_named_bytes(os.fsencode(path))
+            or any(path == root or path.startswith(root + "/") for root in roots)
+        ):
+            continue
+        return True
+    return False
 
 
 async def requested_output_states(

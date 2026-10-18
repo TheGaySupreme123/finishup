@@ -205,11 +205,170 @@ def test_task_input_paths_are_the_files_the_statement_names_then_declared_inputs
         "spec/rules.txt",
         "main.c",
         "rules/RULEBOOK.txt",
-        # Issue #1082: an absolute directory the statement names comes last; only an admitted
-        # outside-workspace root ever lists one, and the repository read never opens it.
+        # Issue #1082: an absolute directory the statement names comes last. Issue #1102: the
+        # repository read lists one inside the repository; outside it, only an admitted root does.
         "/app/out/",
     )
     assert task_input_paths(case.projection, None) == ("rules/RULEBOOK.txt",)
+
+
+def test_a_quoted_or_escaped_path_with_spaces_is_one_candidate() -> None:
+    """Issue #1102 (RC6d): a path with spaces was split into words that name nothing."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    projection = make_case().projection
+
+    # A quoted span still yields its words after the path, so nothing the old split found is
+    # lost; the read skips the words that name nothing.
+    assert task_input_paths(projection, 'Read "/app/My Documents/spec.md" and write out.txt') == (
+        "/app/My Documents/spec.md",
+        "/app/My",
+        "Documents/spec.md",
+        "out.txt",
+    )
+    # An escaped space is unambiguous: one value.
+    assert task_input_paths(projection, "Read /app/My\\ Documents/spec.md and write out.txt") == (
+        "/app/My Documents/spec.md",
+        "out.txt",
+    )
+    assert task_input_paths(
+        projection,
+        "Read '/app/data files/input.csv' then write report.md; don't touch it's John's.",
+    ) == ("/app/data files/input.csv", "/app/data", "files/input.csv", "report.md")
+    # Prose ahead of an absolute path is not part of it; a span listing whole files is prose.
+    assert task_input_paths(projection, 'Use "see /app/My Docs/spec.md" now')[0] == (
+        "/app/My Docs/spec.md"
+    )
+    assert task_input_paths(projection, '"see docs/a.md and docs/b.md"') == (
+        "docs/a.md",
+        "docs/b.md",
+    )
+    assert (
+        task_input_paths(
+            projection, 'Run `pip install -e .` then "make test" and read "the README file"'
+        )
+        == ()
+    )
+
+
+def test_unquoted_statements_tokenize_exactly_as_before() -> None:
+    """Issue #1102: the old words all stay, in order; a quoted spaced path only adds one."""
+
+    from finishup.application import check_change
+
+    statements = (
+        "Port the VBA UserForm in /app/vba/UserForm1.frm to Python (see `DESIGN.md` and "
+        "spec/rules.txt). Use main.c, e.g. numpy 3.10, i.e. https://example.invalid/x.md.",
+        "Fix the bug in /app/vllm so that the sampler respects min_tokens.",
+        "Implement [the interface] {described} in <app/interface/>; keep a,b,c working!",
+        "Don't break it's tests: run `pytest -q tests/test_a.py` and 'make lint'.",
+        'Quoted "tests/test_b.py" stays one word, as does "x".',
+        "Tabs\tand\nnewlines and  double  spaces split words.",
+        "A path/with/dirs and a.b and 3.10 and e.g and v1.2.3.",
+        "Back\\slash\\words without spaces keep their backslashes.",
+        "Edge: ./setup.py, ../up.txt, /abs/, src/, and *.py globs.",
+        "Unbalanced \"quote and 'apostrophe and `tick here.",
+    )
+    for statement in statements:
+        words = check_change._statement_words(statement)  # pyright: ignore[reportPrivateUsage]
+        before = check_change._STATEMENT_WORD.findall(  # pyright: ignore[reportPrivateUsage]
+            statement
+        )
+        assert [word for word in words if " " not in word] == before, statement
+        assert words == before or "`pytest -q" in statement, statement
+
+
+def test_a_relative_directory_the_statement_names_is_a_candidate_after_files() -> None:
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    projection = make_case().projection
+
+    assert task_input_paths(
+        projection, "The code lives in src/dedup/ ; see the dedup package in /app/dedup."
+    ) == ("/app/dedup", "src/dedup/")
+    # The workspace named whole is a directory candidate too; ``/`` and ``./`` never are.
+    assert task_input_paths(projection, "Everything is in /app. Do not touch / or ./ at all.") == (
+        "/app",
+    )
+
+
+def test_a_declared_input_with_a_space_is_a_candidate_but_a_requested_output_is_not_probed() -> (
+    None
+):
+    from builders.policy_cases import make_case, obl, obligation_record, plan_record
+    from finishup.application.check_change import declared_output_paths, task_input_paths
+    from finishup.domain.events import (
+        ObligationPublishedPayload,
+        ObligationStatus,
+        PlanPublishedPayload,
+        RequestedItem,
+        RequestedItemKind,
+        RequestedItemRole,
+    )
+
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Summarize the spec",
+            "the summary covers the spec",
+            ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(RequestedItemKind.FILE, "My Docs/spec.md", RequestedItemRole.INPUT),
+                RequestedItem(RequestedItemKind.DIRECTORY, "data sets/", RequestedItemRole.INPUT),
+                RequestedItem(RequestedItemKind.FILE, "My Out/sum.md", RequestedItemRole.OUTPUT),
+            ),
+        ),
+        1,
+    )
+    case = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Summarize", (obl(1),)), 1)},
+        obligations={obl(1): obligation},
+        extra_refs=(obl(1),),
+    )
+
+    assert task_input_paths(case.projection, None) == ("My Docs/spec.md", "data sets/")
+    assert declared_output_paths(case.projection) == ()
+
+
+def test_a_verification_operand_with_a_space_is_an_oracle_candidate() -> None:
+    from finishup.application.check_change import verification_input_paths
+
+    case = _verification_case(('pytest -q "tests/my test.py"', "success"))
+
+    assert verification_input_paths(cast(Any, case).projection) == ("tests/my test.py",)
+
+
+@pytest.mark.parametrize(
+    ("candidates", "roots", "outputs", "expected"),
+    [
+        (("/shared/spec.md",), (), (), True),
+        (("/shared/legacy_app/",), (), (), True),
+        (("/shared/spec.md",), ("/shared",), (), False),
+        (("/shared/legacy_app",), ("/shared/legacy_app",), (), False),
+        (("/shared/out.json",), (), ("/shared/out.json",), False),
+        (("/usr/bin/python3", "/lib/x.so"), (), (), False),
+        (("/etc/app/config.yaml", "/home/me/.ssh/notes"), (), (), False),
+        (("/shared/secrets.pem",), (), (), False),
+        (("/app/src/x.py", "/app/My Docs/spec.md", "/APP/other.md"), (), (), False),
+        (("/tmp", "/opt"), (), (), False),
+        (("spec.md", "src/dedup/"), (), (), False),
+    ],
+)
+def test_outside_inputs_not_admitted_is_closed_and_bounded(
+    candidates: tuple[str, ...], roots: tuple[str, ...], outputs: tuple[str, ...], expected: bool
+) -> None:
+    """Issue #1102 (RC6f): a yes or no only; never a path."""
+
+    from finishup.application.check_change import outside_inputs_not_admitted
+
+    assert outside_inputs_not_admitted(candidates, frozenset(), "/app", roots, outputs) is expected
+    # A path only a verification command named is never read outside, so it never counts.
+    assert not outside_inputs_not_admitted(
+        candidates, frozenset(candidates), "/app", roots, outputs
+    )
 
 
 def _verification_case(*commands: tuple[str, str]) -> object:

@@ -6,7 +6,7 @@ import os
 import struct
 import subprocess
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -67,6 +67,38 @@ def test_binary_bytes_become_a_summary_and_text_stays_text() -> None:
 
     text = task_input_from_bytes("DESIGN.md", b"# Design\n")
     assert text is not None and not text.summary and text.text == b"# Design\n"
+
+
+@pytest.mark.parametrize(
+    ("path", "origin", "summary", "valid"),
+    [
+        ("dedup/", "task", True, True),
+        ("./", "task", True, True),
+        ("My Docs/", "task", True, True),
+        ("dedup/config.py", "task_directory", False, True),
+        ("dedup/", "task", False, False),
+        ("dedup/", "task_directory", True, False),
+        ("dedup/", "verification", True, False),
+        ("../", "task", True, False),
+        ("a//", "task", True, False),
+        ("/abs/", "task", True, False),
+    ],
+)
+def test_only_a_task_summary_may_be_a_directory_listing(
+    path: str, origin: str, summary: bool, valid: bool
+) -> None:
+    """Issue #1102: a path ending in ``/`` is FinishUP's own listing of a named directory."""
+
+    def build() -> TaskInputFile:
+        return TaskInputFile(path, b"listing\n", 8, origin=cast(Any, origin), summary=summary)
+
+    if valid:
+        item = build()
+        capture = CheckChangeCapture("task_start", b"diff\n", 0, 0, 0, False, inputs=(item,))
+        assert decode_check_change(encode_check_change(capture)) == capture
+    else:
+        with pytest.raises(ValueError):
+            build()
 
 
 def test_a_file_too_large_to_read_whole_keeps_its_two_ends_or_a_summary() -> None:
@@ -163,6 +195,25 @@ def test_a_named_directory_offers_its_visible_files_in_order(shared: Path) -> No
     assert read_outside_inputs((root,), (f"{root}/legacy_app/",), limit=1)[0].path.endswith(
         "Module1.bas"
     )
+
+
+def test_an_admitted_directory_named_without_a_slash_is_listed(
+    shared: Path, tmp_path: Path
+) -> None:
+    """Issue #1102 (RC6d): "the legacy app in /shared/legacy_app" read nothing without its ``/``."""
+
+    root = os.fspath(shared)
+    (shared / "linked_app").symlink_to(shared / "legacy_app")
+
+    inputs = read_outside_inputs((root,), (f"{root}/legacy_app",), limit=4)
+
+    assert [item.path for item in inputs] == [
+        f"{root}/legacy_app/Module1.bas",
+        f"{root}/legacy_app/forms/Form1.frm",
+    ]
+    # A link at the last component is still never a directory, whichever way it is spelled.
+    assert read_outside_inputs((root,), (f"{root}/linked_app",)) == ()
+    assert read_outside_inputs((root,), (f"{root}/linked_app/",)) == ()
 
 
 def test_links_and_unsafe_roots_admit_nothing(shared: Path, tmp_path: Path) -> None:

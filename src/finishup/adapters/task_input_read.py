@@ -4,11 +4,11 @@ A task input is a file the task names that the reviewer needs beside the change:
 specification, a dataset, the source to port, a test the verification runs. This module turns the
 bytes the service read into one bounded ``TaskInputFile``:
 
-- text stays text, whole or as head and tail with the cut marked;
-- a binary file, an image or a large data file becomes FinishUP's own bounded summary
+- text stays text, whole or, when large, as head and tail with the cut marked;
+- a binary file or an image becomes FinishUP's own bounded summary
   (``finishup.adapters.input_summary``), never its bytes;
-- a file larger than the whole-read bound is summarized from its two ends, read without following
-  a link.
+- a file larger than the whole-read bound is read from its two ends only, without following a
+  link.
 
 A recognized document or binary signature (an all-ASCII PDF has no NUL) is summarized like any
 binary, and no cut ever splits a credential the shared scanner recognizes: a head or tail cut moves
@@ -442,7 +442,8 @@ def read_outside_inputs(
 
     ``values`` are the task's candidate input paths in order: the statement and ``role: input``
     files, never paths only a verification command named (``review_input_paths``). Only an
-    absolute path lexically beneath an admitted root counts. A value ending in ``/`` names a
+    absolute path lexically beneath an admitted root counts. A value ending in ``/``, or one whose
+    last component is a trusted directory reached without a link (issue #1102), names a
     directory: its visible files, two levels deep at most, are offered in name order. Each root
     must still be exactly the directory the owner admitted: it is opened one component at a time
     from ``/`` without following a link, every directory on the way must pass the trust test, and
@@ -483,9 +484,13 @@ def read_outside_inputs(
             descriptor = descriptors[root]
             if descriptor is None:
                 continue
+            # Issue #1102 (RC6d): a directory named without its trailing ``/`` ("the legacy app
+            # in /shared/legacy_app") is listed like one named with it.
             files = (
                 _listed_files(descriptor, relative, limit - len(inputs), trust)
-                if value.endswith("/") or not relative
+                if value.endswith("/")
+                or not relative
+                or _is_directory_beneath(descriptor, relative, trust)
                 else [relative]
             )
             for file in files:
@@ -517,6 +522,33 @@ def read_outside_inputs(
             if descriptor is not None:
                 os.close(descriptor)
     return tuple(inputs)
+
+
+def _is_directory_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> bool:
+    """Whether ``path`` beneath the open root is a trusted directory, reached without a link.
+
+    Each parent component is opened from the root descriptor without following a link and must
+    pass ``trust``; the last is examined without following a link, so a link to a directory is
+    never one. ``False`` on any error; what was opened is closed.
+    """
+
+    parts = path.split(b"/")
+    if not path or any(part in {b"", b".", b".."} for part in parts):
+        return False
+    opened: list[int] = []
+    current = root_descriptor
+    try:
+        for part in parts[:-1]:
+            current = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
+            opened.append(current)
+            if not trust.directory(os.fstat(current)):
+                return False
+        return trust.directory(os.stat(parts[-1], dir_fd=current, follow_symlinks=False))
+    except OSError:
+        return False
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
 
 
 def _open_root(root: str, trust: _Trust) -> int | None:

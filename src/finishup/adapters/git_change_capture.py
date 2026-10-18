@@ -50,6 +50,7 @@ from finishup.adapters.git_version import (
     git_version,
     git_version_supported,
 )
+from finishup.adapters.input_summary import declared_binary_format
 from finishup.adapters.repository_identity import root_owned_checkout
 from finishup.adapters.task_input_read import (
     MAX_TASK_INPUT_READ_BYTES,
@@ -2079,6 +2080,12 @@ class GitChangeCaptureAdapter:
         most ``MAX_TASK_INPUT_TEXT_BYTES``, whole or as head and tail with the cut marked. The
         read is point-in-time, after the change proved stable. A file that fails any test is
         skipped silently: nothing about it is returned.
+
+        Issue #1102 (RC6d): a value that is a directory inside the repository (the workspace root
+        included, after every other one) is expanded once every named file was read, into
+        FinishUP's own listing of its files that pass the same unchanged-since-start test and,
+        in the room left, the members sharing the most identifiers with the change
+        (``_directory_inputs``). Named files keep priority; directory material only backfills.
         """
 
         if type(values) is not tuple or not values:
@@ -2087,11 +2094,16 @@ class GitChangeCaptureAdapter:
         nested_roots = {read.path for read in nested}
         inputs: list[TaskInputFile] = []
         seen: set[bytes] = set()
+        directories: list[bytes] = []
+        root_named = False
         for value in values[:_MAX_REQUESTED_PATH_PROBES]:
             if len(inputs) >= MAX_TASK_INPUT_FILES or _expired(deadline):
                 break
             relative = _requested_relative_path(pinned.root, value)
-            if relative is None or relative == _ROOT_RELATIVE or relative in seen:
+            if relative == _ROOT_RELATIVE:
+                root_named = True
+                continue
+            if relative is None or relative in seen:
                 continue
             seen.add(relative)
             if (
@@ -2103,7 +2115,13 @@ class GitChangeCaptureAdapter:
             ):
                 continue
             identity = _path_identity(pinned.descriptor, relative)
-            if identity is None or identity == _BLOCKED or not stat.S_ISREG(identity[0]):
+            if identity is None or identity == _BLOCKED:
+                continue
+            if stat.S_ISDIR(identity[0]):
+                if len(directories) < _MAX_INPUT_DIRECTORIES and not _hidden(relative):
+                    directories.append(relative)
+                continue
+            if not stat.S_ISREG(identity[0]):
                 continue
             blob: str | None = None
             if relative not in baseline_kept:
@@ -2117,7 +2135,218 @@ class GitChangeCaptureAdapter:
             input_file = _task_input(pinned, relative, identity, object_format, blob)
             if input_file is not None:
                 inputs.append(input_file)
+        if root_named:
+            directories.append(_ROOT_RELATIVE)
+        read = {item.path.encode("utf-8") for item in inputs}
+        for directory in directories:
+            if len(inputs) >= MAX_TASK_INPUT_FILES or _expired(deadline):
+                break
+            for item in self._directory_inputs(
+                pinned,
+                directory,
+                sections,
+                changed,
+                nested_roots,
+                baseline_kept,
+                deadline,
+                room=MAX_TASK_INPUT_FILES - len(inputs),
+                read=frozenset(read),
+                base_kind=base_kind,
+                base_id=base_id,
+                object_format=object_format,
+            ):
+                inputs.append(item)
+                read.add(item.path.encode("utf-8"))
         return tuple(inputs)
+
+    def _directory_inputs(
+        self,
+        pinned: _Workspace,
+        directory: bytes,
+        sections: list[_Section],
+        changed: set[bytes],
+        nested_roots: set[bytes],
+        baseline_kept: frozenset[bytes],
+        deadline: float,
+        *,
+        room: int,
+        read: frozenset[bytes],
+        base_kind: ChangeBaseKind,
+        base_id: str,
+        object_format: Literal["sha1", "sha256"],
+    ) -> list[TaskInputFile]:
+        """A named directory's listing, then its members most related to the change (#1102).
+
+        The listing names the directory's files that are unchanged since the task started, by
+        the same test a named file passes, and never a changed, ignored, hidden or
+        credential-named file or one in a nested repository. Then, in ``room``, its members are
+        ranked structurally (beside a file the change touches beneath it, then on the way to
+        one, then the rest; shallower first; then by name), and the first
+        ``_MAX_DIRECTORY_SCORED`` text members of at most 256 KiB, 2 MiB in all, are read and
+        ordered by how many distinct identifiers they share with the change; a tie keeps the
+        structural order. A binary member is listed but never read. Every member read is a
+        ``task_directory`` input, read and proven unchanged exactly like a named file.
+        """
+
+        members, cut = self._directory_members(
+            pinned,
+            directory,
+            changed,
+            nested_roots,
+            baseline_kept,
+            deadline,
+            base_kind=base_kind,
+            base_id=base_id,
+        )
+        listing = _directory_listing(directory, tuple(members), cut)
+        if listing is None:
+            return []
+        chosen: list[TaskInputFile] = [listing]
+        prefix = b"" if directory == _ROOT_RELATIVE else directory + b"/"
+        beneath = [path for path in changed if path.startswith(prefix)]
+        identifiers = _change_identifiers(
+            [
+                section
+                for section in sections
+                if section.path.startswith(prefix) or not beneath or not prefix
+            ]
+        )
+        parents = {path.rpartition(b"/")[0] for path in beneath}
+        scored: list[tuple[int, int, TaskInputFile]] = []
+        budget = _MAX_DIRECTORY_SCORED_BYTES
+        attempts = 0
+        ranked = sorted(
+            (path for path in members if path not in read),
+            key=lambda path: _member_rank(path, parents),
+        )
+        for order, path in enumerate(ranked):
+            if attempts >= _MAX_DIRECTORY_SCORED or budget <= 0 or _expired(deadline):
+                break
+            identity = _path_identity(pinned.descriptor, path)
+            if (
+                identity is None
+                or identity == _BLOCKED
+                or not stat.S_ISREG(identity[0])
+                or not 0 < identity[3] <= min(_MAX_DIRECTORY_SCORED_FILE_BYTES, budget)
+            ):
+                continue
+            attempts += 1
+            budget -= identity[3]
+            content = _unchanged_bytes(pinned, path, identity, object_format, members[path])
+            if content is None or _binary_member(content):
+                continue
+            item = task_input_from_bytes(path.decode("utf-8"), content, origin="task_directory")
+            if item is None:
+                continue
+            shared = len(identifiers & set(_identifiers(content)))
+            scored.append((-shared, order, item))
+        chosen.extend(item for _, _, item in sorted(scored, key=lambda row: row[:2]))
+        return chosen[:room]
+
+    def _directory_members(
+        self,
+        pinned: _Workspace,
+        directory: bytes,
+        changed: set[bytes],
+        nested_roots: set[bytes],
+        baseline_kept: frozenset[bytes],
+        deadline: float,
+        *,
+        base_kind: ChangeBaseKind,
+        base_id: str,
+    ) -> tuple[dict[bytes, str | None], bool]:
+        """The directory's files unchanged since the task started, and whether the list was cut.
+
+        Each maps to its base commit blob (tracked) or ``None`` (untracked). A tracked member
+        counts only against a ``task_start`` base, as an ordinary index entry (``git ls-files
+        -v`` tag ``H``) of a regular blob in the base tree that this change does not touch; an
+        untracked one only when the task-start snapshot lists it unchanged. Two Git calls, both
+        bounded by the deadline and an output limit; past ``_MAX_DIRECTORY_MEMBERS`` names, or
+        past either limit, the list is cut and says so.
+        """
+
+        root = directory == _ROOT_RELATIVE
+        prefix = b"" if root else directory + b"/"
+
+        def eligible(path: bytes) -> bool:
+            return (
+                path.startswith(prefix)
+                and _safe_relative(path)
+                and path not in changed
+                and not _hidden(path)
+                and not _credential_name(path)
+                and not any(byte in path for byte in b"\r\n")
+                and not any(
+                    path == nested_root or path.startswith(nested_root + b"/")
+                    for nested_root in nested_roots
+                )
+                and _utf8(path)
+            )
+
+        members: dict[bytes, str | None] = {}
+        cut = False
+        if base_kind == "task_start":
+            try:
+                name = directory.decode("utf-8", errors="strict")
+                tags, tags_cut = self._listed(
+                    pinned,
+                    ("ls-files", "-v", "-z", "--", *(() if root else (":(literal)" + name + "/",))),
+                    deadline,
+                )
+                tree, tree_cut = self._listed(
+                    pinned,
+                    ("ls-tree", "-r", "-z", base_id if root else f"{base_id}:{name}"),
+                    deadline,
+                    accepted=frozenset({0, 128}),
+                )
+                cut = tags_cut or tree_cut
+                ordinary = {record[2:] for record in _nul_fields(tags) if record.startswith(b"H ")}
+                for record in _nul_fields(tree):
+                    meta, separator, path = record.partition(b"\t")
+                    fields = meta.split(b" ")
+                    full = prefix + path
+                    if (
+                        separator
+                        and len(fields) == 3
+                        and fields[0] in {b"100644", b"100755"}
+                        and fields[1] == b"blob"
+                        and full in ordinary
+                        and eligible(full)
+                    ):
+                        members[full] = fields[2].decode("ascii")
+            except UnicodeDecodeError, ValueError, ChangeCaptureUnavailable:
+                members, cut = {}, True
+        for path in sorted(baseline_kept):
+            if eligible(path):
+                members.setdefault(path, None)
+        if len(members) > _MAX_DIRECTORY_MEMBERS:
+            kept = sorted(members, key=lambda path: (path.count(b"/"), path))
+            members = {path: members[path] for path in kept[:_MAX_DIRECTORY_MEMBERS]}
+            cut = True
+        return members, cut
+
+    def _listed(
+        self,
+        pinned: _Workspace,
+        arguments: tuple[str, ...],
+        deadline: float,
+        *,
+        accepted: frozenset[int] = frozenset({0}),
+    ) -> tuple[bytes, bool]:
+        """NUL-terminated records a bounded listing returned, and whether it was cut."""
+
+        try:
+            code, listing = self._git(
+                pinned,
+                arguments,
+                deadline=deadline,
+                limit=_DIRECTORY_LIST_LIMIT,
+                accepted=accepted,
+                keep_prefix_on_limit=True,
+            )
+        except GitOutputTruncated as exc:
+            return exc.prefix[: exc.prefix.rfind(b"\0") + 1], True
+        return (listing if code == 0 else b""), False
 
     def _unchanged_tracked_blob(
         self, pinned: _Workspace, relative: bytes, base_id: str, deadline: float
@@ -3224,6 +3453,162 @@ def _task_input(
         if digest.hexdigest() != blob:
             return None
     return task_input_from_bytes(name, content)
+
+
+# Issue #1102 (RC6d): a directory the task names inside the repository. At most this many are
+# expanded per check (the workspace root, when the task names it, comes after them); each lists at
+# most this many names read from Git and renders at most this many of them in this many bytes.
+_MAX_INPUT_DIRECTORIES: Final = 2
+_MAX_DIRECTORY_MEMBERS: Final = 4_096
+_DIRECTORY_LIST_LIMIT: Final = 1024 * 1024
+_MAX_LISTED_NAMES: Final = 256
+_MAX_LISTING_BYTES: Final = 8_192
+# Members read to rank them by the identifiers they share with the change: at most this many
+# files, each at most this large, at most this many bytes in all, within the capture deadline.
+_MAX_DIRECTORY_SCORED: Final = 16
+_MAX_DIRECTORY_SCORED_FILE_BYTES: Final = 256 * 1024
+_MAX_DIRECTORY_SCORED_BYTES: Final = 2 * 1024 * 1024
+_MAX_CHANGE_IDENTIFIERS: Final = 512
+_IDENTIFIER: Final = re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]{3,63}(?![A-Za-z0-9_])")
+# Words nearly every source file shares; they say nothing about which file the change relates to.
+_COMMON_IDENTIFIERS: Final = frozenset(
+    {
+        b"class",
+        b"const",
+        b"elif",
+        b"else",
+        b"export",
+        b"False",
+        b"from",
+        b"function",
+        b"import",
+        b"None",
+        b"number",
+        b"print",
+        b"return",
+        b"self",
+        b"string",
+        b"that",
+        b"this",
+        b"True",
+        b"value",
+        b"while",
+        b"with",
+    }
+)
+_BINARY_SNIFF_BYTES: Final = 8_000
+
+
+def _hidden(path: bytes) -> bool:
+    return any(part.startswith(b".") for part in path.split(b"/"))
+
+
+def _utf8(path: bytes) -> bool:
+    try:
+        path.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _identifiers(text: bytes) -> list[bytes]:
+    return [word for word in _IDENTIFIER.findall(text) if word not in _COMMON_IDENTIFIERS]
+
+
+def _change_identifiers(sections: Sequence[_Section]) -> frozenset[bytes]:
+    """Distinct identifiers on the added and removed lines of ``sections``, at most 512."""
+
+    found: dict[bytes, None] = {}
+    for section in sections:
+        if section.text is None:
+            continue
+        for line in section.text.split(b"\n"):
+            if line[:1] not in {b"+", b"-"} or line.startswith((b"+++ ", b"--- ")):
+                continue
+            for word in _identifiers(line[1:]):
+                found.setdefault(word, None)
+                if len(found) >= _MAX_CHANGE_IDENTIFIERS:
+                    return frozenset(found)
+    return frozenset(found)
+
+
+def _member_rank(path: bytes, parents: set[bytes]) -> tuple[int, int, bytes]:
+    """Structural order of a directory member: beside a changed file, on the way to one, else."""
+
+    parent = path.rpartition(b"/")[0]
+    if parent in parents:
+        place = 0
+    elif any(not parent or changed.startswith(parent + b"/") for changed in parents):
+        place = 1
+    else:
+        place = 2
+    return place, path.count(b"/"), path
+
+
+def _binary_member(content: bytes) -> bool:
+    return declared_binary_format(content) or b"\0" in content[:_BINARY_SNIFF_BYTES]
+
+
+def _unchanged_bytes(
+    pinned: _Workspace,
+    relative: bytes,
+    identity: _Identity,
+    object_format: Literal["sha1", "sha256"],
+    blob: str | None,
+) -> bytes | None:
+    """A directory member's whole bytes, hashing to ``blob`` when tracked; ``None`` to skip."""
+
+    try:
+        outcome, content = _read_beneath(
+            pinned.descriptor, relative, _MAX_DIRECTORY_SCORED_FILE_BYTES, identity
+        )
+    except _ChangedDuringCapture:
+        return None
+    if outcome not in {"regular", "executable"} or not content:
+        return None
+    if blob is not None:
+        digest = hashlib.new(object_format, b"blob %d\0" % len(content))
+        digest.update(content)
+        if digest.hexdigest() != blob:
+            return None
+    return content
+
+
+def _directory_listing(
+    directory: bytes, members: Sequence[bytes], cut: bool
+) -> TaskInputFile | None:
+    """FinishUP's own listing of a named directory's unchanged files; ``None`` when it has none.
+
+    Names only, shallower first then by name, at most 256 of them in at most 8 KiB, cut on whole
+    lines. Stored as a ``summary`` input whose path ends in ``/`` (``./`` for the workspace root).
+    """
+
+    if not members:
+        return None
+    name = "." if directory == _ROOT_RELATIVE else directory.decode("utf-8")
+    ordered = sorted(members, key=lambda path: (path.count(b"/"), path))
+    names: list[str] = []
+    used = 1_024
+    for path in ordered[:_MAX_LISTED_NAMES]:
+        line = path.decode("utf-8")
+        if used + len(line.encode("utf-8")) + 1 > _MAX_LISTING_BYTES:
+            break
+        names.append(line)
+        used += len(line.encode("utf-8")) + 1
+    total = f"At least {len(members)}" if cut else str(len(members))
+    lines = [
+        f"FinishUP listing of {name}/: {total} files beneath it are unchanged since the task "
+        "started (tracked by Git, or present when the task started); "
+        f"{len(names)} are named below, the first by depth then name.",
+        "Files changed during the task are in the check-time change and are not listed here; "
+        "files Git ignores, hidden files and credential-named files are never listed.",
+        *names,
+    ]
+    text = ("\n".join(lines) + "\n").encode("utf-8")
+    try:
+        return TaskInputFile(name + "/", text, len(text), summary=True)
+    except ValueError:
+        return None
 
 
 def _header(

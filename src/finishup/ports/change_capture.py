@@ -288,8 +288,16 @@ class TaskChangeBase:
             raise _invalid()
 
 
-type TaskInputOrigin = Literal["task", "verification", "outside_workspace"]
-TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset({"task", "verification", "outside_workspace"})
+type TaskInputOrigin = Literal["task", "verification", "outside_workspace", "task_directory"]
+TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset(
+    {"task", "verification", "outside_workspace", "task_directory"}
+)
+
+
+def _listing_path(value: str) -> bool:
+    """A named directory's listing path (issue #1102): ``dir/``, or ``./`` for the root."""
+
+    return value == "./" or (value.endswith("/") and _json_path(value[:-1]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,9 +321,14 @@ class TaskInputFile:
     # operand of a recorded verification command, under the same repository rule, so a test the
     # task ships reaches the reviewer as the oracle. ``outside_workspace``: named by the task and
     # read beneath a root the owner admitted in the repository's privacy grant.
+    # ``task_directory`` (issue #1102): beneath a directory the task names inside the repository,
+    # chosen by FinishUP for the identifiers it shares with the change, under the ``task`` rule;
+    # never labelled as named by the task.
     origin: TaskInputOrigin = "task"
     # Issue #1082: ``text`` is FinishUP's own bounded summary of a binary or data file it never
-    # sends whole (``finishup.adapters.input_summary``), not the file's bytes.
+    # sends whole (``finishup.adapters.input_summary``), not the file's bytes. Issue #1102: a
+    # ``task`` summary whose path ends in ``/`` is FinishUP's own listing of the unchanged files
+    # beneath a directory the task names (``./`` for the workspace root).
     summary: bool = False
 
     def __post_init__(self) -> None:
@@ -324,7 +337,9 @@ class TaskInputFile:
         if self.origin == "outside_workspace":
             if not self.path.startswith("/") or not _json_path(self.path.lstrip("/")):
                 raise _invalid()
-        elif not _json_path(self.path):
+        elif not _json_path(self.path) and not (
+            self.origin == "task" and self.summary and _listing_path(self.path)
+        ):
             raise _invalid()
         if (
             type(self.text) is not bytes
@@ -522,6 +537,8 @@ class ChangeCapturePort(Protocol):
         of every other file (tb4n2 R7). They order the change only, never widen what is read.
         ``input_paths`` names candidate read-only task input files (issue #1045); only those inside
         the repository, unchanged, not ignored and not credential-named are read, into ``inputs``.
+        A candidate may name a directory inside the repository (issue #1102): its unchanged files
+        are listed and the ones most related to the change read, within the same input bound.
         """
         ...
 

@@ -819,14 +819,30 @@ _TASK_INPUT_SUMMARY_LABEL: Final = (
     "description of a binary or data file it did not send whole; not the file itself and not the "
     "agent's work]\n"
 )
+# Issue #1102 (RC6d): a directory the task names inside the repository. Its listing is FinishUP's
+# own text, and a file FinishUP picked beneath it is never labelled as named by the task.
+_TASK_INPUT_LISTING_LABEL: Final = (
+    "[FinishUP summary of task input directory {path}: FinishUP's own listing of the files "
+    "beneath a directory the task names that were unchanged since the task started; not the "
+    "files' content and not the agent's work]\n"
+)
+_TASK_INPUT_DIRECTORY_LABEL: Final = (
+    "[FinishUP task input file {path} ({size} bytes{cut}): beneath a directory the task names, "
+    "chosen by FinishUP for the names it shares with the change, unchanged since the task "
+    "started, read by the FinishUP service when this check ran; not the agent's work]\n"
+)
 
 
 def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
     """The labelled excerpt text of one task input, and whether it is a partial view."""
 
     cut = len(item.text) < item.size and not item.summary
-    if item.summary:
+    if item.summary and item.path.endswith("/"):
+        label = _TASK_INPUT_LISTING_LABEL
+    elif item.summary:
         label = _TASK_INPUT_SUMMARY_LABEL
+    elif item.origin == "task_directory":
+        label = _TASK_INPUT_DIRECTORY_LABEL
     elif item.origin == "verification":
         label = _TASK_INPUT_VERIFICATION_LABEL
     elif item.origin == "outside_workspace":
