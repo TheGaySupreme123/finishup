@@ -21,8 +21,11 @@ def test_shared_guidance_makes_conversation_primary_and_user_choice_final() -> N
     # tb4n5 startup dedup (ADR-047): the skill names the operating card, and the card alone routes
     # setup to the request templates instead of every surface repeating the route.
     assert "finishup://guidance/agent-instructions.md" in skill
-    assert "publish `#publish-shapes`" in guidance
-    assert "setup `finishup://guidance/request-templates.md`" in guidance
+    # n7 RC3: a bare ``#publish-shapes`` read against the card itself (42 unknown-anchor reads),
+    # so the card names the full topic URI, and setup lives on that same page.
+    assert "publish `finishup://guidance/request-templates.md#publish-shapes`" in guidance
+    assert "setup: same page." in guidance
+    assert "`#publish-shapes`" not in guidance
     for surface in (_text("guidance/request-templates.md"),):
         collapsed = " ".join(surface.split())
         assert "Normal conversation is the primary" in collapsed

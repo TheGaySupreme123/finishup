@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Final, cast
 
 from finishup.protocol.guidance_uris import (
+    FOCUSED_GUIDANCE_URIS,
     GUIDANCE_TOPIC_URIS,
     GUIDANCE_URI_PREFIX,
     LEGACY_GUIDANCE_ANCHORS,
@@ -790,10 +791,15 @@ def resolve_guidance_topic_uri(uri: object) -> str | None:
        (``attempt-accounting`` is ``requested-items-and-attempt-accounting``);
     3. words that all appear in exactly one catalogued anchor of that document
        (``decision`` is ``publish-work-decision``). Two or more candidates are ambiguous and never
-       resolve.
+       resolve;
+    4. only when the named document yields no candidate at all, the exact catalogued anchor of
+       exactly one *other* guidance document (n7: 42 reads asked for ``#publish-shapes`` beside
+       the wrong page; it is ``request-templates.md#publish-shapes``). A focused page has no
+       catalogued topics, so an anchor on it takes this step alone. A slug two documents share,
+       an alias and a word subset never cross documents, and the returned URI names the page read.
 
-    Anything else, a focused topic or an unknown document returns ``None``, and the caller keeps
-    its refusal with the registered alternatives. The URI is never interpreted as a path.
+    Anything else, including an unknown document, returns ``None``, and the caller keeps its
+    refusal with the registered alternatives. The URI is never interpreted as a path.
     """
 
     if type(uri) is not str or len(uri) > _MAX_GUESSED_TOPIC_URI_CHARS:
@@ -811,7 +817,11 @@ def _resolve_current_guidance_topic_uri(uri: str) -> str | None:
     """Resolve a near-miss anchor written in the current ``finishup://`` scheme."""
 
     document, separator, anchor = uri.partition("#")
-    if not separator or not anchor or document not in _RESOURCE_BY_URI:
+    if not separator or not anchor:
+        return None
+    if document in FOCUSED_GUIDANCE_URIS:
+        return _cross_document_topic_uri(_guidance_anchor(anchor))
+    if document not in _RESOURCE_BY_URI:
         return None
     # A title anchor the pre-rename guidance spelled with the old product name (ADR-048).
     renamed = LEGACY_GUIDANCE_ANCHORS.get(uri.removeprefix(GUIDANCE_URI_PREFIX))
@@ -832,7 +842,29 @@ def _resolve_current_guidance_topic_uri(uri: str) -> str | None:
         return f"{document}#{alias}"
     words = frozenset(slug.split("-"))
     matches = [candidate for candidate in catalogued if words <= frozenset(candidate.split("-"))]
-    return f"{document}#{matches[0]}" if len(matches) == 1 else None
+    if matches:
+        return f"{document}#{matches[0]}" if len(matches) == 1 else None
+    return _cross_document_topic_uri(slug)
+
+
+def _cross_document_topic_uri(slug: str) -> str | None:
+    """Step 4: the topic URI of the one guidance document cataloguing exactly ``slug``."""
+
+    if not slug or not slug.isascii():
+        return None
+    owners = _topic_anchor_owners().get(slug, ())
+    return f"{owners[0]}#{slug}" if len(owners) == 1 else None
+
+
+@lru_cache(maxsize=1)
+def _topic_anchor_owners() -> Mapping[str, tuple[str, ...]]:
+    """Every catalogued topic anchor mapped to the guidance documents that catalogue it."""
+
+    owners: dict[str, list[str]] = {}
+    for topic_uri in GUIDANCE_TOPIC_URIS:
+        document, _separator, anchor = topic_uri.partition("#")
+        owners.setdefault(anchor, []).append(document)
+    return MappingProxyType({anchor: tuple(documents) for anchor, documents in owners.items()})
 
 
 def _resource_for_uri(uri: object) -> GuidanceResource:
