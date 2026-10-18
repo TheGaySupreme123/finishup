@@ -166,13 +166,12 @@ class ReviewerLoop:
     async def execute_actions(self, parsed: JsonValue) -> SemanticJudgment | None:
         """Decode the one reply; run a read and append its observation, or finish."""
         reply = decode_reviewer_reply(parsed)
+        # The assistant turn is the validated reply exactly as the model returned it: a provider
+        # holding its own copy of the thread (Codex) checks the history against it (unit 3).
+        self.add_messages(Turn("assistant", canonical_encode(parsed).decode()))
         if isinstance(reply, SemanticJudgment):
-            self.add_messages(Turn("assistant", canonical_encode(parsed).decode()))
             return reply
         if not self.reads_offered:
             raise _Exit("read_limit")  # no observation, no extra budget
-        self.add_messages(
-            Turn("assistant", canonical_encode(reply.model_dump(mode="json")).decode())
-        )
         self.add_messages(Turn("user", await self.broker.execute(reply)))
         return None

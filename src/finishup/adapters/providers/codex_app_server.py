@@ -2152,11 +2152,30 @@ class _ReviewerSession:
     auth_mode: Literal["chatgpt"] | None
     plan_type: str | None
     token_usage: RuntimeTokenUsage | None
+    keys: tuple[str, ...] = ()
     expiry: asyncio.TimerHandle | None = None
 
 
 def _transcript_key(history: tuple[tuple[str, str], ...]) -> str:
     return canonical_digest([[role, text] for role, text in history])
+
+
+def _reviewer_turn_continues(reply: dict[str, JsonValue] | None) -> bool:
+    """Whether the loop can send another turn: anything but a valid final judgment.
+
+    A read action continues; so may a malformed reply, through the loop's one format repair.
+    """
+
+    inner = None if reply is None else reply.get("reply")
+    if type(inner) is dict and set(cast(dict[str, JsonValue], inner)) == {"final_judgment"}:
+        try:
+            normalize_judgment(
+                cast(dict[str, JsonValue], inner)["final_judgment"], require_part2=True
+            )
+        except ValueError, TypeError, LookupError:
+            return True
+        return False
+    return True
 
 
 class _ReviewerSessions:
@@ -2173,24 +2192,35 @@ class _ReviewerSessions:
         self._tasks: set[asyncio.Task[object]] = set()
 
     def take(self, key: str) -> _ReviewerSession | None:
-        session = self._live.pop(key, None)
-        if session is not None and session.expiry is not None:
-            session.expiry.cancel()
+        session = self._live.get(key)
+        if session is not None:
+            self._drop(session)
         return session
 
-    def keep(self, key: str, session: _ReviewerSession, seconds: float) -> None:
-        session.expiry = asyncio.get_running_loop().call_later(seconds, self._expire, key)
-        self._live[key] = session
+    def keep(self, keys: tuple[str, ...], session: _ReviewerSession, seconds: float) -> None:
+        # Two continuations are possible: the loop appends the reply and an observation, or (after
+        # a malformed reply, which the loop never echoes) only its format-repair notice.
+        session.keys = keys
+        session.expiry = asyncio.get_running_loop().call_later(seconds, self._expire, keys[0])
+        for key in keys:
+            self._live[key] = session
+
+    def _drop(self, session: _ReviewerSession) -> None:
+        for key in session.keys:
+            self._live.pop(key, None)
+        if session.expiry is not None:
+            session.expiry.cancel()
 
     def _expire(self, key: str) -> None:
-        session = self._live.pop(key, None)
+        session = self._live.get(key)
         if session is not None:
+            self._drop(session)
             task = asyncio.ensure_future(_cleanup_guaranteed(session.runtime))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
     async def aclose(self) -> None:
-        sessions = list(self._live.values())
+        sessions = {id(session): session for session in self._live.values()}.values()
         self._live.clear()
         for session in sessions:
             if session.expiry is not None:
@@ -2254,6 +2284,7 @@ class CodexAppServerEvaluator:
         output_schema = _CODEX_JUDGMENT_JSON_SCHEMA
         instructions = SEMANTIC_REVIEW_INSTRUCTION
         turn_text: str | None = None
+        turn_completed = False
         try:
             self.profile.verify_capability_evidence(self.clock.now_utc())
             if mode is not None:
@@ -2465,6 +2496,7 @@ class CodexAppServerEvaluator:
                     raise ValueError("codex_app_server_completion_invalid")
                 if completed.get("status") != "completed" or completed.get("error") is not None:
                     raise _turn_failure(completed.get("error"))
+                turn_completed = True
                 candidates = final_texts if final_texts else untagged_texts
                 if len(candidates) != 1:
                     raise ValueError("codex_app_server_agent_message_count")
@@ -2494,29 +2526,30 @@ class CodexAppServerEvaluator:
             )
         finally:
             retained = False
-            next_reply = reply.get("reply") if reply is not None else None
+            remaining = deadline.monotonic_deadline - self.clock.monotonic_seconds()
             if (
-                mode == "turn"
-                and failure is None
-                and history is not None
+                history is not None
                 and self.sessions is not None
                 and runtime is not None
                 and thread_id is not None
-                and isinstance(next_reply, dict)
-                and "action" in next_reply
+                and remaining > 0.0
+                and (
+                    (failure is None and _reviewer_turn_continues(reply))
+                    or (failure == "invalid" and turn_completed)
+                )
             ):
-                # An action turn keeps the scoped session for the next exchange, bounded by the
-                # review deadline. Any other end of a turn closes it.
-                remaining = deadline.monotonic_deadline - self.clock.monotonic_seconds()
-                if remaining > 0.0:
-                    assert reply is not None
-                    transcript = (*history, ("assistant", canonical_encode(reply).decode()))
-                    self.sessions.keep(
-                        _transcript_key(transcript),
-                        _ReviewerSession(runtime, thread_id, auth_mode, plan_type, token_usage),
-                        remaining,
-                    )
-                    retained = True
+                # A turn the loop can continue keeps the scoped session for the next exchange,
+                # bounded by the review deadline; a valid final judgment or any failure closes it.
+                keys = (_transcript_key(history),)
+                if reply is not None:
+                    answer = ("assistant", canonical_encode(reply).decode())
+                    keys = (_transcript_key((*history, answer)), *keys)
+                self.sessions.keep(
+                    keys,
+                    _ReviewerSession(runtime, thread_id, auth_mode, plan_type, token_usage),
+                    remaining,
+                )
+                retained = True
             if retained:
                 cleanup = "retained"
             else:

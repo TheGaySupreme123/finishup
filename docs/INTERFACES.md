@@ -11693,11 +11693,13 @@ receipt remains coverage-bounded; Stop is never blocked on it.
 One reviewer-loop completion is one ordinary gateway dispatch with its own admission, rendered-body
 scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
 payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of
-`{"content", "role"}` messages, `system` first, then `user`/`assistant` alternating, ending with
-`user`, at most 11 messages. `ApprovedOutboundCase.media_type` (or the local case's media type)
+`{"content", "role"}` messages, `system` first, then `user` and `assistant` turns ending with
+`user`, at most 12 messages. A user turn may follow a user turn (the loop's format-repair notice
+never echoes the malformed reply); an assistant turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
 selects the reply schema: `application/vnd.finishup.reviewer-turn+json` (every reply branch) or
 `application/vnd.finishup.reviewer-final+json` (final judgment only). Composition installs both
-provider-wire schemas as `ReviewerReplySchemas`; without them a route refuses the exchange.
+provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the strict
+`findings/reviewer-reply-1.0.0` forms); without them a route refuses the exchange.
 
 | Route | Request | Refusal |
 |---|---|---|
@@ -11711,8 +11713,13 @@ its canonical text (the assistant message the next exchange must carry), and pro
 prompt and schema digests name the exchange's own instruction and reply schema. Branch and argument
 validation stay with the reply decoder. The gateway records it as `completed`. An action turn on
 Codex reports `runtime_evidence.process_cleanup = "retained"`; the exchange that ends the session
-reports the real cleanup. That value is domain-only until exchange evidence is persisted, which
-needs a `runtime-attempt-evidence` schema bump. `ReviewerExchangeModel.complete(history, mode,
-deadline=)` is bound to one provider binding; a bare judgment or a reply from another endpoint
-profile or model raises `reviewer_exchange_route_mismatch`, so a review never moves to another,
-separately billed route.
+reports the real cleanup. A Codex session stays open after a read action, and after a completed turn
+whose output was malformed (for the loop's one repair); a valid final judgment or any other failure
+closes it. That value is domain-only until exchange evidence is persisted, which
+needs a `runtime-attempt-evidence` schema bump. `ReviewerExchangeModel` is the loop's
+`ReviewerModel`: `complete(history, schema, deadline=)` returns the reply object, raises the
+decoder's `ReviewerReplyInvalid("output_not_json")` for an invalid turn (the one repair), and
+`ReviewerModelError` for any other failed, refused, late or uncertain turn. It is bound to one
+provider binding; a reply from another endpoint profile or model raises
+`reviewer_exchange_route_mismatch`, so a review never moves to another, separately billed route.
+The loop appends each reply to the history exactly as the model returned it (canonical JSON).

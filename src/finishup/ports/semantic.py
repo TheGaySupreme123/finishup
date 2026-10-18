@@ -2093,7 +2093,8 @@ class SemanticResultUnavailable:
 # -- reviewer completion exchanges (#1118 unit 3, ADR-006) ----------------------------------------
 # One reviewer-loop completion is one ordinary gateway dispatch. Its approved payload is the whole
 # canonical linear history: a JSON array of ``{"content", "role"}`` messages, a system message
-# first, then user/assistant turns alternating and ending with user. The case media type names
+# first, then user and assistant turns ending with user. Two user turns may follow each other (the
+# loop's format-repair notice never echoes the malformed reply); two assistant turns may not. The case media type names
 # which reply schema the provider must enforce: every branch, or the final judgment only.
 type ReviewerExchangeMode = Literal["turn", "final"]
 type ReviewerMessage = tuple[Literal["system", "user", "assistant"], str]
@@ -2101,7 +2102,9 @@ REVIEWER_EXCHANGE_MEDIA_TYPES: Final[dict[ReviewerExchangeMode, str]] = {
     "turn": "application/vnd.finishup.reviewer-turn+json",
     "final": "application/vnd.finishup.reviewer-final+json",
 }
-_MAX_REVIEWER_MESSAGES: Final = 1 + 2 * 5
+# System, packet, three action/observation pairs, and one format-repair notice (plus, at most,
+# the malformed turn's own pair when a route keeps it).
+_MAX_REVIEWER_MESSAGES: Final = 12
 
 
 def reviewer_exchange_mode(media_type: str) -> ReviewerExchangeMode | None:
@@ -2118,29 +2121,33 @@ def encode_reviewer_exchange(history: tuple[ReviewerMessage, ...]) -> bytes:
 
 
 def decode_reviewer_exchange(payload: bytes) -> tuple[ReviewerMessage, ...]:
-    """The validated history; anything but the closed alternating shape is refused."""
+    """The validated history; anything but the closed shape is refused."""
 
     error = ValueError("reviewer_exchange_invalid")
     try:
         raw = strict_json_parse(payload)
     except ProtocolValueError, ValueError:
         raise error from None
-    if type(raw) is not list or not 2 <= len(raw) <= _MAX_REVIEWER_MESSAGES or len(raw) % 2:
+    if type(raw) is not list or not 2 <= len(raw) <= _MAX_REVIEWER_MESSAGES:
         raise error
     messages: list[ReviewerMessage] = []
     for index, item in enumerate(cast(list[JsonValue], raw)):
-        expected: Literal["system", "user", "assistant"] = (
-            "system" if index == 0 else ("user" if index % 2 else "assistant")
-        )
         if type(item) is not dict:
             raise error
         fields = cast(dict[str, JsonValue], item)
-        text = fields.get("content")
-        if set(fields) != {"content", "role"} or fields["role"] != expected:
+        role, text = fields.get("role"), fields.get("content")
+        if set(fields) != {"content", "role"} or type(text) is not str or not text:
             raise error
-        if type(text) is not str or not text:
+        if index == 0 and role == "system":
+            messages.append(("system", text))
+        elif index > 0 and role == "user":
+            messages.append(("user", text))
+        elif index > 1 and role == "assistant" and messages[-1][0] == "user":
+            messages.append(("assistant", text))
+        else:
             raise error
-        messages.append((expected, text))
+    if messages[-1][0] != "user":
+        raise error
     return tuple(messages)
 
 

@@ -26,7 +26,8 @@ from finishup.adapters.providers.openai_responses import (
     owner_declared_data_use_profile,
 )
 from finishup.adapters.providers.openai_responses import render_case as render_responses
-from finishup.application.reviewer_exchange import ReviewerExchangeModel
+from finishup.application.reviewer_exchange import REVIEWER_REPLY_SCHEMAS, ReviewerExchangeModel
+from finishup.application.reviewer_loop import ReviewerModelError, Turn
 from finishup.domain.privacy import (
     ApprovedLocalDisclosureCase,
     ApprovedOutboundCase,
@@ -60,7 +61,10 @@ _SCHEMAS = ReviewerReplySchemas(
     final={"type": "object", "properties": {"reply": {"type": "object"}}},
 )
 _ACTION = '{"reply":{"action":"read_ledger","args":{"refs":["evt_1"],"view":"claims"}}}'
-_FINAL = '{"reply":{"final_judgment":{"conclusion":"insufficient_packet"}}}'
+_FINAL = (
+    '{"reply":{"final_judgment":{"conclusion":"no_material_discrepancy","prior_finding_verdicts":[],'
+    '"review_summary":"The supplied packet was reviewed.","reviewer_challenges":[],"verified":[]}}}'
+)
 _FIRST: tuple[ReviewerMessage, ...] = (("system", "Review it."), ("user", "packet"))
 _SECOND: tuple[ReviewerMessage, ...] = (*_FIRST, ("assistant", _ACTION), ("user", "observation"))
 
@@ -89,10 +93,13 @@ def _case(history: tuple[ReviewerMessage, ...], binding: ProviderBinding, mode: 
 def test_exchange_payload_is_the_closed_alternating_history() -> None:
     payload = encode_reviewer_exchange(_SECOND)
     assert decode_reviewer_exchange(payload) == _SECOND
+    # The loop's format-repair notice follows a user turn; the malformed reply is never echoed.
+    assert len(decode_reviewer_exchange(encode_reviewer_exchange((*_FIRST, ("user", "r"))))) == 3
     bad_histories: list[tuple[ReviewerMessage, ...]] = [
         _FIRST[:1],
         (*_FIRST, ("assistant", _ACTION)),
         (("user", "x"), ("user", "y")),
+        (*_SECOND[:3], ("assistant", _ACTION), ("user", "y")),
     ]
     for bad in bad_histories:
         with pytest.raises(ValueError, match="reviewer_exchange_invalid"):
@@ -446,10 +453,33 @@ async def test_facade_refuses_a_reply_from_another_route() -> None:
 
     model = ReviewerExchangeModel(binding, dispatch)
     deadline = Deadline(_NOW + timedelta(seconds=30), 30.0)
-    with pytest.raises(ValueError, match="reviewer_exchange_route_mismatch"):
-        await model.complete(_FIRST, "final", deadline=deadline)
+    turns = [Turn(role, text) for role, text in _FIRST]
+    final_schema = REVIEWER_REPLY_SCHEMAS.final
+    with pytest.raises(ReviewerModelError, match="reviewer_exchange_route_mismatch"):
+        await model.complete(turns, final_schema, deadline=deadline)
     assert seen == [REVIEWER_EXCHANGE_MEDIA_TYPES["final"]]
     same = ReviewerExchangeModel(
         replace(binding, endpoint_profile_id="openai-responses", model_id="gpt"), dispatch
     )
-    assert type(await same.complete(_FIRST, "final", deadline=deadline)) is SemanticResultReply
+    assert await same.complete(turns, final_schema, deadline=deadline) == strict_json_parse(
+        _FINAL.encode()
+    )
+    with pytest.raises(ReviewerModelError, match="reviewer_schema_unknown"):
+        await same.complete(turns, {"type": "object"}, deadline=deadline)
+
+
+async def test_codex_keeps_a_malformed_turn_for_the_one_format_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _CodexRuntime(
+        profile_for(record_for(b"c", b"h", version="0.162.1")), ["not json", _FINAL]
+    )
+    sessions = codex._ReviewerSessions()  # pyright: ignore[reportPrivateUsage]
+    cleanups: list[object] = []
+    first = await _codex_exchange(monkeypatch, runtime, sessions, _FIRST, cleanups)
+    assert type(first) is SemanticResultInvalid and cleanups == []
+    runtime.requests.clear()
+    repair: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", "format_error: output_not_json."))
+    second = await _codex_exchange(monkeypatch, runtime, sessions, repair, cleanups)
+    assert type(second) is SemanticResultReply and cleanups == [runtime]
+    assert [method for method, _ in runtime.requests] == ["turn/start"]
