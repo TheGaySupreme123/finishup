@@ -3,8 +3,8 @@
 Privacy policy 1.2.0 lets the Expanded preset carry up to 64 excerpts, so a long session can build
 a case whose prepared packet is larger than the channel's ``max_bytes`` or estimated
 ``max_tokens``. Egress refuses such a packet whole. Before that happens, the case is rebuilt with a
-smaller excerpt byte budget. That is a narrowing of the approved selection, so it needs no consent.
-The dropped excerpts are disclosed as ``content_unselected``, and the egress ceiling still decides
+narrower narrative selection before a smaller excerpt byte budget. This only narrows the approved
+selection. Cuts are disclosed as ``content_unselected``, and the egress ceiling still decides
 every dispatch.
 
 The planner measures the payload the channel will release: items in a category or data class the
@@ -27,6 +27,9 @@ from finishup.adapters.privacy.local_enforcer import (
 )
 from finishup.application.semantic_case import (
     SemanticCaseTooLarge,
+    check_time_change_bytes_carried,
+    final_diff_floor,
+    primary_material_selection,
     semantic_case_to_prepared_payload,
 )
 from finishup.domain.privacy import (
@@ -50,7 +53,7 @@ __all__ = [
     "with_ceiling_planning_gap",
 ]
 
-# At most this many rebuilds; a case still over the ceiling afterwards is left for egress to deny.
+# At most this many planning rounds plus one fixed-cost probe; unresolved capacity goes to egress.
 MAX_CEILING_PLANNING_ROUNDS: Final = 4
 # Each later round aims this much further below the ceiling, so a round that lands just over it
 # does not repeat the same budget.
@@ -179,26 +182,42 @@ def plan_under_channel_ceiling(
     local privacy minimization withholds never cost an eligible excerpt its place.
 
     ``rebuild`` builds the same case under a narrower selection and adds the planning gap. The
-    first rebuild carries no excerpts, which measures the fixed part of the packet. Later rebuilds
+    first rebuild omits lower-priority narrative with the primary excerpt budget intact. A
+    no-excerpt probe measures the remaining fixed part; it is never returned below the diff floor.
+    Later rebuilds
     size the excerpt budget from how many prepared bytes each excerpt byte actually cost, since
-    JSON escaping can multiply it. A case whose envelope cannot be bounded at all, or that carries
-    no excerpt to reduce, is returned unchanged, and egress decides it as before.
+    JSON escaping can multiply it. A case whose envelope cannot be bounded at all is returned
+    unchanged, and egress decides it as before.
     """
 
     if limit is None:
         return case, selection, 0
     size = _prepared_size(case, admission)
     excerpt_bytes = _excerpt_bytes(case)
-    if size is None or size <= limit or excerpt_bytes == 0:
+    if size is None or size <= limit:
         return case, selection, 0
-    approved = selection
+    floor = final_diff_floor(case, selection, limit)
+    approved = primary_material_selection(
+        selection, keep_timeline="prior-missing-for-assessment" in case.packet.timeline_item_ids
+    )
     rounds = 1
+    protected = rebuild(approved)
+    protected_size = _prepared_size(protected, admission)
+    if protected_size is None or protected_size <= limit:
+        return protected, approved, rounds
+    size, excerpt_bytes = protected_size, _excerpt_bytes(protected)
     base = rebuild(_with_excerpt_budget(approved, 0))
     base_size = _prepared_size(base, admission)
     if base_size is None or base_size >= limit:
         # Even without excerpts the packet is over the ceiling: egress refuses it as before.
-        return base, _with_excerpt_budget(approved, 0), rounds
-    planned, planned_selection = base, _with_excerpt_budget(approved, 0)
+        return (
+            (protected, approved, rounds)
+            if floor
+            else (base, _with_excerpt_budget(approved, 0), rounds)
+        )
+    planned, planned_selection = (
+        (protected, approved) if floor else (base, _with_excerpt_budget(approved, 0))
+    )
     while rounds < MAX_CEILING_PLANNING_ROUNDS and size > base_size and excerpt_bytes:
         rounds += 1
         room = limit - base_size - _ROUND_MARGIN_BYTES * (rounds - 1)
@@ -209,7 +228,8 @@ def plan_under_channel_ceiling(
         if candidate_size is None:
             break
         if candidate_size <= limit:
-            planned, planned_selection = candidate, candidate_selection
+            if check_time_change_bytes_carried(candidate) >= floor:
+                planned, planned_selection = candidate, candidate_selection
             break
         size, excerpt_bytes = candidate_size, _excerpt_bytes(candidate)
     return planned, planned_selection, rounds

@@ -378,6 +378,12 @@ Interpret limitations per item: `content_unselected` means a retained kind was n
 means capture is unavailable for the affected input; `semantic_case_content_over_item_limit`
 bounds or clips that item. An aggregate union of those gaps does not mean no native content
 reached review. A selectable excerpt proves what was observed, not command success or correctness.
+When the total review packet is too large, the task specification, current change and decisive
+verification take priority over the agent's plan, claims, obligation prose and history. Cuts are
+reported as `not_selected` omissions and `content_unselected`; a bounded omission list may show
+fewer rows than the total count. The diff floor is protected against the final packet limit. If
+protected material cannot fit, the existing capacity or policy refusal remains. Read the actual
+provider-bound input manifest before claiming that a particular input reached review.
 
 For example, a synthetic inventory may span two pages: a matching source snapshot, an unrelated
 stale snapshot, matching test output, a digest-only documentation item and an oversized diff.

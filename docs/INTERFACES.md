@@ -9638,7 +9638,8 @@ oversized plan, obligation, claim or decision payload has its longest prose clip
 and falls back to `yoetz.bounded-content-omission/1` only when clipping cannot fit.
 A clipped structural payload is named by `semantic_case_content_over_item_limit`; an excerpt
 clipped at `max_excerpt_bytes` is named by `truncated_payload`. The builder measures the exact
-prepared document and drops lowest-ranked excerpts (`not_selected`, `content_unselected`) to stay
+prepared document, omits lower-priority narrative, then reduces excerpts (`not_selected`,
+`content_unselected`) to stay
 below the effective channel ceiling: the schema maximum, narrowed by the effective policy's own
 `llm_inference` `max_bytes` and `max_tokens` (at the gateway's four bytes per token), so a narrower
 owner ceiling drops excerpts instead of denying the whole review. Every candidate the excerpt count
@@ -10647,8 +10648,9 @@ plan. Names and contracts:
   `MAX_SEMANTIC_CASE_BYTES` before ceiling planning), `semantic_excerpt_count_limit` and `semantic_excerpt_byte_limit` (the effective limits the case
   was built with after ceiling planning) and `semantic_excerpt_ceiling_rounds`. All precede privacy
   minimization and certify neither consent nor delivery.
-- `build_semantic_case` drops the lowest-ranked excerpts, as `not_selected` omissions with
-  `content_unselected`, when the case would otherwise exceed `MAX_SEMANTIC_CASE_BYTES`; a case
+- `build_semantic_case` omits ordinary plan/claim/obligation and history rows before reducing
+  excerpts, as `not_selected` omissions with `content_unselected`, when the case would otherwise
+  exceed `MAX_SEMANTIC_CASE_BYTES`; a case
   within that bound is unchanged. The count is `SemanticCase.excerpts_cut_for_case_bound`, local
   composition state outside the envelope and digest. When non-excerpt items alone exceed the
   bound it raises `SemanticCaseCapacityExceeded` (the base of `LineageSemanticCapacityExceeded`),
@@ -10661,8 +10663,16 @@ plan. Names and contracts:
   `local_af_unix`, unioned), with each item's data class from the enforcer's
   `clean_item_data_class`. `plan_under_channel_ceiling` measures only the items that admission
   releases, and rebuilds
-  an over-ceiling case with a smaller `max_total_excerpt_bytes` (and `max_excerpt_bytes`), or no
-  excerpts. It stops after at most `MAX_CEILING_PLANNING_ROUNDS` (4) rebuilds, and every rebuild
+  an over-ceiling case without lower-priority narrative before reducing `max_total_excerpt_bytes`
+  (and `max_excerpt_bytes`). `primary_material_selection` narrows goal, obligations, claims and
+  ordinary timeline plus finding prose; decisions, pending missing-input context and independent lineage remain.
+  A pending request retains one ordinary timeline slot, with history narrowed around it; independent
+  lineage does not consume that request slot. The final diff
+  floor (`final_diff_floor`) is the lesser of initially carried diff bytes and half the lesser of
+  the approved excerpt budget and final packet limit, rounded to the existing line-aligned parts. A no-excerpt probe only measures fixed cost;
+  neither planner can return it below that floor. Impossible protected cases remain over limit
+  for the existing egress refusal. It stops after at most `MAX_CEILING_PLANNING_ROUNDS` (4)
+  planning rounds (plus the fixed-cost probe), and every rebuild
   adds `content_unselected`. It is deterministic, so a recovered case keeps its digest.
 - Resume (`PrivacyCoordinator._resume_admitted`) denies a stored `semantic-review` proposal,
   external or local-model, outside the current policy's excerpt limits or LLM `max_bytes` /

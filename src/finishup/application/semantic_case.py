@@ -262,6 +262,8 @@ __all__ = [
     "assemble_filtered_review_packet",
     "build_semantic_case",
     "carries_task_inputs",
+    "primary_material_selection",
+    "final_diff_floor",
     "follow_up_byte_budget",
     "follow_up_new_parts",
     "current_section_parts",
@@ -2796,13 +2798,13 @@ def _omit(
 def _omission_subject_refs(source_ref: str, linked: Sequence[str]) -> tuple[str, ...]:
     """Ledger subjects a dropped excerpt may name (issue #1077).
 
-    A check-time change excerpt's own source is the synthetic ``check-time-change`` token.
+    Check-time change and task-input excerpts use synthetic source tokens.
     ``ReviewOmission`` accepts only ledger subject ids, so a dropped synthetic excerpt is
     disclosed against the valid linked subjects it answers. A recorded source keeps its own ref.
     Subject validation itself is unchanged.
     """
 
-    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+    if source_ref not in {_CHECK_TIME_CHANGE_SOURCE_REF, _TASK_INPUT_SOURCE_REF}:
         return (source_ref,)
     seen: list[str] = []
     for ref in linked:
@@ -2827,7 +2829,7 @@ def _append_omission(
     """
 
     subjects = _omission_subject_refs(source_ref, linked)
-    if source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+    if source_ref not in {_CHECK_TIME_CHANGE_SOURCE_REF, _TASK_INPUT_SOURCE_REF}:
         omissions.append(_omit(subjects[0], category, source_kind, reason))
         return
     for subject in subjects:
@@ -2837,6 +2839,52 @@ def _append_omission(
             continue
 
 
+def primary_material_selection(
+    selection: ReviewSelectionPolicy, *, keep_timeline: bool = False
+) -> ReviewSelectionPolicy:
+    """Narrow only narrative, preserving the approved primary-material recipe.
+
+    This is a capacity reduction, never a new category or an authorization change. Decisions,
+    including blockers, and independent lineage authority remain available.
+    """
+
+    return replace(
+        selection,
+        sections=tuple(
+            section
+            for section in selection.sections
+            if section not in {"goal", "obligations", "claims"}
+            and (section != "timeline" or keep_timeline)
+        ),
+        include_finding_prose=False,
+        max_timeline_items=min(selection.max_timeline_items, 1)
+        if keep_timeline
+        else selection.max_timeline_items,
+    )
+
+
+def final_diff_floor(case: SemanticCase, selection: ReviewSelectionPolicy, limit: int) -> int:
+    """The current diff's half-share, bound to the final packet limit, not a later trial budget.
+
+    An already complete smaller diff is protected whole. Impossible ceilings remain a capacity
+    refusal rather than a successful packet with a silently weakened floor.
+    """
+
+    share = min(selection.max_total_excerpt_bytes, limit) // 2
+    used = 0
+    carried = 0
+    for item in case.items:
+        if not item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX):
+            continue
+        if used + item.content_bytes > share:
+            # Existing selection admits complete line-aligned parts, except a clipped first
+            # part. Bind that actual reservation now rather than recomputing it in later trials.
+            return carried or min(_check_time_change_part_chunk_bytes(item.content), share)
+        used += item.content_bytes
+        carried += _check_time_change_part_chunk_bytes(item.content)
+    return carried
+
+
 def _fit_excerpts_within_case_bound(
     items: Sequence[SemanticCaseItem],
     targeted: list[TargetedExcerptRef],
@@ -2844,27 +2892,105 @@ def _fit_excerpts_within_case_bound(
     capture_gaps: set[str],
     *,
     fixed_item_ids: set[str],
+    narrative_lists: Sequence[list[str]],
+    diff_floor: int,
 ) -> int:
-    """Drop the lowest-ranked excerpts until the case fits ``MAX_SEMANTIC_CASE_BYTES``.
+    """Omit narrative before reducing excerpts at the aggregate content bound.
 
     The excerpt budget and the case's aggregate item bound are independent. Since the Expanded
     excerpt count rose to the protocol maximum (issue #907 Phase 1b), a full excerpt budget beside
     rich finding prose can cross the aggregate bound, and ``SemanticCase`` would refuse the whole
-    case before the channel-ceiling planner could narrow it. Only a case that would otherwise be
-    refused is changed, so every constructible case keeps its exact bytes and digest. Each dropped
-    excerpt is disclosed as ``not_selected`` with ``content_unselected``, never silently. Returns
-    how many excerpts were dropped. Non-excerpt material over the bound on its own is not cut here.
+    case before the channel-ceiling planner could narrow it. Only an over-bound case changes.
+    Every cut is a ``not_selected`` omission with ``content_unselected``; protected primary material
+    and independent structural authority cause typed refusal when they cannot fit. Returns the
+    number of excerpts dropped (narrative omissions do not inflate that diagnostic).
     """
 
     by_id = {item.item_id: item for item in items}
     case_bytes = sum(by_id[item_id].content_bytes for item_id in fixed_item_ids if item_id in by_id)
     case_bytes += sum(by_id[excerpt.excerpt_item_id].content_bytes for excerpt in targeted)
-    if case_bytes <= MAX_SEMANTIC_CASE_BYTES or not targeted:
+    if case_bytes <= MAX_SEMANTIC_CASE_BYTES:
         return 0
+    # Narrative yields before primary material, including at the pre-construction bound.
+    # Keep special structural rows (lineage, missing-input requests, disclosures, deliverables).
+    narrative = sorted(
+        (
+            by_id[item_id]
+            for ids in narrative_lists
+            for item_id in ids
+            if item_id in fixed_item_ids
+            and item_id.startswith(("goal-", "obligation-", "claim-", "history-", "timeline-"))
+            and item_id not in {"history-window", "timeline-frontier"}
+            and not by_id[item_id].source_ref.startswith("frontier-")
+        ),
+        key=lambda item: (-item.content_bytes, item.item_id),
+    )
+    for item in narrative:
+        if case_bytes <= MAX_SEMANTIC_CASE_BYTES:
+            break
+        fixed_item_ids.discard(item.item_id)
+        for ids in narrative_lists:
+            if item.item_id in ids:
+                ids.remove(item.item_id)
+        case_bytes -= item.content_bytes
+        _append_omission(
+            omissions,
+            item.source_ref,
+            item.linked_subject_refs,
+            item.category,
+            item.source_kind,
+            "not_selected",
+        )
+        capture_gaps.add("content_unselected")
     selected = len(targeted)
     dropped_refs: set[str] = set()
-    while targeted and case_bytes > MAX_SEMANTIC_CASE_BYTES:
-        excerpt = targeted.pop()
+    verification_id = next(
+        (
+            ref.excerpt_item_id
+            for ref in targeted
+            if not by_id[ref.excerpt_item_id].superseded_by
+            and by_id[ref.excerpt_item_id].content.startswith(
+                b"[FinishUP: observed output captured by a host hook"
+            )
+        ),
+        "",
+    ) or next(
+        (
+            ref.excerpt_item_id
+            for ref in targeted
+            if ref.source_kind in {"test", "command"}
+            and not ref.excerpt_item_id.startswith(("excerpt-cmd-", "excerpt-fail-"))
+            and not by_id[ref.excerpt_item_id].superseded_by
+        ),
+        "",
+    )
+    primary_ids = {
+        next(
+            (
+                ref.excerpt_item_id
+                for ref in targeted
+                if ref.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
+            ),
+            "",
+        ),
+        verification_id,
+    }
+    diff_bytes = sum(
+        ref.content_bytes
+        for ref in targeted
+        if ref.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+    )
+    for excerpt in reversed(tuple(targeted)):
+        if case_bytes <= MAX_SEMANTIC_CASE_BYTES:
+            break
+        is_diff = excerpt.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+        if excerpt.excerpt_item_id in primary_ids or (
+            is_diff and diff_bytes - excerpt.content_bytes < diff_floor
+        ):
+            continue
+        targeted.remove(excerpt)
+        if is_diff:
+            diff_bytes -= excerpt.content_bytes
         item = by_id[excerpt.excerpt_item_id]
         case_bytes -= item.content_bytes
         dropped_refs.add(item.source_ref)
@@ -6374,8 +6500,8 @@ def build_semantic_case(
     (issue #907) when the caller passes ``prepared_byte_ceiling`` (the effective policy's own
     channel ceiling, its ``max_bytes`` and ``max_tokens`` measured the way the gateway measures
     them); without it the caller plans the released payload itself. An over-plan case is rebuilt
-    with a smaller
-    excerpt budget; the dropped excerpts are ordinary ``not_selected`` omissions with
+    without lower-priority narrative before its excerpt budget is reduced; every cut uses
+    ordinary ``not_selected`` omissions with
     ``content_unselected``. The gateway still enforces the owner's ceiling on every dispatch.
     ``workspace_root`` anchors absolute paths when the prior missing-item request's answers are
     matched (issue #907); it is compared in process and never enters the case.
@@ -6396,6 +6522,8 @@ def build_semantic_case(
         else max(0, min(MAX_SEMANTIC_CASE_BYTES, prepared_byte_ceiling) - _PLANNING_RESERVE_BYTES)
     )
 
+    selection = review_selection
+
     def build(excerpt_byte_budget: int | None) -> SemanticCase:
         return _build_semantic_case_once(
             case_id=case_id,
@@ -6403,13 +6531,21 @@ def build_semantic_case(
             dependency_digest=dependency_digest,
             findings=findings,
             review_context_profile=review_context_profile,
-            review_selection=review_selection,
+            review_selection=selection,
             policy_id=policy_id,
             policy_version=policy_version,
             lineage_evaluation=lineage_evaluation,
             captured_content=captured_content,
             captured_content_scope=captured_content_scope,
-            captured_content_gaps=captured_content_gaps,
+            captured_content_gaps=tuple(
+                sorted(
+                    {
+                        *captured_content_gaps,
+                        *({"content_unselected"} if selection != review_selection else set()),
+                    },
+                    key=str.encode,
+                )
+            ),
             excerpt_byte_budget=excerpt_byte_budget,
             workspace_root=workspace_root,
             check_time_change=check_time_change,
@@ -6438,19 +6574,33 @@ def build_semantic_case(
         # never cost eligible excerpts their room. The aggregate case bound is still enforced by
         # the pre-construction cut either way.
         return case
+    if fits(case) is not False:
+        return case
+    floor = final_diff_floor(case, review_selection, prepared_byte_ceiling)
+    selection = primary_material_selection(
+        review_selection,
+        keep_timeline=frozen_case.projection.pending_missing_for_assessment is not None,
+    )
+    case = build(None)
+    if fits(case) is not False:
+        return case
     excerpt_bytes = sum(item.content_bytes for item in case.items if item.section == "excerpt")
-    if not excerpt_bytes or fits(case) is not False:
+    if not excerpt_bytes:
         return case
     # JSON escaping makes the prepared document grow by a content-dependent factor, so search the
     # largest excerpt byte budget whose exact document fits. Admission runs in rank order, so a
     # smaller budget drops the lowest-ranked excerpts first.
-    best = build(0)
+    # Keep an over-ceiling protected case if no fitting candidate preserves the floor. Egress
+    # then refuses it honestly; no later stage may trade away the diff for a successful dispatch.
+    best = case if floor else build(0)
     low, high = 0, excerpt_bytes
     while high - low > _PLANNING_GRANULARITY_BYTES:
         middle = (low + high) // 2
         candidate = build(middle)
         if fits(candidate):
-            low, best = middle, candidate
+            low = middle
+            if check_time_change_bytes_carried(candidate) >= floor:
+                best = candidate
         else:
             high = middle
     return best
@@ -6860,6 +7010,33 @@ def _build_semantic_case_once(
         if fit == "replaced":
             omissions.append(_omit(ref, DataCategory.DECISION_EXCERPT, "decision", "not_selected"))
 
+    # A capacity-narrowed recipe still accounts for omitted history, including legacy projection
+    # history. Ordinary section selection omissions remain bounded ledger metadata.
+    if "timeline" not in sections:
+        history_sources: list[tuple[str, _SourceKind, DataCategory]] = [
+            (
+                str(row.event_id),
+                _HISTORY_KIND[row.schema_name][0],
+                _HISTORY_KIND[row.schema_name][1],
+            )
+            for row in frozen_case.history
+        ]
+        if frozen_case.history_availability == "not_recorded":
+            history_sources.extend(
+                (str(row.source_event_id), cast(_SourceKind, kind), category)
+                for family, kind, category in (
+                    (projection.obligations, "obligation", DataCategory.OBLIGATION_TEXT),
+                    (projection.claims, "claim", DataCategory.CLAIM_TEXT),
+                    (projection.actions, "action", DataCategory.BOUNDED_STRUCTURAL_METADATA),
+                    (projection.results, "result", DataCategory.BOUNDED_STRUCTURAL_METADATA),
+                )
+                for row in family.values()
+                if str(row.source_event_id) in allowed
+            )
+        for ref, kind, category in history_sources:
+            if ref in allowed:
+                omissions.append(_omit(ref, category, kind, "not_selected"))
+
     # --- Frozen accepted-event history ---
     if "timeline" in sections and frozen_case.history_availability == "available":
         detailed_history = bool({"goal", "obligations", "claims", "decisions"} & sections)
@@ -7092,6 +7269,23 @@ def _build_semantic_case_once(
                 continue
             seen_timeline_refs.add(source_ref)
             deduped_timeline.append(row)
+        if (
+            selection.max_timeline_items == 1
+            and projection.pending_missing_for_assessment is not None
+            and "content_unselected" in capture_gap_set
+        ):
+            for _order, _event, source_kind, source_ref, _body in deduped_timeline[
+                selection.max_timeline_items :
+            ]:
+                if source_ref in allowed:
+                    omissions.append(
+                        _omit(
+                            source_ref,
+                            DataCategory.BOUNDED_STRUCTURAL_METADATA,
+                            source_kind,
+                            "not_selected",
+                        )
+                    )
         for order, _event, source_kind, source_ref, body in deduped_timeline[
             : selection.max_timeline_items
         ]:
@@ -7748,18 +7942,34 @@ def _build_semantic_case_once(
     if prior_missing_item is not None:
         # The prior request holds its own timeline slot: without it the reviewer cannot tell a
         # supplied item from one still missing, which is the loop issue #907 closes.
+        timeline_limit = max(selection.max_timeline_items, len(lineage_items) + 1)
         timeline_ids = [
             item_id for item_id in timeline_ids if item_id != prior_missing_item.item_id
         ]
-        if len(timeline_ids) >= selection.max_timeline_items:
+        if len(timeline_ids) >= timeline_limit:
             ordinary = [
                 item_id
                 for item_id in timeline_ids
                 if item_id not in {item.item_id for item in lineage_items}
             ]
             if ordinary:
-                timeline_ids.remove(ordinary[-1])
-        if len(timeline_ids) < selection.max_timeline_items:
+                displaced_id = ordinary[-1]
+                timeline_ids.remove(displaced_id)
+                displaced = next(item for item in items if item.item_id == displaced_id)
+                if (
+                    selection.max_timeline_items == 1
+                    and "content_unselected" in capture_gap_set
+                    and displaced.source_ref in allowed
+                ):
+                    _append_omission(
+                        omissions,
+                        displaced.source_ref,
+                        displaced.linked_subject_refs,
+                        displaced.category,
+                        displaced.source_kind,
+                        "not_selected",
+                    )
+        if len(timeline_ids) < timeline_limit:
             timeline_ids.append(prior_missing_item.item_id)
     review_assessments = review_assessments[: selection.max_assessments]
     changes = changes[: selection.max_change_observations]
@@ -7769,6 +7979,8 @@ def _build_semantic_case_once(
         targeted,
         omissions,
         capture_gap_set,
+        narrative_lists=(goal_ids, obligation_ids, claim_ids, timeline_ids),
+        diff_floor=min(selection.max_total_excerpt_bytes, MAX_SEMANTIC_CASE_BYTES) // 2,
         fixed_item_ids={
             *task_statement_ids,
             *goal_ids,
@@ -7890,6 +8102,13 @@ def _build_semantic_case_once(
             for item in prior_items
             if item.item_id == f"prior-finding-{item.source_ref}"
         ]
+        if not selection.include_finding_prose and "content_unselected" in capture_gap_set:
+            # A capacity-narrowed finding keeps its structural ruling identity, but the missing
+            # prose still needs a subject-level omission and total accounting.
+            prior_omissions.extend(
+                _omit(ref, DataCategory.FINDING_SUMMARY, "finding", "not_selected")
+                for ref in sorted({item.source_ref for item in prior_items})
+            )
         if prior_omissions:
             omission_universe.update(prior_omissions)
             omissions = sorted(

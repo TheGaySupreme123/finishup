@@ -2829,3 +2829,16 @@ publishes `result_recorded` of the target's action with the output in `summary`,
 says on every host (capability gap owned by #910). An observed run never answers
 `command_identity`; a respond counts only for a finding target, and a description never counts. Verified by `tests/unit/cli/test_status_operation_render.py` and the host-neutral tests named in
 the Codex runbook.
+
+
+## Total reviewer packet budget (AIP-3/AIP-4, issue #1108)
+
+Decision for claude-code: supported by the shared service composer for MCP, CLI and hook-triggered
+reviews; no host adapter change. On supported macOS, Linux and WSL 2 paths, over-limit packets omit
+agent plan/claim/obligation prose and ordinary history before reducing specification, current diff
+and decisive verification excerpts. The current diff floor is tied to the final packet limit;
+impossible protected packets retain the existing refusal. Synthetic task-input and change
+omissions name valid linked subjects. Packet omissions, coverage and omission totals flow through
+the existing CLI/MCP/TUI summaries and JSON, markdown and text receipts. Small packets are unchanged.
+These are shared-composer tests on macOS/Linux, not new native host or WSL session certification.
+No installation, upgrade, disconnect or reverse-state behavior changes.
