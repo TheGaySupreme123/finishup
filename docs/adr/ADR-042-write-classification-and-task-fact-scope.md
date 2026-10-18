@@ -230,7 +230,8 @@ contradicts the README exclusion above. A sixth class is added instead.
     `CHANGELOG`, `AUTHORS` or `CONTRIBUTORS`, and `LICENSE`/`LICENCE`/`COPYING`/`NOTICE` alone or
     with a license identifier (`LICENSE-MIT`, `LICENSE-APACHE-2.0`, `COPYING-GPL-3.0-or-later`,
     `LICENSE-THIRD-PARTY`). `bin/license-check`, `scripts/notice-gen`, `bin/readme`,
-    `scripts/history` or `news` may be a program a test runs, so they stay ordinary edits (#1106 r2);
+    `scripts/history` or `news` may be a program a test runs, so they stay ordinary edits
+    (#1106 r2);
   - or a `.md`/`.markdown`/`.rst`/`.adoc`/`.asciidoc` file.
 
   The directories are read on the path *inside* the workspace: a relative path as it is, an
@@ -241,14 +242,25 @@ contradicts the README exclusion above. A sixth class is added instead.
   climbs out (`../`), cannot be placed, so only a conventional name makes it `docs`.
 
   A shell write's relative target lands under the command's working directory (#1106 r2,
-  `domain.shell_writes`). The host's `cwd` (or a Codex call's `workdir`), when it is at or under
-  the workspace root, is where it starts; a command that starts with one `cd <literal word> &&`
-  and changes directory nowhere else has its relative targets read under that word. Any other
-  directory change (a second or later `cd`, a subshell `cd`, `pushd`/`popd`, `git -C`, a `cd`
-  whose target is not one literal word) or a working directory that cannot be placed under the
-  root leaves a relative target unplaced, and an unplaced target, or one that is no documentation
-  where it lands (`cd tests && cat > golden.md`), is an ordinary `workspace` write. The directory
-  only places documentation: no write becomes scratch or outside the workspace by it.
+  `domain.shell_writes`). The host's `cwd` (or a Codex call's `workdir`), when it is at or under the
+  workspace root, is where it starts; a command that starts with one `cd <literal word> &&` and
+  changes directory nowhere else has its relative targets read under that word. Any other directory
+  change (a second or later `cd`, a subshell `cd`, `pushd`/`popd`, `git -C`, `env -C`, `sudo -D` or
+  their `--chdir`, a `cd` whose target is not one literal word, a `cd` in an `eval` string or a
+  `$(...)` substitution) or a working directory that cannot be placed under the root leaves a
+  relative target unplaced, and an unplaced target, or one that is no documentation where it lands
+  (`cd tests && cat > golden.md`), is an ordinary `workspace` write. The directory only places
+  documentation: no write becomes scratch or outside the workspace by it.
+
+  The directory is read by the same lexer as the writes (#1106 r3). A whole command `bash -lc
+  SCRIPT` (the string a Claude Code or Cursor `Bash` command, or a Codex `cmd`, carries for a
+  wrapped call) is read as its script, so `bash -lc 'cd tests && cat > golden.md'` writes
+  `tests/golden.md`; a `cd` inside a nested `sh -c` script anywhere else leaves the targets
+  unplaced. A heredoc body is data, so a README whose setup section says `cd repo && make` changes
+  no directory; past the 16 KiB token bound the text is searched less its heredoc bodies. Text the
+  lexer cannot read is searched for any `cd`, `pushd`, `popd`, `git -C`, `env -C` or `sudo -D` word.
+  Read with no workspace root (the Codex rollout outside a hook), a `cd` to an absolute directory
+  cannot be placed in the workspace, so what is written there is unplaced too.
 
   `.txt` is never documentation by its extension (`requirements.txt` is read by the build).
   `notes` wins over `docs`; outside the workspace nothing changes. An edit tool names `docs` only
@@ -274,22 +286,22 @@ contradicts the README exclusion above. A sixth class is added instead.
     never sends `docs` over the channel to an older service; it is refused as `manifest_mismatch`
     and the rows wait locally.
   - *The shared local observation store* (#1106 r2). The hooks and the running service share one
-    store, and the service's own outbox sweeper and every store read decode each persisted
-    envelope; a build that predates `docs` refuses a stored row naming it for the whole workspace
+    store, and the service's own outbox sweeper and every store read decode each persisted envelope;
+    a build that predates `docs` refuses a stored row naming it for the whole workspace
     (`invalid_event_value_type`), so it could read no consent, list no pending workspace and sweep
     nothing. The hook connects with `supersede_incompatible=False`, so such a holder keeps running
     for the rest of the host session that was open during the upgrade. A writer (the hook, and the
     session-stream reader in the hook process) therefore records `docs` only while the singleton
     holder's lock stamp shows this installation's schema manifest digest
-    (`service.write_scope_admission.docs_write_scope_admitted`): the digest pins the bytes that carry
-    the enum. With no live holder, an unreadable stamp, a stamp without a digest or another digest,
-    the class a build before `docs` records is written instead (`write_scope.without_docs_scope`):
-    `workspace` for a shell write, no scope for an edit tool or a Codex `FileChange`. That only keeps
-    the edit stale-making, the pre-#1106 behavior, so a documentation edit recorded then can still
-    give an extra Stop prompt; it is never a hidden edit. The stamp is advisory identity, never a
-    fence: it only chooses between a class every reader accepts and one this build's service
-    accepts. Once the MCP bridge's start or `finishup service restart` supersedes the stale holder,
-    later edits are recorded as `docs` again.
+    (`service.write_scope_admission.docs_write_scope_admitted`): the digest pins the bytes that
+    carry the enum. With no live holder, an unreadable stamp, a stamp without a digest or another
+    digest, the class a build before `docs` records is written instead
+    (`write_scope.without_docs_scope`): `workspace` for a shell write, no scope for an edit tool or
+    a Codex `FileChange`. That only keeps the edit stale-making, the pre-#1106 behavior, so a
+    documentation edit recorded then can still give an extra Stop prompt; it is never a hidden edit.
+    The stamp is advisory identity, never a fence: it only chooses between a class every reader
+    accepts and one this build's service accepts. Once the MCP bridge's start or `finishup service
+    restart` supersedes the stale holder, later edits are recorded as `docs` again.
 
   The check-result 1.5.0 inspection row keeps its own scope list: a `docs` row shows no
   `write_scope`, still class `edit_or_write`. Naming `docs` there is a separate protocol change,
@@ -300,14 +312,24 @@ contradicts the README exclusion above. A sixth class is added instead.
     docs build such as `sphinx-build -W` or `mkdocs build --strict`; a Markdown lint) is not made
     stale by a later edit of that file. Declaring the file, or its directory, as an output turns
     the exemption back on;
-  - a Markdown file a program reads at run time outside those directories (a prompt kept at the
-    repository root) no longer makes verification stale unless it is declared;
-  - a Codex 0.159 hook payload carries the session `cwd`, never the call's `workdir` argument
-    (`exec_command.rs` sends `tool_input: {"command": args.cmd}`), so when the hook copy of a call
-    whose `workdir` names a data directory commits first, a relative documentation-named write
-    there (`printf x > README.md` with `workdir` `tests/`) is placed under the session `cwd` and
-    reads as `docs`. The rollout row of the same call, when it commits first, is placed under its
-    `workdir`.
+  - a Markdown file a program reads at run time outside those directories (a prompt or
+    package-data file under `src/`, such as `src/pkg/prompt.md`, or one at the repository root,
+    such as an agent guidance file a packaging test reads) no longer makes verification stale
+    unless it is declared.
+
+  A Codex 0.159 hook payload carries the session `cwd`, never the call's `workdir` argument
+  (`exec_command.rs` sends `tool_input: {"command": args.cmd}`), so the Codex hook copy of a shell
+  call places a relative target only through its own call's row (#1106 r3). Codex records the
+  `function_call` row before it runs the call; when placing a relative write under the session
+  `cwd` would make it documentation, the hook reads that row from the validated rollout (the last
+  MiB, the exact `call_id`, a shell tool; `codex_session_stream.codex_call_workdir`). A call with
+  no `workdir` runs in the session `cwd`; a stated absolute `workdir` places the write under it;
+  a relative or non-string one, or a row the hook cannot find (not yet flushed, beyond the tail),
+  leaves the target unplaced, an ordinary edit that can give an extra Stop prompt but never hides
+  one. The rollout copy is placed under the call's `workdir` or the completed `CommandExecution`
+  item's own `cwd`. An absolute documentation path is unaffected, as are the Codex `apply_patch`
+  tool and `FileChange`, which are no shell writes. Before r3 the hook copy read every relative
+  target under the session `cwd`, so a README written into a `tests/` `workdir` read as `docs`.
 
   Rows recorded before the class existed, or while an older service held the singleton, keep
   counting as before (an edit-tool row with no scope, a shell row with `write workspace`). An older

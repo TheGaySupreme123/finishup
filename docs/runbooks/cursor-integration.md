@@ -2714,11 +2714,17 @@ Host decisions for Cursor:
   directory (`tests`, `fixtures`, `golden`, `resources`, `prompts`, …) is documentation, and those
   directories are read inside the workspace only, so a host-managed worktree
   (`~/.cursor/worktrees/…`) is not data. A `Shell` write's relative target is placed under the
-  payload's `cwd` when it states one and one leading `cd <dir> &&`; a target that cannot be
-  placed, or a fixture written after `cd tests`, is an ordinary edit (#1106 r2). The exemption is lexical: a doctest, docs build or Markdown
-  lint that reads the file is not made stale by a later edit of it unless the file is declared. A
-  `docs` row's check inspection shows no `write_scope` (check-result 1.5.0 keeps its list; follow-up
-  is the #1106 owner's). Supported.
+  payload's `cwd` when it states one and one leading `cd <dir> &&` (also inside a whole
+  `bash -lc '…'` script); a heredoc body is data, so a README whose text says `cd repo` stays
+  documentation. A target that cannot be placed (any other `cd`, `env -C`, a nested `sh -c` that
+  changes directory), a fixture written after `cd tests`, and a heredoc patch whose paths cannot be
+  read (`patch -d`, `git apply --directory`, a pure rename) are ordinary edits (#1106 r2, r3).
+  Unverified: no captured Cursor payload shows whether `cwd` follows a `cd` made by an earlier
+  `Shell` call; if it does not, a relative README written by a later call from inside `tests/`
+  reads as `docs` (gap kept; follow-up is the #1106 owner's). The exemption is lexical: a doctest,
+  docs build or Markdown lint that reads the file is not made stale by a later edit of it unless
+  the file is declared. A `docs` row's check inspection shows no `write_scope` (check-result 1.5.0
+  keeps its list; follow-up is the #1106 owner's). Supported.
 - **Background verification.** Gap kept: A background `Shell` process the agent polls from a later
   call is recorded when it starts; its completion is not a verification (output text is never read).
   Run verification in the foreground, in one tool call (the shipped guidance says so).

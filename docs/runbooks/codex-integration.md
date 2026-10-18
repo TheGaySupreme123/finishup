@@ -3660,17 +3660,24 @@ Host decisions for Codex; the shared classifier parts apply to Claude Code and C
   `FileChange`. Nothing in a data directory (`tests`, `fixtures`, `golden`, `resources`,
   `prompts`, …) is documentation, and those directories are read inside the workspace only, so a
   Codex app worktree under `~/.codex/worktrees/` is not data. A shell write's relative target is
-  placed under one leading `cd <dir> &&` and, for the rollout copy, the call's `workdir`; a
-  target that cannot be placed, or a fixture written after `cd tests`, is an ordinary edit. The
-  Codex hook payload carries the session `cwd`, not the call's `workdir`, so when the hook copy of
-  a call whose `workdir` is a data directory commits first, a relative README written there reads
-  as `docs` (gap kept, #1106 r2). The rollout
-  knows no workspace root, so a stream-first `FileChange` with an absolute `docs/guide.md` path is
-  an ordinary edit there (only a conventional name such as `README.md` is `docs`); the hook copy
-  names it. The exemption is lexical: a doctest, docs build or Markdown lint that reads the file
-  is not made stale by a later edit of it unless the file is declared. A `docs` row's check
-  inspection shows no `write_scope` (check-result 1.5.0 keeps its list; follow-up is the #1106
-  owner's).
+  placed under one leading `cd <dir> &&` (also inside a whole `bash -lc '…'` script) and, for the
+  rollout copy, the call's `workdir` or the completed `CommandExecution` item's own `cwd`; a
+  heredoc body is data, so a README whose text says `cd repo` stays documentation. A target that
+  cannot be placed (any other `cd`, `env -C`, a nested `sh -c` that changes directory), a fixture
+  written after `cd tests`, and a heredoc patch whose paths cannot be read (`patch -d`, `git apply
+  --directory`, a pure rename) are ordinary edits. The Codex hook payload carries the session
+  `cwd`, never the call's `workdir`, so when a relative write would be documentation the hook reads
+  its own call's `function_call` row from the rollout tail (the row is written before the call
+  runs): no `workdir` means the session `cwd`, an absolute one places the write. A row the hook
+  cannot find (not yet flushed, more than 1 MiB back) or a relative `workdir` leaves the write an
+  ordinary edit, which can give an extra Stop prompt but never hides one (#1106 r3). An absolute
+  path, the `apply_patch` tool and `FileChange` need no lookup. The rollout knows no workspace
+  root, so a stream-first
+  `FileChange` with an absolute `docs/guide.md` path is an ordinary edit there (only a
+  conventional name such as `README.md` is `docs`); the hook copy names it. The exemption is
+  lexical: a doctest, docs build or Markdown lint that reads the file is not made stale by a later
+  edit of it unless the file is declared. A `docs` row's check inspection shows no `write_scope`
+  (check-result 1.5.0 keeps its list; follow-up is the #1106 owner's).
 - **Background verification.** A job started with `&` or `nohup` and polled from a later call is
   recorded when it starts; its log is never read, so its completion is not a verification. A
   unified-exec run that yields and is polled to exit is recognized through its `item_completed`

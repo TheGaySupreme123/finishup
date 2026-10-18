@@ -691,8 +691,11 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
     output. Declare it when a check reads the file itself (a doctest over the README, a docs
     build), so that check goes stale again after the edit. Documentation in test, fixture, data,
     golden or template folders, a script named like a license or readme (`bin/license-check`), and
-    a file written after `cd tests` keep counting as ordinary edits. While a service from an
-    earlier build still runs after an upgrade, documentation edits count as ordinary edits too.
+    a file written after `cd tests` (also inside a `bash -c '…'` script or behind `env -C`), or
+    by a patch whose file paths FinishUP cannot read, keep counting as ordinary edits. While
+    FinishUP's service is not running, or one from an earlier build still runs after an upgrade,
+    documentation edits count as ordinary edits too, as does a Codex shell command that writes a
+    documentation file by a relative path when FinishUP cannot find which folder it ran in.
   - A verification started in the background and polled from a later call is still recorded only
     when it starts; FinishUP's guidance now asks agents to run verification in the foreground.
 

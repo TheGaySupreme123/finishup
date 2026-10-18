@@ -363,11 +363,13 @@ a changelog, Markdown guides outside test, fixture, data, golden, resource, prom
 folders) are recorded as work but never make an earlier verification stale, unless the task
 declares that file, or any output directory, as an output. A check that reads the documentation
 itself (a doctest over a README, a docs build, a Markdown lint) is not made stale by such an edit
-either, so declare the file when that check matters. While a service from an earlier build is
-still running after an upgrade, a documentation edit counts as an ordinary edit until that service
-is restarted. A run matches when it is the planned command or
-contains it as one part, such as `cd /app && pytest -q && git diff --check`, `pytest -q > log
-2>&1`, `time pytest -q`, or a line of a `bash <<'EOF'` script; when the run combined other
+either, so declare the file when that check matters. While FinishUP's service is not running,
+or one from an earlier build is still running after an upgrade, a documentation edit counts as an
+ordinary edit until a current service runs. A documentation file written from inside a test or
+data folder, or in a command whose working folder FinishUP cannot tell, also counts as an ordinary
+edit. A run matches when it is the planned command or contains it as one part, such as
+`cd /app && pytest -q && git diff --check`, `pytest -q > log 2>&1`, `time pytest -q`, or a line
+of a `bash <<'EOF'` script; when the run combined other
 commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested
 command with a `<placeholder>` is refused when you publish it: write the concrete command; a requested output file that is missing (a
 unresolved finding, even if an action named it) or excluded from Git; one you recorded

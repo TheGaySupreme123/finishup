@@ -1214,7 +1214,8 @@ only while the singleton holder's stamp shows this installation's schema manifes
 class (`service/write_scope_admission`, `write_scope.without_docs_scope`), so a service that
 predates the class never finds a stored row it refuses. A heredoc-fed `apply_patch`, `git apply`
 or `patch` (after `sudo`, or `git -C <dir>`) writes the files its patch headers name
-(`domain/shell_writes.heredoc_patch_paths`), and a heredoc body's quotes never decide a command's
+(`domain/shell_writes.heredoc_patch_paths`; one whose paths it cannot place is an ordinary write,
+#1106 r3), and a heredoc body's quotes never decide a command's
 runner class (ADR-045 amendment of 2026-10-18).
 
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
@@ -10852,8 +10853,16 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `docs` (#1106: counts as an edit and as acting, never advances the latest edit;
   `observed_failures.STALE_EXEMPT_WRITE_TOKENS`, `observed_write_stales_verification(description,
   stale_exempt)`). `shell_writes.heredoc_patch_paths(command)` names the files a complete heredoc
-  fed to `apply_patch`, `git apply` or `patch` writes; `codex_intercepts_shell_apply_patch(command)`
-  is Codex's sole-statement interception rule.
+  fed to `apply_patch`, `git apply` or `patch` writes; `heredoc_patch_writes(command) ->
+  HeredocPatchWrites(paths, unplaced)` adds whether an applying patch writes files it cannot place
+  (`shell_write_scope(..., unplaced_writes=)` then counts it as `workspace`, #1106 r3);
+  `command_working_directory(command) -> (directory, unplaced)` reads the leading `cd` with the
+  write lexer (heredoc bodies are data; a whole `bash -lc SCRIPT` is read as its script);
+  `runtime_structural_facts(..., call_directory_unknown=)` leaves a relative shell target
+  unplaced (a Codex hook payload names no `workdir`; the hook then reads its call's row,
+  `adapters/integrations/codex_session_stream.codex_call_workdir(path, call_id) -> (stated,
+  workdir) | None`); `codex_intercepts_shell_apply_patch(command)` is Codex's sole-statement
+  interception rule.
   `missing_for_assessment.check_change_text_paths(capture)` lists the files the check-time change
   shows as text; `_TargetFiles.unsupported` decides by Git's NUL sniff first, then the suffix. The
   standing `declared_output_not_reviewable` (`DECLARED_OUTPUT_NOT_REVIEWABLE_GAP`) is raised when a
@@ -10875,11 +10884,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `work-integrity/0.2.0` generation.
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
-  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|docs|workspace`; ADR-042:
-  `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
-  FinishUP's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
-  writes the workspace; #1106: `docs` a write of only project documentation, stale-exempt but
-  counting),
+  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|docs|workspace`;
+  ADR-042: `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the
+  workspace or FinishUP's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell
+  command that writes the workspace; #1106: `docs` a write of only project documentation,
+  stale-exempt but counting),
   `effective_user` (`root|non_root`) and `workspace_effect` (`unchanged|changed|unavailable`,
   PR #1080 round 5: produced only by `cli/workspace_effect_hook.workspace_fingerprint_pass` on a
   live `PostToolUse`, never copied from a host payload; materialization appends it to the observed
