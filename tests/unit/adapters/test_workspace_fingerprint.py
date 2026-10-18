@@ -19,7 +19,11 @@ _KEY = b"w" * 32
 
 
 def _store(tmp_path: Path) -> WorkspaceFingerprintStore:
-    return WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY)
+    """File-walk and settlement tests assume no lingering writer, independent of the runner."""
+
+    return WorkspaceFingerprintStore(
+        tmp_path / "state" / "fp", _KEY, lingering=lambda _window, _root: False
+    )
 
 
 def _granted(tmp_path: Path) -> WorkspaceFingerprintStore:
@@ -527,7 +531,7 @@ def test_a_child_left_running_in_the_workspace_makes_the_comparison_unavailable(
 
     root = _workspace(tmp_path)
     (root / "deliverable.txt").write_text("reviewed")
-    store = _store(tmp_path)
+    store = WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY)
     assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
     with not_a_child_subreaper():
         release_write, done_read = launch_lingering_worker(root)
@@ -547,7 +551,7 @@ def test_a_child_left_running_elsewhere_does_not_block_the_comparison(tmp_path: 
     root = _workspace(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    store = _store(tmp_path)
+    store = WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY)
     assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
     release_write, done_read = launch_lingering_worker(elsewhere)
     try:
