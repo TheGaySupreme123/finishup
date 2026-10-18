@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import hmac
+import json
 import os
 import re
 import shlex
@@ -15,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final, Literal, cast
+from urllib.parse import unquote, urlsplit
 
 from finishup.adapters.importers.codex_jsonl import (
     CodexCapabilityProfile,
@@ -64,7 +66,7 @@ from finishup.domain.observation_selection import (
     without_routine_read,
 )
 from finishup.domain.shell_writes import (
-    heredoc_patch_paths,
+    heredoc_patch_writes,
     shell_command_text,
     shell_write_scope,
 )
@@ -90,6 +92,7 @@ __all__ = [
     "PERIODIC_RECONCILE_SECONDS",
     "SessionStreamAdvance",
     "SessionStreamReader",
+    "codex_call_workdir",
     "default_stream_profile",
     "envelope_from_stream_record",
     "read_codex_child_rollout_header",
@@ -1259,6 +1262,102 @@ def _stream_call_workdir(
     return True, workdir if type(workdir) is str and workdir else None
 
 
+# How much of a rollout's tail a Codex hook reads to find its own call's row (#1106 r3).
+_CALL_ROW_TAIL_BYTES: Final = 1 << 20
+
+
+def codex_call_workdir(path: Path, call_id: object) -> tuple[bool, str | None] | None:
+    """``(stated, workdir)`` from the rollout row of one Codex shell call, or ``None`` (#1106 r3).
+
+    A Codex hook payload carries the session ``cwd``, never the call's ``workdir`` argument, so a
+    hook that must place a relative write reads its own call's ``function_call`` row from the
+    validated rollout (``CodexSessionStreamLocator.resolve``): only the last
+    ``_CALL_ROW_TAIL_BYTES``, only a complete row whose ``call_id`` is exactly *call_id* and whose
+    tool is a shell call. ``None`` means the row was not found (not yet flushed, beyond the tail,
+    or no such row): the caller cannot place the write. The arguments are parsed transiently and
+    only the directory returns; it is never stored or emitted.
+    """
+
+    token = _token(call_id)
+    if token is None:
+        return None
+    needle = json.dumps(token).encode()
+    try:
+        with path.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            start = max(0, size - _CALL_ROW_TAIL_BYTES)
+            handle.seek(start)
+            tail = handle.read(_CALL_ROW_TAIL_BYTES)
+    except OSError:
+        return None
+    lines = tail.split(b"\n")
+    if start > 0:
+        lines = lines[1:]  # the first line is cut
+    for line in reversed(lines):
+        if needle not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        payload = cast(dict[str, object], row).get("payload")
+        if cast(dict[str, object], row).get("type") != "response_item" or not isinstance(
+            payload, dict
+        ):
+            continue
+        item = cast(dict[str, object], payload)
+        name = item.get("name")
+        if (
+            item.get("type") != "function_call"
+            or item.get("call_id") != token
+            or type(name) is not str
+            or name.casefold() not in _STREAM_SHELL_CALL_TOOLS
+        ):
+            continue
+        arguments = item.get("arguments")
+        try:
+            parsed = json.loads(arguments) if type(arguments) is str else None
+        except ValueError:
+            return True, None
+        if not isinstance(parsed, dict):
+            return True, None
+        values = cast(dict[str, object], parsed)
+        if values.get("workdir") is None:
+            return False, None
+        workdir = values.get("workdir")
+        return True, workdir if type(workdir) is str and workdir else None
+    return None
+
+
+def _command_execution_workdir(body: Mapping[str, JsonValue]) -> tuple[bool, str | None]:
+    """``(stated, workdir)`` for a completed ``CommandExecution`` item's own ``cwd`` (#1106 r3).
+
+    Codex records it as a ``file://`` URI (``file:///app``) or a path. A stated value the
+    reader cannot decode to an absolute local path still counts as a working directory it
+    cannot place.
+    """
+
+    if "cwd" not in body or body.get("cwd") is None:
+        return False, None
+    value = body.get("cwd")
+    if type(value) is not str or not value or "\x00" in value:
+        return True, None
+    if value.startswith("/"):
+        return True, value
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return True, None
+    if parts.scheme != "file" or parts.netloc not in {"", "localhost"} or parts.query:
+        return True, None
+    path = unquote(parts.path)
+    if not path.startswith("/") or "\x00" in path:
+        return True, None
+    return True, path
+
+
 # The hook process's own facts for one command a rollout row names: ``(script, workdir) ->``
 # ``install_target``, ``write_scope`` and ``effective_user`` exactly as its hook copy would carry
 # them (``cli.runtime_facts.runtime_structural_facts``, #1106 r2). Only the closed tokens return.
@@ -1328,12 +1427,14 @@ def _command_facts(
         # ADR-045: the stream knows no workspace root, so it claims only a relative write
         # (a working directory makes it certain); an absolute path is left to the hook. A
         # heredoc-fed patch writes the files its headers name, as the hook reads them.
+        patch_writes = heredoc_patch_writes(script)
         scope = shell_write_scope(
             script,
             workspace=None,
             inside=lambda _path: False,
             relative_only=True,
-            also_written=heredoc_patch_paths(script),
+            also_written=patch_writes.paths,
+            unplaced_writes=patch_writes.unplaced,
             relocated=stated and (directory is None or not directory.startswith("/")),
             working_directory=directory
             if directory is not None and directory.startswith("/")
@@ -1462,6 +1563,7 @@ def structural_from_stream_record(
                 key_material=key_material,
                 post=True,
                 command_facts=command_facts,
+                workdir=_command_execution_workdir(body),
             )
         else:
             call_command = _stream_call_command(record, fields)

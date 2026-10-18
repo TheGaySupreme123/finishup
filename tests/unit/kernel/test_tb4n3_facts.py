@@ -233,6 +233,7 @@ def _hook_edit(
     path: str,
     *,
     cwd: str | None = None,
+    codex: bool = False,
 ) -> str | None:
     """Record the edit a real PostToolUse hook leaves in the ledger, and return its write scope.
 
@@ -268,6 +269,7 @@ def _hook_edit(
         tool_name=cast(str, envelope.structural_payload["tool_name"]),
         workspace_locator=_WORKSPACE,
         inside=lambda value: workspace_relative_edit_path(value, _WORKSPACE) is not None,
+        call_directory_unknown=codex,
     )
     envelope = replace(
         envelope, structural_payload=JsonObject({**envelope.structural_payload, **facts})
@@ -642,6 +644,27 @@ def test_c2k_docs_and_code_in_one_shell_write_stale_verification() -> None:
             id="cd_git_apply",
         ),
         pytest.param("cd /app/tests && printf 'x\\n' > golden.md", id="cd_absolute"),
+        # #1106 r3: a ``cd`` inside the quoted script of a wrapped shell, and ``env -C``.
+        pytest.param("bash -c 'cd tests && echo x > golden.md'", id="wrapped_bash_c"),
+        pytest.param('sh -c "cd tests/fixtures && printf x > expected.md"', id="wrapped_sh_c"),
+        pytest.param("bash -lc 'cd tests && cat > golden.md'", id="wrapped_bash_lc"),
+        pytest.param("bash -lc 'cd tests && echo x > README.md'", id="wrapped_readme"),
+        pytest.param("env -C tests sh -c 'printf x > golden.md'", id="env_chdir"),
+        pytest.param("env --chdir=tests sh -c 'printf x > README.md'", id="env_chdir_long"),
+        # surfaces-r3-3: a patch the reader cannot place is still a write.
+        pytest.param(
+            "patch -d tests -p1 <<'EOF'\n--- a/golden.md\n+++ b/golden.md\n@@\n-a\n+b\nEOF",
+            id="patch_dir",
+        ),
+        pytest.param(
+            "git apply --directory=tests <<'EOF'\n--- a/golden.md\n+++ b/golden.md\nEOF",
+            id="git_apply_directory",
+        ),
+        pytest.param(
+            "git apply <<'EOF'\ndiff --git a/README.md b/tests/golden.md\nrename from README.md\n"
+            "rename to tests/golden.md\nEOF",
+            id="git_apply_rename",
+        ),
     ],
 )
 def test_c2l_a_fixture_written_after_cd_stales_verification(command: str) -> None:
@@ -670,6 +693,47 @@ def test_c2l_the_hosts_cwd_places_a_relative_doc_write() -> None:
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
     # A cwd that cannot be placed under the root (another spelling of it) keeps it counting.
     assert _hook_edit(_ledger(), "Bash", command, "", cwd="/private/app") == "workspace"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("cat > README.md <<'EOF'\n## Setup\n\n    cd repo && make\nEOF", id="heredoc"),
+        pytest.param(
+            "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: docs/guide.md\n@@\n"
+            "+Then cd into the folder.\n*** End Patch\nEOF",
+            id="apply_patch",
+        ),
+        pytest.param(
+            "git apply <<'EOF'\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n"
+            "+    cd repo && make\nEOF",
+            id="git_apply",
+        ),
+    ],
+)
+def test_c2n_a_readme_whose_body_says_cd_leaves_verification_current(command: str) -> None:
+    """goal-r3-2: a heredoc body is data, so setup instructions in a README change no directory."""
+
+    ledger = _ledger()
+    ledger.edit()
+    ledger.passes("pytest -q")
+    assert _hook_edit(ledger, "Bash", {"command": command}, "") == "docs"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+
+
+def test_c2o_a_codex_hook_copy_cannot_place_a_relative_doc_write() -> None:
+    """goal-r3-3: a Codex hook payload never names the call's ``workdir``, so when the hook copy
+    commits first a relative README write may land in ``tests/``: it counts as an ordinary edit.
+    An absolute documentation path needs no working directory and stays documentation."""
+
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    absolute: dict[str, JsonValue] = {"command": "printf 'x\\n' > /app/README.md"}
+    assert _hook_edit(ledger, "Bash", absolute, "", cwd="/app", codex=True) == "docs"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    relative: dict[str, JsonValue] = {"command": "printf 'x\\n' > README.md"}
+    assert _hook_edit(ledger, "Bash", relative, "", cwd="/app", codex=True) == "workspace"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
 
 
 @pytest.mark.parametrize(

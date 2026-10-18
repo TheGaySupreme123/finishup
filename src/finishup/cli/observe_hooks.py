@@ -1770,6 +1770,78 @@ def _absolute_path_key(value: str) -> tuple[str, bool] | None:
     return None
 
 
+def _hook_runtime_facts(
+    facts_payload: Mapping[str, JsonValue],
+    payload: Mapping[str, JsonValue],
+    *,
+    tool_name: str | None,
+    workspace_locator: str | None,
+    codex_session_id: str | None,
+) -> dict[str, JsonValue]:
+    """The closed runtime facts of one hook call (``runtime_structural_facts``, #977).
+
+    A Codex hook payload (``codex_session_id`` set) names the session ``cwd``, never the call's
+    ``workdir`` argument, so a relative shell target cannot be placed and is never documentation
+    (#1106 r3). Only when placing it under the session ``cwd`` would make it documentation does
+    the hook read its own call's ``function_call`` row from the validated rollout
+    (``codex_session_stream.codex_call_workdir``): a call with no ``workdir`` runs in the session
+    ``cwd``, a stated one places the write under it, and a row it cannot find keeps the write an
+    ordinary edit.
+    """
+
+    def inside(value: str) -> bool:
+        return workspace_relative_edit_path(value, workspace_locator) is not None
+
+    def read(*, unknown: bool = False, workdir: str | None = None) -> dict[str, JsonValue]:
+        return runtime_structural_facts(
+            facts_payload,
+            tool_name=tool_name,
+            workspace_locator=workspace_locator,
+            inside=inside,
+            working_directory=workdir,
+            call_directory_unknown=unknown,
+        )
+
+    if codex_session_id is None:
+        return read()
+    facts = read(unknown=True)
+    if facts.get("write_scope") != "workspace":
+        return facts
+    placed = read()
+    if placed.get("write_scope") == "workspace":
+        return facts
+    workdir = _codex_hook_call_workdir(payload, codex_session_id)
+    if workdir is None:
+        return facts
+    stated, directory = workdir
+    if not stated:
+        return placed
+    # A stated ``workdir`` that is no absolute path is passed as ``.``, which is never placed.
+    return read(workdir=directory if directory is not None else ".")
+
+
+def _codex_hook_call_workdir(
+    payload: Mapping[str, JsonValue], codex_session_id: str
+) -> tuple[bool, str | None] | None:
+    from finishup.adapters.integrations.codex_session_stream import (
+        CodexSessionStreamLocator,
+        codex_call_workdir,
+        resolve_codex_home,
+    )
+
+    hook_path = payload.get("session_file") or payload.get("transcript_path")
+    try:
+        path = CodexSessionStreamLocator(resolve_codex_home()).resolve(
+            session_id=codex_session_id,
+            hook_provided_path=hook_path if type(hook_path) is str else None,
+        )
+    except Exception:
+        return None
+    if path is None:
+        return None
+    return codex_call_workdir(path, payload.get("tool_use_id"))
+
+
 def _stream_command_facts(
     workspace_locator: str | None,
 ) -> Callable[[str, str | None], Mapping[str, object]] | None:
@@ -5699,12 +5771,13 @@ def handle_observe(
                 # Read from the host's own tool input in this process; only tokens persist.
                 with contextlib.suppress(Exception):
                     tool_token = envelope.structural_payload.get("tool_name")
-                    runtime_facts = runtime_structural_facts(
+                    runtime_facts = _hook_runtime_facts(
                         _content_payload if _content_payload is not None else payload,
+                        payload,
                         tool_name=tool_token if type(tool_token) is str else None,
                         workspace_locator=workspace_locator,
-                        inside=lambda value: (
-                            workspace_relative_edit_path(value, workspace_locator) is not None
+                        codex_session_id=(
+                            codex_session_id if source is ObservationSource.CODEX_HOOK else None
                         ),
                     )
                     if runtime_facts:

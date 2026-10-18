@@ -375,3 +375,123 @@ def test_an_argv_command_execution_names_its_heredoc_patch_write(script: str) ->
     assert structural["write_scope"] == "workspace"
     if "pytest" in script:
         assert structural["runner_class"] == "test"
+
+
+def _command_execution(script: str, cwd: object) -> CodexParsedRecord:
+    item: dict[str, Any] = {
+        "id": "exec-cwd",
+        "type": "CommandExecution",
+        "command": ["/bin/bash", "-lc", script],
+        "exit_code": 0,
+        "status": "completed",
+    }
+    if cwd is not None:
+        item["cwd"] = cwd
+    return CodexParsedRecord(
+        1,
+        0,
+        200,
+        "event_msg",
+        "CommandExecution",
+        JsonObject({"payload": {"item": item, "type": "item_completed"}}),
+    )
+
+
+@pytest.mark.parametrize(
+    ("cwd", "scope"),
+    [
+        (None, "docs"),
+        ("file:///repo", "docs"),
+        ("/repo/docs", "docs"),
+        ("file:///repo/tests", "workspace"),
+        ("file://localhost/repo/tests", "workspace"),
+        ("/repo/tests", "workspace"),
+        ("file:///elsewhere", "workspace"),
+        ("https://example.invalid/repo", "workspace"),
+        ("tests", "workspace"),
+        (7, "workspace"),
+    ],
+)
+def test_a_command_execution_places_a_relative_write_under_its_own_cwd(
+    cwd: object, scope: str
+) -> None:
+    """correctness-r3-2: the completed item names the directory it ran in (``file:///app``)."""
+
+    from finishup.cli.observe_hooks import (
+        _stream_command_facts,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    record = _command_execution("printf 'x\\n' > README.md", cwd)
+    structural, _gaps = structural_from_stream_record(
+        record, key_material=_KEY, command_facts=_stream_command_facts("/repo")
+    )
+    assert structural.get("write_scope") == scope
+    # Read outside a hook, only a relative write under a stated directory is claimed.
+    outside, _gaps = structural_from_stream_record(record, key_material=_KEY)
+    if cwd in {"file:///repo/tests", "/repo/tests"}:
+        assert outside.get("write_scope") == "workspace"
+
+
+def _row(call_id: str, name: str, arguments: object) -> bytes:
+    payload = {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments if type(arguments) is str else json.dumps(arguments),
+        },
+    }
+    return json.dumps(payload).encode() + b"\n"
+
+
+@pytest.mark.parametrize(
+    ("rows", "call_id", "expected"),
+    [
+        (
+            [_row("c1", "exec_command", {"cmd": "x", "workdir": "/w/tests"})],
+            "c1",
+            (True, "/w/tests"),
+        ),
+        ([_row("c1", "exec_command", {"cmd": "x"})], "c1", (False, None)),
+        ([_row("c1", "exec_command", {"cmd": "x", "workdir": None})], "c1", (False, None)),
+        ([_row("c1", "shell", {"command": ["ls"], "workdir": 7})], "c1", (True, None)),
+        ([_row("c1", "exec_command", "{not json")], "c1", (True, None)),
+        ([_row("c1", "exec_command", {"cmd": "x", "workdir": "/w"})], "c2", None),
+        ([_row("c1", "apply_patch", {"workdir": "/w"})], "c1", None),
+        ([_row("c10", "exec_command", {"workdir": "/w"})], "c1", None),
+        (
+            [
+                _row("c1", "exec_command", {"cmd": "x", "workdir": "/old"}),
+                _row("c2", "exec_command", {"cmd": "y", "workdir": "/w"}),
+            ],
+            "c1",
+            (True, "/old"),
+        ),
+        ([b'{"partial": \n'], "c1", None),
+        ([_row("c1", "exec_command", {"workdir": "/w"})], "bad id!", None),
+    ],
+)
+def test_a_codex_hook_reads_only_its_own_calls_workdir(
+    tmp_path: Path, rows: list[bytes], call_id: str, expected: object
+) -> None:
+    """goal-r3-3: the hook finds its own call's ``function_call`` row; anything else is ``None``."""
+
+    from finishup.adapters.integrations.codex_session_stream import codex_call_workdir
+
+    path = tmp_path / "rollout.jsonl"
+    path.write_bytes(b"".join(rows))
+    assert codex_call_workdir(path, call_id) == expected
+    assert codex_call_workdir(tmp_path / "absent.jsonl", call_id) is None
+
+
+def test_a_codex_hook_reads_only_the_rollout_tail(tmp_path: Path) -> None:
+    from finishup.adapters.integrations import codex_session_stream
+
+    path = tmp_path / "rollout.jsonl"
+    early = _row("c1", "exec_command", {"cmd": "x", "workdir": "/w"})
+    filler = b'{"type":"event_msg","payload":{"x":"' + b"a" * (2 << 20) + b'"}}\n'
+    path.write_bytes(early + filler)
+    assert codex_session_stream.codex_call_workdir(path, "c1") is None
+    path.write_bytes(filler + early)
+    assert codex_session_stream.codex_call_workdir(path, "c1") == (True, "/w")

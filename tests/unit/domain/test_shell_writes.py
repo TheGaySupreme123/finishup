@@ -653,3 +653,193 @@ def test_a_long_heredoc_patch_in_a_native_argv_is_still_a_write() -> None:
     assert shell_writes.shell_command_text(["pytest", "-q"]) == "pytest -q"
     assert shell_writes.shell_command_text("ls") == "ls"
     assert shell_writes.shell_command_text([1, 2]) is None
+
+
+# --- #1106 r3: a directory change inside a wrapped script, and heredoc bodies as data ----------
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("bash -c 'cd tests && echo x > golden.md'", ("tests", False)),
+        ('sh -c "cd tests/fixtures && printf x > expected.md"', ("tests/fixtures", False)),
+        ("bash -lc 'cd tests && cat > golden.md'", ("tests", False)),
+        ("/bin/bash -lc \"bash -c 'cd tests && echo x > a.md'\"", ("tests", False)),
+        ("cd tests && bash -c 'printf x > golden.md'", ("tests", False)),
+        ("sh -c 'cd tests; echo x > README.md'", (None, True)),
+        ("cd a && bash -c 'cd b && echo x > README.md'", (None, True)),
+        ("echo hi; bash -c 'cd tests && printf x > golden.md'", (None, True)),
+        ("env -C tests sh -c 'printf x > golden.md'", (None, True)),
+        ("env --chdir=tests sh -c 'printf x > README.md'", (None, True)),
+        ("env -iC tests sh -c 'printf x > README.md'", (None, True)),
+        ("sudo -D tests sh -c 'printf x > README.md'", (None, True)),
+        ("sudo --chdir=tests sh -c 'printf x > README.md'", (None, True)),
+        ("sudo -u app sh -c 'printf x > README.md'", (None, False)),
+        ("eval 'cd tests'; echo x > README.md", (None, True)),
+        ("echo $(cd tests && pwd) > README.md", (None, True)),
+        ("echo `cd tests` > README.md", (None, True)),
+        ("git -c a=b -C tests log > README.md", (None, True)),
+        ('bash -c "cd $D && echo x > README.md"', (None, True)),
+        ("cat > README.md <<'EOF'\n    cd repo && make\nThen cd into it.\nEOF", (None, False)),
+        (
+            "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: README.md\n@@\n"
+            "+    cd repo && make\n*** End Patch\nEOF",
+            (None, False),
+        ),
+        ("bash -lc 'cat > README.md <<EOF\n  cd repo\nEOF'", (None, False)),
+        ("echo 'unbalanced; cd tests && echo x > README.md", (None, True)),
+    ],
+)
+def test_the_working_directory_is_read_like_the_writes(
+    command: str, expected: tuple[str | None, bool]
+) -> None:
+    """correctness-r3-1, goal-r3-1, goal-r3-2: a ``cd`` inside a quoted ``sh -c`` script or behind
+    ``env -C`` was not seen while the script's write was, and a heredoc body that said ``cd`` made
+    a README unplaceable."""
+
+    assert shell_writes.command_working_directory(command) == expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -c 'cd tests && echo x > golden.md'",
+        'sh -c "cd tests/fixtures && printf x > expected.md"',
+        "bash -lc 'cd tests && cat > golden.md'",
+        "env -C tests sh -c 'printf x > golden.md'",
+        "env --chdir=tests sh -c 'printf x > README.md'",
+        "bash -lc 'cd tests && echo x > README.md'",
+    ],
+)
+def test_a_doc_name_written_in_a_wrapped_cd_is_an_ordinary_write(command: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "workspace"
+    assert (
+        shell_write_scope(command, workspace=None, inside=lambda _p: False, relative_only=True)
+        == "workspace"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat > README.md <<'EOF'\n    cd repo && make\nEOF",
+        "bash -lc 'cd docs && echo x > guide.md'",
+        "cd docs && cat > guide.md <<'EOF'\nThen cd into the folder.\nEOF",
+    ],
+)
+def test_a_readme_whose_body_says_cd_is_still_docs(command: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "docs"
+
+
+def test_a_heredoc_patch_whose_body_says_cd_is_still_docs() -> None:
+    command = (
+        "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: docs/guide.md\n@@\n"
+        "+Then cd into the folder.\n*** End Patch\nEOF"
+    )
+    assert (
+        shell_write_scope(
+            command,
+            workspace="/app",
+            inside=_inside,
+            also_written=shell_writes.heredoc_patch_paths(command),
+        )
+        == "docs"
+    )
+
+
+@pytest.mark.parametrize("target", ["/etc", "/tmp", "/app/docs"])
+def test_a_relative_only_reader_cannot_place_an_absolute_cd(target: str) -> None:
+    """correctness-r3-3: with no workspace root an absolute ``cd`` cannot be placed in it."""
+
+    command = f"cd {target} && echo x > README.md"
+    assert (
+        shell_write_scope(command, workspace=None, inside=lambda _p: False, relative_only=True)
+        == "workspace"
+    )
+
+
+_UNPLACED_DIFF = "--- a/y.py\n+++ b/y.py\n@@\n-a\n+b\n"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"patch -d src -p1 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --directory=src <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch -o src/y.py <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch -p1 -i fix.patch <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply fix.patch <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        "git apply <<'EOF'\ndiff --git a/README.md b/src/x.py\nrename from README.md\n"
+        "rename to src/x.py\nEOF",
+        'git apply <<\'EOF\'\n--- "a/sp ace"\n+++ "b/sp ace"\nEOF',
+        f"git apply -p5 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        'git apply <<\'EOF\'\n--- a/README.md\n+++ b/README.md\n--- "a/q"\n+++ "b/q"\nEOF',
+    ],
+)
+def test_an_applying_patch_it_cannot_place_is_an_ordinary_write(command: str) -> None:
+    """surfaces-r3-3: a heredoc patch that moves what it writes, or names a header the reader
+    cannot read, is still a write, and the unplaced class keeps an earlier verification honest."""
+
+    writes = shell_writes.heredoc_patch_writes(command)
+    assert writes.unplaced
+    hook = shell_write_scope(
+        command,
+        workspace="/app",
+        inside=_inside,
+        also_written=writes.paths,
+        unplaced_writes=writes.unplaced,
+    )
+    stream = shell_write_scope(
+        command,
+        workspace=None,
+        inside=lambda _path: False,
+        relative_only=True,
+        also_written=writes.paths,
+        unplaced_writes=writes.unplaced,
+    )
+    assert hook == stream == "workspace"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"git apply --check <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --stat <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --cached <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --directory=src --check <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch --dry-run -d src -p1 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch -C -p1 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"cat <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply <<'EOF'\n{_UNPLACED_DIFF}",  # unterminated: not a complete edit
+    ],
+)
+def test_a_check_only_or_absent_patch_writes_nothing(command: str) -> None:
+    assert shell_writes.heredoc_patch_writes(command) == shell_writes.HeredocPatchWrites((), False)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env " * 200_000 + "-C x",
+        "bash -c '" + "cd x; " * 100_000 + "'",
+        "cat <<EOF\n" + "cd x\n" * 200_000 + "EOF\n" + "echo y > README.md\n",
+        "echo " + "a " * 400_000 + "> README.md\n" + "x\n" * 10,
+        "git apply <<'EOF'\n" + "+cd x\n" * 200_000 + "EOF\n",
+    ],
+    ids=["many-env", "nested-cds", "long-heredoc", "long-line", "long-patch"],
+)
+def test_the_working_directory_reader_is_linear(command: str) -> None:
+    started = time.perf_counter()
+    shell_writes.command_working_directory(command)
+    shell_write_scope(command, workspace="/app", inside=_inside)
+    assert time.perf_counter() - started < _DEADLINE_SECONDS
+
+
+def test_a_long_patch_whose_tail_says_cd_is_still_docs() -> None:
+    """Past the token bound the text is searched less its heredoc bodies."""
+
+    body = "".join(f"+    cd repo{index} && make\n" for index in range(1200))
+    command = f"git apply <<'EOF'\n--- a/README.md\n+++ b/README.md\n@@\n{body}EOF\n"
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_writes.command_working_directory(command) == (None, False)
+    assert shell_writes.command_working_directory(command + "cd tests\n") == (None, True)

@@ -45,10 +45,12 @@ __all__ = [
     "APPLY_PATCH_PATH",
     "MAX_SHELL_WRITE_CHARS",
     "SHELL_APPLY_PATCH",
+    "HeredocPatchWrites",
     "bound_command",
     "codex_intercepts_shell_apply_patch",
     "command_working_directory",
     "heredoc_patch_paths",
+    "heredoc_patch_writes",
     "patch_command_words",
     "shell_command_text",
     "shell_heredocs",
@@ -965,6 +967,7 @@ def shell_write_scope(
     also_written: Iterable[str] = (),
     relocated: bool = False,
     working_directory: str | None = None,
+    unplaced_writes: bool = False,
 ) -> str | None:
     """The ``write_scope`` a shell command earns: ``outside_workspace``, ``workspace`` or ``None``.
 
@@ -993,8 +996,12 @@ def shell_write_scope(
     (``relocated``), leaves a relative target unplaced, and an unplaced target is never project
     documentation: it counts as ``workspace``. ``working_directory`` is the absolute directory
     the command starts in when the caller knows it (the host's ``cwd``, a Codex call's
-    ``workdir``); a relative ``cd`` word is read under it. ``relative_only`` never reads under a
-    directory (an absolute target would be dropped); it only marks the targets unplaced.
+    ``workdir``); a relative ``cd`` word is read under it. ``relative_only`` drops absolute
+    targets and reads a relative one under ``working_directory`` with no workspace root (so a
+    data directory anywhere on that path keeps it an ordinary write); a ``cd`` to an absolute
+    directory, which it cannot place in the workspace, leaves the targets unplaced.
+    ``unplaced_writes`` says the command also writes files the caller could not name (a heredoc
+    patch whose paths it cannot read, ``heredoc_patch_writes``): the command is then an edit.
     """
 
     targets = dict(_write_targets(command))
@@ -1002,6 +1009,10 @@ def shell_write_scope(
         if extra:
             targets.setdefault(extra, False)
     base, unplaced = command_working_directory(command)
+    if relative_only and base is not None and base.startswith("/"):
+        # A ``cd`` to an absolute directory: with no workspace root the reader cannot tell
+        # whether it is inside the workspace, so what lands there is unplaced (#1106 r3).
+        base, unplaced = None, True
     if relocated:
         base, unplaced = None, True
     elif working_directory is not None and not unplaced:
@@ -1051,6 +1062,8 @@ def shell_write_scope(
         ):
             continue
         classes.add(written_class)
+    if unplaced_writes:
+        classes.add("workspace")
     if "outside_workspace" in classes:
         return "outside_workspace"
     if "workspace" in classes or len(classes) > 1:
@@ -1065,37 +1078,150 @@ def shell_write_scope(
     return None
 
 
-# A directory change anywhere in a command: ``cd``/``pushd``/``popd`` as a command word, or a
-# ``git -C <dir>``. Searched over the whole text (a heredoc body that says ``cd`` only makes the
-# reader more careful).
+# A directory change in text the lexer could not read, beyond the bound, or inside one word (a
+# quoted argument, an ``eval`` string, a substitution): ``cd``/``pushd``/``popd`` after a blank,
+# a separator, a backtick or a quote, or a ``git -C <dir>``. Read conservatively: a ``cd`` in
+# prose only leaves a relative target unplaced.
 _DIRECTORY_CHANGE: Final = re.compile(
-    r"(?:^|[\s;&|(`])(?:cd|pushd|popd)(?=$|[\s;&|)])"
-    r"|(?:^|[\s;&|(])git(?:[ \t]+-c[ \t]+[^\s;&|()]+)*[ \t]+-C(?=[\s=]|$)",
+    r"(?:^|[\s;&|(`'\"])(?:cd|pushd|popd)(?=$|[\s;&|)`'\"])"
+    r"|(?:^|[\s;&|(`'\"])git(?:[ \t]+-c[ \t]+[^\s;&|()]+)*[ \t]+-C(?=[\s=]|$)",
     re.MULTILINE,
 )
-# One leading ``cd <word> &&``: the word is a literal path (no expansion, quoting or option).
-_LEADING_CD: Final = re.compile(r"\A[ \t]*cd[ \t]+([A-Za-z0-9_./+@%:,=-]+)[ \t]*&&")
+# ``env -C <dir>``, ``sudo -D <dir>`` and their ``--chdir``: an ``env`` or ``sudo`` word anywhere
+# and a ``-C``/``-D`` (or a short-option cluster holding one) or ``--chdir`` word anywhere. Two
+# independent searches, so the check stays linear; reading them apart only makes the reader more
+# careful.
+_ENV_WORD: Final = re.compile(r"(?:^|[\s;&|(`'\"/])(?:env|sudo)(?=[\s'\"])")
+_CHDIR_OPTION: Final = re.compile(r"(?:^|[\s'\"])(?:-[A-Za-z0-9]*[CD]|--chdir)")
+# The wrappers the write readers look through that can change directory, by the short option
+# that does it (``env -C``, ``sudo -D``, ``git -C``); each also takes ``--chdir`` but ``git``.
+_CHDIR_WRAPPERS: Final = {"env": "C", "sudo": "D", "git": "C"}
+_DIRECTORY_WORDS: Final = frozenset({"cd", "pushd", "popd"})
+# A literal leading ``cd`` target (no expansion, option or home directory).
+_LEADING_CD_WORD: Final = re.compile(r"[A-Za-z0-9_./+@%:,=-]+")
 
 
 def command_working_directory(command: str) -> tuple[str | None, bool]:
-    """Where a shell command's relative writes land, as ``(directory, unplaced)`` (#1106 r2).
+    """Where a shell command's relative writes land, as ``(directory, unplaced)`` (#1106 r2, r3).
 
     ``(None, False)``: the command changes no directory, so its relative targets are read against
     the caller's working directory. ``(word, False)``: it starts with one ``cd <word> &&`` (a
-    literal word, not ``-``, never starting with ``~``) and changes directory nowhere else.
+    literal word, not an option, never starting with ``~``) and changes directory nowhere else.
     ``(None, True)``: any other directory change, so a relative target cannot be placed.
+
+    The command is read by the same lexer as its writes, so a heredoc body is data (a README that
+    says ``cd repo && make`` changes no directory), and a whole command ``bash -lc SCRIPT`` (the
+    string a host records for a wrapped call) is read as its script, as its writes are. Anywhere
+    else, a directory change is any ``cd``, ``pushd`` or ``popd`` word; a ``git`` or ``env`` with a
+    ``-C``/``--chdir`` option; a nested ``sh -c`` script that changes directory; and any other word
+    (a quoted argument, an ``eval`` string, a ``$(...)`` substitution) whose text names one.
+    Text the lexer cannot read, and text beyond ``MAX_SHELL_WRITE_CHARS`` less its heredoc bodies,
+    is searched for one directly.
     """
 
-    head = _LEADING_CD.match(command)
-    rest = command[head.end() :] if head is not None else command
-    if _DIRECTORY_CHANGE.search(rest) is not None:
+    return _working_directory_of(command, 0)
+
+
+def _working_directory_of(command: str, depth: int) -> tuple[str | None, bool]:
+    text, cut = _bounded(command)
+    if cut and _text_changes_directory(_without_heredoc_bodies(command, len(text))):
         return None, True
+    lexed = _lex(text, partial=cut)
+    if lexed is None:
+        return (None, True) if _text_changes_directory(text) else (None, False)
+    tokens = lexed[0]
+    while tokens and tokens[-1].kind == "op" and tokens[-1].text == "\n":
+        tokens.pop()
+    while tokens and tokens[0].kind == "op" and tokens[0].text == "\n":
+        tokens.pop(0)
+    head: str | None = None
+    if (
+        len(tokens) >= 3
+        and tokens[0].kind == "word"
+        and tokens[0].text == "cd"
+        and tokens[1].kind == "word"
+        and tokens[1].literal
+        and _LEADING_CD_WORD.fullmatch(tokens[1].text) is not None
+        and tokens[2].kind == "op"
+        and tokens[2].text == "&&"
+    ):
+        head = tokens[1].text
+        tokens = tokens[3:]
+    segments: list[list[_Token]] = [[]]
+    for token in tokens:
+        if token.kind == "op" and token.text in _SEPARATORS:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    words_of = [[token for token in segment if token.kind == "word"] for segment in segments]
+    whole = head is None and len(segments) == 1 and len(words_of[0]) == len(segments[0])
+    for words in words_of:
+        texts = [word.text for word in words]
+        stripped = strip_wrappers(texts[:_WRAPPER_SCAN])
+        offset = min(len(texts), _WRAPPER_SCAN) - len(stripped)
+        script = wrapped_shell_argument(stripped) if len(texts) - offset == 3 else None
+        if script is not None and not words[offset + 2].literal:
+            script = None  # expanded by the outer shell first: read as a word below
+        nested = words[offset + 2] if script is not None else None
+        for index, word in enumerate(words):
+            if word is nested:
+                continue
+            if word.text in _DIRECTORY_WORDS or _text_changes_directory(word.text):
+                return None, True
+            name = posixpath.basename(word.text)
+            if name in _CHDIR_WRAPPERS and any(
+                _option_changes_directory(later.text, name) for later in words[index + 1 :]
+            ):
+                return None, True
+        if script is None:
+            continue
+        if depth >= _MAX_SHELL_DEPTH:
+            return None, True
+        inner = _working_directory_of(script, depth + 1)
+        if whole:
+            # ``bash -lc 'cd tests && cat > golden.md'``: the script is the whole command.
+            return inner
+        if inner != (None, False):
+            return None, True
     if head is None:
         return None, False
-    word = head.group(1)
-    if word.startswith(("-", "~")):
+    if head.startswith(("-", "~")):
         return None, True
-    return posixpath.normpath(word), False
+    return posixpath.normpath(head), False
+
+
+def _option_changes_directory(word: str, wrapper: str) -> bool:
+    if wrapper == "git":
+        return word.startswith("-C")
+    if word.startswith("--"):
+        return word.startswith("--chdir")
+    return word.startswith("-") and _CHDIR_WRAPPERS[wrapper] in word
+
+
+def _text_changes_directory(text: str) -> bool:
+    return _DIRECTORY_CHANGE.search(text) is not None or (
+        _ENV_WORD.search(text) is not None and _CHDIR_OPTION.search(text) is not None
+    )
+
+
+def _without_heredoc_bodies(command: str, start: int) -> str:
+    """*command* from *start* on, less the body and closing lines of its complete heredocs.
+
+    The same bodies the heredoc patch reader reads as the patch (``_heredocs``), so a long patch
+    whose added lines say ``cd`` changes no directory.
+    """
+
+    lines = command.split("\n")
+    skipped: set[int] = set()
+    for heredoc in _heredocs(command):
+        skipped.update(range(heredoc.start + 1, heredoc.end + 1))
+    kept: list[str] = []
+    offset = 0
+    for index, line in enumerate(lines):
+        if offset + len(line) >= start and index not in skipped:
+            kept.append(line)
+        offset += len(line) + 1
+    return "\n".join(kept)
 
 
 def shell_command_text(value: object) -> str | None:
@@ -1223,6 +1349,8 @@ _STRIP_FLAG: Final = re.compile(r"^(?:-p|--strip=)([0-9]{1,2})$", re.ASCII)
 # ``patch`` without ``-p``: strip only one leading ``a/``/``b/`` component (the class needs only
 # the location and the name).
 _STRIP_DIFF_PREFIX: Final = -1
+# ``_diff_patch_strip``: a patch tool that applies a patch whose paths the reader cannot place.
+_UNPLACED_PATCH: Final = -2
 
 
 class _Heredoc(NamedTuple):
@@ -1287,8 +1415,21 @@ def codex_intercepts_shell_apply_patch(command: str) -> bool:
     return _INTERCEPTED_APPLY_PATCH.match(head) is not None and not tail.strip()
 
 
+class HeredocPatchWrites(NamedTuple):
+    """What the heredoc-fed patches of a shell command write (``heredoc_patch_writes``)."""
+
+    paths: tuple[str, ...]
+    unplaced: bool  # an applying patch writes files whose paths cannot all be read
+
+
 def heredoc_patch_paths(command: str) -> tuple[str, ...]:
-    """The files a heredoc-fed patch in a shell command names (n7 RC2, #1046 review).
+    """The files a heredoc-fed patch in a shell command names (``heredoc_patch_writes``)."""
+
+    return heredoc_patch_writes(command).paths
+
+
+def heredoc_patch_writes(command: str) -> HeredocPatchWrites:
+    """The files a heredoc-fed patch in a shell command writes (n7 RC2, #1046 review, #1106 r3).
 
     The command's own tokens show no write for these, so the patch headers are the write. Three
     forms, each only from a complete heredoc: ``apply_patch``/``applypatch`` (its ``*** Add|
@@ -1296,10 +1437,12 @@ def heredoc_patch_paths(command: str) -> tuple[str, ...]:
     unified-diff ``+++`` header, or its ``---`` when ``+++`` is ``/dev/null``, less the leading
     components the ``-p`` strip removes: ``git apply`` defaults to one, a bare ``patch`` drops one
     leading ``a/``/``b/``). An invocation that writes nothing (``git apply --check``/``--cached``,
-    ``patch --dry-run``), reads its patch from a file (an operand, ``-i``), moves what it writes
-    (``-d``, ``-o``, ``--directory``) or uses an option this reader does not know names nothing,
-    as does a header it cannot place (a quoted path). A whole command ``bash -lc '...'`` (a joined
-    native argv) is read through that one shell layer.
+    ``patch --dry-run``) names nothing. One that applies a patch the reader cannot place (it reads
+    its patch from a file, an operand or ``-i``; moves what it writes, ``-d``, ``-o``,
+    ``--directory``; uses an option the reader does not know; or names a header it cannot read, a
+    quoted path, a strip deeper than the path, or none at all, as a pure rename has) is still a
+    write: ``unplaced``, an ordinary edit. A whole command ``bash -lc '...'`` (a joined native
+    argv) is read through that one shell layer.
 
     Every step is linear in the text (a hook payload is at most 1 MiB). Unlike the token parsers,
     the heredoc reader is not cut at ``MAX_SHELL_WRITE_CHARS``: a patch longer than that is still
@@ -1307,15 +1450,15 @@ def heredoc_patch_paths(command: str) -> tuple[str, ...]:
     """
 
     if "<<" not in command:
-        return ()
-    paths = _heredoc_patch_paths(command)
-    if paths:
-        return paths
+        return HeredocPatchWrites((), False)
+    found = _heredoc_patch_writes(command)
+    if found.paths or found.unplaced:
+        return found
     # A native argv joined into one string (``/bin/bash -lc 'git apply <<EOF ...'``, the shape a
     # Codex ``CommandExecution`` item or a legacy ``shell`` call records): the heredoc sits inside
     # the quoted script, so read that script once, as ``shell_write_scope`` does.
     script = _wrapped_script(command)
-    return _heredoc_patch_paths(script) if script is not None else ()
+    return _heredoc_patch_writes(script) if script is not None else found
 
 
 def _wrapped_script(command: str) -> str | None:
@@ -1332,20 +1475,31 @@ def _wrapped_script(command: str) -> str | None:
     return wrapped_shell_argument(words)
 
 
-def _heredoc_patch_paths(command: str) -> tuple[str, ...]:
+def _heredoc_patch_writes(command: str) -> HeredocPatchWrites:
     paths: list[str] = []
+    unplaced = False
     for heredoc in _heredocs(command):
         if SHELL_APPLY_PATCH.search(heredoc.prefix):
             paths.extend(match.strip() for match in APPLY_PATCH_PATH.findall(heredoc.body))
             continue
         strip = _diff_patch_strip(heredoc.prefix)
-        if strip is not None:
-            paths.extend(_diff_paths(heredoc.body, strip))
-    return tuple(path for path in paths if path)
+        if strip is None:
+            continue
+        if strip == _UNPLACED_PATCH:
+            unplaced = True
+            continue
+        named, unread = _diff_paths(heredoc.body, strip)
+        paths.extend(named)
+        unplaced = unplaced or unread or not named
+    return HeredocPatchWrites(tuple(path for path in paths if path), unplaced)
 
 
 def _diff_patch_strip(prefix: str) -> int | None:
-    """The ``-p`` strip of a ``git apply``/``patch`` a heredoc feeds; ``None`` when it names no write."""
+    """The ``-p`` strip of a ``git apply``/``patch`` a heredoc feeds.
+
+    ``None`` when the heredoc feeds no patch tool, or one that writes nothing; ``_UNPLACED_PATCH``
+    when it applies a patch whose paths the reader cannot place.
+    """
 
     last = _PREFIX_SEPARATOR.split(prefix)[-1]
     if ")" in last or len(last) > _MAX_PATCH_COMMAND_CHARS:
@@ -1363,12 +1517,12 @@ def _diff_patch_strip(prefix: str) -> int | None:
         flags, no_write, known, strip = words[1:], _PATCH_NO_WRITE, _PATCH_FLAGS, None
     else:
         return None
+    if any(flag in no_write for flag in flags):
+        return None
     index = 0
     while index < len(flags):
         flag = flags[index]
         index += 1
-        if flag in no_write:
-            return None
         strip_match = _STRIP_FLAG.match(flag)
         if strip_match is not None:
             strip = int(strip_match.group(1))
@@ -1376,7 +1530,7 @@ def _diff_patch_strip(prefix: str) -> int | None:
             strip = int(flags[index][:2])
             index += 1
         elif flag not in known and _VALUE_FLAG.match(flag) is None:
-            return None
+            return _UNPLACED_PATCH
     return _STRIP_DIFF_PREFIX if strip is None else strip
 
 
@@ -1421,11 +1575,14 @@ def patch_command_words(words: Sequence[str]) -> list[str]:
     return rest
 
 
-def _diff_paths(body: str, strip: int) -> list[str]:
+def _diff_paths(body: str, strip: int) -> tuple[list[str], bool]:
+    """``(paths, unread)``: the paths a diff's file headers name, and whether one could not be read."""
+
     # A file header is a ``---`` line directly followed by a ``+++`` line: pairing them line by
     # line keeps a removed ``-- comment`` or an added ``++ x`` body line from posing as one.
     lines = body.split("\n")
     paths: list[str] = []
+    unread = False
     for old_line, new_line in zip(lines, lines[1:], strict=False):
         old = _DIFF_OLD_PATH.match(old_line)
         new = _DIFF_NEW_PATH.match(new_line)
@@ -1435,11 +1592,14 @@ def _diff_paths(body: str, strip: int) -> list[str]:
         if header == "/dev/null":
             header = old.group(1).strip()  # a deletion names its old path
         if not header or header == "/dev/null" or header.startswith('"'):
+            unread = True
             continue
         path = _strip_components(header, strip)
         if path:
             paths.append(path)
-    return paths
+        else:
+            unread = True
+    return paths, unread
 
 
 def _strip_components(path: str, strip: int) -> str | None:

@@ -60,6 +60,7 @@ from finishup.domain.shell_writes import (
     SHELL_APPLY_PATCH,
     bound_command,
     heredoc_patch_paths,
+    heredoc_patch_writes,
     shell_command_text,
     shell_heredocs,
     shell_write_scope,
@@ -406,6 +407,7 @@ def runtime_structural_facts(
     inside: Callable[[str], bool],
     working_directory: str | None = None,
     docs_admitted: Callable[[], bool] | None = None,
+    call_directory_unknown: bool = False,
 ) -> dict[str, JsonValue]:
     """Return the closed runtime facts for one tool-call payload (possibly empty).
 
@@ -418,6 +420,10 @@ def runtime_structural_facts(
     class, ``service.write_scope_admission``) says so; otherwise the older class is
     (``domain.write_scope.without_docs_scope``), so a service that predates the class never
     finds a stored row it refuses (#1106 r2).
+
+    ``call_directory_unknown`` says the payload cannot state the directory the shell call runs
+    in: a Codex hook payload carries the session ``cwd``, never the call's ``workdir`` argument.
+    A relative shell target is then unplaced, so it is never read as documentation (#1106 r3).
     """
 
     admitted = _docs_admitted if docs_admitted is None else docs_admitted
@@ -483,14 +489,16 @@ def runtime_structural_facts(
             workspace_locator,
             inside,
         )
+        patch_writes = heredoc_patch_writes(script)
         scope = shell_write_scope(
             script,
             workspace=workspace_locator,
             inside=inside,
             owned_roots=_owned_roots(),
-            also_written=shell_apply_patch_paths(script),
-            relocated=relocated,
+            also_written=patch_writes.paths,
+            relocated=relocated or call_directory_unknown,
             working_directory=start,
+            unplaced_writes=patch_writes.unplaced,
         )
         if scope == "docs" and not admitted():
             scope = without_docs_scope(scope, shell=True)
