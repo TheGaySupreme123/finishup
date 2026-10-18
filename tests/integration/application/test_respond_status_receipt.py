@@ -9417,6 +9417,117 @@ async def test_a_payload_refusal_names_its_reason_and_field(
     assert cursor_body["error"]["safe_details"] == details
 
 
+def _claude_text(error: PublicOperationError, request_id: str) -> str:
+    from finishup.mcp.errors import tool_error_envelope
+    from finishup.mcp.server import result_from_public_model
+    from finishup.protocol.models import RespondResult
+
+    bound = error.bind_correlation_id("err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    envelope = tool_error_envelope(bound, request_id=request_id)
+    rendered = result_from_public_model(
+        RespondResult.model_validate(envelope), host_profile="claude"
+    )
+    return cast(Any, rendered.content[0]).text
+
+
+async def test_application_field_refusals_get_a_remedy_that_holds_for_them() -> None:
+    """The ``response_fields_invalid`` remedy is keyed by the token alone (n7 RC3b, #1103).
+
+    Claude Code reads only the bounded text, which never renders a message, so for the checks
+    respond makes itself (an unrecorded reference, nothing to reopen) the remedy is the only
+    guidance it gets. It has to state the rule each of them broke, never contradict it.
+    """
+
+    app, _runtime, _ = _build_app(seed_offset=109)
+    started, checked, published, low, _high = await _finding_with_two_evidence(app, seed=10900)
+    remedy = f"Remedy: {REASON_REMEDIES['response_fields_invalid']}"
+
+    unknown = protocol_id("req_", 10950)
+    with pytest.raises(PublicOperationError) as unrecorded:
+        await app.respond(
+            RespondRequest.model_validate(
+                _rejection_wire(
+                    started, checked, published, unknown, [low, protocol_id("evd_", 10999)]
+                )
+            )
+        )
+    assert unrecorded.value.message == "A response reference is invalid."
+    text = _claude_text(unrecorded.value, unknown)
+    assert "Reason: response_fields_invalid at /evidence_refs." in text
+    assert remedy in text
+    assert "evidence_refs ids must be recorded" in text
+
+    reopen = protocol_id("req_", 10951)
+    wire = _rejection_wire(started, checked, published, reopen, [low])
+    wire["disposition"] = "reopened"
+    with pytest.raises(PublicOperationError) as nothing:
+        await app.respond(RespondRequest.model_validate(wire))
+    assert (nothing.value.safe_details or {}).get("field") == "/disposition"
+    text = _claude_text(nothing.value, reopen)
+    assert "Reason: response_fields_invalid at /disposition." in text
+    assert remedy in text
+    # The answer carried a reason, so the remedy must name the state rule, not only the reason.
+    assert "reopened only undoes acknowledged_not_done" in text
+
+
+async def test_an_ai_finding_acknowledgement_refusal_remedy_names_its_rule() -> None:
+    """Issue #976's refusal: the remedy must not imply plain acknowledged needs no reason."""
+
+    seed = 11000
+    app, _runtime, _ = _build_app(
+        seed_offset=110,
+        semantic="optional",
+        semantic_evaluator=_question_evaluator(protocol_id("clm_", seed + 5)),
+    )
+    started, checked, _obligation = await _bootstrap_finding(
+        app, seed=seed, mode="semantic_if_configured"
+    )
+    question = next(
+        item for item in checked.findings if item.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    )
+    request_id = protocol_id("req_", seed + 10)
+    with pytest.raises(PublicOperationError) as refused:
+        await app.respond(
+            RespondRequest.model_validate(
+                {
+                    **_request_base(request_id),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(checked.result_frontier),
+                    "finding_id": question.finding_id,
+                    "finding_frontier": _frontier(checked.result_frontier),
+                    "disposition": "acknowledged",
+                }
+            )
+        )
+    assert refused.value.message.startswith("Acknowledging an AI-powered review finding")
+    text = _claude_text(refused.value, request_id)
+    assert "Reason: response_fields_invalid at /reason." in text
+    assert f"Remedy: {REASON_REMEDIES['response_fields_invalid']}" in text
+    assert "acknowledged on an AI-powered finding need a reason" in text
+
+
+def test_the_field_rule_remedy_names_every_disposition_the_payload_needs_a_reason_for() -> None:
+    remedy = REASON_REMEDIES["response_fields_invalid"]
+    needs_reason = remedy.split(" need a reason;", 1)[0]
+    for disposition in (
+        "acknowledged_not_done",
+        "provenance_disputed",
+        "rejected",
+        "reopened",
+        "self_verified",
+        "waived",
+        "acknowledged on an AI-powered finding",
+    ):
+        assert disposition in needs_reason
+    for rule in (
+        "self_verified: one after the finding",
+        "go only with waived",
+        "duplicate_of_finding_id only, and always, with duplicate_of",
+    ):
+        assert rule in remedy
+
+
 async def test_an_unsorted_set_refusal_carries_its_corrective_hint() -> None:
     app, _runtime, _ = _build_app(seed_offset=106)
     started, checked, published, low, high = await _finding_with_two_evidence(app, seed=10600)

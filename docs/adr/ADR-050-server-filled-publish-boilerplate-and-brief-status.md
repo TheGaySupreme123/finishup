@@ -226,9 +226,14 @@ a material transition, not typing UUIDs, timestamps and mirrors.
      carries `reason_code`, the request `field` from a frozen pointer table, and
      `input_correction_new_identity` unless the reason maps its own continuation; its message names
      the corrective rule, so a host that reads only the structured body (Codex) gets it too. The
-     bounded text never renders a message, so `response_fields_invalid` also carries that rule as
-     a `REASON_REMEDIES` remedy for a host that reads only the text (Claude Code). The
-     outer catch-alls of `respond` and `receipt` keep their messages and now carry `reason_code`.
+     bounded text never renders a message, so `response_fields_invalid` also carries a
+     `REASON_REMEDIES` remedy for a host that reads only the text (Claude Code). Remedies are
+     keyed by the token alone and `respond`'s own state and reference checks raise the same token,
+     so that sentence states every rule behind it (the dispositions and the AI-powered
+     acknowledgement that need a reason, recorded `evidence_refs`, `reopened` only after
+     `acknowledged_not_done`, the waiver and duplicate fields) and the error's field names which
+     one broke. The outer catch-alls of `respond` and `receipt` keep their messages and now carry
+     `reason_code`.
 8. **Provenance is recorded, not inferred.**
    - **What is recorded:** whenever an envelope field or the request frontier was filled, every
      success, reduced success and dry-run result carries `server_filled`. It lists

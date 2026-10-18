@@ -312,17 +312,22 @@ required at the service. The pure half lives in `finishup.protocol.publish_boile
 `finishup.protocol.publish_boilerplate.canonical_reference_set`, so the MCP bridge, the CLI and the
 service read one request and an unsorted answer hashes and replays like its sorted twin. A non-id
 member is left as sent for the schema to refuse at `/evidence_refs`, and an explicit `null` keeps
-`optional_field_must_not_be_null`. A `ProtocolValueError` raised while the response payload or its
-draft is built (before any append) is `INVALID_REQUEST` with `safe_details.reason_code`, a `field`
+`optional_field_must_not_be_null`. A `ProtocolValueError` raised while the response payload is built
+from the answer (before any append) is `INVALID_REQUEST` with `safe_details.reason_code`, a `field`
 pointer only from the frozen table (`/duplicate_of_finding_id`, `/evidence_refs`, `/reason`,
 `/waiver_expiry`), and `continuation: input_correction_new_identity` unless the reason maps its own
 (`unsorted_set_field` keeps `sorted_set_required`); the message names the corrective rule for
 `duplicate_set_member`, `response_fields_invalid`, `set_member_not_ascii` and `unsorted_set_field`,
 so a host that reads only `structuredContent` sees it. The bounded text summary never renders a
-message, so `response_fields_invalid` also carries its rule as a `REASON_REMEDIES` remedy, which
-the text renders as `Remedy:` (the other three are set reasons shared with other operations, and
-canonicalization and the id pattern leave them unreachable for a request the schema admits). The outer `respond` and `receipt`
-catch-alls keep their messages and add `reason_code`.
+message, so `response_fields_invalid` also carries a `REASON_REMEDIES` remedy, which the text
+renders as `Remedy:`. The remedy is selected by the token alone, and `respond` also raises that
+token from its own checks (an unrecorded `evidence_refs` id, nothing to reopen, an AI-powered
+finding acknowledged without a reason, self-verification evidence from before the finding), so the
+sentence states every rule behind the token and the `Reason:` field says which one broke. The other
+three are set reasons shared with other operations, carry no remedy, and canonicalization and the id
+pattern leave them unreachable for a request the schema admits. The outer `respond` and `receipt`
+catch-alls keep their messages and add `reason_code`; building the event draft around an accepted
+payload (ids, clock, stored causal parent) stays with that catch-all.
 
 Host-owned request identity (ADR-050 decision 2, revised by round 2 of the PR #1088 review).
 The MCP `publish_work` tool, and `finishup publish-work`, admit a body without `request_id` (the

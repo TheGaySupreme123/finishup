@@ -221,6 +221,8 @@ _RESPONSE_PAYLOAD_REFUSAL: Final = (
 # reads the structured error body, which carries this message. Claude Code reads only the bounded
 # text summary, which never renders a message: it carries reason_code, field, the continuation
 # directive and, for ``response_fields_invalid``, the same rule as a ``REASON_REMEDIES`` remedy.
+# That remedy is keyed by the token alone and so also rides on this module's application-check
+# refusals of the same token; it states every rule behind the token, not only the payload's.
 # Cursor reads the canonical JSON copy of the body, so it sees the message too.
 _RESPONSE_PAYLOAD_HINTS: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -1245,25 +1247,27 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
                     if request.duplicate_of_finding_id is None
                     else finding_id(request.duplicate_of_finding_id),
                 )
-                now = app.clock.now_utc()
-                draft = EventDraft(
-                    event_id(app.ids.new(IdKind.EVENT)),
-                    EventSchema(
-                        "response_recorded",
-                        RESPONSE_EVENT_SCHEMA_VERSION
-                        if payload.disposition in RESPONSE_V1_1_DISPOSITIONS
-                        else "1.0.0",
-                    ),
-                    timestamp_from_datetime(now),
-                    (finding_record.source_event_id,),
-                    payload,
-                    (),
-                    payload.evidence_refs,
-                )
             except ProtocolValueError as exc:
-                # Nothing is recorded before the append below, so this is certainly a refusal of
-                # the caller's response; the outer catch-all may also fire after the append.
+                # Only the payload built from the caller's answer is refused here: nothing is
+                # recorded yet, so this is certainly a refusal of the caller's response. The
+                # server-side draft below (ids, clock, stored causal parent) stays with the outer
+                # catch-all, which never blames the caller's body.
                 raise _payload_refusal(exc) from exc
+            now = app.clock.now_utc()
+            draft = EventDraft(
+                event_id(app.ids.new(IdKind.EVENT)),
+                EventSchema(
+                    "response_recorded",
+                    RESPONSE_EVENT_SCHEMA_VERSION
+                    if payload.disposition in RESPONSE_V1_1_DISPOSITIONS
+                    else "1.0.0",
+                ),
+                timestamp_from_datetime(now),
+                (finding_record.source_event_id,),
+                payload,
+                (),
+                payload.evidence_refs,
+            )
             payload_bytes = canonical_encode(encode_payload(payload))
             metadata = ObjectMetadata(
                 ObjectKind.EVENT_PAYLOAD,

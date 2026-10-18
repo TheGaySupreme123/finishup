@@ -1126,14 +1126,19 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "so read status view=operation and view=compact, and never resend it under a new "
             "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),
-        # n7 RC3b (#1103): the one respond field-rule reason, so a host that renders only the
-        # bounded text (Claude Code) gets the rule, not just the token. ``respond`` reuses this
-        # sentence in its refusal message, which a host reading the structured body sees.
+        # n7 RC3b (#1103): respond's field-rule reason, so a host that renders only the bounded
+        # text (Claude Code) gets the rule, not just the token. The remedy is selected by the
+        # token alone, and ``respond`` raises it from the domain payload and from about ten
+        # application checks (finding state, recorded references, AI-powered findings), so the
+        # sentence states every rule behind it and the field in the Reason clause says which
+        # one broke. ``respond`` reuses it in the domain refusal's message.
         "response_fields_invalid": (
-            "The answer breaks a field rule of its disposition: acknowledged_not_done, "
-            "provenance_disputed, rejected, reopened, self_verified and waived need a reason; "
-            "self_verified needs evidence_refs; only waived takes waiver_scope (required) and "
-            "waiver_expiry; duplicate_of needs a duplicate_of_finding_id naming another finding."
+            "A field breaks a respond rule: acknowledged_not_done, provenance_disputed, "
+            "rejected, reopened, self_verified, waived, and acknowledged on an AI-powered "
+            "finding need a reason; evidence_refs ids must be recorded (self_verified: one after "
+            "the finding); reopened only undoes acknowledged_not_done; waiver_scope (required) "
+            "and waiver_expiry go only with waived; duplicate_of_finding_id only, and always, "
+            "with duplicate_of."
         ),
         "response_projection_failed": (
             "The operation is recorded, but its response could not be shaped. Replay the same "

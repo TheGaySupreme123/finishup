@@ -2338,13 +2338,16 @@ on:
   the schema check, so it is the same request as the sorted list. The service also drops a
   repeat, but the advertised schema keeps `uniqueItems`, so send each id once.
 - A refused `respond` payload is `INVALID_REQUEST` with `safe_details.reason_code`, a `field`
-  pointer from a frozen table and a continuation (`input_correction_new_identity` unless the
-  reason maps its own), and its message states the rule. On Claude Code, an `isError` result
-  delivers only the bounded text, which never renders the message: it names `Reason: <reason_code>
-  at <field>` and the continuation directive, and for `response_fields_invalid` the field rule as
-  a `Remedy:` clause. The set reasons (`unsorted_set_field`, `duplicate_set_member`,
-  `set_member_not_ascii`) are shared with other operations and carry no remedy; canonicalization
-  and the id pattern leave them unreachable for a request the schema admits.
+  pointer from a frozen table and a continuation (`input_correction_new_identity` unless the reason
+  maps its own), and its message states the rule. On Claude Code, an `isError` result delivers only
+  the bounded text, which never renders the message: it names `Reason: <reason_code> at <field>` and
+  the continuation directive, and for `response_fields_invalid` a `Remedy:` clause. That clause is
+  chosen by the reason alone and rides on every `respond` refusal with that reason, including
+  respond's own checks (an unrecorded `evidence_refs` id, nothing to reopen, an AI-powered finding
+  acknowledged without a reason), so it lists every rule behind the reason and the `at <field>`
+  pointer says which one broke. The set reasons (`unsorted_set_field`, `duplicate_set_member`,
+  `set_member_not_ascii`) are shared with other operations and carry no remedy; canonicalization and
+  the id pattern leave them unreachable for a request the schema admits.
 - The `respond` and `receipt` catch-alls keep their messages and add `reason_code`.
 - A `read_guidance` anchor unknown on its page (or any anchor on a focused page) that is exactly
   the catalogued anchor of one other guidance document reads that topic, and the result's `uri`
