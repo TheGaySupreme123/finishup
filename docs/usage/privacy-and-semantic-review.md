@@ -216,10 +216,15 @@ is a file only a test command your agent ran mentions. Nothing is read unless yo
 Private and Metadata only send nothing from these folders. `finishup privacy show`, `/privacy`
 and the status command above show what is admitted.
 
-When the task names a file or folder outside your workspace that you have not admitted, and it
-was already there when the task started, the check and the receipt say so with
-`task_input_outside_not_admitted`: the reviewer judged the work without it. A web route the task
-names (`/api/users`) or a file your agent writes during the task never counts. The note never
+When the task names a file or folder outside your workspace that you have not admitted, and
+FinishUP can tell it is an input, the check and the receipt say so with
+`task_input_outside_not_admitted`: the reviewer judged the work without it. FinishUP can tell
+only when the file or folder was already there when the task started (so a task FinishUP did not
+see start never gets this note) and it is not in a system, scratch, log, cache or package folder
+(`/usr`, `/tmp`, `/var/log`, a `bin` folder), a hidden or credential-named path, or a top-level
+folder of homes or installed software (`/home`, `/opt`). A web route the task names
+(`/api/users`) or a file your agent writes during the task never counts. A missing note does not
+prove the reviewer read every outside file the task named. The note never
 names the path, never stops your agent or asks it to change the work, and never lowers the
 receipt's conclusion; your agent tells you which folder the task named. Only you can let review read it,
 with `finishup privacy input-roots add <folder>` on this terminal. Copying the file into the

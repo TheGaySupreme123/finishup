@@ -673,9 +673,16 @@ issue #1045 proof, or FinishUP's own text naming such files.
 1. **Statement words.** A quoted (`` ` ``, `"`, or `'` not inside a word, so `don't` opens no span)
    or backslash-escaped path keeps its single spaces (`"/app/My Docs/spec.md"`,
    `/app/My\ Docs/spec.md`), at most eight of them, with no other whitespace, glob, `~`, `$`,
-   backtick or URL; a span with an option-like word (`pytest -q tests/test_a.py`) is a command,
-   never one path. Prose ahead of the path and a relative path's last word still count after it,
-   so a quoted command (`cat docs/spec.md`) never loses the file it names; the words the spaces
+   backtick or URL; a span with an option-like word (`pytest -q tests/test_a.py`) or a word that
+   is or starts with a shell operator or redirection (`&&`, `|`, `;`, `<`, `>`, `2>`) is a command,
+   never one path. A span is prose, never one path, when an earlier word names a whole file or
+   ends in `/` (`the parser in /app/parser/ fails`), when a joining word (`and`, `or`, `then`, `to`
+   and the like) sits between two words holding `/` (`src/dedup and src/util`), or when its last
+   component holds a space and is no file name with a lettered extension (`/app/config is
+   read-only`). A rejected span splits into its words exactly as unquoted text does, so
+   `` `cd /app/vllm && pytest` `` still names `/app/vllm` (#1102 review). Prose ahead of the path
+   and a relative path's last word still count after it, so a quoted command (`cat docs/spec.md`)
+   never loses the file it names; the words the spaces
    cut from the path's head and middle, and every word of an absolute spaced path, never count, so
    `/app/data` of `'/app/data files/input.csv'` never expands an unrelated folder. Unquoted text
    splits exactly as before. A `role: input` file with a
@@ -710,7 +717,8 @@ issue #1045 proof, or FinishUP's own text naming such files.
      share with the added and removed lines of the change beneath the directory (the whole change
      when none is beneath it). A tie, or no change beneath it, keeps the structural order. A binary
      member is listed and never read. Each chosen member is stored with the new origin
-     `task_directory` and labelled as chosen by FinishUP, never as named by the task.
+     `task_directory` and labelled as chosen by FinishUP as possibly related to the change (by
+     shared names, or else by its place beside the changed files), never as named by the task.
 4. **Outside directories without a slash.** The outside reader lists a value beneath an admitted
    root as a directory when its last component is a trusted directory reached without a link
    ("the legacy app in /shared/legacy_app"), as it already did for one ending in `/`.
@@ -719,8 +727,12 @@ issue #1045 proof, or FinishUP's own text naming such files.
    outside the root this read used, beneath no admitted root, not a declared output, not in a
    system tree (`/usr`, `/bin`, `/lib*`, `/sbin`, `/snap`, `/nix`, or a tree no root may be
    admitted beneath), not in a scratch, log, cache or package-state tree (`/tmp`, `/var/tmp`,
-   `/var/log`, `/var/cache`, `/var/lib`), not through a `bin` or installed-package directory, and
-   not hidden or credential-named, the read `lstat`s it (metadata only; a final link never counts,
+   `/var/folders`, `/var/log`, `/var/cache`, `/var/lib`), not through a `bin` or installed-package
+   directory, not hidden or credential-named, and not a top-level tree of homes, installed software
+   or system state (`/home`, `/root`, `/Users`, `/opt`, `/mnt`, `/srv`, `/var`, `/private`,
+   `/Volumes`, `/Applications`, `/Library`, `/System`); a top-level folder named whole (`/data`,
+   `/legacy`) counts, since it may be admitted as a root (`check_change.outside_input_candidates`),
+   the read `lstat`s it (metadata only; a final link never counts,
    no content is opened). It counts only when a regular file or directory is there whose
    modification and change times both predate the task-start base's recording: a route
    (`GET /api/v1/users`) names nothing on disk, and a file the agent wrote during the task is its
@@ -735,9 +747,14 @@ issue #1045 proof, or FinishUP's own text naming such files.
    terminal). It is readiness `S` and disclosed on both routes (gap rule G4c): never agent work,
    never a Stop-gate item or closure blocker, and it never lowers the receipt's conclusion. For
    AI-powered absence proof it is a capture baseline like the task-statement codes; local packs
-   never read task inputs, so it never weakens a local proof.
+   never read task inputs, so it never weakens a local proof. It is one recorded code added to the
+   unreleased gap classification version `8` (223 rows including readiness-only tokens).
 6. **Measured.** `semantic_case_built` counts the task-input candidates, the inputs read, the
-   listings among them, the task-input excerpts selected and whether the code fired, as integers.
+   listings among them, the task-input excerpts selected, the named outside candidates that pass
+   item 5's lexical rules (before any `lstat`, against the connection's root the read uses, else
+   the session's workspace), and whether the code fired, as integers. A candidate count beside a
+   0 flag tells "FinishUP saw such a path but could not count it" (no `task_start` base, nothing on
+   disk, written during the task) from "none named".
 
 Downgrade only: a build before this amendment rejects a check-change object holding an input with
 `origin: task_directory`, a listing path ending in `/` (`dedup/`, `./`), or the

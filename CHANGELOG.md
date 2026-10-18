@@ -358,9 +358,11 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   path with spaces is read as one path, and an admitted outside folder named without a trailing
   `/` is read like one named with it. A reviewer's `other` request is answered in the same check
   from what FinishUP recorded for the run or edit it names, under the same privacy rules as every
-  other follow-up. When the task names an existing file or folder outside the workspace that you
-  have not admitted, the check and the receipt say so (`task_input_outside_not_admitted`) and name
-  the one command that admits it; that note never stops your agent or asks it to change the work
+  other follow-up. When the task names a file or folder outside the workspace that you have not
+  admitted, and FinishUP can tell it is an input (it was there before the task started and is not
+  in a system, scratch, log, cache or package folder), the check and the receipt say so
+  (`task_input_outside_not_admitted`) and name the one command that admits it; a missing note
+  does not prove every outside file was read; that note never stops your agent or asks it to change the work
   (your agent only tells you which folder the task named) and never lowers the receipt.
 - **Agents write each fact once.** A `publish_work` request may leave out its request id, its
   frontier, and each event's id, time, empty lists and repeated references. The MCP tool and

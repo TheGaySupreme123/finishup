@@ -2238,8 +2238,13 @@ and FinishUP adds no unattended one: a non-interactive harness can admit roots o
 owner-attended ceremony while it is provisioned. The code is decided once by the check-time read,
 only for a path that exists outside the workspace and predates the task, so a route or an output
 the agent writes never counts. The terminal interface shows the code without its sentence (it
-renders coverage codes only); the owner's route there is the privacy panel, which lists the
-admitted roots, while the CLI, MCP and receipt print the sentence.
+renders coverage codes only); the owner's route there is the privacy panel, which names the
+admitted roots or, with none admitted, the step `finishup privacy input-roots add <folder>`, while
+the CLI, MCP and receipt print the sentence. `finishup service diagnostics` counts the task inputs on
+`semantic_case_built` as integers only: `semantic_task_input_candidates`,
+`semantic_task_inputs_read`, `semantic_task_input_listings`,
+`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates` and
+`semantic_task_inputs_outside_not_admitted`.
 
 ## Possible-credential filter opt-out (issue #982)
 

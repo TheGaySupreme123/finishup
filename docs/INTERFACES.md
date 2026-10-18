@@ -1742,8 +1742,10 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
 - `task_input_outside_not_admitted` — the recipe carries task inputs and the task itself names an
   absolute file or folder outside the workspace that no `admitted_input_roots` entry covers (not a
   declared output, not in a system, scratch, log, cache, package-state, `bin` or installed-package
-  tree, not hidden or credential-named) and that an `lstat` finds as a regular file or directory
-  predating the task-start base, so the reviewer judged without it (issue #1102, ADR-031 and
+  tree, not hidden or credential-named, not a top-level tree of homes, installed software or
+  system state such as `/home`, `/opt` or `/var`; a top-level folder such as `/data` counts;
+  `check_change.outside_input_candidates`) and that an `lstat` finds as a regular file or
+  directory predating the task-start base (no `task_start` base, no note), so the reviewer judged without it (issue #1102, ADR-031 and
   ADR-009 amendments; `check_change.outside_inputs_not_admitted`). The check-time read decides it
   against its own root and freezes it into the check-change object as
   `CheckChangeCapture.outside_inputs_not_admitted` (stored key written only when true), which the
@@ -9596,8 +9598,12 @@ with integer counts: `semantic_capture_parts_resolved`, `semantic_diff_parts_res
 packet), and `semantic_edit_evidence_in_case` (materialized native edit captures in the frozen
 case, before any resolver fence; zero beside known native edits means their captures never reached
 the ledger), and since issue #1102 `semantic_task_input_candidates`, `semantic_task_inputs_read`,
-`semantic_task_input_listings`, `semantic_task_input_excerpts_selected` and
-`semantic_task_inputs_outside_not_admitted` (0 or 1). Resolved parts have passed capture authentication; selected excerpts are in the built
+`semantic_task_input_listings`, `semantic_task_input_excerpts_selected`,
+`semantic_task_input_outside_candidates` (named outside candidates that pass the lexical rules of
+`task_input_outside_not_admitted`, counted before any `lstat` against the connection's root the
+read uses, else the session's workspace; 0 when neither is known) and
+`semantic_task_inputs_outside_not_admitted` (0 or 1); a candidate count beside a 0 flag means
+FinishUP saw such a path but could not count it. Resolved parts have passed capture authentication; selected excerpts are in the built
 packet. These counts precede privacy minimization and do not prove provider delivery or code
 correctness. The record contains no content, paths, or content hashes.
 
