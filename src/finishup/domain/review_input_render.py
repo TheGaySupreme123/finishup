@@ -302,18 +302,18 @@ def has_agent_suppliable_missing(items: object) -> bool:
 # What counts as supplying a named item (ADR-006 amendment, W6). Closed wording; the short form is
 # the clause every guidance page quotes inside ``MISSING_SUPPLY_SENTENCE``.
 SUPPLY_COUNTS_SENTENCE: Final = (
-    "Counts as supplied only when new and tied to the target: a result of the target's action or "
+    "Counts as supplied only when new. For a named target: a result of the target's action or "
     "of the same exact command, evidence whose reference is the target id, its event id or its "
     "path, or a respond when the target is a finding. A re-run FinishUP observed counts only for "
     "a verification_output or other item, and only once its captured output reaches the "
     "reviewer. A respond to anything else, a description, or citing the old record again does "
-    "not count."
+    "not count. Without a target, publish new material of the requested kind."
 )
-SUPPLY_COUNTS_SHORT: Final = "Only new material tied to the target counts as supplied."
+SUPPLY_COUNTS_SHORT: Final = "Only new material counts; tie it to any named target."
 # The same sentence as the operating card, the receipt topic and the coverage page (issue #1079).
 MISSING_SUPPLY_SENTENCE: Final = (
     "If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish "
-    "exactly that item once, linked to its target, then `check` again. If it is already "
+    "exactly that item once, linked to any named target, then `check` again. If it is already "
     "supplied, or it is a packet, type or authority limit, go to the receipt and state that "
     "specific limit. " + SUPPLY_COUNTS_SHORT
 )
@@ -335,7 +335,11 @@ _PUBLISH_EXACTLY: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "Do not stage an untracked file.",
             "Publish evidence whose reference is that path, or one git diff result covering it.",
         ),
-        "other": ("Publish evidence whose reference is the target id.",),
+        "other": (
+            "Publish new evidence answering the request; if a target is named, "
+            "set its reference to that target id.",
+            "Publish new evidence; link its reference to any named target.",
+        ),
         "plan_or_claim_text": (
             "Publish one plan_revised, or a claim_recorded 1.1.0 whose supersedes_claim_refs "
             "names the target claim.",
@@ -455,7 +459,7 @@ OVERALL_NEXT_INSTRUCTIONS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "supply_missing_input": (
             "If `missing_for_assessment` names an `agent_suppliable` item you can supply, "
-            "publish exactly that item once, linked to its target, then `check` again. If it "
+            "publish exactly that item once, linked to any named target, then `check` again. If it "
             "is already supplied, or it is a packet, type or authority limit, go to the receipt "
             "and state that specific limit. Never change your work to fit the reviewer"
         ),

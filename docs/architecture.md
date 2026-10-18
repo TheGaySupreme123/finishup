@@ -223,10 +223,14 @@ populate the service-wide presence cell. The one service-wide `UserPresencePort`
 `adapters/keys/macos_user_presence.py` (Apple LocalAuthentication, composed only on macOS), and the
 service uses it only for the owner receipt view ([ADR-009](adr/ADR-009-data-egress-privacy.md)
 round 5). Cursor-native hooks enter through
-`hooks cursor-observe`; that boundary retains only allowlisted structural scalars and a one-way
-changed-path digest. It drops prompts, reasoning, response text, file paths and contents, edits,
-MCP arguments/results, transcripts, command output, and email before observation storage. The
-adapter never reads or mutates Cursor caches. Cursor Cloud is not a registered local capability.
+`hooks cursor-observe`. On the default structural profile, this boundary retains only allowlisted
+structural scalars and a one-way changed-path digest. On that profile, it drops prompts, reasoning,
+response text, file paths and contents, edits, MCP arguments/results, transcripts, command output,
+and email before observation storage. A separately selected ordinary-work profile can also retain
+visible tool content under its matching per-host content consent; see the
+[Cursor runbook](runbooks/cursor-integration.md#hooks-and-observation) for capture limits and
+acceptance coverage. The adapter never reads or mutates Cursor caches. Cursor Cloud is not a
+registered local capability.
 
 Claude Code is the third first-party harness, but it is a native dual target rather than an Agent
 Plugins client. `adapters/integrations/claude_code_integration.py` generates a strict private local
@@ -236,9 +240,12 @@ Claude's project settings/list result and exact cache bytes while keeping enable
 loaded-session activation. It observes local/project/user/plugin/connector MCP sources without
 turning Claude's precedence winner into a FinishUP ownership claim.
 
-Claude-native hooks enter through `hooks claude-observe`. Only the exact scoped FinishUP MCP tool names
-and bounded structural lifecycle facts survive; raw Claude prompt/transcript/path/tool/result/error
-content is discarded before storage. The `claude_hook` source is carried on local-control schema
+Claude-native hooks enter through `hooks claude-observe`. On the default structural profile, only
+the exact scoped FinishUP MCP tool names and bounded structural lifecycle facts survive; raw Claude
+prompt/transcript/path/tool/result/error content is discarded before storage. A separately selected
+ordinary-work profile can also retain visible tool content under its matching per-host content
+consent; see the [Claude Code runbook](runbooks/claude-code-integration.md#hooks-and-observation)
+for capture limits and acceptance coverage. The `claude_hook` source is carried on local-control schema
 `2.2.0`. The initial capability fixture covers only local CLI `2.1.241`, macOS arm64, project scope,
 and private marketplace install. Desktop, remote, web/cloud, synced, managed/user/local scope,
 Agent SDK, loaded-session/model-use, AI-powered review, privacy-receipt, and workflow-receipt cells

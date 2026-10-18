@@ -257,7 +257,7 @@ That user then builds and serves its own private copies from root's files (verif
 it cannot be pinned (a pin must be the running user's own), so a pinned instance still needs a
 runtime the user owns. If root has already run FinishUP from that runtime, the existing sibling holds
 root's copies and lock: leave it and install a runtime for the user instead. Lifecycle in this
-layout: root upgrades the package with its package manager (for example `uv tool upgrade yoetz`;
+layout: root upgrades the package with its package manager (for example `uv tool upgrade finishup`;
 `finishup upgrade --accept` run as root is refused by the same rule); the user's next serving start
 builds a fresh copy and removes unused older ones, and the user can remove unused copies at any
 time with `finishup upgrade --prune-runtimes`. Sessions already open keep their copy until they end.

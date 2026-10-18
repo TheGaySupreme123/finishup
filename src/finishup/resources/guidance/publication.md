@@ -63,13 +63,18 @@ not content inspection. Use bounded excerpts with the directly relevant file, sy
 failure; user-controlled titles, paths, prompts, and model output never become structural table or
 error text.
 
-When hooks observe your work, a completion claim must cite at least one hook-observed verification
-run made after your last observed edit (find it in `status view=results`), in `supporting_refs`,
-or in `limitation_refs` when it failed; otherwise the check returns an agent-actionable
-`claim_without_admissible_evidence` finding that a recheck alone does not clear. Only a test or
-build run counts, never an edit's output or an exploration or VCS command. When the host recorded
-no exit status for that run (a long run that outlived the tool's wait), cite its `res_` id in
-`limitation_refs`: it still shows the run happened after your last edit.
+When hooks record an edit that stales verification or a verification run with a known outcome,
+a completion claim must cite verification recorded after the latest such edit, if any. Cite it through
+`supporting_refs`, `limitation_refs` for a limiting result, or the resolution evidence of a resolved
+obligation the claim names; otherwise the check returns `claim_without_admissible_evidence`, which
+a recheck alone does not clear. A hook-observed command result or the captured output it links
+counts unless its runner class is `exploration` or `vcs`: test, build, lint, typecheck and
+unclassified commands can qualify. The fallback is your own admissible command result or
+`test_result`/`command_output` evidence, published after that edit; a published exploration or VCS
+command does not qualify. An edit's output and a standalone hook capture that no verification run
+links do not qualify. An observed run with no exit status can still corroborate that it ran after
+the edit; find its `res_` id in `status view=results` and cite it in `limitation_refs`, disclosing
+the missing outcome.
 
 For completion scope, put admissible evidence in `supporting_refs`, partial/failed/unknown results
 in `limitation_refs`, and the named in-scope obligations in `obligation_refs`. Leave the envelope

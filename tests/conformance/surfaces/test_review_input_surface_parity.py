@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from finishup.cli.render import render_human_check
 from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
 from finishup.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
@@ -44,7 +46,16 @@ def _manifest() -> dict[str, object]:
     }
 
 
-def test_check_cli_and_mcp_share_bounded_manifest_and_missing_projection() -> None:
+@pytest.mark.parametrize(
+    ("kind", "refs"),
+    (
+        ("verification_output", ("res_00000000-0000-4000-8000-000000000002",)),
+        ("other", ()),
+    ),
+)
+def test_check_cli_and_mcp_share_bounded_manifest_and_missing_projection(
+    kind: str, refs: tuple[str, ...]
+) -> None:
     manifest = _manifest()
     result = CheckSuccessModel.model_construct(
         verdict="insufficient_coverage",
@@ -61,8 +72,8 @@ def test_check_cli_and_mcp_share_bounded_manifest_and_missing_projection() -> No
         missing_for_assessment=(
             CheckMissingItemModel.model_validate(
                 {
-                    "kind": "verification_output",
-                    "target_refs": ["res_00000000-0000-4000-8000-000000000002"],
+                    "kind": kind,
+                    "target_refs": refs,
                     "availability": "agent_suppliable",
                 }
             ),
@@ -87,8 +98,8 @@ def test_check_cli_and_mcp_share_bounded_manifest_and_missing_projection() -> No
         "review_input_manifest": manifest,
         "missing_for_assessment": [
             {
-                "kind": "verification_output",
-                "target_refs": ["res_00000000-0000-4000-8000-000000000002"],
+                "kind": kind,
+                "target_refs": list(refs),
                 "availability": "agent_suppliable",
             }
         ],
@@ -98,5 +109,9 @@ def test_check_cli_and_mcp_share_bounded_manifest_and_missing_projection() -> No
     assert "Review input manifest: provider_bound" in mcp
     assert "specification: withheld" in mcp
     assert "overall next: supply_missing_input" in mcp
-    assert "res_00000000-0000-4000-8000-000000000002" in mcp
+    for ref in refs:
+        assert ref in mcp
+    if not refs:
+        remedy = "Publish new evidence answering the request; if a target is named"
+        assert remedy in cli and remedy in mcp
     assert len(render_safe_compact_summary(wire).encode("ascii")) <= MAX_SUMMARY_BYTES

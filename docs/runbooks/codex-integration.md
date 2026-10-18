@@ -3473,6 +3473,10 @@ models, the MCP bridge's `read_guidance` dispatch and error hints, the status te
   (n7, #1103; see below).
 - A resolution without `resolution_evidence_refs` (omitted, empty or the wrong id kind) is refused
   with the sentence that says what the list holds; the `status` `view: "obligations"` text states the resolution recipe, that field included.
+- Plan one `requested_items` command per independently checkable step, and run each item as
+  written. For example, record `npm test` and `npm run build` as two command items if you will run
+  them in two calls. Do not plan `npm test && npm run build` as one item and then substitute two
+  separate calls: FinishUP matches the compound against one observed run.
 - A run linked to a requested command with a `command` action (the PL6-3 link) is a disclosed
   equivalence: it reads `command_attempt_uncorroborated`, never `command_attempt_mismatch`, and a
   `self_verified` refusal on a remaining `command_attempt_mismatch` names that link as the exit.
@@ -3494,8 +3498,11 @@ resolver, so Codex takes the same path as the other hosts. What a Codex agent ca
 - A `claim_recorded/1.1.0` draft may leave out an empty `limitation_refs` and
   `supersedes_claim_refs`, and a plan beside `no_obligations_reason` an empty `obligation_refs`.
   Each is the empty list: one request, digest and stored payload with the explicit `[]`, and not
-  named in `server_filled`. It is judged like an explicit `[]`, so a completion claim that leaves a
-  live failed, partial or unknown result out is still refused (`limitation_refs_complete`).
+  named in `server_filled`. An omitted set is judged exactly like an explicit `[]`.
+  A completion claim that omits a required `failure` or `partial` result from `limitation_refs`
+  is still refused by `limitation_refs_complete`, which names the missing result. An `unknown`
+  result may be disclosed in `limitation_refs`; omitting it does not trigger that admission refusal, but a later local check
+  can report `material_limitation_omitted`.
   `supporting_refs`, a revision's `obligation_changes` and evidence `observed_at` stay required.
 - A `respond` answer may list its `evidence_refs` in any order: the request model sorts it before
   the schema check, so it is the same request as the sorted list. The service also drops a

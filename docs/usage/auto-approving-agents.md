@@ -181,9 +181,12 @@ retry cue is still pending; it is not proof that a provider received or reviewed
 ## Codex registration
 
 `finishup setup run` and `finishup integrate codex mcp preview` show the exact command, route profile, and
-digest before registration. A zero-egress setup selects the strict command. If provider/privacy
-posture later changes, preview again: a FinishUP-owned registration with the other route profile is a
-re-registration, not a silent mutation. A foreign entry named `finishup` is never overwritten.
+digest before registration. Without a route override, interactive setup registers the policy route
+for all three review-mode answers, including local only. The privacy policy enforces that choice.
+Noninteractive setup without a route override uses strict for a fresh connection and preserves
+an existing Codex route.
+Changing the route requires a new preview and registration. A foreign entry named `finishup` is
+never overwritten.
 
 Inspect the active route through MCP initialize instructions or `status(view=versions)`. Registration
 proves only the configured command; it does not prove that a host has launched it or that a provider

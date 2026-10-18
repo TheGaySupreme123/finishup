@@ -93,13 +93,15 @@ not authorize external review, choose a provider, or permit any content to leave
 AI-powered review still requires its own provider readiness and repository privacy decision
 described below.
 
-## The four LLM privacy profiles
+## Privacy menu and policy profiles
 
-`local_only`, `confirm_every_request`, `minimal_external`, `trusted_provider`.
+Under `/privacy`, choose **Other privacy options** to find **Private**, **Metadata only**,
+**Assisted review**, **Expanded review**, and **Custom**.
 
-The terminal interface names these in ordinary words — **Local only**, **Ask every time**,
-**Minimal external review**, **Trusted provider** — under `/privacy`. The words are a label for
-the same durable profile; nothing about the policy changes because the wording is friendlier.
+The underlying policy profiles are `local_only`, `confirm_every_request`, `minimal_external`, and
+`trusted_provider`. Recipes combine a profile with other settings, including review context,
+content categories and confirmation requirements; they are not one-for-one renamings of those
+profiles.
 
 Trusted-provider permission always binds named categories, a purpose, a scope, a provider, a model,
 and an endpoint profile. It never means "send everything available."
