@@ -304,8 +304,9 @@ class Recheck:
 
     Delivery memory ("asked once per session") stays client-side in the gate; the candidate list
     is computed by the service so status, closure_prepare, the CLI, the TUI and the gate read one
-    list. ``key`` is content keyed (``accept:<h8 of resolved ids>``, ``ack:<obl>``,
-    ``blocker:<obl>:<kind>``, ``premise:<n>``).
+    list. ``key`` is content keyed (``ack:<obl>``, ``blocker:<obl>:<kind>``, ``premise:<n>``).
+    The ``acceptance`` kind and its ``accept:<h8 of resolved ids>`` key appear only in results
+    from an earlier 0.3 build; this build never emits them (ADR-033 D1).
     """
 
     kind: RecheckKind

@@ -104,9 +104,9 @@ _ACCEPTANCE_RISK_FALLBACK: Final = (
     "this as a coverage limit."
 )
 _ACCEPTANCE_RISK_TAIL: Final = (
-    " to an observed verification run or a recorded verification limit. Stopping is not blocked"
-    " and no action is needed for met work; the receipt records this as a coverage limit. If an"
-    " output does not meet its acceptance_criteria, republish that obligation"
+    " to an observed verification run or a recorded verification limit. This alone never blocks"
+    " stopping and no action is needed for met work; the receipt records this as a coverage limit."
+    " If an output does not meet its acceptance_criteria, republish that obligation"
     " acknowledged_not_done with the reason."
 )
 
@@ -165,7 +165,7 @@ def acceptance_risk_note(readiness: object, *, short: bool = False) -> str:
     if short:
         return (
             f"Acceptance provenance: {len(rows)} obligation(s) recorded as a receipt coverage limit"
-            " (closure_readiness.acceptance_risk); no action needed to stop."
+            " (closure_readiness.acceptance_risk); not a Stop item."
         )
     named = "; ".join(
         f"{obligation} ({', '.join(reasons)})" for obligation, reasons in rows[:_MAX_NAMED_RISK]

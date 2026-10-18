@@ -1408,6 +1408,9 @@ flagged obligations that already had an admissible observed link.
   `admissible_verification` (its only readers were the attestation check and a duplicate status
   sentence); the field stays defined so an earlier 0.3 result validates. `closing_material_frontier`
   is still emitted. The `acceptance` value stays in the `rechecks[].kind` enum for the same reason.
+  An earlier 0.3-dev MCP bridge or CLI process still running after the service restarts on this
+  build rejects the new field (its closed readiness model) until it restarts too: the same
+  dev-only exposure as the earlier in-place 1.4.0 additions.
 - *Receipt coverage limit.* Unchanged in code, gap-effect row and bound: a flagged resolved
   obligation with neither an admissible observed link nor a recorded `verification_limit` carries
   `unresolved_verification_limitation` (G13, readiness S, bounding on both routes), so the receipt
@@ -1427,7 +1430,9 @@ flagged obligations that already had an admissible observed link.
   effective `obligation_published` is `acknowledged_not_done` and whose immediately preceding
   version (by ingestion sequence) was `resolved` (`ClosureReadinessFacts.downgraded_obligation_ids`,
   replay-derived). An acknowledgement of work never claimed (open to `acknowledged_not_done`) is
-  still asked once (#997); an unreadable prior version fails toward asking. Gate memory written by
+  still asked once (#997); an unreadable prior version fails toward asking. An unreadable
+  publication is attributed to its obligation through its projection locator, as the reducer does,
+  so another obligation's redacted publication does not remove the exemption. Gate memory written by
   an earlier build (`accept:<h8>@<invite>[@m<material>]`) is still read and retained, so a session
   that spans the upgrade is not newly challenged; no new `accept:` key is written.
 
@@ -1441,4 +1446,9 @@ reverse paths are replay-derived: the limit lifts when an observed verification 
 is taken back by republishing the obligation `open`. Risk accepted: an infeasible or partial
 outcome the re-read might have prompted the agent to downgrade now relies on the closing review,
 the agent's own answer and the status note; the receipt stays bounded, so nothing reads as
-verified. Issue #1101 (tracker #1100); it retires the gate behavior #1050 introduced.
+verified. The exemption also covers an obligation `acceptance_risk` never flagged, so an agent can
+skip the #997 acknowledgement re-check by resolving and then acknowledging; that is accepted
+because the downgrade claims less than the resolution, the receipt still lists the
+acknowledgement, and the invite-frontier exemption it replaces skipped every later acknowledgement
+once an invite was delivered. Issue #1101 (tracker #1100); it retires the gate behavior #1050
+introduced.

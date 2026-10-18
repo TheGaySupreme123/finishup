@@ -130,13 +130,46 @@ def test_an_unreadable_prior_publication_fails_toward_asking() -> None:
         if isinstance(row.payload, ObligationPublishedPayload)
         and row.payload.status is ObligationStatus.RESOLVED
     )
-    hole = SimpleNamespace(
-        schema=records[resolved_at].schema,
-        ledger=records[resolved_at].ledger,
-        payload=None,
-    )
-    holed = (*records[:resolved_at], cast(LedgerRecord, hole), *records[resolved_at + 1 :])
+    holed = (*records[:resolved_at], _hole(records[resolved_at]), *records[resolved_at + 1 :])
     assert _downgraded_from_resolved(state, holed, (_OBLIGATION,)) == ()
+    # A hole whose locator names no obligation may be anyone's, so it breaks the chain too.
+    anonymous = _hole(records[resolved_at], anonymous=True)
+    holed = (*records[:resolved_at], anonymous, *records[resolved_at + 1 :])
+    assert _downgraded_from_resolved(state, holed, (_OBLIGATION,)) == ()
+
+
+def _hole(record: LedgerRecord, *, anonymous: bool = False) -> LedgerRecord:
+    """*record* with an unreadable payload; *anonymous* also drops its locator's logical key."""
+
+    locator = SimpleNamespace(logical_key=None) if anonymous else record.projection_locator
+    hole = SimpleNamespace(
+        schema=record.schema, ledger=record.ledger, payload=None, projection_locator=locator
+    )
+    return cast(LedgerRecord, hole)
+
+
+@pytest.mark.parametrize("readable", (True, False))
+def test_an_unrelated_publication_after_a_downgrade_keeps_the_exemption(readable: bool) -> None:
+    ledger = _ledger(ObligationStatus.RESOLVED, ObligationStatus.ACKNOWLEDGED_NOT_DONE)
+    other = obligation_id("obl_00000000-0000-4000-8000-00000000f002")
+    ledger.append(
+        _SCHEMA,
+        ObligationPublishedPayload(
+            obligation_id=other,
+            description="Another output",
+            evidence_expectation="A recorded run",
+            status=ObligationStatus.OPEN,
+        ),
+        observed=False,
+    )
+    records = ledger.prefix
+    state = replay(records)
+    assert records[-1].projection_locator.logical_key == other
+    if not readable:
+        # A redacted or key-unavailable publication is attributed through its locator, as the
+        # reducer does: it does not break another obligation's chain.
+        records = (*records[:-1], _hole(records[-1]))
+    assert _downgraded_from_resolved(state, records, (_OBLIGATION,)) == (_OBLIGATION,)
 
 
 def test_the_gate_fed_the_kernels_rechecks_over_a_downgrade_lets_the_agent_stop() -> None:

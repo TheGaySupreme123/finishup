@@ -994,8 +994,9 @@ def closure_gate_from_readiness(
         # ADR-035: the standing content-moved disclosure rides gate text that fires anyway.
         moved = _content_moved_note(readiness).strip()
         # Keep only whole sentences under the host bound, choosing by priority (blocker re-check,
-        # acknowledgement re-check, premise ask, then the note) but keeping the reading order. A re-check that does not fit is not reported as asked, so its keys
-        # are not remembered and the next Stop asks it again.
+        # acknowledgement re-check, premise ask, then the note) but keeping the reading order. A
+        # re-check that does not fit is not reported as asked, so its keys are not remembered and
+        # the next Stop asks it again.
         used = len(opener)
         chosen: set[str] = set()
         for name, sentence in (

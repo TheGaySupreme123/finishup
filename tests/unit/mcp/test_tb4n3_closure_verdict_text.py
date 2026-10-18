@@ -168,7 +168,7 @@ def test_acceptance_risk_note_once_and_host_independent() -> None:
     note = acceptance_risk_note(readiness)
     assert note.startswith(_NOTE_HEAD + " (a receipt coverage limit, not a Stop item)")
     assert f"{_RISKY} (evidence_self_asserted_only)" in note
-    assert "Stopping is not blocked" in note and "acknowledged_not_done" in note
+    assert "This alone never blocks stopping" in note and "acknowledged_not_done" in note
     for wire in (_status(**readiness), _prepared(**readiness)):
         texts = {
             host: render_safe_compact_summary_detailed(wire, host=host).text
@@ -194,6 +194,37 @@ def test_acceptance_risk_note_once_and_host_independent() -> None:
         )
         == ""
     )
+
+
+def test_acceptance_risk_note_is_scoped_beside_a_real_stop_item() -> None:
+    """The note speaks only for its own limit: beside "Work remains" it never says Stop is free."""
+
+    from typing import cast
+
+    from finishup.cli.render import render_closure_readiness_lines
+    from finishup.protocol.models import StatusClosureReadinessModel
+    from finishup.protocol.readiness_text import acceptance_risk_note
+
+    fields: dict[str, object] = {
+        "state": "action_required",
+        "agent_actionable": ["closing_review_required"],
+        "standing_limitations": ["unresolved_verification_limitation"],
+        "acceptance_risk": _RISK_ROWS,
+    }
+    text = summary_for_status(_status(**fields))
+    model = cast(
+        StatusClosureReadinessModel,
+        _readiness_model(**{**fields, "agent_actionable": ("closing_review_required",)}),
+    )
+    lines = "\n".join(render_closure_readiness_lines(model))
+    for rendered in (text, lines):
+        assert "closing_review_required" in rendered
+        assert rendered.count(_NOTE_HEAD) == 1
+        assert "This alone never blocks stopping" in rendered
+        assert "Stopping is not blocked" not in rendered
+        assert "no action needed to stop" not in rendered
+    short = acceptance_risk_note({"acceptance_risk": _RISK_ROWS}, short=True)
+    assert short.endswith("; not a Stop item.")
 
 
 def test_acceptance_risk_note_bounds_the_named_ids() -> None:

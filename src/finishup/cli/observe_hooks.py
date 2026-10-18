@@ -6254,9 +6254,9 @@ def handle_observe(
         delivery_session_id: str | None = None
         # stop_hook_active says a prior Stop already continued this turn. Ordinary items and
         # advice never continue it again; only a re-check readiness announced since the last
-        # gate (a blocker, an acknowledgement, the acceptance re-read) or a withdrawn deliverable
-        # not yet voiced is asked once, within the per-turn cap (#985, tb4n3 RC-8), and anything
-        # else records the normal end of a continued turn.
+        # gate (a blocker, an acknowledgement, a premise dispute) or a withdrawn deliverable not
+        # yet voiced is asked once, within the per-turn cap (#985, tb4n3 RC-8), and anything else
+        # records the normal end of a continued turn.
         stop_already_active = payload.get("stop_hook_active") is True
         if resolved_event == "Stop" and not stop_already_active and mapping is not None:
             # A Stop the host did not continue starts a new turn for the gate's per-turn cap,

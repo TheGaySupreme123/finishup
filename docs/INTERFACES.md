@@ -8195,9 +8195,10 @@ the basis could not be read):
   entry is never announced. `acceptance_risk_note(readiness, *, short=False) -> str` is the one
   closure-guidance sentence ("Acceptance provenance (a receipt coverage limit, not a Stop item):
   FinishUP could not tie the resolution of <id> (<reasons>); ... to an observed verification run
-  or a recorded verification limit. Stopping is not blocked ..."), at most eight ids, `""` when
-  none; `short` is the bounded MCP form; with no `acceptance_risk` field and the standing code
-  present (an earlier 0.3 service) it returns the fixed receipt sentence once, without ids.
+  or a recorded verification limit. This alone never blocks stopping ..."), at most eight ids,
+  `""` when none; `short` is the bounded MCP form ("...; not a Stop item."); with no
+  `acceptance_risk` field and the standing code present (an earlier 0.3 service) it returns the
+  fixed receipt sentence once, without ids.
   `acceptance_risk_rows` returns the validated rows. `prepare_closure(..., host="generic")`
   appends the same note to `notes`; the MCP bridge still passes its host profile to it and to
   `render_safe_compact_summary_detailed(envelope, *, host=None)`, which no longer changes any

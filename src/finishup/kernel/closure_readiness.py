@@ -45,7 +45,7 @@ from finishup.domain.receipts import (
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
 )
-from finishup.domain.values import EventId, FindingId, ObligationId
+from finishup.domain.values import EventId, FindingId, ObligationId, obligation_id
 from finishup.kernel import finding_todo as _finding_todo_module
 from finishup.kernel.acceptance_risk import ACCEPTANCE_RISK_REASONS, acceptance_risk
 from finishup.kernel.check_standing import CheckCause, CheckStanding, check_standing
@@ -840,6 +840,18 @@ def _open_obligations_unreadable(state: ProjectionState) -> bool:
     )
 
 
+def _publication_locator_obligation(record: LedgerRecord) -> ObligationId | None:
+    """The obligation an unreadable ``obligation_published`` names in its projection locator."""
+
+    key = record.projection_locator.logical_key
+    if key is None:
+        return None
+    try:
+        return obligation_id(key)
+    except ValueError:
+        return None
+
+
 def _downgraded_from_resolved(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
@@ -850,9 +862,10 @@ def _downgraded_from_resolved(
     For each obligation in *acknowledged*, its ``obligation_published`` records at or before the
     projection frontier are read in ingestion order: it is a downgrade when the newest one is
     ``acknowledged_not_done`` and the one right before it is ``resolved``. An unreadable
-    publication on either side is not a downgrade (fail toward asking). An acknowledgement of
-    work never claimed (``open`` to ``acknowledged_not_done``) is not one either. Pure over the
-    projection and the prefix, so it replays to the same set.
+    publication on either side is not a downgrade (fail toward asking); it is attributed through
+    its projection locator, as the reducer does, and only one that names no obligation breaks every
+    chain. An acknowledgement of work never claimed (``open`` to ``acknowledged_not_done``) is not
+    one either. Pure over the projection and the prefix, so it replays to the same set.
     """
 
     wanted = frozenset(acknowledged)
@@ -867,15 +880,19 @@ def _downgraded_from_resolved(
             continue
         payload = record.payload
         typed = payload if type(payload) is ObligationPublishedPayload else None
-        obligation = None if typed is None else typed.obligation_id
+        obligation = (
+            _publication_locator_obligation(record) if typed is None else typed.obligation_id
+        )
         if obligation is None:
-            # An unreadable publication may be any obligation's: it breaks every chain it could
-            # belong to, so a later acknowledgement is not exempted on the strength of an older
-            # resolved version.
+            # An unreadable publication whose locator does not name its obligation may be any
+            # obligation's: it breaks every chain it could belong to, so a later acknowledgement
+            # is not exempted on the strength of an older resolved version.
             for chain in versions.values():
                 chain.append(None)
             continue
         if obligation in wanted:
+            # An unreadable publication the locator attributes (as the reducer does) breaks only
+            # that obligation's chain.
             versions.setdefault(obligation, []).append(typed)
     found: list[ObligationId] = []
     for obligation, chain in versions.items():

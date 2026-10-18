@@ -342,10 +342,10 @@ findings you acknowledged that the review says the task requires); the status te
 them. `acceptance_risk` lists resolved obligations whose acceptance FinishUP could not tie to an
 observed verification run or a recorded verification limit, because a requested item was never
 attempted or their evidence is unlinked or only your own assertion. The status text names them
-once. This is never a Stop question: you can stop, met work needs no action, and the receipt
-records it as a coverage limit (`insufficient_coverage`). If an output does not meet its
-acceptance criteria, republish that obligation `acknowledged_not_done` with the reason; that
-honest downgrade is not questioned again at Stop. A `finishup-acceptance:` line in your final
+once. This is never a Stop question: it never blocks a Stop on its own, met work needs no action,
+and the receipt records it as a coverage limit (`insufficient_coverage`). If an output does not
+meet its acceptance criteria, republish that obligation `acknowledged_not_done` with the reason;
+that honest downgrade is not questioned again at Stop. A `finishup-acceptance:` line in your final
 answer is not read.
 `ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
