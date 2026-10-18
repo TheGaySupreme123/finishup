@@ -2617,7 +2617,11 @@ counts as supplied. Claude Code's MCP output limit is far above these sizes; the
 (`agent_next`, `overall_next`, `missing_for_assessment` before findings) costs nothing here.
 `isError` results are unchanged. `status view=operation` for a finished check returns
 `check_outcome`, and its text summary adds `check outcome: <verdict>; next: <action>;` and the lead
-when room remains. A Bash re-run of the target's exact command the PostToolUse hook observed after
-the request counts as supplying a targeted item (ADR-006 amendment); a respond or a description does
-not. Verified by `tests/unit/cli/test_status_operation_render.py` and the host-neutral tests named in
+when room remains. The captured output of a Bash re-run of the target's exact command the PostToolUse
+hook observed after the request counts as supplying a targeted `verification_output` item once the
+reviewer was sent it (ADR-006 amendment). That path exists only on the ordinary-work observation
+profile: the default structural profile observes no generic `Bash` calls, so there the agent
+publishes `result_recorded` of the target's action with the output in `summary`, which `agent_next`
+says on every host (capability gap owned by #910). An observed run never answers
+`command_identity`; a respond counts only for a finding target, and a description never counts. Verified by `tests/unit/cli/test_status_operation_render.py` and the host-neutral tests named in
 the Codex runbook.

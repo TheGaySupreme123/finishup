@@ -1,23 +1,37 @@
-"""Generate the canonical ``agent_next`` vectors of check-result 1.5.0 (issue #1107, W6).
+"""Generate the canonical W6 review-result-delivery vectors (issue #1107).
 
-Each vector freezes one ``overall_next`` and ``missing_for_assessment`` pair and the bounded
-``agent_next`` lead the service composes from them, so a change to the closed sentences, their
-order or their shrink rule is a reviewed fixture change rather than a silent drift.
+``AGN-001`` freezes ``overall_next`` and ``missing_for_assessment`` pairs and the bounded
+``agent_next`` lead the service composes from them (check-result 1.5.0), so a change to the closed
+sentences, their order or their shrink rule is a reviewed fixture change rather than a silent
+drift. ``AGN-002`` freezes one status-result 1.4.0 operation page of a finished
+``insufficient_packet`` check with its ``check_outcome`` (verdict, lead, next action, missing
+items, frontier) and the CLI and MCP renderings of that page.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Final, cast
+from typing import Any, Final, cast
 
+from finishup.cli.render import render_human_status
 from finishup.domain.review_input_render import MAX_AGENT_NEXT_BYTES, render_agent_next
+from finishup.domain.values import freeze_json
+from finishup.mcp.summaries import render_safe_compact_summary
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.models import StatusResultModel, StatusSuccessModel, public_model_to_wire
+from finishup.protocol.schemas import validate_schema_instance
 
 _PATH: Final = "canonical/check-agent-next-1.5.0.case.json"
 _FIXTURE_ID: Final = "AGN-001"
+_STATUS_PATH: Final = "canonical/status-check-outcome-1.4.0.case.json"
+_STATUS_FIXTURE_ID: Final = "AGN-002"
+# A reviewed status-result 1.4.0 operation page whose envelope the outcome page reuses.
+_STATUS_BASE: Final = "canonical/status-check-admission-1.4.0.case.json"
 
 
 def _ref(prefix: str, number: int) -> str:
@@ -142,6 +156,82 @@ def document() -> dict[str, JsonValue]:
     }
 
 
+def status_document(root: Path) -> dict[str, JsonValue]:
+    """The finished-check operation page (``AGN-002``), on a reviewed status envelope."""
+
+    base = json.loads((root / "fixtures" / _STATUS_BASE).read_bytes())
+    result = cast(dict[str, JsonValue], copy.deepcopy(base["input"]["results"]["acquiring"]))
+    _vector_id, overall_next, missing, limitation_requests = _cases()[0]
+    agent_next = render_agent_next(overall_next, missing, limitation_requests=limitation_requests)
+    page = cast(dict[str, JsonValue], result["page"])
+    page.pop("admission")
+    page.update(
+        found=True,
+        state="complete",
+        operation_kind="check",
+        check_outcome={
+            "verdict": "insufficient_coverage",
+            "agent_next": agent_next,
+            "overall_next": overall_next,
+            "missing_for_assessment": missing,
+            "semantic_status": "succeeded",
+            "semantic_reason": "semantic_completed",
+            "semantic_conclusion": "insufficient_packet",
+            "result_frontier": result["result_frontier"],
+        },
+    )
+    validate_schema_instance("status-result", "1.4.0", freeze_json(result))
+    model = StatusResultModel.model_validate(result)
+    if public_model_to_wire(model) != result or not isinstance(model.root, StatusSuccessModel):
+        raise ValueError("status_check_outcome_fixture_invalid")
+    lines = render_human_status(model.root).splitlines()
+    # The outcome block: from its first line up to the page's gap line.
+    start = next(index for index, line in enumerate(lines) if line.startswith("Check outcome:"))
+    end = next(
+        (index for index, line in enumerate(lines) if index > start and line.startswith("Gaps:")),
+        len(lines),
+    )
+    return {
+        "fixture_id": _STATUS_FIXTURE_ID,
+        "fixture_schema": "yoetz.fixture-case/1.0.0",
+        "fixture_version": "1.0.0",
+        "minimum_versions": {
+            "engine": "0.1.0",
+            "protocol": "0.1",
+            "status_result_schema": "1.4.0",
+        },
+        "owns_requirements": ["ISSUE-1107:status-check-outcome"],
+        "purpose": (
+            "Freeze the status view=operation page of a finished insufficient_packet check: its "
+            "check_outcome carries the same verdict, agent_next, overall_next, missing items and "
+            "result frontier a same-id replay returns, and the CLI and MCP renderings of it."
+        ),
+        "controls": {
+            "clock": "fixture_supplied",
+            "external_io": "forbidden",
+            "network": "forbidden",
+            "randomness": "forbidden",
+        },
+        "input": {"result": result},
+        "expected": {
+            "text_lines": cast(list[JsonValue], lines[start:end]),
+            "mcp_summary": render_safe_compact_summary(cast(JsonValue, result)),
+            "canonical_hex": canonical_encode(result).hex(),
+            "digest": canonical_digest(result),
+        },
+    }
+
+
+def _member(fixture_id: str, path: str, data: bytes) -> dict[str, Any]:
+    return {
+        "fixture_id": fixture_id,
+        "path": path,
+        "byte_length": len(data),
+        "media_type": "application/vnd.yoetz.fixture-case+json",
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -149,30 +239,38 @@ def main() -> int:
     mode.add_argument("--check", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    data = canonical_encode(cast(JsonValue, document()))
-    target = root / "fixtures" / _PATH
+    builders: tuple[tuple[str, str, Callable[[], dict[str, JsonValue]]], ...] = (
+        (_FIXTURE_ID, _PATH, document),
+        (_STATUS_FIXTURE_ID, _STATUS_PATH, lambda: status_document(root)),
+    )
     manifest_path = root / "fixtures/manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
-    unrelated = [item for item in manifest["members"] if item["path"] != _PATH]
-    if any(item["fixture_id"] == _FIXTURE_ID for item in unrelated):
+    paths = {path for _id, path, _build in builders}
+    unrelated = [item for item in manifest["members"] if item["path"] not in paths]
+    ids = {fixture_id for fixture_id, _path, _build in builders}
+    if any(item["fixture_id"] in ids for item in unrelated):
         raise ValueError("fixture_identity_conflict")
-    member = {
-        "fixture_id": _FIXTURE_ID,
-        "path": _PATH,
-        "byte_length": len(data),
-        "media_type": "application/vnd.yoetz.fixture-case+json",
-        "sha256": hashlib.sha256(data).hexdigest(),
-    }
+    outputs = [
+        (path, data, _member(fixture_id, path, data))
+        for fixture_id, path, build in builders
+        for data in (canonical_encode(cast(JsonValue, build())),)
+    ]
     if args.check:
-        if (
-            not target.is_file()
-            or target.read_bytes() != data
-            or [item for item in manifest["members"] if item["path"] == _PATH] != [member]
-        ):
-            raise ValueError("review_result_delivery_fixture_stale")
+        for path, data, member in outputs:
+            target = root / "fixtures" / path
+            if (
+                not target.is_file()
+                or target.read_bytes() != data
+                or [item for item in manifest["members"] if item["path"] == path] != [member]
+            ):
+                raise ValueError("review_result_delivery_fixture_stale")
     else:
-        manifest["members"] = sorted([*unrelated, member], key=lambda item: item["path"])
-        target.write_bytes(data)
+        manifest["members"] = sorted(
+            [*unrelated, *(member for _path, _data, member in outputs)],
+            key=lambda item: item["path"],
+        )
+        for path, data, _member_row in outputs:
+            (root / "fixtures" / path).write_bytes(data)
         manifest_path.write_text(json.dumps(manifest) + "\n")
     print("review result delivery fixture: PASS")
     return 0

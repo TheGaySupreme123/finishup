@@ -1,18 +1,22 @@
-"""A re-run FinishUP observed supplies the reviewer's request (issue #1107, W6; ADR-006 amendment).
+"""A re-run FinishUP observed is named as supplied on the next check (issue #1107, W6; ADR-006).
 
 The real application, ledger and check commit with a hermetic reviewer that builds the real review
 case. The agent publishes a failing ``uv run pytest -q`` run; the first check's reviewer asks for
 its output (``verification_output``). The agent then re-runs the same command in a Codex shell:
-the production Codex mapping materializes the ``PostToolUse`` envelope (keyed command commitment,
-captured tool output) into hook-observed rows, exactly as the hook or its session-stream copy
-commits them. The next check's packet names the observed rows as supplied since the request; a
-repeat is not dropped as already supplied while the packet never carried the captured output, and
-the result's lead then says how to supply it.
+the production materialization commits an already-normalized ``PostToolUse`` envelope whose
+structural keys are the ones the Codex hook mapping produces (keyed command commitment, the
+mapped exit status, one captured tool-output part) into hook-observed rows. The next check's
+packet names the observed rows as supplied since the request, a repeat is not dropped as already
+supplied while the packet never carried the captured output, and the result's lead says to publish
+the output. Host-shaped input from the recorded Codex fixture, both host copies (the hook and the
+session stream) and the positive path where the packet carries the captured output are covered
+by ``test_observed_rerun_host_copies.py``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import json
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
@@ -62,6 +66,8 @@ from finishup.protocol.models import (
     PublishWorkRequest,
     SemanticReason,
     SemanticStatus,
+    StatusOperationPageModel,
+    StatusRequest,
 )
 
 pytestmark = pytest.mark.anyio
@@ -158,6 +164,20 @@ class _Reviewer:
         )
 
 
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in cast(Mapping[str, object], value).items()}
+    if isinstance(value, tuple | list):
+        return [_thaw(item) for item in cast(Sequence[object], value)]
+    return value
+
+
+def _json(value: object) -> str:
+    """One canonical spelling of a wire value, whichever (frozen) container types hold it."""
+
+    return json.dumps(_thaw(value), sort_keys=True)
+
+
 def _draft(event: int, name: str, payload: dict[str, object]) -> dict[str, object]:
     return {
         "event_id": protocol_id("evt_", event),
@@ -203,11 +223,16 @@ async def _observed_rerun(app: Any, started: Any, frontier: Any) -> tuple[Any, s
         receipt_time=Timestamp("2026-10-12T12:05:00.000Z"),
         structural_payload=JsonObject(
             {
-                "tool_name": "shell",
+                # The keys the Codex hook mapping derives from a recorded ``PostToolUse`` payload
+                # (``exit_status`` is the mapping's own fact, not a host field).
+                "tool_name": "Bash",
                 "tool_call_id": "call-w6-rerun",
-                "correlation_id": "call-w6-rerun",
+                "hook_name": "PostToolUse",
+                "result_status": "success",
+                "success": True,
                 "exit_status": 0,
                 "command_commitment": commitment,
+                "command_composition": "single",
             }
         ),
         content_object_refs=(captured_id,),
@@ -343,10 +368,12 @@ async def test_an_observed_rerun_answers_the_request_on_the_next_check() -> None
         if item.item_id == "prior-missing-for-assessment"
     )
     assert observed_result.encode() in prior.content and observed_output.encode() in prior.content
-    # This owner's policy sends no repository excerpt, so the packet named the observed rows but
-    # never carried the captured output: the repeat is not dropped as already supplied for
-    # material the reviewer could not see. The item stays the agent's, and the result's lead
-    # says how to supply it.
+    # This hermetic reviewer builds the case without loading any captured bytes (no
+    # ``CapturedSemanticContent``), so the observed output is omitted as not recorded: the packet
+    # named the observed rows but never carried the captured output, as when Private or the
+    # repository-excerpt gate withholds it. The repeat is not dropped as already supplied for
+    # material the reviewer could not see; the item stays the agent's, and the result's lead says
+    # to publish the output, even after a re-run.
     excerpts = {
         item.source_ref for item in reviewer.cases[reviewed].items if item.section == "excerpt"
     }
@@ -359,6 +386,38 @@ async def test_an_observed_rerun_answers_the_request_on_the_next_check() -> None
     assert type(lead) is str and lead.startswith("Next: supply_missing_input")
     assert f"verification_output for {_TARGET}" in lead
     assert "result_recorded whose action_id is the target's action" in lead
+    assert "Publish it even after a re-run" in lead
+    assert "counts only once it reaches the reviewer" in lead
+
+    # A lost or cut result is recovered from the operation page: it carries the same verdict,
+    # lead, next action and missing items a same-id resend returns (RC6a, W6).
+    replay = await _check(app, started, frontier, _SEED + 50)
+    assert replay.outcome == "replayed"
+    replayed = check_internal_json(replay)
+    status = await app.status(
+        StatusRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", _SEED + 55)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "operation",
+                "limit": "1",
+                "filter": {"operation_request_id": protocol_id("req_", _SEED + 50)},
+            }
+        )
+    )
+    assert isinstance(status.page, StatusOperationPageModel)
+    outcome = status.page.check_outcome
+    assert outcome is not None
+    page = outcome.model_dump(mode="json", exclude_none=True)
+    assert page["agent_next"] == replayed["agent_next"] == lead
+    assert page["verdict"] == replayed["verdict"]
+    assert page["semantic_conclusion"] == "insufficient_packet"
+    assert _json(page["overall_next"]) == _json(replayed["overall_next"])
+    assert _json(page["missing_for_assessment"]) == _json(replayed["missing_for_assessment"])
+    assert [(item.kind, item.availability) for item in outcome.missing_for_assessment] == [
+        ("verification_output", "agent_suppliable")
+    ]
 
     # The agent publishes the output as the lead says; the next repeat is already supplied.
     supplied = await app.publish_work(

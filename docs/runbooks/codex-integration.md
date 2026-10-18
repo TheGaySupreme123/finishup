@@ -3640,15 +3640,27 @@ lost or cut result is recovered with `status view=operation` for the check's `re
 now carries `check_outcome` with the same verdict, `agent_next`, `overall_next` and missing items a
 same-id resend returns, so an agent never replays the check through the CLI to read them.
 
-**Supply on Codex.** A shell re-run of the target's exact command that the hook (or the
-session-stream copy, whichever commits it) observed after the request counts as supplying a
-targeted item (ADR-006 amendment). Both copies materialize the same rows, so matching is on the
-recorded run. The run's captured output must reach the reviewer before a repeat is dropped as
-already supplied; when the owner's policy sends no repository excerpt, `agent_next` tells the agent
-to publish one `result_recorded` of the target's action with the output in `summary`. A respond or
-a description never counts.
+**Supply on Codex.** The captured output of a shell re-run of the target's exact command that
+FinishUP observed after the request counts as supplying a targeted `verification_output` (or
+`other`) item (ADR-006 amendment). The hook and the session-stream copy commit the run in different
+shapes: hook first, the observed result cites the captured output; stream first (the usual order on
+0.159), the stream copy commits the action and result and the hook's captured output arrives late,
+linked to the run's action event, and no result cites it. Supply matching reads both shapes as the
+same run's output. Only captured `tool_output` counts; the captured command input does not. Codex
+shell calls are observed on the default hook registration, but output bytes are captured only under
+the workspace's content-capture consent, so without it a re-run records no output and supplies
+nothing. The output must also reach the reviewer before a repeat is dropped as already supplied,
+which Private or a selection without repository excerpts never allows. An observed run never
+answers `command_identity`: it records only `omitted:<keyed identity>`. `agent_next` therefore
+always says to publish one `result_recorded` of the target's action with the output in `summary`,
+even after a re-run, and says a re-run counts only once its output reaches the reviewer. A respond
+counts only for a finding target; a description never counts.
 
 **Verification:** `tests/unit/mcp/test_codex_structured_head.py` emulates the cut on the real bridge
-projection; `tests/integration/application/test_observed_rerun_supply.py` drives a Codex
-`PostToolUse` envelope through the production materialization; `tests/integration/application/test_status_operation_view.py`
-covers the recovery page.
+projection. `tests/integration/application/test_observed_rerun_host_copies.py` feeds the recorded
+Codex `PostToolUse` payload through the real hook mapping and the recorded rollout through the
+session-stream reader and the service coordinator, in both commit orders, then shows the re-run's
+output in the real packet and the repeat dropped as already supplied, and kept when the selection
+sends no excerpt. `tests/integration/application/test_observed_rerun_supply.py` runs two real checks
+around an already-normalized observed re-run whose output the packet does not carry.
+`tests/integration/application/test_status_operation_view.py` covers the recovery page.

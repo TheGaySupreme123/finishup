@@ -303,9 +303,10 @@ def has_agent_suppliable_missing(items: object) -> bool:
 # the clause every guidance page quotes inside ``MISSING_SUPPLY_SENTENCE``.
 SUPPLY_COUNTS_SENTENCE: Final = (
     "Counts as supplied only when new and tied to the target: a result of the target's action or "
-    "of the same exact command (a re-run FinishUP observed counts), evidence whose reference is "
-    "the target id or its path, or a respond to a finding target. A description, or citing the "
-    "old record again, does not count."
+    "of the same exact command, evidence whose reference is the target id or its path, or a "
+    "respond when the target is a finding. A re-run FinishUP observed counts only for output and "
+    "only once its captured output reaches the reviewer. A respond to anything else, a "
+    "description, or citing the old record again does not count."
 )
 SUPPLY_COUNTS_SHORT: Final = "Only new material tied to the target counts as supplied."
 # The same sentence as the operating card, the receipt topic and the coverage page (issue #1079).
@@ -321,7 +322,7 @@ _PUBLISH_EXACTLY: Final = MappingProxyType(
     {
         "command_identity": (
             "Publish one action_recorded whose command is the exact command text of the target "
-            "run; a re-run of that exact command FinishUP observes also counts."
+            "run. A re-run does not count: FinishUP records no command text for a run it observes."
         ),
         "current_diff_for_path": (
             "Publish evidence whose reference is that path, or one git diff result covering it. "
@@ -339,8 +340,9 @@ _PUBLISH_EXACTLY: Final = MappingProxyType(
         ),
         "verification_output": (
             "Publish one result_recorded whose action_id is the target's action and whose "
-            "summary is the command output, with its evidence_refs; a re-run of that exact "
-            "command that FinishUP observes and captures also counts."
+            "summary is the command output, with its evidence_refs. Publish it even after a "
+            "re-run: the output of a run FinishUP observes counts only once it reaches the "
+            "reviewer, which the owner's privacy settings may not allow."
         ),
     }
 )

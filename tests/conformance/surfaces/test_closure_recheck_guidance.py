@@ -129,9 +129,10 @@ _OBSERVED_OUTPUT: Final = (
     "Verification follow-ups include observed test, build, lint, or typecheck output only when a "
     "repository excerpt would be sent."
 )
-# W6 (#1107, ADR-006 amendment): a re-run FinishUP observed counts as supplied; a respond or a
-# description does not.
-_OBSERVED_RERUN: Final = "re-run of the same command"
+# W6 (#1107, ADR-006 amendment): a re-run FinishUP observed counts only once its output reaches
+# the reviewer; a respond counts only for a finding target, a description never.
+_OBSERVED_RERUN: Final = "counts only once it reaches the reviewer"
+_RESPOND_RULE: Final = "a respond counts only when the target is a finding"
 
 
 @pytest.mark.parametrize(
@@ -148,6 +149,7 @@ def test_insufficient_packet_goes_to_the_receipt_not_a_deterministic_fallback(na
         assert "never counts as agent-supplied" not in text
     if name == "receipt.md":
         assert _OBSERVED_RERUN in text
+        assert _RESPOND_RULE in text
     # The workflow page keeps the explicit local-only ban; the other three share one sentence.
     assert any(
         phrase in text

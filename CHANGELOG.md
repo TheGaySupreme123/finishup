@@ -682,9 +682,10 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   naming the next step and, for each requested item, how to supply it and what counts;
   `status view=operation` for a finished check returns the same outcome, so a lost or cut result is
   recovered without re-running the check. Supplying now counts when an agent actually did it: a
-  re-run of the same command that FinishUP observed (once the reviewer saw its output), the same
-  command spelled as text or as the hook recorded it, and evidence naming the record by its event
-  id or with stray whitespace. A respond or a description still never counts (#1107).
+  re-run's captured output of the same command that FinishUP observed (once the reviewer saw that
+  output, whichever Codex copy recorded the run), the same command spelled as text or as the hook
+  recorded it, and evidence naming the record by its event id or with stray whitespace. A
+  description still never counts, and a respond counts only for a finding (#1107).
 
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks

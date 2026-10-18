@@ -109,7 +109,11 @@ def test_cursor_canonical_copy_lists_agent_next_first_or_second() -> None:
     result = result_from_public_model(
         CheckResult.model_validate(_n7_shaped_wire()), host_profile="cursor"
     )
-    structured = result.structuredContent
-    assert structured is not None
-    keys = list(json.loads(canonical_encode(cast(Any, structured))))
+    # The text Cursor's model reads is the bridge's canonical JSON copy in ``content[0]``.
+    (content,) = result.content
+    assert content.type == "text"
+    copy = json.loads(content.text)
+    keys = list(copy)
     assert keys.index("agent_next") <= 1
+    assert copy["agent_next"] == cast(dict[str, Any], result.structuredContent)["agent_next"]
+    assert content.text.encode() == canonical_encode(cast(Any, result.structuredContent))

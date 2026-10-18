@@ -2164,24 +2164,33 @@ workstream W6 (Q1, Q4; the owner may overturn it), recorded on #1107:
   exactly that text (`kernel.task_facts.requested_command_identity`). Whole commands only:
   `cd x && pytest` is not `pytest`. Without the key the two spellings are not the same run. The
   #1045 packet latest-run rule (`command_run_key`) is unchanged.
-- **A re-run FinishUP observed counts for a targeted item.** A hook-observed command run recorded
-  after the request whose identity meets the target's, its observed results, and the captured output
-  (evidence holding captured bytes) those results cite, answer that target. It does not matter
-  whether the hook or Codex's session-stream copy committed the rows: both materialize the same
-  records. An observed result's own summary is FinishUP's status line, not output: it answers
-  `command_identity` but never `verification_output`. Observed rows never answer an untargeted item,
-  and never supply a path (observed `git diff` text is not recorded; observed edits stay excluded).
-  These rows are named in `supplied_since` and rank as supplied in the next packet, but an observed
-  result's summary is never offered as agent-published output and captured output stays a candidate
-  only where the repository-excerpt gate already allowed it (ADR-009). No new category is sent.
+- **The output of a re-run FinishUP observed counts for a targeted output request.** A
+  hook-observed command run recorded after the request whose identity meets the target's, its
+  observed results, and the captured tool output of that run answer a `verification_output` or
+  `other` item naming that target. The run's captured output is what its observed result cites and,
+  when Codex's session-stream copy committed first, the late hook capture the observation writer
+  links to the run's action event (its `reference` is that event id, as `observed_enrichment_refs`
+  reads it): the two copies commit the run in different shapes, and either shape counts. Only
+  captured `tool_output` bytes are output; the captured command input and a digest-only row are
+  not. An observed result's own summary is FinishUP's status line, not output. Observed rows never
+  answer `command_identity`: an observed run records `omitted:<keyed identity>`, never the command
+  text the reviewer asked for, so only an `action_recorded` with the exact text answers it. Observed
+  rows never answer an untargeted item, and never supply a path (observed `git diff` text is not
+  recorded; observed edits stay excluded). These rows are named in `supplied_since` and rank as
+  supplied in the next packet, but an observed result's summary is never offered as
+  agent-published output and captured output stays a candidate only where the repository-excerpt
+  gate already allowed it (ADR-009). No new category is sent.
 - **Never drop a repeat for material the reviewer could not see.** A repeat is dropped as
-  `semantic_missing_already_supplied` on observed material only when the packet carried it: the run
-  and result rows among the citable refs and, for `verification_output`, the captured output among
-  the excerpts the sent packet held (whole or a part, including the marked observed span). When the
-  packet did not carry it (Private, the repository-excerpt gate, packet room, or an unknown sent
-  set) the item stays the agent's under the existing non-convergence rule, and the check result's
-  `agent_next` (ADR-043 amendment of the same date) says to publish the result summary. Agent-
-  published material keeps the earlier rule.
+  `semantic_missing_already_supplied` on observed material only when the packet carried its
+  output: the captured output among the citable refs and among the excerpts the sent packet held
+  (whole or a part, including the marked observed span). When the packet did not carry it
+  (Private, the repository-excerpt gate, packet room, or an unknown sent set) the item stays the
+  agent's under the existing non-convergence rule. The check result's `agent_next` (ADR-043
+  amendment of the same date) is composed from the stored check alone, so it cannot know whether a
+  later re-run's output will be sent: its `verification_output` instruction always says to publish
+  the result with the output as its summary, even after a re-run, and its supply rule says a
+  re-run FinishUP observed counts only once its output reaches the reviewer. Agent-published
+  material keeps the earlier rule.
 - **The same record under another id.** An `evt_` target that is exactly one row's own event id
   reads as that row; evidence whose `reference`, trimmed, is the target id or the target row's own
   event id counts. Prose that merely mentions an id never counts. The requesting check's own event id

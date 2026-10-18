@@ -141,10 +141,12 @@ id repeats it if the result was lost.
 
 Supply each item once, then check again. What counts is new material tied to the named record: a
 result of the same run or of the same exact command, evidence that names the record or its file
-path, or a correction of a named claim. Re-running the same command counts when FinishUP observed
-the run, but the reviewer must see its output before a repeated request is treated as answered; if
-your privacy setting does not send command output, publish the run's result with its output as
-the summary. A response or a description of the output does not count. If an item is a FinishUP
+path, a correction of a named claim, or a response when the named record is a finding. Re-running
+the same command counts for its output when FinishUP observed the run and captured the output, but
+only once the reviewer is sent that output; your privacy setting may never send it. So publish the
+run's result with its output as the summary even after a re-run, as `agent_next` says. A re-run
+never supplies the exact command text: publish the action with that text. A response to anything
+other than a finding, or a description of the output, does not count. If an item is a FinishUP
 limit rather than missing work, verify it yourself and state the limit in the receipt.
 
 ## Completion scope is declared, not inferred
