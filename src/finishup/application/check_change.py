@@ -74,6 +74,7 @@ from finishup.protocol.canonical import JsonValue
 __all__ = [
     "declared_output_paths",
     "OutsideInputReader",
+    "outside_input_candidates",
     "outside_inputs_not_admitted",
     "review_input_paths",
     "task_input_paths",
@@ -842,6 +843,13 @@ _STATEMENT_TOKEN: Final = re.compile(
 _SPACED_NOT_PLAIN: Final = re.compile(r"[\t\n\r\f\v*?\[\]{}~$`]|://|  ")
 _SPACED_FILE_NAME: Final = re.compile(r"[^/]*[A-Za-z0-9_)]\.(?P<extension>[A-Za-z0-9]{1,10})")
 _MAX_PATH_SPACES: Final = 8
+# A quoted shell command (``cd /app/vllm && pytest``, ``cat a | grep b``, ``make > out.txt``) is
+# never one path: a word that is or starts with a shell operator or redirection marks it.
+_SPACED_COMMAND_WORD: Final = re.compile(r"\A(?:[&|;<>]|[0-9]+[<>])")
+# Prose joining two paths (``"src/dedup and src/util"``) is never one path either.
+_SPACED_JOINING_WORDS: Final = frozenset(
+    {"and", "or", "then", "to", "into", "from", "with", "vs", "versus", "plus"}
+)
 
 
 def _statement_file_word(word: str) -> str | None:
@@ -873,30 +881,42 @@ def _spaced_path(value: str) -> str | None:
     The value must have a directory part or end in ``/``, or end in a file name with a lettered
     extension; hold one to eight single spaces and no other whitespace, glob, brace, home or
     variable expansion, backtick or URL; and be at most 1024 characters. Prose ahead of an
-    absolute path (``see /app/My Docs/spec.md``) is dropped, a span whose earlier words
-    already name a whole file (``docs/a.md and docs/b.md``) is prose, never one path, and a span
-    with an option-like word (``pytest -q tests/test_a.py``) is a command, never one path.
+    absolute path (``see /app/My Docs/spec.md``) is dropped. A span whose earlier words already
+    name a whole file (``docs/a.md and docs/b.md``) or a folder (``/app/parser/ fails``), joins
+    two paths with a word like ``and``, or whose spaced last component is no file name
+    (``/app/config is read-only``) is prose, never one path; a span with an option-like word
+    (``pytest -q tests/test_a.py``) or a shell operator (``cd /app/vllm && pytest``) is a
+    command, never one path. A rejected span keeps every word it holds (``_statement_words``).
     """
 
     value = value.strip(_STATEMENT_WORD_EDGE)
     if " /" in value:
         value = value[value.index(" /") + 1 :]
+    words = value.split(" ")
     if (
         " " not in value
         or value != value.strip(" ")
         or value.count(" ") > _MAX_PATH_SPACES
         or len(value) > 1_024
         or _SPACED_NOT_PLAIN.search(value) is not None
-        or any(_names_a_file(word) for word in value.split(" ")[:-1])
-        or any(word.startswith("-") for word in value.split(" ")[1:])
+        or any(_names_a_file(word) or word.endswith("/") for word in words[:-1])
+        or any(word.startswith("-") for word in words[1:])
+        or any(_SPACED_COMMAND_WORD.match(word) is not None for word in words)
+        or any(
+            word.casefold() in _SPACED_JOINING_WORDS and "/" in before and "/" in after
+            for before, word, after in zip(words, words[1:], words[2:], strict=False)
+        )
     ):
         return None
     name = value.rstrip("/").rsplit("/", 1)[-1]
     if not name or name.startswith("-"):
         return None
-    if "/" in value.strip("/") or value.endswith("/"):
+    # The last component may hold a space only as a file name with a lettered extension, or
+    # when a ``/`` follows it: ``/app/config is read-only`` is prose, ``/app/My Docs/`` a folder.
+    last = value.rsplit("/", 1)[-1]
+    if " " not in last:
         return value
-    match = _SPACED_FILE_NAME.fullmatch(name)
+    match = _SPACED_FILE_NAME.fullmatch(last)
     if match is None or not any(char.isalpha() for char in match.group("extension")):
         return None
     return value
@@ -1111,12 +1131,32 @@ _SYSTEM_TREES: Final = (
 # answer to /tmp/answer.txt", "log to /var/log/app.log"), not as material to read.
 _OUTPUT_TREES: Final = (
     "/private/tmp",
+    "/private/var/folders",
     "/private/var/tmp",
     "/tmp",
     "/var/cache",
+    "/var/folders",
     "/var/lib",
     "/var/log",
     "/var/tmp",
+)
+# A top-level folder named whole is a candidate (``/data``, ``/legacy``) unless it is a tree of
+# homes, installed software or system state, never itself one task's input folder.
+_TOP_LEVEL_CONTAINERS: Final = frozenset(
+    {
+        "/Applications",
+        "/Library",
+        "/System",
+        "/Users",
+        "/Volumes",
+        "/home",
+        "/mnt",
+        "/opt",
+        "/private",
+        "/root",
+        "/srv",
+        "/var",
+    }
 )
 # A path through an installed program or package tree names a tool (``/opt/conda/bin/python``).
 _TOOL_COMPONENTS: Final = frozenset(
@@ -1129,6 +1169,54 @@ def _lstat_or_none(path: str) -> os.stat_result | None:
         return os.lstat(path)
     except OSError, ValueError:
         return None
+
+
+def outside_input_candidates(
+    candidates: Iterable[str],
+    oracle: frozenset[str],
+    workspace: str,
+    admitted_roots: Iterable[str],
+    outputs: Iterable[str],
+) -> tuple[str, ...]:
+    """The candidates that lexically could be an unadmitted outside input, normalized (#1102).
+
+    The lexical half of ``outside_inputs_not_admitted``: an absolute candidate the task itself
+    names (not in ``oracle``), outside ``workspace`` (case-folded, as the outside read compares
+    it), not a declared output (``outputs``), in no system, scratch, log, cache or package-state
+    tree, through no ``bin`` or installed-package directory, with no hidden component, at or
+    beneath a path the owner may admit as a root (``admitted_input_root_valid``), not
+    credential-named, and at or beneath none of ``admitted_roots``. A top-level folder named
+    whole (``/data``) counts unless it is a tree of homes, installed software or system state
+    (``/home``, ``/opt``, ``/var``). Nothing on disk is consulted; in process only.
+    """
+
+    roots = tuple(os.path.normpath(root) for root in admitted_roots)
+    declared = {os.path.normpath(value) for value in outputs if value.startswith("/")}
+    eligible: list[str] = []
+    for value in candidates:
+        if not value.startswith("/") or value in oracle or "\x00" in value:
+            continue
+        path = os.path.normpath(value)
+        parts = path.split("/")[1:]
+        ancestors = ("/" + "/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+        if (
+            not parts
+            or not parts[0]
+            or path in _TOP_LEVEL_CONTAINERS
+            or path in declared
+            or _within(path, workspace)
+            or any(
+                path == tree or path.startswith(tree + "/")
+                for tree in (*_SYSTEM_TREES, *_OUTPUT_TREES)
+            )
+            or any(part.startswith(".") or part in _TOOL_COMPONENTS for part in parts)
+            or not any(admitted_input_root_valid(ancestor) for ancestor in ancestors)
+            or credential_named_bytes(os.fsencode(path))
+            or any(path == root or path.startswith(root + "/") for root in roots)
+        ):
+            continue
+        eligible.append(path)
+    return tuple(dict.fromkeys(eligible))
 
 
 def outside_inputs_not_admitted(
@@ -1147,12 +1235,11 @@ def outside_inputs_not_admitted(
     only a recorded verification command named, which are never read outside the workspace and
     so never count. A candidate counts only when FinishUP can tell it is an input:
 
-    * lexically, it is absolute, lies outside ``workspace`` (case-folded, as the outside read
-      compares it), has at least two components, is not a declared output (``outputs``), lies in
-      no system, scratch, log, cache or package-state tree, passes through no ``bin`` or
-      installed-package directory, has no hidden component, could lie beneath a root the owner
-      may admit (one of its ancestors passes ``admitted_input_root_valid``), is not
-      credential-named, and is at or beneath none of ``admitted_roots``;
+    * lexically, it is one of ``outside_input_candidates``: absolute, outside ``workspace``,
+      not a declared output, in no system, scratch, log, cache or package-state tree, not
+      hidden or credential-named, at or beneath a path the owner may admit, and at or beneath
+      none of ``admitted_roots``; a top-level folder (``/data``) counts, a tree of homes,
+      installed software or system state (``/home``, ``/opt``, ``/var``) does not;
     * on disk, ``probe`` (``lstat``: metadata only, never following a final link, never opening
       content) finds a regular file or a directory there whose modification and change times
       both predate ``task_started_at``. A route (``GET /api/v1/users``) names nothing on disk,
@@ -1166,28 +1253,7 @@ def outside_inputs_not_admitted(
     if task_started_at is None:
         return False
     metadata = _lstat_or_none if probe is None else probe
-    roots = tuple(os.path.normpath(root) for root in admitted_roots)
-    declared = {os.path.normpath(value) for value in outputs if value.startswith("/")}
-    for value in candidates:
-        if not value.startswith("/") or value in oracle or "\x00" in value:
-            continue
-        path = os.path.normpath(value)
-        parts = path.split("/")[1:]
-        ancestors = ("/" + "/".join(parts[:depth]) for depth in range(1, len(parts)))
-        if (
-            len(parts) < 2
-            or path in declared
-            or _within(path, workspace)
-            or any(
-                path == tree or path.startswith(tree + "/")
-                for tree in (*_SYSTEM_TREES, *_OUTPUT_TREES)
-            )
-            or any(part.startswith(".") or part in _TOOL_COMPONENTS for part in parts)
-            or not any(admitted_input_root_valid(ancestor) for ancestor in ancestors)
-            or credential_named_bytes(os.fsencode(path))
-            or any(path == root or path.startswith(root + "/") for root in roots)
-        ):
-            continue
+    for path in outside_input_candidates(candidates, oracle, workspace, admitted_roots, outputs):
         status = metadata(path)
         if (
             status is None

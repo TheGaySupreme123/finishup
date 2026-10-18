@@ -2297,6 +2297,47 @@ def test_a_named_directory_lists_its_unchanged_files_and_reads_the_one_sharing_t
     assert decode_check_change(encode_check_change(capture)) == capture
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Fix the threshold bug; run cd dedup/ && pytest to reproduce.",
+        "Fix the threshold bug; run `cd dedup/ && pytest` to reproduce.",
+        "Fix the threshold bug; `cd {repository}/dedup && pytest` fails.",
+        'The issue says "the code in {repository}/dedup/ fails on a zero threshold".',
+    ],
+)
+def test_a_quoted_command_or_prose_still_reads_the_directory_it_names(
+    tmp_path: Path, statement: str
+) -> None:
+    """Issue #1102 review correctness-r2-1: a backticked shell command or quoted prose is never
+    one spaced path, so the folder it names reaches the reviewer as it does unquoted."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    repository = _dedup_repository(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "dedup" / "core.py").write_text(
+        "from dedup.config import validate_threshold\n\n"
+        "def dedup(items, threshold):\n"
+        "    validate_threshold(threshold)\n"
+        "    return items\n",
+        encoding="utf-8",
+    )
+    candidates = task_input_paths(
+        make_case().projection, statement.format(repository=os.fspath(repository))
+    )
+
+    capture = adapter.capture(os.fspath(repository), base, input_paths=candidates)
+
+    assert all(" " not in value for value in candidates)
+    read = {(item.path, item.origin) for item in capture.inputs}
+    assert ("dedup/config.py", "task_directory") in read
+    config = next(item for item in capture.inputs if item.path == "dedup/config.py")
+    assert b"threshold must be > 0" in config.text
+
+
 def test_a_directory_listing_never_names_a_file_the_task_renamed_away(tmp_path: Path) -> None:
     """Issue #1102 review r1-6: the change folds a rename into one ``R`` section of the new
     path, but the old path is the task's work too, never "unchanged since the task started"."""

@@ -265,6 +265,33 @@ def test_a_quoted_or_escaped_path_with_spaces_is_one_candidate() -> None:
         )
         == ()
     )
+    # A quoted command or quoted prose is never one path, so the folder it names is kept
+    # (review correctness-r2-1): shell operators, a word ending in ``/`` ahead of more words, a
+    # word joining two paths, and a spaced last component that is no file name all mark it.
+    assert task_input_paths(projection, "Run `cd /app/vllm && pytest` to reproduce.") == (
+        "/app/vllm",
+    )
+    assert task_input_paths(projection, "Fix it: `cd /app/src && make` fails.") == ("/app/src",)
+    assert task_input_paths(projection, "Run `cat a/b.log | grep x` and `make > out/r.txt`") == (
+        "a/b.log",
+        "out/r.txt",
+    )
+    assert task_input_paths(
+        projection, 'The issue says "the parser in /app/parser/ fails on empty input".'
+    ) == ("/app/parser/",)
+    assert task_input_paths(projection, 'Note: "/app/config is read-only"') == ("/app/config",)
+    assert task_input_paths(projection, 'Look at "src/dedup and src/util" for context.') == (
+        "src/dedup",
+        "src/util",
+    )
+    assert task_input_paths(projection, "Run `cd /shared/legacy_app && make` first.") == (
+        "/shared/legacy_app",
+    )
+    # A spaced folder still is one: a ``/`` follows its spaced component.
+    assert task_input_paths(projection, 'The data is in "/app/My Docs/" and "/app/My Docs/x"') == (
+        "/app/My Docs/x",
+        "/app/My Docs/",
+    )
 
 
 def test_unquoted_statements_tokenize_exactly_as_before() -> None:
@@ -388,6 +415,11 @@ _ON_DISK: Final = {
     "/var/run/app.sock": ("file", _STARTED - 60),
     "/usr/bin/python3": ("file", _STARTED - 60),
     "/shared/secrets.pem": ("file", _STARTED - 60),
+    "/data": ("dir", _STARTED - 60),
+    "/legacy": ("dir", _STARTED - 60),
+    "/opt": ("dir", _STARTED - 60),
+    "/home": ("dir", _STARTED - 60),
+    "/var/folders/x1/T/in.csv": ("file", _STARTED - 60),
 }
 
 
@@ -416,6 +448,14 @@ _ON_DISK: Final = {
         (("/shared/secrets.pem",), (), (), False),
         (("/app/src/x.py", "/app/My Docs/spec.md", "/APP/other.md"), (), (), False),
         (("/tmp", "/opt"), (), (), False),
+        # A top-level folder named whole is an input folder (review correctness-r2-2); a tree of
+        # homes or installed software is not, nor the macOS per-user scratch tree.
+        (("/data/",), (), (), True),
+        (("/data",), (), (), True),
+        (("/legacy",), (), (), True),
+        (("/data",), ("/data",), (), False),
+        (("/home", "/opt", "/"), (), (), False),
+        (("/var/folders/x1/T/in.csv", "/private/var/folders/x1/T/in.csv"), (), (), False),
         (("spec.md", "src/dedup/"), (), (), False),
     ],
 )
