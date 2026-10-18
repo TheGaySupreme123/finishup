@@ -2148,7 +2148,7 @@ the procedure for a live replay. The instruction grew from 22.5 KB to about 29.8
 more input tokens per review under the bytes/4 estimate, against a median native review footprint
 of about 110k tokens.
 
-### Observed witnesses, one reading of disclosure, primary material first (2026-10-18, n7, issue #1108)
+### Observed witnesses, disclosure, primary material first (2026-10-18, n7, issue #1108)
 
 The n7 investigation traced the reviewer's extra `insufficient_packet` verdicts and its wrong
 verdicts to the instruction and the packet layout, not to missing material: 15 of 27 wrong verdicts
@@ -2159,10 +2159,25 @@ AI-powered review receives the material it needs and judges from primary materia
   the agent's own validators, probes and tests, whose files agents keep outside the workspace
   (FinishUP never sends them), although the packet held what those checks printed. A hook-captured
   tool output now leads its first-packet excerpt with
-  `[FinishUP: observed output captured by a host hook (evidence <evd_>)…; not an agent-published result]`
-  (`_OBSERVED_OUTPUT_LABEL`). The label carries ids and closed tokens only and is prefixed after the
-  capture's text is neutralised, so a capture cannot forge it; its recorded spans stay placed in
-  the capture's own bytes. A run clause (`run of command action <act_>, host-reported outcome
+  `[FinishUP: observed output captured by a host hook (evidence <evd_>)…]`
+  (`_OBSERVED_OUTPUT_LABEL`, ending `; not an agent-published result]`). The label carries ids and closed tokens only and is
+  prefixed after the capture's text is neutralised; its recorded spans stay placed in the capture's
+  own bytes. Because the label is now a witness, the neutraliser reads a line as a reader sees it
+  (#1108 review R1): every line boundary `str.splitlines` honours starts a line (a bare CR and
+  U+2028 included), any run of characters a reader cannot see may lead the bracket (whitespace,
+  controls, format characters such as U+200B and U+FEFF, combining marks, the invisible fillers),
+  and the bracket and the name compare after NFKC folding with those characters removed, so an
+  agent line imitating the label behind such a lead is prefixed `(agent text) ` like any other.
+  Look-alike letters from other scripts are not folded. A capture never travels without its label:
+  when the per-excerpt limit leaves no readable room beside the full label the run clause is
+  dropped, and when even the bare label leaves none the excerpt is left out as `not_selected` with
+  `content_unselected`. Evidence only the service or the importer can record names its author too:
+  `[FinishUP: approved check result recorded by FinishUP from a check it ran (evidence <evd_>);…]`
+  for `approved_check` provenance and `[FinishUP: import report recorded by the FinishUP importer
+  (evidence <evd_>); …]` for `import_observed` (`evidence_recorded` rejects either provenance from
+  any other author), and the instruction names both, says a `source_kind` `diff` evidence excerpt
+  holds hook-captured edit bytes, and reads only the remaining unlabelled evidence as the agent's
+  published description. A run clause (`run of command action <act_>, host-reported outcome
   <outcome>, exit status <n>`) appears only when the action and its result are hook-observed
   records (ADR-022 decision 2) and the action's keyed command identity is the one the capture was
   resolved under, the test auto-supply already applies; an agent-published or plaintext record
@@ -2174,6 +2189,8 @@ AI-powered review receives the material it needs and judges from primary materia
   sentence, since supplied answers arrive in the next check's packet (issue #1094 round-3 note), and
   now says that observed output, the check-time change or a file answering the same request is the
   witness; `supplied_since` is said to include the re-runs of a requested command FinishUP observed.
+  That clause is true only with the n7 change that counts those re-runs in `supplied_since`
+  (tracker issue #1100); the two ship in the same integration.
 - **One reading of disclosure** (RC7). The instruction said both "a caveat the agent disclosed is
   not by itself support" and "a hidden-evaluator requirement is `not_assessable`, not a challenge,
   once the packet shows the agent disclosed it", and the reviewer took the second: 9 of 27 wrong
@@ -2203,13 +2220,14 @@ AI-powered review receives the material it needs and judges from primary materia
   (R2-N3).
 
 Every provider route reads the same text: the Responses and Chat Completions adapters send
-`SEMANTIC_REVIEW_INSTRUCTION` (Chat Completions with its JSON-shape suffix), and the Codex app-server
-sends it as `baseInstructions`; the local-model adapter sends no instruction and the fake provider a
-fixed digest. The instruction grew from 29.9 KB to about 33.3 KB, about 860 more input tokens per
-review under the bytes/4 estimate. Case digests change for every case (item order is bound into
-`case_digest`), so a review frozen by an older build and recovered by this one ends `failed` /
-`coordinator_failure` through `semantic_execution_case_changed`, as for every case-builder change,
-and a pending disclosure approval bound to the older digest is reported `stale` and re-prepared.
+`SEMANTIC_REVIEW_INSTRUCTION` (Chat Completions with its JSON-shape suffix), and the Codex
+app-server sends it as `baseInstructions`; the local-model adapter sends no instruction and the fake
+provider a fixed digest. The instruction grew from 29.9 KB to about 33.6 KB, about 930 more input
+tokens per review under the bytes/4 estimate. Case digests change for every case (item order is
+bound into `case_digest`), so a review frozen by an older build and recovered by this one ends
+`failed` / `coordinator_failure` through `semantic_execution_case_changed`, as for every
+case-builder change, and a pending disclosure approval bound to the older digest is reported `stale`
+and re-prepared.
 
 Four n7 cases join the offline evaluation set (`tests/fixtures/reviewer_accuracy/n7_cases.json`):
 an observed validator outside the workspace, an answer supplied after a request, a disclosed limit

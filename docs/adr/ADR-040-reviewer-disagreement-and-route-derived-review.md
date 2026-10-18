@@ -714,10 +714,13 @@ scoped request; this amends Q4 in placement and reading only.
    "agent_disclosures", "standing": "agent_assertion", "disclosures": [...], "not_listed_count":
    n}`. Each entry is `{"obligation_id", "acknowledged_not_done"?, "verification_limit"?,
    "assumption"?, "already_disclosed": true}`, the same keys the obligation rows carried, sorted by
-   obligation id; entries that do not fit one structural item are left out and counted, never cut.
-   Ids and closed tokens only, so no user-controlled text enters the row. It sorts first in its
-   section, so the 16-decision cap never drops it, and is emitted only when the obligations section
-   is carried and at least one disclosure exists. The settled-finding row
+   obligation id. The row is built after the 32-row obligation cap, so it names only obligations the
+   packet carries, and it is held to the 16 KiB per-item bound rather than the 4 KiB prose bound, so
+   every one of those 32 fits; an entry that still did not fit would be left out and counted, never
+   cut. Ids and closed tokens only, so no user-controlled text enters the row. It sorts first in its
+   section, so the 16-decision cap never drops it; a decision row it displaces from the 16 slots is
+   recorded as a `not_selected` omission, never dropped silently. It is emitted only when the
+   obligations section is carried and at least one disclosure exists. The settled-finding row
    (`limitation_already_disclosed`) is unchanged.
 2. **One reading.** The instruction says the row is the agent's assertion: a disclosed caveat is
    not support, a disclosed limit is judged like any claim against what the packet shows, and the
@@ -727,7 +730,7 @@ scoped request; this amends Q4 in placement and reading only.
    and challenges the requirement when that material shows it unmet, disclosed or not (ADR-006 n7
    amendment). Nothing asks the agent for an artifact it cannot obtain.
 
-The reviewer still sees every disclosure, so the tb4n3 RC-1 loop (being asked to disclose a limit
-again) stays closed. No event, projection or schema changes; packets built before and after differ
-in item placement only, and a review recovered across the upgrade ends `coordinator_failure`
-(ADR-006).
+The reviewer still sees the disclosure of every obligation the packet carries, so the tb4n3 RC-1
+loop (being asked to disclose a limit again) stays closed. No event, projection or schema changes;
+packets built before and after differ in item placement only (plus the omission row for a displaced
+decision), and a review recovered across the upgrade ends `coordinator_failure` (ADR-006).

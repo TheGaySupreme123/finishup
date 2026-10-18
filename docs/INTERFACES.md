@@ -4822,8 +4822,9 @@ the check passed. The final-phase rule and `REVIEW_PHASE_QUESTIONS["final"]` mak
 hidden-evaluator requirement `not_assessable` only when the packet holds no material that settles
 it; a disclosure is never support and never stops the reviewer judging the packet. The "Reading the
 packet" section states the item order (`SEMANTIC_CASE_SECTION_ORDER`), explains the observed-output
-label and the `agent-disclosures` row, and carries the `excerpt-supplied-` rule beside the
-`prior_missing_for_assessment` sentence. `tests/fixtures/reviewer_accuracy/n7_cases.json` (same
+label, the `[FinishUP: approved check result` and `[FinishUP: import report` labels of records
+FinishUP wrote, and the `agent-disclosures` row, and carries the `excerpt-supplied-` rule beside
+the `prior_missing_for_assessment` sentence. `tests/fixtures/reviewer_accuracy/n7_cases.json` (same
 schema) adds four cases.
 
 **Routine frame and the agent's own criteria (issues #1042, #1043; ADR-040 amendment of
@@ -9885,8 +9886,11 @@ Names shared by the kernel, `respond`, `check`, status and the receipt:
   `decision`, first in it; category `obligation_text`; content `yoetz.agent-disclosures/1` with
   `kind: agent_disclosures`, `standing: agent_assertion`, `disclosures` per obligation id with the
   `acknowledged_not_done` / `verification_limit` / `assumption` / `already_disclosed` keys, and
-  `not_listed_count`) listing what the agent disclosed (n7 RC7, issue #1108, ADR-040 amendment of
-  2026-10-18; it replaced `yoetz_already_disclosed` beside each obligation), and
+  `not_listed_count`) listing what the agent disclosed for each obligation the packet carries
+  (built after the 32-row obligation cap, within the 16 KiB per-item bound, so all 32 fit; a
+  decision row it displaces from the 16 decision slots is a `not_selected` omission) (n7 RC7, issue
+  #1108, ADR-040 amendment of 2026-10-18; it replaced `yoetz_already_disclosed` beside each
+  obligation), and
   `limitation_already_disclosed` / `limitation_disclosed_by` on a settled-finding row.
 
 #### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
@@ -10167,9 +10171,10 @@ plan. Names and contracts:
 - `TaskStatementSource`: `agent_transcribed` (every recorded statement), `host_captured_user_prompt`
   (reserved: no path records it and captured prompt text never enters a packet), and
   `task_title_only` (fallback).
-- Packet: section `task_statement` (first in `SEMANTIC_CASE_SECTION_ORDER`), one item `task-statement`, category
-  `task_description`, source kind `task`, content `yoetz.task-statement/1`
-  (`source`, `statement`, `statement_bytes`, `elided_bytes`). Content is at most
+- Packet: section `task_statement` (first in `SEMANTIC_CASE_SECTION_ORDER`), one item
+  `task-statement`, category `task_description`, source kind `task`, content
+  `yoetz.task-statement/1` (`source`, `statement`, `statement_bytes`, `elided_bytes`). Content is
+  at most
   `MAX_TASK_STATEMENT_ITEM_BYTES` (16 KiB) of canonical JSON: a longer statement keeps its head and
   tail, marks `[... N bytes elided ...]`, and adds `semantic_case_content_over_item_limit`.
   `ReviewPacket.task_statement_item_ids` (max 1) and outbound-case 1.2.0 carry it. Catalog and

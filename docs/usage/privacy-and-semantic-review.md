@@ -399,9 +399,10 @@ skip-worktree or assume-unchanged never travels) and its content still matches t
 exactly. A test or fixture file a recorded verification command ran is offered the same way, so the
 reviewer can read the assertions behind a passing run; a test your agent wrote or changed is
 already in the change. Task inputs travel after the change's own share, within an eighth of the
-room for excerpts and never in the places the latest test run needs, so a large change cannot push
-the specification out entirely; a task input larger than the room left arrives as its first and
-last lines, marked as shortened. A binary, image or data
+room for excerpts and never in the places the latest test run needs. Beside a large change the
+first task input usually still travels, at least as its first and last lines marked as shortened,
+and it takes whatever room the packet has left at the end; when the room is too small it is
+listed as not carried. A binary, image or data
 input (a PDF included) is never sent: FinishUP sends its own short description instead (format, size, image dimensions, an estimated page count, a spreadsheet's sheet names and
 first rows, an archive's file names, an array's shape), labelled as FinishUP's description; a value
 in it that looks like a credential is replaced by a marker before anything is shortened. A large
@@ -519,7 +520,8 @@ support for the work itself, and it never stops the reviewer judging what the pa
 reviewer reads the work before the agent's account of it: the packet lists the task, the change,
 task inputs and the output FinishUP observed before the agent's plan, claims and disclosures, and
 output FinishUP observed from a check the agent ran counts as that check's witness even when the
-check's own file is not in the packet. Work left open while completion is claimed is still reported, and so is a real
+check's own file is not in the packet. Work left open while completion is claimed is still
+reported, and so is a real
 discrepancy in the agent's own record, such as a completion claim beyond the plan or a recorded
 command that differs from the one observed. Every provider — the Codex subscription, OpenAI, and
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing

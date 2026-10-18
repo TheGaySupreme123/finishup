@@ -679,16 +679,36 @@ floor instead of a lead:
    the bytes held back for the decisive verification output (an eighth of the budget, at most one
    excerpt). An input larger than the room left arrives as its head and tail cut to that room,
    with the elision marked, while the room is at least 2 KiB; it is disclosed as truncated
-   (`caller_evidence` `partial`, `truncated_payload`). Their slots are bounded as before: those
-   the change's admitted parts and two per decisive run leave.
-3. **The rest is unchanged.** The change's remaining parts take the room the reserved excerpt
-   classes leave, ahead of older hunks and general output (#983); the change then backfills, and
-   the inputs not yet carried backfill last. The task statement is its own item, never an excerpt,
-   so no excerpt budget can drop it.
+   (`caller_evidence` `partial`, `truncated_payload`). When inputs are offered, the rounding of
+   the change's share up to its first part never takes that 2 KiB floor or the decisive hold: the
+   change keeps at least its half, and its first part is cut to the room as a narrowed case
+   already allows (#983). The floor is the first input's: later inputs take what the eighth leaves
+   and otherwise wait for the backfill. Their slots are bounded as before: those the change's
+   admitted parts and two per decisive run leave; with none left, every input waits for the
+   backfill.
+3. **The rest is unchanged, except that a cut input grows back.** The change's remaining parts take
+   the room the reserved excerpt classes leave, ahead of older hunks and general output (#983); the
+   change then backfills, and the inputs not yet carried backfill last. An input the first offer
+   cut is then offered the room the packet has left, so one that fits whole arrives whole, as it
+   did when it waited for the backfill. The task statement is its own item, never an excerpt, so no
+   excerpt budget can drop it.
 
-At the full Expanded budget a ~102 KB change with two 16 KB specifications is now carried whole
-with one specification beside it; under a narrowed budget the change keeps its half and each
-specification at least its head and tail. Primary material also leads the item order now (ADR-006
-n7 amendment), so envelope bounding drops the timeline and the agent's account before any change
-part. Cutting the change's *last* part to the room, rather than only its first, would let the change
-use the bytes the input clip frees; it reworks the shown-file accounting (#983) and is a follow-up.
+At the full Expanded budget a ~102 KB change with two 16 KB specifications is now carried whole with
+one specification beside it. Under a budget the service planner narrowed, the change keeps its half
+and the first specification at least its head and tail whenever that budget leaves 2 KiB beside the
+change's half and the decisive hold (an excerpt budget of about 5.3 KiB or more) and the recipe
+leaves the inputs a slot; below that the input is listed as not carried. Primary material also leads
+the item order now (ADR-006 n7 amendment), so envelope bounding drops the timeline and the agent's
+account before any change part.
+
+What this amendment does not remove, left as follow-ups that issue #1108 lists:
+
+- **The in-builder planned path.** When the case builder itself narrows the excerpt budget below
+  a prepared-byte ceiling, the inputs still cost the change one 16 KiB part at each narrowed
+  budget, as before #1108 (measured at 96000, 72000 and 56000 bytes: the same change bytes as at
+  the base). Cutting the change's *last* part to the room, rather than only its first, would let
+  the change use the bytes the input clip frees; it reworks the shown-file accounting (#983).
+- **Planner room.** Fixed material (the agent's account, timeline rows and earlier-finding prose)
+  is measured before excerpts and narrows none of them, so primary material is still a minority
+  of a full packet. Rebalancing that room, with per-section byte measurements from a pilot dump,
+  touches the #905 dialogue guarantees and is its own decision.
