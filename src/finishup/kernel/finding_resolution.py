@@ -85,6 +85,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+    TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     UNRESOLVED_VERIFICATION_GAP,
 )
 from finishup.domain.task_statement import (
@@ -246,6 +247,9 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
         # The check-time change is AI-powered review input only (ADR-031); local packs never
         # read it, so its limits cannot weaken a local absence proof.
         *CHECK_TIME_CHANGE_GAPS,
+        # A task-named input outside the workspace the reviewer could not read (issue #1102) is
+        # AI-powered review input only; local packs never read task inputs.
+        TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
         # The reduced review's sent content could not be recorded (issue #904): a limit of that
         # review, never of the complete local case. For AI-powered proof it blocks.
         SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP,
@@ -382,7 +386,8 @@ _TEST_EDIT_ACCOUNTING_GAPS: Final = frozenset(
 # categories, dropped challenges, truncated payloads, or an insufficient-packet answer.
 # The task-statement gaps (issue #908) join them on the same terms: a review that lacked the
 # user's request may prove absence only for an issue raised by a review that lacked it the same
-# way, never for one raised with the statement in hand.
+# way, never for one raised with the statement in hand. A task-named outside input the owner did
+# not admit (issue #1102) joins on the same terms.
 SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS: Final = (
     _HOST_OBSERVATION_GAPS
     | REVIEW_SELECTION_GAPS
@@ -391,6 +396,7 @@ SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS: Final = (
             "content_capture_unavailable",
             SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
             SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
+            TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
         }
     )
     | TASK_STATEMENT_GAPS

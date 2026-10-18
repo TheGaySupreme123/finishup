@@ -3221,6 +3221,9 @@ def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None
         "semantic_case_finding_refs_over_limit": (False, False),
         SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP: (False, True),
         SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP: (False, True),
+        # A task-named outside input the owner has not admitted (issue #1102): AI-powered review
+        # input only, so never a local veto; an AI-powered baseline like the task statement's.
+        "task_input_outside_not_admitted": (False, True),
     }
     # Structural test-edit accounting (ADR-032, #961) is decided by kind rather than baseline: the
     # standing accounting limits bound only ``task_requirement_unmet``, while the actionable

@@ -16,6 +16,7 @@ import hmac
 import os
 import re
 import shlex
+import stat
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, cast
@@ -235,20 +236,35 @@ async def _resolve(
 
 
 async def _load_task_base(runtime: TaskRuntime, request_id: str) -> TaskChangeBase | None:
+    return (await _load_task_base_and_start(runtime, request_id))[0]
+
+
+async def _load_task_base_and_start(
+    runtime: TaskRuntime, request_id: str
+) -> tuple[TaskChangeBase | None, float | None]:
+    """The task's kept base, and when a ``task_start`` base was recorded (POSIX seconds).
+
+    A ``task_start`` base is recorded right after the task is created, before the creating
+    request returns, so its object's creation time is when the task started (issue #1102); a
+    ``first_check`` base, or none, gives no start time.
+    """
+
     loader = getattr(runtime.ledger, "load_task_change_base", None)
     if not callable(loader):
-        return None
+        return None, None
     try:
         ref = await cast(Callable[[], Awaitable[ObjectRef | None]], loader)()
         if ref is None:
-            return None
+            return None, None
         if (
             ref.metadata.kind is not ObjectKind.CHANGE_CAPTURE
             or ref.metadata.media_type != TASK_CHANGE_BASE_MEDIA_TYPE
             or ref.metadata.task_id != runtime.task_id
         ):
             raise ValueError("task_change_base_invalid")
-        return decode_task_change_base(await _read(runtime, ref))
+        base = decode_task_change_base(await _read(runtime, ref))
+        started = ref.metadata.created_at.timestamp() if base.origin == "task_start" else None
+        return base, started
     except Exception as exc:
         # An unreadable base degrades to the HEAD base, which the case discloses as
         # ``check_time_change_base_unavailable``; it never blocks the review.
@@ -258,7 +274,7 @@ async def _load_task_base(runtime: TaskRuntime, request_id: str) -> TaskChangeBa
             operation="check_time_change_base_unreadable",
             request_id=request_id,
         )
-        return None
+        return None, None
 
 
 async def _pin_first_check_base(
@@ -456,9 +472,15 @@ def _with_outside_inputs(
     workspace by device and inode at every level of its walk, so an admitted directory that
     contains the workspace, or a differently spelled path to it, cannot enumerate its files
     (PR #1086 review R1-02); every file the reader returns is checked here again.
+
+    Issue #1102: a file the task names outside the workspace outranks what the repository read
+    chose beneath a task-named directory (its listing and the members FinishUP picked), so that
+    material gives way to it and keeps only the room left after it.
     """
 
-    room = MAX_TASK_INPUT_FILES - len(capture.inputs)
+    named = tuple(item for item in capture.inputs if not _directory_material(item))
+    chosen = tuple(item for item in capture.inputs if _directory_material(item))
+    room = MAX_TASK_INPUT_FILES - len(named)
     outside = tuple(
         value
         for value in input_paths
@@ -483,7 +505,13 @@ def _with_outside_inputs(
         added.append(item)
     if not added:
         return capture
-    return replace(capture, inputs=(*capture.inputs, *added))
+    return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES])
+
+
+def _directory_material(item: TaskInputFile) -> bool:
+    """A listing of a task-named directory, or a member FinishUP chose beneath one (#1102)."""
+
+    return item.origin == "task_directory" or (item.summary and item.path.endswith("/"))
 
 
 def _capture_redacted(
@@ -494,6 +522,9 @@ def _capture_redacted(
     input_paths: tuple[str, ...] = (),
     verification_paths: frozenset[str] = frozenset(),
     outside_reader: OutsideInputReader | None = None,
+    *,
+    admitted_roots: tuple[str, ...] = (),
+    task_started_at: float | None = None,
 ) -> CheckChangeCapture:
     # A port without deliverable ordering or task inputs (an embedded or test port) is called
     # exactly as before when neither is asked for.
@@ -507,7 +538,7 @@ def _capture_redacted(
         raise TypeError("check_change_capture_invalid")
     capture = _with_input_origins(capture, verification_paths, workspace)
     # Every input, inside the repository or beneath an admitted root, takes the same redaction.
-    return _redacted(
+    capture = _redacted(
         _with_outside_inputs(
             capture,
             input_paths,
@@ -516,6 +547,18 @@ def _capture_redacted(
             verification_paths=verification_paths,
         )
     )
+    # Issue #1102 (RC6f): decided once, here, against the root this read used, and frozen into
+    # the stored object, so a recovered job replays the decision instead of re-reading the disk.
+    if outside_inputs_not_admitted(
+        input_paths,
+        verification_paths,
+        workspace,
+        admitted_roots,
+        priority_paths,
+        task_started_at=task_started_at,
+    ):
+        capture = replace(capture, outside_inputs_not_admitted=True)
+    return capture
 
 
 async def capture_check_time_change(
@@ -530,6 +573,7 @@ async def capture_check_time_change(
     input_paths: tuple[str, ...] = (),
     verification_paths: frozenset[str] = frozenset(),
     outside_reader: OutsideInputReader | None = None,
+    admitted_roots: tuple[str, ...] = (),
 ) -> CheckChangeOutcome:
     """Capture, redact and store one check's change; every failure is a disclosed absence.
 
@@ -539,7 +583,9 @@ async def capture_check_time_change(
     inputs are labelled as the verification's oracle and are never read outside the workspace.
     ``outside_reader`` reads the task's own candidates beneath the outside-workspace roots the
     owner admitted in the repository grant (#1082); the service passes it only when the effective
-    policy admits a root and the recipe carries task inputs.
+    policy admits a root and the recipe carries task inputs. ``admitted_roots`` are those roots
+    themselves: the capture records, as one closed flag, whether the task names an existing input
+    outside the workspace that none of them covers (``outside_inputs_not_admitted``, #1102).
     """
 
     if type(source) is not CheckWorkspaceSource:
@@ -556,7 +602,7 @@ async def capture_check_time_change(
             request_id=request_id,
         )
         return CheckChangeOutcome(unavailable=True, reason="repository_mismatch")
-    base = await _load_task_base(runtime, request_id)
+    base, task_started_at = await _load_task_base_and_start(runtime, request_id)
     if base is None:
         base = await _pin_first_check_base(runtime, port, source.workspace, clock, request_id)
     try:
@@ -571,6 +617,8 @@ async def capture_check_time_change(
             input_paths,
             verification_paths,
             outside_reader,
+            admitted_roots=admitted_roots,
+            task_started_at=task_started_at,
         )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
@@ -782,7 +830,8 @@ _MAX_STATEMENT_INPUT_CANDIDATES: Final = 16
 # Issue #1102 (RC6d): a path the statement quotes or escapes keeps its spaces
 # (``"/app/My Docs/spec.md"``, ``/app/My\ Docs/spec.md``). One token is a quoted span or a word,
 # and a word may hold ``\ ``. Unquoted, unescaped text splits exactly as ``_STATEMENT_WORD`` does,
-# and a quoted span still yields those same words, after the spaced path it holds when it is one.
+# and a quoted span still yields those same words; when it holds a spaced path, the path comes
+# first and the words the spaces cut from its head and middle are dropped (``_statement_words``).
 # An apostrophe inside a word (``don't``) never opens a span.
 _STATEMENT_TOKEN: Final = re.compile(
     r"`(?P<tick>[^`\n]{1,1024})`"
@@ -824,8 +873,9 @@ def _spaced_path(value: str) -> str | None:
     The value must have a directory part or end in ``/``, or end in a file name with a lettered
     extension; hold one to eight single spaces and no other whitespace, glob, brace, home or
     variable expansion, backtick or URL; and be at most 1024 characters. Prose ahead of an
-    absolute path (``see /app/My Docs/spec.md``) is dropped, and a span whose earlier words
-    already name a whole file (``docs/a.md and docs/b.md``) is prose, never one path.
+    absolute path (``see /app/My Docs/spec.md``) is dropped, a span whose earlier words
+    already name a whole file (``docs/a.md and docs/b.md``) is prose, never one path, and a span
+    with an option-like word (``pytest -q tests/test_a.py``) is a command, never one path.
     """
 
     value = value.strip(_STATEMENT_WORD_EDGE)
@@ -838,6 +888,7 @@ def _spaced_path(value: str) -> str | None:
         or len(value) > 1_024
         or _SPACED_NOT_PLAIN.search(value) is not None
         or any(_names_a_file(word) for word in value.split(" ")[:-1])
+        or any(word.startswith("-") for word in value.split(" ")[1:])
     ):
         return None
     name = value.rstrip("/").rsplit("/", 1)[-1]
@@ -862,11 +913,23 @@ def _statement_words(text: str) -> list[str]:
             continue
         content = match.group("tick") or match.group("double") or match.group("single") or ""
         spaced = _spaced_path(content)
-        if spaced is not None:
-            # Ahead of its words, which still count: a quoted command (``pytest -q t/a.py``)
-            # can pass for a spaced path, and the file it names must not be lost.
-            words.append(spaced)
-        words.extend(_STATEMENT_WORD.findall(content))
+        if spaced is None:
+            words.extend(_STATEMENT_WORD.findall(content))
+            continue
+        # Ahead of the words around it. Prose before the path still counts, and so does a
+        # relative path's last word: a quoted command (``cat docs/spec.md``) can pass for a
+        # spaced path, and the file it names must not be lost. The words the spaces cut from the
+        # path's head and middle never count, nor any of an absolute path's: ``/shared/legacy``
+        # of ``"/shared/legacy app/main.c"`` is no folder the task names (#1102 review).
+        words.append(spaced)
+        start = content.find(spaced)
+        end = start + len(spaced)
+        tail = not spaced.startswith("/")
+        words.extend(
+            fragment.group(0)
+            for fragment in _STATEMENT_WORD.finditer(content)
+            if fragment.start() < start or (tail and fragment.end() >= end)
+        )
     return words
 
 
@@ -1021,9 +1084,51 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
     return tuple(dict.fromkeys((*candidates, *directories)))[:_MAX_STATEMENT_INPUT_CANDIDATES]
 
 
-# Issue #1102 (RC6f): absolute trees that hold the system's own programs and libraries. A task that
-# names ``/usr/bin/python3`` names a tool, not an input the reviewer lacks.
-_SYSTEM_TREES: Final = ("/bin", "/lib", "/lib32", "/lib64", "/nix", "/sbin", "/snap", "/usr")
+# Issue #1102 (RC6f): absolute trees that hold the system's own programs, libraries, devices,
+# processes and host configuration. A task that names ``/usr/bin/python3`` names a tool, not an
+# input the reviewer lacks, and no root beneath the device, process or configuration trees may be
+# admitted at all (``domain.privacy``).
+_SYSTEM_TREES: Final = (
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/nix",
+    "/private/etc",
+    "/private/var/run",
+    "/proc",
+    "/run",
+    "/sbin",
+    "/snap",
+    "/sys",
+    "/usr",
+    "/var/run",
+)
+# Scratch, log, cache and package-state trees: a task names them as places to write ("write the
+# answer to /tmp/answer.txt", "log to /var/log/app.log"), not as material to read.
+_OUTPUT_TREES: Final = (
+    "/private/tmp",
+    "/private/var/tmp",
+    "/tmp",
+    "/var/cache",
+    "/var/lib",
+    "/var/log",
+    "/var/tmp",
+)
+# A path through an installed program or package tree names a tool (``/opt/conda/bin/python``).
+_TOOL_COMPONENTS: Final = frozenset(
+    {"bin", "dist-packages", "node_modules", "sbin", "site-packages"}
+)
+
+
+def _lstat_or_none(path: str) -> os.stat_result | None:
+    try:
+        return os.lstat(path)
+    except OSError, ValueError:
+        return None
 
 
 def outside_inputs_not_admitted(
@@ -1032,33 +1137,62 @@ def outside_inputs_not_admitted(
     workspace: str,
     admitted_roots: Iterable[str],
     outputs: Iterable[str],
+    *,
+    task_started_at: float | None,
+    probe: Callable[[str], os.stat_result | None] | None = None,
 ) -> bool:
-    """Whether the task names an input outside the workspace no admitted root covers (#1102).
+    """Whether the task names an existing input outside the workspace no admitted root covers.
 
-    ``candidates`` are ``review_input_paths``' candidates and ``oracle`` those only a recorded
-    verification command named, which are never read outside the workspace and so never count.
-    A candidate counts when it is absolute, lies outside ``workspace`` (case-folded, as the
-    outside read compares it), has at least two components, is neither a declared output nor in
-    a system tree, could lie beneath a root the owner may admit (``admitted_input_root_valid``
-    of its parent, so never hidden or a device, process or host-configuration tree), and is at
-    or beneath none of ``admitted_roots``. A closed yes or no: no path is returned or kept.
+    Issue #1102 (RC6f). ``candidates`` are ``review_input_paths``' candidates and ``oracle`` those
+    only a recorded verification command named, which are never read outside the workspace and
+    so never count. A candidate counts only when FinishUP can tell it is an input:
+
+    * lexically, it is absolute, lies outside ``workspace`` (case-folded, as the outside read
+      compares it), has at least two components, is not a declared output (``outputs``), lies in
+      no system, scratch, log, cache or package-state tree, passes through no ``bin`` or
+      installed-package directory, has no hidden component, could lie beneath a root the owner
+      may admit (one of its ancestors passes ``admitted_input_root_valid``), is not
+      credential-named, and is at or beneath none of ``admitted_roots``;
+    * on disk, ``probe`` (``lstat``: metadata only, never following a final link, never opening
+      content) finds a regular file or a directory there whose modification and change times
+      both predate ``task_started_at``. A route (``GET /api/v1/users``) names nothing on disk,
+      and a file the agent wrote during the task (``/root/model.pt``) is its output, not an
+      input. Without a task-start time nothing counts.
+
+    A closed yes or no, decided once when the check-time read runs and frozen into its object:
+    no path is returned or kept.
     """
 
+    if task_started_at is None:
+        return False
+    metadata = _lstat_or_none if probe is None else probe
     roots = tuple(os.path.normpath(root) for root in admitted_roots)
     declared = {os.path.normpath(value) for value in outputs if value.startswith("/")}
     for value in candidates:
         if not value.startswith("/") or value in oracle or "\x00" in value:
             continue
         path = os.path.normpath(value)
-        parent = path.rsplit("/", 1)[0]
+        parts = path.split("/")[1:]
+        ancestors = ("/" + "/".join(parts[:depth]) for depth in range(1, len(parts)))
         if (
-            path.count("/") < 2
+            len(parts) < 2
             or path in declared
             or _within(path, workspace)
-            or any(path == tree or path.startswith(tree + "/") for tree in _SYSTEM_TREES)
-            or not admitted_input_root_valid(parent)
+            or any(
+                path == tree or path.startswith(tree + "/")
+                for tree in (*_SYSTEM_TREES, *_OUTPUT_TREES)
+            )
+            or any(part.startswith(".") or part in _TOOL_COMPONENTS for part in parts)
+            or not any(admitted_input_root_valid(ancestor) for ancestor in ancestors)
             or credential_named_bytes(os.fsencode(path))
             or any(path == root or path.startswith(root + "/") for root in roots)
+        ):
+            continue
+        status = metadata(path)
+        if (
+            status is None
+            or not (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
+            or max(status.st_mtime, status.st_ctime) >= task_started_at
         ):
             continue
         return True

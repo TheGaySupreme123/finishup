@@ -67,10 +67,10 @@ from finishup.protocol.models import (
 __all__ = [
     "CHECK_TIME_CHANGE_SOURCE_REF",
     "FOLLOW_UP_KINDS",
-    "OBSERVED_FOLLOW_UP_KINDS",
-    "SECTION_FOLLOW_UP_KINDS",
     "FINISHUP_LIMIT_PACKET_ROOM",
     "FINISHUP_LIMIT_UNSUPPORTED_DATA_TYPE",
+    "OBSERVED_FOLLOW_UP_KINDS",
+    "SECTION_FOLLOW_UP_KINDS",
     "MissingItemsReview",
     "ReviewFollowUp",
     "ReviewFollowUpItem",

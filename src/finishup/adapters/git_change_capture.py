@@ -241,6 +241,9 @@ class _TrackedRead:
     # Changed gitlinks (submodules and embedded repositories Git tracks): path and the commit the
     # base tree records for it, ``None`` when the base held no gitlink there.
     gitlinks: tuple[tuple[bytes, str | None], ...] = ()
+    # Old paths of the renames folded into ``R`` sections: the change no longer names them, but
+    # the task did touch them (issue #1102 review r1-6).
+    rename_sources: frozenset[bytes] = frozenset()
 
 
 @dataclass(slots=True)
@@ -1876,6 +1879,7 @@ class GitChangeCaptureAdapter:
             base_kind=base_kind,
             base_id=base_id,
             object_format=object_format,
+            moved=tracked.rename_sources,
         )
         return self._render(
             base_kind,
@@ -2064,6 +2068,7 @@ class GitChangeCaptureAdapter:
         base_kind: ChangeBaseKind,
         base_id: str,
         object_format: Literal["sha1", "sha256"],
+        moved: frozenset[bytes] = frozenset(),
     ) -> tuple[TaskInputFile, ...]:
         """Read the read-only task input files ``values`` names (issue #1045), bounded.
 
@@ -2086,11 +2091,13 @@ class GitChangeCaptureAdapter:
         FinishUP's own listing of its files that pass the same unchanged-since-start test and,
         in the room left, the members sharing the most identifiers with the change
         (``_directory_inputs``). Named files keep priority; directory material only backfills.
+        ``moved`` are the old paths of renames the change shows as ``R`` sections of their new
+        paths: the task touched them too, so they are never read or listed as unchanged.
         """
 
         if type(values) is not tuple or not values:
             return ()
-        changed = {section.path.rstrip(b"/") for section in sections}
+        changed = {section.path.rstrip(b"/") for section in sections} | moved
         nested_roots = {read.path for read in nested}
         inputs: list[TaskInputFile] = []
         seen: set[bytes] = set()
@@ -2857,6 +2864,7 @@ class GitChangeCaptureAdapter:
                 for entry in entries
                 if entry.dst_mode == "160000" and entry.status != "D"
             ),
+            rename_sources=frozenset(rename_targets.values()),
         )
         if not sections:
             return read

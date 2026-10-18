@@ -216,6 +216,27 @@ def test_an_admitted_directory_named_without_a_slash_is_listed(
     assert read_outside_inputs((root,), (f"{root}/linked_app/",)) == ()
 
 
+def test_the_head_word_of_a_quoted_spaced_path_never_lists_a_folder(shared: Path) -> None:
+    """Issue #1102 review goal-r1-2: ``"/shared/legacy app/main.c"`` names one file. The word
+    the space cut from its head, ``/shared/legacy``, is no folder the task names, even when one
+    exists there beneath the admitted root."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    root = os.fspath(shared)
+    (shared / "legacy app").mkdir()
+    (shared / "legacy app" / "main.c").write_text("int main(void) { return 0; }\n", "utf-8")
+    (shared / "legacy").mkdir()
+    (shared / "legacy" / "unrelated_notes.txt").write_text("UNRELATED_MARKER\n", "utf-8")
+
+    candidates = task_input_paths(make_case().projection, f'Port "{root}/legacy app/main.c".')
+    inputs = read_outside_inputs((root,), candidates, limit=4)
+
+    assert candidates == (f"{root}/legacy app/main.c",)
+    assert [item.path for item in inputs] == [f"{root}/legacy app/main.c"]
+
+
 def test_links_and_unsafe_roots_admit_nothing(shared: Path, tmp_path: Path) -> None:
     root = os.fspath(shared)
     target = tmp_path / "target.md"

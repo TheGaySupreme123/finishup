@@ -2297,6 +2297,59 @@ def test_a_named_directory_lists_its_unchanged_files_and_reads_the_one_sharing_t
     assert decode_check_change(encode_check_change(capture)) == capture
 
 
+def test_a_directory_listing_never_names_a_file_the_task_renamed_away(tmp_path: Path) -> None:
+    """Issue #1102 review r1-6: the change folds a rename into one ``R`` section of the new
+    path, but the old path is the task's work too, never "unchanged since the task started"."""
+
+    repository = _dedup_repository(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "dedup" / "README.md").rename(repository / "dedup" / "NOTES.md")
+    _git(repository, "add", "--", "dedup/NOTES.md")
+
+    capture = adapter.capture(
+        os.fspath(repository), base, input_paths=("dedup/", "dedup/README.md")
+    )
+
+    assert "diff --git a/dedup/NOTES.md b/dedup/NOTES.md" in capture.text.decode("utf-8")
+    listing = capture.inputs[0]
+    assert listing.path == "dedup/" and listing.summary
+    names = listing.text.decode("utf-8").splitlines()
+    assert names[0].startswith("FinishUP listing of dedup/: 3 files beneath it are unchanged")
+    assert names[2:] == ["dedup/__init__.py", "dedup/config.py", "dedup/core.py"]
+    assert all(item.path not in {"dedup/README.md", "dedup/NOTES.md"} for item in capture.inputs)
+
+
+def test_the_head_word_of_a_quoted_spaced_path_is_never_a_task_named_directory(
+    tmp_path: Path,
+) -> None:
+    """Issue #1102 review goal-r1-2: ``'<repo>/app/data files/input.csv'`` names one file. The
+    word the space cut from its head, ``<repo>/app/data``, must not expand an unrelated
+    ``app/data/`` as "a directory the task names"."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    repository = _repository(tmp_path)
+    (repository / "app" / "data files").mkdir(parents=True)
+    (repository / "app" / "data files" / "input.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (repository / "app" / "data").mkdir()
+    (repository / "app" / "data" / "unrelated.csv").write_text("UNRELATED\n", encoding="utf-8")
+    _git(repository, "add", "--", "app")
+    _commit(repository, "data")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    statement = f"Read '{repository}/app/data files/input.csv' then write report.md"
+
+    candidates = task_input_paths(make_case().projection, statement)
+    capture = adapter.capture(os.fspath(repository), base, input_paths=candidates)
+
+    assert candidates == (f"{repository}/app/data files/input.csv", "report.md")
+    assert [(item.path, item.origin) for item in capture.inputs] == [
+        ("app/data files/input.csv", "task")
+    ]
+
+
 def test_a_directory_named_without_a_slash_or_with_spaces_is_expanded_too(
     tmp_path: Path,
 ) -> None:

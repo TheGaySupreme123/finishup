@@ -367,7 +367,9 @@ class CheckChangeCapture:
     task-start commit, HEAD, or the empty tree); it keys the per-file commitments a completed review
     records, and is empty only for an object written before it existed. ``inputs`` are the read-only
     task input files the same read carried (issue #1045); they are not part of the change and never
-    enter ``text``.
+    enter ``text``. ``outside_inputs_not_admitted`` is the service's closed decision, taken when
+    the read ran, that the task names an existing input outside the workspace that no root the
+    owner admitted covers (issue #1102); it names no path.
     """
 
     base: ChangeBaseKind
@@ -379,6 +381,7 @@ class CheckChangeCapture:
     redacted: bool = False
     base_commit: str = field(default="", repr=False)
     inputs: tuple[TaskInputFile, ...] = field(default=(), repr=False)
+    outside_inputs_not_admitted: bool = False
 
     def __post_init__(self) -> None:
         if self.base not in _BASE_KINDS:
@@ -401,7 +404,11 @@ class CheckChangeCapture:
                 raise _invalid()
         if self.omitted_files > self.tracked_files + self.untracked_files:
             raise _invalid()
-        if type(self.truncated) is not bool or type(self.redacted) is not bool:
+        if (
+            type(self.truncated) is not bool
+            or type(self.redacted) is not bool
+            or type(self.outside_inputs_not_admitted) is not bool
+        ):
             raise _invalid()
         if self.omitted_files and not self.truncated:
             raise _invalid()
@@ -847,6 +854,9 @@ def encode_check_change(capture: CheckChangeCapture) -> bytes:
             }
             for item in capture.inputs
         ]
+    if capture.outside_inputs_not_admitted:
+        # Issue #1102: written only when set, so every object without it keeps its bytes.
+        body["outside_inputs_not_admitted"] = True
     return canonical_encode(cast(JsonValue, body))
 
 
@@ -855,7 +865,7 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
     if canonical_encode(parsed) != data or type(parsed) is not dict:
         raise _invalid()
     source = cast(dict[str, object], parsed)
-    if set(source) - {"base_commit", "inputs"} != {
+    if set(source) - {"base_commit", "inputs", "outside_inputs_not_admitted"} != {
         "base",
         "omitted_files",
         "redacted",
@@ -867,6 +877,9 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
     }:
         raise _invalid()
     if source["schema"] != _CHECK_CHANGE_SCHEMA or type(source["text"]) is not str:
+        raise _invalid()
+    if source.get("outside_inputs_not_admitted", True) is not True:
+        # A default value is never written, so a present ``false`` is not canonical.
         raise _invalid()
     inputs_raw = source.get("inputs", [])
     if type(inputs_raw) is not list or ("inputs" in source and not inputs_raw):
@@ -904,4 +917,5 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         redacted=cast(bool, source["redacted"]),
         base_commit=cast(str, source.get("base_commit", "")),
         inputs=tuple(inputs),
+        outside_inputs_not_admitted=source.get("outside_inputs_not_admitted") is True,
     )

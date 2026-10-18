@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import stat
+from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest
 
@@ -220,12 +223,10 @@ def test_a_quoted_or_escaped_path_with_spaces_is_one_candidate() -> None:
 
     projection = make_case().projection
 
-    # A quoted span still yields its words after the path, so nothing the old split found is
-    # lost; the read skips the words that name nothing.
+    # The words the spaces cut from an absolute spaced path name nothing the task named, so
+    # they never count (review goal-r1-2): ``/app/My`` could be an unrelated folder.
     assert task_input_paths(projection, 'Read "/app/My Documents/spec.md" and write out.txt') == (
         "/app/My Documents/spec.md",
-        "/app/My",
-        "Documents/spec.md",
         "out.txt",
     )
     # An escaped space is unambiguous: one value.
@@ -236,7 +237,20 @@ def test_a_quoted_or_escaped_path_with_spaces_is_one_candidate() -> None:
     assert task_input_paths(
         projection,
         "Read '/app/data files/input.csv' then write report.md; don't touch it's John's.",
-    ) == ("/app/data files/input.csv", "/app/data", "files/input.csv", "report.md")
+    ) == ("/app/data files/input.csv", "report.md")
+    # A relative spaced path keeps its last word, which a quoted command needs: the file
+    # ``cat docs/spec.md`` names must not be lost. Its head word never counts.
+    assert task_input_paths(projection, 'Read "My Docs/spec.md" and run `cat docs/rules.md`') == (
+        "My Docs/spec.md",
+        "Docs/spec.md",
+        "cat docs/rules.md",
+        "docs/rules.md",
+    )
+    # A span with an option-like word is a command, never one path; its file still counts.
+    assert task_input_paths(projection, "Run `pytest -q tests/test_a.py` then read a.md") == (
+        "tests/test_a.py",
+        "a.md",
+    )
     # Prose ahead of an absolute path is not part of it; a span listing whole files is prose.
     assert task_input_paths(projection, 'Use "see /app/My Docs/spec.md" now')[0] == (
         "/app/My Docs/spec.md"
@@ -254,7 +268,7 @@ def test_a_quoted_or_escaped_path_with_spaces_is_one_candidate() -> None:
 
 
 def test_unquoted_statements_tokenize_exactly_as_before() -> None:
-    """Issue #1102: the old words all stay, in order; a quoted spaced path only adds one."""
+    """Issue #1102: text holding no quoted or escaped spaced path splits exactly as before."""
 
     from finishup.application import check_change
 
@@ -276,8 +290,7 @@ def test_unquoted_statements_tokenize_exactly_as_before() -> None:
         before = check_change._STATEMENT_WORD.findall(  # pyright: ignore[reportPrivateUsage]
             statement
         )
-        assert [word for word in words if " " not in word] == before, statement
-        assert words == before or "`pytest -q" in statement, statement
+        assert words == before, statement
 
 
 def test_a_relative_directory_the_statement_names_is_a_candidate_after_files() -> None:
@@ -341,13 +354,62 @@ def test_a_verification_operand_with_a_space_is_an_oracle_candidate() -> None:
     assert verification_input_paths(cast(Any, case).projection) == ("tests/my test.py",)
 
 
+_STARTED = 1_000_000.0
+
+
+def _probe(found: dict[str, tuple[str, float]]) -> Callable[[str], os.stat_result | None]:
+    """A metadata probe over ``found``: path -> (``file``, ``dir`` or ``link``, change time)."""
+
+    kinds = {"file": stat.S_IFREG, "dir": stat.S_IFDIR, "link": stat.S_IFLNK}
+
+    def probe(path: str) -> os.stat_result | None:
+        if path not in found:
+            return None
+        kind, when = found[path]
+        return os.stat_result((kinds[kind] | 0o644, 1, 1, 1, 0, 0, 10, when, when, when))
+
+    return probe
+
+
+_ON_DISK: Final = {
+    "/shared/spec.md": ("file", _STARTED - 60),
+    "/shared/legacy_app": ("dir", _STARTED - 60),
+    "/shared/legacy_app/": ("dir", _STARTED - 60),
+    "/shared/legacy app/main.c": ("file", _STARTED - 60),
+    "/shared/out.json": ("file", _STARTED - 60),
+    "/shared/linked": ("link", _STARTED - 60),
+    "/root/model.pt": ("file", _STARTED + 5),
+    "/output/answer.txt": ("file", _STARTED + 5),
+    "/home/user/venv": ("dir", _STARTED + 5),
+    "/opt/conda/bin/python": ("file", _STARTED - 60),
+    "/opt/conda/lib/python3.12/site-packages/numpy": ("dir", _STARTED - 60),
+    "/tmp/result.json": ("file", _STARTED - 60),
+    "/var/log/app/server.log": ("file", _STARTED - 60),
+    "/var/run/app.sock": ("file", _STARTED - 60),
+    "/usr/bin/python3": ("file", _STARTED - 60),
+    "/shared/secrets.pem": ("file", _STARTED - 60),
+}
+
+
 @pytest.mark.parametrize(
     ("candidates", "roots", "outputs", "expected"),
     [
         (("/shared/spec.md",), (), (), True),
         (("/shared/legacy_app/",), (), (), True),
+        (("/shared/legacy_app",), (), (), True),
+        (("/shared/legacy app/main.c",), (), (), True),
         (("/shared/spec.md",), ("/shared",), (), False),
         (("/shared/legacy_app",), ("/shared/legacy_app",), (), False),
+        (("/shared/legacy app/main.c",), ("/shared",), (), False),
+        # Nothing on disk there: a route, not an input (review r1-1, surfaces-r1-3, goal-r1-1).
+        (("/api/v1/users", "/api/orders", "/v1/chat/completions", "/models/x.pkl"), (), (), False),
+        # Written during the task: the agent's output, not an input.
+        (("/root/model.pt", "/output/answer.txt", "/home/user/venv"), (), (), False),
+        # Scratch, log, tool and package trees; a final link; system trees.
+        (("/tmp/result.json", "/var/log/app/server.log"), (), (), False),
+        (("/opt/conda/bin/python", "/opt/conda/lib/python3.12/site-packages/numpy"), (), (), False),
+        (("/shared/linked",), (), (), False),
+        (("/var/run/app.sock", "/proc/1/status", "/run/user/notes.md"), (), (), False),
         (("/shared/out.json",), (), ("/shared/out.json",), False),
         (("/usr/bin/python3", "/lib/x.so"), (), (), False),
         (("/etc/app/config.yaml", "/home/me/.ssh/notes"), (), (), False),
@@ -360,15 +422,44 @@ def test_a_verification_operand_with_a_space_is_an_oracle_candidate() -> None:
 def test_outside_inputs_not_admitted_is_closed_and_bounded(
     candidates: tuple[str, ...], roots: tuple[str, ...], outputs: tuple[str, ...], expected: bool
 ) -> None:
-    """Issue #1102 (RC6f): a yes or no only; never a path."""
+    """Issue #1102 (RC6f): a yes or no only, never a path; only for an existing input."""
 
     from finishup.application.check_change import outside_inputs_not_admitted
 
-    assert outside_inputs_not_admitted(candidates, frozenset(), "/app", roots, outputs) is expected
+    probe = _probe(_ON_DISK)
+
+    def decide(oracle: frozenset[str], started: float | None) -> bool:
+        return outside_inputs_not_admitted(
+            candidates, oracle, "/app", roots, outputs, task_started_at=started, probe=probe
+        )
+
+    assert decide(frozenset(), _STARTED) is expected
     # A path only a verification command named is never read outside, so it never counts.
-    assert not outside_inputs_not_admitted(
-        candidates, frozenset(candidates), "/app", roots, outputs
+    assert not decide(frozenset(candidates), _STARTED)
+    # Without the task's start time FinishUP cannot tell an input from an output.
+    assert not decide(frozenset(), None)
+
+
+def test_the_outside_decision_probes_metadata_only_and_never_a_rejected_path() -> None:
+    from finishup.application.check_change import outside_inputs_not_admitted
+
+    probed: list[str] = []
+
+    def probe(path: str) -> os.stat_result | None:
+        probed.append(path)
+        return None
+
+    outside_inputs_not_admitted(
+        ("/usr/bin/python3", "/tmp/x.txt", "src/a.py", "/app/b.py", "/shared/c.md"),
+        frozenset(),
+        "/app",
+        (),
+        (),
+        task_started_at=_STARTED,
+        probe=probe,
     )
+
+    assert probed == ["/shared/c.md"]
 
 
 def _verification_case(*commands: tuple[str, str]) -> object:
@@ -544,6 +635,121 @@ def test_outside_inputs_join_the_capture_in_the_room_left_and_are_redacted() -> 
     # Without a reader, nothing outside the repository is read.
     plain = _capture_redacted(InputPort(), "/repo", None, (), paths, frozenset(), None)
     assert all(item.origin == "task" for item in plain.inputs)
+
+
+def test_a_named_outside_input_outranks_directory_material_the_read_chose() -> None:
+    """Issue #1102: a task-named outside file is a named file; a task-named directory's listing
+    and the members FinishUP picked beneath it give way to it, keeping only the room left."""
+
+    from finishup.ports.change_capture import TaskInputFile
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    asked: list[int] = []
+    listing = b"FinishUP listing of dedup/: 3 files\ndedup/a.py\ndedup/b.py\ndedup/c.py\n"
+
+    class DirectoryPort:
+        def capture(
+            self,
+            workspace: str,
+            base: object,
+            *,
+            priority_paths: tuple[str, ...] = (),
+            input_paths: tuple[str, ...] = (),
+        ) -> CheckChangeCapture:
+            return CheckChangeCapture(
+                base="task_start",
+                text=b"diff --git a/a.py b/a.py\n+print('kept')\n",
+                tracked_files=1,
+                untracked_files=0,
+                omitted_files=0,
+                truncated=False,
+                inputs=(
+                    TaskInputFile("DESIGN.md", b"# Design\n", 9),
+                    TaskInputFile("dedup/", listing, len(listing), summary=True),
+                    TaskInputFile("dedup/a.py", b"A = 1\n", 6, origin="task_directory"),
+                    TaskInputFile("dedup/b.py", b"B = 1\n", 6, origin="task_directory"),
+                ),
+            )
+
+    def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+        del values, workspace
+        asked.append(room)
+        return (TaskInputFile("/shared/spec.md", b"spec\n", 5, origin="outside_workspace"),)
+
+    paths = ("DESIGN.md", "/shared/spec.md", "dedup/")
+    capture = _capture_redacted(DirectoryPort(), "/repo", None, (), paths, frozenset(), reader)
+
+    assert asked == [3]
+    assert [item.path for item in capture.inputs] == [
+        "DESIGN.md",
+        "/shared/spec.md",
+        "dedup/",
+        "dedup/a.py",
+    ]
+
+
+def test_the_outside_decision_is_taken_against_the_read_root_and_frozen_into_the_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #1102 review r1-8: the read decides against the root it read (the connection's
+    locator), never the session's optional workspace label, and stores one closed flag, so a
+    recovered job decodes the same decision and an object without the flag keeps its bytes."""
+
+    from finishup.ports.change_capture import decode_check_change, encode_check_change
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    monkeypatch.setattr(
+        check_change_module, "_lstat_or_none", _probe({"/shared/spec.md": ("file", 1.0)})
+    )
+
+    class Port:
+        def capture(
+            self, workspace: str, base: object, *, input_paths: tuple[str, ...] = ()
+        ) -> CheckChangeCapture:
+            del workspace, base, input_paths
+            return CheckChangeCapture(
+                base="task_start",
+                text=b"diff --git a/a.py b/a.py\n+print('kept')\n",
+                tracked_files=1,
+                untracked_files=0,
+                omitted_files=0,
+                truncated=False,
+            )
+
+    def run(workspace: str, roots: tuple[str, ...], started: float | None) -> CheckChangeCapture:
+        return _capture_redacted(
+            Port(),
+            workspace,
+            None,
+            (),
+            ("/shared/spec.md",),
+            frozenset(),
+            None,
+            admitted_roots=roots,
+            task_started_at=started,
+        )
+
+    flagged = run("/app", (), 100.0)
+    assert flagged.outside_inputs_not_admitted is True
+    encoded = encode_check_change(flagged)
+    assert b'"outside_inputs_not_admitted":true' in encoded
+    assert b"/shared" not in encoded
+    assert decode_check_change(encoded) == flagged
+    # The read's own root holds the file, an admitted root covers it, or no start time is known.
+    for capture in (
+        run("/shared", (), 100.0),
+        run("/app", ("/shared",), 100.0),
+        run("/app", (), None),
+    ):
+        assert capture.outside_inputs_not_admitted is False
+        assert b"outside_inputs_not_admitted" not in encode_check_change(capture)
+    # A present default is not canonical.
+    with pytest.raises(ValueError):
+        decode_check_change(
+            encoded.replace(
+                b'"outside_inputs_not_admitted":true', b'"outside_inputs_not_admitted":false'
+            )
+        )
 
 
 def test_an_outside_path_only_a_verification_command_names_is_never_read() -> None:

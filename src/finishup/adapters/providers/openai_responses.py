@@ -230,6 +230,11 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
         "task_statement_not_authorized": "the privacy policy withheld the user's task statement",
         "task_statement_not_supplied": "no task statement or readable task title was recorded",
         "task_statement_unavailable": "the packet does not carry the user's task statement",
+        # Issue #1102: a task-named input outside the workspace the owner has not admitted.
+        "task_input_outside_not_admitted": (
+            "a file or folder the task names lies outside the workspace and the owner has not "
+            "admitted it, so it is not in this packet; judge what depends on it as not assessable"
+        ),
         "truncated_payload": "a payload was cut to a bounded prefix",
         "unknown_event": "an event of a schema this version cannot read was kept unread",
         "unknown_event_schema_preserved": (
