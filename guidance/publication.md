@@ -52,8 +52,8 @@ Check each line. Each one names the refusal or finding it prevents.
    every meaning field.
 8. Omit `occurred_at`; FinishUP records its clock. Never run `date` for it. An `occurred_at` you
    send is your claim. `evidence_recorded` always needs `observed_at`: when you saw the evidence,
-   as a time you already hold (the `accepted_at` of your last accepted write, or a time the output
-   printed), never a template's example.
+   as a time you already hold (a time the output printed, or else the `accepted_at` of your last
+   accepted write, an earlier bound rather than the moment you saw it), never a template's example.
 9. A file the task writes only under a condition is a `change` item that names the condition and
    the path. Never create an empty or placeholder file for it.
 
