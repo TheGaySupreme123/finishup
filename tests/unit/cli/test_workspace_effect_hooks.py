@@ -11,14 +11,16 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.workspace_fingerprint import WorkspaceFingerprintStore
 from finishup.application.observation_materialize import materialize_observation_envelope
-from finishup.cli import observe_hooks
+from finishup.cli import observe_hooks, workspace_effect_hook
 from finishup.domain.events import ResultRecordedPayload
 from finishup.domain.observation import ObservationEnvelope
 from finishup.domain.observation_profiles import (
@@ -30,6 +32,30 @@ from finishup.domain.workspace_effect import workspace_effect_from_result_summar
 from finishup.protocol.canonical import canonical_encode
 
 _TASK = "tsk_00000000-0000-4000-8000-000000001080"
+
+
+@pytest.fixture
+def real_process_table() -> None:
+    """Keep the production process probe for tests of live or unreadable processes."""
+
+
+@pytest.fixture(autouse=True)
+def quiescent_process_table(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Host/file tests assume no lingering writer; process tests request the real probe."""
+
+    if "real_process_table" in request.fixturenames:
+        return
+
+    def no_lingering_writer(_window: int, _root: str) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        workspace_effect_hook,
+        "WorkspaceFingerprintStore",
+        partial(WorkspaceFingerprintStore, lingering=no_lingering_writer),
+    )
 
 
 def _codex(event: str, call: str, command: str, **extra: object) -> dict[str, object]:
@@ -387,6 +413,7 @@ def test_a_script_writing_inside_a_dependency_or_cache_directory_is_changed(
 
 
 @pytest.mark.parametrize("host", ["codex", "claude", "cursor"])
+@pytest.mark.usefixtures("real_process_table")
 def test_a_launcher_whose_child_outlives_it_is_unavailable(tmp_path: Path, host: str) -> None:
     """Review finding 2: the launcher exits 0, its new-session child writes after the post hook."""
 
@@ -520,6 +547,7 @@ def test_a_post_pass_racing_a_late_pre_pass_cannot_consume_its_snapshot(
     assert after is not None and after.effect == "unavailable"
 
 
+@pytest.mark.usefixtures("real_process_table")
 def test_an_unreadable_process_table_is_unavailable_and_diagnosed_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -852,6 +880,7 @@ def test_text_the_splitter_misreads_keeps_a_real_late_writer_unavailable(
     assert reasons == {"background_launch": 1}
 
 
+@pytest.mark.usefixtures("real_process_table")
 def test_a_codex_launcher_whose_child_outlives_it_is_process_lingering(tmp_path: Path) -> None:
     """The completion fact is necessary, not sufficient: a lingering child keeps it unavailable."""
 
