@@ -2705,7 +2705,8 @@ recorded for this change; native Windows is not claimed.
 bulky ones. `status view=operation` for a finished check returns `check_outcome` with the same
 verdict, lead, `overall_next` and missing items a same-id resend returns. The captured output of a
 shell re-run of the target's exact command the Cursor hook observed after the request counts as
-supplying a targeted `verification_output` item once the reviewer was sent it (ADR-006 amendment).
+supplying a targeted `verification_output` (or `other`) item once the reviewer was sent it (ADR-006
+amendment).
 That path exists only on the ordinary-work observation profile: the default structural profile
 observes no shell calls, so there the agent publishes `result_recorded` of the target's action with
 the output in `summary`, which `agent_next` says on every host (capability gap owned by #910). An

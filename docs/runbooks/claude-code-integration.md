@@ -2612,14 +2612,14 @@ recorded for this change; native Windows is not claimed.
 
 **Host decision: supported, same field.** Claude Code delivers `structuredContent` for successful
 tools, so every check result's `agent_next` (ADR-043 amendment) reaches the model beside the
-unchanged 4,096-byte text summary, whose missing-item sentences now name the linking field and what
-counts as supplied. Claude Code's MCP output limit is far above these sizes; the field order
+unchanged 4,096-byte text summary, whose missing-item sentences now name the linking field; what
+counts as supplied rides in `agent_next`. Claude Code's MCP output limit is far above these sizes; the field order
 (`agent_next`, `overall_next`, `missing_for_assessment` before findings) costs nothing here.
 `isError` results are unchanged. `status view=operation` for a finished check returns
 `check_outcome`, and its text summary adds `check outcome: <verdict>; next: <action>;` and the lead
 when room remains. The captured output of a Bash re-run of the target's exact command the PostToolUse
-hook observed after the request counts as supplying a targeted `verification_output` item once the
-reviewer was sent it (ADR-006 amendment). That path exists only on the ordinary-work observation
+hook observed after the request counts as supplying a targeted `verification_output` (or `other`)
+item once the reviewer was sent it (ADR-006 amendment). That path exists only on the ordinary-work observation
 profile: the default structural profile observes no generic `Bash` calls, so there the agent
 publishes `result_recorded` of the target's action with the output in `summary`, which `agent_next`
 says on every host (capability gap owned by #910). An observed run never answers

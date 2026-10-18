@@ -28,6 +28,7 @@ from builders.policy_cases import (
 )
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from finishup.application.missing_for_assessment import (
+    agent_supplied_answer_refs,
     check_change_binary_paths,
     check_change_text_paths,
     review_missing_for_assessment,
@@ -1776,6 +1777,126 @@ def test_an_observed_rerun_of_the_targets_command_supplies_it(
     # The kind ``other`` reads the same output.
     other = _w6_rerun_case(_w6_observed_rerun(w6_key, stream_first=stream_first), "other")
     assert _w6_supplied(other) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
+
+
+def _w6_observed_target(
+    identity: str, *, stream_first: bool
+) -> tuple[
+    dict[ActionId, ProjectionRecord[ActionRecordedPayload]],
+    dict[ResultId, ProjectionRecord[ResultRecordedPayload]],
+    dict[EvidenceId, EvidenceProjectionRecord],
+]:
+    """A run ``act(3)``/``res(4)`` FinishUP observed before the request, with output ``evd(5)``.
+
+    Hook first, ``res(4)`` cites ``evd(5)``; stream first, ``evd(5)`` names ``act(3)``'s event.
+    """
+
+    return (
+        {
+            act(3): record(
+                ActionRecordedPayload(
+                    act(3), ActionKind.COMMAND, "Observed command", command=f"omitted:{identity}"
+                ),
+                12,
+            )
+        },
+        {
+            res(4): record(
+                ResultRecordedPayload(
+                    res(4),
+                    act(3),
+                    ResultOutcome.FAILURE,
+                    exit_status=1,
+                    summary="Observed result status=failure",
+                    evidence_refs=() if stream_first else (evd(5),),
+                ),
+                13,
+            )
+        },
+        {
+            evd(5): evidence_record(
+                _w6_captured(5, reference=str(evt(12)) if stream_first else None), 14
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize("stream_first", [False, True])
+def test_a_captured_output_target_is_tied_to_its_run_from_either_copy(
+    w6_key: str, stream_first: bool
+) -> None:
+    # W6 round 2: the reviewer names the captured output of an observed run. Whichever Codex
+    # copy committed that run first, an observed re-run of the same command answers it ...
+    actions, results, evidence = _w6_observed_target(w6_key, stream_first=stream_first)
+    rerun = _w6_observed_rerun(w6_key, stream_first=stream_first)
+    case = _w6_case(
+        actions={**actions, **rerun.actions},
+        results={**results, **rerun.results},
+        evidence={**evidence, **rerun.evidence},
+        observed=(70, 71, 72),
+        target=str(evd(5)),
+    )
+    assert _w6_supplied(case) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
+    # ... and so does the agent's own result for the target's action, as agent_next asks.
+    published = _w6_case(
+        actions=actions,
+        results={
+            **results,
+            res(90): record(
+                ResultRecordedPayload(
+                    res(90), act(3), ResultOutcome.FAILURE, exit_status=1, summary="1 failed"
+                ),
+                90,
+            ),
+        },
+        evidence=evidence,
+        target=str(evd(5)),
+    )
+    assert _w6_supplied(published) == ((str(res(90)),),)
+
+
+def test_observed_reruns_never_crowd_out_the_agents_published_output(w6_key: str) -> None:
+    # W6 round 2: the agent publishes the target run's output, then two observed re-runs follow
+    # (the n7 replay loop). The agent's result keeps its slot among the supplied refs.
+    actions: dict[ActionId, ProjectionRecord[ActionRecordedPayload]] = {}
+    results: dict[ResultId, ProjectionRecord[ResultRecordedPayload]] = {
+        res(60): record(
+            ResultRecordedPayload(
+                res(60), act(1), ResultOutcome.SUCCESS, exit_status=0, summary="3 passed"
+            ),
+            60,
+        )
+    }
+    evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
+    observed: list[int] = []
+    for run, result, output in ((70, 71, 72), (73, 74, 75)):
+        actions[act(run)] = record(
+            ActionRecordedPayload(
+                act(run), ActionKind.COMMAND, "Observed command", command=f"omitted:{w6_key}"
+            ),
+            run,
+        )
+        results[res(result)] = record(
+            ResultRecordedPayload(
+                res(result),
+                act(run),
+                ResultOutcome.SUCCESS,
+                exit_status=0,
+                summary="Observed result status=success",
+                evidence_refs=(evd(output),),
+            ),
+            result,
+        )
+        evidence[evd(output)] = evidence_record(_w6_captured(output), output)
+        observed += [run, result, output]
+    case = _w6_case(actions=actions, results=results, evidence=evidence, observed=observed)
+    answered = _w6_supplied(case)
+    assert len(answered[0]) == 4 and str(res(60)) in answered[0]
+    agent = agent_supplied_answer_refs(
+        case.projection, answered, frozenset(str(item) for item in case.observation_event_ids)
+    )
+    assert str(res(60)) in agent
+    assert str(res(71)) not in agent and str(res(74)) not in agent
 
 
 def test_an_observed_capture_of_the_command_input_is_not_output(w6_key: str) -> None:

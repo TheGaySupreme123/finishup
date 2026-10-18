@@ -2176,8 +2176,12 @@ workstream W6 (Q1, Q4; the owner may overturn it), recorded on #1107:
   answer `command_identity`: an observed run records `omitted:<keyed identity>`, never the command
   text the reviewer asked for, so only an `action_recorded` with the exact text answers it. Observed
   rows never answer an untargeted item, and never supply a path (observed `git diff` text is not
-  recorded; observed edits stay excluded). These rows are named in `supplied_since` and rank as
-  supplied in the next packet, but an observed result's summary is never offered as
+  recorded; observed edits stay excluded). A target that is itself captured output linked to its
+  run's action event (stream first, no result cites it) names that run, as a cited capture does.
+  These rows are named in `supplied_since` and rank as supplied in the next packet, after the
+  agent's own published material: of the four refs per item, agent-published rows take the slots
+  first (newest first) and observed rows fill the rest, so repeated re-runs never push the agent's
+  published output out of the packet. But an observed result's summary is never offered as
   agent-published output and captured output stays a candidate only where the repository-excerpt
   gate already allowed it (ADR-009). No new category is sent.
 - **Never drop a repeat for material the reviewer could not see.** A repeat is dropped as

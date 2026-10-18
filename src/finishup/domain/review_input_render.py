@@ -304,9 +304,9 @@ def has_agent_suppliable_missing(items: object) -> bool:
 SUPPLY_COUNTS_SENTENCE: Final = (
     "Counts as supplied only when new and tied to the target: a result of the target's action or "
     "of the same exact command, evidence whose reference is the target id or its path, or a "
-    "respond when the target is a finding. A re-run FinishUP observed counts only for output and "
-    "only once its captured output reaches the reviewer. A respond to anything else, a "
-    "description, or citing the old record again does not count."
+    "respond when the target is a finding. A re-run FinishUP observed counts only for a "
+    "verification_output or other item, and only once its captured output reaches the reviewer. "
+    "A respond to anything else, a description, or citing the old record again does not count."
 )
 SUPPLY_COUNTS_SHORT: Final = "Only new material tied to the target counts as supplied."
 # The same sentence as the operating card, the receipt topic and the coverage page (issue #1079).

@@ -312,7 +312,8 @@ _ANSWERING_FAMILIES: Final[Mapping[str, tuple[str, ...]]] = {
 # W6 (ADR-006 amendment): what a re-run FinishUP observed can answer. Its action and result rows
 # hold no command text (``omitted:<keyed identity>``) and its result summary is FinishUP's own
 # status line, so only the captured command output the run produced answers, and only a request
-# for output; never ``command_identity`` or any other kind.
+# for output or an ``other`` item about that run (which the base rule lets any new result of the
+# target's run answer); never ``command_identity`` or any other kind.
 _OBSERVED_ANSWERING_FAMILIES: Final[Mapping[str, tuple[str, ...]]] = {
     "other": ("evidence", "output_results"),
     "verification_output": ("evidence", "output_results"),
@@ -884,20 +885,38 @@ def supplied_since(
     paths its authenticated bytes record, used only to compare); an item with no target counts
     any answering material of its kind. FinishUP cannot bind new material to reviewer prose, so the
     next reviewer reads these refs and decides whether they answer the request.
+
+    W6: the agent's own published material takes the slots first, newest first, and observed
+    re-run rows fill what is left, so repeated observed re-runs never crowd out the output the
+    agent published (its summary reaches the packet only through these refs).
     """
 
+    observed = _observed_row_refs(projection, observation_event_ids)
     answered: list[tuple[str, ...]] = []
     for per_target in _answers_by_target(
         projection, pending, allowed, observation_event_ids, captured_edit_paths, workspace_root
     ):
         newest = sorted(
             {entry for entries in per_target.values() for entry in entries},
-            key=lambda entry: (-entry[0], entry[1].encode("ascii")),
+            key=lambda entry: (entry[1] in observed, -entry[0], entry[1].encode("ascii")),
         )
         answered.append(
             tuple(sorted((ref for _order, ref in newest[:_MAX_SUPPLIED_REFS]), key=str.encode))
         )
     return tuple(answered)
+
+
+def _observed_row_refs(
+    projection: ProjectionState, observation_event_ids: frozenset[str]
+) -> frozenset[str]:
+    """The action, result and evidence refs FinishUP observed rather than the agent published."""
+
+    return frozenset(
+        str(ref)
+        for rows in (projection.actions, projection.results, projection.evidence)
+        for ref, row in rows.items()
+        if str(row.source_event_id) in observation_event_ids or _hook_observed(row.payload)
+    )
 
 
 def agent_supplied_answer_refs(
@@ -1058,9 +1077,11 @@ class _Links:
     captured tool output they cite or the observation writer linked to the run, answer an output
     request for the target too (never paths: observed ``git diff`` text is not recorded and
     observed edits stay excluded; never ``command_identity``: observed rows hold no command
-    text, see ``_OBSERVED_ANSWERING_FAMILIES``). An evidence ``reference`` matches the target
-    id or the target row's own event id, with surrounding whitespace ignored; an ``evt_`` target
-    that names exactly one row's event is read as that row. The requesting check's own event id
+    text, see ``_OBSERVED_ANSWERING_FAMILIES``). An older captured-output target linked that
+    way to its run's action event names that run, as a result citing it would. An evidence
+    ``reference`` matches the target id or the target row's own event id, with surrounding
+    whitespace ignored; an ``evt_`` target that names exactly one row's event is read as that
+    row. The requesting check's own event id
     names the request, not a target, so it never matches. A claim is answered by material tied to
     what it cites; a correction (``claim_recorded`` 1.1.0 superseding it, or any claim disputing it) answers it,
     with the new material it cites when that is tied to the claim's support or the claim cited
@@ -1160,7 +1181,7 @@ class _Links:
                         item
                         for item, reference in captured_output.items()
                         if reference is not None
-                        and reference == action_events.get(str(result.action_id))
+                        and reference.strip() == action_events.get(str(result.action_id))
                     ),
                 }
             )
@@ -1331,6 +1352,29 @@ class _Links:
                 paths.add(path)
         return frozenset(paths)
 
+    def _linked_runs(self, evidence_ref: str) -> tuple[str, ...]:
+        """The older action rows whose own event an older captured-output row's reference names."""
+
+        row = next(
+            (item for key, item in self.projection.evidence.items() if str(key) == evidence_ref),
+            None,
+        )
+        if (
+            row is None
+            or row.source_frontier > self.after
+            or row.redacted
+            or row.payload is None
+            or not _captured_tool_output(row.payload)
+            or row.payload.reference is None
+        ):
+            return ()
+        reference = row.payload.reference.strip()
+        return tuple(
+            str(ref)
+            for ref, action in self.projection.actions.items()
+            if action.source_frontier <= self.after and str(action.source_event_id) == reference
+        )
+
     def _action_subject(self, ref: str) -> _Subject:
         payload = self._action(ref)
         scope = None if payload is None else _diff_scope(payload.command, self.roots)
@@ -1385,6 +1429,12 @@ class _Links:
                     action = str(row.payload.action_id)
                     subject = subject | self._action_subject(action)
                     artifact = artifact or self._wrote_artifact(action)
+            # W6: captured tool output the observation writer linked to its run's action event
+            # (Codex's session-stream copy committed first, so no result cites it) is that run's
+            # output too, the same link the packet shows the reviewer.
+            for action in self._linked_runs(target):
+                subject = subject | self._action_subject(action)
+                artifact = artifact or self._wrote_artifact(action)
             subject = subject | _Subject(
                 frozenset(), frozenset(), self._evidence_paths(target, artifact=artifact)
             )
