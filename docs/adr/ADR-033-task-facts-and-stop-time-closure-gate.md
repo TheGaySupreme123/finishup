@@ -1363,3 +1363,82 @@ the workspace unchanged and is harmless closure traffic. The CLI, MCP/status, TU
 currency all derive from the same observed facts and kernel predicates. Codex, Claude Code
 (ordinary profile) and Cursor (ordinary profile) fingerprint through the shared `handle_observe`
 path; their structural profiles observe no shell calls.
+
+## Amendment (2026-10-18, n7 RC5, owner decision D1): the acceptance re-read becomes a receipt coverage note
+
+**Measurement.** In the n7 pilot the acceptance re-read was 49 of 57 Stop continuations. Agents
+answered 43 of the 49 by re-attesting `finishup-acceptance:<obligation id>:met`, and it never
+caught an obligation that actually failed. `kernel/acceptance_risk` reads provenance (attempts and
+evidence lineage), never outputs or test results: a correct result with self-asserted evidence is
+flagged, and an observed test that encodes a wrong premise counts as safe, so the flags land on
+obligations that pass. The re-read was also broader than the receipt's own limit: it named
+flagged obligations that already had an admissible observed link.
+
+**Decision (owner D1).** Acceptance-provenance risk is never a Stop item, on any host.
+
+- *The Stop gate* neither blocks on nor voices it. `kernel/closure_verdict` emits no `acceptance`
+  re-check (the `resolved_obligations_acceptance_risk` and legacy
+  `resolved_obligations_acceptance_reread` rules are gone), and the gate drops an `acceptance`
+  entry an earlier 0.3 service still announces (`_RECHECK_KEY_SHAPES` no longer names it). The
+  `acceptance_recheck` gate item and the `closure_gate_acceptance_rechecked` /
+  `closure_gate_acceptance_covered` diagnostics are no longer written; the two reason names stay
+  readable so an older diagnostics file parses.
+- *The final-message attestation is retired.* No hook reads `last_assistant_message` (Codex) or
+  threads it through the adapter (Claude Code); Cursor never had one. A
+  `finishup-acceptance:<obligation id>:met[:<evd_ or res_ id>]` line, or a
+  `finishup-verification-limit:<obligation id>` line in the final message, is ignored. Nothing was
+  ever recorded from these lines, so no ledger, projection or replay changes. A
+  `finishup-verification-limit:<obligation id>` **decision** (`decision_recorded`) is unchanged and
+  still lifts the coverage limit.
+- *Shown once.* Status, `closure_prepare`, the CLI and the terminal interface print one stateless,
+  host-independent sentence in the closure guidance (`protocol/readiness_text.acceptance_risk_note`):
+  the flagged ids and reason tokens (at most eight, then "and N more"), that stopping is not
+  blocked and met work needs no action, that the receipt records a coverage limit, and that an
+  output which does not meet its `acceptance_criteria` is republished `acknowledged_not_done` with
+  the reason. The note does not offer the verification-limit decision as a way to clear the limit:
+  a decision is a material record that supersedes the check, which is the churn this decision
+  removes. It is not suppressed on a repeated read (a read is idempotent, and history-dependent
+  text would make the CLI, TUI and MCP disagree). It is never an `agent_actionable` token and never
+  in the re-check note. The `check` result keeps its fixed sentence when its coverage carries the
+  code.
+- *Structured field.* `closure_readiness.acceptance_risk` (`[{obligation_id, reasons[1..3]}]`,
+  sorted by id, at most 64, omitted when empty) is an in-place optional addition to the unreleased
+  status-result 1.4.0. A non-empty list requires `unresolved_verification_limitation` among the
+  standing limitations (one verdict on the wire). The service stops emitting
+  `admissible_verification` (its only readers were the attestation check and a duplicate status
+  sentence); the field stays defined so an earlier 0.3 result validates. `closing_material_frontier`
+  is still emitted. The `acceptance` value stays in the `rechecks[].kind` enum for the same reason.
+- *Receipt coverage limit.* Unchanged in code, gap-effect row and bound: a flagged resolved
+  obligation with neither an admissible observed link nor a recorded `verification_limit` carries
+  `unresolved_verification_limitation` (G13, readiness S, bounding on both routes), so the receipt
+  reads `insufficient_coverage`. The set has one source,
+  `kernel/claim_verification.unresolved_acceptance_risk`, walked without a cap; status, the check
+  and the receipt all read it (ADR-046). Before this, status derived its standing limitation from
+  the eight-capped `admissible_verification` list and reported a limit the check and the receipt
+  did not have once more than eight obligations were flagged. The receipt sentence names what the
+  ledger lacks instead of an "unanswered acceptance invitation": "Acceptance provenance not
+  established for ...: no admissible observed verification link or recorded verification limit;
+  the receipt records this as a coverage limit." JSON, markdown, text, the MCP receipt summary and
+  the terminal receipt view carry it; the pairing lines and their header are unchanged. The MCP
+  receipt summary keeps the first eight pairing lines and counts the rest ("+K more flagged
+  obligations"), and names at most eight unresolved ids (#1093 item 1; item 2, the Stop over-ask
+  past eight, is moot).
+- *An honest downgrade is not challenged.* The acknowledgement re-check skips an obligation whose
+  effective `obligation_published` is `acknowledged_not_done` and whose immediately preceding
+  version (by ingestion sequence) was `resolved` (`ClosureReadinessFacts.downgraded_obligation_ids`,
+  replay-derived). An acknowledgement of work never claimed (open to `acknowledged_not_done`) is
+  still asked once (#997); an unreadable prior version fails toward asking. Gate memory written by
+  an earlier build (`accept:<h8>@<invite>[@m<material>]`) is still read and retained, so a session
+  that spans the upgrade is not newly challenged; no new `accept:` key is written.
+
+This supersedes, as far as they concern the Stop gate and its final-message answer, the 2026-10-11
+acceptance re-read item, the tb4n4 and 2026-10-13 acceptance amendments (the flag rules
+themselves stand: they now select the coverage-limit set), the 2026-10-14 Cursor wording
+amendment, the gate parts of the two 2026-10-15 issue #1079 item 7 amendments, and the 2026-10-15
+"returns only after a material delta" amendment. The receipt parts and F2's bounding stand. The
+reverse paths are replay-derived: the limit lifts when an observed verification is linked or a
+`verification_limit` decision is recorded, and returns with a new flagged resolution; a downgrade
+is taken back by republishing the obligation `open`. Risk accepted: an infeasible or partial
+outcome the re-read might have prompted the agent to downgrade now relies on the closing review,
+the agent's own answer and the status note; the receipt stays bounded, so nothing reads as
+verified. Issue #1101 (tracker #1100); it retires the gate behavior #1050 introduced.

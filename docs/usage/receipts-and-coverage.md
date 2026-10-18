@@ -347,6 +347,16 @@ the same counters (findings to do, awaiting a ruling, unmet requirements, disclo
 disclose), then one sentence beginning "Why". The totals printed from the latest check are labelled
 with that check's frontier, because they describe the check, not the final state.
 
+**Acceptance provenance.** When an obligation you resolved names a requested item you never
+attempted, or its evidence is not linked to a declared item or is only your own assertion, and no
+observed verification run or recorded verification limit backs it, the receipt records
+`unresolved_verification_limitation` as a coverage limit and reads `insufficient_coverage`. It
+says "Acceptance provenance not established for" those obligations. FinishUP judges where the
+resolution came from, not whether the output is right, so this never stops you at Stop and met
+work needs no action; status names the obligations once (`closure_readiness.acceptance_risk`).
+Linking the observed run or recording the limit lifts it. An output that does not meet its
+acceptance criteria is republished as acknowledged not done.
+
 Three more things the receipt discloses in their own sections, by id only:
 
 

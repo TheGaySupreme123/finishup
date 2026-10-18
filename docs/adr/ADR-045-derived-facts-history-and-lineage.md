@@ -279,7 +279,8 @@ receipt, so a present-but-not-reviewed deliverable is named.
   and runs the line-count read whenever a declared file exists.
 - **Known coupling (wave 2).** The A-12 acceptance re-read rides on other Stop-gate tokens. Removing
   the false `declared_output_emptied` and flag-prefix tokens means it is delivered less often until
-  it becomes its own once-per-frontier readiness item (owner decision 6, wave 2).
+  it becomes its own once-per-frontier readiness item (owner decision 6, wave 2). Superseded by
+  ADR-033's 2026-10-18 amendment (owner decision D1): the re-read is no longer a Stop item at all.
 - Shell-write attribution trades recall for honesty. Writes the parser does not read (`perl -pi`,
   `awk -i inplace`, `ln`, `curl -o`, a script that opens files itself, an expansion-built path, a
   write after the 16,384-character bound, a heredoc body that runs `$(...)`, a `then`/`do` body, a

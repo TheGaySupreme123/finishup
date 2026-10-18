@@ -244,8 +244,9 @@ whole basis at the latest frontier first (amendment of 2026-10-15).
 * `closure_readiness.awaiting_ruling_findings [{finding_id, since_frontier}]` (at most eight, by
   id) names the rejected findings that wait for a ruling and the frontier of the rejection.
 * `closure_readiness.rechecks [{kind, key, subjects, rule, since_frontier}]` are the
-  once-per-frontier re-reads the Stop gate may ask (`acceptance`, `acknowledgement`, `blocker`,
-  `premise`), computed statelessly from the closures; delivery memory stays in the gate. Every
+  once-per-frontier re-reads the Stop gate may ask (`acknowledgement`, `blocker`, `premise`;
+  `acceptance` is no longer emitted since ADR-033's 2026-10-18 amendment, owner decision D1),
+  computed statelessly from the closures; delivery memory stays in the gate. Every
   surface that says "nothing further to do" announces them in the same sentence
   (`protocol.readiness_text.recheck_note`).
 * Status finding rows gain `closure_class`, `closure_basis` and `next_actions`; obligation rows gain
@@ -445,3 +446,19 @@ the ledger already accepts — an observation-authored record, or a second recei
 does not conflict, so the prediction stays on the frontier that was asked for. Check and
 inspection loads of one exact frontier are unchanged: they call `load_closure_basis` directly and
 do not follow the head.
+
+## Amendment 2026-10-18 (n7 RC5, owner decision D1): acceptance provenance is a verdict output, not a re-read
+
+The verdict no longer emits an `acceptance` re-check (ADR-033's 2026-10-18 amendment). It gains
+one output instead: `closure_readiness.acceptance_risk [{obligation_id, reasons}]`, the flagged
+resolved obligations with neither an admissible observed verification link nor a recorded
+verification limit, which is exactly the receipt's `unresolved_verification_limitation` set. Status,
+the check's deterministic case and the receipt read that one set
+(`kernel/claim_verification.unresolved_acceptance_risk`, uncapped). Before this, status derived its
+standing limitation from the eight-capped `admissible_verification` list and, past eight flagged
+obligations, reported a limit the check and the receipt did not have; that split verdict is fixed.
+A non-empty `acceptance_risk` requires `unresolved_verification_limitation` among the standing
+limitations on the same readiness. Every surface prints it once, as closure guidance
+(`protocol.readiness_text.acceptance_risk_note`), never in the re-check sentence. The verdict's
+acknowledgement re-check also skips an honest downgrade (an effective `acknowledged_not_done`
+right after `resolved`), derived from the ledger.

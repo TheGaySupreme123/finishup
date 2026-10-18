@@ -514,7 +514,8 @@ An older build raises `unknown_event_schema` while opening that row, and the ope
 `STORAGE_CORRUPT`; it does not skip the row. Unknown schemas stay in the ledger only when they
 were written `unknown_unprojected`. `admissible_verification` is an optional field on the
 unreleased status-result 1.4.0 (absent when no flagged obligation has a recorded link; absence
-never means a cited id is linked).
+never means a cited id is linked). Since ADR-033's 2026-10-18 amendment (owner decision D1) it is
+no longer emitted, and `acceptance_risk` (equally optional) names the coverage-limit set.
 The deferral
 comes before the review's own admission, so a pre-work check asks for no repository grant,
 disclosure decision or review input either, and a missing provider or a policy block
