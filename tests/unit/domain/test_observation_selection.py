@@ -211,3 +211,44 @@ def test_python_module_runs_and_build_named_scripts(command: str, runner: str) -
     """tb4n2 interleaved S (P1-2): `python -m pytest` is a test run; `build_model.py` is not a build."""
 
     assert command_runner_class({"command": command}) == runner
+
+
+# --- n7 RC2(a): a heredoc body's quotes never decide the class (#1106) -------------------------
+
+_ODD_BODIES = {
+    "apply_patch": (
+        "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: a.py\n@@\n-x = 1\n"
+        "+x = 2  # don't\n*** End Patch\nPATCH"
+    ),
+    "git_apply": "cd /app && git apply <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+    "patch_p1": "cd /app && patch -p1 <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+    "cat_write": "cat > /app/x.py <<'EOF'\nprint('ok')  # it's\nEOF",
+    "python_stdin": "python3 - <<'PY'\n# it's a script\nPY",
+}
+
+
+@pytest.mark.parametrize("verify", ["pytest -q", "python -m pytest -q tests/"])
+@pytest.mark.parametrize("body", list(_ODD_BODIES.values()), ids=list(_ODD_BODIES))
+def test_heredoc_body_quote_does_not_hide_compound_verification(body: str, verify: str) -> None:
+    """n7 RC2(a): one apostrophe in a heredoc body made the whole text unsplittable, so a
+    patch-then-test command was ``compound`` and its test never counted as a verification."""
+
+    assert command_runner_class({"command": f"{body}\n{verify}"}) == "test"
+    assert command_runner_class({"tool_input": {"cmd": f"{body}\n{verify} 2>&1 | tail"}}) == "test"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo 'oops && pytest -q",
+        'pytest -q && echo "unterminated',
+        "apply_patch <<'PATCH'\n*** Update File: a.py\n+# don't\npytest -q",
+        "cat <<'EOF'\nit's\nEOF",
+        "cat <<'EOF'\nit's\nEOF\nls",
+    ],
+)
+def test_unterminated_quote_or_heredoc_stays_compound(command: str) -> None:
+    """The segmenter still refuses what the shell itself could not run as written, and a
+    heredoc command is never ``exploration`` (its body may be a write's content)."""
+
+    assert command_runner_class({"command": command}) == "compound"

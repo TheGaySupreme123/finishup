@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import shlex
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Final, NamedTuple
@@ -40,7 +41,17 @@ from typing import Final, NamedTuple
 from finishup.domain.command_segments import strip_wrappers, wrapped_shell_argument
 from finishup.domain.write_scope import classify_write_path, scratch_path
 
-__all__ = ["MAX_SHELL_WRITE_CHARS", "bound_command", "shell_write_paths", "shell_write_scope"]
+__all__ = [
+    "APPLY_PATCH_PATH",
+    "MAX_SHELL_WRITE_CHARS",
+    "SHELL_APPLY_PATCH",
+    "bound_command",
+    "codex_intercepts_shell_apply_patch",
+    "heredoc_patch_paths",
+    "shell_heredocs",
+    "shell_write_paths",
+    "shell_write_scope",
+]
 
 # The hook's command normalization limit (``domain.observation._MAX_OBSERVED_COMMAND_CHARS``; a
 # unit test pins the two together): longer text is analysed only up to its last newline inside it.
@@ -1006,3 +1017,240 @@ def shell_write_scope(
         if scope in classes:
             return scope
     return None
+
+
+# A heredoc that feeds a patch tool writes the files the patch names, which no shell token shows.
+_HEREDOC_START: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# A heredoc fed to ``apply_patch``: the line before ``<<`` ends in the command name.
+SHELL_APPLY_PATCH: Final = re.compile(r"(?:^|[\s;&|(])(?:apply_patch|applypatch)\s*$")
+APPLY_PATCH_PATH: Final = re.compile(
+    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE
+)
+_MAX_SHELL_HEREDOCS: Final = 8
+# Codex 0.159 intercepts a shell ``apply_patch`` only as the whole script: ``apply_patch <<EOF``
+# or ``cd <one word> && apply_patch <<EOF`` (``codex-rs/apply-patch/src/invocation.rs``).
+_INTERCEPTED_APPLY_PATCH: Final = re.compile(
+    r"\A\s*(?:cd[ \t]+(?:'[^'\n]*'|\"[^\"\n]*\"|[^\s'\"\;&|()<>$`-][^\s'\"\;&|()<>$`]*)"
+    r"[ \t]*&&[ \t]*)?(?:apply_patch|applypatch)[ \t]*\Z"
+)
+# The last simple command of the text before ``<<`` (the one the heredoc feeds).
+_LAST_COMMAND: Final = re.compile(r"(?:^|&&|\|\||[;|&(])\s*([^;&|()]*)$")
+# Unified-diff file headers; a path is the text up to a tab (a timestamp may follow).
+_DIFF_NEW_PATH: Final = re.compile(r"\+\+\+ ([^\t\n]+)")
+_DIFF_OLD_PATH: Final = re.compile(r"--- ([^\t\n]+)")
+# ``git apply`` options that leave the working tree alone ...
+_GIT_APPLY_NO_WORKTREE: Final = frozenset(
+    {"--check", "--stat", "--numstat", "--summary", "--cached", "--build-fake-ancestor"}
+)
+# ... and the ones that take no separate value and do not move what it writes.
+_GIT_APPLY_FLAGS: Final = frozenset(
+    {
+        "-",
+        "-3",
+        "--3way",
+        "--apply",
+        "--index",
+        "-R",
+        "--reverse",
+        "--reject",
+        "-v",
+        "--verbose",
+        "-q",
+        "--quiet",
+        "--recount",
+        "--unidiff-zero",
+        "--allow-empty",
+        "--inaccurate-eof",
+        "--ignore-whitespace",
+        "--ignore-space-change",
+    }
+)
+# ``patch`` options that change nothing on disk ...
+_PATCH_NO_WRITE: Final = frozenset({"--dry-run", "-C", "--check"})
+# ... and the same no-value, path-neutral set for it.
+_PATCH_FLAGS: Final = frozenset(
+    {
+        "-N",
+        "--forward",
+        "-R",
+        "--reverse",
+        "-f",
+        "--force",
+        "-t",
+        "--batch",
+        "-s",
+        "--silent",
+        "--quiet",
+        "-u",
+        "--unified",
+        "-l",
+        "--ignore-whitespace",
+        "-E",
+        "--remove-empty-files",
+        "-b",
+        "--backup",
+        "--no-backup-if-mismatch",
+        "--verbose",
+    }
+)
+_VALUE_FLAG: Final = re.compile(r"^(?:--whitespace=\S+|-C[0-9]+|-F[0-9]+|--fuzz=[0-9]+)$")
+_STRIP_FLAG: Final = re.compile(r"^(?:-p|--strip=)([0-9]{1,2})$", re.ASCII)
+# ``patch`` without ``-p``: strip only one leading ``a/``/``b/`` component (the class needs only
+# the location and the name).
+_STRIP_DIFF_PREFIX: Final = -1
+
+
+class _Heredoc(NamedTuple):
+    prefix: str
+    suffix: str
+    body: str
+    start: int  # the index of the ``<<`` line
+    end: int  # the index of the closing delimiter line
+
+
+def _heredocs(command: str) -> list[_Heredoc]:
+    lines = command.split("\n")
+    found: list[_Heredoc] = []
+    index = 0
+    while index < len(lines) and len(found) < _MAX_SHELL_HEREDOCS:
+        line = lines[index]
+        start = index
+        match = _HEREDOC_START.search(line)
+        index += 1
+        if match is None:
+            continue
+        delimiter = match.group(2)
+        body: list[str] = []
+        while index < len(lines) and lines[index].strip() != delimiter:
+            body.append(lines[index])
+            index += 1
+        if index >= len(lines):
+            break  # unterminated heredoc: not a complete edit
+        found.append(
+            _Heredoc(
+                line[: match.start()], line[match.end() :], "\n".join(body) + "\n", start, index
+            )
+        )
+        index += 1
+    return found
+
+
+def shell_heredocs(command: str) -> list[tuple[str, str, str]]:
+    """Return bounded ``(prefix, suffix, body)`` triples for each complete heredoc in a command."""
+
+    return [(heredoc.prefix, heredoc.suffix, heredoc.body) for heredoc in _heredocs(command)]
+
+
+def codex_intercepts_shell_apply_patch(command: str) -> bool:
+    """Whether Codex applies this shell ``apply_patch <<EOF`` itself instead of running it.
+
+    Codex 0.159 intercepts only a script that is that one statement, ``apply_patch <<'EOF' ...
+    EOF`` or ``cd <path> && apply_patch <<'EOF' ... EOF``, and fires no post-tool event for it
+    (#1041). A script with anything before or after it (the patch, then ``pytest -q``) runs in the
+    shell through Codex's ``apply_patch`` alias, and its post-tool event arrives as usual.
+    """
+
+    if "<<" not in command:
+        return False
+    found = _heredocs(command)
+    if len(found) != 1:
+        return False
+    heredoc = found[0]
+    lines = command.split("\n")
+    head = "\n".join([*lines[: heredoc.start], heredoc.prefix])
+    tail = "\n".join([heredoc.suffix, *lines[heredoc.end + 1 :]])
+    return _INTERCEPTED_APPLY_PATCH.match(head) is not None and not tail.strip()
+
+
+def heredoc_patch_paths(command: str) -> tuple[str, ...]:
+    """The files a heredoc-fed patch in a shell command names (n7 RC2, #1046 review).
+
+    The command's own tokens show no write for these, so the patch headers are the write. Three
+    forms, each only from a complete heredoc: ``apply_patch``/``applypatch`` (its ``*** Add|
+    Update|Delete File:`` and ``*** Move to:`` headers), and ``git apply`` and ``patch`` (each
+    unified-diff ``+++`` header, or its ``---`` when ``+++`` is ``/dev/null``, less the leading
+    components the ``-p`` strip removes: ``git apply`` defaults to one, a bare ``patch`` drops one
+    leading ``a/``/``b/``). An invocation that writes nothing (``git apply --check``/``--cached``,
+    ``patch --dry-run``), reads its patch from a file (an operand, ``-i``), moves what it writes
+    (``-d``, ``-o``, ``--directory``) or uses an option this reader does not know names nothing,
+    as does a header it cannot place (a quoted path).
+    """
+
+    if "<<" not in command:
+        return ()
+    paths: list[str] = []
+    for heredoc in _heredocs(command):
+        if SHELL_APPLY_PATCH.search(heredoc.prefix):
+            paths.extend(match.strip() for match in APPLY_PATCH_PATH.findall(heredoc.body))
+            continue
+        strip = _diff_patch_strip(heredoc.prefix)
+        if strip is not None:
+            paths.extend(_diff_paths(heredoc.body, strip))
+    return tuple(path for path in paths if path)
+
+
+def _diff_patch_strip(prefix: str) -> int | None:
+    """The ``-p`` strip of a ``git apply``/``patch`` a heredoc feeds; ``None`` when it names no write."""
+
+    match = _LAST_COMMAND.search(prefix)
+    if match is None:
+        return None
+    try:
+        words = strip_wrappers(shlex.split(match.group(1), posix=True))
+    except ValueError:
+        return None
+    if not words:
+        return None
+    name = words[0].rsplit("/", 1)[-1]
+    if name == "git" and words[1:2] == ["apply"]:
+        flags, no_write, known, strip = words[2:], _GIT_APPLY_NO_WORKTREE, _GIT_APPLY_FLAGS, 1
+    elif name in {"patch", "gpatch"}:
+        flags, no_write, known, strip = words[1:], _PATCH_NO_WRITE, _PATCH_FLAGS, None
+    else:
+        return None
+    index = 0
+    while index < len(flags):
+        flag = flags[index]
+        index += 1
+        if flag in no_write:
+            return None
+        strip_match = _STRIP_FLAG.match(flag)
+        if strip_match is not None:
+            strip = int(strip_match.group(1))
+        elif flag == "-p" and index < len(flags) and flags[index].isdecimal():
+            strip = int(flags[index][:2])
+            index += 1
+        elif flag not in known and _VALUE_FLAG.match(flag) is None:
+            return None
+    return _STRIP_DIFF_PREFIX if strip is None else strip
+
+
+def _diff_paths(body: str, strip: int) -> list[str]:
+    # A file header is a ``---`` line directly followed by a ``+++`` line: pairing them line by
+    # line keeps a removed ``-- comment`` or an added ``++ x`` body line from posing as one.
+    lines = body.split("\n")
+    paths: list[str] = []
+    for old_line, new_line in zip(lines, lines[1:], strict=False):
+        old = _DIFF_OLD_PATH.match(old_line)
+        new = _DIFF_NEW_PATH.match(new_line)
+        if old is None or new is None:
+            continue
+        header = new.group(1).strip()
+        if header == "/dev/null":
+            header = old.group(1).strip()  # a deletion names its old path
+        if not header or header == "/dev/null" or header.startswith('"'):
+            continue
+        path = _strip_components(header, strip)
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _strip_components(path: str, strip: int) -> str | None:
+    if strip == _STRIP_DIFF_PREFIX:
+        head, _, rest = path.partition("/")
+        return rest if head in {"a", "b"} and rest else path
+    parts = path.split("/")
+    if strip >= len(parts):
+        return None  # ``patch`` skips a header with fewer components than its strip
+    return "/".join(parts[strip:]) or None

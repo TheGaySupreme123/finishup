@@ -166,6 +166,7 @@ from finishup.domain.observation_selection import (
     is_routine_read_candidate,
     without_routine_read,
 )
+from finishup.domain.shell_writes import codex_intercepts_shell_apply_patch
 from finishup.domain.values import (
     JsonObject,
     Timestamp,
@@ -1929,7 +1930,9 @@ def _intercepted_shell_apply_patch(
     """A Codex shell ``apply_patch <<EOF`` pre-event: the only hook Codex fires for it (#1041).
 
     Codex intercepts the shell call and applies the patch itself, so no post-tool event follows;
-    the pending attempt is pre-only and the session stream's ``FileChange`` item closes it.
+    the pending attempt is pre-only and the session stream's ``FileChange`` item closes it. Codex
+    intercepts only a script that is that one statement: a patch followed by a test runs in the
+    shell and fires its post-tool event, so its attempt is an ordinary one (n7 RC2).
     """
 
     if event_name != "PreToolUse" or source is not ObservationSource.CODEX_HOOK:
@@ -1938,11 +1941,7 @@ def _intercepted_shell_apply_patch(
         return False
     arguments = payload.get("tool_input")
     command = arguments.get("command") if isinstance(arguments, Mapping) else None
-    return (
-        type(command) is str
-        and "<<" in command
-        and any(_SHELL_APPLY_PATCH.search(prefix) for prefix, _, _ in _shell_heredocs(command))
-    )
+    return type(command) is str and codex_intercepts_shell_apply_patch(command)
 
 
 def _cursor_served_finishup_read(
@@ -2008,8 +2007,9 @@ def _shell_edit_contents(
 ) -> list[tuple[ObservationContentKind, str, JsonValue]]:
     """Recognize shell-mediated edits whose new bytes are visible in the command itself.
 
-    Covered: ``apply_patch <<EOF`` (Codex intercepts it, so only its pre-tool event exists),
-    ``git apply <<EOF`` and whole-file writes through ``cat > path <<EOF`` or
+    Covered: ``apply_patch <<EOF`` (Codex intercepts it as a sole statement, so only its
+    pre-tool event exists; with anything around it, it runs in the shell and is read from the
+    post-tool event), ``git apply <<EOF`` and whole-file writes through ``cat > path <<EOF`` or
     ``tee path <<EOF``. A write outside the workspace (for example a ``/tmp`` scratch file) is
     not code under review and is skipped. Edits made by scripts (``sed -i``, ``python``,
     ``git apply file.patch``) carry no reviewable bytes in the command and stay uncaptured.
@@ -2017,15 +2017,18 @@ def _shell_edit_contents(
 
     patches: list[str] = []
     writes: list[JsonValue] = []
+    intercepted = source is ObservationSource.CODEX_HOOK and codex_intercepts_shell_apply_patch(
+        command
+    )
     for prefix, suffix, body in _shell_heredocs(command):
-        if _SHELL_APPLY_PATCH.search(prefix):
-            # Codex intercepts a shell apply_patch and emits no post-tool event for it.
-            if event_name == "PreToolUse" and source is ObservationSource.CODEX_HOOK:
+        if _SHELL_APPLY_PATCH.search(prefix) and intercepted:
+            # Codex intercepts a sole shell apply_patch and emits no post-tool event for it.
+            if event_name == "PreToolUse":
                 patches.append(body)
             continue
         if event_name != "PostToolUse":
             continue
-        if _SHELL_GIT_APPLY.search(prefix):
+        if _SHELL_APPLY_PATCH.search(prefix) or _SHELL_GIT_APPLY.search(prefix):
             patches.append(body)
             continue
         if _SHELL_WRITER.search(prefix) is None:

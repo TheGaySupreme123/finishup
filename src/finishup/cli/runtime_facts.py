@@ -34,8 +34,9 @@ for delivery are reduced here to closed tokens and nothing else crosses into the
   every path is FinishUP's own material (a saved ``finishup_receipt.*``/``finishup_export.*``, FinishUP's state
   or isolation root, ``.agents/plugins/finishup``, ``.agents/skills/finishup``) reports ``yoetz_owned``
   (``domain.write_scope``, ADR-042): neither makes an earlier verification stale.
-  A shell ``apply_patch <<EOF`` heredoc writes the files its patch headers name, classified
-  the same way (Codex intercepts it and fires only the pre-event, #1041).
+  A heredoc-fed patch (``apply_patch <<EOF``, ``git apply <<EOF``, ``patch -p1 <<EOF``) writes
+  the files its patch headers name, classified the same way (Codex intercepts a sole
+  ``apply_patch`` and fires only the pre-event, #1041).
 * ``effective_user`` — ``root`` or ``non_root``: the effective user this hook process (spawned by
   the host beside the agent's commands) runs as. It says nothing about the delivery environment.
 
@@ -53,7 +54,14 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Final, cast
 
-from finishup.domain.shell_writes import bound_command, shell_write_scope
+from finishup.domain.shell_writes import APPLY_PATCH_PATH as _PATCH_PATH
+from finishup.domain.shell_writes import (
+    SHELL_APPLY_PATCH,
+    bound_command,
+    heredoc_patch_paths,
+    shell_heredocs,
+    shell_write_scope,
+)
 from finishup.domain.write_scope import classify_write_path, edit_write_scope
 from finishup.protocol.canonical import JsonValue
 
@@ -87,57 +95,20 @@ _EDIT_TOOLS: Final = frozenset(
     {"Write", "Edit", "MultiEdit", "NotebookEdit", "write_file", "edit_file", "cursor_file_edit"}
 )
 _EDIT_PATH_KEYS: Final = ("file_path", "path", "target_file", "filePath", "notebook_path")
-_PATCH_PATH: Final = re.compile(
-    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.MULTILINE
-)
 _SHELL_TOOLS: Final = frozenset({"Bash", "bash", "Shell", "shell", "exec_command", "local_shell"})
 _LOCATION_FLAGS: Final = ("--target", "-t", "--prefix", "--root")
-_HEREDOC_START: Final = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-# A heredoc fed to ``apply_patch``: the line before ``<<`` ends in the command name.
-SHELL_APPLY_PATCH: Final = re.compile(r"(?:^|[\s;&|(])apply_patch\s*$")
-_MAX_SHELL_HEREDOCS: Final = 8
-
-
-def shell_heredocs(command: str) -> list[tuple[str, str, str]]:
-    """Return bounded ``(prefix, suffix, body)`` triples for each heredoc in a command."""
-
-    lines = command.split("\n")
-    found: list[tuple[str, str, str]] = []
-    index = 0
-    while index < len(lines) and len(found) < _MAX_SHELL_HEREDOCS:
-        line = lines[index]
-        match = _HEREDOC_START.search(line)
-        index += 1
-        if match is None:
-            continue
-        delimiter = match.group(2)
-        body: list[str] = []
-        while index < len(lines) and lines[index].strip() != delimiter:
-            body.append(lines[index])
-            index += 1
-        if index >= len(lines):
-            break  # unterminated heredoc: not a complete edit
-        index += 1
-        found.append((line[: match.start()], line[match.end() :], "\n".join(body) + "\n"))
-    return found
 
 
 def shell_apply_patch_paths(command: str) -> tuple[str, ...]:
-    """The files a shell ``apply_patch <<EOF`` heredoc names (``*** Update File: ...``).
+    """The files a shell heredoc patch names (``domain.shell_writes.heredoc_patch_paths``).
 
-    Codex intercepts such a call and applies the patch itself (#1041), so the command's own
-    tokens show no write; the patch's file headers are the write, exactly as for the native
-    ``apply_patch`` tool. Only a complete heredoc fed to ``apply_patch`` counts.
+    Codex intercepts a sole ``apply_patch <<EOF`` and applies the patch itself (#1041); a
+    ``git apply <<EOF`` or ``patch -p1 <<EOF`` (or an ``apply_patch`` with a test after it) runs
+    in the shell. Either way the command's own tokens show no write: the patch's file headers are
+    the write, exactly as for the native ``apply_patch`` tool.
     """
 
-    if "<<" not in command or "apply_patch" not in command:
-        return ()
-    return tuple(
-        match.strip()
-        for prefix, _suffix, body in shell_heredocs(command)
-        if SHELL_APPLY_PATCH.search(prefix)
-        for match in _PATCH_PATH.findall(body)
-    )
+    return heredoc_patch_paths(command)
 
 
 def _raw_command(tool_input: Mapping[str, JsonValue]) -> str | None:
@@ -452,9 +423,10 @@ def runtime_structural_facts(
         # ADR-045: one classifier decides every written path, the one an edit tool uses: a real
         # write outside the workspace, a write into it (an edit), or only notes, FinishUP material
         # (``cp a.json /opt/finishup_receipt.json`` is FinishUP-owned, not outside) or scratch.
-        # A shell ``apply_patch <<EOF`` writes the files its patch names (#1046 review): Codex
-        # intercepts it and fires only this pre-event, so this token is the only record that it
-        # changed the work.
+        # A heredoc-fed patch (``apply_patch``, ``git apply``, ``patch``) writes the files its
+        # headers name (#1046 review, n7 RC2): no shell token shows them, and for an intercepted
+        # ``apply_patch`` Codex fires only this pre-event, so this token is the only record that
+        # it changed the work.
         scope = shell_write_scope(
             command,
             workspace=workspace_locator,

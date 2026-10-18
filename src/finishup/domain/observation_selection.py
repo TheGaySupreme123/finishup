@@ -997,7 +997,11 @@ def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerCla
     try:
         argv = shlex.split(raw, posix=True)
     except ValueError:
-        return "compound"
+        # A heredoc body is data the shell never splits into words: one apostrophe in a patch or
+        # script body (``# don't``) must not hide the commands around it (n7 RC2). The quote-aware
+        # segmenter still refuses an unterminated quote, substitution, or here-document, which
+        # then stays ``compound``.
+        return _compound_runner_class(raw) if _is_shell_compound(raw) else "compound"
     if not argv:
         return None
     if _is_shell_compound(raw):

@@ -313,3 +313,87 @@ def test_a_receipt_saved_under_either_product_name_is_finishup_material(name: st
     assert shell_write_scope(f": > NOTES.md; {command}", workspace="/app", inside=_inside) == (
         "workspace"
     )
+
+
+# --- n7 RC2(a): heredoc-fed patches name the files they write (#1106) --------------------------
+
+_DIFF = "--- a/src/x.py\n+++ b/src/x.py\n@@\n-it's\n+ok\n"
+
+
+@pytest.mark.parametrize(
+    ("command", "paths"),
+    [
+        ("apply_patch <<'P'\n*** Begin Patch\n*** Update File: a.py\n*** End Patch\nP", ("a.py",)),
+        (
+            "applypatch <<'P'\n*** Add File: n.py\n*** Update File: o.py\n*** Move to: m.py\nP",
+            ("n.py", "o.py", "m.py"),
+        ),
+        (f"cd /app && git apply <<'EOF'\n{_DIFF}EOF\npytest -q", ("src/x.py",)),
+        (f"git apply -p1 --3way - <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"git apply -p0 <<'EOF'\n{_DIFF}EOF", ("b/src/x.py",)),
+        (f"patch -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"patch -p 0 -N <<'EOF'\n{_DIFF}EOF", ("b/src/x.py",)),
+        (f"patch <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        ("git apply <<'EOF'\n--- a/README.md\n+++ /dev/null\n@@\n-x\nEOF", ("README.md",)),
+        ("git apply <<'EOF'\n--- /dev/null\n+++ b/new.py\n@@\n+x\nEOF", ("new.py",)),
+        ("git apply <<'EOF'\n--- /tmp/a\t2026-01-01\n+++ /tmp/a\t2026-01-02\nEOF", ("tmp/a",)),
+        ("patch -p0 <<'EOF'\n--- /tmp/a\n+++ /tmp/a\nEOF", ("/tmp/a",)),
+        (
+            # A removed ``-- note`` and an added ``++ n`` body line are not file headers.
+            "git apply <<'EOF'\n--- a/q.sql\n+++ b/q.sql\n@@\n--- note\n+x\n+++ n\nEOF",
+            ("q.sql",),
+        ),
+    ],
+)
+def test_heredoc_patch_paths_reads_three_patch_forms(command: str, paths: tuple[str, ...]) -> None:
+    """n7 RC2(a): the patch's file headers are the write; the command's tokens show none."""
+
+    assert shell_writes.heredoc_patch_paths(command) == paths
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"git apply --check <<'EOF'\n{_DIFF}EOF",
+        f"git apply --stat <<'EOF'\n{_DIFF}EOF",
+        f"git apply --cached <<'EOF'\n{_DIFF}EOF",
+        f"git apply --directory=sub <<'EOF'\n{_DIFF}EOF",
+        f"git apply fix.patch <<'EOF'\n{_DIFF}EOF",
+        f"patch --dry-run -p1 <<'EOF'\n{_DIFF}EOF",
+        f"patch -C -p1 <<'EOF'\n{_DIFF}EOF",
+        f"patch -p1 -i fix.patch <<'EOF'\n{_DIFF}EOF",
+        f"patch -p1 -o out.py <<'EOF'\n{_DIFF}EOF",
+        f"patch -d sub -p1 <<'EOF'\n{_DIFF}EOF",
+        f"patch -p1 src/x.py <<'EOF'\n{_DIFF}EOF",
+        f"cat <<'EOF'\n{_DIFF}EOF",
+        f"git apply <<'EOF'\n{_DIFF}",  # unterminated: not a complete edit
+        'git apply <<\'EOF\'\n--- "a/sp ace"\n+++ "b/sp ace"\nEOF',
+        f"git apply -p5 <<'EOF'\n{_DIFF}EOF",  # fewer components than the strip
+    ],
+)
+def test_heredoc_patch_paths_names_nothing_it_cannot_place(command: str) -> None:
+    assert shell_writes.heredoc_patch_paths(command) == ()
+
+
+@pytest.mark.parametrize(
+    ("command", "intercepted"),
+    [
+        ("apply_patch <<'EOF'\n*** Begin Patch\n*** End Patch\nEOF", True),
+        ("apply_patch <<'EOF'\n*** Begin Patch\n*** End Patch\nEOF\n", True),
+        ("applypatch <<EOF\n*** Begin Patch\n*** End Patch\nEOF", True),
+        ("cd /app && apply_patch <<'EOF'\n*** End Patch\nEOF", True),
+        ("cd '/my app' && apply_patch <<'EOF'\n*** End Patch\nEOF", True),
+        ("apply_patch <<'EOF'\n*** End Patch\nEOF\npytest -q", False),
+        ("apply_patch <<'EOF' && pytest -q\n*** End Patch\nEOF", False),
+        ("echo hi; apply_patch <<'EOF'\n*** End Patch\nEOF", False),
+        ("cd -P /app && apply_patch <<'EOF'\n*** End Patch\nEOF", False),
+        ("cd /app || apply_patch <<'EOF'\n*** End Patch\nEOF", False),
+        ("apply_patch x <<'EOF'\n*** End Patch\nEOF", False),
+        ("apply_patch <<'EOF'\n*** End Patch\n", False),
+        ("git apply <<'EOF'\n--- a/x\n+++ b/x\nEOF", False),
+    ],
+)
+def test_codex_intercepts_only_a_sole_shell_apply_patch(command: str, intercepted: bool) -> None:
+    """Codex 0.159 ``invocation.rs``: only a script that is that one statement is intercepted."""
+
+    assert shell_writes.codex_intercepts_shell_apply_patch(command) is intercepted

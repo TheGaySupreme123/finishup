@@ -410,6 +410,39 @@ def test_c2g_a_command_writing_notes_and_a_declared_receipt_keeps_counting() -> 
     assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(plain)
 
 
+_PATCH_THEN_TEST = (
+    "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: /app/solve.py\n@@\n-x = 1\n"
+    "+x = 2  # don't\n*** End Patch\nPATCH\npytest -q"
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(_PATCH_THEN_TEST, id="apply_patch"),
+        pytest.param(
+            "cd /app && git apply <<'EOF'\n--- a/solve.py\n+++ b/solve.py\n@@\n-x\n+it's\nEOF\n"
+            "python -m pytest -q 2>&1 | tail -5",
+            id="git_apply",
+        ),
+    ],
+)
+def test_c2h_patch_then_test_with_an_apostrophe_clears_edited_after(command: str) -> None:
+    """n7 RC2(a, #1106): one apostrophe in the patch body made the whole command ``compound``, so
+    its test never counted and the earlier edit stayed "edited after the last verification". The
+    real hook chain names the patch a workspace write and the test a verification run."""
+
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    ledger.edit()
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert _hook_edit(ledger, "Bash", {"command": command}, "/app/solve.py") == "workspace"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    # The patch alone, after that test, is a later edit.
+    assert _hook_edit(ledger, "Bash", {"command": command.rsplit("\n", 1)[0]}, "") == "workspace"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
 def test_c3c_a_bare_run_of_the_canonical_form_has_a_known_outcome() -> None:
     """Planned ``python -m pytest``, run as bare ``pytest``: one simple command, so its own
     outcome, not ``unknown`` (a bare command carries no composition suffix)."""
