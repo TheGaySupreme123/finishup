@@ -39,6 +39,10 @@ from finishup.adapters.integrations.observation_local import (
     observation_store_lock_scope,
 )
 from finishup.adapters.workspace_binding import canonical_workspace_locator
+from finishup.adapters.workspace_fingerprint import (
+    reading_tally_summary,
+    workspace_fingerprint_dir,
+)
 from finishup.application.observation_check_policy import (
     ObservationCheckPolicyAbsent,
     ObservationCheckPolicyAmbiguous,
@@ -62,7 +66,7 @@ from finishup.cli.render import (
     render_error_recovery_lines,
     render_local_recovery_lines,
 )
-from finishup.config.paths import PathSafetyError
+from finishup.config.paths import PathSafetyError, state_dir
 from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationGapCode,
@@ -1308,6 +1312,39 @@ def _pending_attempt_endings_text(endings: Mapping[str, JsonValue]) -> str:
     return f"{count_text} (open: {endings.get('open')}; recent: {recent_text or 'none'})"
 
 
+def _workspace_effect_readings(commitment: str, *, _state: Path | None) -> JsonObject:
+    """This workspace's bounded per-call fingerprint tally (n7 RC1); never creates anything."""
+
+    try:
+        root = (state_dir() if _state is None else _state) / "observation"
+    except Exception:
+        return reading_tally_summary(None)
+    return reading_tally_summary(workspace_fingerprint_dir(root, commitment))
+
+
+def _workspace_effect_readings_text(summary: Mapping[str, JsonValue]) -> str:
+    """One line of closed tokens and counts: how many calls compared, and why the rest did not."""
+
+    status = summary.get("status")
+    if status != "retained":
+        return "unreadable; restarts on next hook" if status == "unreadable" else "none recorded"
+    counts = cast(Mapping[str, JsonValue], summary.get("all") or {})
+    reasons = cast(Mapping[str, JsonValue], counts.get("unavailable_reasons") or {})
+    detail = ", ".join(f"{reason} {count}" for reason, count in reasons.items() if count)
+    dropped = summary.get("dropped_sample_count")
+    return (
+        f"unchanged {counts.get('unchanged', 0)}, changed {counts.get('changed', 0)}, "
+        f"unverified {counts.get('unavailable', 0)}"
+        + (f" ({detail})" if detail else "")
+        + f" since {summary.get('since')}; last {summary.get('ring_capacity')} calls kept"
+        + (
+            f"; {dropped} reading(s) dropped under lock contention"
+            if type(dropped) is int and dropped
+            else ""
+        )
+    )
+
+
 def _delivery_lag_text(lag: Mapping[str, JsonValue]) -> str:
     """One line: accepted rows measured, then p50/p95 bucket bounds and the maximum."""
 
@@ -1395,6 +1432,9 @@ def observe_status(
     # The delivery measure: enqueue-to-acceptance lag of accepted outbox rows (tb4n5). The
     # ``drain_pass_delivered_nothing`` hook diagnostic counts passes, not lateness.
     delivery_lag = store.delivery_lag(commitment)
+    # Per-call workspace-effect readings by closed reason, so an export can attribute a call that
+    # stayed material to why its comparison was unavailable (n7 RC1).
+    effect_readings = _workspace_effect_readings(commitment, _state=_state)
     reclaim_guidance = (
         "reclaim with 'finishup observe reclaim --workspace .'"
         if root == Path.cwd().resolve()
@@ -1458,6 +1498,7 @@ def observe_status(
                 "local_retention": local_retention,
                 "held_rollout_items": held_rollout,
                 "delivery_lag": delivery_lag,
+                "workspace_effect_readings": effect_readings,
                 "plugin_activation": plugin_activation,
             },
             json_output=True,
@@ -1523,6 +1564,7 @@ def observe_status(
             else "0"
         ),
         "delivery_lag": _delivery_lag_text(delivery_lag),
+        "workspace_effect": _workspace_effect_readings_text(effect_readings),
         "hook_coverage": str(status.source_coverage.get(ObservationSource.CODEX_HOOK, False)),
         "stream_coverage": str(
             status.source_coverage.get(ObservationSource.CODEX_SESSION_STREAM, False)

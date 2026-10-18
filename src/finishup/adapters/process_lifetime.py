@@ -331,13 +331,15 @@ def _owned_roots(chain: list[tuple[int, _Process]], window_ns: int) -> frozenset
     """This hook's own chain up to and including the host that ran it.
 
     The chain members that started inside the window are this hook's launchers; the first member
-    that started before it is the host (in a test, the test process itself).
+    that started before it is the host (in a test, the test process itself). The window carries the
+    same clock slack as the candidates: a launcher whose start time the platform rounded down (the
+    10 ms Linux tick) is still a launcher, not the host (#1090 PL-1).
     """
 
     owned: set[int] = set()
     for pid, process in chain:
         owned.add(pid)
-        if process.started_ns < window_ns:
+        if process.started_ns < window_ns - PROCESS_CLOCK_SLACK_NS:
             break
     owned.discard(1)
     owned.discard(0)

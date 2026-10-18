@@ -493,7 +493,11 @@ async def test_post_only_hosts_get_the_same_duplicate_classification(
 
 
 def _stated_post(cell: Replay, call: str, exit_code: int) -> None:
-    """A hook ``PostToolUse`` that states the call's exit status."""
+    """A hook ``PostToolUse`` that states the call's exit status.
+
+    The host-structured result object is the shape that still states one: a shell call's text
+    response is its own output, never an outcome (n7 RC1, #1105).
+    """
 
     tool_input = {"command": _TEST_COMMAND}
     cell.hook(
@@ -501,9 +505,7 @@ def _stated_post(cell: Replay, call: str, exit_code: int) -> None:
         tool_name="Bash",
         tool_use_id=call,
         tool_input=tool_input,
-        tool_response=json.dumps(
-            {"chunk_id": "s1", "exit_code": exit_code, "output": "public synthetic output"}
-        ),
+        tool_response={"chunk_id": "s1", "exit_code": exit_code, "output": "public synthetic output"},
     )
 
 

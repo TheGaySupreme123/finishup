@@ -73,6 +73,7 @@ __all__ = [
     "canonical_command_commitments",
     "canonical_commitment",
     "canonical_words",
+    "command_may_background",
     "command_segment_commitments",
     "command_segments",
     "exact_segment_commitments",
@@ -1011,3 +1012,91 @@ def requested_command_shape(value: str) -> str:
     ):
         return "prose"
     return "command"
+
+
+# Words that start a process meant to outlive its launcher, at any wrapper layer of a segment.
+_DETACHING_WORDS: Final = frozenset({"nohup", "setsid", "disown", "daemonize", "start-stop-daemon"})
+# Programs that hand one of their arguments to a shell or an interpreter as code (and any
+# ``python*``): an ``&`` inside such an argument may background a process although it is quoted.
+_CODE_ARGUMENT_RUNNERS: Final = frozenset(
+    {
+        "eval",
+        "ssh",
+        "xargs",
+        "parallel",
+        "script",
+        "watch",
+        "su",
+        "sudo",
+        "doas",
+        "find",
+        "env",
+        "node",
+        "perl",
+        "ruby",
+        "php",
+        "osascript",
+        "tmux",
+        "screen",
+        *_SHELLS,
+    }
+)
+
+
+def _segment_may_background(segment: str, depth: int) -> bool | None:
+    if "$(" in segment or "`" in segment:
+        # A command substitution runs its own commands inside this segment: undecided here.
+        return None
+    words = _split_words(segment)
+    layer = list(words)
+    for _ in range(_MAX_WRAPPER_ROUNDS + 1):
+        if not layer:
+            break
+        if _basename(layer[0]) in _DETACHING_WORDS:
+            return True
+        if not _strip_one_wrapper(layer):
+            break
+    inner = wrapped_shell_argument(layer) if layer else None
+    if inner is not None:
+        return None if depth >= _MAX_DEPTH else command_may_background(inner, _depth=depth + 1)
+    if any(
+        _basename(word) in _CODE_ARGUMENT_RUNNERS or _basename(word).startswith("python")
+        for word in words
+    ):
+        # ``eval "x &"``, ``ssh host 'x &'``, ``env -S 'x &'``, ``find . -exec sh -c 'x &' \;``,
+        # ``python -c``: the quoted ``&`` reaches a shell or interpreter.
+        return any("&" in word for word in words[1:])
+    return False
+
+
+def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
+    """Whether the shell text can leave a process running past its call, by shell grammar.
+
+    ``True`` for a top-level ``&`` separator (``&&``, ``>&``, ``&>`` and a quoted ``&`` are not
+    one), any ``&`` in a segment with a command or process substitution, or in a here-document
+    body, a detaching word (``nohup``, ``setsid``, ``disown``, ``daemonize``,
+    ``start-stop-daemon``) at any wrapper layer of a segment, a ``sh -c`` argument that
+    backgrounds (read recursively), and an ``&`` in any argument of a program that hands an
+    argument to a shell or interpreter (``eval``, ``ssh``, ``xargs``, ``env -S``, ``find -exec``,
+    ``python -c`` and the like). ``False`` when none of these hold: a quoted ``&`` in an
+    ordinary argument (``curl 'h?a=1&b=2'``, ``sed 's/x/&/'``) does not background anything.
+    ``None`` when the text is not splittable, so the caller keeps its conservative reading.
+    The answer is about the text only; it never proves that no process outlives the call.
+    """
+
+    if type(text) is not str or len(text) > _MAX_TEXT_CHARS:
+        return None
+    split = _split_top_level(text)
+    if split is None:
+        return None
+    if "&" in split.separators:
+        return True
+    if any("&" in body for bodies in split.bodies.values() for body in bodies):
+        return True
+    undecided = False
+    for segment in split.segments:
+        verdict = _segment_may_background(segment, _depth)
+        if verdict is True:
+            return True
+        undecided = undecided or verdict is None
+    return None if undecided else False

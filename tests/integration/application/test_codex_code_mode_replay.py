@@ -9,6 +9,12 @@ outer cell plus the nested ``CommandExecution`` items. Nothing is pre-normalised
 every hook payload goes through ``observe_hooks.handle_observe``, every rollout
 line through the session-stream reader that the hooks trigger, and every outbox
 row through the real sweeper and observation coordinator into a task ledger.
+
+A hook post that states an exit here sends the host-structured result *object*.
+Codex hook stdin carries a shell call's output as text, and FinishUP reads no
+outcome from that text (n7 RC1, #1105: a printed header or JSON would forge one),
+so the 0.159 shape (output only, the exit in the joined rollout item) has its own
+tests at the end of this module.
 """
 
 # pyright: reportPrivateUsage=false
@@ -55,6 +61,9 @@ from finishup.domain.observation import (
     ObservationIngestRequest,
     ObservationSource,
 )
+from finishup.kernel.closing_review_delta import closing_review_delta
+from finishup.kernel.later_material import workspace_effects
+from finishup.kernel.reducers import replay as replay_state
 from finishup.protocol.coverage import PublicationChannel
 
 
@@ -95,13 +104,12 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         tool_name="Bash",
         tool_use_id="call_nTypecheck",
         tool_input=command,
-        tool_response=json.dumps(
+        tool_response=(
             {
                 "chunk_id": "d74c6f",
                 "exit_code": 2,
                 "original_token_count": 1919,
                 "output": "> tsc --noEmit\nerror TS2322: public synthetic",
-                "wall_time_seconds": 23.226037979,
             }
         ),
     )
@@ -173,7 +181,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         tool_name="Bash",
         tool_use_id="call_nRerun",
         tool_input=command,
-        tool_response=json.dumps({"chunk_id": "e1", "exit_code": 0, "output": "ok"}),
+        tool_response=({"chunk_id": "e1", "exit_code": 0, "output": "ok"}),
     )
     cell.append(exec_cell_output("call_cellPatch", '{"exit_code":0}', "2026-09-29T17:59:22.000Z"))
 
@@ -203,7 +211,7 @@ def _code_mode_session(cell: _Replay) -> dict[str, int]:
         tool_name="Bash",
         tool_use_id="call_nRead",
         tool_input=read,
-        tool_response=json.dumps({"chunk_id": "f1", "exit_code": 1, "output": "No such file"}),
+        tool_response=({"chunk_id": "f1", "exit_code": 1, "output": "No such file"}),
     )
     cell.append(exec_cell_output("call_cellRead", '{"exit_code":1}', "2026-09-29T17:59:37.000Z"))
     cell.hook("Stop", last_assistant_message="Typecheck rerun passed.", stop_hook_active=False)
@@ -471,7 +479,7 @@ async def test_unhooked_cell_after_hooked_cells_is_still_recorded(replay: _Repla
         tool_name="Bash",
         tool_use_id="call_nHooked",
         tool_input=command,
-        tool_response=json.dumps({"chunk_id": "a1", "exit_code": 0, "output": "ok"}),
+        tool_response=({"chunk_id": "a1", "exit_code": 0, "output": "ok"}),
     )
     replay.append(
         exec_cell_output("call_cellHooked", '{"exit_code":0}', "2026-09-29T17:58:12.000Z"),
@@ -531,13 +539,12 @@ def _hooked_run(cell: _Replay, call: str, item: str, exit_code: int, timestamp: 
         tool_name="Bash",
         tool_use_id=call,
         tool_input=command,
-        tool_response=json.dumps(
+        tool_response=(
             {
                 "chunk_id": call[-6:],
                 "exit_code": exit_code,
                 "original_token_count": 12,
                 "output": "public synthetic output",
-                "wall_time_seconds": 2.5,
             }
         ),
     )
@@ -713,13 +720,12 @@ async def test_same_command_calls_each_keep_their_only_exit(
         tool_name="Bash",
         tool_use_id="call_second",
         tool_input=command,
-        tool_response=json.dumps(
+        tool_response=(
             {
                 "chunk_id": "second",
                 "exit_code": 0,
                 "original_token_count": 4,
                 "output": "public synthetic output",
-                "wall_time_seconds": 3.0,
             }
         ),
     )
@@ -765,13 +771,12 @@ def _interleaved_post(cell: _Replay) -> None:
         tool_name="Bash",
         tool_use_id="call_parallel",
         tool_input={"command": "git status"},
-        tool_response=json.dumps(
+        tool_response=(
             {
                 "chunk_id": "paral",
                 "exit_code": 0,
                 "original_token_count": 1,
                 "output": "public synthetic output",
-                "wall_time_seconds": 0.1,
             }
         ),
     )
@@ -822,13 +827,12 @@ async def test_item_read_before_its_outcome_less_post_is_released_once(
         tool_name="Bash",
         tool_use_id="call_before_post",
         tool_input=command,
-        tool_response=json.dumps(
+        tool_response=(
             {
                 "chunk_id": "before",
                 "original_token_count": 0,
                 "output": "public synthetic output",
                 "session_id": 3,
-                "wall_time_seconds": 10.0,
             }
         ),
     )
@@ -872,13 +876,12 @@ async def test_item_read_before_its_stated_post_stays_one_run(replay: _Replay) -
         tool_name="Bash",
         tool_use_id="call_red",
         tool_input=command,
-        tool_response=json.dumps(
+        tool_response=(
             {
                 "chunk_id": "redred",
                 "exit_code": 2,
                 "original_token_count": 12,
                 "output": "public synthetic output",
-                "wall_time_seconds": 2.5,
             }
         ),
     )
@@ -898,7 +901,6 @@ def _post(cell: _Replay, call: str, command: str, exit_code: int | None) -> None
         "chunk_id": call[-6:],
         "original_token_count": 1,
         "output": "public synthetic output",
-        "wall_time_seconds": 1.0,
     }
     if exit_code is None:
         response["session_id"] = 3
@@ -909,7 +911,7 @@ def _post(cell: _Replay, call: str, command: str, exit_code: int | None) -> None
         tool_name="Bash",
         tool_use_id=call,
         tool_input={"command": command},
-        tool_response=json.dumps(response),
+        tool_response=response,
     )
 
 
@@ -1256,7 +1258,7 @@ async def test_concurrent_pre_and_post_deliveries_record_one_action(
         tool_name="Bash",
         tool_use_id="call_nRace",
         tool_input=command,
-        tool_response=json.dumps({"chunk_id": "r1", "exit_code": 0, "output": "ok"}),
+        tool_response=({"chunk_id": "r1", "exit_code": 0, "output": "ok"}),
     )
     rows = [
         row
@@ -1411,3 +1413,99 @@ async def test_compaction_alias_never_folds_a_different_call_or_command(
     assert hook_facts == [(ResultOutcome.UNKNOWN, None)]
     assert len(actions) == 2
     assert (ResultOutcome.SUCCESS, 0) in [(item.outcome, item.exit_status) for item in results]
+
+
+# --- Codex 0.159 (n7 RC1, #1105): the post is the completion fact, the item carries the exit ----
+
+
+def _ledger_rows(cell: _Replay) -> list[AcceptedEvent]:
+    return [
+        row
+        for row in cell.ledger._state.records
+        if type(row) is AcceptedEvent
+        and row.schema.name in {"action_recorded", "result_recorded", "evidence_recorded"}
+    ]
+
+
+def _material_rows(cell: _Replay) -> list[str]:
+    records = tuple(cell.ledger._state.records)
+    state = replay_state(records)
+    effects = workspace_effects(records, state)
+    return [
+        row.schema.name
+        for row in _ledger_rows(cell)
+        if closing_review_delta(row, state, effects=effects)
+    ]
+
+
+def _codex_0159_read(cell: _Replay, call: str, item_id: str, exit_code: int) -> None:
+    """A read-only ``rg`` as Codex 0.159 sends it: the post's response is the output only."""
+
+    session_start(cell, cli_version="0.159.0")
+    (cell.workspace / "a.txt").write_text("x\n")
+    command = {"command": "rg -n x ."}
+    cell.hook("PreToolUse", tool_name="Bash", tool_use_id=call, tool_input=command)
+    cell.advance(0.2)
+    cell.hook(
+        "PostToolUse",
+        tool_name="Bash",
+        tool_use_id=call,
+        tool_input=command,
+        tool_response="./a.txt:1:x\n" if exit_code == 0 else "",
+    )
+    cell.append(command_execution(item_id, "rg -n x .", exit_code, "2026-09-29T18:00:10.000Z"))
+    cell.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("exit_code", [0, 1])
+async def test_0159_read_after_its_rollout_item_is_quiet_and_keeps_its_exit(
+    replay: _Replay, exit_code: int
+) -> None:
+    """A Codex 0.159 read is ``unchanged``, not material, and a failed one is never a success.
+
+    The hook states no outcome, so its result is ``unknown``; the rollout item joins it by id
+    (the 0.159 item id is the hook's ``tool_use_id``) and appends the real exit. Before n7 the
+    reading was ``unavailable`` and re-armed the closing review; with the completion fact alone
+    (and the post still read as a native success) a failed ``rg`` became a proven success.
+    """
+
+    _codex_0159_read(replay, "exec-0159-rg-read", "exec-0159-rg-read", exit_code)
+    await sweep_all(replay)
+    posts = [
+        envelope
+        for envelope in replay.store.list_envelopes(replay.commitment)
+        if envelope.event_kind == "PostToolUse"
+        and envelope.structural_payload.get("tool_call_id") == "exec-0159-rg-read"
+    ]
+    assert len(posts) == 1
+    structural = posts[0].structural_payload
+    assert structural["workspace_effect"] == "unchanged"
+    assert "success" not in structural
+    assert "exit_status" not in structural
+    assert structural.get("action") != "routine_read"
+    actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
+    results = [cast(ResultRecordedPayload, row.payload) for row in replay.rows("result_recorded")]
+    assert len(actions) == 1
+    expected = ResultOutcome.SUCCESS if exit_code == 0 else ResultOutcome.FAILURE
+    assert [(item.outcome, item.exit_status) for item in results] == [
+        (ResultOutcome.UNKNOWN, None),
+        (expected, exit_code),
+    ]
+    assert all(item.action_id == actions[0].action_id for item in results)
+    assert _material_rows(replay) == []
+
+
+@pytest.mark.anyio
+async def test_0159_unjoined_rollout_item_stays_material(replay: _Replay) -> None:
+    """Residual (design Q6): an item whose id does not join the hook call is a second action.
+
+    The 0.159 source joins the ids for direct and code-mode calls; if a build did not, the stream
+    copy carries no fingerprint and stays material. Flip this when stamping across ids lands.
+    """
+
+    _codex_0159_read(replay, "call_0159_rg", "exec-0159-unjoined", 0)
+    await sweep_all(replay)
+    actions = [cast(ActionRecordedPayload, row.payload) for row in replay.rows("action_recorded")]
+    assert len(actions) == 2
+    assert "action_recorded" in _material_rows(replay)

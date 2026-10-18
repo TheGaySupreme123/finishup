@@ -293,7 +293,7 @@ def _classification_result_mappings(
 
 
 def _classification_outcome(
-    payload: Mapping[str, CanonicalJsonValue], event_name: str
+    payload: Mapping[str, CanonicalJsonValue], event_name: str, host_post_is_success: bool = True
 ) -> _OutcomeFacts:
     """Reduce closed host outcome fields to one conservative state."""
 
@@ -397,8 +397,9 @@ def _classification_outcome(
     # signal when no more specific result fact is present.  Require the
     # validated hook-event echo so an ordinary mapping call with no outcome is
     # still classified as unknown.  Explicit failure, partial, invalid, or
-    # unknown facts above always win over this fallback.
-    native_post_success = (
+    # unknown facts above always win over this fallback.  Codex fires its post
+    # for a non-zero exit too, so its caller turns the fallback off (n7 RC1).
+    native_post_success = host_post_is_success and (
         event_name in {"PostToolUse", "postToolUse"}
         and payload.get("hook_event_name") == event_name
     )
@@ -1148,13 +1149,20 @@ def _classification_phase(event_name: str) -> Literal["pre", "post", "other"]:
 
 
 def classify_observation(
-    payload: Mapping[str, CanonicalJsonValue], event_name: str
+    payload: Mapping[str, CanonicalJsonValue],
+    event_name: str,
+    *,
+    host_post_is_success: bool = True,
 ) -> ObservationClassification:
     """Classify one observation with deterministic, fail-closed rules.
 
     Host action labels and agent-facing names are never authority.  A
     pre-event keeps its pending identity, while only a post-event with a
     closed success fact can become an unprotected routine success.
+
+    ``host_post_is_success``: Claude Code's and Cursor's post event is their
+    closed success signal; Codex fires ``PostToolUse`` for a non-zero exit
+    too, so its caller passes ``False``.
     """
 
     phase = _classification_phase(event_name)
@@ -1163,7 +1171,7 @@ def classify_observation(
         if phase in {"pre", "post"}
         else _RoutineFacts(False, "unknown_operation")
     )
-    outcome = _classification_outcome(payload, event_name)
+    outcome = _classification_outcome(payload, event_name, host_post_is_success)
     proven = phase == "post" and routine.candidate and outcome.state == "success"
     protected = phase != "post" or not proven
     reasons: list[str] = [routine.reason]
@@ -1257,7 +1265,10 @@ def is_routine_read_candidate(payload: Mapping[str, CanonicalJsonValue]) -> bool
 
 
 def envelope_outcome_state(
-    structural_payload: Mapping[str, CanonicalJsonValue], event_kind: str
+    structural_payload: Mapping[str, CanonicalJsonValue],
+    event_kind: str,
+    *,
+    host_post_is_success: bool = True,
 ) -> str | None:
     """Resolve an already-built envelope's outcome with the classifier's rules.
 
@@ -1274,13 +1285,15 @@ def envelope_outcome_state(
     ``hook_event_name`` echo so the native post fallback resolves identically.
     A stream envelope records no ``hook_name`` and therefore keeps needing an
     explicit outcome fact, exactly as its own classification did.
+    ``host_post_is_success`` is the classifier's own switch: ``False`` for a
+    Codex hook envelope, whose post is not a success fact (n7 RC1).
     """
 
     payload = dict(structural_payload)
     hook_name = payload.get("hook_name")
     if type(hook_name) is str and "hook_event_name" not in payload:
         payload["hook_event_name"] = hook_name
-    return _classification_outcome(payload, event_kind).state
+    return _classification_outcome(payload, event_kind, host_post_is_success).state
 
 
 __all__ = [

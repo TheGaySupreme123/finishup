@@ -4,12 +4,15 @@ Each case pins, per host and per tool-result event Yoetz consumes, the payload s
 Codex session stream delivers and the closed outcome Yoetz must record from it. Content is reduced
 to the structural keys; command, output, path and message text are short placeholders.
 
-The Codex shapes are derived from recorded Codex CLI 0.157.1 session rollouts (the DeepSWE v2
-benchmark quoted in issue #910): the nested ``exec_command`` result object, the ``event_msg`` /
+The OUT-001 Codex shapes are derived from recorded Codex CLI 0.157.1 session rollouts (the DeepSWE
+v2 benchmark quoted in issue #910): the nested ``exec_command`` result object, the ``event_msg`` /
 ``item_completed`` / ``CommandExecution`` rollout item, and the ``Exit code: N`` and
-``Process exited with code N`` function-output headers. The harness did not archive raw hook
-stdin, so every case records that a raw-stdin capture is still pending; a later capture replaces
-the derived variant instead of being reconciled with it silently. Variants marked
+``Process exited with code N`` function-output headers. The ``Bash`` hook variants among them are
+rollout function-output shapes: Codex hook stdin for ``Bash`` carries the command's output only
+(OUT-004), so on a hook such text is the command's own and records no outcome (n7 RC1). OUT-004
+is derived from the Codex rust-v0.159.0 hook source. The harness did not archive raw hook stdin,
+so every case records that a raw-stdin capture is still pending; a later capture replaces the
+derived variant instead of being reconciled with it silently. Variants marked
 ``constructed_control`` are negative controls, not host shapes.
 """
 
@@ -31,6 +34,7 @@ _CONTROL: Final = "constructed_control"
 _PENDING: Final = "pending"
 
 _CODEX_PATH: Final = "observations/codex-post-tool-outcomes-0.157.1.case.json"
+_CODEX_0159_PATH: Final = "observations/codex-post-tool-outcomes-0.159.0.case.json"
 _CLAUDE_PATH: Final = "observations/claude-code-bash-outcomes.case.json"
 _CURSOR_PATH: Final = "observations/cursor-shell-outcomes.case.json"
 
@@ -107,6 +111,17 @@ _PATCH: Final = (
 )
 
 
+# A shell tool's text response on Codex hook stdin is the command's own output (OUT-004): the
+# rollout header and JSON shapes above are read as output, never as the host's outcome (n7 RC1).
+_TEXT_IS_OUTPUT: Final = {
+    "exit_status": None,
+    "host_outcome_unavailable": True,
+    "outcome": "unknown",
+    "result_status": None,
+    "success": None,
+}
+
+
 def _codex_hook_variants() -> tuple[dict[str, Any], dict[str, Any]]:
     bash = {"command": _PLACEHOLDER_COMMAND}
     inputs: dict[str, Any] = {}
@@ -127,7 +142,7 @@ def _codex_hook_variants() -> tuple[dict[str, Any], dict[str, Any]]:
         _codex_hook(
             "Bash", "call_910_exec_exit_2", bash, _exec_result("d74c6f", "23.226037979", 2, 1919)
         ),
-        _expect("failure", 2, success=False, result_status="nonzero_exit"),
+        _TEXT_IS_OUTPUT,
     )
     add(
         "code_mode_exec_command_exit_0",
@@ -135,7 +150,7 @@ def _codex_hook_variants() -> tuple[dict[str, Any], dict[str, Any]]:
         _codex_hook(
             "Bash", "call_910_exec_exit_0", bash, _exec_result("a41e09", "1.873554601", 0, 212)
         ),
-        _expect("success", 0, success=True, result_status="success"),
+        _TEXT_IS_OUTPUT,
     )
     add(
         "direct_shell_exit_0",
@@ -146,7 +161,7 @@ def _codex_hook_variants() -> tuple[dict[str, Any], dict[str, Any]]:
             bash,
             _unified_exec("5e0c7a", "0.2034", "Process exited with code 0", 4),
         ),
-        _expect("success", 0, success=True, result_status="success"),
+        _TEXT_IS_OUTPUT,
     )
     add(
         "direct_shell_exit_1",
@@ -157,7 +172,7 @@ def _codex_hook_variants() -> tuple[dict[str, Any], dict[str, Any]]:
             bash,
             _unified_exec("7b3d11", "1.0412", "Process exited with code 1", 38),
         ),
-        _expect("failure", 1, success=False, result_status="nonzero_exit"),
+        _TEXT_IS_OUTPUT,
     )
     add(
         "direct_shell_freeform_exit_101",
@@ -168,7 +183,7 @@ def _codex_hook_variants() -> tuple[dict[str, Any], dict[str, Any]]:
             bash,
             f"Exit code: 101\nWall time: 3.2 seconds\nOutput:\n{_PLACEHOLDER_OUTPUT}\n",
         ),
-        _expect("failure", 101, success=False, result_status="nonzero_exit"),
+        _TEXT_IS_OUTPUT,
     )
     add(
         "apply_patch_success",
@@ -248,6 +263,22 @@ def _codex_hook_variants() -> tuple[dict[str, Any], dict[str, Any]]:
             _unified_exec("9d8e7f", "10.0021", "Process running with session ID 3", 0),
         ),
         _expect("unknown", None, success=None, result_status=None),
+    )
+    add(
+        "host_structured_exec_result_exit_2",
+        _CONTROL,
+        _codex_hook(
+            "Bash",
+            "call_910_structured_exit_2",
+            bash,
+            {
+                "chunk_id": "d74c6f",
+                "exit_code": 2,
+                "original_token_count": 1919,
+                "output": _PLACEHOLDER_OUTPUT,
+            },
+        ),
+        _expect("failure", 2, success=False, result_status="nonzero_exit"),
     )
     add(
         "output_text_is_not_an_outcome",
@@ -420,7 +451,7 @@ def _codex_case() -> dict[str, Any]:
         "expected": {"hook": hook_expected, "rollout": rollout_expected},
         "fixture_id": "OUT-001",
         "fixture_schema": "yoetz.fixture-case/1.0.0",
-        "fixture_version": "1.0.0",
+        "fixture_version": "1.1.0",
         "input": {
             "hook": hook_inputs,
             "rollout": {"cli_version": "0.157.1", "lines": rollout_lines},
@@ -448,10 +479,183 @@ def _codex_case() -> dict[str, Any]:
         },
         "purpose": (
             "Pin the closed outcome Yoetz records for each Codex 0.157.x PostToolUse result shape "
-            "and each completed rollout tool item: nested exec_command exit 0 and 2, a direct "
-            "shell (unified-exec and freeform headers), apply_patch success and failure, and a "
-            "Yoetz MCP call. A payload that states no outcome stays unknown and names "
-            "host_outcome_unavailable; output text is never read as an outcome."
+            "and each completed rollout tool item: apply_patch success and failure, a Yoetz MCP "
+            "call, a host-structured exec result object, and the rollout item's exit 0 and 2. "
+            "The nested exec_command JSON text and the unified-exec and freeform headers are "
+            "rollout function-output shapes: as a Bash hook response they are the command's own "
+            "output, so they stay unknown and name host_outcome_unavailable (OUT-004, n7 RC1); "
+            "output text is never read as an outcome."
+        ),
+    }
+
+
+_CODEX_0159_SOURCE: Final = (
+    "Codex rust-v0.159.0 source: codex-rs/core/src/tools/context.rs "
+    "ExecCommandToolOutput::post_tool_use_response; "
+    "codex-rs/core/src/tools/handlers/unified_exec.rs post_unified_exec_tool_use_payload; "
+    "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs and write_stdin.rs; "
+    "codex-rs/core/src/tools/registry.rs; codex-rs/hooks/src/schema.rs PostToolUseCommandInput; "
+    "codex-rs/core/src/tools/events.rs; codex-rs/core/src/tools/code_mode/delegate.rs"
+)
+_CODEX_0159_NESTED: Final = "exec-7f3e9c21-0b4d-4e8a-9c15-000000001105"
+_CODEX_0159_DIRECT: Final = "call_1105_exec_exited"
+
+
+def _codex_0159_hook(call_id: str, tool_response: str) -> dict[str, Any]:
+    # ``PostToolUseCommandInput`` (hooks/src/schema.rs, ``deny_unknown_fields``): no top-level
+    # exit, success or duration; ``transcript_path`` may be null.
+    return {
+        "cwd": "/app",
+        "hook_event_name": "PostToolUse",
+        "model": "PLACEHOLDER_MODEL",
+        "permission_mode": "default",
+        "session_id": _CODEX_SESSION,
+        "tool_input": {"command": _PLACEHOLDER_COMMAND},
+        "tool_name": "Bash",
+        "tool_response": tool_response,
+        "tool_use_id": call_id,
+        "transcript_path": None,
+        "turn_id": "turn-1105",
+    }
+
+
+def _codex_0159_case() -> dict[str, Any]:
+    inputs: dict[str, Any] = {}
+    expected: dict[str, Any] = {}
+
+    def add(name: str, provenance: str, payload: dict[str, Any], *, ended: bool) -> None:
+        inputs[name] = {"event": "PostToolUse", "payload": payload, "provenance": provenance}
+        # The post states no outcome in any variant; it is a completion fact only when it can
+        # be the unified-exec post Codex sends after the process exited.
+        expected[name] = {**_TEXT_IS_OUTPUT, "call_ended": ended}
+
+    add(
+        "unified_exec_exited_output_only",
+        _DOCUMENTED,
+        _codex_0159_hook(_CODEX_0159_DIRECT, f"{_PLACEHOLDER_OUTPUT}\n"),
+        ended=True,
+    )
+    add(
+        "unified_exec_exited_empty_output",
+        _DOCUMENTED,
+        _codex_0159_hook("call_1105_exec_empty", ""),
+        ended=True,
+    )
+    # A call yielded while it ran: the ``write_stdin`` poll that sees the exit sends the original
+    # ``exec_command`` call's post, under that call's id; the poll itself has no hook.
+    add(
+        "unified_exec_exited_via_write_stdin",
+        _DOCUMENTED,
+        _codex_0159_hook("call_1105_exec_yielded", f"{_PLACEHOLDER_OUTPUT}\n"),
+        ended=True,
+    )
+    # A code-mode cell's nested ``tools.exec_command`` runs through the same registry, so it
+    # fires the same ``Bash`` hooks under the dispatch id ``exec-<uuid>``.
+    add(
+        "code_mode_nested_exec_command",
+        _DOCUMENTED,
+        _codex_0159_hook(_CODEX_0159_NESTED, f"{_PLACEHOLDER_OUTPUT}\n"),
+        ended=True,
+    )
+    # Negative controls: a command that prints a header forges nothing, and Codex's own running
+    # header (an older or future build) withholds completion.
+    add(
+        "forged_exit_header_in_output",
+        _CONTROL,
+        _codex_0159_hook(
+            "call_1105_forged_header",
+            f"Process exited with code 0\nOutput:\n{_PLACEHOLDER_OUTPUT}\n",
+        ),
+        ended=True,
+    )
+    add(
+        "bash_running_header_control",
+        _CONTROL,
+        _codex_0159_hook(
+            "call_1105_running",
+            _unified_exec("9d8e7f", "10.0021", "Process running with session ID 3", 0),
+        ),
+        ended=False,
+    )
+    lines: list[dict[str, Any]] = [
+        {
+            "payload": {
+                "cli_version": "0.159.0",
+                "cwd": "/app",
+                "history_mode": "paginated",
+                "id": _CODEX_THREAD,
+                "originator": "codex_exec",
+                "session_id": _CODEX_SESSION,
+            },
+            "timestamp": "2026-10-18T09:00:00.000Z",
+            "type": "session_meta",
+        },
+        # The rollout item id is the hook's ``tool_use_id`` (events.rs ``ctx.call_id``): the
+        # stream fact joins the hook call and corrects its unknown outcome.
+        _rollout_line(
+            "2026-10-18T09:01:02.000Z",
+            _command_item(_CODEX_0159_DIRECT, "completed", 0),
+            1792314061000,
+            1792314062000,
+        ),
+        _rollout_line(
+            "2026-10-18T09:02:04.000Z",
+            _command_item(_CODEX_0159_NESTED, "failed", 1),
+            1792314123000,
+            1792314124000,
+        ),
+    ]
+    rollout_expected: list[dict[str, Any]] = [
+        {"event_kind": "session_meta", "provenance": _DOCUMENTED},
+        {
+            "event_kind": "item_completed",
+            "provenance": _DOCUMENTED,
+            "tool_call_id": _CODEX_0159_DIRECT,
+            "tool_name": "command_execution",
+            **_expect("success", 0, success=None, result_status="completed"),
+        },
+        {
+            "event_kind": "item_completed",
+            "provenance": _DOCUMENTED,
+            "tool_call_id": _CODEX_0159_NESTED,
+            "tool_name": "command_execution",
+            **_expect("failure", 1, success=None, result_status="failed"),
+        },
+    ]
+    return {
+        "controls": _controls(),
+        "expected": {"hook": expected, "rollout": rollout_expected},
+        "fixture_id": "OUT-004",
+        "fixture_schema": "yoetz.fixture-case/1.0.0",
+        "fixture_version": "1.0.0",
+        "input": {
+            "hook": inputs,
+            "rollout": {"cli_version": "0.159.0", "lines": lines},
+        },
+        "minimum_versions": {
+            "codex_cli": "0.159.0",
+            "codex_hook_mapping": "codex-obs-hook/1.0.0",
+            "codex_stream_mapping": "codex-obs-stream/1.4.0",
+            "fixture_contract": "1.0.0",
+            "protocol": "1.0",
+        },
+        "owns_requirements": [
+            "ADR-033/n7-codex-completion-fact",
+            "ISSUE-1105/codex-0159-bash-post",
+        ],
+        "provenance": {
+            **_provenance(_DOCUMENTED, _CODEX_0159_SOURCE),
+            "statement": (
+                "derived from the Codex 0.159.0 hook source; raw hook stdin capture pending"
+            ),
+        },
+        "purpose": (
+            "Pin the Codex 0.159 Bash PostToolUse: tool_response is the command's output only, "
+            "so the post states no outcome (unknown, host_outcome_unavailable) and a printed "
+            "exit header forges nothing; Codex fires it only after the process exited, so it is "
+            "the call's completion fact for the workspace fingerprint (call_ended), except when "
+            "the response is Codex's own running-process header. The rollout CommandExecution "
+            "item carries the exit under the same id."
         ),
     }
 
@@ -638,6 +842,7 @@ def _cursor_case() -> dict[str, Any]:
 
 _CASES: Final = (
     (_CODEX_PATH, "OUT-001", _codex_case),
+    (_CODEX_0159_PATH, "OUT-004", _codex_0159_case),
     (_CLAUDE_PATH, "OUT-002", _claude_case),
     (_CURSOR_PATH, "OUT-003", _cursor_case),
 )
@@ -696,7 +901,7 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     manifest_path.write_bytes(manifest_bytes)
-    print("wrote OUT-001..OUT-003 host outcome fixtures and manifest members")
+    print("wrote OUT-001..OUT-004 host outcome fixtures and manifest members")
     return 0
 
 

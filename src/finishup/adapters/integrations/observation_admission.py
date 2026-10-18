@@ -18,6 +18,7 @@ from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
+    ObservationSource,
     observation_cursor_to_json,
     observation_envelope_from_json,
     observation_envelope_to_json,
@@ -120,7 +121,15 @@ def _proven_routine_success(envelope: ObservationEnvelope) -> bool:
     planner had already buffered as successes (issue #753).
     """
 
-    return envelope_outcome_state(envelope.structural_payload, envelope.event_kind) == "success"
+    return (
+        envelope_outcome_state(
+            envelope.structural_payload,
+            envelope.event_kind,
+            # The classifier's own rule: a Codex post is not a success fact (n7 RC1).
+            host_post_is_success=envelope.source is not ObservationSource.CODEX_HOOK,
+        )
+        == "success"
+    )
 
 
 def build_routine_read_summary(
