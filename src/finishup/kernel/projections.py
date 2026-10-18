@@ -1245,8 +1245,8 @@ def unanswered_finding_ids(
     disclosed coverage limitation that needs no response, so it is never response work. Neither
     rule sets the receipt's ``resolved`` field, which remains false for every response disposition.
 
-    A readable finding a later qualifying check already proved absent, with no response, is
-    ``verified_resolved``: that state is final and ``respond`` refuses it, so counting it as
+    A readable finding a later qualifying check proved absent or a passing run retired, with
+    no response, is ``verified_resolved``: that state is final and ``respond`` refuses it, so counting it as
     response work would leave an agent that repaired before answering with a readiness item it
     can never clear (pilot blocker).
 
@@ -1258,13 +1258,15 @@ def unanswered_finding_ids(
     unreadable, that answer no longer applies and the finding needs its own answer again.
     """
 
+    from finishup.kernel.finding_resolution import finding_is_resolved
+
     limitations = observation_limitation_finding_ids(state, records)
     waiting = frozenset(
         key
-        for key, record in state.findings.items()
+        for key in state.findings
         if (key not in state.responses or _duplicate_answer_lapsed(state, key))
         and key not in limitations
-        and not (record.payload is not None and record.resolved_by_check_event_id is not None)
+        and not finding_is_resolved(state, key)
     )
     return waiting - _disclosed_limitations(state, waiting)
 

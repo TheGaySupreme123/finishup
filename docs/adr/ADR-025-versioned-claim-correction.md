@@ -259,14 +259,21 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    resolution explanation, the shipped guidance and the product docs), so a retired finding never
    reads as a failure the claim may leave out.
 
-   The advice snapshot's `failed_command_unresolved` item follows the shared rule, so after a
-   retirement by a planned verification its rule still sees no pass of the failed command. The
-   status advice view drops an item whose finding the ledger already retired
-   (`finding_resolution.retired_failed_command_finding_ids`), so the advice and findings views
-   agree, and the item's detail says only that the command has no later pass of itself. Known
-   gap, follow-up owned by #1104: the hook-side advice (the top item a hook prints, read from the
-   stored snapshot without the ledger) can still list that item until the observation evidence
-   changes; the Stop gate, status, check and the receipt read the ledger and do not block on it.
+   Status unanswered counts and action-required work use the same effective resolution predicate
+   as Stop, check and receipts (`finding_resolution.finding_is_resolved`). A retired finding
+   needs no response; retirement is recomputed, so waiving the planned obligation or redacting
+   its proof reopens the finding and restores unanswered work.
+
+   The observation-only advice rule can still see no pass of the failed command itself after a
+   different planned verification passes. The coordinator therefore applies the ledger's shared
+   retirement predicate (`finding_resolution.retired_failed_command_finding_ids`) after
+   materializing findings and before mirroring advice into hook-local storage, for Codex, Claude
+   Code and Cursor. Status advice uses that same filter. The durable observation snapshot retains
+   the candidates; each coordinator advice build reads the current projection and restores the
+   item if the planned retirement no longer holds. Hook delivery reads the latest mirrored
+   snapshot, so this is refreshed at an advice build rather than a synchronous ledger read by
+   every hook. An unavailable projection retains the candidate conservatively. The independent
+   completion-claim duty to name a failure retired only by a different verifier is unchanged.
 
    No check resolves such a finding: no local rule re-reads the advice condition, so a check's
    silence proves nothing, and `resolution_blockers` names `observed_failure_not_rerun` for it

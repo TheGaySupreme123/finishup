@@ -41,6 +41,7 @@ from finishup.kernel.projections import (
     ProjectionState,
     projection_from_snapshot,
     projection_snapshot,
+    unanswered_finding_ids,
 )
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import (
@@ -70,6 +71,7 @@ def _assert_retired(ledger: ObservedLedger, finding: FindingId, passing: EventId
     assert record.retired_by_event_id == passing
     assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
     assert not finding_blocks_receipt(state, finding)
+    assert finding not in unanswered_finding_ids(state, ledger.prefix)
     closure = finding_closure(state, finding)
     assert closure is not None
     assert closure.basis == "retired_by_passing_run"
@@ -83,6 +85,7 @@ def _assert_open(ledger: ObservedLedger, finding: FindingId) -> None:
     assert record.retired_by_event_id is None
     assert finding_todo_state(state, finding) is FindingTodoState.OPEN
     assert finding_blocks_receipt(state, finding)
+    assert finding in unanswered_finding_ids(state, ledger.prefix)
 
 
 def test_a_later_pass_retires_the_observed_failed_command_finding() -> None:
@@ -535,6 +538,7 @@ def _assert_retired_by_plan(ledger: ObservedLedger, finding: FindingId, passing:
     assert record.retired_by_planned_verification
     assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
     assert not finding_blocks_receipt(state, finding)
+    assert finding not in unanswered_finding_ids(state, ledger.prefix)
     closure = finding_closure(state, finding)
     assert closure is not None
     assert closure.basis == "retired_by_planned_verification"

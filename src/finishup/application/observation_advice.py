@@ -7,7 +7,7 @@ import inspect
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Protocol, cast
 
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingId, FindingKind, finding_id
@@ -21,6 +21,7 @@ from finishup.domain.observation import (
     ObservationStatusQuery,
 )
 from finishup.domain.values import validate_sha256_digest
+from finishup.kernel.finding_resolution import retired_failed_command_finding_ids
 from finishup.kernel.policies.observation_advice import (
     OBSERVATION_ADVICE_POLICY_ID,
     OBSERVATION_ADVICE_POLICY_VERSION,
@@ -34,6 +35,10 @@ from finishup.kernel.policies.observation_advice import (
     evidence_basis_digest,
     observation_advice_findings,
 )
+from finishup.kernel.projections import ProjectionState
+from finishup.observability.logging import record_unexpected_exception_without_raising
+from finishup.ports.ledger import ProjectionView
+from finishup.ports.runtime import TaskRuntime
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.coverage import (
     MAX_KNOWN_GAPS,
@@ -74,9 +79,11 @@ __all__ = [
     "select_advice_item",
     "select_standing_item",
     "should_reissue_advice",
+    "without_retired_failed_commands",
     "stable_advice_finding_id",
 ]
 
+_FAILED_COMMAND_RULE: Final = "failed_command_unresolved"
 _SUPPRESSION_DOMAIN: Final = b"yoetz/observation-advice-suppress/v1\x00"
 _FINDING_DOMAIN: Final = b"yoetz/observation-advice-finding/v1\x00"
 _DELIVERY_DOMAIN: Final = b"yoetz/observation-advice-delivery/v1\x00"
@@ -1308,3 +1315,50 @@ def minimized_semantic_evidence_packet(
             for item in candidates
         ),
     }
+
+
+async def without_retired_failed_commands(
+    runtime: TaskRuntime, snapshot: AdviceSnapshot
+) -> AdviceSnapshot:
+    """The advice snapshot without the failed-command items the ledger already retired (#1104).
+
+    The snapshot's rule retires a failure only on a later pass of the same command; the ledger
+    also retires it on a passing planned verification. An unreadable projection keeps every item,
+    so an unresolved failure is never hidden.
+    """
+
+    if not any(item.rule_code == _FAILED_COMMAND_RULE for item in snapshot.ranked_items):
+        return snapshot
+    try:
+        stored = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="application.observation_advice",
+            operation="advice_retired_findings_read_failed",
+        )
+        return snapshot
+    if (
+        stored is None
+        or type(stored.state) is not ProjectionState
+        or stored.lag != 0
+        or stored.rebuild_required
+    ):
+        return snapshot
+    retired = retired_failed_command_finding_ids(stored.state)
+    if not retired:
+        return snapshot
+    kept = tuple(
+        item
+        for item in snapshot.ranked_items
+        if item.rule_code != _FAILED_COMMAND_RULE or item.finding_id not in retired
+    )
+    if len(kept) == len(snapshot.ranked_items):
+        return snapshot
+    return replace(
+        snapshot,
+        ranked_items=kept,
+        ranked_finding_ids=tuple(item.finding_id for item in kept),
+    )

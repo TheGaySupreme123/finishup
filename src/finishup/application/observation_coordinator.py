@@ -40,6 +40,7 @@ from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_PENDING_GAP,
     ObservationAdviceContextBuilder,
     scoped_session_envelopes,
+    without_retired_failed_commands,
 )
 from finishup.application.observation_advice_semantic import (
     AdviceSemanticCancellationReconciler,
@@ -139,6 +140,7 @@ from finishup.domain.observation import (
     OBSERVATION_BACKPRESSURE_REASON,
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     AdviceItem,
+    AdviceSnapshot,
     CaptureHandoffRetirementReason,
     CaptureHandoffRetirementStage,
     ObservationCapturePart,
@@ -7059,12 +7061,39 @@ class ObservationCoordinator:
             session_commitment=session_commitment,
             lineage_refs=lineage_refs,
         )
+        retained_failed_candidates = False
+        if snapshot is None and not isinstance(runtime, str):
+            # Observation-only supersession can remove the last candidate. Reconcile the
+            # previous failed-command candidates with the ledger anyway: this clears an old
+            # mirrored item on a same-command pass and restores it if its proof is redacted.
+            # Other old advice is not carried forward.
+            prior = store.load_advice_snapshot(workspace)
+            session_loader = getattr(store, "load_advice_snapshot_for_session", None)
+            if callable(session_loader) and type(session_id) is str:
+                prior = session_loader(workspace=workspace, yoetz_session_id=session_id)
+            if type(prior) is AdviceSnapshot:
+                failed_items = tuple(
+                    item
+                    for item in prior.ranked_items
+                    if item.rule_code == "failed_command_unresolved"
+                )
+                if failed_items:
+                    retained_failed_candidates = True
+                    snapshot = replace(
+                        prior,
+                        ranked_items=failed_items,
+                        ranked_finding_ids=tuple(item.finding_id for item in failed_items),
+                    )
         if snapshot is not None:
             # Materialize before publishing the snapshot to either durable cache.
             # Snapshot identity participates in deterministic suppression, so
             # advancing it first could make a failed ledger append disappear on
             # retry and let the outbox ACK without the finding ever landing.
-            if not isinstance(runtime, str) and runtime.writer_id is not None:
+            if (
+                not retained_failed_candidates
+                and not isinstance(runtime, str)
+                and runtime.writer_id is not None
+            ):
                 await self._materialize_advice_findings(
                     runtime,
                     envelopes,
@@ -7099,6 +7128,12 @@ class ObservationCoordinator:
                     ),
                     recorded_at=now,
                 )
+            # Keep the unfiltered durable snapshot for status reads and future rebuilds. The
+            # hook mirror uses the same current ledger retirement as status, after any new
+            # findings have materialized. Rebuilding from observations on every run restores
+            # work if a planned obligation is waived or its proof is redacted.
+            if not isinstance(runtime, str):
+                snapshot = await without_retired_failed_commands(runtime, snapshot)
             # Mirror into local store for hook advice delivery.
             await self._local(partial(self.local.set_advice_snapshot, workspace, snapshot))
             if not isinstance(runtime, str) and type(session_id) is str:

@@ -8121,17 +8121,21 @@ here or in the compact `unanswered_findings` preview, so it never sets `findings
 stays in `view=findings` with its own disposition and an explanation that names it a limitation,
 keeps its resolution requirements (it does not become resolvable), and stays on the receipt with
 its coverage; an optional acknowledgement is recorded like any response and carried there (#911).
-A readable finding that a later qualifying check already resolved, with no response, is
-`verified_resolved`, a final state `respond` refuses, so it is not response work either and never
+A readable finding that a later qualifying check resolved or a later passing same-command or
+planned-verification run retired, with no response, is `verified_resolved`, a final state `respond` refuses, so it is not response work either and never
 sets `findings_unanswered` (pilot blocker: otherwise repairing before answering left an item no
-action could clear).
+action could clear). This uses `finding_is_resolved`, including proof readability and response
+semantics. A waiver or redaction that removes the planned retirement proof restores unanswered
+work. Status advice and the coordinator's hook-local advice mirror use the same ledger retirement
+filter; the coordinator retains raw observation candidates and re-evaluates them on every advice
+build, so reopening restores hook advice when that mirror is refreshed.
 `kernel/projections.unanswered_finding_ids` is the single rule for the status counter, the compact
 preview, closure readiness, and the durable SQLite mirror. `receipt_blocking_finding_count` selects the
 newest readable finding per receipt issue key and counts the actionable ones that
 `finding_is_resolved` does not report resolved. It never decreases merely because a response was
-recorded; only a later qualifying check of the repaired record (the finding-view rule above)
-resolves a row, and the same read sets the receipt's `resolved` state and the status finding
-row's `resolved`, so the three surfaces cannot disagree.
+recorded; a qualifying check of the repaired record or an observed failed-command retirement
+(the finding-view rule above) resolves a row. The same read sets the receipt's `resolved` state
+and the status finding row's `resolved`, so the three surfaces cannot disagree.
 The compact singleton carries the same two completion-scope fields beside its current plan locator,
 both counters, and an `unanswered_findings` preview. Its `blocking_conditions` are exactly
 `obligations_open|findings_unanswered|receipt_findings_unresolved|no_plan_published|
