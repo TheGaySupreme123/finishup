@@ -3204,8 +3204,19 @@ class CatalogPrivacyAudit:
         return authorization
 
     async def consume(
-        self, authorization_id: str, dispatch_id: str, now: datetime
+        self,
+        authorization_id: str,
+        dispatch_id: str,
+        now: datetime,
+        *,
+        owed_receipt: EgressReceipt | None = None,
     ) -> ConsumedAuthorization:
+        if owed_receipt is not None and type(owed_receipt) is not EgressReceipt:
+            raise TypeError("privacy_egress_receipt_invalid")
+        # The owed ``outcome_unknown`` receipt is parked by the same UPDATE that consumes the
+        # authorization (#1118 unit 1), so no crash leaves a consumed row without it.
+        owed = None if owed_receipt is None else _receipt_bytes(owed_receipt)
+        owed_digest = None if owed is None else canonical_digest(strict_json_parse(owed))
         async with self._lock:
             with _transaction(self._db):
                 row = self._db.execute(
@@ -3255,7 +3266,9 @@ class CatalogPrivacyAudit:
                     self._db.execute(
                         """UPDATE privacy_audit_records
                            SET state = 'receipt_pending', dispatch_id = ?,
-                               dispatch_started_at = ?, consumed_at = ?, updated_at = ?
+                               dispatch_started_at = ?, consumed_at = ?, updated_at = ?,
+                               attempt_result_structural_canonical = ?,
+                               attempt_result_commitment = ?
                            WHERE authorization_id = ? AND state = 'authorized'
                              AND dispatch_id IS NULL""",
                         (
@@ -3263,6 +3276,8 @@ class CatalogPrivacyAudit:
                             format_rfc3339_millis(now),
                             format_rfc3339_millis(now),
                             format_rfc3339_millis(now),
+                            owed,
+                            owed_digest,
                             authorization_id,
                         ),
                     )

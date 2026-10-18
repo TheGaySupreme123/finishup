@@ -1093,8 +1093,20 @@ class PrivacyAuditPort(Protocol):
     ) -> EgressAuthorization: ...
 
     async def consume(
-        self, authorization_id: str, dispatch_id: str, now: datetime
-    ) -> ConsumedAuthorization: ...
+        self,
+        authorization_id: str,
+        dispatch_id: str,
+        now: datetime,
+        *,
+        owed_receipt: EgressReceipt | None = None,
+    ) -> ConsumedAuthorization:
+        """Consume one authorization; with ``owed_receipt``, park it in the same transaction.
+
+        The parked receipt is the ``outcome_unknown`` receipt the admitted attempt owes if no
+        real receipt lands. Writing it with the consume leaves no crash window in which an
+        authorization is spent but its owed receipt is missing.
+        """
+        ...
 
     async def consume_local(
         self, reservation_id: str, approved_case_digest: str, now: datetime

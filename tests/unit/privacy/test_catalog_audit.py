@@ -1440,6 +1440,43 @@ def test_startup_reconciliation_closes_a_receipt_pending_row_left_by_a_restart()
     assert view.receipt.safe_failure_reason is PrivacyReason.OUTCOME_UNKNOWN
 
 
+def test_consume_parks_the_owed_receipt_in_the_same_transaction() -> None:
+    """#1118 unit 1: a crash right after consume still leaves the owed receipt to reconcile.
+
+    No separate parking write follows the consume, so there is no window in which the
+    authorization is spent but its ``outcome_unknown`` receipt is missing.
+    """
+
+    db = _database()
+    _insert_task_route(db)
+    audit = CatalogPrivacyAudit(db, _StoredObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    coordinator = _coordinator(audit)
+
+    async def consume_then_crash() -> None:
+        prepared = await audit.prepare_disclosure_proposal(_external_disclosure_request())
+        authorization = await audit.authorize(
+            prepared.proposal.privacy_proposal_id,
+            prepared.proposal.prepared_case_digest,
+            _NOW,
+        )
+        await audit.consume(
+            authorization.authorization_id,
+            _DISPATCH,
+            _NOW,
+            owed_receipt=_unknown_attempt_receipt(authorization),
+        )
+
+    asyncio.run(consume_then_crash())
+    assert _audit_row_state(db) == ("receipt_pending", None, None, None)
+    assert asyncio.run(coordinator.reconcile_started_attempts(_NOW + timedelta(minutes=1))) == 1
+    assert _audit_row_state(db) == (
+        "attempt_completed",
+        "transport_failed",
+        "outcome_unknown",
+        _RECEIPT,
+    )
+
+
 def test_advice_cancellation_before_consume_leaves_authority_unspent() -> None:
     """Cancelling before the consume CAS spends nothing and invents no reconciliation (#755)."""
 

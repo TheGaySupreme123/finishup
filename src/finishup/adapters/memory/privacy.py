@@ -1127,9 +1127,14 @@ class MemoryPrivacyAudit:
         raise ValueError("network_privacy_authority_unavailable_until_b8")
 
     async def consume(
-        self, authorization_id: str, dispatch_id: str, now: datetime
+        self,
+        authorization_id: str,
+        dispatch_id: str,
+        now: datetime,
+        *,
+        owed_receipt: EgressReceipt | None = None,
     ) -> ConsumedAuthorization:
-        del authorization_id, dispatch_id, now
+        del authorization_id, dispatch_id, now, owed_receipt
         raise ValueError("network_privacy_dispatch_unavailable_until_b8")
 
     async def complete_egress(self, dispatch_id: str, receipt: EgressReceipt) -> None:
