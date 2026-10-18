@@ -610,6 +610,55 @@ def test_codex_0159_rollout_item_joins_the_hook_call_and_carries_the_exit(tmp_pa
         assert all(item.exit_status == facts["exit_status"] for item in corrected)
 
 
+def _assert_joined_exit_one_is_a_failure(
+    tmp_path: Path,
+    project: Path,
+    envelope: ObservationEnvelope,
+    command: str,
+    payload: Mapping[str, Any],
+) -> None:
+    """The 0.159 rollout item for the same call id states exit 1: the call becomes a failure."""
+
+    from builders.codex_rollout import encode_lines, item_completed, session_meta
+
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_bytes(
+        encode_lines(
+            session_meta(cli_version="0.159.0", history_mode="paginated"),
+            item_completed(
+                {
+                    "command": ["/bin/bash", "-lc", command],
+                    "cwd": f"file://{project}",
+                    "exit_code": 1,
+                    "id": payload["tool_use_id"],
+                    "source": "unified_exec_startup",
+                    "status": "failed",
+                    "type": "CommandExecution",
+                }
+            ),
+        )
+    )
+    reader = SessionStreamReader(
+        session_commitment=envelope.session_commitment,
+        profile=None,
+        cursor=ObservationCursor(
+            source_generation=1,
+            byte_position=0,
+            event_position=0,
+            last_source_commitment=_EMPTY,
+            mapping_version=STREAM_MAPPING_VERSION,
+        ),
+        key_material=_KEY,
+    )
+    stream = reader.advance(rollout).envelopes[-1]
+    correction = materialize_observation_outcome_correction(stream, task_id=_TASK)
+    outcomes = [
+        cast(ResultRecordedPayload, item.draft.payload).outcome for item in correction.drafts
+    ]
+    assert outcomes and ResultOutcome.SUCCESS not in outcomes
+    assert ResultOutcome.FAILURE in outcomes
+
+
 def test_a_failing_pytest_that_prints_an_exit_header_is_not_recorded_as_success(
     tmp_path: Path,
 ) -> None:
@@ -671,44 +720,56 @@ def test_a_failing_pytest_that_prints_an_exit_header_is_not_recorded_as_success(
     assert result.outcome is ResultOutcome.UNKNOWN
     assert result.exit_status is None
 
-    from builders.codex_rollout import encode_lines, item_completed, session_meta
+    _assert_joined_exit_one_is_a_failure(tmp_path, project, envelope, command, payload)
 
-    rollout = tmp_path / "rollout.jsonl"
-    rollout.write_bytes(
-        encode_lines(
-            session_meta(cli_version="0.159.0", history_mode="paginated"),
-            item_completed(
-                {
-                    "command": ["/bin/bash", "-lc", command],
-                    "cwd": f"file://{project}",
-                    "exit_code": 1,
-                    "id": payload["tool_use_id"],
-                    "source": "unified_exec_startup",
-                    "status": "failed",
-                    "type": "CommandExecution",
-                }
-            ),
-        )
+
+@pytest.mark.parametrize(
+    "forged",
+    ['{"success": true}', '{"exit_code": 0}', '{"ok": true, "status": "success"}'],
+)
+def test_a_codex_read_whose_output_is_a_json_success_records_no_success(
+    tmp_path: Path, forged: str
+) -> None:
+    """Q5 (n7 RC1): a Codex shell call's string output is never parsed as a host result.
+
+    A read-shaped call whose output happens to be ``{"success": true}`` (``rg -n success status.json``)
+    states nothing about how the call ended: no ``success``, no routine-read marker, and the
+    joined rollout item's exit 1 still makes it a failure.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "status.json").write_text(forged)
+    command = "rg -n success status.json"
+    payload: dict[str, Any] = {
+        "cwd": str(project),
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-5",
+        "permission_mode": "default",
+        "session_id": "019f9c41-5e2b-7c10-9a43-000000001105",
+        "tool_input": {"command": command},
+        "tool_name": "Bash",
+        "tool_response": forged,
+        "tool_use_id": "call_1105_forged_json",
+        "transcript_path": None,
+        "turn_id": "turn-1105",
+    }
+    state = tmp_path / "state"
+    store = LocalObservationStore(_state=state)
+    workspace = store.workspace_commitment(str(project.resolve()))
+    store.grant_consent(workspace)
+    _codex_pair(project, payload, state)
+    envelope = _post_envelope(
+        LocalObservationStore(_state=state), workspace, payload["tool_use_id"]
     )
-    reader = SessionStreamReader(
-        session_commitment=envelope.session_commitment,
-        profile=None,
-        cursor=ObservationCursor(
-            source_generation=1,
-            byte_position=0,
-            event_position=0,
-            last_source_commitment=_EMPTY,
-            mapping_version=STREAM_MAPPING_VERSION,
-        ),
-        key_material=_KEY,
-    )
-    stream = reader.advance(rollout).envelopes[-1]
-    correction = materialize_observation_outcome_correction(stream, task_id=_TASK)
-    outcomes = [
-        cast(ResultRecordedPayload, item.draft.payload).outcome for item in correction.drafts
-    ]
-    assert outcomes and ResultOutcome.SUCCESS not in outcomes
-    assert ResultOutcome.FAILURE in outcomes
+    structural = envelope.structural_payload
+    assert "success" not in structural
+    assert "exit_status" not in structural
+    assert structural.get("action") != "routine_read"
+    assert structural.get("result_status") is None
+    result = _result(materialize_observation_envelope(envelope, task_id=_TASK))
+    assert result.outcome is ResultOutcome.UNKNOWN
+    _assert_joined_exit_one_is_a_failure(tmp_path, project, envelope, command, payload)
 
 
 @pytest.mark.parametrize("variant", _hook_variants(_CLAUDE))

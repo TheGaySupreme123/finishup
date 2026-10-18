@@ -256,10 +256,12 @@ def _classification_token(value: object) -> str | None:
     return value
 
 
-def _bounded_result_mapping(value: object) -> Mapping[str, CanonicalJsonValue] | None:
+def _bounded_result_mapping(
+    value: object, *, text_is_output: bool = False
+) -> Mapping[str, CanonicalJsonValue] | None:
     if isinstance(value, Mapping):
         return cast(Mapping[str, CanonicalJsonValue], value)
-    if type(value) is not str or not value:
+    if type(value) is not str or not value or text_is_output:
         return None
     try:
         encoded = value.encode("utf-8")
@@ -275,18 +277,22 @@ def _bounded_result_mapping(value: object) -> Mapping[str, CanonicalJsonValue] |
 
 
 def _classification_result_mappings(
-    payload: Mapping[str, CanonicalJsonValue],
+    payload: Mapping[str, CanonicalJsonValue], *, text_is_output: bool = False
 ) -> tuple[Mapping[str, CanonicalJsonValue], ...]:
-    """Collect bounded result carriers without traversing arbitrary content."""
+    """Collect bounded result carriers without traversing arbitrary content.
+
+    ``text_is_output``: a string carrier is the command's own output, never a host-structured
+    result, so it is not parsed as JSON (a command printing ``{"success": true}`` states nothing).
+    """
 
     mappings: list[Mapping[str, CanonicalJsonValue]] = [payload]
     for key in ("tool_response", "tool_output", "result", "result_json"):
-        mapping = _bounded_result_mapping(payload.get(key))
+        mapping = _bounded_result_mapping(payload.get(key), text_is_output=text_is_output)
         if mapping is None:
             continue
         mappings.append(mapping)
         for nested_key in ("structuredContent", "structured_content", "data", "result"):
-            nested = _bounded_result_mapping(mapping.get(nested_key))
+            nested = _bounded_result_mapping(mapping.get(nested_key), text_is_output=text_is_output)
             if nested is not None:
                 mappings.append(nested)
     return tuple(mappings)
@@ -315,7 +321,13 @@ def _classification_outcome(
     invalid_exit = False
     valid_exits: list[int] = []
 
-    for mapping in _classification_result_mappings(payload):
+    # A Codex shell call's string ``tool_response`` is the command's own output (Codex 0.159 sends
+    # no exit in it): text the command printed must never read as a host outcome (n7 RC1, Q5).
+    tool = _classification_token(payload.get("tool_name"))
+    text_is_output = (
+        not host_post_is_success and tool is not None and tool.casefold() in SHELL_TOOLS
+    )
+    for mapping in _classification_result_mappings(payload, text_is_output=text_is_output):
         for key in ("denied", "is_denied", "permission_denied"):
             if type(mapping.get(key)) is bool and mapping.get(key) is True:
                 denied = True
@@ -1162,7 +1174,8 @@ def classify_observation(
 
     ``host_post_is_success``: Claude Code's and Cursor's post event is their
     closed success signal; Codex fires ``PostToolUse`` for a non-zero exit
-    too, so its caller passes ``False``.
+    too, so its caller passes ``False``.  With ``False`` a shell call's string
+    result is its command's output, so it is never parsed for outcome fields.
     """
 
     phase = _classification_phase(event_name)
