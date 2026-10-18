@@ -736,7 +736,8 @@ def _closing_review_facts(
     closing review succeeded. The walk no longer falls back past it to an older, staled review:
     asking for "the closing review" again would contradict the check's own continuation. A newer
     current closing-review attempt with another outcome (refused, invalid ...) decides instead,
-    so the flag stays false behind it; an older current review that succeeded still wins. A
+    so the flag stays false behind it; a newer local-only check (``not_requested``) asked for no
+    review and changes nothing; an older current review that succeeded still wins. A
     material change after it asks again and clears the flag; an ordinary mid-task check without a
     judgment changes nothing.
     """
@@ -773,6 +774,11 @@ def _closing_review_facts(
             continue
         if status is SemanticStatus.SUCCEEDED:
             return True, used, deferred, False, False
+        if status is SemanticStatus.NOT_REQUESTED:
+            # A local-only check (``deterministic_mode``, ``no_material_semantic_case``) asked for
+            # no AI-powered review, so it is no newer attempt: following the no-judgment
+            # continuation's "go local-only" must not bring the closing-review request back.
+            continue
         if status in _NO_JUDGMENT_STATUSES and not newer_closing_attempt:
             # The newest closing-review attempt on this state ended without a judgment. An
             # older current review that succeeded still wins; a staled one no longer does.

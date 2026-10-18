@@ -8059,7 +8059,8 @@ An unchanged newest check that failed with
 of asking for the same closing review. When the newest closing-review attempt that still covers
 this state ended `unavailable` (any reason) or `timeout` (no judgment), with no current closing
 review that succeeded, it is current too and adds the standing code `semantic_review_no_judgment`
-(n7 RC1, #1105); a newer current closing-review attempt with another outcome decides instead. The
+(n7 RC1, #1105); a newer current closing-review attempt with another outcome decides instead,
+while a newer local-only check (`not_requested`) asked for no review and changes nothing. The
 sentence defers to that check's own continuation (at most one new check, none after a retry that
 also returned no judgment), otherwise a finish that reports a required review as unmet
 (`protocol/readiness_text.closing_review_limit_note`, alias `coordinator_failure_note`, gives the
@@ -10952,7 +10953,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   given (`rg` without `--pre`; never `wget`), so its quoted `&` is data, #1089; `None` otherwise,
   including `sudo`/`doas`, `env -S`, an assignment such as `LD_PRELOAD=` or `PATH=`, ANSI-C
   quoting (`$'...'`), shells or interpreters reading stdin, code-taking programs, command or
-  process substitution and unsplittable text), and `None` keeps the conservative pattern),
+  process substitution (also in an unquoted here-document body), `printf -v` and unsplittable
+  text; a `False` also needs `pattern_may_background` to see no detaching word anywhere and no
+  `&` outside a quoted or escaped span, so the grammar can only clear a quoted `&`), and `None`
+  keeps the conservative pattern `pattern_may_background(text)`),
   `owned_relative_paths(workspace, roots)` and
   `workspace_fingerprint_pass(event, *, call_identity, workspace_locator, workspace_commitment,
   key_material, observation_root, complete, incomplete_reason, call_token, excluded, seconds,

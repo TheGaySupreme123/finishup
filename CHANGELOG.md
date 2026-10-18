@@ -689,7 +689,8 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   `sed 's/x/&/'`, `rg 'a&b'` without `--pre`) no longer counts as starting a background process;
   `sudo`, `wget`, shells, interpreters, other programs that can run code, a wrapper or assignment in
   front of the program (`env -S`, `LD_PRELOAD=`, `PATH=`) and ANSI-C quoting (`$'...'`) keep the
-  cautious reading, and Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no snapshot.
+  cautious reading, as does any text where a detaching word or an unquoted `&` appears anywhere,
+  so only a quoted `&` is ever cleared, and Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no snapshot.
   `finishup observe status` counts how many commands were compared and why the others could not be
   (`call_incomplete`, `background_launch`, `process_lingering`, `workspace_unsettled`, ...), keeping
   the last 64 by call. A closing review that ended without a judgment (outcome unknown, timeout, a

@@ -1440,7 +1440,9 @@ pytest` recorded a failing run as a success.
    no judgment, none while that continuation says to wait or fix configuration), and keeps the
    required-route clause (report a required review as unmet). A newer current closing-review
    attempt with another outcome (refused, invalid) decides instead: the code is not set behind it
-   (an older current review that succeeded still wins). Status, the closure-prepare notes, the MCP
+   (an older current review that succeeded still wins). A newer local-only check
+   (`not_requested`, which is what the continuation's local-only finish runs) asked for no review
+   and leaves the code in place. Status, the closure-prepare notes, the MCP
    summaries and the Stop gate opener now say the same
    (`protocol/readiness_text.closing_review_limit_note`). The receipt does not carry that
    sentence: it discloses the gap through its existing semantic limitation wording and still
@@ -1462,7 +1464,13 @@ whose daemon the same-user process probe cannot see; a wrapper or assignment tha
 (`env -S`/`--split-string`, `LD_PRELOAD=`, `BASH_ENV=`, `PATH=`); ANSI-C quoting (`$'...'`), whose
 escaped quote the splitter would misread; `wget` (`-b`, `--use-askpass`); a shell or interpreter
 reading stdin or a here-document; `eval`, `ssh`, `awk`, `git`, `trap`, `find -exec`, any
-interpreter; a command or process substitution; unsplittable text. Cursor's `MCP:<tool>` spelling of
+interpreter; a command or process substitution, including one in an unquoted here-document
+body; `printf -v`; unsplittable text. The bound holds by construction, not by that list: a
+"no" also requires that the pattern itself sees no detaching word anywhere in the raw text and
+no `&` outside a quoted or escaped span, so where the splitter misreads text that bash parses
+differently (an escaped blank before `#`, a partly quoted here-document delimiter) the pattern's
+answer stands. The splitter now also starts a comment only after an unescaped blank,
+quote-removes the whole here-document delimiter word and reads `\>&` as a separator. Cursor's `MCP:<tool>` spelling of
 FinishUP's own tools takes no snapshot (#1091 N6). The hook's own launcher chain is judged with the
 same 50 ms clock slack as the candidates, so a launcher whose start the Linux 10 ms tick rounded
 down is not taken for the host (#1090 PL-1). Residual: if a Codex build's rollout item did not join

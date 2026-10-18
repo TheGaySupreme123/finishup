@@ -1041,6 +1041,42 @@ def test_a_newer_refused_closing_review_decides_over_an_older_one_without_a_judg
     assert "semantic_review_no_judgment" not in split.standing_limitations
 
 
+@pytest.mark.parametrize("with_manifest", [False, True])
+@pytest.mark.parametrize("required", [True, False])
+def test_a_local_only_check_after_a_closing_review_without_a_judgment_keeps_the_flag(
+    with_manifest: bool, required: bool
+) -> None:
+    """Review round 3: following the continuation's "go local-only" asks for no closing review."""
+
+    state, records, _source = _closing_review_then(
+        SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN
+    )
+    unjudged = cast(AcceptedEvent, records[-1])
+    local = _append_check(
+        unjudged,
+        replace(
+            cast(CheckRecordedPayload, unjudged.payload),
+            mode=CheckMode.DETERMINISTIC_ONLY,
+            semantic_status=SemanticStatus.NOT_REQUESTED,
+            semantic_reason=SemanticReason.DETERMINISTIC_MODE,
+            semantic_provenance=None,
+            review_input_manifest=_review_input_manifest_from_json(
+                cast(DomainJsonValue, _manifest("final"))
+            )
+            if with_manifest
+            else None,
+        ),
+        unjudged.ledger.ingestion_sequence + 1,
+        appended_id="evt_00000000-0000-4000-8000-00000000f0c3",
+    )
+    facts = closure_readiness_facts(state, (*records, local))
+    assert facts.closing_review_current is True
+    assert facts.closing_review_no_judgment is True
+    split = derive_closure_readiness((), (), facts, semantic_review_required=required)
+    assert "closing_review_required" not in split.agent_actionable
+    assert "semantic_review_no_judgment" in split.standing_limitations
+
+
 def test_a_closing_review_without_a_judgment_an_older_current_review_still_wins() -> None:
     state, records, _source = _closing_review_then(
         SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN, material_between=False
