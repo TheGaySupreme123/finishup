@@ -121,6 +121,23 @@ def test_text_that_backgrounds(text: str) -> None:
         "rg --pre=sh 'a&b' .",
         "rg --pre ./bg.sh 'a&b' .",
         "rg --pre setsid -e x .",
+        "printf -v PATH %s . ; curl 'h?a=1&b=2'",
+        # Splitter misreads (review round 3) that bash parses differently; each really leaves a
+        # writer running under ``bash -c``. An escaped blank or a line continuation keeps ``#``
+        # inside the word, so the ``&`` after it is top level.
+        "echo a\\ #b & (cd / && sleep 3 && echo late >> f) &",
+        "echo a\\\n#b & (cd / && sleep 3 && echo late >> f) &",
+        "echo \\>& sleep 9",
+        # Bash removes quotes inside a here-document delimiter word: the body ends at ``EOF`` and
+        # the next line runs as a command.
+        'cat <<E"O"F\nEOF\nsetsid -f sh -c \'sleep 3; touch f\'\nE"O"F',
+        'cat <<"E"OF\nEOF\nsetsid -f w\nE',
+        # An unquoted here-document body runs command substitution.
+        "cat <<EOF\n$(setsid -f sh -c 'cd / ; sleep 3 ; echo late >> f' >/dev/null)\nEOF",
+        "cat <<EOF\n`setsid -f w`\nEOF",
+        "cat <<EOF\n${x:-$(setsid -f w)}\nEOF",
+        # The quiet answer never clears a detaching word, wherever the splitter put it.
+        "grep -n 'x nohup y' f",
     ],
 )
 def test_text_the_grammar_leaves_to_the_conservative_reading(text: str) -> None:
@@ -154,3 +171,29 @@ def test_a_claude_background_launch_flag_is_a_background_launch() -> None:
     assert (
         reason({"tool_input": {"command": "x &"}, HOST_CALL_ENDED_KEY: True}) == "background_launch"
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "curl 'h?a=1&b=2'",
+        "sed 's/x/&/' f",
+        "echo a #b & c",
+        "echo 'x' # it's\n(sleep 3; touch f) &",
+        "cat <<'EOF'\nit's\nEOF\necho 'a&b'",
+        'curl "a&$(true)b"',
+    ],
+)
+def test_a_quiet_answer_never_hides_what_the_pattern_sees_outside_quotes(text: str) -> None:
+    """By construction: ``False`` only when every pattern hit is an ``&`` in a quoted span."""
+
+    from finishup.domain.command_segments import (
+        _unquoted,  # pyright: ignore[reportPrivateUsage]
+        pattern_may_background,
+    )
+
+    if command_may_background(text) is False:
+        assert not pattern_may_background(_unquoted(text))
+        assert "nohup" not in text and "setsid" not in text
+    else:
+        assert _outlives(text) is True

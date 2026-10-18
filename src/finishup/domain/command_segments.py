@@ -74,6 +74,7 @@ __all__ = [
     "canonical_commitment",
     "canonical_words",
     "command_may_background",
+    "pattern_may_background",
     "command_segment_commitments",
     "command_segments",
     "exact_segment_commitments",
@@ -156,9 +157,15 @@ def _split_top_level(text: str) -> _Split | None:
     index = 0
     length = len(text)
 
+    # Index in ``current`` of the last unescaped blank: a ``#`` starts a comment only at the start
+    # of a word, never after an escaped blank (``a\\ #b``) or a line continuation.
+    blank_at = -1
+
     def flush() -> None:
+        nonlocal blank_at
         segment = "".join(current).strip()
         current.clear()
+        blank_at = -1
         if segment:
             segments.append(segment)
 
@@ -210,7 +217,7 @@ def _split_top_level(text: str) -> _Split | None:
             current.append(char)
             index += 1
             continue
-        if char == "#" and (not current or current[-1][-1:] in {" ", "\t", "\n"}):
+        if char == "#" and (not current or blank_at == len(current) - 1):
             while index < length and text[index] != "\n":
                 index += 1
             continue
@@ -222,17 +229,23 @@ def _split_top_level(text: str) -> _Split | None:
                 index += 1
             while index < length and text[index] in " \t":
                 index += 1
-            delimiter_start = index
-            if index < length and text[index] in "'\"":
-                closing = text.find(text[index], index + 1)
-                if closing < 0:
-                    return None
-                delimiter = text[index + 1 : closing]
-                index = closing + 1
-            else:
-                while index < length and text[index] not in " \t\n;&|<>()":
+            # The delimiter is the whole word after quote removal: ``<<E"O"F`` and ``<<"E"OF``
+            # both end at a line ``EOF``.
+            pieces: list[str] = []
+            while index < length and text[index] not in " \t\n;&|<>()":
+                if text[index] in "'\"":
+                    closing = text.find(text[index], index + 1)
+                    if closing < 0:
+                        return None
+                    pieces.append(text[index + 1 : closing])
+                    index = closing + 1
+                elif text[index] == "\\":
+                    pieces.append(text[index + 1 : index + 2])
+                    index += 2
+                else:
+                    pieces.append(text[index])
                     index += 1
-                delimiter = text[delimiter_start:index].replace("\\", "")
+            delimiter = "".join(pieces)
             if not delimiter:
                 return None
             current.append(text[start:index])
@@ -269,7 +282,9 @@ def _split_top_level(text: str) -> _Split | None:
             index += 1
             continue
         if char == "&":
-            previous = current[-1][-1:] if current else ""
+            # Only a bare ``>``/``<`` makes ``>&``/``<&`` a redirection; an escaped one (``\\>``) is
+            # a word character, so the ``&`` after it is a separator.
+            previous = current[-1] if current else ""
             following = text[index + 1 : index + 2]
             if previous in {">", "<"} or following == ">":
                 current.append(char)
@@ -278,6 +293,8 @@ def _split_top_level(text: str) -> _Split | None:
                 separators.add("&")
             index += 1
             continue
+        if char in " \t":
+            blank_at = len(current)
         current.append(char)
         index += 1
     if quote is not None or substitution or backtick or pending:
@@ -1016,6 +1033,36 @@ def requested_command_shape(value: str) -> str:
 
 # Words that start a process meant to outlive its launcher, at any wrapper layer of a segment.
 _DETACHING_WORDS: Final = frozenset({"nohup", "setsid", "disown", "daemonize", "start-stop-daemon"})
+# The conservative reading (PR #1080): a shell background operator (a lone ``&``, not ``&&``,
+# ``>&``, ``&>``, ``<&`` or ``|&``) or a detaching launcher anywhere in the raw text.
+_BACKGROUND_OPERATOR: Final = re.compile(r"(?<![&|<>])&(?![&>])")
+_DETACHING_WORD: Final = re.compile(
+    r"(?:^|[\s;|&(`])(?:nohup|setsid|disown|daemonize|start-stop-daemon)(?=$|[\s;|&)`])"
+)
+
+
+def pattern_may_background(text: str) -> bool:
+    """The conservative pattern reading of *text*: a lone ``&`` or a detaching word anywhere."""
+
+    return _BACKGROUND_OPERATOR.search(text) is not None or _DETACHING_WORD.search(text) is not None
+
+
+def _pattern_cleared_only_quoted_ampersands(text: str) -> bool:
+    """Whether every hit of the pattern in *text* is an ``&`` inside a quoted or escaped span.
+
+    The grammar's quiet answer is bounded by this, so it can never be quieter than the pattern
+    except for such an ``&`` (#1089 item 1): a detaching word anywhere, or an ``&`` the quote
+    scan leaves visible, keeps the pattern's answer whatever the splitter made of the text.
+    Blanking only turns characters into spaces, so it never hides an ``&`` the pattern matched
+    outside a quoted span.
+    """
+
+    return (
+        _DETACHING_WORD.search(text) is None
+        and _BACKGROUND_OPERATOR.search(_unquoted(text)) is None
+    )
+
+
 # Programs that, in the forms accepted here, never hand an argument to a shell or an interpreter,
 # nor read code from stdin: a quoted ``&`` in their arguments is data. Everything else (a shell,
 # ``eval``, ``sudo``, ``ssh``, ``xargs``, ``find``, ``awk``, ``git``, ``trap``, ``wget`` with its
@@ -1108,6 +1155,9 @@ def _inert_program(words: Sequence[str]) -> bool:
     if head == "rg":
         # ``--pre``/``--pre=`` (and ``--pre-glob``) run a preprocessor command for each file.
         return not any(word.startswith("--pre") for word in words[1:])
+    if head == "printf":
+        # ``printf -v PATH ...`` assigns a shell variable, which can change what runs next.
+        return not any(word.startswith("-v") for word in words[1:])
     return head != "sed" or _inert_sed(words[1:])
 
 
@@ -1154,10 +1204,13 @@ def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
     any command or process substitution, ANSI-C quoting (``$'...'``), a wrapper or assignment
     (``env -S``, ``LD_PRELOAD=``, ``PATH=``) in front of such a program, a privilege wrapper
     (``sudo``), a program that hands an argument or its stdin to a shell or interpreter, and
-    text that is not splittable: the caller
-    keeps its conservative reading, so this answer is never quieter than that pattern except for
-    a call made only of those known programs. The answer is about the text only; it never proves
-    that no process outlives the call.
+    text that is not splittable, and an unquoted here-document body with a ``$`` or a backtick
+    (command substitution). The quiet answer is also bounded by construction: it is ``None``
+    whenever the conservative pattern (``pattern_may_background``) sees a detaching word anywhere
+    or an ``&`` outside a quoted or escaped span, so where the splitter misreads the text the
+    caller keeps its pattern. This answer is therefore never quieter than that pattern except for
+    a quoted ``&`` in a call made only of those known programs. The answer is about the text only;
+    it never proves that no process outlives the call.
     """
 
     if type(text) is not str or len(text) > _MAX_TEXT_CHARS:
@@ -1167,14 +1220,21 @@ def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
         return None
     if "&" in split.separators:
         return True
-    if any("&" in body for bodies in split.bodies.values() for body in bodies):
+    bodies = [body for owned in split.bodies.values() for body in owned]
+    if any("&" in body for body in bodies):
         return True
     # ANSI-C quoting (``$'\''``) escapes a quote the splitter reads as closing one, so a real
-    # top-level ``&`` can look quoted: never a quiet answer for such text.
-    undecided = not split.segments or "$'" in text
+    # top-level ``&`` can look quoted: never a quiet answer for such text. An unquoted
+    # here-document body runs command substitution (``$(setsid -f w)``), so a body with a ``$``
+    # or a backtick is undecided too.
+    undecided = (
+        not split.segments or "$'" in text or any("$" in body or "`" in body for body in bodies)
+    )
     for segment in split.segments:
         verdict = _segment_may_background(segment, _depth)
         if verdict is True:
             return True
         undecided = undecided or verdict is None
-    return None if undecided else False
+    if undecided or not _pattern_cleared_only_quoted_ampersands(text):
+        return None
+    return False

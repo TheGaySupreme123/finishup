@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import re
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -49,7 +48,7 @@ from finishup.adapters.workspace_fingerprint import (
     WorkspaceFingerprintStore,
     workspace_fingerprint_dir,
 )
-from finishup.domain.command_segments import command_may_background
+from finishup.domain.command_segments import command_may_background, pattern_may_background
 from finishup.domain.observation_selection import ROUTINE_READ_TOOLS, SHELL_TOOLS
 from finishup.domain.values import JsonValue
 
@@ -116,20 +115,6 @@ def fingerprinted_tool(tool_name: object, *, finishup_owned: bool) -> bool:
     return not (lowered in _EDIT_TOOLS or "edit" in lowered or "patch" in lowered)
 
 
-# The conservative reading for text the shell grammar leaves undecided
-# (``command_segments.command_may_background``): a shell background operator (a lone ``&``, not
-# ``&&``, ``>&``, ``&>``, ``<&`` or ``|&``) or a detaching launcher anywhere. The grammar clears
-# it only for a call made solely of programs known not to run an argument or stdin as code in the
-# form given, each with no wrapper or assignment in front and no ANSI-C quoting in the text. A
-# command that may leave a process writing after the post-call snapshot cannot be shown to have
-# left the workspace unchanged, and the lingering-process probe sees only this user's processes
-# (a ``sudo`` daemon is invisible to it).
-_BACKGROUND_OPERATOR: Final = re.compile(r"(?<![&|<>])&(?![&>])")
-_DETACHING_WORD: Final = re.compile(
-    r"(?:^|[\s;|&(`])(?:nohup|setsid|disown|daemonize|start-stop-daemon)(?=$|[\s;|&)`])"
-)
-
-
 def _command_text(tool_input: Mapping[str, JsonValue]) -> str | None:
     for key in ("cmd", "command", "argv"):
         value = tool_input.get(key)
@@ -146,7 +131,12 @@ def command_may_outlive_call(payload: Mapping[str, JsonValue]) -> bool:
     Shell grammar answers first (#1089): it says yes for a real background operator or detaching
     launcher, and no only when every program in the text, with no wrapper or assignment in front,
     is known not to run its arguments or stdin as code in the form given, so a quoted ``&`` there
-    (``curl 'h?a=1&b=2'``) is data. Anything it leaves undecided keeps the conservative pattern.
+    (``curl 'h?a=1&b=2'``) is data. Anything it leaves undecided keeps the conservative pattern
+    (``pattern_may_background``: a lone ``&`` or a detaching launcher anywhere), and its quiet
+    answer is bounded by that pattern: a detaching word anywhere, or an ``&`` outside a quoted
+    span, is never cleared. A command that may leave a process writing after the post-call
+    snapshot cannot be shown to have left the workspace unchanged, and the lingering-process
+    probe sees only this user's processes (a ``sudo`` daemon is invisible to it).
     """
 
     tool_input = payload.get("tool_input")
@@ -158,7 +148,7 @@ def command_may_outlive_call(payload: Mapping[str, JsonValue]) -> bool:
     verdict = command_may_background(text)
     if verdict is not None:
         return verdict
-    return _BACKGROUND_OPERATOR.search(text) is not None or _DETACHING_WORD.search(text) is not None
+    return pattern_may_background(text)
 
 
 # Set by a host adapter on its local copy of the outcome facts when the post event itself is the
