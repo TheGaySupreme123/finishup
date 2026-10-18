@@ -15,6 +15,10 @@ and the record's own failure modes duplicated or suppressed publications. Each i
 gets a fresh, named id: retry means sending it, and an in-memory guard refuses an identical
 id-less resend instead of guessing. The `replay_notice` field is retired. Golden vectors are added
 (CAN-022).
+**Amended 2026-10-18** (n7 RC3, [issue #1103](https://github.com/TheGaySupreme123/yoetz/issues/1103);
+design gate: protocol, requested by the maintainer's n7 brief and recorded on #1103): decision 7
+also fills an allowlisted omitted empty payload set and canonicalizes `respond` `evidence_refs`, and
+a `respond` payload refusal names its reason. No schema, golden vector or result version changes.
 
 This ADR widens unreleased 0.3 schema versions in place:
 
@@ -196,6 +200,31 @@ a material transition, not typing UUIDs, timestamps and mirrors.
      family or version absent from the allowlist keeps its exact bytes and refusal. Lineage and
      coordination payload sets keep their refusal.
    - **Why this is safe:** a set has no order or multiplicity, so this changes no assertion.
+   - **Omitted empty payload sets (n7 RC3a).** The request model fills `[]` for an omitted payload
+     reference set whose omission has exactly one admissible meaning, by an explicit
+     `(family, version)` allowlist (`PAYLOAD_EMPTY_SET_DEFAULTS`):
+     - `claim_recorded/1.1.0` `limitation_refs` and `supersedes_claim_refs` (the
+       `claim_recorded/1.0.0` meaning: no limitation linked, no correction);
+     - `plan_published` `obligation_refs`, only beside `no_obligations_reason`, where `[]` is the
+       only admissible value.
+
+     Every other required list keeps its exact refusal: `supporting_refs`, a revision's
+     `obligation_changes` and a plan's `obligation_refs` without a reason carry the record's
+     substance, so an omission there is likelier a forgotten value than an empty one. A sent value
+     is never replaced. The default asserts nothing the domain does not still judge: a claim that
+     leaves a live failed or partial result out of an omitted `limitation_refs` is refused by
+     `limitation_refs_complete` and names the result. Like set order, the default is not named in
+     `server_filled` (decision 8 records envelope provenance, and naming payload fields would
+     version two result schemas), and an omitted set and an explicit `[]` are one request with one
+     digest and one stored payload, so either form replays the other.
+   - **`respond` `evidence_refs` (n7 RC3b).** `RespondRequest` sorts and de-duplicates
+     `evidence_refs` before the schema check with the same `canonical_reference_set` rule, so an
+     answer that lists its evidence in another order, or twice, is the same request as its sorted
+     twin. A refusal of the response payload is no longer a reason-free `INVALID_REQUEST`: it
+     carries `reason_code`, the request `field` from a frozen pointer table, and
+     `input_correction_new_identity` unless the reason maps its own continuation; its message names
+     the corrective rule, so a host that reads only the structured body (Codex) gets it too. The
+     outer catch-alls of `respond` and `receipt` keep their messages and now carry `reason_code`.
 8. **Provenance is recorded, not inferred.**
    - **What is recorded:** whenever anything was filled, every success, reduced success and
      dry-run result carries `server_filled`. It lists `expected_frontier` when omitted and, for
@@ -212,7 +241,8 @@ a material transition, not typing UUIDs, timestamps and mirrors.
      gap would have propagated into every check and receipt.
 9. **Payload ids and evidence `observed_at` stay caller-authored.** Their payload schemas are
    released, and in-batch cross-references need them; #919's label proposal remains the route for
-   that.
+   that. The guidance says so in the same sentence that tells agents to omit `occurred_at`, and
+   names where a held time comes from (n7 RC3, #1097).
 10. **Status has a `brief` detail level.**
     - **Protocol:** `status` accepts `detail: brief | full`. `full`, or an absent `detail`, is the
       earlier body. A `brief` body is a strict subset of it:
@@ -266,7 +296,11 @@ a material transition, not typing UUIDs, timestamps and mirrors.
   survive those cases send their own `request_id`. The ready-to-file follow-ups are listed in the
   PR #1088 round-2 fix report.
 - **Version skew.** An older service refuses a sparse body as `INVALID_REQUEST` before any append.
-  A schema-manifest change supersedes an older holder through the existing handshake.
+  A schema-manifest change supersedes an older holder through the existing handshake. The n7 RC3
+  normalization runs in the shared request model, so a new bridge sends an older 0.3 service the
+  explicit `[]` and sorted refs it already accepts; an older bridge keeps refusing the omitted
+  form locally until its host restarts it. No recorded operation can hold the pre-normalization
+  shape (both forms were refused before any append), so no stored digest changes.
 - **Downgrade.** An older 0.3 build that replays a sparse operation would refuse its stored
   result's extra key. Downgrade below this unreleased contract is not supported.
 - **Concurrency.** An omitted frontier refuses a cooperative write that lands while the batch is in

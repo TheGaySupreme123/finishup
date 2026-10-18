@@ -352,7 +352,8 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   latest verification output; and an agent's digest of output FinishUP already captured now reaches
   that output.
 - **Agents write each fact once.** A `publish_work` request may leave out its request id, its
-  frontier, and each event's id, time, empty lists and repeated references. The MCP tool and
+  frontier, each event's id, time, own empty reference lists and repeated references, and a
+  current-version claim's empty limitation and correction lists (#1103). The MCP tool and
   `finishup publish-work` give each call its own request id and name it in every answer: retry a
   lost answer by sending that id, while a deliberate repeat is a new record (an identical id-less
   resend right after the same call is refused and names the earlier id). FinishUP guards an omitted frontier with the one it reads when it takes
@@ -675,6 +676,17 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   chosen for an ordinary task (#828).
 
 ### Fixed
+
+- Agents no longer have their tool calls refused for shapes the guidance told them to send (#1103).
+  A completion or correction claim that leaves out an empty `limitation_refs` or
+  `supersedes_claim_refs` is accepted as the empty list (a claim that leaves out a failed result it
+  must disclose is still refused and names it). A `respond` answer may list its `evidence_refs` in
+  any order or repeat one; it is the same request as the sorted list. A refused answer now names
+  the rule it broke and the field in its error, where it used to say only that the request was
+  invalid. `read_guidance` reads `#publish-shapes` (and any other topic exactly one guidance page
+  defines) when an agent attaches it to the wrong page, and the operating card writes that topic's
+  full address. `closure_prepare` says it drafts only from recorded ids and where request shapes
+  live, and the guidance says that evidence `observed_at` is always required.
 
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks

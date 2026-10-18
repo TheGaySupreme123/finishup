@@ -296,6 +296,30 @@ required at the service. The pure half lives in `finishup.protocol.publish_boile
   `causal_parents` defaults to empty. A sent value is never replaced, so a sent mirror that
   disagrees is still `ref_mirror_mismatch`, and a request that sends every value keeps its earlier
   identity, digest and result bytes.
+- An omitted empty payload reference set is filled by `default_empty_payload_sets` for exactly the
+  `(family, version)` pairs `PAYLOAD_EMPTY_SET_DEFAULTS` names (n7 RC3a, issue #1103):
+  `claim_recorded/1.1.0` `limitation_refs` and `supersedes_claim_refs`, and `plan_published`
+  `obligation_refs` only beside `no_obligations_reason`. It runs in the request model after the
+  `decision_id` drop and before set canonicalization (`normalize_publish_drafts`). Every other
+  required list (`supporting_refs`, `plan_revised` `obligation_changes`, a plan's `obligation_refs`
+  without a reason) keeps its `schema_instance_invalid` refusal naming `missing_fields`. The fill is
+  not named in `server_filled` (its enum stays the five envelope fields): an omitted set and an
+  explicit `[]` are one request, one digest and one stored payload, and the domain still judges the
+  empty set (`limitation_refs_complete`).
+
+`respond` `evidence_refs` is a reference set (n7 RC3b, issue #1103, ADR-050 decision 7).
+`RespondRequest` sorts it as ASCII bytes and de-duplicates it before the schema check with
+`finishup.protocol.publish_boilerplate.canonical_reference_set`, so the MCP bridge, the CLI and the
+service read one request and an unsorted answer hashes and replays like its sorted twin. A non-id
+member is left as sent for the schema to refuse at `/evidence_refs`, and an explicit `null` keeps
+`optional_field_must_not_be_null`. A `ProtocolValueError` raised while the response payload or its
+draft is built (before any append) is `INVALID_REQUEST` with `safe_details.reason_code`, a `field`
+pointer only from the frozen table (`/duplicate_of_finding_id`, `/evidence_refs`, `/reason`,
+`/waiver_expiry`), and `continuation: input_correction_new_identity` unless the reason maps its own
+(`unsorted_set_field` keeps `sorted_set_required`); the message names the corrective rule for
+`duplicate_set_member`, `response_fields_invalid`, `set_member_not_ascii` and `unsorted_set_field`,
+so a host that reads only `structuredContent` sees it. The outer `respond` and `receipt`
+catch-alls keep their messages and add `reason_code`.
 
 Host-owned request identity (ADR-050 decision 2, revised by round 2 of the PR #1088 review).
 The MCP `publish_work` tool, and `finishup publish-work`, admit a body without `request_id` (the
