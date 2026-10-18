@@ -81,13 +81,16 @@ COORDINATOR_FAILURE_SENTENCE: Final = (
     "The closing review stopped on an unchanged coordinator failure. That is a FinishUP limit;"
     " do not send the same check again."
 )
-# n7 RC1 (#1105): a closing review that ended without a judgment is not asked for again; its
-# continuation allows one new check and then a disclosed local-only finish.
+# n7 RC1 (#1105): a closing review that ended without a judgment (``unavailable`` or ``timeout``,
+# whatever the reason, including one refused before dispatch) is not asked for again. The sentence
+# defers to that check's own continuation, which may allow one new check or none (wait for quota,
+# fix the configuration), and holds for every reason: it never says the review ran.
 NO_JUDGMENT_TOKEN: Final = "semantic_review_no_judgment"
 NO_JUDGMENT_SENTENCE: Final = (
-    "The closing review ran but ended without a judgment. FinishUP does not ask for it again:"
-    " you may run one new check under a NEW request_id, or finish and disclose that"
-    " AI-powered review did not return a judgment."
+    "The closing review ended without a judgment, so FinishUP does not ask for it again. Follow"
+    " that check's own continuation: it allows at most one new check under a NEW request_id,"
+    " and none after a retry that also returned no judgment. Otherwise finish, report a required"
+    " review as unmet, and disclose that AI-powered review returned no judgment."
 )
 
 

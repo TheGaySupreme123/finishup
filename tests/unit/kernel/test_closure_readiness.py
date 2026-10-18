@@ -281,7 +281,11 @@ def _retarget_action(
 
 
 def _append_check(
-    source: LedgerRecord, payload: CheckRecordedPayload, sequence: int
+    source: LedgerRecord,
+    payload: CheckRecordedPayload,
+    sequence: int,
+    *,
+    appended_id: str = "evt_00000000-0000-4000-8000-00000000f0c1",
 ) -> AcceptedEvent:
     """A second check after *source*, with its own event id and entry digest."""
 
@@ -293,7 +297,7 @@ def _append_check(
     values: dict[str, object] = {
         field.name: getattr(base, field.name) for field in fields(AcceptedEvent) if field.init
     }
-    appended = event_id("evt_00000000-0000-4000-8000-00000000f0c1")
+    appended = event_id(appended_id)
     values.update(
         event_id=appended,
         ledger=replace(base.ledger, ingestion_sequence=sequence),
@@ -939,9 +943,11 @@ def _closing_review_then(
             payload,
             semantic_status=status,
             semantic_reason=reason,
-            # A retry budget spent before dispatch records no provider provenance.
+            # A retry budget spent, or a credential missing, before dispatch records no provider
+            # provenance.
             semantic_provenance=None
-            if reason is SemanticReason.RETRY_BUDGET_EXHAUSTED
+            if reason
+            in {SemanticReason.RETRY_BUDGET_EXHAUSTED, SemanticReason.CREDENTIAL_UNAVAILABLE}
             else replace(_provenance(), status=status, reason=reason),
             review_input_manifest=_review_input_manifest_from_json(
                 cast(DomainJsonValue, _manifest(phase))
@@ -960,6 +966,10 @@ def _closing_review_then(
         (SemanticStatus.UNAVAILABLE, SemanticReason.RETRY_BUDGET_EXHAUSTED),
         (SemanticStatus.UNAVAILABLE, SemanticReason.TRANSPORT_UNAVAILABLE),
         (SemanticStatus.TIMEOUT, SemanticReason.PROVIDER_TIMEOUT),
+        # Refused before dispatch, and a quota whose continuation says to wait: still no
+        # judgment, and the Stop text defers to that check's own continuation.
+        (SemanticStatus.UNAVAILABLE, SemanticReason.CREDENTIAL_UNAVAILABLE),
+        (SemanticStatus.UNAVAILABLE, SemanticReason.PROVIDER_QUOTA_EXHAUSTED),
     ],
 )
 def test_a_closing_review_without_a_judgment_is_not_asked_again(
@@ -999,6 +1009,36 @@ def test_a_closing_review_without_a_judgment_then_a_material_change_asks_again()
     asked = derive_closure_readiness((), (), after, semantic_review_required=True)
     assert "closing_review_required" in asked.agent_actionable
     assert "semantic_review_no_judgment" not in asked.standing_limitations
+
+
+def test_a_newer_refused_closing_review_decides_over_an_older_one_without_a_judgment() -> None:
+    """Only the newest current closing-review attempt can stop the request (goal-r1-3)."""
+
+    state, records, _source = _closing_review_then(
+        SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN
+    )
+    unjudged = cast(AcceptedEvent, records[-1])
+    refused = _append_check(
+        unjudged,
+        replace(
+            cast(CheckRecordedPayload, unjudged.payload),
+            semantic_status=SemanticStatus.REFUSED,
+            semantic_reason=SemanticReason.PROVIDER_REFUSED,
+            semantic_provenance=replace(
+                _provenance(),
+                status=SemanticStatus.REFUSED,
+                reason=SemanticReason.PROVIDER_REFUSED,
+            ),
+        ),
+        unjudged.ledger.ingestion_sequence + 1,
+        appended_id="evt_00000000-0000-4000-8000-00000000f0c2",
+    )
+    facts = closure_readiness_facts(state, (*records, refused))
+    assert facts.closing_review_no_judgment is False
+    assert facts.closing_review_current is False
+    split = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" in split.agent_actionable
+    assert "semantic_review_no_judgment" not in split.standing_limitations
 
 
 def test_a_closing_review_without_a_judgment_an_older_current_review_still_wins() -> None:

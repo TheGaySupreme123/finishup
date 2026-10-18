@@ -6,18 +6,29 @@ An unchanged coordinator failure (#1079) and a closing review that ended without
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from builders.gate_readiness import acceptance_recheck, readiness
 from finishup.cli import closure_gate, render
 from finishup.cli.closure_gate import closure_gate_from_readiness
-from finishup.cli.render import render_human_check
+from finishup.cli.render import render_closure_readiness_lines, render_human_check
 from finishup.domain import closure
 from finishup.domain.receipts import COORDINATOR_FAILURE_LIMITATION
+from finishup.kernel.closure_readiness import GAP_CLASSIFICATION_VERSION
 from finishup.mcp import summaries
-from finishup.protocol.models import CheckSuccessModel
+from finishup.mcp.summaries import summary_for_closure_prepare, summary_for_status
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
+    CheckSuccessModel,
+    ClosureSelectionModel,
+    FrontierModel,
+    StatusClosureReadinessModel,
+    StatusSuccessModel,
+)
 from finishup.protocol.readiness_text import (
     COORDINATOR_FAILURE_SENTENCE,
     NO_JUDGMENT_SENTENCE,
@@ -142,3 +153,106 @@ def test_every_surface_reads_one_closing_review_limit_sentence() -> None:
     both = SimpleNamespace(standing_limitations=(NO_JUDGMENT_TOKEN, "semantic_coordinator_failure"))
     assert closing_review_limit_note(both) == COORDINATOR_FAILURE_SENTENCE
     assert closing_review_limit_note(SimpleNamespace(standing_limitations=())) is None
+
+
+def _no_judgment_wire(token: str = NO_JUDGMENT_TOKEN) -> dict[str, Any]:
+    return {
+        "state": "ready_with_limitations",
+        "agent_actionable": [],
+        "standing_limitations": [token],
+        "acknowledged_not_done": [],
+        "acknowledged_not_done_count": "0",
+        "receipt_blocking_finding_count": "0",
+        "open_obligation_count": "0",
+        "declared_obligation_count": "1",
+        "no_obligations_reason": None,
+        "gap_classification_version": GAP_CLASSIFICATION_VERSION,
+        "unanswered_finding_count": "0",
+        "blocking_conditions": [],
+    }
+
+
+def _cli_text(wire: dict[str, Any]) -> str:
+    return "\n".join(
+        render_closure_readiness_lines(StatusClosureReadinessModel.model_validate(wire))
+    )
+
+
+def _mcp_status_text(wire: dict[str, Any]) -> str:
+    return summary_for_status(
+        {
+            "view": "compact",
+            "head_frontier": {"sequence": "442", "head_digest": _DIGEST},
+            "gaps": [],
+            "closure_readiness": wire,
+        }
+    )
+
+
+def _mcp_prepare_text(wire: dict[str, Any]) -> str:
+    return summary_for_closure_prepare(
+        {
+            "preparatory_only": True,
+            "frontier": {"sequence": "442", "head_digest": _DIGEST},
+            "closure_readiness": wire,
+            "inventory": {},
+        }
+    )
+
+
+def _prepare_notes(wire: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> str:
+    """The closure-prepare ``notes`` (``domain.closure.prepare_closure``) over a stub status."""
+
+    frontier = FrontierModel.model_validate({"sequence": "442", "head_digest": _DIGEST})
+    compact = StatusSuccessModel.model_construct(
+        subject_frontier=frontier,
+        closure_readiness=StatusClosureReadinessModel.model_validate(wire),
+    )
+
+    async def status(_request: object) -> Any:
+        return SimpleNamespace(root=compact)
+
+    def empty_page(_wrapped: object) -> dict[str, Any]:
+        return {"page": {"items": [], "next_cursor": None}}
+
+    monkeypatch.setattr(closure, "public_model_to_wire", empty_page)
+    output = asyncio.run(
+        closure.prepare_closure(
+            status,
+            str(new_id(IdKind.SESSION)),
+            str(new_id(IdKind.WRITER)),
+            ClosureSelectionModel(),
+        )
+    )
+    notes = output["notes"]
+    assert isinstance(notes, list)
+    return "\n".join(str(note) for note in notes)
+
+
+_SURFACES = ("cli_check", "mcp_status", "mcp_closure_prepare", "closure_prepare_notes")
+
+
+@pytest.mark.parametrize("surface", _SURFACES)
+def test_every_surface_renders_the_no_judgment_sentence(
+    surface: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Design test 8: each renderer, driven with the standing token, prints the sentence."""
+
+    def text(wire: dict[str, Any]) -> str:
+        if surface == "cli_check":
+            return _cli_text(wire)
+        if surface == "mcp_status":
+            return _mcp_status_text(wire)
+        if surface == "mcp_closure_prepare":
+            return _mcp_prepare_text(wire)
+        return _prepare_notes(wire, monkeypatch)
+
+    rendered = text(_no_judgment_wire())
+    assert NO_JUDGMENT_SENTENCE in rendered
+    assert "closing review has not run" not in rendered
+    assert COORDINATOR_FAILURE_SENTENCE not in rendered
+    failure = text(_no_judgment_wire("semantic_coordinator_failure"))
+    assert COORDINATOR_FAILURE_SENTENCE in failure
+    assert NO_JUDGMENT_SENTENCE not in failure
+    plain = text(_no_judgment_wire("semantic_relevance_review_not_run"))
+    assert NO_JUDGMENT_SENTENCE not in plain
