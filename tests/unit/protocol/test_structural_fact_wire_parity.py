@@ -216,7 +216,13 @@ def test_an_edited_write_scope_enum_cannot_reach_an_older_service() -> None:
     the schema manifest pins the 2.9.0 bytes, both handshake sides compare the whole manifest
     digest before any request frame, and a peer built from other bytes is refused as
     ``manifest_mismatch`` (the hook keeps its rows for the superseding service; an MCP bridge or
-    ``finishup service restart`` supersedes the stale holder through its lock stamp)."""
+    ``finishup service restart`` supersedes the stale holder through its lock stamp).
+
+    This test pins only the manifest side. The handshake refusal itself is pinned by
+    ``tests/unit/service/test_control_protocol.py::test_server_answers_hello_result_then_refuses_a_foreign_manifest``
+    and ``::test_client_handshake_names_an_answered_foreign_digest_as_manifest_mismatch``, and its
+    mapping to ``service_incompatible`` by
+    ``tests/unit/service/test_client.py::test_only_an_answered_manifest_mismatch_maps_to_service_incompatible``."""
 
     import hashlib
     import json
