@@ -6,22 +6,25 @@ state-bound facts needed for another participant to understand and check the wor
 
 Publish a bounded initial plan and its explicit obligations before substantive work. After bounded
 exploration and before the first material edit, publish one `plan_revised` refinement; map
-instruction requirements to testable obligations and carry, supersede, or waive earlier obligations explicitly.
-Each obligation's `source_refs` cites the task-statement event (see `startup.md`), and its
-`requested_items` name the files and commands the request names. `source_refs` cannot change on
-an existing obligation: to map a missed requirement, publish a new obligation.
-Then publish material transitions, results, evidence, and a completion claim. Keep one transition together in a small
-batch. `work_closed` closes work; a receipt never does. A `publish_work` body may omit
-`request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at`, `causal_parents`,
-`artifact_refs` and `evidence_refs`. FinishUP mints a request id for that one call, mints event
-ids, records its own clock, copies the payload mirrors, guards the batch with the frontier it reads
-when it admits it, and names every filled value in the result's `server_filled`. Every result and
-error names that request id. After an unknown outcome, retry by sending that `request_id` with the
-body: it replays instead of appending twice. Resending the body without it is never a retry: right
-after the same call FinishUP refuses it and names the id, and otherwise it is a new publication.
-Send a value only when you need it: an explicit `expected_frontier` (the `frontier`
-`start` returned for the first plan, then the `result_frontier` of your last accepted write) also
-refuses a change made since you read it; a `causal_parents` entry cites an earlier event id.
+instruction requirements to testable obligations and carry, supersede, or waive earlier obligations
+explicitly. Each obligation's `source_refs` cites the task-statement event (see `startup.md`), and
+its `requested_items` name the files and commands the request names. `source_refs` cannot change on
+an existing obligation: to map a missed requirement, publish a new obligation. Then publish material
+transitions, results, evidence, and a completion claim. Keep one transition together in a small
+batch. `work_closed` closes work; a receipt never does. A `publish_work` body may omit `request_id`,
+`expected_frontier`, each draft's `event_id`, `occurred_at`, `causal_parents`, `artifact_refs` and
+`evidence_refs`, and, on `claim_recorded/1.1.0`, an empty `limitation_refs` or
+`supersedes_claim_refs`, and a plan's empty `obligation_refs` beside `no_obligations_reason`.
+Payload ids and evidence `observed_at` stay yours to send. FinishUP mints a request id for that one
+call, mints event ids, records its own clock, copies the payload mirrors, guards the batch with the
+frontier it reads when it admits it, and names every filled envelope value in the result's
+`server_filled` (an omitted empty claim or plan set is simply the empty set). Every result and error
+names that request id. After an unknown outcome, retry by sending that `request_id` with the body:
+it replays instead of appending twice. Resending the body without it is never a retry: right after
+the same call FinishUP refuses it and names the id, and otherwise it is a new publication. Send a
+value only when you need it: an explicit `expected_frontier` (the `frontier` `start` returned for
+the first plan, then the `result_frontier` of your last accepted write) also refuses a change made
+since you read it; a `causal_parents` entry cites an earlier event id.
 
 ## Before you send a batch
 
@@ -47,8 +50,10 @@ Check each line. Each one names the refusal or finding it prevents.
    evidence (`obligation_resolution_mismatch`); cite the new evidence from the claim. If its work
    no longer holds, republish it `open`, or `acknowledged_not_done` with the reason, repeating
    every meaning field.
-8. Omit `occurred_at`; FinishUP records its clock. Never run `date` for it. An `occurred_at` or
-   `observed_at` you send is your claim: a time you already hold, never a template's example.
+8. Omit `occurred_at`; FinishUP records its clock. Never run `date` for it. An `occurred_at` you
+   send is your claim. `evidence_recorded` always needs `observed_at`: when you saw the evidence,
+   as a time you already hold (a time the output printed, or else the `accepted_at` of your last
+   accepted write, an earlier bound rather than the moment you saw it), never a template's example.
 9. A file the task writes only under a condition is a `change` item that names the condition and
    the path. Never create an empty or placeholder file for it.
 

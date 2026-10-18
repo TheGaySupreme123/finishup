@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -59,3 +60,30 @@ def test_catalogued_topic_has_one_max_sized_page(monkeypatch: pytest.MonkeyPatch
         page = resources.read_resource_page(uri, page_size=MAX_GUIDANCE_PAGE_SIZE)
         assert page.page_count == 1
         assert page.complete
+
+
+# A backticked bare anchor such as `#publish-shapes`: not part of a longer URI, and not the text of
+# a Markdown link whose target names its page. `#anchor` is the generic word, not an anchor.
+_BARE_ANCHOR = re.compile(r"(?<![\w/.:])`#([a-z0-9][a-z0-9-]*)`(?!\]\()")
+_GENERIC_ANCHOR_WORDS = frozenset({"anchor"})
+
+
+def test_a_bare_anchor_names_a_topic_of_its_own_page() -> None:
+    """n7 RC3 (#1103): a bare anchor reads against the page it is written on.
+
+    The operating card wrote `#publish-shapes` (a request-templates topic) between two other
+    pages' URIs; 42 reads resolved it against the card or a neighbour and were refused. Every bare
+    anchor must therefore be a catalogued topic of the page that writes it; any other anchor is
+    written as its full topic URI.
+    """
+
+    stray: list[str] = []
+    for path in sorted((_ROOT / "guidance").glob("*.md")):
+        page = f"finishup://guidance/{path.name}"
+        for anchor in _BARE_ANCHOR.findall(path.read_text(encoding="utf-8")):
+            if (
+                anchor not in _GENERIC_ANCHOR_WORDS
+                and f"{page}#{anchor}" not in GUIDANCE_TOPIC_URIS
+            ):
+                stray.append(f"{path.name}#{anchor}")
+    assert stray == []

@@ -197,8 +197,16 @@ class ReceiptInternalResult:
         }
 
 
-def _error(code: PublicErrorCode, message: str, *, retryable: bool = False) -> PublicOperationError:
-    return PublicOperationError(code, message, retryable)
+def _error(
+    code: PublicErrorCode,
+    message: str,
+    *,
+    retryable: bool = False,
+    reason_code: str | None = None,
+) -> PublicOperationError:
+    # n7 RC3: a catch-all refusal still names its frozen reason token, never the exception text.
+    details = None if reason_code is None else {"reason_code": reason_code}
+    return PublicOperationError(code, message, retryable, safe_details=details)
 
 
 def _classified_storage_error(
@@ -729,6 +737,10 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             raise
         return _internal_result(request, document, receipt_ref, digest, result.result_frontier)
     except ProtocolValueError as exc:
-        raise _error(PublicErrorCode.INVALID_REQUEST, "The receipt request is invalid.") from exc
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            "The receipt request is invalid.",
+            reason_code=exc.reason_code,
+        ) from exc
     finally:
         await app.runtime.release(runtime)

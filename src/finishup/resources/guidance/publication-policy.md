@@ -306,7 +306,8 @@ no cursor. A `respond` request carries `finding_id`, `finding_frontier`, `dispos
 a `receipt` request carries its own receipt fields. Never copy response fields into a receipt, and
 never invent a finding disposition when a host reports that the wrong operation template was used.
 The complete operation bodies remain in `finishup://guidance/request-templates.md`; read the one
-section for your operation, such as `#respond` or `#receipt` (page 0 lists every section).
+section for your operation, such as `finishup://guidance/request-templates.md#respond` or
+`finishup://guidance/request-templates.md#receipt` (page 0 lists every section).
 
 `publish_work` needs no caller-minted `request_id` or draft `event_id` (see
 [service-filled values](#service-filled-values)). Payload IDs you mint (action, result, evidence,
@@ -415,7 +416,7 @@ Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
 and as complete fallback bodies in one section per family of
 `finishup://guidance/request-templates.md`. Ordinary publish is one read,
-`#publish-shapes`. Example `occurred_at`
+`finishup://guidance/request-templates.md#publish-shapes`. Example `occurred_at`
 values are illustrative shape only; do not copy them into live drafts.
 
 ### Service-filled values
@@ -454,6 +455,13 @@ That guard is best effort, and only the request id is a guarantee. The guard doe
 In those cases an identical id-less body is a new publication. If you need a retry that survives
 them, send your own `request_id`; when you hold no id, read `status view=history` before
 publishing again.
+
+An omitted `limitation_refs` or `supersedes_claim_refs` on `claim_recorded/1.1.0`, and an omitted
+`obligation_refs` beside a plan's `no_obligations_reason`, is the empty set. Like set order, these
+are not listed in `server_filled`: an omitted set is judged exactly like an explicit `[]`, so a
+completion claim that leaves a live failed, partial or unknown result out of `limitation_refs` is
+still refused and names it. Every other required list (`supporting_refs`, a revision's
+`obligation_changes`, a plan's `obligation_refs` without a reason) is still yours to send.
 
 Reference-set fields are also sorted and de-duplicated; text lists are kept exactly as sent.
 Every accepted or previewed result lists what was
@@ -500,6 +508,7 @@ sorts and de-duplicates every envelope reference set and the payload reference-s
 ordinary publishable family before validation (issue #1084), so authoring order no longer matters
 there. It reads only those fields, by name: a text list such as `alternatives`, `attempted_items`
 or `scope_exclusions` keeps its exact order and repeats even when its members look like ids.
+A `respond` call's `evidence_refs` is sorted and de-duplicated the same way.
 Lineage and coordination payload sets keep the earlier refusal: a rejection names `unsorted_set_field` or `duplicate_set_member` at the owning
 field. Sort the named field as ASCII bytes and retry; do not reverse-engineer order from a
 one-member subset.

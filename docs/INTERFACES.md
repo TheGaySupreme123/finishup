@@ -296,6 +296,38 @@ required at the service. The pure half lives in `finishup.protocol.publish_boile
   `causal_parents` defaults to empty. A sent value is never replaced, so a sent mirror that
   disagrees is still `ref_mirror_mismatch`, and a request that sends every value keeps its earlier
   identity, digest and result bytes.
+- An omitted empty payload reference set is filled by `default_empty_payload_sets` for exactly the
+  `(family, version)` pairs `PAYLOAD_EMPTY_SET_DEFAULTS` names (n7 RC3a, issue #1103):
+  `claim_recorded/1.1.0` `limitation_refs` and `supersedes_claim_refs`, and `plan_published`
+  `obligation_refs` only beside `no_obligations_reason`. It runs in the request model after the
+  `decision_id` drop and before set canonicalization (`normalize_publish_drafts`). Every other
+  required list (`supporting_refs`, `plan_revised` `obligation_changes`, a plan's `obligation_refs`
+  without a reason) keeps its `schema_instance_invalid` refusal naming `missing_fields`. The fill is
+  not named in `server_filled` (its enum stays the five envelope fields): an omitted set and an
+  explicit `[]` are one request, one digest and one stored payload, and the domain still judges the
+  empty set (`limitation_refs_complete`).
+
+`respond` `evidence_refs` is a reference set (n7 RC3b, issue #1103, ADR-050 decision 7).
+`RespondRequest` sorts it as ASCII bytes and de-duplicates it before the schema check with
+`finishup.protocol.publish_boilerplate.canonical_reference_set`, so the MCP bridge, the CLI and the
+service read one request and an unsorted answer hashes and replays like its sorted twin. A non-id
+member is left as sent for the schema to refuse at `/evidence_refs`, and an explicit `null` keeps
+`optional_field_must_not_be_null`. A `ProtocolValueError` raised while the response payload is built
+from the answer (before any append) is `INVALID_REQUEST` with `safe_details.reason_code`, a `field`
+pointer only from the frozen table (`/duplicate_of_finding_id`, `/evidence_refs`, `/reason`,
+`/waiver_expiry`), and `continuation: input_correction_new_identity` unless the reason maps its own
+(`unsorted_set_field` keeps `sorted_set_required`); the message names the corrective rule for
+`duplicate_set_member`, `response_fields_invalid`, `set_member_not_ascii` and `unsorted_set_field`,
+so a host that reads only `structuredContent` sees it. The bounded text summary never renders a
+message, so `response_fields_invalid` also carries a `REASON_REMEDIES` remedy, which the text
+renders as `Remedy:`. The remedy is selected by the token alone, and `respond` also raises that
+token from its own checks (an unrecorded `evidence_refs` id, nothing to reopen, an AI-powered
+finding acknowledged without a reason, self-verification evidence from before the finding), so the
+sentence states every rule behind the token and the `Reason:` field says which one broke. The other
+three are set reasons shared with other operations, carry no remedy, and canonicalization and the id
+pattern leave them unreachable for a request the schema admits. The outer `respond` and `receipt`
+catch-alls keep their messages and add `reason_code`; building the event draft around an accepted
+payload (ids, clock, stored causal parent) stays with that catch-all.
 
 Host-owned request identity (ADR-050 decision 2, revised by round 2 of the PR #1088 review).
 The MCP `publish_work` tool, and `finishup publish-work`, admit a body without `request_id` (the
@@ -341,7 +373,8 @@ advertised and catalog input schemas drop it from `required`).
 
 Provenance: every success, reduced success and dry-run result carries `server_filled` (`request`:
 `expected_frontier` when omitted; `drafts`: groups of filled envelope `fields` with the batch
-`indexes` they apply to) exactly when something was filled, and the publish operation's stored
+`indexes` they apply to) exactly when an envelope field or the request frontier was filled (an
+omitted empty payload set is the empty set and is not listed), and the publish operation's stored
 result keeps the same field names (structural only, no caller content). A replay and `status
 view=operation` return the committed operation's stored record, never one recomputed from the retry
 body. `status view=history` items (`status-result` 1.4.0 history row) and the frozen check history
@@ -620,7 +653,12 @@ The anchor names a topic when it is the topic's anchor once case, `_` and punctu
 slug way (`publish_work-decision`), an explicit `<a id>` target the document writes under that
 topic's heading (`publication-policy.md#attempt-accounting`), or words that all appear in that
 topic's anchor and in no other anchor of the document (`request-templates.md#decision`). Two or more
-candidates never resolve; `resources/read` keeps exact URIs. The guesses tb4n5 agents made are
+candidates never resolve; `resources/read` keeps exact URIs. When the named document (or a focused
+page, which catalogues no topics) yields no candidate at all, an anchor that folds to exactly the
+catalogued anchor of exactly one other guidance document reads that topic, and the result's `uri`
+names it (n7, issue #1103): `agent-instructions.md#publish-shapes` reads
+`request-templates.md#publish-shapes`. An anchor two documents share, an alias and a word subset
+never cross documents. The guesses tb4n5 agents made are
 explicit `<a id>` aliases (#1049): `request-templates.md#publish-work` and
 `#ordinary-publication` read `#publication-templates` (the list of every `publish_work` template's
 exact URI), `request-templates.md#plan-and-obligations` reads
@@ -628,7 +666,7 @@ exact URI), `request-templates.md#plan-and-obligations` reads
 `#obligations-evidence-and-claims`. Ordinary publish is the one topic
 `request-templates.md#publish-shapes` (plan, obligation, action, result, evidence, claim, revised
 plan, and decision). Any other anchor outside the catalog
-on a registered document is
+on a registered document, and on no other document, is
 rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
 document's registered anchors plus the whole-document retry; an unregistered document lists the
 registered document and focused-topic URIs. Only catalog constants appear; the caller's URI is

@@ -132,7 +132,9 @@ def test_every_typed_internal_stage_has_a_registered_reason_and_a_remedy_sentenc
         "service_handshake_failed",
     }
     assert stages <= PROTOCOL_REASON_CODES
-    assert set(REASON_REMEDIES) == stages
+    # The one remedy that is not an internal stage: respond's field-rule refusal, whose rule has
+    # to reach a host that renders only the bounded text (n7 RC3b, #1103).
+    assert set(REASON_REMEDIES) == stages | {"response_fields_invalid"}
 
 
 @pytest.mark.parametrize(

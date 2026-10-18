@@ -200,6 +200,20 @@ def test_the_obligations_view_states_the_resolution_recipe() -> None:
         (f"{_TEMPLATES}#ordinary-publication", f"{_TEMPLATES}#publication-templates"),
         (f"{_TEMPLATES}#plan-and-obligations", f"{_TEMPLATES}#publish-work-plan-plus-obligation"),
         (f"{_POLICY}#plan-and-obligations", f"{_POLICY}#obligations-evidence-and-claims"),
+        # n7 RC3 (#1103): 42 reads put the card's bare #publish-shapes beside the wrong page. A
+        # page with no candidate of its own reads the one document that catalogues the exact slug.
+        (
+            "finishup://guidance/agent-instructions.md#publish-shapes",
+            f"{_TEMPLATES}#publish-shapes",
+        ),
+        (
+            "finishup://guidance/coverage-and-receipts.md#publish-shapes",
+            f"{_TEMPLATES}#publish-shapes",
+        ),
+        (f"{_POLICY}#publish-shapes", f"{_TEMPLATES}#publish-shapes"),
+        # A focused page catalogues no topic, so only this step applies to it.
+        ("finishup://guidance/publication.md#publish-shapes", f"{_TEMPLATES}#publish-shapes"),
+        ("finishup://guidance/publication.md#Publish_Shapes", f"{_TEMPLATES}#publish-shapes"),
     ],
 )
 async def test_a_guessed_anchor_that_names_one_topic_reads_it(
@@ -232,6 +246,13 @@ async def test_a_guessed_anchor_that_names_one_topic_reads_it(
         "finishup://guidance/publication.md#attempt-accounting",
         "finishup://guidance/not-a-document.md#decision",
         f"{_TEMPLATES}#",
+        # n7 RC3: the cross-document step takes only an exact slug exactly one document catalogues.
+        # ``cadence`` is catalogued by several documents; ``decision`` is a word subset, and
+        # ``attempt-accounting`` (above) an alias, neither of which crosses documents.
+        "finishup://guidance/receipt.md#cadence",
+        "finishup://guidance/agent-instructions.md#cadence",
+        "finishup://guidance/receipt.md#decision",
+        "finishup://guidance/agent-instructions.md#zz-guessed-anchor",
     ],
 )
 async def test_an_ambiguous_or_unknown_anchor_is_still_refused(guessed: str) -> None:
@@ -245,6 +266,13 @@ async def test_an_ambiguous_or_unknown_anchor_is_still_refused(guessed: str) -> 
     error = cast(dict[str, object], cast(dict[str, object], result.structuredContent)["error"])
     assert error["code"] == "INVALID_REQUEST"
     assert error["safe_details"] == {"field": "/uri"}
+
+
+def test_a_cross_document_guess_in_the_legacy_scheme_reads_its_answer_in_that_scheme() -> None:
+    assert (
+        resolve_guidance_topic_uri("yoetz://guidance/publication.md#publish-shapes")
+        == "yoetz://guidance/request-templates.md#publish-shapes"
+    )
 
 
 def test_every_catalogued_topic_resolves_to_itself() -> None:

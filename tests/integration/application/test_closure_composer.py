@@ -524,3 +524,8 @@ async def test_resolve_drafts_the_obligation_version_its_payload_needs() -> None
         )
     assert "result_ids" in PREPARATION_REMEDIATIONS["closure_evidence_unavailable"]
     assert "res_" in PREPARATION_REMEDIATIONS["closure_evidence_unavailable"]
+    # n7 RC3: 14 calls used closure_prepare as a shape oracle with unpublished ids; the remedy
+    # says it drafts only from recorded ids and where the request shape lives.
+    remedy = PREPARATION_REMEDIATIONS["closure_evidence_unavailable"]
+    assert "drafts only from ids already recorded" in remedy
+    assert "finishup://guidance/request-templates.md#publish-shapes" in remedy

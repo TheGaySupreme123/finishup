@@ -2305,7 +2305,8 @@ models, the MCP bridge's `read_guidance` dispatch and error hints, the status te
 - A `read_guidance` anchor that names exactly one catalogued topic of its document (the heading's
   slug, an explicit anchor beside it, or words only that anchor contains) reads that topic; the
   result's `uri` is the catalogued one. An ambiguous or unknown anchor is still refused with the
-  document's anchors.
+  document's anchors, unless it is exactly the catalogued anchor of one other guidance document
+  (n7, #1103; see below).
 - A resolution without `resolution_evidence_refs` (omitted, empty or the wrong id kind) is refused
   with the sentence that says what the list holds; the `status` `view: "obligations"` text states the resolution recipe, that field included.
 - A run linked to a requested command with a `command` action (the PL6-3 link) is a disclosed
@@ -2319,6 +2320,50 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Claude Code transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+### Avoidable MCP rejections on Claude Code (n7 RC3, #1103)
+
+Host decision: supported, no host-specific code. Every change lives in the shared publish and
+respond request models, the `respond` and `receipt` applications and the `read_guidance`
+resolver, so Claude Code takes the same path as the other hosts. What a Claude Code agent can rely
+on:
+
+- A `claim_recorded/1.1.0` draft may leave out an empty `limitation_refs` and
+  `supersedes_claim_refs`, and a plan beside `no_obligations_reason` an empty `obligation_refs`.
+  Each is the empty list: one request, digest and stored payload with the explicit `[]`, and not
+  named in `server_filled`. It is judged like an explicit `[]`, so a completion claim that leaves a
+  live failed, partial or unknown result out is still refused (`limitation_refs_complete`).
+  `supporting_refs`, a revision's `obligation_changes` and evidence `observed_at` stay required.
+- A `respond` answer may list its `evidence_refs` in any order: the request model sorts it before
+  the schema check, so it is the same request as the sorted list. The service also drops a
+  repeat, but the advertised schema keeps `uniqueItems`, so send each id once.
+- A refused `respond` payload is `INVALID_REQUEST` with `safe_details.reason_code`, a `field`
+  pointer from a frozen table and a continuation (`input_correction_new_identity` unless the reason
+  maps its own), and its message states the rule. On Claude Code, an `isError` result delivers only
+  the bounded text, which never renders the message: it names `Reason: <reason_code> at <field>` and
+  the continuation directive, and for `response_fields_invalid` a `Remedy:` clause. That clause is
+  chosen by the reason alone and rides on every `respond` refusal with that reason, including
+  respond's own checks (an unrecorded `evidence_refs` id, nothing to reopen, an AI-powered finding
+  acknowledged without a reason), so it lists every rule behind the reason and the `at <field>`
+  pointer says which one broke. The set reasons (`unsorted_set_field`, `duplicate_set_member`,
+  `set_member_not_ascii`) are shared with other operations and carry no remedy; canonicalization and
+  the id pattern leave them unreachable for a request the schema admits.
+- The `respond` and `receipt` catch-alls keep their messages and add `reason_code`.
+- The `respond` refusal details and the catch-all `reason_code` come from the service, so they
+  appear once it restarts (`finishup service restart`). This change leaves the schema manifest
+  unchanged, so an upgrade does not supersede a still-running older 0.3 service on its own.
+- A `read_guidance` anchor unknown on its page (or any anchor on a focused page) that is exactly
+  the catalogued anchor of one other guidance document reads that topic, and the result's `uri`
+  names it: `agent-instructions.md#publish-shapes` reads `request-templates.md#publish-shapes`. An
+  anchor two documents share, an alias and a word subset never cross documents.
+
+Verification: `tests/unit/protocol/test_publish_payload_empty_sets.py`,
+`tests/unit/protocol/test_respond_reference_sets.py`,
+`tests/integration/application/test_publish_server_filled.py`,
+`tests/integration/application/test_respond_status_receipt.py` (the payload refusal rendered for
+the Codex, Claude Code and Cursor profiles), `tests/unit/mcp/test_guidance_topics.py` and
+`tests/unit/mcp/test_tb4n4_call_traps.py`; the n7 exports were not replayed, and a live Claude Code
+transcript on macOS, Linux and WSL 2 is not recorded for this change.
 
 ### Receipt privacy ceiling (N5)
 
@@ -2556,7 +2601,8 @@ so Claude Code takes the same path as every other host. What a Claude Code agent
   per call and names it in every result and error (the CLI prints it on stderr before sending);
   nothing is persisted. The service mints event ids from the task, writer, request id, position and preview
   role, records its own clock, copies the payload mirrors, and guards an omitted frontier with the
-  one it reads on admission. The result's `server_filled` names every filled value, and
+  one it reads on admission. The result's `server_filled` names every filled envelope value and
+  the frontier (an omitted empty claim or plan list is the empty list and is not listed), and
   `status view=operation` shows the committed operation's record. Reference-set fields are sorted
   and de-duplicated; text lists are kept as sent. A request that sends every value behaves exactly
   as before.

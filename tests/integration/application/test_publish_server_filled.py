@@ -516,6 +516,126 @@ async def test_an_inconsistent_present_mirror_is_still_refused() -> None:
     assert caught.value.safe_details.get("reason_code") == "ref_mirror_mismatch"
 
 
+def _claim(seed: int, *, evidence: str, **extra: JsonValue) -> dict[str, JsonValue]:
+    """A ``claim_recorded/1.1.0`` draft that leaves its empty sets out unless ``extra`` names them."""
+
+    return {
+        "schema": {"name": "claim_recorded", "version": "1.1.0"},
+        "payload": {
+            "claim_id": protocol_id("clm_", seed),
+            "claim_kind": "material",
+            "statement": "The parser change is complete.",
+            "supporting_refs": [evidence],
+            **extra,
+        },
+    }
+
+
+async def test_an_omitted_empty_claim_set_records_the_explicit_bytes_and_digest() -> None:
+    """n7 RC3a: 57 of 60 trials were refused for leaving out an empty claim set.
+
+    Both spellings run on identically seeded applications, so equal request digests and payload
+    references prove that they are one request recording one payload.
+    """
+
+    seen: list[tuple[object, object]] = []
+    spellings: tuple[dict[str, JsonValue], ...] = (
+        {},
+        {"limitation_refs": [], "supersedes_claim_refs": []},
+    )
+    for explicit in spellings:
+        app, started = await _started(10930)
+        rid = protocol_id("req_", 10935)
+        evidence = protocol_id("evd_", 10931)
+        result = await app.publish_work(
+            _sparse_request(
+                started,
+                [_evidence(10931), _claim(10931, evidence=evidence, **explicit)],
+                request_id=rid,
+            )
+        )
+        assert isinstance(result, PublishWorkInternalResult)
+        assert result.outcome == "accepted"
+        # Only envelope fields are named: an empty payload set asserts nothing (ADR-050 decision 7).
+        assert cast(Mapping[str, Any], result.as_json()["server_filled"]) == {
+            "request": ("expected_frontier",),
+            "drafts": ({"fields": _ALL_FILLED, "indexes": ("0", "1")},),
+        }
+        (claim,) = [row for row in _records(app) if row.schema.name == "claim_recorded"]
+        payload = cast(Any, claim).payload
+        assert payload.limitation_refs == ()
+        assert payload.supersedes_claim_refs == ()
+        operation = await _ledger(app).lookup_operation(started.writer_id, rid)
+        assert operation is not None
+        seen.append((operation.request_digest, cast(Any, claim).payload_ref))
+    assert seen[0] == seen[1]
+
+
+async def test_a_retry_with_the_omitted_form_replays_an_explicit_commit() -> None:
+    app, started = await _started(10940)
+    rid = protocol_id("req_", 10945)
+    evidence = protocol_id("evd_", 10941)
+    explicit = [
+        _evidence(10941),
+        _claim(10941, evidence=evidence, limitation_refs=[], supersedes_claim_refs=[]),
+    ]
+    first = await app.publish_work(_sparse_request(started, explicit, request_id=rid))
+    assert isinstance(first, PublishWorkInternalResult)
+    assert first.outcome == "accepted"
+    omitted = [_evidence(10941), _claim(10941, evidence=evidence)]
+    retry = await app.publish_work(_sparse_request(started, omitted, request_id=rid))
+    assert isinstance(retry, PublishWorkInternalResult)
+    assert retry.outcome == "replayed"
+    assert retry.request_digest == first.request_digest
+    assert retry.accepted_events == first.accepted_events
+    assert len([row for row in _records(app) if row.schema.name == "claim_recorded"]) == 1
+
+
+async def test_an_omitted_limitation_set_still_names_missing_live_failures() -> None:
+    """The default is the empty set, which the domain still judges: a live failure is named."""
+
+    app, started = await _started(10950)
+    evidence = protocol_id("evd_", 10951)
+    failed = protocol_id("res_", 10951)
+    obligation = protocol_id("obl_", 10951)
+    plan: dict[str, JsonValue] = {
+        "schema": {"name": "plan_published", "version": "1.0.0"},
+        "payload": {"plan_version": 1, "summary": "plan", "obligation_refs": [obligation]},
+    }
+    published: dict[str, JsonValue] = {
+        "schema": {"name": "obligation_published", "version": "1.0.0"},
+        "payload": {
+            "obligation_id": obligation,
+            "description": "Fix the parser.",
+            "acceptance_criteria": "The parser tests pass.",
+            "evidence_expectation": "test",
+            "status": "open",
+        },
+    }
+    completion = _claim(10952, evidence=evidence, obligation_refs=[obligation])
+    cast(dict[str, JsonValue], completion["payload"])["claim_kind"] = "completion"
+    with pytest.raises(PublicOperationError) as caught:
+        await app.publish_work(
+            _sparse_request(
+                started,
+                [
+                    plan,
+                    published,
+                    _action(10951),
+                    _evidence(10951),
+                    _result(10951, evidence=(evidence,), outcome="failure"),
+                    completion,
+                ],
+                request_id=protocol_id("req_", 10955),
+            )
+        )
+    assert caught.value.code is PublicErrorCode.EVENT_INVALID
+    assert caught.value.safe_details is not None
+    assert caught.value.safe_details.get("invariant") == "limitation_refs_complete"
+    assert caught.value.safe_details.get("field") == "/event_drafts/5/payload/limitation_refs"
+    assert failed in caught.value.message
+
+
 def _pause_staging(app: object, marker: bytes) -> tuple[asyncio.Event, asyncio.Event]:
     """Hold the publish whose payload carries ``marker`` at object staging (after admission)."""
 

@@ -107,4 +107,5 @@ def test_agent_instructions_say_not_to_list_resources() -> None:
         "finishup://guidance/coverage-and-receipts.md",
         "finishup://guidance/request-templates.md",
     ):
-        assert f"`{uri}`" in read_more
+        # A document URI may carry its exact topic anchor (n7 RC3: never a bare ``#anchor``).
+        assert f"`{uri}`" in read_more or f"`{uri}#" in read_more

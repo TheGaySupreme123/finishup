@@ -44,7 +44,7 @@ PREPARATION_REMEDIATIONS = {
     "closure_inventory_limit": "The bounded inventory is incomplete; use paginated status without assuming closure.",
     "closure_result_too_large": "The complete inventory exceeds the MCP response bound. Select the ids you need from status pages and call closure_prepare with phase attempt, respond, resolve, claim or receipt (those responses carry only the selected rows), or use the CLI closure-prepare --output path; do not claim closure from an incomplete response.",
     "closure_obligation_unknown": "Select an obligation ID from the returned inventory.",
-    "closure_evidence_unavailable": "Select available evidence ids (evd_) from the inventory in evidence_refs; result ids (res_) go in result_ids. Otherwise retain the missing-evidence limitation.",
+    "closure_evidence_unavailable": "Select available evidence ids (evd_) from the inventory in evidence_refs; result ids (res_) go in result_ids. closure_prepare drafts only from ids already recorded; for a request shape, read finishup://guidance/request-templates.md#publish-shapes. Otherwise retain the missing-evidence limitation.",
     "closure_result_unavailable": "The selected result payload is unavailable; inspect results and retain its limitation.",
     "closure_attempt_selection_required": "Select one obligation, exact requested-item indexes, and an explicit action description.",
     "closure_item_unknown": "Select requested-item indexes from the current obligation.",

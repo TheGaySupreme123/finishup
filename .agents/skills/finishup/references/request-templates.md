@@ -131,7 +131,8 @@ Exact topic URIs; use these anchors verbatim and never derive one:
 
 Replace ids. Not one live batch. Skip a resolved obligation. FinishUP mints the call's `request_id`
 and fills `expected_frontier`, `event_id`, `occurred_at` and the envelope lists; `server_filled`
-names them.
+names them. An omitted empty `limitation_refs` or `supersedes_claim_refs` on a 1.1.0 claim is the
+empty set.
 
 ```json
 {"protocol_version":"0.1","schema_version":"1.0.0","session_id":"ses_00000000-0000-4000-8000-000000000001","writer_id":"wri_00000000-0000-4000-8000-000000000001","event_drafts":[{"schema":{"name":"plan_published","version":"1.0.0"},"payload":{"plan_version":1,"summary":"plan","obligation_refs":["obl_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"obligation_published","version":"1.0.0"},"payload":{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","description":"outcome","acceptance_criteria":"criterion","evidence_expectation":"test","status":"open","requested_items":[{"item_kind":"command","value":"pytest -q"}],"source_refs":["evt_00000000-0000-4000-8000-000000000000"]}},{"schema":{"name":"action_recorded","version":"1.0.0"},"payload":{"action_id":"act_00000000-0000-4000-8000-000000000001","action_kind":"command","command":"pytest -q","description":"action","attempted_items":["pytest -q"]}},{"schema":{"name":"result_recorded","version":"1.0.0"},"payload":{"result_id":"res_00000000-0000-4000-8000-000000000001","action_id":"act_00000000-0000-4000-8000-000000000001","outcome":"success","summary":"result","evidence_refs":["evd_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"evidence_recorded","version":"1.1.0"},"payload":{"evidence_id":"evd_00000000-0000-4000-8000-000000000001","evidence_kind":"test_result","strength":"content_digest","content_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","digest_binding":{"subject":"test_stdout","content_availability":"digest_only","byte_count":1,"provenance":"caller_asserted"},"observed_at":"2026-01-01T00:00:00.000Z"}},{"schema":{"name":"claim_recorded","version":"1.1.0"},"payload":{"claim_id":"clm_00000000-0000-4000-8000-000000000001","claim_kind":"completion","statement":"claim","supporting_refs":["evd_00000000-0000-4000-8000-000000000001"],"obligation_refs":["obl_00000000-0000-4000-8000-000000000001"],"limitation_refs":["res_00000000-0000-4000-8000-000000000004"],"supersedes_claim_refs":[]}},{"schema":{"name":"plan_revised","version":"1.0.0"},"payload":{"plan_version":2,"supersedes_plan_version":1,"reason":"changed","summary":"revised","obligation_changes":[{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","change":"carried"}]}},{"schema":{"name":"decision_recorded","version":"1.0.0"},"payload":{"statement":"decision","rationale":"why","authority":"harness:cli"}}],"actor":{"actor_id":"harness:cli","actor_type":"harness"},"client":{"kind":"cooperative_agent","version":"0.1.0","integration":"cooperative_mcp"}}
@@ -887,7 +888,8 @@ takes no response, and nothing is recorded for one.
 `acknowledged` on an AI-powered finding needs one concrete resolution attempt you recorded after
 the finding, cited in `evidence_refs`: the `evd_` or `res_` id of the repair, requested evidence or
 verification result (ids named only in `reason` do not count). A limitation request or an
-`answer_question` step needs none.
+`answer_question` step needs none. List `evidence_refs` in any order, each id once: FinishUP sorts
+them.
 
 A reviewer finding whose `requested_next_step` is `state_unresolved_limitation` asks you to state a
 limit, not to do work, and your answer decides what it means. If the requirement may be met but

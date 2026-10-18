@@ -63,6 +63,7 @@ from finishup.protocol.guidance_uris import (
 )
 from finishup.protocol.ids import PREFIX_BY_KIND, IdKind, validate_actor_id, validate_id
 from finishup.protocol.publish_boilerplate import (
+    canonical_reference_set,
     normalize_publish_drafts,
     server_filled_from_json,
 )
@@ -1875,6 +1876,22 @@ class RespondRequestModel(PublicRequestModel):
     evidence_refs: tuple[EvidenceOrResultIdWire, ...] | None = None
     # Issue #996: the earlier finding a ``duplicate_of`` answer links to; only with it.
     duplicate_of_finding_id: FindingIdWire | None = None
+
+    # n7 RC3b: ``evidence_refs`` is a reference set (respond-request ``uniqueItems``; the domain
+    # records it ASCII-sorted). Its order and repeats carry no meaning, so they are canonicalized
+    # before the schema check, as ``publish_work`` does for its sets (#1084): every surface reads
+    # one request, and an unsorted answer hashes and replays exactly like its sorted twin.
+    @model_validator(mode="before")
+    @classmethod
+    def _canonicalize_evidence_refs(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        source = cast(Mapping[object, object], value)
+        refs = source.get("evidence_refs")
+        canonical = canonical_reference_set(refs)
+        if canonical is refs:
+            return cast(object, value)
+        return {**source, "evidence_refs": tuple(cast(Sequence[object], canonical))}
 
     @model_validator(mode="after")
     def _validate_respond_request(self) -> RespondRequestModel:

@@ -1955,11 +1955,12 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "native captures. Put feedback and requested delivery in the effective "
         "plan via a revision. Accepted records are assertions, not repair proof. "
         "Previews or appends asserted work to the local FinishUP ledger. It does not publish to GitHub "
-        "or run an AI-powered evaluation. Omit request_id, expected_frontier and each draft's "
-        "event_id, occurred_at, empty lists and mirrored refs: FinishUP mints the call's id, "
-        "guards the batch with the frontier it reads on admission, and names the filled values in "
-        "server_filled. Every result names the call's request_id: retry an unknown outcome by "
-        "sending it; an id-less resend is never a retry. "
+        "or run an AI-powered evaluation. Omit request_id, expected_frontier, each draft's "
+        "event_id, occurred_at and envelope lists, and a 1.1.0 claim's empty limitation_refs and "
+        "supersedes_claim_refs (evidence observed_at stays required): FinishUP mints the call's "
+        "id, guards the batch with the frontier it reads on admission, and names the filled "
+        "envelope values in server_filled. Every result names the call's request_id: retry an "
+        "unknown outcome by sending it; an id-less resend is never a retry. "
         "Reference sets are sorted and de-duplicated for you. attempted_items belongs only on the "
         "action_recorded payload; copy each requested_items value exactly and never place it on "
         "claim_recorded. decision_recorded.authority is a structural actor id, not approval prose; "
@@ -2061,7 +2062,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "finding at any frontier at or after its record, such as the current status frontier, "
         "not its subject_frontier. A finding a check resolved (verified_resolved) or whose answer "
         "is final (next_actions none) takes no response. Acknowledging an AI-powered finding "
-        "cites in evidence_refs an evd_ or res_ recorded after it. "
+        "cites in evidence_refs an evd_ or res_ recorded after it; evidence_refs is a set: any "
+        "order, sorted for you. "
         "For an unresolved finding: repair it and check first. "
         "If you repaired it and FinishUP still cannot confirm it (a FinishUP limit), verify it yourself, "
         "record that evidence, and respond self_verified saying how you checked it, with the "
@@ -2177,7 +2179,9 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "dry_run=true; this helper never writes the ledger, judges work, or claims completion. "
         "Use the emitted recovery request and keep its request identity when a later write "
         "times out. Select only IDs and requested-item indexes returned by the same inventory; "
-        "a moving frontier or unavailable item is refused. The MCP response has a bounded frame: "
+        "a moving frontier or unavailable item is refused. It drafts only from recorded ids; for "
+        "a request shape read finishup://guidance/request-templates.md#publish-shapes. The MCP "
+        "response has a bounded frame: "
         "a draft phase echoes only the rows you selected, and an oversized inventory returns "
         "LIMIT_EXCEEDED without a partial success, so select ids from the status pages or use the "
         "CLI closure-prepare --output path for a larger local inventory. Guidance: "
@@ -2234,33 +2238,33 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "policy": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
+                "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:d1c5018a531b794062485d475432f89902ca81fa598b1e992a8a158cd5ff1632",
-                "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
+                "respond": "sha256:0f481d010bc55a22b4bd665fcac302d97208c36e69af6c3a2b844b14c895bf0b",
                 "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
-                "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
+                "closure_prepare": "sha256:93373a5db28a0eff648e93b961f8621b4c3527eb210ebf497d070526bfaf3e97",
             }
         ),
         "strict": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
+                "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:4374e8f3ddb53fa9bf07c6de45dca86a689d37ae70b5d4c0a55ad96750a426e4",
-                "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
+                "respond": "sha256:0f481d010bc55a22b4bd665fcac302d97208c36e69af6c3a2b844b14c895bf0b",
                 "status": "sha256:a4c701672b65d181bca80e434065216cbdceb5a811ac286e84c13c5c3961964e",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
-                "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
+                "closure_prepare": "sha256:93373a5db28a0eff648e93b961f8621b4c3527eb210ebf497d070526bfaf3e97",
             }
         ),
     }
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:73febdec57969d915948bfed2ffed6cfc8e8de96182127f420921461db22da84",
-        "strict": "sha256:b17a0c6544e3efc3ba895fe31108ccafb739ef21f7b78d8280e9bc5dc8ae9ed6",
+        "policy": "sha256:eac179fa752a3394a87346ae366a1b4961658732cb3c881bf69d60ddf737f856",
+        "strict": "sha256:37dbe63aae11db3910948fa6ea50cf2d310d132383ee45282c435a9704a7bb99",
     }
 )
 
