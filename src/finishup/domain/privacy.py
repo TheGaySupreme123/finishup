@@ -320,18 +320,6 @@ def admitted_input_root_valid(value: object) -> bool:
     )
 
 
-def _input_roots(values: object) -> None:
-    """A case's outside-root bindings: a sorted, unique tuple of admissible roots (#1118)."""
-
-    if type(values) is not tuple:
-        raise _invalid()
-    roots = cast(tuple[object, ...], values)
-    if not all(admitted_input_root_valid(root) for root in roots) or list(roots) != sorted(
-        set(cast(tuple[str, ...], roots)), key=str.encode
-    ):
-        raise _invalid()
-
-
 def validate_admitted_input_roots(values: object) -> tuple[str, ...]:
     """The roots sorted and unique, or ``privacy_value_invalid``; at most eight."""
 
@@ -2572,7 +2560,8 @@ class ApprovedOutboundCase:
             raise _invalid()
         _nonnegative(self.redacted_span_count)
         _enum(self.credential_heuristic, CredentialHeuristic)
-        _input_roots(self.input_roots)
+        if validate_admitted_input_roots(self.input_roots) != self.input_roots:
+            raise _invalid()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2633,7 +2622,8 @@ class ApprovedLocalDisclosureCase:
             raise _invalid()
         _nonnegative(self.redacted_span_count)
         _enum(self.credential_heuristic, CredentialHeuristic)
-        _input_roots(self.input_roots)
+        if validate_admitted_input_roots(self.input_roots) != self.input_roots:
+            raise _invalid()
 
 
 type ApprovedProviderCase = ApprovedOutboundCase | ApprovedLocalDisclosureCase

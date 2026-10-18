@@ -498,9 +498,13 @@ def _snapshot_inputs(
         if item.path in current:
             now = current[item.path]
             try:
-                same = now is not None and _redacted_text(now)[0] == item.text
+                seen, redacted_now = (None, False) if now is None else _redacted_text(now)
             except ChangeCaptureUnavailable:
-                same = False
+                seen, redacted_now = None, False
+            # Compared after redaction: with the copy redacted, ``same`` covers only its
+            # unredacted bytes, and the label says so (R5); a current file redaction changed
+            # cannot equal an unredacted copy.
+            same = seen == item.text and (item.redacted or not redacted_now)
             state = "same" if same else "changed"
         rendered = task_input_from_bytes(item.path, item.text, origin="outside_workspace")
         if rendered is None:

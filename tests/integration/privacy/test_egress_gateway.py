@@ -349,9 +349,6 @@ class _FullPrivacyAudit:
     async def complete_egress(self, dispatch_id: str, receipt: EgressReceipt) -> None:
         self.egress_receipts.append((dispatch_id, receipt))
 
-    async def park_attempt_reconciliation(self, dispatch_id: str, receipt: EgressReceipt) -> None:
-        self.parked_receipts.append((dispatch_id, receipt))
-
     async def complete_decision(self, reservation_id: str, receipt: EgressReceipt) -> None:
         self.decision_receipts.append((reservation_id, receipt))
 

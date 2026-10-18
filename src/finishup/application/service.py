@@ -1113,6 +1113,13 @@ class Application:
             await self._renew_activity_session(request.session_id, request)
         elif request.parent_session_id is not None:
             await self._renew_activity_session(request.parent_session_id, request)
+        statement_paths = statement_input_paths(request.task_statement)
+
+        async def capture(task: TaskRuntime, key: str, boundary: SnapshotBoundary) -> None:
+            await self._capture_inputs(
+                task, key, statement_paths, boundary, repository_privacy_context, request.request_id
+            )
+
         async with self._start_lock:
             # A public lifecycle append and its catalog mirror share the lineage publication
             # lock.  Parent-authorized starts take that same lock and reconcile any event that
@@ -1131,6 +1138,7 @@ class Application:
                             if repository_privacy_context is None
                             else repository_privacy_context.commitment
                         ),
+                        input_capture=capture,
                     )
             else:
                 result = await execute_start(
@@ -1141,37 +1149,26 @@ class Application:
                         if repository_privacy_context is None
                         else repository_privacy_context.commitment
                     ),
+                    input_capture=capture,
                 )
             await self._maybe_birth_implicit_repository_project(repository_privacy_context)
             await self._record_task_change_base(result, repository_privacy_context)
-            if result.outcome in {"created", "delegated"}:
-                # #1118 unit 1: before the creator gets the result, so the copy is the start.
-                await self._record_input_snapshot(
-                    result.task_id,
-                    result.session_id,
-                    result.writer_id,
-                    statement_input_paths(request.task_statement),
-                    "task_start",
-                    repository_privacy_context,
-                    result.request_id,
-                )
             return result
 
-    async def _record_input_snapshot(
+    async def _capture_inputs(
         self,
-        task_id: str,
-        session_id: str,
-        writer_id: str,
+        task: TaskRuntime,
+        key: str,
         values: tuple[str, ...],
         boundary: SnapshotBoundary,
         repository_privacy_context: RepositoryPrivacyContext | None,
-        request_id: str | None,
+        request_id: str,
     ) -> None:
-        """Keep copies of the outside inputs ``values`` names, at ``boundary`` (#1118 unit 1).
+        """Keep copies of the outside inputs ``values`` names at boundary ``key`` (#1118 unit 1).
 
-        Best effort: a task without a copy still runs; its checks label outside inputs as current
-        bytes and disclose ``task_input_baseline_unavailable``. Never a backdated copy: a start
-        records ``task_start`` only here, and a later declaration records ``admission_time``.
+        Called inside the admitting operation, before its event is appended. Best effort: a task
+        without a copy still runs; its checks label outside inputs as current bytes and disclose
+        ``task_input_baseline_unavailable``.
         """
 
         source = self.input_snapshot_scope
@@ -1180,33 +1177,25 @@ class Application:
         if not any(value.startswith("/") for value in values):
             return
         try:
-            scope = await source(repository_privacy_context, task_id)
-            if scope is None:
-                return
-            runtime = await self.runtime.route(
-                RouteCommand(
-                    session_id, writer_id, RouteAccess.WRITE, frozenset({RuntimeCapability.WRITE})
-                )
-            )
+            scope = await source(repository_privacy_context, task.task_id)
         except Exception as exc:
             record_unexpected_exception_without_raising(
                 exc,
                 component="start",
-                operation="input_snapshot_route_failed",
+                operation="input_snapshot_scope_failed",
                 request_id=request_id,
             )
             return
-        try:
+        if scope is not None:
             await record_input_snapshot(
-                runtime=runtime,
+                runtime=task,
+                key=key,
                 values=values,
                 scope=scope,
                 boundary=boundary,
                 clock=self.clock,
                 request_id=request_id,
             )
-        finally:
-            await self.runtime.release(runtime)
 
     async def _record_task_change_base(
         self,
@@ -1950,6 +1939,20 @@ class Application:
         coordination_payloads = _coordination_publication_payloads(request)
         await self._validate_coordination_declarations(request, coordination_declarations)
         await self._validate_coordination_publications(request, coordination_payloads)
+        declared = _declared_input_paths(request)
+
+        async def capture(task: TaskRuntime) -> None:
+            # #1118 unit 1: an outside input the task first names in this batch is copied inside
+            # the publication, before its append, keyed by this request.
+            await self._capture_inputs(
+                task,
+                request.request_id,
+                declared,
+                "admission_time",
+                repository_privacy_context,
+                request.request_id,
+            )
+
         if any(
             isinstance(
                 item,
@@ -1976,7 +1979,7 @@ class Application:
                 # that evidence before admitting another terminal event on this or a child task.
                 await self.reconcile_lineage_publications()
                 await self._validate_lineage_publication(request, payloads)
-                result = await execute_publish_work(self, request)  # pyright: ignore[reportArgumentType]
+                result = await execute_publish_work(self, request, capture)  # pyright: ignore[reportArgumentType]
                 # Dry-run is explicitly non-mutating.  A real accepted or replayed publication is
                 # idempotently mirrored into catalog state after the ledger append succeeds.
                 if not (
@@ -1987,25 +1990,13 @@ class Application:
                     await self._sweep_project_coordination(result)
                     await self._apply_coordination_dispositions(coordination_payloads)
                 return result
-        result = await execute_publish_work(self, request)  # pyright: ignore[reportArgumentType]
+        result = await execute_publish_work(self, request, capture)  # pyright: ignore[reportArgumentType]
         await self._sweep_project_coordination(result)
         if not (
             isinstance(result, PublishWorkResultModel)
             and getattr(result.root, "outcome", None) == "dry_run"
         ):
             await self._apply_coordination_dispositions(coordination_payloads)
-        if isinstance(result, PublishWorkInternalResult):
-            # #1118 unit 1: an outside input the task first names now is copied now, labelled
-            # with this admission rather than the task's start.
-            await self._record_input_snapshot(
-                result.task_id,
-                request.session_id,
-                request.writer_id,
-                _declared_input_paths(request),
-                "admission_time",
-                repository_privacy_context,
-                result.request_id,
-            )
         return result
 
     async def _sweep_project_coordination(self, result: object) -> None:

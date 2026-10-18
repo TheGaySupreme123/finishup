@@ -24,7 +24,7 @@ from typing import Final, Literal, Protocol, cast
 
 from finishup.domain.privacy import admitted_input_root_valid
 from finishup.domain.values import validate_commitment
-from finishup.ports.objects import ObjectRef
+from finishup.ports.objects import ObjectKind, ObjectRef
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
 __all__ = [
@@ -32,10 +32,14 @@ __all__ = [
     "MAX_SNAPSHOT_CANDIDATES",
     "MAX_SNAPSHOT_FILES",
     "MAX_SNAPSHOT_FILE_BYTES",
-    "MAX_SNAPSHOT_SECONDS",
+    "MAX_SNAPSHOT_MANIFEST_BYTES",
     "MAX_SNAPSHOT_SETS",
     "MAX_SNAPSHOT_TOTAL_BYTES",
     "SnapshotFile",
+    "SnapshotUsage",
+    "change_capture_ref_valid",
+    "snapshot_grant",
+    "snapshot_key_valid",
     "TASK_INPUT_SNAPSHOT_MEDIA_TYPE",
     "TaskInputSnapshotSet",
     "decode_task_input_snapshot",
@@ -751,14 +755,19 @@ class ChangeLineCounts:
 # #1118 unit 1 (AIP-1): bounded snapshots of task-named outside inputs, kept at task start or
 # when the task first names an input. Task-wide bounds, never replenished by a check.
 TASK_INPUT_SNAPSHOT_MEDIA_TYPE: Final = "application/vnd.finishup.task-input-snapshot+json"
-_TASK_INPUT_SNAPSHOT_SCHEMA: Final = "finishup.task-input-snapshot/1"
+_TASK_INPUT_SNAPSHOT_SCHEMA: Final = "finishup.task-input-snapshot/2"
 MAX_SNAPSHOT_FILES: Final = 4
 MAX_SNAPSHOT_FILE_BYTES: Final = 256 * 1024
 MAX_SNAPSHOT_TOTAL_BYTES: Final = 1024 * 1024
+MAX_SNAPSHOT_MANIFEST_BYTES: Final = 32 * 1024
 MAX_SNAPSHOT_CANDIDATES: Final = 16
 MAX_SNAPSHOT_SETS: Final = 16
-MAX_SNAPSHOT_SECONDS: Final = 10.0
-MAX_SNAPSHOT_ADMISSION_SECONDS: Final = 5.0
+MAX_SNAPSHOT_MS: Final = 10_000
+MAX_SNAPSHOT_ADMISSION_MS: Final = 5_000
+MAX_SNAPSHOT_ADMISSION_SECONDS: Final = MAX_SNAPSHOT_ADMISSION_MS / 1000
+_SNAPSHOT_KEY: Final = re.compile(
+    r"^(evt|req)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 type SnapshotBoundary = Literal["task_start", "admission_time"]
 type SnapshotOmissionReason = Literal[
     "too_large", "not_text", "unreadable", "budget", "redaction_incomplete"
@@ -766,6 +775,50 @@ type SnapshotOmissionReason = Literal[
 SNAPSHOT_OMISSION_REASONS: Final = frozenset(
     {"too_large", "not_text", "unreadable", "budget", "redaction_incomplete"}
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotUsage:
+    """Task-wide snapshot capacity: what one boundary reserved, then what it actually spent."""
+
+    files: int = 0
+    bytes: int = 0
+    candidates: int = 0
+    ms: int = 0
+
+    def __post_init__(self) -> None:
+        bounds = (MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_TOTAL_BYTES, MAX_SNAPSHOT_CANDIDATES, 3_600_000)
+        values = (self.files, self.bytes, self.candidates, self.ms)
+        if any(type(v) is not int or not 0 <= v <= b for v, b in zip(values, bounds, strict=True)):
+            raise _invalid()
+
+    def within(self, grant: SnapshotUsage) -> bool:
+        """Whether this spend fits ``grant``; time may overrun, since a read is stopped late."""
+
+        return (
+            self.files <= grant.files
+            and self.bytes <= grant.bytes
+            and self.candidates <= grant.candidates
+        )
+
+
+def snapshot_grant(spent: Sequence[SnapshotUsage]) -> SnapshotUsage:
+    """What a new boundary may reserve after ``spent``: every earlier boundary's actual spend,
+    or its whole grant while it is still reserved."""
+
+    return SnapshotUsage(
+        max(0, MAX_SNAPSHOT_FILES - sum(u.files for u in spent)),
+        max(0, MAX_SNAPSHOT_TOTAL_BYTES - sum(u.bytes for u in spent)),
+        max(0, MAX_SNAPSHOT_CANDIDATES - sum(u.candidates for u in spent)),
+        max(0, min(MAX_SNAPSHOT_ADMISSION_MS, MAX_SNAPSHOT_MS - sum(u.ms for u in spent))),
+    )
+
+
+def snapshot_key_valid(key: object) -> bool:
+    """A boundary key is the service id of the operation that admits it: a lifecycle event id
+    or a publication request id, never content."""
+
+    return type(key) is str and _SNAPSHOT_KEY.fullmatch(key) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -800,23 +853,18 @@ class SnapshotFile:
 class TaskInputSnapshotSet:
     """What one admission boundary kept: whole files, and the candidates it could not keep.
 
-    ``boundary`` is ``task_start`` only when kept before the creating start returned;
-    ``candidates`` and ``elapsed_ms`` count against the task-wide bounds.
+    ``boundary`` is ``task_start`` only when kept inside the creating start, before its lifecycle
+    event. The capacity it spent is accounted in the task ledger, not here. Paths are bounded by
+    ``MAX_SNAPSHOT_MANIFEST_BYTES``.
     """
 
     boundary: SnapshotBoundary
-    candidates: int
-    elapsed_ms: int
     files: tuple[SnapshotFile, ...]
     omitted: tuple[tuple[str, SnapshotOmissionReason], ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if (
             self.boundary not in {"task_start", "admission_time"}
-            or type(self.candidates) is not int
-            or not 0 <= self.candidates <= MAX_SNAPSHOT_CANDIDATES
-            or type(self.elapsed_ms) is not int
-            or not 0 <= self.elapsed_ms <= 3_600_000
             or type(self.files) is not tuple
             or len(self.files) > MAX_SNAPSHOT_FILES
             or any(type(item) is not SnapshotFile for item in self.files)
@@ -830,6 +878,9 @@ class TaskInputSnapshotSet:
                 or row[1] not in SNAPSHOT_OMISSION_REASONS
                 for row in self.omitted
             )
+            or sum(len(i.path) + len(i.root) for i in self.files)
+            + sum(len(path) for path, _ in self.omitted)
+            > MAX_SNAPSHOT_MANIFEST_BYTES
         ):
             raise _invalid()
 
@@ -839,8 +890,6 @@ def encode_task_input_snapshot(snapshot: TaskInputSnapshotSet) -> bytes:
         raise _invalid()
     body: dict[str, JsonValue] = {
         "boundary": snapshot.boundary,
-        "candidates": snapshot.candidates,
-        "elapsed_ms": snapshot.elapsed_ms,
         "files": [
             {
                 "path": item.path,
@@ -862,7 +911,7 @@ def decode_task_input_snapshot(data: bytes) -> TaskInputSnapshotSet:
     if canonical_encode(parsed) != data or type(parsed) is not dict:
         raise _invalid()
     source = cast(dict[str, object], parsed)
-    if set(source) != {"boundary", "candidates", "elapsed_ms", "files", "omitted", "schema"}:
+    if set(source) != {"boundary", "files", "omitted", "schema"}:
         raise _invalid()
     if source["schema"] != _TASK_INPUT_SNAPSHOT_SCHEMA:
         raise _invalid()
@@ -900,11 +949,18 @@ def decode_task_input_snapshot(data: bytes) -> TaskInputSnapshotSet:
             raise _invalid()
         omitted.append((pair[0], cast(SnapshotOmissionReason, pair[1])))
     return TaskInputSnapshotSet(
-        cast(SnapshotBoundary, source["boundary"]),
-        cast(int, source["candidates"]),
-        cast(int, source["elapsed_ms"]),
-        tuple(files),
-        tuple(omitted),
+        cast(SnapshotBoundary, source["boundary"]), tuple(files), tuple(omitted)
+    )
+
+
+def change_capture_ref_valid(ref: object, media_type: str, task_id: str) -> bool:
+    """Whether ``ref`` is this task's ``CHANGE_CAPTURE`` object of ``media_type``."""
+
+    return (
+        type(ref) is ObjectRef
+        and ref.metadata.kind is ObjectKind.CHANGE_CAPTURE
+        and ref.metadata.media_type == media_type
+        and ref.metadata.task_id == task_id
     )
 
 
@@ -917,11 +973,24 @@ class TaskChangeBaseStorePort(Protocol):
 
     async def load_task_change_base(self) -> ObjectRef | None: ...
 
-    async def record_task_input_snapshot(self, ref: ObjectRef) -> bool:
-        """Append one snapshot set (#1118 unit 1); ``False`` when the task already holds 16."""
+    async def reserve_task_input_snapshot(self, key: str) -> SnapshotUsage | None:
+        """Reserve boundary ``key`` (#1118 unit 1) in one ledger transaction.
+
+        Returns the capacity granted from what every earlier boundary reserved or spent, or
+        ``None`` when ``key`` was already reserved, its copy or gap standing, or when the task holds
+        ``MAX_SNAPSHOT_SETS`` boundaries: nothing is read.
+        """
         ...
 
-    async def load_task_input_snapshots(self) -> tuple[ObjectRef, ...]: ...
+    async def complete_task_input_snapshot(
+        self, key: str, spent: SnapshotUsage, ref: ObjectRef | None
+    ) -> None:
+        """Record what reserved boundary ``key`` spent and the set it kept, if any; once."""
+        ...
+
+    async def load_task_input_snapshots(self) -> tuple[ObjectRef, ...]:
+        """The kept sets, oldest first; raises when the accounting cannot be read."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)

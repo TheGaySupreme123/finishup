@@ -1,12 +1,18 @@
 """Bounded snapshots of task-named outside inputs (#1118 unit 1, ADR-031 amendment).
 
-A file the task names beneath a root the owner admitted is read once, whole, when the task starts
-(``task_start``) or when the task first names it as an input (``admission_time``). A later check
-sends that copy instead of the file's current bytes, so an agent that rewrites the specification
-cannot pass its edit off as the original (AIP-1). Copies are redacted before they are kept, are
-stored as encrypted ``change_capture`` objects, and count against task-wide bounds that no check
-replenishes. Nothing is read when the policy admits no root or the review recipe carries no task
-inputs, so a local-only task never reads a file to prepare a review it will not run.
+A file the task names beneath a root the owner admitted is read once, whole, inside the operation
+that admits it: the creating start, before its lifecycle event (``task_start``), or a later
+statement or ``role: input`` declaration (``admission_time``). A later check sends that copy
+instead of the file's current bytes, so an agent that rewrites the specification cannot pass its
+edit off as the original (AIP-1).
+
+Each boundary is reserved in the task ledger, keyed by its operation id, before anything is read.
+The reservation takes the task-wide capacity left (4 files, 256 KiB each, 1 MiB, 16 candidates,
+10 s with at most 5 s per boundary) in one ledger transaction, and its completion records what was
+actually spent, even when nothing was kept. A retry of the same operation finds the reservation
+and rereads nothing: its copy or its gap stands. Copies are redacted before they are kept and are
+stored as encrypted ``change_capture`` objects. Nothing is read unless the effective policy could
+send a file to AI-powered review (``snapshot_roots``).
 """
 
 from __future__ import annotations
@@ -14,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, cast
 
@@ -24,25 +30,29 @@ from finishup.application.check_change import (
     _redacted_text,  # pyright: ignore[reportPrivateUsage]
     _store,  # pyright: ignore[reportPrivateUsage]
 )
-from finishup.domain.privacy import PrivacyPolicy
+from finishup.domain.privacy import (
+    ConversationReview,
+    DataCategory,
+    DataClass,
+    EgressChannel,
+    PrivacyPolicy,
+)
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.ports.change_capture import (
-    MAX_SNAPSHOT_ADMISSION_SECONDS,
     MAX_SNAPSHOT_CANDIDATES,
     MAX_SNAPSHOT_FILE_BYTES,
-    MAX_SNAPSHOT_FILES,
-    MAX_SNAPSHOT_SECONDS,
-    MAX_SNAPSHOT_TOTAL_BYTES,
     TASK_INPUT_SNAPSHOT_MEDIA_TYPE,
     SnapshotBoundary,
     SnapshotFile,
     SnapshotOmissionReason,
+    SnapshotUsage,
+    TaskChangeBaseStorePort,
     TaskInputSnapshotSet,
     decode_task_input_snapshot,
     encode_task_input_snapshot,
 )
 from finishup.ports.clock import ClockPort
-from finishup.ports.objects import ObjectKind, ObjectRef
+from finishup.ports.objects import ObjectRef
 from finishup.ports.runtime import TaskRuntime
 
 __all__ = [
@@ -72,38 +82,51 @@ class InputSnapshotScope:
 def snapshot_roots(policy: PrivacyPolicy, carries_task_inputs: bool) -> tuple[str, ...]:
     """The roots a snapshot may read beneath under ``policy``; empty when it may read nothing.
 
-    Only when AI-powered review can run at all (the external channel or the local model is on)
-    and its recipe carries task inputs: a local-only or no-file policy never reads ahead.
+    Only when a file could reach AI-powered review at all: the recipe carries task inputs, the
+    owner's conversation setting is not ``local_only``, and the external channel or the separately
+    enabled local model admits repository excerpts of ordinary content. Any other policy reads
+    nothing ahead for a review it cannot run.
     """
 
-    review_on = policy.local_model_enabled or any(
-        item.enabled and item.channel.value == "llm_inference" for item in policy.channel_policies
+    excerpt, ordinary = DataCategory.REPOSITORY_EXCERPT, DataClass.ORDINARY_USER_CONTENT
+    external = any(
+        item.enabled
+        and item.channel is EgressChannel.LLM_INFERENCE
+        and excerpt in item.allowed_categories
+        and ordinary in item.allowed_data_classes
+        for item in policy.channel_policies
     )
-    return policy.admitted_input_roots if review_on and carries_task_inputs else ()
+    local = (
+        policy.local_model_enabled
+        and excerpt in policy.local_model_categories
+        and ordinary in policy.local_model_data_classes
+    )
+    review = policy.effective_conversation_review is not ConversationReview.LOCAL_ONLY
+    return (
+        policy.admitted_input_roots
+        if carries_task_inputs and review and (external or local)
+        else ()
+    )
+
+
+async def _load_sets(runtime: TaskRuntime) -> tuple[TaskInputSnapshotSet, ...]:
+    """The task's kept sets, oldest first; raises when any cannot be read."""
+
+    refs = await cast(TaskChangeBaseStorePort, runtime.ledger).load_task_input_snapshots()
+    return tuple([decode_task_input_snapshot(await _read(runtime, ref)) for ref in refs])
 
 
 async def load_input_snapshots(
     runtime: TaskRuntime, request_id: str | None
 ) -> tuple[TaskInputSnapshotSet, ...]:
-    """The task's kept snapshot sets, oldest first; empty when none or unreadable."""
+    """The task's kept sets for a check; empty when none or unreadable (the check then labels
+    outside inputs as current bytes and discloses the missing baseline)."""
 
-    loader = getattr(runtime.ledger, "load_task_input_snapshots", None)
-    if not callable(loader):
+    if not callable(getattr(runtime.ledger, "load_task_input_snapshots", None)):
         return ()
     try:
-        refs = await cast(Callable[[], Awaitable[tuple[ObjectRef, ...]]], loader)()
-        sets: list[TaskInputSnapshotSet] = []
-        for ref in refs:
-            if (
-                ref.metadata.kind is not ObjectKind.CHANGE_CAPTURE
-                or ref.metadata.media_type != TASK_INPUT_SNAPSHOT_MEDIA_TYPE
-                or ref.metadata.task_id != runtime.task_id
-            ):
-                raise ValueError("task_input_snapshot_invalid")
-            sets.append(decode_task_input_snapshot(await _read(runtime, ref)))
-        return tuple(sets)
+        return await _load_sets(runtime)
     except Exception as exc:
-        # An unreadable snapshot is no snapshot: the check labels current bytes as unverified.
         record_unexpected_exception_without_raising(
             exc, component=_COMPONENT, operation="input_snapshot_unreadable", request_id=request_id
         )
@@ -113,91 +136,108 @@ async def load_input_snapshots(
 async def record_input_snapshot(
     *,
     runtime: TaskRuntime,
+    key: str,
     values: tuple[str, ...],
     scope: InputSnapshotScope,
     boundary: SnapshotBoundary,
     clock: ClockPort,
     request_id: str | None,
 ) -> bool:
-    """Keep one snapshot set for the outside ``values`` not yet kept; ``True`` when recorded.
+    """Keep one snapshot set at boundary ``key`` for the outside ``values``; ``True`` when kept.
 
-    Task-wide bounds (4 files, 256 KiB each, 1 MiB, 16 candidates, 10 s) are counted from the
-    sets already kept, so a retry or a later declaration never resets them. A candidate the read
-    could not keep whole is recorded with its reason, never as a partial original. A failure
-    records nothing and leaves the task without a baseline for those inputs, which its checks
-    then disclose; it never fails the start or publication that called it.
+    Reserves ``key`` first; an already reserved key reads nothing. A candidate that could not be
+    kept whole, including one past the capacity left, is recorded with its reason, never as a
+    partial original. A failure, including an unreadable earlier set, keeps nothing and leaves
+    the boundary spent; it never fails the start or publication that called it.
     """
 
-    recorder = getattr(runtime.ledger, "record_task_input_snapshot", None)
-    if not callable(recorder) or not scope.roots:
+    ledger = cast(TaskChangeBaseStorePort, runtime.ledger)
+    outside = tuple(
+        dict.fromkeys(
+            os.path.normpath(value) + ("/" if value.endswith("/") else "")
+            for value in values
+            if value.startswith("/")
+        )
+    )
+    if (
+        not scope.roots
+        or not outside
+        or not callable(getattr(ledger, "reserve_task_input_snapshot", None))
+    ):
         return False
     try:
-        prior = await load_input_snapshots(runtime, request_id)
-        seen = {item.path for kept in prior for item in kept.files} | {
-            path for kept in prior for path, _reason in kept.omitted
-        }
-        files_left = MAX_SNAPSHOT_FILES - sum(len(kept.files) for kept in prior)
-        bytes_left = MAX_SNAPSHOT_TOTAL_BYTES - sum(
-            item.size for kept in prior for item in kept.files
-        )
-        candidates_left = MAX_SNAPSHOT_CANDIDATES - sum(kept.candidates for kept in prior)
-        seconds_left = MAX_SNAPSHOT_SECONDS - sum(kept.elapsed_ms for kept in prior) / 1000
-        outside = tuple(
-            dict.fromkeys(
-                os.path.normpath(value) + ("/" if value.endswith("/") else "")
-                for value in values
-                if value.startswith("/") and os.path.normpath(value) not in seen
-            )
-        )[: max(0, candidates_left)]
-        if not outside or files_left < 1 or seconds_left <= 0:
-            return False
-        started = time.monotonic()
-        reads = await asyncio.to_thread(
-            lambda: scope.reader(
-                scope.roots,
-                outside,
-                # Bounded by candidates and time; the file budget is applied below, so a
-                # file too large or not text never takes a kept file's place.
-                limit=MAX_SNAPSHOT_CANDIDATES,
-                max_bytes=MAX_SNAPSHOT_FILE_BYTES,
-                seconds=min(MAX_SNAPSHOT_ADMISSION_SECONDS, seconds_left),
-                excluded=scope.excluded,
-            )
-        )
-        files: list[SnapshotFile] = []
-        omitted: list[tuple[str, SnapshotOmissionReason]] = []
-        for read in reads:
-            if read.path in seen:
-                continue
-            seen.add(read.path)
-            if read.text is None:
-                omitted.append((read.path, read.reason or "unreadable"))
-            elif len(files) >= files_left or read.size > bytes_left:
-                omitted.append((read.path, "budget"))
-            else:
-                try:
-                    kept_text, redacted = _redacted_text(read.text)
-                except Exception:
-                    omitted.append((read.path, "redaction_incomplete"))
-                    continue
-                files.append(SnapshotFile(read.path, read.root, kept_text, read.size, redacted))
-                bytes_left -= read.size
-        if not files and not omitted:
-            return False
-        elapsed_ms = min(3_600_000, int((time.monotonic() - started) * 1000))
-        snapshot = TaskInputSnapshotSet(
-            boundary,
-            len(outside),
-            elapsed_ms,
-            tuple(files),
-            tuple(omitted[:MAX_SNAPSHOT_CANDIDATES]),
-        )
-        ref = await _store(
-            runtime, encode_task_input_snapshot(snapshot), TASK_INPUT_SNAPSHOT_MEDIA_TYPE, clock
-        )
-        return await cast(Callable[[ObjectRef], Awaitable[bool]], recorder)(ref)
+        grant = await ledger.reserve_task_input_snapshot(key)
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc, component=_COMPONENT, operation="input_snapshot_failed", request_id=request_id
         )
         return False
+    if grant is None:
+        return False
+    files: list[SnapshotFile] = []
+    attempted = 0
+    started: float | None = None
+    ref: ObjectRef | None = None
+    try:
+        prior = await _load_sets(runtime)
+        seen = {i.path for kept in prior for i in kept.files} | {
+            path for kept in prior for path, _reason in kept.omitted
+        }
+        wanted = tuple(v for v in outside if v.rstrip("/") not in seen)[:MAX_SNAPSHOT_CANDIDATES]
+        omitted: list[tuple[str, SnapshotOmissionReason]] = []
+        if wanted and grant.files and grant.candidates and grant.ms:
+            attempted = grant.candidates  # Until the reader returns, every candidate is spent.
+            started = time.monotonic()
+            reads = await asyncio.to_thread(
+                lambda: scope.reader(
+                    scope.roots,
+                    wanted,
+                    limit=grant.candidates,
+                    max_bytes=MAX_SNAPSHOT_FILE_BYTES,
+                    seconds=grant.ms / 1000,
+                    excluded=scope.excluded,
+                )
+            )
+            attempted = min(len(reads), grant.candidates)
+            bytes_left = grant.bytes
+            for read in reads[:attempted]:
+                if read.path in seen:
+                    continue
+                seen.add(read.path)
+                if read.text is None:
+                    omitted.append((read.path, read.reason or "unreadable"))
+                elif len(files) >= grant.files or read.size > bytes_left:
+                    omitted.append((read.path, "budget"))
+                else:
+                    try:
+                        kept_text, redacted = _redacted_text(read.text)
+                    except Exception:
+                        omitted.append((read.path, "redaction_incomplete"))
+                        continue
+                    files.append(SnapshotFile(read.path, read.root, kept_text, read.size, redacted))
+                    bytes_left -= read.size
+        else:
+            omitted = [(value.rstrip("/"), "budget") for value in wanted]
+        if files or omitted:
+            snapshot = TaskInputSnapshotSet(boundary, tuple(files), tuple(omitted))
+            ref = await _store(
+                runtime, encode_task_input_snapshot(snapshot), TASK_INPUT_SNAPSHOT_MEDIA_TYPE, clock
+            )
+    except Exception as exc:
+        files, ref = [], None
+        record_unexpected_exception_without_raising(
+            exc, component=_COMPONENT, operation="input_snapshot_failed", request_id=request_id
+        )
+    finally:
+        elapsed = 0 if started is None else int((time.monotonic() - started) * 1000)
+        spent = SnapshotUsage(
+            len(files), sum(i.size for i in files), attempted, min(3_600_000, elapsed)
+        )
+        try:
+            await ledger.complete_task_input_snapshot(key, spent, ref)
+        except Exception as exc:
+            ref = None
+            record_unexpected_exception_without_raising(
+                exc, component=_COMPONENT, operation="input_snapshot_failed", request_id=request_id
+            )
+    return ref is not None

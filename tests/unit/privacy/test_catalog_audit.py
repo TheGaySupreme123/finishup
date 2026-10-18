@@ -1319,11 +1319,14 @@ def test_cancelled_advice_attempt_reconciles_consumed_egress_to_unknown() -> Non
             prepared.proposal.prepared_case_digest,
             _NOW,
         )
-        await audit.consume(authorization.authorization_id, _DISPATCH, _NOW)
-        # The gateway parks the receipt it owes before the provider call; cancellation lands in
-        # that admitted window. Recording it here is what the shielded finalizer does in
-        # production, so this test exercises the recovery contract, not the transport.
-        await audit.park_attempt_reconciliation(_DISPATCH, _unknown_attempt_receipt(authorization))
+        # The gateway stores the receipt it owes in the consume transaction, before the provider
+        # call; cancellation lands in that admitted window.
+        await audit.consume(
+            authorization.authorization_id,
+            _DISPATCH,
+            _NOW,
+            owed_receipt=_unknown_attempt_receipt(authorization),
+        )
         raise asyncio.CancelledError
 
     async def reconcile(
@@ -1415,8 +1418,12 @@ def test_startup_reconciliation_closes_a_receipt_pending_row_left_by_a_restart()
             prepared.proposal.prepared_case_digest,
             _NOW,
         )
-        await audit.consume(authorization.authorization_id, _DISPATCH, _NOW)
-        await audit.park_attempt_reconciliation(_DISPATCH, _unknown_attempt_receipt(authorization))
+        await audit.consume(
+            authorization.authorization_id,
+            _DISPATCH,
+            _NOW,
+            owed_receipt=_unknown_attempt_receipt(authorization),
+        )
 
     asyncio.run(seed())
     assert _audit_row_state(db) == ("receipt_pending", None, None, None)

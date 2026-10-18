@@ -862,6 +862,12 @@ _SNAPSHOT_CURRENT: Final = {
     ),
     "unavailable": "The file could not be read when this check ran.",
 }
+# R5: a redacted copy proves nothing about the values it replaced.
+_SNAPSHOT_REDACTED: Final = "Values that looked like secrets were redacted from this copy."
+_SNAPSHOT_CURRENT_REDACTED: Final = (
+    "The file read when this check ran matches this copy outside its redacted values; whether "
+    "those values changed is unknown."
+)
 _TASK_INPUT_SUMMARY_LABEL: Final = (
     "[FinishUP summary of task input file {path} ({size} bytes): FinishUP's own bounded "
     "description of a binary or data file it did not send whole; not the file itself and not the "
@@ -895,8 +901,16 @@ def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
     elif item.origin == "verification":
         label = _TASK_INPUT_VERIFICATION_LABEL
     elif item.origin == "outside_workspace" and item.baseline != "current":
+        state = item.current_state or "unavailable"
+        current = (
+            _SNAPSHOT_CURRENT_REDACTED
+            if item.redacted and state == "same"
+            else _SNAPSHOT_CURRENT[state]
+        )
+        if item.redacted:
+            current = f"{_SNAPSHOT_REDACTED} {current}"
         label = _TASK_INPUT_SNAPSHOT_LABEL.replace("{when}", _SNAPSHOT_WHEN[item.baseline]).replace(
-            "{current}", _SNAPSHOT_CURRENT[item.current_state or "unavailable"]
+            "{current}", current
         )
     elif item.origin == "outside_workspace":
         label = _TASK_INPUT_OUTSIDE_LABEL
