@@ -28,7 +28,7 @@ from finishup.kernel.closure_readiness import (
     derive_closure_readiness,
     live_lineage_blockers,
 )
-from finishup.kernel.projections import observation_limitation_finding_ids
+from finishup.kernel.projections import ProjectionState, observation_limitation_finding_ids
 from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
 from finishup.kernel.reducers import invalidates_recorded_check, replay
 from finishup.ports.semantic import SamplingParams
@@ -903,3 +903,122 @@ def test_only_a_deferral_lifts_the_missing_review_s_hold_on_the_closing_review()
     )
     # A hand-built fact set that does not say keeps the pre-#1046 answer.
     assert _facts().semantic_review_deferred is False
+
+
+# --- n7 RC1 (#1105): a closing review that ended without a judgment -------------------------
+
+
+def _closing_review_then(
+    status: SemanticStatus,
+    reason: SemanticReason,
+    *,
+    phase: str = "final",
+    material_between: bool = True,
+) -> tuple[ProjectionState, tuple[LedgerRecord, ...], LedgerRecord]:
+    """A succeeded final review, an optional material command, then a review with no judgment."""
+
+    prefix = _prefix_through_check()
+    closing = _reviewed(prefix, "final")
+    check = cast(AcceptedEvent, closing[-1])
+    sequence = check.ledger.ingestion_sequence
+    source = next(
+        record
+        for record in prefix
+        if record.schema.name == "action_recorded" and type(record.payload) is ActionRecordedPayload
+    )
+    # An observed command with no workspace-effect fact: material, so the first review is stale.
+    command = _retarget_action(
+        source,
+        replace(cast(ActionRecordedPayload, source.payload), action_kind=ActionKind.COMMAND),
+        sequence + 1,
+    )
+    payload = cast(CheckRecordedPayload, check.payload)
+    unjudged = _append_check(
+        check,
+        replace(
+            payload,
+            semantic_status=status,
+            semantic_reason=reason,
+            # A retry budget spent before dispatch records no provider provenance.
+            semantic_provenance=None
+            if reason is SemanticReason.RETRY_BUDGET_EXHAUSTED
+            else replace(_provenance(), status=status, reason=reason),
+            review_input_manifest=_review_input_manifest_from_json(
+                cast(DomainJsonValue, _manifest(phase))
+            ),
+        ),
+        sequence + 2,
+    )
+    middle: tuple[LedgerRecord, ...] = (command,) if material_between else ()
+    return replay(closing), (*closing, *middle, unjudged), source
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN),
+        (SemanticStatus.UNAVAILABLE, SemanticReason.RETRY_BUDGET_EXHAUSTED),
+        (SemanticStatus.UNAVAILABLE, SemanticReason.TRANSPORT_UNAVAILABLE),
+        (SemanticStatus.TIMEOUT, SemanticReason.PROVIDER_TIMEOUT),
+    ],
+)
+def test_a_closing_review_without_a_judgment_is_not_asked_again(
+    status: SemanticStatus, reason: SemanticReason
+) -> None:
+    """The newest final review ran on this state and returned no judgment.
+
+    Before n7 the walk skipped it and fell back to the older, staled review, so the Stop gate
+    asked for "the closing review" again while the check's own continuation allowed one new
+    check and then a disclosed local-only finish.
+    """
+
+    state, records, _source = _closing_review_then(status, reason)
+    facts = closure_readiness_facts(state, records)
+    assert facts.closing_review_current is True
+    assert facts.closing_review_no_judgment is True
+    assert facts.coordinator_failure_unchanged is False
+    split = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" not in split.agent_actionable
+    assert "semantic_review_no_judgment" in split.standing_limitations
+    assert "semantic_coordinator_failure" not in split.standing_limitations
+
+
+def test_a_closing_review_without_a_judgment_then_a_material_change_asks_again() -> None:
+    state, records, source = _closing_review_then(
+        SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN
+    )
+    sequence = cast(AcceptedEvent, records[-1]).ledger.ingestion_sequence + 1
+    edit = _retarget_action(
+        source,
+        replace(cast(ActionRecordedPayload, source.payload), action_kind=ActionKind.EDIT),
+        sequence,
+    )
+    after = closure_readiness_facts(state, (*records, edit))
+    assert after.closing_review_current is False
+    assert after.closing_review_no_judgment is False
+    asked = derive_closure_readiness((), (), after, semantic_review_required=True)
+    assert "closing_review_required" in asked.agent_actionable
+    assert "semantic_review_no_judgment" not in asked.standing_limitations
+
+
+def test_a_closing_review_without_a_judgment_an_older_current_review_still_wins() -> None:
+    state, records, _source = _closing_review_then(
+        SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN, material_between=False
+    )
+    facts = closure_readiness_facts(state, records)
+    assert facts.closing_review_current is True
+    assert facts.closing_review_no_judgment is False
+    split = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "semantic_review_no_judgment" not in split.standing_limitations
+
+
+def test_a_mid_task_check_without_a_judgment_changes_nothing() -> None:
+    state, records, _source = _closing_review_then(
+        SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN, phase="routine"
+    )
+    facts = closure_readiness_facts(state, records)
+    assert facts.closing_review_current is False
+    assert facts.closing_review_no_judgment is False
+    split = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" in split.agent_actionable
+    assert "semantic_review_no_judgment" not in split.standing_limitations

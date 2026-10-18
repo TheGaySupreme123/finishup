@@ -25,9 +25,12 @@ __all__ = [
     "awaiting_ruling_variants",
     "COORDINATOR_FAILURE_SENTENCE",
     "COORDINATOR_FAILURE_TOKEN",
+    "NO_JUDGMENT_SENTENCE",
+    "NO_JUDGMENT_TOKEN",
     "check_cause_sentence",
     "closure_counts_variants",
     "admissible_verification_sentence",
+    "closing_review_limit_note",
     "coordinator_failure_note",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
@@ -77,6 +80,14 @@ COORDINATOR_FAILURE_TOKEN: Final = "semantic_coordinator_failure"
 COORDINATOR_FAILURE_SENTENCE: Final = (
     "The closing review stopped on an unchanged coordinator failure. That is a FinishUP limit;"
     " do not send the same check again."
+)
+# n7 RC1 (#1105): a closing review that ended without a judgment is not asked for again; its
+# continuation allows one new check and then a disclosed local-only finish.
+NO_JUDGMENT_TOKEN: Final = "semantic_review_no_judgment"
+NO_JUDGMENT_SENTENCE: Final = (
+    "The closing review ran but ended without a judgment. FinishUP does not ask for it again:"
+    " you may run one new check under a NEW request_id, or finish and disclose that"
+    " AI-powered review did not return a judgment."
 )
 
 
@@ -147,16 +158,28 @@ def admissible_verification_sentence(readiness: object) -> str:
     return " ".join(sentences)
 
 
-def coordinator_failure_note(readiness: object) -> str | None:
-    """The standing sentence when readiness names an unchanged coordinator failure.
+def closing_review_limit_note(readiness: object) -> str | None:
+    """The standing sentence when readiness stops asking for the closing review.
 
-    ``None`` when the token is absent, so a checklist without it keeps its exact text.
+    That is an unchanged coordinator failure (#1079) or a closing review that ended without a
+    judgment (n7 RC1). ``None`` when neither token is present, so a checklist without them keeps
+    its exact text.
     """
 
     raw = _field(readiness, "standing_limitations")
-    if isinstance(raw, (tuple, list)) and COORDINATOR_FAILURE_TOKEN in raw:
+    if not isinstance(raw, (tuple, list)):
+        return None
+    tokens = cast("tuple[object, ...] | list[object]", raw)
+    if COORDINATOR_FAILURE_TOKEN in tokens:
         return COORDINATOR_FAILURE_SENTENCE
+    if NO_JUDGMENT_TOKEN in tokens:
+        return NO_JUDGMENT_SENTENCE
     return None
+
+
+# The name every surface (CLI render, closure prepare and receipt, MCP summaries, the Stop gate)
+# already calls; it covers both closing-review limits.
+coordinator_failure_note = closing_review_limit_note
 
 
 def readiness_directive(state: str, *, standing: object = 0, acknowledged: object = 0) -> str:
