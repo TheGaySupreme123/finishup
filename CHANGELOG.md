@@ -353,15 +353,16 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   that output.
 - **Agents write each fact once.** A `publish_work` request may leave out its request id, its
   frontier, each event's id, time, own empty reference lists and repeated references, and a
-  current-version claim's empty limitation and correction lists (#1103). The MCP tool and
-  `finishup publish-work` give each call its own request id and name it in every answer: retry a
-  lost answer by sending that id, while a deliberate repeat is a new record (an identical id-less
-  resend right after the same call is refused and names the earlier id). FinishUP guards an omitted frontier with the one it reads when it takes
-  the request, orders reference-set lists (never text lists), marks a time it filled in history and
-  review inputs, and names every other filled field in the result's `server_filled` and in the
-  operation record. A request that sends every value behaves exactly as before. Agent `status` reads are
-  brief by default; `detail: full` returns the complete body, `limit` defaults to 20, and
-  `view=results` accepts the filters agents already sent it (#1084, ADR-050).
+  current-version claim's empty limitation and correction lists, and a no-obligations plan's empty
+  obligation list (#1103). The MCP tool and `finishup publish-work` give each call its own request
+  id and name it in every answer: retry a lost answer by sending that id, while a deliberate repeat
+  is a new record (an identical id-less resend right after the same call is refused and names the
+  earlier id). FinishUP guards an omitted frontier with the one it reads when it takes the request,
+  orders reference-set lists (never text lists), marks a time it filled in history and review
+  inputs, and names every other filled field in the result's `server_filled` and in the operation
+  record. A request that sends every value behaves exactly as before. Agent `status` reads are brief
+  by default; `detail: full` returns the complete body, `limit` defaults to 20, and `view=results`
+  accepts the filters agents already sent it (#1084, ADR-050).
 
 - **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
   advice packet to your configured reviewer where every task uses AI-powered review and your
@@ -679,14 +680,16 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 - Agents no longer have their tool calls refused for shapes the guidance told them to send (#1103).
   A claim (`claim_recorded/1.1.0`) that leaves out an empty `limitation_refs` or
-  `supersedes_claim_refs` is accepted as the empty list and judged like one (a completion claim
+  `supersedes_claim_refs`, and a plan that leaves out an empty `obligation_refs` beside
+  `no_obligations_reason`, is accepted as the empty list and judged like one (a completion claim
   that leaves out a failed result it must disclose is still refused and names it). A `respond`
-  answer may list its `evidence_refs` in any order; it is the same request as the sorted list. A refused answer now names
-  the rule it broke and the field in its error, where it used to say only that the request was
-  invalid. `read_guidance` reads `#publish-shapes` (and any other topic exactly one guidance page
-  defines) when an agent attaches it to the wrong page, and the operating card writes that topic's
-  full address. `closure_prepare` says it drafts only from recorded ids and where request shapes
-  live, and the guidance says that evidence `observed_at` is always required.
+  answer may list its `evidence_refs` in any order; it is the same request as the sorted list. A
+  refused answer now names its reason and, where it can, the field in its error, where it used to
+  say only that the request was invalid. `read_guidance` reads `#publish-shapes` (and any other
+  topic exactly one guidance page defines) when an agent attaches it to the wrong page, and the
+  operating card writes that topic's full address. `closure_prepare` says it drafts only from
+  recorded ids and where request shapes live, and the guidance says that evidence `observed_at` is
+  always required.
 
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks

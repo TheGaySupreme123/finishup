@@ -38,7 +38,10 @@ compaction, reacquire the core and the topic for the current operation. Anchored
 return only their named section. An anchor that is not listed but names exactly one section of
 that document (the section heading written another way, an anchor the text places under it, or
 words only its anchor contains) reads that section, and the result names its listed link; an
-anchor that could mean several sections is refused with the document's listed anchors.
+anchor that could mean several sections is refused with the document's listed anchors. When the
+page you named has no such section, an anchor that is exactly the listed anchor of one other
+guidance page reads that page's section, and the result names where it came from; an anchor
+several pages share is not guessed.
 
 If an MCP host drops schema examples or renders required fields as unknown, read
 `finishup://guidance/request-templates.md#publish-shapes` for ordinary publish, or the topic for
@@ -63,25 +66,23 @@ formatting, and per-file mechanics.
 
 Write each fact once. A publish needs only your session and writer, your actor and client, and
 events made of a `schema` and a `payload`. FinishUP fills the rest when you leave it out. It gives
-each call its own request id and names it in every answer, including errors (the command line
-prints it before sending). If an answer never arrived, retry by sending that request id: FinishUP
-returns the stored result instead of recording twice. Sending the same request again without the
-id is a new record (switching review back on, for example). Right after the same call, FinishUP
-asks you to choose instead, naming the earlier id. If you need a retry that holds even after FinishUP
-restarts, send your own request id. It also fills each event id, the
-event time (FinishUP's clock, never your claim, and marked as such in history), each event's own
-reference lists (empty, or copied from the payload where they repeat it), and the frontier: the one
-it reads when it takes the request, so a change another participant makes meanwhile is refused. A
-current-version claim may also leave out an empty `limitation_refs` or `supersedes_claim_refs`,
-and a plan with a `no_obligations_reason` an empty `obligation_refs`: each is simply the empty
-list, judged like one: a completion claim that leaves out a failed result it must disclose is still
-refused and names it.
-Ids inside payloads and the time you observed evidence (`observed_at`) stay yours to send.
-Reference lists are put in canonical order for you; text lists are kept exactly as you wrote them.
-The result's `server_filled` names every event id, time, envelope list and frontier FinishUP
-filled, and so does the operation record; an omitted empty claim or plan list is simply the empty
-list and is not listed. Send a value when you need it, for example the frontier you last read when what you
-publish depends on it.
+each call its own request id and names it in every answer, including errors (the command line prints
+it before sending). If an answer never arrived, retry by sending that request id: FinishUP returns
+the stored result instead of recording twice. Sending the same request again without the id is a new
+record (switching review back on, for example). Right after the same call, FinishUP asks you to
+choose instead, naming the earlier id. If you need a retry that holds even after FinishUP restarts,
+send your own request id. It also fills each event id, the event time (FinishUP's clock, never your
+claim, and marked as such in history), each event's own reference lists (empty, or copied from the
+payload where they repeat it), and the frontier: the one it reads when it takes the request, so a
+change another participant makes meanwhile is refused. A current-version claim may also leave out an
+empty `limitation_refs` or `supersedes_claim_refs`, and a plan with a `no_obligations_reason` an
+empty `obligation_refs`: each is simply the empty list, judged like one: a completion claim that
+leaves out a failed result it must disclose is still refused and names it. Ids inside payloads and
+the time you observed evidence (`observed_at`) stay yours to send. Reference lists are put in
+canonical order for you; text lists are kept exactly as you wrote them. The result's `server_filled`
+names every event id, time, envelope list and frontier FinishUP filled, and so does the operation
+record; an omitted empty claim or plan list is simply the empty list and is not listed. Send a value
+when you need it, for example the frontier you last read when what you publish depends on it.
 
 A plan must make completion scope inspectable. Normally, list its obligation refs. If no
 obligations apply, record `no_obligations_reason` as exactly `no_material_change`,
