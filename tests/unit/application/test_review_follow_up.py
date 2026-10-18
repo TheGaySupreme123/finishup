@@ -277,7 +277,8 @@ def test_an_event_target_names_the_rows_it_recorded() -> None:
         # Kinds FinishUP never answers itself: they stay the agent's, exactly as before.
         _requested("task_statement", str(clm(1)), availability="agent_suppliable"),
         _requested("plan_or_claim_text", str(clm(1)), availability="agent_suppliable"),
-        _requested("other", str(res(1)), availability="agent_suppliable"),
+        # ``other`` naming only a claim: no recorded row carries it (issue #1102).
+        _requested("other", str(clm(1)), availability="agent_suppliable"),
         # Content the packet may never carry is never re-sent.
         _requested(
             "verification_output", str(res(1)), availability="structurally_unavailable_on_this_host"
@@ -849,7 +850,9 @@ def test_a_follow_up_value_is_bounded() -> None:
     with pytest.raises(ValueError):
         ReviewFollowUp(1, (), frozenset())
     with pytest.raises(ValueError):
-        ReviewFollowUpItem("other", (str(res(1)),), frozenset({str(evd(1))}))
+        ReviewFollowUpItem("task_statement", (str(res(1)),), frozenset({str(evd(1))}))
+    # Issue #1102: ``other`` is answered from recorded rows like the kinds before it.
+    assert ReviewFollowUpItem("other", (str(res(1)),), frozenset({str(evd(1))})).kind == "other"
 
 
 # --- Every surface reads the round from the recorded manifest ---------------------------------
@@ -2179,13 +2182,16 @@ def _capture_scene(
 
 
 def _observed_follow_up(
-    case: DeterministicCase, *, shown: frozenset[str] | None = None
+    case: DeterministicCase,
+    *,
+    shown: frozenset[str] | None = None,
+    kind: str = "verification_output",
 ) -> ReviewFollowUp:
     allowed = frozenset(str(ref) for ref in case.allowed_ids)
     follow_up = plan_review_follow_up(
         case.projection,
         allowed,
-        (_requested("verification_output", str(res(12)), availability="agent_suppliable"),),
+        (_requested(kind, str(res(12)), availability="agent_suppliable"),),
         previous=None,
         shown_refs=frozenset() if shown is None else shown,
     )
@@ -2470,14 +2476,17 @@ def _privacy_scene() -> tuple[
 
 
 def _privacy_follow_up(
-    case: DeterministicCase, targets: Sequence[tuple[int, str]]
+    case: DeterministicCase,
+    targets: Sequence[tuple[int, str]],
+    *,
+    kind: str = "verification_output",
 ) -> ReviewFollowUp:
     allowed = frozenset(str(ref) for ref in case.allowed_ids)
     follow_up = plan_review_follow_up(
         case.projection,
         allowed,
         tuple(
-            _requested("verification_output", str(res(number)), availability="agent_suppliable")
+            _requested(kind, str(res(number)), availability="agent_suppliable")
             for number, _command in targets
         ),
         previous=None,
@@ -2734,3 +2743,159 @@ def test_a_digest_alias_never_answers_for_another_commands_run() -> None:
             assert item.latest_for != "command" or str(evd(32)) in item.linked_subject_refs
     # The agent's own row is still carried as its own account.
     assert any(item.item_id == f"excerpt-{evd(99)}" for item in semantic.items)
+
+
+# --- Issue #1102 (RC6g): ``other`` requests answered from rows FinishUP recorded ---------------
+
+
+def test_an_other_request_naming_a_run_is_answered_from_its_rows_and_observed_output() -> None:
+    case, _refs = _verification_case(20)
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    sources = {
+        kind: plan_review_follow_up(
+            case.projection,
+            allowed,
+            (_requested(kind, str(res(1)), availability="agent_suppliable"),),
+            previous=None,
+            shown_refs=frozenset(),
+        )
+        for kind in ("verification_output", "other")
+    }
+    answered = sources["other"]
+    assert answered is not None and sources["verification_output"] is not None
+    assert answered.items[0].kind == "other"
+    assert answered.items[0].source_refs == sources["verification_output"].items[0].source_refs
+
+    scene, captured, scope = _capture_scene()
+    follow_up = _observed_follow_up(scene, kind="other")
+    built = _build(
+        scene,
+        follow_up=follow_up,
+        selection=_assisted(),
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    marked = [item for item in built.items if item.content.startswith(_OBSERVED_MARKER.encode())]
+    assert [item.source_ref for item in marked] == [str(evd(22))]
+    assert _PYTEST_NEW in marked[0].content
+    joined = b"\n".join(item.content for item in built.items)
+    assert _RUFF_OUTPUT not in joined and _EDIT_OUTPUT not in joined
+    manifest = built.packet.input_manifest
+    assert manifest is not None
+    assert [(row.kind, row.status) for row in manifest.missing_inputs] == [("other", "supplied")]
+    rendered = {**review_input_manifest_to_json(manifest), "phase": "provider_bound"}
+    assert "other=supplied" in " ".join(render_review_input_manifest_lines(rendered))
+
+
+def test_an_other_request_naming_an_edit_is_answered_with_its_current_section() -> None:
+    case, captured, scope, change = _stale_edit_case()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    section_parts = _section_parts(case, captured, scope, change)
+    first = _build(
+        case, captured_content=captured, captured_content_scope=scope, check_time_change=change
+    )
+    first_sent = _provider_manifest(_send(first))
+
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("other", str(evd(1))),),
+        previous=None,
+        shown_refs=sent_excerpt_content_refs(first, first_sent),
+        shown_parts=sent_excerpt_parts(first, first_sent),
+        section_parts=section_parts,
+    )
+
+    # The edit itself was shown whole; only its current section in the change is still owed.
+    assert follow_up is not None
+    again = _build(
+        case,
+        follow_up=follow_up,
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    sections = [
+        item for item in again.items if item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX)
+    ]
+    assert len(sections) == 1 and b"CURRENT_LEAD_STORE_MARKER" in sections[0].content
+    assert sections[0].linked_subject_refs == (str(evd(1)),)
+
+
+def test_an_other_request_naming_only_an_obligation_or_the_statement_plans_no_round() -> None:
+    case, _refs = _verification_case(20)
+    targets = tuple(sorted((str(evt(500)), str(obl(1)), str(clm(1)))))
+    allowed = frozenset(str(ref) for ref in case.allowed_ids) | frozenset(targets)
+
+    for request in (
+        (_requested("other", *targets, availability="agent_suppliable"),),
+        # Content the packet may never carry is never re-sent, whatever the kind.
+        (_requested("other", str(res(1)), availability="structurally_unavailable_on_this_host"),),
+        (_requested("other", str(res(1)), availability="yoetz_limit_unsupported_data_type"),),
+    ):
+        assert (
+            plan_review_follow_up(
+                case.projection, allowed, request, previous=None, shown_refs=frozenset()
+            )
+            is None
+        )
+    # Everything the named run holds was shown whole already: nothing to add, no round.
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            (_requested("other", str(res(1)), availability="agent_suppliable"),),
+            previous=None,
+            shown_refs=frozenset({str(res(1)), str(act(1)), str(evd(1))}),
+        )
+        is None
+    )
+
+
+def test_an_other_request_obeys_every_auto_supply_gate() -> None:
+    """A non-verification command, an environment dump, a credential path, a path the change
+    refused and a secret are withheld for ``other`` exactly as for ``verification_output``;
+    a Private or command-only selection sends no captured output at all."""
+
+    case, captured, scope, targets = _privacy_scene()
+    built = {
+        kind: _build(
+            case,
+            follow_up=_privacy_follow_up(case, targets, kind=kind),
+            selection=_assisted(),
+            captured_content=captured,
+            captured_content_scope=scope,
+            check_time_change=_refused_change(),
+            workspace_root=_PRIVACY_ROOT,
+        )
+        for kind in ("verification_output", "other")
+    }
+    prepared = _provider_contents(_send(built["other"]))
+    for marker in _SECRET_MARKERS:
+        assert marker not in prepared
+    assert _PYTEST_CLEAN in prepared and _RUFF_CLEAN in prepared
+
+    def reasons(semantic: SemanticCase) -> set[tuple[str, str]]:
+        return {(omission.subject_ref, omission.reason) for omission in semantic.packet.omissions}
+
+    assert reasons(built["other"]) == reasons(built["verification_output"])
+    denied = replace(
+        _assisted(),
+        excerpt_kinds=tuple(kind for kind in _assisted().excerpt_kinds if kind != "diff"),
+    )
+    for selection in (denied, ReviewSelectionPolicy.for_profile(ReviewContextProfile.STRUCTURAL)):
+        withheld = _provider_contents(
+            _send(
+                _build(
+                    case,
+                    follow_up=_privacy_follow_up(case, targets, kind="other"),
+                    selection=selection,
+                    captured_content=captured,
+                    captured_content_scope=scope,
+                    check_time_change=_refused_change(),
+                    workspace_root=_PRIVACY_ROOT,
+                )
+            )
+        )
+        assert _OBSERVED_MARKER.encode() not in withheld
+        assert _PYTEST_CLEAN not in withheld

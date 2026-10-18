@@ -29,6 +29,8 @@ from finishup.application.check import (
 from finishup.application.missing_for_assessment import (
     CHECK_TIME_CHANGE_SOURCE_REF,
     OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
+    OBSERVED_FOLLOW_UP_KINDS,
+    SECTION_FOLLOW_UP_KINDS,
     ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
@@ -4968,7 +4970,7 @@ def _select_targeted_excerpts(
                 key=recency,
                 reverse=True,
             )
-            if follow_up_item.kind == "current_diff_for_path" and sections:
+            if follow_up_item.kind in SECTION_FOLLOW_UP_KINDS and sections:
                 for index in matching:
                     linked = tuple(
                         sorted(
@@ -4998,7 +5000,7 @@ def _select_targeted_excerpts(
             observed_indexes = {
                 index
                 for index in matching
-                if follow_up_item.kind == "verification_output"
+                if follow_up_item.kind in OBSERVED_FOLLOW_UP_KINDS
                 and observed_capture(index, follow_up_item.source_refs)
             }
             for index in matching:
