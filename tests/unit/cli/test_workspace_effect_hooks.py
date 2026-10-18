@@ -556,6 +556,23 @@ def _readings(state: Path, commitment: str) -> dict[str, object]:
     return dict(reading_tally_summary(workspace_fingerprint_dir(state / "observation", commitment)))
 
 
+def test_revoking_observation_removes_the_snapshots_and_the_reading_tally(tmp_path: Path) -> None:
+    """The tally keeps host call ids in its ring, so revoke must take it with the snapshots."""
+
+    from finishup.adapters.workspace_fingerprint import workspace_fingerprint_dir
+    from finishup.domain.observation import ObservationRevokeCommand
+
+    workspace, state, commitment = _setup(tmp_path)
+    emit, pre, post, _shape = _host("codex", workspace, state)
+    emit(pre, _codex(pre, "call_revoke", "rg -n reviewed deliverable.txt"))
+    emit(post, _codex(post, "call_revoke", "rg -n reviewed deliverable.txt"))
+    directory = workspace_fingerprint_dir(state / "observation", commitment)
+    assert directory is not None
+    assert (directory / "readings.json").is_file()
+    LocalObservationStore(_state=state).revoke(ObservationRevokeCommand(commitment))
+    assert not directory.exists()
+
+
 def test_a_codex_0159_read_is_unchanged_and_its_outcome_stays_unknown(tmp_path: Path) -> None:
     """The ``Bash`` post is the completion fact; it states no exit, so no success is invented."""
 
@@ -651,6 +668,66 @@ def test_an_ampersand_handed_to_a_shell_is_still_a_background_launch(
     emit(pre, shape(pre, "call_bg", command))
     emit(post, shape(post, "call_bg", command))
     (envelope,) = _posts(state, commitment)
+    assert envelope.structural_payload["workspace_effect"] == "unavailable"
+    reasons = cast(dict[str, object], _readings(state, commitment)["all"])["unavailable_reasons"]
+    assert reasons == {"background_launch": 1}
+
+
+@pytest.mark.parametrize("host", ["codex", "claude"])
+@pytest.mark.parametrize("case", ["escaped_blank_hash", "quoted_delimiter", "heredoc_substitution"])
+def test_text_the_splitter_misreads_keeps_a_real_late_writer_unavailable(
+    tmp_path: Path, host: str, case: str
+) -> None:
+    """Review round 3: bash runs a writer past the call that the splitter's reading missed.
+
+    The writer leaves the workspace's cwd (beyond the lingering-process probe) and waits for the
+    test's release file, so the post hook runs while it is still pending; it then appends to the
+    deliverable. The reading must stay ``unavailable``, never ``unchanged``.
+    """
+
+    import shlex
+    import shutil
+    import subprocess
+    import time
+
+    if shutil.which("bash") is None or (
+        case != "escaped_blank_hash" and not shutil.which("setsid")
+    ):
+        pytest.skip("needs bash and setsid")
+    workspace, state, commitment = _setup(tmp_path)
+    target = workspace / "deliverable.txt"
+    release, done = tmp_path / "release", tmp_path / "done"
+    writer = (
+        f"cd /; while [ ! -e {shlex.quote(str(release))} ]; do sleep 0.05; done; "
+        f"echo late >> {shlex.quote(str(target))}; touch {shlex.quote(str(done))}"
+    )
+    detached = f"setsid -f sh -c {shlex.quote(writer)} >/dev/null 2>/dev/null </dev/null"
+    command = {
+        "escaped_blank_hash": f"echo a\\ #b & ({writer}) >/dev/null 2>/dev/null & echo",
+        "quoted_delimiter": f'cat <<E"O"F\nEOF\n{detached}\nE"O"F',
+        "heredoc_substitution": f"cat <<EOF\n$({detached})\nEOF",
+    }[case]
+    emit, pre, post, shape = _host(host, workspace, state)
+    emit(pre, shape(pre, f"{host}-late", command))
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=workspace,
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        emit(post, shape(post, f"{host}-late", command))
+        before_release = target.read_text()
+    finally:
+        release.touch()
+        deadline = time.monotonic() + 30
+        while not done.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+    (envelope,) = _posts(state, commitment)
+    assert before_release == "reviewed\n"
+    assert done.exists() and target.read_text() == "reviewed\nlate\n"
     assert envelope.structural_payload["workspace_effect"] == "unavailable"
     reasons = cast(dict[str, object], _readings(state, commitment)["all"])["unavailable_reasons"]
     assert reasons == {"background_launch": 1}
