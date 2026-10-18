@@ -28,6 +28,9 @@ from finishup.application.closure_basis import (
 )
 from finishup.application.coordination import CoordinationAdvice
 from finishup.application.ledger_snapshot import projection_for_records
+from finishup.application.observation_advice import (
+    without_retired_failed_commands as _without_retired_failed_commands,
+)
 from finishup.application.projects import ProjectApplication, ProjectCommandError
 from finishup.application.status_faults import (
     StatusFault,
@@ -71,7 +74,6 @@ from finishup.kernel.deterministic_checks import (
     finding_basis_to_status_json,
 )
 from finishup.kernel.fact_lineage import lineage_to_wire
-from finishup.kernel.finding_resolution import retired_failed_command_finding_ids
 from finishup.kernel.gap_effect import UNCLASSIFIED_GAP_PREFIX, GapEffectKind
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
@@ -196,8 +198,6 @@ _PACKS = (
     current_policy_pack(WORK_INTEGRITY_POLICY_ID),
 )
 _CURSOR_VERSION = "1"
-# The advice rule whose items the ledger can retire before the snapshot does (#1104).
-_FAILED_COMMAND_RULE: Final = "failed_command_unresolved"
 
 
 def _dump_closed_omitting_optional_nulls(model: BaseModel) -> dict[str, JsonValue]:
@@ -1327,46 +1327,6 @@ def _operation_page_from_record(
         return StatusOperationPageModel.model_validate(published)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("status_operation_result_invalid") from exc
-
-
-async def _without_retired_failed_commands(
-    runtime: TaskRuntime, snapshot: AdviceSnapshot
-) -> AdviceSnapshot:
-    """The advice snapshot without the failed-command items the ledger already retired (#1104).
-
-    The snapshot's rule retires a failure only on a later pass of the same command; the ledger
-    also retires it on a passing planned verification. An unreadable projection keeps every item,
-    so an unresolved failure is never hidden.
-    """
-
-    if not any(item.rule_code == _FAILED_COMMAND_RULE for item in snapshot.ranked_items):
-        return snapshot
-    try:
-        stored = await runtime.ledger.load_projection(
-            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
-        )
-    except Exception as exc:
-        record_unexpected_exception_without_raising(
-            exc, component="status", operation="advice_retired_findings_read_failed"
-        )
-        return snapshot
-    if stored is None or type(stored.state) is not ProjectionState:
-        return snapshot
-    retired = retired_failed_command_finding_ids(stored.state)
-    if not retired:
-        return snapshot
-    kept = tuple(
-        item
-        for item in snapshot.ranked_items
-        if item.rule_code != _FAILED_COMMAND_RULE or item.finding_id not in retired
-    )
-    if len(kept) == len(snapshot.ranked_items):
-        return snapshot
-    return replace(
-        snapshot,
-        ranked_items=kept,
-        ranked_finding_ids=tuple(item.finding_id for item in kept),
-    )
 
 
 async def _exact_frontier(runtime: TaskRuntime, sequence: int | None) -> tuple[Frontier, Frontier]:

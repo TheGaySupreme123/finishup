@@ -1,7 +1,7 @@
 """A failed command, then its passing rerun, through the real coordinator to status and receipt.
 
 #1104 round 1 (the design's ``test_failed_command_then_pass_then_receipt_is_not_blocked``). The
-Claude Code hook handler records a ``PostToolUseFailure`` and a later passing ``PostToolUse`` of the
+Codex, Claude Code and Cursor hook handlers record a failure and a later passing rerun of the
 same command into a real local observation store. Every stored envelope is materialized and
 appended as a hook observation, and the real ``ObservationCoordinator`` runs the real advice rule
 over the stored envelopes (``build_observation_advice_snapshot``, as ``_run_advice`` does) and
@@ -14,16 +14,18 @@ the finding as retired by the passing run, not blocking.
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from typing import Any, cast
 
+import apsw
 import pytest
 
 import integration.application.test_respond_status_receipt as workflow
 from builders.ledger_adapters import MemoryObjects
 from builders.start_application import start_request
 from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
 from finishup.application import status as status_module
 from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
@@ -34,13 +36,13 @@ from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     observation_author,
 )
-from finishup.cli import observe_hooks
+from finishup.cli.render import render_human_status
 from finishup.domain.events import AcceptedEvent, ResultRecordedPayload, media_type_for
 from finishup.domain.findings import Finding
 from finishup.domain.observation import AdviceSnapshot, ObservationEnvelope, ObservationLifecycle
-from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from finishup.domain.values import Frontier
+from finishup.domain.values import Frontier, timestamp_from_datetime
 from finishup.kernel.task_facts import register_command_identity_key
+from finishup.mcp.summaries import summary_for_status
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.ledger import (
     AppendCommand,
@@ -57,9 +59,9 @@ from finishup.ports.runtime import (
     TaskObservationPort,
     TaskRuntime,
 )
-from finishup.protocol.canonical import JsonValue, canonical_encode
-from finishup.protocol.models import StatusRequest
+from finishup.protocol.models import StatusRequest, StatusSuccessModel
 from integration.application.test_closure_readiness_checklist import _Session, public_status
+from integration.observation.test_failure_supersession_hosts import _host, _run_on
 
 pytestmark = pytest.mark.anyio
 
@@ -72,60 +74,20 @@ def anyio_backend() -> str:
 
 
 class _Host:
-    """A Claude Code ordinary-profile hook writing into one isolated local store."""
+    """One host's normalized hook payloads writing into an isolated local store."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, host_name: str = "claude") -> None:
         self.root = root
+        self.host_name = host_name
+        self.emit, _ = _host(root, host_name)
         self.state = root / "state"
         self.store = LocalObservationStore(_state=self.state)
         self.workspace = self.store.workspace_commitment(str(root.resolve()))
         self.store.grant_consent(self.workspace)
         self.appended: set[str] = set()
 
-    def emit(self, event: str, payload: dict[str, JsonValue]) -> None:
-        assert (
-            observe_hooks.handle_claude_observe(
-                event_name=event,
-                stdin_bytes=canonical_encode(payload),
-                stdout=io.BytesIO(),
-                workspace=str(self.root),
-                _state=self.state,
-                skip_service=True,
-                observation_profile=CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
-            )
-            == 0
-        )
-
     def bash(self, call: str, *, failed: bool, command: str = _COMMAND) -> None:
-        session: dict[str, JsonValue] = {
-            "session_id": "claude-1104",
-            "tool_name": "Bash",
-            "tool_use_id": call,
-        }
-        tool_input: dict[str, JsonValue] = {"command": command, "description": "Run tests"}
-        self.emit(
-            "PreToolUse", {**session, "hook_event_name": "PreToolUse", "tool_input": tool_input}
-        )
-        if failed:
-            self.emit(
-                "PostToolUseFailure",
-                {
-                    **session,
-                    "hook_event_name": "PostToolUseFailure",
-                    "tool_input": tool_input,
-                    "error": "Exit code 1\n1 failed",
-                },
-            )
-        else:
-            self.emit(
-                "PostToolUse",
-                {
-                    **session,
-                    "hook_event_name": "PostToolUse",
-                    "tool_input": tool_input,
-                    "tool_response": {"stdout": "1 passed", "stderr": "", "interrupted": False},
-                },
-            )
+        _run_on(self.host_name, self.emit, call, command, int(failed))
 
     def new_envelopes(self) -> list[ObservationEnvelope]:
         fresh = [
@@ -234,11 +196,58 @@ async def _findings_view(session: _Session) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], cast(dict[str, Any], wire)["page"]["items"])
 
 
-async def test_failed_command_then_pass_then_receipt_is_not_blocked(tmp_path: Path) -> None:
+async def _assert_unanswered_status(session: _Session, count: int) -> None:
+    status = await session.status()
+    public = public_status(status).root
+    assert type(public) is StatusSuccessModel
+    assert public.closure_readiness.unanswered_finding_count == str(count)
+    assert ("findings_unanswered" in public.closure_readiness.blocking_conditions) == bool(count)
+    assert f"Unanswered findings: {count}" in render_human_status(public)
+    assert ("findings_unanswered" in summary_for_status(status.as_json())) == bool(count)
+
+
+async def _mirror_advice(session: _Session, task_runtime: TaskRuntime, host: _Host) -> None:
+    """Use the production build/materialize/persist/mirror path, with private SQL."""
+
+    path = host.root / "advice.sqlite"
+    fresh = not path.exists()
+    db = apsw.Connection(str(path))
+    try:
+        if fresh:
+            initialize_bundle(db, {"task_id": task_runtime.task_id, "owner_generation": "1"})
+        store = SqliteObservationStore(db)
+        store.grant_consent(host.workspace, timestamp_from_datetime(session.app.clock.now_utc()))
+        for envelope in host.store.list_envelopes(host.workspace):
+            store.bind_session(host.workspace, envelope.session_commitment)
+            await store.ingest(envelope)
+        coordinator = ObservationCoordinator(
+            runtime=cast(BundleRuntimePort, session.runtime),
+            local=host.store,
+            clock=session.app.clock,
+            ids=session.app.ids,
+            state_root=host.state,
+        )
+        await coordinator._run_advice(host.workspace, task_runtime, store)
+        assert store.load_advice_snapshot(host.workspace) is not None
+    finally:
+        db.close()
+
+
+def _assert_hook_failure(host: _Host, session: _Session, expected: bool) -> None:
+    delivery = host.store.peek_advice_for_delivery(
+        host.workspace, yoetz_session_id=session.started.session_id, allow_standing=False
+    )
+    assert bool(delivery and "resolve_failed_command" in delivery.text) == expected
+
+
+@pytest.mark.parametrize("host_name", ["claude", "cursor", "codex"])
+async def test_failed_command_then_pass_then_receipt_is_not_blocked(
+    tmp_path: Path, host_name: str
+) -> None:
     app, runtime, _ = workflow._build_app(seed_offset=1104)
     started = await app.start(start_request(1_104_500, title="Retire a fixed failure"))
     session = _Session(app, runtime, started)
-    host = _Host(tmp_path)
+    host = _Host(tmp_path, host_name)
 
     host.bash("toolu-red", failed=True)
     red = host.new_envelopes()
@@ -290,7 +299,6 @@ async def test_failed_command_then_pass_then_receipt_is_not_blocked(tmp_path: Pa
         record
         for record in records
         if type(record.payload) is ResultRecordedPayload
-        and record.payload.exit_status is None
         and record.payload.outcome.value == "failure"
     )
     failed_action = next(
@@ -312,6 +320,8 @@ async def test_failed_command_then_pass_then_receipt_is_not_blocked(tmp_path: Pa
     ]
     assert open_item["closure_basis"] == "open_unanswered"
     assert await session.receipt() == "unresolved_findings_remain"
+    await _mirror_advice(session, task_runtime, host)
+    _assert_hook_failure(host, session, True)
 
     host.bash("toolu-green", failed=False)
     await _append_observed(session, host.new_envelopes())
@@ -322,7 +332,32 @@ async def test_failed_command_then_pass_then_receipt_is_not_blocked(tmp_path: Pa
     ]
     assert retired["closure_basis"] == "retired_by_passing_run"
     assert retired["resolved"] is True
+    await _assert_unanswered_status(session, 0)
     assert await session.receipt() != "unresolved_findings_remain"
+    await _mirror_advice(session, task_runtime, host)
+    _assert_hook_failure(host, session, False)
+
+    # The retained observation still contains the pass, but the ledger has lost its proof.
+    # Rebuilding the mirror must restore the failed-command item from the retained candidate.
+    passing = next(
+        record
+        for record in await _records(session)
+        if type(record.payload) is ResultRecordedPayload
+        and record.payload.outcome.value == "success"
+    )
+    await workflow._append_local_redaction(
+        app,
+        runtime,
+        started,
+        seed=1_104_950,
+        expected_frontier=int(session.frontier.sequence),
+        target=str(passing.event_id),
+    )
+    session.frontier = await _head(session)
+    await _assert_unanswered_status(session, 1)
+    assert await session.receipt() == "unresolved_findings_remain"
+    await _mirror_advice(session, task_runtime, host)
+    _assert_hook_failure(host, session, True)
 
 
 async def _advice_finding(
@@ -377,7 +412,11 @@ def _failed_command_items(snapshot: AdviceSnapshot) -> list[str]:
     ]
 
 
-async def test_failed_install_then_planned_verification_pass_retires_it(tmp_path: Path) -> None:
+@pytest.mark.parametrize("host_name", ["claude", "cursor", "codex"])
+@pytest.mark.parametrize("reversal", ["waive", "redact"])
+async def test_failed_install_then_planned_verification_pass_retires_it(
+    tmp_path: Path, host_name: str, reversal: str
+) -> None:
     """Owner decision 2026-10-18 through the application: the plan requests the test command, an
     install fails, the coordinator records its finding, and the planned test command passes.
     Status (findings view, validated against the generated model) names the planned kind, the
@@ -387,7 +426,7 @@ async def test_failed_install_then_planned_verification_pass_retires_it(tmp_path
     app, runtime, _ = workflow._build_app(seed_offset=1105)
     started = await app.start(start_request(1_104_600, title="Retire by a planned check"))
     session = _Session(app, runtime, started)
-    host = _Host(tmp_path)
+    host = _Host(tmp_path, host_name)
     # The service registers the installation key the hooks commit with (ready composition).
     register_command_identity_key(host.store.key_material())
     try:
@@ -421,6 +460,8 @@ async def test_failed_install_then_planned_verification_pass_retires_it(tmp_path
         assert await session.receipt() == "unresolved_findings_remain"
         kept = await status_module._without_retired_failed_commands(task_runtime, snapshot)
         assert _failed_command_items(kept) == [str(finding.finding_id)]
+        await _mirror_advice(session, task_runtime, host)
+        _assert_hook_failure(host, session, True)
 
         host.bash("toolu-tests", failed=False)
         await _append_observed(session, host.new_envelopes())
@@ -431,11 +472,63 @@ async def test_failed_install_then_planned_verification_pass_retires_it(tmp_path
         ]
         assert retired["closure_basis"] == "retired_by_planned_verification"
         assert retired["resolved"] is True
+        await _assert_unanswered_status(session, 0)
         assert await session.receipt() != "unresolved_findings_remain"
         # The advice rule still sees no pass of the install itself; the advice view reads the
         # ledger's retirement and drops the item, so both views agree about the finding.
         assert _failed_command_items(snapshot) == [str(finding.finding_id)]
         dropped = await status_module._without_retired_failed_commands(task_runtime, snapshot)
         assert _failed_command_items(dropped) == []
+        await _mirror_advice(session, task_runtime, host)
+        _assert_hook_failure(host, session, False)
+
+        # Reverse state uses the same ledger projection: a waiver or unreadable proof restores
+        # the unanswered work and the actual hook-local selection on the next advice build.
+        session.frontier = await _head(session)
+        if reversal == "waive":
+            await session.publish(
+                session.draft(
+                    "plan_revised",
+                    {
+                        "plan_version": 2,
+                        "supersedes_plan_version": 1,
+                        "reason": "The planned check is out of scope.",
+                        "summary": "Waive the check.",
+                        "obligation_changes": [
+                            {
+                                "obligation_id": obligation,
+                                "change": "waived",
+                                "reason": "Out of scope.",
+                            }
+                        ],
+                    },
+                )
+            )
+        else:
+            passing = next(
+                record
+                for record in await _records(session)
+                if type(record.payload) is ResultRecordedPayload
+                and record.payload.outcome.value == "success"
+            )
+            await workflow._append_local_redaction(
+                app,
+                runtime,
+                started,
+                seed=1_104_900,
+                expected_frontier=int(session.frontier.sequence),
+                target=str(passing.event_id),
+            )
+            session.frontier = await _head(session)
+        await _assert_unanswered_status(session, 1)
+        (reopened,) = [
+            item
+            for item in await _findings_view(session)
+            if item["finding_id"] == str(finding.finding_id)
+        ]
+        assert reopened["resolved"] is False
+        assert await session.receipt() == "unresolved_findings_remain"
+        await _mirror_advice(session, task_runtime, host)
+        _assert_hook_failure(host, session, True)
     finally:
         register_command_identity_key(None)

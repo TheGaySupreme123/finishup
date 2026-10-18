@@ -8,8 +8,10 @@ import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import get_args
+from types import SimpleNamespace
+from typing import cast, get_args
 
+from builders.observed_runs import ObservedLedger
 from finishup.adapters.integrations.observation_local import LocalObservationStore
 from finishup.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
 from finishup.application.observation_advice import (
@@ -24,6 +26,7 @@ from finishup.application.observation_advice import (
     select_standing_item,
     semantic_state_from_addon,
     should_reissue_advice,
+    without_retired_failed_commands,
 )
 from finishup.application.observation_coordinator import (
     _materialized_advice_items,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
@@ -48,7 +51,9 @@ from finishup.kernel.policies.observation_advice import (
     evidence_basis_digest,
     observation_advice_findings,
 )
+from finishup.kernel.reducers import replay
 from finishup.mcp.resources import read_resource
+from finishup.ports.runtime import TaskRuntime
 
 _COMMITMENT = "hmac-sha256:" + "a" * 64
 _TIME = Timestamp("2026-07-22T21:00:00.000Z")
@@ -1483,3 +1488,58 @@ def test_model_derived_advice_cannot_claim_an_attempt_derived_repair() -> None:
         item.recommended_next_action != "renew_provider_sign_in" for item in snapshot.ranked_items
     )
     assert "advice_semantic_output_invalid" in snapshot.confidence_coverage.known_gaps
+
+
+def test_retirement_advice_filter_requires_a_readable_current_projection() -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q")
+    finding = ledger.advice_finding(ledger.events_of(failed))
+    ledger.passes("pytest -q")
+    state = replay(ledger.prefix)
+    snapshot = build_observation_advice_snapshot(
+        ObservationAdviceBuildInput(
+            envelopes=(
+                _envelope(
+                    "hook:fail", {"tool_name": "shell", "exit_status": 2, "correlation_id": "x1"}
+                ),
+            ),
+            lifecycle=ObservationLifecycle.ACTIVE,
+            gaps=(),
+            has_real_observation=True,
+        )
+    )
+    assert snapshot is not None
+    snapshot = replace(
+        snapshot,
+        ranked_items=(replace(snapshot.ranked_items[0], finding_id=finding),),
+        ranked_finding_ids=(finding,),
+    )
+
+    class _Ledger:
+        def __init__(self, result: object) -> None:
+            self.result = result
+
+        async def load_projection(self, *_args: object) -> object:
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    for result in (
+        None,
+        RuntimeError("projection_unavailable"),
+        SimpleNamespace(state=(), lag=0, rebuild_required=False),
+        SimpleNamespace(state=state, lag=1, rebuild_required=False),
+        SimpleNamespace(state=state, lag=0, rebuild_required=True),
+    ):
+        runtime = cast(TaskRuntime, SimpleNamespace(ledger=_Ledger(result), session_id="isolated"))
+        assert asyncio.run(without_retired_failed_commands(runtime, snapshot)) is snapshot
+    runtime = cast(
+        TaskRuntime,
+        SimpleNamespace(
+            ledger=_Ledger(SimpleNamespace(state=state, lag=0, rebuild_required=False)),
+            session_id="isolated",
+        ),
+    )
+    filtered = asyncio.run(without_retired_failed_commands(runtime, snapshot))
+    assert not filtered.ranked_items
+    assert not filtered.ranked_finding_ids

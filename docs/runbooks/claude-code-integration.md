@@ -1196,9 +1196,14 @@ A failed `Bash` call becomes an observation finding (`failed_command_unresolved`
   and `test_claude_planned_command_that_is_no_verifier_retires_nothing` in
   `tests/integration/observation/test_failure_supersession_hosts.py`; owner decision 2026-10-18,
   #1104 comment 6252094173).
-  Known gap (follow-up on #1104): the hook-side advice can still list the retired item until the
-  observation evidence changes; `status view=advice`, the Stop gate, check and the receipt read
-  the ledger and do not.
+  The coordinator filters the hook-local advice mirror with the same current ledger retirement
+  rule as `status view=advice`, Stop, check and receipts, after materializing findings. Retired
+  findings also leave status's unanswered count and action-required work. Each advice rebuild
+  re-evaluates the raw candidates: waiving the planned obligation or redacting its proof restores
+  the finding and its hook advice at the next mirror refresh. Hooks consume that latest mirror;
+  they do not synchronously read the ledger. A different planned verifier never removes the
+  completion claim's duty to disclose the failed command. The shared integration regression
+  covers normalized Codex, Claude Code and Cursor payloads; this is not native-runtime proof.
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
   clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
 - **Read-only chains and FinishUP's own CLI: supported**, as on every host (`cd`, banners,
