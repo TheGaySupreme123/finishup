@@ -1118,10 +1118,6 @@ class PrivacyAuditPort(Protocol):
 
     async def complete_egress(self, dispatch_id: str, receipt: EgressReceipt) -> None: ...
 
-    async def park_attempt_reconciliation(
-        self, dispatch_id: str, receipt: EgressReceipt
-    ) -> None: ...
-
     async def reconcile_started_attempts(self, consumed_before: datetime, limit: int) -> int: ...
 
     async def complete_local_disclosure(

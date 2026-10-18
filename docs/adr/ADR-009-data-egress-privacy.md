@@ -884,8 +884,8 @@ and the parking write: a crash there left a consumed row with no owed receipt. T
 builds the owed `transport_failed/outcome_unknown` receipt before the consume and passes it as
 `PrivacyAuditPort.consume(..., owed_receipt=)`; the catalog writes the `receipt_pending`
 transition and the parked receipt in one transaction. A failure of that transaction consumes
-nothing, so nothing is dispatched and no attempt receipt is owed. `park_attempt_reconciliation`
-remains for compatibility but the gateway no longer calls it. Recovery (point 3) is unchanged.
+nothing, so nothing is dispatched and no attempt receipt is owed. The separate
+`park_attempt_reconciliation` port method is removed. Recovery (point 3) is unchanged.
 
 ## Task statement review section amendment (2026-09-30, issue #908)
 

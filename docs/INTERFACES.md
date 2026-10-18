@@ -4473,12 +4473,11 @@ Before the consume it builds the `transport_failed/outcome_unknown` receipt the 
 and passes it as `PrivacyAuditPort.consume(authorization_id, dispatch_id, now, owed_receipt=)`,
 which parks it in the consume transaction itself (issue #1118 unit 1); parking asserts no outcome
 and leaves the row `receipt_pending`, and a failed consume parks nothing and dispatches nothing.
-`park_attempt_reconciliation(dispatch_id, receipt)` remains on the port but the gateway no longer
-calls it. At that consume, under the gateway lock policy mutation holds, the gateway refuses
-(`authorization_stale`) an `ApprovedOutboundCase` whose `input_roots` its current registry
-(`ProviderRegistry.admitted_input_roots`) no longer admits; `dispatch_local_semantic` makes the
-same check and runs `consume_local` under the same lock. `asyncio.CancelledError` inside that admitted window (a foreground
-runtime rebind yielding an advisory attempt) records the parked receipt through a shielded
+There is no separate parking method. At that consume, under the gateway lock policy mutation
+holds, the gateway refuses (`authorization_stale`) an `ApprovedOutboundCase` whose `input_roots`
+its current registry (`ProviderRegistry.admitted_input_roots`) no longer admits;
+`dispatch_local_semantic` makes the same check and runs `consume_local` under the same lock.
+`asyncio.CancelledError` inside that admitted window (a foreground runtime rebind yielding an advisory attempt) records the parked receipt through a shielded
 `complete_egress` and then re-raises, so cancellation still propagates promptly and no provider is
 re-entered. `PrivacyAuditPort.reconcile_started_attempts(consumed_before, limit) -> int` is the
 bounded, idempotent startup sweep for rows whose dispatcher died before that write: it runs once

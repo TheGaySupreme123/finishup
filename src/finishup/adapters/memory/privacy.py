@@ -1141,10 +1141,6 @@ class MemoryPrivacyAudit:
         del dispatch_id, receipt
         raise ValueError("network_privacy_dispatch_unavailable_until_b8")
 
-    async def park_attempt_reconciliation(self, dispatch_id: str, receipt: EgressReceipt) -> None:
-        del dispatch_id, receipt
-        raise ValueError("network_privacy_dispatch_unavailable_until_b8")
-
     async def reconcile_started_attempts(self, consumed_before: datetime, limit: int) -> int:
         """No memory-adapter row reaches ``receipt_pending``: network dispatch never admits here."""
 
