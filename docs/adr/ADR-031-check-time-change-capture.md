@@ -729,3 +729,122 @@ What this amendment does not remove, left as follow-ups for the workstream issue
   is measured before excerpts and narrows none of them, so primary material is still a minority
   of a full packet. Rebalancing that room, with per-section byte measurements from a pilot dump,
   touches the #905 dialogue guarantees and is its own decision.
+
+## Amendment (2026-10-18, issue #1102): directories the task names, quoted paths, outside gaps
+
+The n7 investigation (RC6d, RC6f) found that the read never opened a directory the task named
+(`/app/vllm`, `/app/interface/`, `src/dedup/`), split a quoted or escaped path with spaces into
+words that named nothing, and never said when a task-named file outside the workspace went unread.
+In the dedup trial the unchanged validator that held "threshold must be > 0" sat beside the changed
+file in the task-named directory, and the reviewer raised a false finding without it. No egress
+class is added: every byte below is a `repository_excerpt` of a workspace file that passes the
+issue #1045 proof, or FinishUP's own text naming such files.
+
+1. **Statement words.** A quoted (`` ` ``, `"`, or `'` not inside a word, so `don't` opens no span)
+   or backslash-escaped path keeps its single spaces (`"/app/My Docs/spec.md"`,
+   `/app/My\ Docs/spec.md`), at most eight of them, with no other whitespace, glob, `~`, `$`,
+   backtick or URL. A span is never one path when it is a command or a list: a word is option-like
+   (`pytest -q tests/test_a.py`) or is or starts with a shell operator or redirection (`&&`, `|`,
+   `;`, `<`, `>`, `2>`); a second absolute path follows the first (`ls /app/data /app/models`); a
+   first word without `/` precedes two words holding `/` (`diff src/dedup src/util`); or an
+   earlier word names a whole file or ends in `/` (`the parser in /app/parser/ fails`). Such a span
+   splits into its words exactly as unquoted text does, so `` `cd /app/vllm && pytest` `` still
+   names `/app/vllm` and every operand of a quoted command survives (#1102 review). A span only the
+   disk can tell apart comes whole and is followed by every word it holds: a joining word (`and`,
+   `or`, `to` and the like) sits between two words holding `/` (`src/dedup and src/util`,
+   `/app/Terms and Conditions/terms.pdf`), a later word starts with the first word's first
+   component (`docs/Makefile docs/Dockerfile`), or the last component holds a space and is no file
+   name with a lettered extension (`/app/test data`, `/app/config is read-only`). Every read (the
+   repository read, the outside reader, and item 5's decision) looks once at the metadata of each
+   candidate holding a space, only where it may look at all, and when one names a file or
+   directory there it drops the candidates that are its space-cut words
+   (`change_capture.drop_space_cut_words`): `/app/test` is never read for `/app/test data`, and
+   `/app/config` is still read for the prose. Only a candidate that came solely from splitting a
+   quoted span is dropped (`check_change.space_cut_input_paths`, carried in process beside the
+   candidates and never stored): one the statement also names on its own (`Notes.md` of
+   ``Read "docs/My Notes.md" and Notes.md``), a `role: input` item or a verification operand is
+   always kept (#1112 review). For a span accepted as one path, prose ahead of it still counts,
+   and so does the last word of a relative span whose earlier words hold no `/`, when it names a
+   file or a folder with a directory part, so a quoted command (`cat docs/spec.md`) never loses
+   the file it names. No other word the spaces cut counts: `/app/data` of
+   `'/app/data files/input.csv'`, `data/` of `'src/test data/'` and `Notes.md` of
+   `'docs/My Notes.md'` never expand an unrelated file or folder. Unquoted text splits exactly as
+   before. A `role: input` file with a space, a `role: input` directory, and a spaced operand of a
+   recorded verification command are candidates too. A requested output keeps the plain-path rule
+   (#977).
+2. **Directories.** A statement word ending in `/` (relative or absolute), or an absolute path of
+   one component (the workspace `/app`), is a directory candidate, offered after every named file.
+   A no-slash `/app/vllm` keeps its statement place; the read decides by what the path is.
+3. **The read.** A candidate that is a directory inside the repository (at most two, in order; the
+   workspace root, when named, after them) is expanded only after every named file and the oracle
+   were read, and only into the room the four-input bound (`MAX_TASK_INPUT_FILES`) leaves; a file
+   the task names beneath an admitted outside root outranks it too, so this material gives way to
+   such a file and keeps only the room left after it:
+   - **Members** are the directory's files unchanged since the task started under the #1045 test: a
+     tracked file only against a `task_start` base, as an ordinary index entry (`ls-files -v` tag
+     `H`) of a regular blob in the base tree that the change does not touch; an untracked file only
+     when the task-start snapshot lists it unchanged. Hidden, credential-named, ignored, changed and
+     nested-repository files, the old path of a file the task renamed, and names that are not UTF-8
+     or hold a line break, are never members.
+     Two Git calls per directory, bounded by the capture deadline and 1 MiB of output, at most 4096
+     names; past either bound the listing says "at least".
+   - **The listing** is FinishUP's own text: how many members there are, that changed, ignored,
+     hidden and credential-named files are never listed, then the names, shallower first and then
+     by name, at most 256 of them in at most 8 KiB, cut on whole lines. It is stored as a `task`
+     input with `summary: true` and a path ending in `/` (`./` for the workspace root), so the
+     stored object gains no key.
+   - **Chosen members** fill the room left. Members are ranked by place (beside a file the change
+     touches beneath the directory, then on the way to one, then the rest; shallower first; then by
+     name); the first 16 text members of at most 256 KiB, 2 MiB in all, are read locally, each
+     proven unchanged as it is read (a tracked member's bytes must hash to its base blob), and
+     ordered by how many distinct identifiers (at most 512, minus a fixed list of common words) they
+     share with the added and removed lines of the change beneath the directory (the whole change
+     when none is beneath it). A tie, or no change beneath it, keeps the structural order. A binary
+     member is listed and never read. Each chosen member is stored with the new origin
+     `task_directory` and labelled as chosen by FinishUP as possibly related to the change (by
+     shared names, or else by its place beside the changed files), never as named by the task.
+4. **Outside directories without a slash.** The outside reader lists a value beneath an admitted
+   root as a directory when its last component is a trusted directory reached without a link
+   ("the legacy app in /shared/legacy_app"), as it already did for one ending in `/`.
+5. **An unadmitted outside input is disclosed.** When the recipe carries task inputs and a
+   candidate the task itself names (never one only a verification command named) is absolute,
+   outside the root this read used, beneath no admitted root, not a declared output, not in a
+   system tree (`/usr`, `/bin`, `/lib*`, `/sbin`, `/snap`, `/nix`, or a tree no root may be
+   admitted beneath), not in a scratch, log, cache, output or package-state tree (`/tmp`,
+   `/var/tmp`, `/var/folders`, `/var/log`, `/var/cache`, `/var/lib`, `/output`, `/outputs`,
+   `/logs`, `/results`), not through a `bin` or installed-package directory, not hidden or
+   credential-named, and not a top-level tree of homes, mounts, installed software or system state
+   (`/home`, `/root`, `/Users`, `/opt`, `/mnt`, `/media`, `/srv`, `/var`, `/private`, `/Volumes`,
+   `/Applications`, `/Library`, `/System`) (`check_change.outside_input_candidates`), the read
+   `lstat`s it (metadata only; a final link never counts, no content is opened). It counts only when
+   a regular file or directory is there whose modification and change times both predate the
+   task-start base's recording; a top-level path (`/data`, `/legacy`) counts only as a directory,
+   since only a folder there may be admitted as a root and no root covers a file like `/spec.md`; a
+   word the spaces cut from a spaced candidate found there never counts (item 1). A route
+   (`GET /api/v1/users`) names nothing on disk, and a file the agent wrote during the task is its
+   output. Without a `task_start` base nothing counts. The check then records the closed coverage
+   code `task_input_outside_not_admitted`. The read decides once, against the connection's root it
+   read (never the session's optional workspace label), and freezes one closed flag into the
+   check-change object (`outside_inputs_not_admitted: true`, written only when set), so a recovered
+   job replays it and a job an earlier build froze, which never wrote it, keeps its case. When the
+   read itself is unavailable (`not_git`, `unsafe_root`) nothing is decided: an admitted root would
+   not be read then either. It names no path: its
+   fixed sentence names the owner's step (`finishup privacy input-roots add <folder>` on a trusted
+   terminal). It is readiness `S` and disclosed on both routes (gap rule G4c): never agent work,
+   never a Stop-gate item or closure blocker, and it never lowers the receipt's conclusion. For
+   AI-powered absence proof it is a capture baseline like the task-statement codes; local packs
+   never read task inputs, so it never weakens a local proof. It is one recorded code added to the
+   unreleased gap classification version `8` (223 rows including readiness-only tokens).
+6. **Measured.** `semantic_case_built` counts the task-input candidates, the inputs read, the
+   listings among them, the task-input excerpts selected, the named outside candidates that pass
+   item 5's lexical rules (before any `lstat`, against the connection's root the read uses, else
+   the session's workspace), and whether the code fired, as integers. A candidate count beside a
+   0 flag tells "FinishUP saw such a path but could not count it" (no `task_start` base, nothing on
+   disk, written during the task) from "none named".
+
+Downgrade only: a build before this amendment rejects a check-change object holding an input with
+`origin: task_directory`, a listing path ending in `/` (`dedup/`, `./`), or the
+`outside_inputs_not_admitted` key (the check-time change is then unavailable for that job), as with
+the #1082 keys; it also reads a recorded `task_input_outside_not_admitted` as an unclassified code,
+which it treats as agent work. Upgrade over a running earlier build changes no recovered case: its
+frozen objects never carry the flag, so the code is never added to a job it froze.

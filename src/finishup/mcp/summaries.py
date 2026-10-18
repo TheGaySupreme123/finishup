@@ -25,6 +25,8 @@ from finishup.domain.receipts import (
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+    TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
+    TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE,
     UNRESOLVED_VERIFICATION_GAP,
     UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
@@ -1589,12 +1591,31 @@ def _lineage_sentence(raw: object, code: str | None = None) -> str:
 
 
 def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
-    # Why the check-time change was unavailable (ADR-031): a fixed sentence per closed code.
+    # Why the check-time change was unavailable (ADR-031): a fixed sentence per closed code. The
+    # owner's step for an unadmitted outside input has its own part below (issue #1102).
     for code in _safe_gap_codes(source):
+        if code == TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP:
+            continue
         sentence = check_time_change_gap_sentence(code)
         if sentence is not None:
             return sentence
     return ""
+
+
+def _task_input_outside_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """Issue #1102: the owner's step when review lacked a task-named outside input, or nothing.
+
+    Its own part, so an unavailable-change sentence beside it never hides it; fixed text only.
+    """
+
+    if TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP not in _safe_gap_codes(source):
+        return ()
+    sentence = check_time_change_gap_sentence(TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP)
+    return (
+        (TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE,)
+        if sentence is None
+        else (sentence, TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE)
+    )
 
 
 def _check_fact_why_part(source: Mapping[str, JsonValue]) -> Part | None:
@@ -1731,6 +1752,12 @@ def summary_for_check(envelope: object) -> str:
             ),
             _opt(
                 render.text("gap_sentence", lambda: _check_time_change_sentence(source)),
+                priority=_P_DISCLOSURE,
+            ),
+            _opt(
+                *render.variants(
+                    "task_input_outside_sentence", lambda: _task_input_outside_variants(source)
+                ),
                 priority=_P_DISCLOSURE,
             ),
             render.guarded_one("fact_lineage", lambda: _check_fact_why_part(source)),

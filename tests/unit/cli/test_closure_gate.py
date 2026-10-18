@@ -1064,3 +1064,78 @@ def test_a_recorded_code_mode_cell_repeats_the_check_cell_deadline(tmp_path: Pat
     assert h.store.session_observed_code_mode(workspace, commitment) is True
     text = host.assert_gate(_stop(h, host, session))
     assert f"starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}`" in text
+
+
+# --- Issue #1102: an unadmitted outside task input is a coverage note, never Stop work -----------
+
+
+@pytest.mark.parametrize("route_requires_review", [False, True])
+def test_an_unadmitted_outside_task_input_changes_neither_the_stop_gate_nor_the_conclusion(
+    route_requires_review: bool,
+) -> None:
+    """``task_input_outside_not_admitted`` names the owner's step on the check and the receipt.
+
+    It never becomes a Stop-gate item, a closure blocker or a continuation demanding action: the
+    readiness split keeps the same agent work, the gate decides exactly as without it, and the
+    predicted receipt conclusion is unchanged on either route.
+    """
+
+    from finishup.domain.findings import CheckVerdict
+    from finishup.domain.receipts import (
+        TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
+        check_time_change_gap_sentence,
+    )
+    from finishup.domain.values import Frontier
+    from finishup.kernel.closure_readiness import derive_closure_readiness
+    from finishup.kernel.gap_effect import GapContext, gap_effect
+    from finishup.kernel.receipt_prediction import (
+        AppliedCheck,
+        ClosureBasis,
+        predict_receipt_conclusion,
+    )
+
+    code = TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP
+    context = GapContext(
+        route_requires_review=route_requires_review, check_carried=frozenset({code})
+    )
+    assert not gap_effect(code, context).kind.bounds
+    for conditions in ((), ("obligations_open",)):
+        without = derive_closure_readiness(
+            conditions, (), None, semantic_review_required=route_requires_review
+        )
+        with_code = derive_closure_readiness(
+            conditions,
+            (code, f"check_coverage:{code}"),
+            None,
+            semantic_review_required=route_requires_review,
+        )
+        assert with_code.agent_actionable == without.agent_actionable
+        assert code in with_code.standing_limitations
+        assert (with_code.state == "action_required") is (without.state == "action_required")
+        gated = [
+            _gate(
+                SimpleNamespace(
+                    state=split.state,
+                    agent_actionable=split.agent_actionable,
+                    standing_limitations=split.standing_limitations,
+                    open_obligation_count="1" if conditions else "0",
+                    receipt_blocking_finding_count="0",
+                )
+            )
+            for split in (without, with_code)
+        ]
+        items = [None if gate is None else gate.items for gate in gated]
+        assert items[1] == items[0]
+        if gated[1] is not None:
+            assert code not in gated[1].text
+    frontier = Frontier(30, "sha256:" + "4" * 64)
+    check = AppliedCheck(CheckVerdict.NO_ISSUE_DETECTED, 0, True)
+    conclusions = [
+        predict_receipt_conclusion(ClosureBasis(frontier, (), (), gaps, check)).conclusion
+        for gaps in ((), (gap_effect(code, context),))
+    ]
+    assert conclusions[0] is conclusions[1]
+    sentence = check_time_change_gap_sentence(code)
+    assert sentence is not None
+    assert "finishup privacy input-roots add <folder>" in sentence
+    assert "/" not in sentence.replace("<folder>", "")

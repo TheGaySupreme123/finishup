@@ -8,8 +8,8 @@ bytes the service read into one bounded ``TaskInputFile``:
   say) included (issue #1094 R2-N3);
 - a binary file or an image becomes FinishUP's own bounded summary
   (``finishup.adapters.input_summary``), never its bytes;
-- a file larger than the whole-read bound is read from its two ends without following a link:
-  text keeps its head and tail, and a binary file is summarized from its head.
+- a file larger than the whole-read bound is read from its two ends only, without following a
+  link: text keeps its head and tail, and a binary file is summarized from its head.
 
 A recognized document or binary signature (an all-ASCII PDF has no NUL) is summarized like any
 binary, and no cut ever splits a credential the shared scanner recognizes: a head or tail cut moves
@@ -48,6 +48,7 @@ from finishup.ports.change_capture import (
     MAX_TASK_INPUT_TEXT_BYTES,
     TaskInputFile,
     TaskInputOrigin,
+    drop_space_cut_words,
 )
 
 __all__ = [
@@ -438,12 +439,14 @@ def read_outside_inputs(
     *,
     limit: int = MAX_TASK_INPUT_FILES,
     excluded: tuple[str, ...] = (),
+    space_cut: frozenset[str] = frozenset(),
 ) -> tuple[TaskInputFile, ...]:
     """Read the files ``values`` names beneath admitted ``roots`` (issue #1082), bounded.
 
     ``values`` are the task's candidate input paths in order: the statement and ``role: input``
     files, never paths only a verification command named (``review_input_paths``). Only an
-    absolute path lexically beneath an admitted root counts. A value ending in ``/`` names a
+    absolute path lexically beneath an admitted root counts. A value ending in ``/``, or one whose
+    last component is a trusted directory reached without a link (issue #1102), names a
     directory: its visible files, two levels deep at most, are offered in name order. Each root
     must still be exactly the directory the owner admitted: it is opened one component at a time
     from ``/`` without following a link, every directory on the way must pass the trust test, and
@@ -451,7 +454,9 @@ def read_outside_inputs(
     directories never read from (the workspace, FinishUP's own directories): refused by their
     case-folded path and by device and inode at every level, so neither an enumeration nor a
     differently spelled path re-enters them. At most ``limit`` files and 16 candidates are read
-    within five seconds; a file that fails any test is skipped silently.
+    within five seconds; a file that fails any test is skipped silently. ``space_cut`` are the
+    values only the spaces of a quoted spaced value cut out (``space_cut_input_paths``): when
+    that value names something beneath a root, they are not read (``drop_space_cut_words``).
     """
 
     usable = tuple(root for root in roots if admitted_input_root_valid(root))
@@ -467,26 +472,44 @@ def read_outside_inputs(
     descriptors: dict[str, int | None] = {}
     inputs: list[TaskInputFile] = []
     seen: set[str] = set()
+
+    def located_open(value: str) -> tuple[str, bytes, int] | None:
+        if _folded_inside(value, folded):
+            return None
+        located = _beneath(value, usable)
+        if located is None:
+            return None
+        root, relative = located
+        if root not in descriptors:
+            descriptors[root] = None if _folded_inside(root, folded) else _open_root(root, trust)
+        descriptor = descriptors[root]
+        return None if descriptor is None else (root, relative, descriptor)
+
+    def names_something(value: str) -> bool:
+        opened = located_open(value)
+        if opened is None or not opened[1]:
+            return False
+        entry = _entry_beneath(opened[2], opened[1], trust)
+        return entry is not None and (stat.S_ISREG(entry.st_mode) or trust.directory(entry))
+
     try:
-        for value in values[:_MAX_OUTSIDE_CANDIDATES]:
+        # Issue #1102: a spaced value that names something beneath a root keeps its own words
+        # out (``drop_space_cut_words``): ``/shared/legacy`` is never read for ``legacy app``.
+        candidates = values[:_MAX_OUTSIDE_CANDIDATES]
+        for value in drop_space_cut_words(candidates, names_something, space_cut):
             if len(inputs) >= limit or time.monotonic() > deadline:
                 break
-            if _folded_inside(value, folded):
+            opened = located_open(value)
+            if opened is None:
                 continue
-            located = _beneath(value, usable)
-            if located is None:
-                continue
-            root, relative = located
-            if root not in descriptors:
-                descriptors[root] = (
-                    None if _folded_inside(root, folded) else _open_root(root, trust)
-                )
-            descriptor = descriptors[root]
-            if descriptor is None:
-                continue
+            root, relative, descriptor = opened
+            # Issue #1102 (RC6d): a directory named without its trailing ``/`` ("the legacy app
+            # in /shared/legacy_app") is listed like one named with it.
             files = (
                 _listed_files(descriptor, relative, limit - len(inputs), trust)
-                if value.endswith("/") or not relative
+                if value.endswith("/")
+                or not relative
+                or _is_directory_beneath(descriptor, relative, trust)
                 else [relative]
             )
             for file in files:
@@ -518,6 +541,40 @@ def read_outside_inputs(
             if descriptor is not None:
                 os.close(descriptor)
     return tuple(inputs)
+
+
+def _is_directory_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> bool:
+    """Whether ``path`` beneath the open root is a trusted directory, reached without a link."""
+
+    entry = _entry_beneath(root_descriptor, path, trust)
+    return entry is not None and trust.directory(entry)
+
+
+def _entry_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> os.stat_result | None:
+    """The metadata of ``path`` beneath the open root, reached without a link; never content.
+
+    Each parent component is opened from the root descriptor without following a link and must
+    pass ``trust``; the last is examined without following a link, so a link is never what it
+    points to. ``None`` on any error; what was opened is closed.
+    """
+
+    parts = path.split(b"/")
+    if not path or any(part in {b"", b".", b".."} for part in parts):
+        return None
+    opened: list[int] = []
+    current = root_descriptor
+    try:
+        for part in parts[:-1]:
+            current = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
+            opened.append(current)
+            if not trust.directory(os.fstat(current)):
+                return None
+        return os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+    except OSError:
+        return None
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
 
 
 def _open_root(root: str, trust: _Trust) -> int | None:

@@ -6,7 +6,8 @@ tb4n4: ``deliverable_references_undeclared_file`` became agent work (#1044, chan
 ``semantic_review_deferred_before_first_edit`` (issue #1046) follows the recorded route like the
 ``semantic_review_not_requested`` it rides with (disclosed where the route did not require review,
 bounding where it did), so it is listed as changed; ``semantic_process_state_filtered`` (issue
-#1042) is disclosed from the start, so it is listed as changed.
+#1042) is disclosed from the start, so it is listed as changed; so is
+``task_input_outside_not_admitted`` (issue #1102).
 """
 
 from __future__ import annotations
@@ -126,6 +127,9 @@ _CHANGED = frozenset(
         "deliverable_references_ambiguous_name",
         # #1079 F2, ADR-033 D1: unestablished acceptance provenance bounds coverage, never Stop.
         "unresolved_verification_limitation",
+        # #1102: a task-named outside input the owner has not admitted; a disclosure from the
+        # start, never agent work and never a Stop-gate item.
+        "task_input_outside_not_admitted",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -136,8 +140,9 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # The 218 recorded codes (#1040 follow-up added check_time_change_unavailable_git_version_
     # unsupported beside its G7 siblings; the #1044 follow-up added
     # deliverable_references_ambiguous_name; #1019 r2 added advice_semantic_preview_required)
-    # + the #1079 unresolved verification limit + 3 readiness-only finding tokens.
-    assert len(GAP_EFFECT_TABLE) == 222
+    # + the #1079 unresolved verification limit + 3 readiness-only finding tokens + the #1102
+    # task_input_outside_not_admitted disclosure.
+    assert len(GAP_EFFECT_TABLE) == 223
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -146,7 +151,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 41
+    assert len(changed) == 42
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])

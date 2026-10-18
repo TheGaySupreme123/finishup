@@ -377,6 +377,12 @@ def test_bounded_event_context_is_fenced_and_reaches_the_ring(
         "semantic_excerpt_ceiling_rounds",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
+        "semantic_task_input_candidates",
+        "semantic_task_input_excerpts_selected",
+        "semantic_task_input_listings",
+        "semantic_task_input_outside_candidates",
+        "semantic_task_inputs_outside_not_admitted",
+        "semantic_task_inputs_read",
     ),
 )
 def test_packet_composition_diagnostics_admit_counts_but_not_content(

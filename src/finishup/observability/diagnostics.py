@@ -83,6 +83,13 @@ _FIELD_ORDER: Final = (
     "semantic_excerpt_ceiling_rounds",
     "semantic_check_change_parts_selected",
     "semantic_edit_evidence_in_case",
+    # Issue #1102: task-input pilot counters (integers only, never a path).
+    "semantic_task_input_candidates",
+    "semantic_task_input_excerpts_selected",
+    "semantic_task_input_listings",
+    "semantic_task_input_outside_candidates",
+    "semantic_task_inputs_outside_not_admitted",
+    "semantic_task_inputs_read",
     # Loop-health counters. Both are already fenced as integers by redact_diagnostic_value; only
     # this projection list was missing them, so a saturation record reached stderr and then
     # vanished from the durable ring an operator actually reads.

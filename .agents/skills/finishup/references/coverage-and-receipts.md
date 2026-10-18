@@ -679,7 +679,7 @@ Never reshape a deliverable to fit the reviewer. What answers each kind is in
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
 `semantic_missing_already_supplied` says it repeated a request after you published or re-ran material for it,
-report the named limitation instead. A verification follow-up may include observed test, build, lint, or typecheck output the agent ran only when a repository excerpt would already be allowed. Withheld whole: an environment dump, a credential-named path, a path outside the workspace, a path the check-time change refused, and output the secret scan hits (a private-key body or its END line). Ignore rules are not re-checked for a path the change did not list. The omission names the gate. Private sends nothing. A command the agent did not run is never included; included output is marked observed. A named
+report the named limitation instead. A verification or `other` follow-up may include observed test, build, lint, or typecheck output the agent ran, marked observed, only under the gates in that workflow section (Private sends nothing; a command the agent did not run is never included); an `other` request is answered only from what FinishUP recorded for the run or edit it names, and one about anything else stays yours to supply. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names

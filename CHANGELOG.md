@@ -379,6 +379,20 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   before. A run-time file or network service the task itself supplies is no longer raised as a
   delivery risk. These are changes to what the reviewer is told and shown; their effect on verdicts
   is not yet measured.
+- **Review packets read what the task names, the way the task names it** (#1102). A folder the
+  task names in your repository (`src/dedup/`, `/app/vllm`, or the workspace itself) reaches the
+  reviewer as FinishUP's own list of its unchanged files plus, in the room left, the files in it
+  most likely related to the change (sharing names with it, or beside the changed files),
+  labelled as chosen by FinishUP. A quoted or escaped path with spaces is read as one path, and an
+  admitted outside folder named without a trailing `/` is read like one named with it. A
+  reviewer's `other` request is answered in the same check from what FinishUP recorded for the run
+  or edit it names, under the same privacy rules as every other follow-up. When the task names a
+  file or folder outside the workspace that you have not admitted, and FinishUP can tell it is an
+  input (it was there before the task started and is not in a system, scratch, log, cache, output
+  or package folder), the check and the receipt say so (`task_input_outside_not_admitted`) and
+  name the one command that admits it. A missing note does not prove every outside file was read.
+  The note never stops your agent or asks it to change the work (your agent only tells you which
+  folder the task named), and it never lowers the receipt.
 - **Agents write each fact once.** A `publish_work` request may leave out its request id, its
   frontier, each event's id, time, own empty reference lists and repeated references, and a
   current-version claim's empty limitation and correction lists, and a no-obligations plan's empty

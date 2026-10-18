@@ -78,6 +78,8 @@ __all__ = [
     "FOLLOW_UP_KINDS",
     "FINISHUP_LIMIT_PACKET_ROOM",
     "FINISHUP_LIMIT_UNSUPPORTED_DATA_TYPE",
+    "OBSERVED_FOLLOW_UP_KINDS",
+    "SECTION_FOLLOW_UP_KINDS",
     "MissingItemsReview",
     "ReviewFollowUp",
     "ReviewFollowUpItem",
@@ -343,11 +345,19 @@ class MissingItemsReview:
 
 
 # Issue #1047: the kinds whose content FinishUP itself can carry as recorded excerpts (the edit a
-# hook captured, a run's recorded output, its exact command). Every other kind (a task statement,
-# plan or claim text, finding context, ``other``) is never answered by FinishUP inside the check.
+# hook captured, a run's recorded output, its exact command). A task statement, plan or claim text
+# and finding context are never answered by FinishUP inside the check. Issue #1102 (RC6g, ADR-006
+# amendment): ``other`` items are answered only from rows FinishUP recorded for their targets (the
+# rows themselves, a named run's observed output, a named edit's current change sections), under
+# every gate the other kinds pass; never from reviewer prose, and never for a target with no row.
 FOLLOW_UP_KINDS: Final = frozenset(
-    {"command_identity", "current_diff_for_path", "verification_output"}
+    {"command_identity", "current_diff_for_path", "other", "verification_output"}
 )
+# The follow-up kinds the check-time change's current sections of a named edit answer, and those
+# hook-observed output of a named run answers (issues #1079, #1102). The planner and the packet's
+# selection read these same sets.
+SECTION_FOLLOW_UP_KINDS: Final = frozenset({"current_diff_for_path", "other"})
+OBSERVED_FOLLOW_UP_KINDS: Final = frozenset({"other", "verification_output"})
 # Only content FinishUP holds and did not show: a target the agent could supply or one the packet
 # had no room for. A privacy-withheld, redacted or unsupported target is never re-sent.
 _FOLLOW_UP_AVAILABILITIES: Final = frozenset({AGENT_SUPPLIABLE, FINISHUP_LIMIT_PACKET_ROOM})
@@ -530,13 +540,15 @@ def plan_review_follow_up(
     refs the latest sent packet withheld under a privacy rule; they join ``added_refs``, since
     sending them again would only spend a round. ``section_parts`` maps each captured edit's
     evidence ref to the check-time change sections of the paths it changed
-    (``semantic_case.current_section_parts``): a ``current_diff_for_path`` request for that edit
-    is still owed while some of those bytes no packet carried, even when the edit itself was
-    shown whole. Whether a round's packet really adds a part is decided once it is composed
-    (``semantic_case.follow_up_new_parts``). A ``verification_output`` item also names
-    hook-captured output of the newest run of each command its targets name. That output stays
-    owed until a sent packet carried its observed span, even when a digest of the same evidence
-    was shown whole. Selection, not this planner, applies the repository-excerpt gate.
+    (``semantic_case.current_section_parts``): a ``current_diff_for_path`` (or ``other``)
+    request for that edit is still owed while some of those bytes no packet carried, even when
+    the edit itself was shown whole. Whether a round's packet really adds a part is decided once
+    it is composed (``semantic_case.follow_up_new_parts``). A ``verification_output`` (or
+    ``other``) item also names hook-captured output of the newest run of each command its
+    targets name. That output stays owed until a sent packet carried its observed span, even
+    when a digest of the same evidence was shown whole. Selection, not this planner, applies the
+    repository-excerpt gate. An ``other`` item (issue #1102) is answered from exactly these
+    recorded sources; its reviewer-written reason never chooses content.
     """
 
     if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
@@ -555,10 +567,10 @@ def plan_review_follow_up(
         ):
             continue
         sources = _recorded_sources(projection, entry.target_refs, allowed)
-        if entry.kind == "verification_output":
-            # Maintainer-approved (issue #1079): hook-captured output of a command this
-            # target names may ride the follow-up. Selection still applies the repository
-            # excerpt gate, the privacy policy and the existing byte limits.
+        if entry.kind in OBSERVED_FOLLOW_UP_KINDS:
+            # Maintainer-approved (issue #1079; ``other``, #1102): hook-captured output of a
+            # command this target names may ride the follow-up. Selection still applies the
+            # repository excerpt gate, the privacy policy and the existing byte limits.
             sources |= observed_command_output_refs(projection, entry.target_refs, allowed)
         if not sources:
             continue
@@ -585,7 +597,7 @@ def plan_review_follow_up(
     observed_refs = frozenset(
         ref
         for item in follow_up.items
-        if item.kind == "verification_output"
+        if item.kind in OBSERVED_FOLLOW_UP_KINDS
         for ref in observed_command_output_refs(projection, item.target_refs, allowed)
     )
     if (
@@ -600,8 +612,8 @@ def plan_review_follow_up(
 def _current_section_pending(
     follow_up: ReviewFollowUp, section_parts: Mapping[str, frozenset[str]]
 ) -> bool:
-    """Whether a ``current_diff_for_path`` item's current file sections still have bytes no
-    packet of the check carried (tb4n5).
+    """Whether a ``current_diff_for_path`` (or ``other``, #1102) item's current file sections
+    still have bytes no packet of the check carried (tb4n5).
 
     The current section of a path an edit changed comes from the check-time change, not from
     the edit's own rows, so it can be owed even when the first packet showed the edit whole.
@@ -612,7 +624,7 @@ def _current_section_pending(
     return any(
         not excerpt_span_covered(key, seen)
         for item in follow_up.items
-        if item.kind == "current_diff_for_path"
+        if item.kind in SECTION_FOLLOW_UP_KINDS
         for ref in item.source_refs
         for key in section_parts.get(ref, ())
     )

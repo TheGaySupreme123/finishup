@@ -1435,3 +1435,51 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
 
 The behaviour is service-side and identical for Codex, Claude Code and Cursor on macOS, Linux and
 Windows through WSL 2.
+
+## Task-named directories, quoted paths, `other` follow-ups and unadmitted outside inputs (2026-10-18, issue #1102)
+
+The owner confirmed the n7 decisions for RC6d, f and g in session on 2026-10-18, including the
+`other` answers and the coverage-note-only handling of outside inputs; #1102 records them. They
+change what reaches the reviewer without adding an egress class, raising a ceiling, or adding a way to
+admit a root. ADR-031's amendment of the same date holds the read; ADR-006's holds `other`.
+
+- **A directory the task names inside the repository** contributes FinishUP's own listing of its
+  unchanged files and, in the room the four-input bound leaves, the members sharing the most
+  identifiers with the change. Every member passes the issue #1045 proof (unchanged since the task
+  started, not ignored, not hidden or credential-named, not in a nested repository, singly linked,
+  reached without a link) and leaves as a `repository_excerpt` labelled as chosen by FinishUP. A
+  channel that withholds `repository_excerpt`, and every recipe that does not carry task inputs,
+  sends none of it.
+- **A quoted or escaped path with spaces** is one candidate; the same rules then decide it. When
+  only the disk can tell a spaced folder from prose (`"/app/test data"`, `"/app/config is
+  read-only"`), the whole value comes first and its words follow; the read looks at the whole
+  value's metadata where it may read at all (inside the repository, or beneath an admitted root)
+  and drops those words when it names something, so a folder one of its words names is never read
+  under the task's name. Only words that came solely from splitting the quoted value are dropped:
+  a path the task also names on its own, a `role: input` item or a verification operand is kept.
+- **An outside directory named without its trailing `/`** is listed like one named with it, still
+  only beneath an admitted root and only when the task itself names it. Known limit: a file read
+  from such a listing keeps the `outside_workspace` label ("named by the task, outside the
+  workspace beneath a root the owner admitted") although only its folder was named, as a file
+  listed beneath a folder named with its `/` already did under issue #1082; the label still names
+  the admitted root that bounds it.
+- **An unadmitted outside input is named, never admitted.** FinishUP adds no unattended or
+  non-interactive way to admit a root, and no pre-admission for a harness: admission stays the
+  owner's `finishup privacy input-roots add <dir>` ceremony on a trusted terminal. When the task
+  names an existing file or folder outside the workspace that no admitted root covers, the check
+  records the closed code `task_input_outside_not_admitted`. To tell an input from a route or an
+  output, the check-time read `lstat`s each such path the task names (metadata only, never a final
+  link, never content) and counts it only when a regular file or directory is there that predates
+  the task (ADR-031 #1102 item 5); that local look reads nothing beneath the path, and the one bit
+  it yields is the only thing that leaves. The code's fixed sentence names the owner's step with a
+  `<folder>` placeholder; the code carries no path, the agent (which holds the statement) names the
+  folder to the owner, and copying the file into the workspace does not make it a task input. It
+  is a disclosure only: never agent work, never a Stop-gate item or closure blocker. A
+  non-interactive harness can admit roots only through an owner-attended ceremony while it is
+  provisioned.
+- **`other` follow-ups** carry only rows FinishUP recorded, hook-observed output of a named
+  verification run and current change sections of a named edit, under every gate of the
+  2026-10-15 amendment above.
+
+The behaviour is service-side and identical for Codex, Claude Code and Cursor on macOS, Linux and
+Windows through WSL 2.

@@ -30,6 +30,8 @@ from finishup.application.check import (
 from finishup.application.missing_for_assessment import (
     CHECK_TIME_CHANGE_SOURCE_REF,
     OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
+    OBSERVED_FOLLOW_UP_KINDS,
+    SECTION_FOLLOW_UP_KINDS,
     ReviewFollowUp,
     agent_supplied_answer_refs,
     check_change_binary_paths,
@@ -838,14 +840,31 @@ _TASK_INPUT_SUMMARY_LABEL: Final = (
     "description of a binary or data file it did not send whole; not the file itself and not the "
     "agent's work]\n"
 )
+# Issue #1102 (RC6d): a directory the task names inside the repository. Its listing is FinishUP's
+# own text, and a file FinishUP picked beneath it is never labelled as named by the task.
+_TASK_INPUT_LISTING_LABEL: Final = (
+    "[FinishUP summary of task input directory {path}: FinishUP's own listing of the files "
+    "beneath a directory the task names that were unchanged since the task started; not the "
+    "files' content and not the agent's work]\n"
+)
+_TASK_INPUT_DIRECTORY_LABEL: Final = (
+    "[FinishUP task input file {path} ({size} bytes{cut}): beneath a directory the task names, "
+    "chosen by FinishUP as possibly related to the change (by names it shares with the change, "
+    "or else by its place beside the changed files), unchanged since the task started, read by "
+    "the FinishUP service when this check ran; not the agent's work]\n"
+)
 
 
 def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
     """The labelled excerpt text of one task input, and whether it is a partial view."""
 
     cut = len(item.text) < item.size and not item.summary
-    if item.summary:
+    if item.summary and item.path.endswith("/"):
+        label = _TASK_INPUT_LISTING_LABEL
+    elif item.summary:
         label = _TASK_INPUT_SUMMARY_LABEL
+    elif item.origin == "task_directory":
+        label = _TASK_INPUT_DIRECTORY_LABEL
     elif item.origin == "verification":
         label = _TASK_INPUT_VERIFICATION_LABEL
     elif item.origin == "outside_workspace":
@@ -5411,7 +5430,7 @@ def _select_targeted_excerpts(
                 key=recency,
                 reverse=True,
             )
-            if follow_up_item.kind == "current_diff_for_path" and sections:
+            if follow_up_item.kind in SECTION_FOLLOW_UP_KINDS and sections:
                 for index in matching:
                     linked = tuple(
                         sorted(
@@ -5441,7 +5460,7 @@ def _select_targeted_excerpts(
             observed_indexes = {
                 index
                 for index in matching
-                if follow_up_item.kind == "verification_output"
+                if follow_up_item.kind in OBSERVED_FOLLOW_UP_KINDS
                 and observed_capture(index, follow_up_item.source_refs)
             }
             for index in matching:

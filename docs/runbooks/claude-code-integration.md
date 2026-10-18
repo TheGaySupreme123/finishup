@@ -2154,6 +2154,29 @@ tool output, and a hook-recorded run with the keyed identity takes the same serv
 Codex, but that parity is unproven. Open follow-up, owned by the workstream issue #1108: a Claude
 Code host-payload test of the run clause.
 
+Issue #1102 (same decision for Claude Code, service-side, no host step and no new host payload): a
+directory the task names inside the repository reaches the reviewer as FinishUP's listing of its
+unchanged files plus the members most likely related to the change (sharing names with it, or beside
+the changed files); a quoted or escaped path with spaces is one candidate, and when only the disk
+can tell a spaced folder from prose the whole path is looked for before its words; an admitted
+outside directory named without a trailing `/` is listed; an `other` follow-up request is answered
+only from rows FinishUP recorded for the run or edit it names. When the task names a file or folder
+outside the workspace that no admitted root covers, the check records
+`task_input_outside_not_admitted`, whose fixed sentence names the owner's step
+(`finishup privacy input-roots add <folder>` on a trusted terminal); it is a disclosure only, never
+a Stop-gate item or a continuation on Claude Code. Claude Code still has no write path to admitted roots,
+and FinishUP adds no unattended one: a non-interactive harness can admit roots only through an
+owner-attended ceremony while it is provisioned. The code is decided once by the check-time read,
+only for a path that exists outside the workspace and predates the task, so a route or an output
+the agent writes never counts. The terminal interface shows the code without its sentence (it
+renders coverage codes only); the owner's route there is the privacy panel, which names the
+admitted roots or, with none admitted, the step `finishup privacy input-roots add <folder>`, while
+the CLI, MCP and receipt print the sentence. `finishup service diagnostics` counts the task inputs on
+`semantic_case_built` as integers only: `semantic_task_input_candidates`,
+`semantic_task_inputs_read`, `semantic_task_input_listings`,
+`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates` and
+`semantic_task_inputs_outside_not_admitted`.
+
 ## Possible-credential filter opt-out (issue #982)
 
 Decision for Claude Code: supported, service-side, identical on every host. `credential_heuristic` is a

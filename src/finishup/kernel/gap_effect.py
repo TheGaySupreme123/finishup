@@ -3,7 +3,7 @@
 Before this module about a dozen places answered "does this gap still bound closure?" with their
 own rule: closure readiness (``GAP_CLASSIFICATION``), the clean-compatible lists, the receipt's
 ad-hoc advisory sets, the deterministic scope, the proof-tolerance sets. They disagreed. This table
-is the one answer. Each of the 212 gap codes the product can emit has exactly one row, and a row
+is the one answer. Each of the 223 gap codes the product can emit has exactly one row, and a row
 says two separate things:
 
 * ``readiness`` - who owes the next move, unchanged from the closed ADR-032 vocabulary: ``A``
@@ -419,6 +419,19 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         review_route="D",
         changed=True,
         codes=("semantic_process_state_filtered",),
+    ),
+    # Issue #1102 (RC6f): the task names an input outside the workspace that no root the owner
+    # admitted covers. A new code, disclosed from the start: the reviewer judged without it, and
+    # only the owner's trusted-terminal ceremony admits a root, so it is never agent work, never a
+    # Stop-gate item and never bounds the conclusion beyond what the review itself reports.
+    _Family(
+        rule="G4c",
+        family="disclosure",
+        readiness="S",
+        d_route="D",
+        review_route="D",
+        changed=True,
+        codes=("task_input_outside_not_admitted",),
     ),
     _Family(
         rule="G6",
@@ -854,6 +867,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "semantic_review_skipped_insufficient_packet",
         "semantic_review_snippet_invalid",
         "semantic_review_value_redacted",
+        "task_input_outside_not_admitted",
         "task_statement_not_authorized",
         "task_statement_not_supplied",
         "task_statement_unavailable",

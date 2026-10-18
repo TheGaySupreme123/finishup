@@ -2243,6 +2243,415 @@ def test_tracked_inputs_are_read_only_against_the_task_start_base(tmp_path: Path
     assert [item.text for item in started.inputs] == [b"AGENT_COMMITTED_DELIVERABLE\n"]
 
 
+# --- Issue #1102 (RC6d): a directory the task names inside the repository -------------------------
+
+
+def _dedup_repository(tmp_path: Path) -> Path:
+    """The dedup shape: the validator the reviewer needs sits unchanged beside the changed file."""
+
+    repository = _repository(tmp_path)
+    package = repository / "dedup"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Dedup."""\n', encoding="utf-8")
+    (package / "config.py").write_text(
+        "def validate_threshold(threshold):\n"
+        "    if threshold <= 0:\n"
+        "        raise ValueError('threshold must be > 0')\n"
+        "    return threshold\n",
+        encoding="utf-8",
+    )
+    (package / "core.py").write_text("def dedup(items):\n    return items\n", encoding="utf-8")
+    (package / "README.md").write_text("Unrelated notes about packaging.\n", encoding="utf-8")
+    _git(repository, "add", "--", "dedup")
+    _commit(repository, "dedup package")
+    return repository
+
+
+def test_a_named_directory_lists_its_unchanged_files_and_reads_the_one_sharing_the_change(
+    tmp_path: Path,
+) -> None:
+    repository = _dedup_repository(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "dedup" / "core.py").write_text(
+        "from dedup.config import validate_threshold\n\n"
+        "def dedup(items, threshold):\n"
+        "    validate_threshold(threshold)\n"
+        "    return items\n",
+        encoding="utf-8",
+    )
+
+    capture = adapter.capture(os.fspath(repository), base, input_paths=("dedup/",))
+
+    listing, *members = capture.inputs
+    assert (listing.path, listing.origin, listing.summary) == ("dedup/", "task", True)
+    names = listing.text.decode("utf-8").splitlines()
+    assert names[0].startswith("FinishUP listing of dedup/: 3 files beneath it are unchanged")
+    # The changed file is the change's, never listed again.
+    assert names[2:] == ["dedup/README.md", "dedup/__init__.py", "dedup/config.py"]
+    assert members[0].path == "dedup/config.py"
+    assert members[0].origin == "task_directory"
+    assert b"threshold must be > 0" in members[0].text
+    assert all(item.path != "dedup/core.py" for item in capture.inputs)
+    assert len(capture.inputs) <= 4
+    assert decode_check_change(encode_check_change(capture)) == capture
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Fix the threshold bug; run cd dedup/ && pytest to reproduce.",
+        "Fix the threshold bug; run `cd dedup/ && pytest` to reproduce.",
+        "Fix the threshold bug; `cd {repository}/dedup && pytest` fails.",
+        'The issue says "the code in {repository}/dedup/ fails on a zero threshold".',
+    ],
+)
+def test_a_quoted_command_or_prose_still_reads_the_directory_it_names(
+    tmp_path: Path, statement: str
+) -> None:
+    """Issue #1102 review correctness-r2-1: a backticked shell command or quoted prose is never
+    one spaced path, so the folder it names reaches the reviewer as it does unquoted."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    repository = _dedup_repository(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "dedup" / "core.py").write_text(
+        "from dedup.config import validate_threshold\n\n"
+        "def dedup(items, threshold):\n"
+        "    validate_threshold(threshold)\n"
+        "    return items\n",
+        encoding="utf-8",
+    )
+    candidates = task_input_paths(
+        make_case().projection, statement.format(repository=os.fspath(repository))
+    )
+
+    capture = adapter.capture(os.fspath(repository), base, input_paths=candidates)
+
+    assert all(" " not in value for value in candidates)
+    read = {(item.path, item.origin) for item in capture.inputs}
+    assert ("dedup/config.py", "task_directory") in read
+    config = next(item for item in capture.inputs if item.path == "dedup/config.py")
+    assert b"threshold must be > 0" in config.text
+
+
+def test_a_directory_listing_never_names_a_file_the_task_renamed_away(tmp_path: Path) -> None:
+    """Issue #1102 review r1-6: the change folds a rename into one ``R`` section of the new
+    path, but the old path is the task's work too, never "unchanged since the task started"."""
+
+    repository = _dedup_repository(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "dedup" / "README.md").rename(repository / "dedup" / "NOTES.md")
+    _git(repository, "add", "--", "dedup/NOTES.md")
+
+    capture = adapter.capture(
+        os.fspath(repository), base, input_paths=("dedup/", "dedup/README.md")
+    )
+
+    assert "diff --git a/dedup/NOTES.md b/dedup/NOTES.md" in capture.text.decode("utf-8")
+    listing = capture.inputs[0]
+    assert listing.path == "dedup/" and listing.summary
+    names = listing.text.decode("utf-8").splitlines()
+    assert names[0].startswith("FinishUP listing of dedup/: 3 files beneath it are unchanged")
+    assert names[2:] == ["dedup/__init__.py", "dedup/config.py", "dedup/core.py"]
+    assert all(item.path not in {"dedup/README.md", "dedup/NOTES.md"} for item in capture.inputs)
+
+
+def test_the_head_word_of_a_quoted_spaced_path_is_never_a_task_named_directory(
+    tmp_path: Path,
+) -> None:
+    """Issue #1102 review goal-r1-2: ``'<repo>/app/data files/input.csv'`` names one file. The
+    word the space cut from its head, ``<repo>/app/data``, must not expand an unrelated
+    ``app/data/`` as "a directory the task names"."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    repository = _repository(tmp_path)
+    (repository / "app" / "data files").mkdir(parents=True)
+    (repository / "app" / "data files" / "input.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (repository / "app" / "data").mkdir()
+    (repository / "app" / "data" / "unrelated.csv").write_text("UNRELATED\n", encoding="utf-8")
+    _git(repository, "add", "--", "app")
+    _commit(repository, "data")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    statement = f"Read '{repository}/app/data files/input.csv' then write report.md"
+
+    candidates = task_input_paths(make_case().projection, statement)
+    capture = adapter.capture(os.fspath(repository), base, input_paths=candidates)
+
+    assert candidates == (f"{repository}/app/data files/input.csv", "report.md")
+    assert [(item.path, item.origin) for item in capture.inputs] == [
+        ("app/data files/input.csv", "task")
+    ]
+
+
+def test_a_path_the_task_also_names_alone_is_read_beside_the_spaced_one(tmp_path: Path) -> None:
+    """PR #1112 review: in ``Read "docs/My Notes.md" and Notes.md`` the task names both files;
+    ``Notes.md`` is no word the spaces cut, so it is read even though the spaced file is there.
+    Likewise a folder named alone beside a spaced folder whose head word names it."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import space_cut_input_paths, task_input_paths
+
+    repository = _repository(tmp_path)
+    (repository / "docs").mkdir()
+    (repository / "docs" / "My Notes.md").write_text("SPACED_NOTES\n", encoding="utf-8")
+    (repository / "Notes.md").write_text("ROOT_NOTES\n", encoding="utf-8")
+    (repository / "src" / "test data").mkdir(parents=True)
+    (repository / "src" / "test data" / "case1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (repository / "src" / "test").mkdir()
+    (repository / "src" / "test" / "helpers.py").write_text("HELPERS = 1\n", encoding="utf-8")
+    _git(repository, "add", "--", ".")
+    _commit(repository, "inputs")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    projection = make_case().projection
+
+    def read(statement: str) -> list[tuple[str, str]]:
+        capture = adapter.capture(
+            os.fspath(repository),
+            base,
+            input_paths=task_input_paths(projection, statement),
+            space_cut_paths=space_cut_input_paths(projection, statement),
+        )
+        return [(item.path, item.origin) for item in capture.inputs]
+
+    assert read('Read "docs/My Notes.md" and Notes.md') == [
+        ("docs/My Notes.md", "task"),
+        ("Notes.md", "task"),
+    ]
+    assert read("Check 'src/test data' against src/test/ helpers.") == [
+        ("src/test data/", "task"),
+        ("src/test data/case1.csv", "task_directory"),
+        ("src/test/", "task"),
+        ("src/test/helpers.py", "task_directory"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("statement", "folder", "unrelated"),
+    [
+        # Review surfaces-r3-1: a quoted spaced folder without a trailing ``/``.
+        ("Summarise the CSVs in '{repository}/test data' and write report.md", "test data", "test"),
+        ("The cases are in 'src/test data' here.", "src/test data", "src/test"),
+        # Review goal-r3-1, correctness-r3-2: the last word of a relative spaced folder.
+        ("Use the cases in 'src/test data/' to verify.", "src/test data", "data"),
+        (
+            'Make the failing cases in "src/integration tests/" pass.',
+            "src/integration tests",
+            "tests",
+        ),
+        # Review correctness-r3-4: a joining word inside a folder name.
+        ("Read '{repository}/Files to Review/'.", "Files to Review", "Files"),
+    ],
+)
+def test_a_spaced_folder_the_task_names_never_lists_a_folder_its_words_name(
+    tmp_path: Path, statement: str, folder: str, unrelated: str
+) -> None:
+    """Issue #1102: when the spaced folder is there, a folder one of its words names (``test/``
+    for ``test data``, ``data/`` for ``src/test data/``) is never listed as one the task names."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import space_cut_input_paths, task_input_paths
+
+    repository = _repository(tmp_path)
+    (repository / folder).mkdir(parents=True)
+    (repository / folder / "case1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (repository / unrelated).mkdir(parents=True, exist_ok=True)
+    (repository / unrelated / "unrelated_private.csv").write_text("NO\n", encoding="utf-8")
+    _git(repository, "add", "--", ".")
+    _commit(repository, "data")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    text = statement.format(repository=os.fspath(repository))
+    candidates = task_input_paths(make_case().projection, text)
+    capture = adapter.capture(
+        os.fspath(repository),
+        base,
+        input_paths=candidates,
+        space_cut_paths=space_cut_input_paths(make_case().projection, text),
+    )
+
+    assert [(item.path, item.origin) for item in capture.inputs] == [
+        (f"{folder}/", "task"),
+        (f"{folder}/case1.csv", "task_directory"),
+    ]
+
+
+def test_a_quoted_prose_span_still_reads_the_folder_it_names_when_no_spaced_one_is_there(
+    tmp_path: Path,
+) -> None:
+    """Review surfaces-r3-1: ``"<repo>/config is read-only"`` names no spaced folder, so the
+    folder its first word names is still read; two quoted operands both are (goal-r3-2)."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    repository = _repository(tmp_path)
+    for name in ("config", "data", "models"):
+        (repository / name).mkdir()
+        (repository / name / f"{name}.txt").write_text(f"{name.upper()}\n", encoding="utf-8")
+    _git(repository, "add", "--", ".")
+    _commit(repository, "folders")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    prose = task_input_paths(make_case().projection, f'Note: "{repository}/config is read-only"')
+    command = task_input_paths(
+        make_case().projection, f"Run `ls {repository}/data {repository}/models` first."
+    )
+    by_prose = adapter.capture(os.fspath(repository), base, input_paths=prose)
+    by_command = adapter.capture(os.fspath(repository), base, input_paths=command)
+
+    assert [item.path for item in by_prose.inputs] == ["config/", "config/config.txt"]
+    assert [item.path for item in by_command.inputs] == [
+        "data/",
+        "data/data.txt",
+        "models/",
+        "models/models.txt",
+    ]
+
+
+def test_a_directory_named_without_a_slash_or_with_spaces_is_expanded_too(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    (repository / "My Docs").mkdir()
+    (repository / "My Docs" / "spec.md").write_text("SPACED_SPEC_MARKER\n", encoding="utf-8")
+    _git(repository, "add", "--", "My Docs")
+    _commit(repository, "spec")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    by_path = adapter.capture(
+        os.fspath(repository), base, input_paths=(os.fspath(repository / "My Docs"),)
+    )
+    by_root = adapter.capture(os.fspath(repository), base, input_paths=(os.fspath(repository),))
+
+    assert [item.path for item in by_path.inputs] == ["My Docs/", "My Docs/spec.md"]
+    assert by_path.inputs[1].text == b"SPACED_SPEC_MARKER\n"
+    # The workspace root itself is a directory too, listed as ``./``.
+    root_listing = by_root.inputs[0]
+    assert root_listing.path == "./" and root_listing.summary
+    assert "My Docs/spec.md" in root_listing.text.decode("utf-8")
+    assert decode_check_change(encode_check_change(by_root)) == by_root
+
+
+def test_a_directory_listing_never_names_ignored_hidden_credential_or_agent_created_files(
+    tmp_path: Path,
+) -> None:
+    repository = _dedup_repository(tmp_path)
+    (repository / "dedup" / ".env").write_text("HIDDEN_CANARY=1\n", encoding="utf-8")
+    (repository / "dedup" / "secrets.pem").write_text("CREDENTIAL_CANARY\n", encoding="utf-8")
+    _git(repository, "add", "--", "dedup/.env", "dedup/secrets.pem")
+    _commit(repository, "hidden and credential files")
+    (repository / "dedup" / "build").mkdir()
+    (repository / "dedup" / "build" / "x").write_text("IGNORED_CANARY\n", encoding="utf-8")
+    (repository / "build").mkdir()
+    (repository / "build" / "x").write_text("IGNORED_CANARY\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "dedup" / "new.py").write_text("AGENT_CREATED_CANARY = 1\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base, input_paths=("dedup/", "build/"))
+
+    listing = capture.inputs[0].text.decode("utf-8")
+    joined = b"".join(item.text for item in capture.inputs)
+    for canary in (".env", "secrets.pem", "build/x", "new.py"):
+        assert canary not in listing
+    for marker in (b"HIDDEN_CANARY", b"CREDENTIAL_CANARY", b"IGNORED_CANARY", b"AGENT_CREATED"):
+        assert marker not in joined
+    # An ignored directory holds nothing unchanged Git sees: no listing at all.
+    assert [item.path for item in capture.inputs if item.summary] == ["dedup/"]
+
+
+def test_directory_members_are_read_only_against_a_task_start_base(tmp_path: Path) -> None:
+    repository = _dedup_repository(tmp_path)
+    (repository / "dedup" / "notes.txt").write_text("UNTRACKED_BRIEF\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    pin = TaskChangeBase(recorded.object_format, recorded.commit, "first_check")
+
+    pinned = adapter.capture(os.fspath(repository), pin, input_paths=("dedup/",))
+    unpinned = adapter.capture(os.fspath(repository), None, input_paths=("dedup/",))
+    started = adapter.capture(os.fspath(repository), recorded, input_paths=("dedup/",))
+
+    # Against a first-check pin or HEAD, a tracked member may be the agent's committed work.
+    assert (pinned.base, pinned.inputs) == ("first_check", ())
+    assert (unpinned.base, unpinned.inputs) == ("head", ())
+    # Against the task's own start, the tracked members and the untracked baseline file count.
+    assert started.base == "task_start"
+    assert "dedup/notes.txt" in started.inputs[0].text.decode("utf-8")
+    assert "dedup/config.py" in started.inputs[0].text.decode("utf-8")
+
+
+def test_named_files_and_the_oracle_keep_priority_over_directory_members(tmp_path: Path) -> None:
+    repository = _dedup_repository(tmp_path)
+    for name in ("a.md", "b.md", "c.md", "test_oracle.py"):
+        (repository / name).write_text(f"{name} body\n", encoding="utf-8")
+    _git(repository, "add", "--", "a.md", "b.md", "c.md", "test_oracle.py")
+    _commit(repository, "named inputs")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    capture = adapter.capture(
+        os.fspath(repository),
+        base,
+        input_paths=("dedup", "a.md", "b.md", "c.md", "test_oracle.py", "dedup/"),
+    )
+
+    assert [item.path for item in capture.inputs] == ["a.md", "b.md", "c.md", "test_oracle.py"]
+
+
+def test_a_directory_listing_is_bounded_and_says_so(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    data = repository / "data"
+    data.mkdir()
+    for index in range(300):
+        (data / f"record_{index:03d}_with_a_long_descriptive_name.txt").write_text(
+            f"{index}\n", encoding="utf-8"
+        )
+    _git(repository, "add", "--", "data")
+    _commit(repository, "many members")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    capture = adapter.capture(os.fspath(repository), base, input_paths=("data/",))
+
+    listing = capture.inputs[0].text.decode("utf-8")
+    lines = listing.splitlines()
+    assert len(capture.inputs[0].text) <= 8_192
+    assert len(lines) - 2 <= 256
+    named = len(lines) - 2
+    assert lines[0] == (
+        "FinishUP listing of data/: 300 files beneath it are unchanged since the task started "
+        "(tracked by Git, or present when the task started); "
+        f"{named} are named below, the first by depth then name."
+    )
+    assert named < 300
+
+
+@pytest.mark.parametrize("flag", ["--skip-worktree", "--assume-unchanged"])
+def test_a_tracked_member_git_does_not_compare_is_never_read(tmp_path: Path, flag: str) -> None:
+    repository = _dedup_repository(tmp_path)
+    _git(repository, "update-index", flag, "--", "dedup/config.py")
+    (repository / "dedup" / "config.py").write_text("LOCAL_ONLY_CANARY = 1\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    capture = adapter.capture(os.fspath(repository), base, input_paths=("dedup/",))
+
+    assert "dedup/config.py" not in capture.inputs[0].text.decode("utf-8")
+    assert all(b"LOCAL_ONLY_CANARY" not in item.text for item in capture.inputs)
+
+
 def strict_json_keys(data: bytes) -> list[str]:
     import json
 

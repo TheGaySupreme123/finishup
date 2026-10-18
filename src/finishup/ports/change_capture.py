@@ -15,7 +15,7 @@ gateway apply to it exactly as to every other case item.
 from __future__ import annotations
 
 import re
-from collections.abc import Generator
+from collections.abc import Callable, Collection, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -47,6 +47,7 @@ __all__ = [
     "current_check_workspace_source",
     "decode_check_change",
     "decode_task_change_base",
+    "drop_space_cut_words",
     "encode_check_change",
     "encode_task_change_base",
     "metadata_path_representable",
@@ -288,8 +289,48 @@ class TaskChangeBase:
             raise _invalid()
 
 
-type TaskInputOrigin = Literal["task", "verification", "outside_workspace"]
-TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset({"task", "verification", "outside_workspace"})
+type TaskInputOrigin = Literal["task", "verification", "outside_workspace", "task_directory"]
+TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset(
+    {"task", "verification", "outside_workspace", "task_directory"}
+)
+
+
+def drop_space_cut_words(
+    values: Sequence[str],
+    names_something: Callable[[str], bool],
+    space_cut: Collection[str],
+) -> tuple[str, ...]:
+    """``values`` without the words the spaces cut from a spaced value that names something.
+
+    Issue #1102 (RC6d): a quoted span only the disk can tell apart (``"/app/test data"`` is a
+    folder or prose, ``"/app/Terms and Conditions/terms.pdf"`` one path or two) is offered as a
+    candidate ahead of its own words. A read asks ``names_something`` (a metadata look at that
+    one value, inside what the read may look at) for each value holding a space; when it says
+    yes, a value that is one of that value's space-cut words (``/app/test``) is no path the task
+    named and is dropped, so an unrelated folder is never read under the task's name. Only a
+    value in ``space_cut`` may be dropped: one that came only from splitting a quoted span
+    (``space_cut_input_paths``). A value the task also named on its own (``Notes.md`` of
+    ``Read "docs/My Notes.md" and Notes.md``), a ``role: input`` item or a verification operand
+    is never in it and is always kept. A spaced value is never dropped. Order is kept.
+    """
+
+    cut: set[str] = set()
+    for value in values:
+        if " " in value and names_something(value):
+            cut.update(word.rstrip("/") for word in value.split(" ") if word.rstrip("/"))
+    if not cut:
+        return tuple(values)
+    return tuple(
+        value
+        for value in values
+        if " " in value or value not in space_cut or value.rstrip("/") not in cut
+    )
+
+
+def _listing_path(value: str) -> bool:
+    """A named directory's listing path (issue #1102): ``dir/``, or ``./`` for the root."""
+
+    return value == "./" or (value.endswith("/") and _json_path(value[:-1]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,9 +354,14 @@ class TaskInputFile:
     # operand of a recorded verification command, under the same repository rule, so a test the
     # task ships reaches the reviewer as the oracle. ``outside_workspace``: named by the task and
     # read beneath a root the owner admitted in the repository's privacy grant.
+    # ``task_directory`` (issue #1102): beneath a directory the task names inside the repository,
+    # chosen by FinishUP by the identifiers it shares with the change, or else by its place
+    # beside the changed files, under the ``task`` rule; never labelled as named by the task.
     origin: TaskInputOrigin = "task"
     # Issue #1082: ``text`` is FinishUP's own bounded summary of a binary or data file it never
-    # sends whole (``finishup.adapters.input_summary``), not the file's bytes.
+    # sends whole (``finishup.adapters.input_summary``), not the file's bytes. Issue #1102: a
+    # ``task`` summary whose path ends in ``/`` is FinishUP's own listing of the unchanged files
+    # beneath a directory the task names (``./`` for the workspace root).
     summary: bool = False
 
     def __post_init__(self) -> None:
@@ -324,7 +370,9 @@ class TaskInputFile:
         if self.origin == "outside_workspace":
             if not self.path.startswith("/") or not _json_path(self.path.lstrip("/")):
                 raise _invalid()
-        elif not _json_path(self.path):
+        elif not _json_path(self.path) and not (
+            self.origin == "task" and self.summary and _listing_path(self.path)
+        ):
             raise _invalid()
         if (
             type(self.text) is not bytes
@@ -352,7 +400,9 @@ class CheckChangeCapture:
     task-start commit, HEAD, or the empty tree); it keys the per-file commitments a completed review
     records, and is empty only for an object written before it existed. ``inputs`` are the read-only
     task input files the same read carried (issue #1045); they are not part of the change and never
-    enter ``text``.
+    enter ``text``. ``outside_inputs_not_admitted`` is the service's closed decision, taken when
+    the read ran, that the task names an existing input outside the workspace that no root the
+    owner admitted covers (issue #1102); it names no path.
     """
 
     base: ChangeBaseKind
@@ -364,6 +414,7 @@ class CheckChangeCapture:
     redacted: bool = False
     base_commit: str = field(default="", repr=False)
     inputs: tuple[TaskInputFile, ...] = field(default=(), repr=False)
+    outside_inputs_not_admitted: bool = False
 
     def __post_init__(self) -> None:
         if self.base not in _BASE_KINDS:
@@ -386,7 +437,11 @@ class CheckChangeCapture:
                 raise _invalid()
         if self.omitted_files > self.tracked_files + self.untracked_files:
             raise _invalid()
-        if type(self.truncated) is not bool or type(self.redacted) is not bool:
+        if (
+            type(self.truncated) is not bool
+            or type(self.redacted) is not bool
+            or type(self.outside_inputs_not_admitted) is not bool
+        ):
             raise _invalid()
         if self.omitted_files and not self.truncated:
             raise _invalid()
@@ -515,6 +570,7 @@ class ChangeCapturePort(Protocol):
         *,
         priority_paths: tuple[str, ...] = (),
         input_paths: tuple[str, ...] = (),
+        space_cut_paths: frozenset[str] = frozenset(),
     ) -> CheckChangeCapture:
         """Render the change from ``base`` (or HEAD when ``None``) to the working tree.
 
@@ -522,6 +578,11 @@ class ChangeCapturePort(Protocol):
         of every other file (tb4n2 R7). They order the change only, never widen what is read.
         ``input_paths`` names candidate read-only task input files (issue #1045); only those inside
         the repository, unchanged, not ignored and not credential-named are read, into ``inputs``.
+        A candidate may name a directory inside the repository (issue #1102): its unchanged files
+        are listed and the ones most related to the change read, within the same input bound.
+        A candidate holding a space that names something there keeps the words its spaces cut
+        out of the read (``drop_space_cut_words``); ``space_cut_paths`` are the candidates that
+        are only such words, and no other candidate is ever dropped that way.
         """
         ...
 
@@ -830,6 +891,9 @@ def encode_check_change(capture: CheckChangeCapture) -> bytes:
             }
             for item in capture.inputs
         ]
+    if capture.outside_inputs_not_admitted:
+        # Issue #1102: written only when set, so every object without it keeps its bytes.
+        body["outside_inputs_not_admitted"] = True
     return canonical_encode(cast(JsonValue, body))
 
 
@@ -838,7 +902,7 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
     if canonical_encode(parsed) != data or type(parsed) is not dict:
         raise _invalid()
     source = cast(dict[str, object], parsed)
-    if set(source) - {"base_commit", "inputs"} != {
+    if set(source) - {"base_commit", "inputs", "outside_inputs_not_admitted"} != {
         "base",
         "omitted_files",
         "redacted",
@@ -850,6 +914,9 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
     }:
         raise _invalid()
     if source["schema"] != _CHECK_CHANGE_SCHEMA or type(source["text"]) is not str:
+        raise _invalid()
+    if source.get("outside_inputs_not_admitted", True) is not True:
+        # A default value is never written, so a present ``false`` is not canonical.
         raise _invalid()
     inputs_raw = source.get("inputs", [])
     if type(inputs_raw) is not list or ("inputs" in source and not inputs_raw):
@@ -887,4 +954,5 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         redacted=cast(bool, source["redacted"]),
         base_commit=cast(str, source.get("base_commit", "")),
         inputs=tuple(inputs),
+        outside_inputs_not_admitted=source.get("outside_inputs_not_admitted") is True,
     )

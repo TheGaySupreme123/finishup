@@ -87,8 +87,10 @@ from finishup.application.check_change import (
     check_change_shown_files,
     check_time_change_selected,
     declared_output_paths,
+    outside_input_candidates,
     recover_check_time_change,
     review_input_paths,
+    space_cut_input_paths,
 )
 from finishup.application.coordination import (
     EncryptedCoordinationDetailStore,
@@ -170,6 +172,7 @@ from finishup.application.semantic_case import (
     CHECK_TIME_CHANGE_ITEM_PREFIX,
     MAX_CAPTURED_SEMANTIC_CONTENT_PARTS,
     MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
+    TASK_INPUT_ITEM_PREFIX,
     CheckTimeChange,
     LineageSemanticCapacityExceeded,
     SemanticCaseCapacityExceeded,
@@ -259,6 +262,7 @@ from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP,
     SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+    TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
@@ -282,6 +286,7 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
+from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.lineage import LineageEvaluation
 from finishup.kernel.policies.observation_advice import ObservationCompositionFact
 from finishup.kernel.projections import ProjectionState
@@ -2644,8 +2649,12 @@ def _outside_input_reader(
     them (PR #1086 review R1-02).
     """
 
-    def read(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
-        return read_outside_inputs(roots, values, limit=room, excluded=(workspace, *protected))
+    def read(
+        values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        return read_outside_inputs(
+            roots, values, limit=room, excluded=(workspace, *protected), space_cut=space_cut
+        )
 
     return read
 
@@ -4307,6 +4316,106 @@ async def _recover_response_evaluation(
     )
 
 
+def _review_inputs(
+    case: DeterministicCase, selection: ReviewSelectionPolicy
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """The candidate task inputs, and those only a verification named (issues #1045, #1082).
+
+    Only where the recipe carries the check-time change, the statement and repository excerpts.
+    Derived from the frozen case alone, so a recovered job names the candidates the new one did.
+    """
+
+    if not (check_time_change_selected(selection) and carries_task_inputs(selection)):
+        return (), frozenset()
+    statement = None if case.task_statement is None else case.task_statement.text
+    return review_input_paths(case.projection, statement)
+
+
+def _review_space_cut(case: DeterministicCase, selection: ReviewSelectionPolicy) -> frozenset[str]:
+    """The candidate task inputs only the spaces of a quoted spaced value cut out (#1112 review).
+
+    Derived from the frozen case alone, like ``_review_inputs``, and only where it offers any.
+    """
+
+    if not (check_time_change_selected(selection) and carries_task_inputs(selection)):
+        return frozenset()
+    statement = None if case.task_statement is None else case.task_statement.text
+    return space_cut_input_paths(case.projection, statement)
+
+
+def _outside_not_admitted(check_change: CheckChangeOutcome) -> bool:
+    """Whether the check-time read found a task-named outside input no admitted root covers.
+
+    Issue #1102 (RC6f): decided once by the read, against the root it used, and frozen into the
+    job's check-change object, so a recovered job replays it and a job an earlier build froze
+    (which never wrote it) keeps its case.
+    """
+
+    return check_change.change is not None and (
+        check_change.change.capture.outside_inputs_not_admitted
+    )
+
+
+def _task_input_counts(
+    review_inputs: tuple[tuple[str, ...], frozenset[str]],
+    check_change: CheckChangeOutcome,
+    semantic_case: SemanticCase,
+    outside_not_admitted: bool,
+    outside_candidates: int = 0,
+) -> dict[str, int]:
+    """Issue #1102 pilot counters for ``semantic_case_built``; counts only, never a path.
+
+    How many task inputs the statement and the recorded verification named, how many the
+    check-time read kept (directory listings among them), how many the packet selected, how
+    many named outside candidates could lexically be an unadmitted input (before any ``lstat``),
+    and whether a named outside input lacked an admitted root. A candidate count beside a 0 flag
+    says FinishUP saw such a path but could not count it (no ``task_start`` base, nothing on disk,
+    written during the task), which a 0 flag alone cannot tell from "none named" (review goal-r2-3).
+    """
+
+    read = () if check_change.change is None else check_change.change.capture.inputs
+    return {
+        "semantic_task_input_candidates": len(review_inputs[0]),
+        "semantic_task_inputs_read": len(read),
+        "semantic_task_input_listings": sum(
+            item.summary and item.path.endswith("/") for item in read
+        ),
+        "semantic_task_input_excerpts_selected": sum(
+            item.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
+            for item in semantic_case.packet.targeted_excerpts
+        ),
+        "semantic_task_input_outside_candidates": outside_candidates,
+        "semantic_task_inputs_outside_not_admitted": int(outside_not_admitted),
+    }
+
+
+def _outside_candidate_count(
+    review_inputs: tuple[tuple[str, ...], frozenset[str]],
+    workspace: str | None,
+    admitted_roots: tuple[str, ...],
+    outputs: tuple[str, ...],
+) -> int:
+    """How many named outside candidates could lexically be an unadmitted input (#1102).
+
+    Counted against the connection's root the check-time read uses, else ``workspace`` (the
+    session's workspace); 0 when neither is known, so the count never claims an outside path it
+    could not place.
+    """
+
+    # A diagnostic count must never fail the case: anything but a bound source's string root
+    # falls back to the session's workspace.
+    read_root: object = getattr(current_check_workspace_source(), "workspace", None)
+    if type(read_root) is str:
+        workspace = read_root
+    if workspace is None:
+        return 0
+    return len(
+        outside_input_candidates(
+            review_inputs[0], review_inputs[1], workspace, admitted_roots, outputs
+        )
+    )
+
+
 async def _workspace_root_for_runtime(runtime: TaskRuntime | None) -> str | None:
     """The absolute workspace path the task's session opened with, or ``None``.
 
@@ -5114,6 +5223,11 @@ def _privacy_gated_semantic_evaluator(
             # The check-time change (ADR-031): captured once for a new job, reloaded from the
             # job's own case object on recovery, never re-read from a working tree that moved.
             check_change = CheckChangeOutcome()
+            # Read-only task inputs the statement names (#1045) and the test files a recorded
+            # verification ran (#1082), only where the recipe carries both the statement and
+            # repository excerpts. Derived from the frozen case alone, so a recovered job names
+            # the same candidates the new one did.
+            review_inputs = _review_inputs(frozen.case, review_selection)
             if runtime is not None and check_time_change_selected(review_selection):
                 if job is not None:
                     if recovered_check_change is not None:
@@ -5122,16 +5236,6 @@ def _privacy_gated_semantic_evaluator(
                         )
                 else:
                     workspace_source = current_check_workspace_source()
-                    review_inputs: tuple[tuple[str, ...], frozenset[str]] = (
-                        review_input_paths(
-                            frozen.case.projection,
-                            None
-                            if frozen.case.task_statement is None
-                            else frozen.case.task_statement.text,
-                        )
-                        if carries_task_inputs(review_selection)
-                        else ((), frozenset())
-                    )
                     if workspace_source is not None and change_capture is not None:
                         check_change = await capture_check_time_change(
                             runtime=runtime,
@@ -5142,9 +5246,6 @@ def _privacy_gated_semantic_evaluator(
                             request_id=frozen.lease.operation_id,
                             # Declared deliverables first, so a clipped packet keeps them.
                             priority_paths=declared_output_paths(frozen.case.projection),
-                            # Read-only task inputs the statement names (#1045) and the test
-                            # files a recorded verification ran (#1082), only where the recipe
-                            # carries both the statement and repository excerpts.
                             input_paths=review_inputs[0],
                             verification_paths=review_inputs[1],
                             # Issue #1082: only roots the owner admitted in this repository's
@@ -5157,6 +5258,12 @@ def _privacy_gated_semantic_evaluator(
                                 and carries_task_inputs(review_selection)
                                 else None
                             ),
+                            # Issue #1102: so the read can say a task-named outside input
+                            # lies beneath none of them.
+                            admitted_roots=policy.admitted_input_roots,
+                            # Issue #1112 review: only the words the spaces cut from a quoted
+                            # spaced candidate give way to it, never a path named on its own.
+                            space_cut_paths=_review_space_cut(frozen.case, review_selection),
                         )
             test_edit_gaps = (
                 ()
@@ -5185,6 +5292,19 @@ def _privacy_gated_semantic_evaluator(
                     sorted(set(captured_content_gaps) | set(task_fact_gaps), key=str.encode)
                 )
             workspace_root = await _workspace_root_for_runtime(runtime)
+            # Issue #1102 (RC6f): the task names an existing input outside the workspace that no
+            # root the owner admitted covers, so the reviewer judges without it. The check-time
+            # read decided it against its own root and froze it into the job's check-change
+            # object, so new and recovered jobs agree. A closed code beside the change's own; it
+            # names no path and only the owner's trusted-terminal step can clear it.
+            outside_not_admitted = _outside_not_admitted(check_change)
+            if outside_not_admitted:
+                captured_content_gaps = tuple(
+                    sorted(
+                        {*captured_content_gaps, TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP},
+                        key=str.encode,
+                    )
+                )
             semantic_case_id = recovered_case_id or ids.new(IdKind.OUTBOUND_CASE)
 
             def build_case(selection: ReviewSelectionPolicy, gaps: tuple[str, ...]) -> SemanticCase:
@@ -5291,6 +5411,18 @@ def _privacy_gated_semantic_evaluator(
                     # here with native edits in the session means none reached the ledger.
                     "semantic_edit_evidence_in_case": edit_capture_evidence_count(
                         frozen.case.projection
+                    ),
+                    **_task_input_counts(
+                        review_inputs,
+                        check_change,
+                        semantic_case,
+                        outside_not_admitted,
+                        _outside_candidate_count(
+                            review_inputs,
+                            workspace_root,
+                            policy.admitted_input_roots,
+                            declared_output_paths(frozen.case.projection),
+                        ),
                     ),
                 },
             )

@@ -16,9 +16,10 @@ import hmac
 import os
 import re
 import shlex
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+import stat
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Final, cast
+from typing import Final, TypedDict, cast
 
 from finishup.application.semantic_case import CheckTimeChange, check_time_change_shown_record
 from finishup.domain.events import (
@@ -30,8 +31,9 @@ from finishup.domain.events import (
     RequestedItemRole,
 )
 from finishup.domain.observation_selection import command_is_verification
-from finishup.domain.privacy import ReviewSelectionPolicy
+from finishup.domain.privacy import ReviewSelectionPolicy, admitted_input_root_valid
 from finishup.domain.receipts import CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
+from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.domain.values import ObligationId
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.task_facts import (
@@ -61,6 +63,7 @@ from finishup.ports.change_capture import (
     TaskInputFile,
     decode_check_change,
     decode_task_change_base,
+    drop_space_cut_words,
     encode_check_change,
     encode_task_change_base,
 )
@@ -72,7 +75,10 @@ from finishup.protocol.canonical import JsonValue
 __all__ = [
     "declared_output_paths",
     "OutsideInputReader",
+    "outside_input_candidates",
+    "outside_inputs_not_admitted",
     "review_input_paths",
+    "space_cut_input_paths",
     "task_input_paths",
     "verification_input_paths",
     "CheckChangeOutcome",
@@ -233,20 +239,35 @@ async def _resolve(
 
 
 async def _load_task_base(runtime: TaskRuntime, request_id: str) -> TaskChangeBase | None:
+    return (await _load_task_base_and_start(runtime, request_id))[0]
+
+
+async def _load_task_base_and_start(
+    runtime: TaskRuntime, request_id: str
+) -> tuple[TaskChangeBase | None, float | None]:
+    """The task's kept base, and when a ``task_start`` base was recorded (POSIX seconds).
+
+    A ``task_start`` base is recorded right after the task is created, before the creating
+    request returns, so its object's creation time is when the task started (issue #1102); a
+    ``first_check`` base, or none, gives no start time.
+    """
+
     loader = getattr(runtime.ledger, "load_task_change_base", None)
     if not callable(loader):
-        return None
+        return None, None
     try:
         ref = await cast(Callable[[], Awaitable[ObjectRef | None]], loader)()
         if ref is None:
-            return None
+            return None, None
         if (
             ref.metadata.kind is not ObjectKind.CHANGE_CAPTURE
             or ref.metadata.media_type != TASK_CHANGE_BASE_MEDIA_TYPE
             or ref.metadata.task_id != runtime.task_id
         ):
             raise ValueError("task_change_base_invalid")
-        return decode_task_change_base(await _read(runtime, ref))
+        base = decode_task_change_base(await _read(runtime, ref))
+        started = ref.metadata.created_at.timestamp() if base.origin == "task_start" else None
+        return base, started
     except Exception as exc:
         # An unreadable base degrades to the HEAD base, which the case discloses as
         # ``check_time_change_base_unavailable``; it never blocks the review.
@@ -256,7 +277,7 @@ async def _load_task_base(runtime: TaskRuntime, request_id: str) -> TaskChangeBa
             operation="check_time_change_base_unreadable",
             request_id=request_id,
         )
-        return None
+        return None, None
 
 
 async def _pin_first_check_base(
@@ -415,9 +436,13 @@ def _with_input_origins(
 
 
 # Reads the candidate paths beneath the owner's admitted outside-workspace roots (issue #1082):
-# ``(values, room, workspace)``. Bound by the service to the effective policy's roots, so this
-# layer never sees a root itself; the workspace is never read from, by path or by identity.
-type OutsideInputReader = Callable[[tuple[str, ...], int, str], tuple[TaskInputFile, ...]]
+# ``(values, room, workspace, space_cut)``, ``space_cut`` the values only the spaces of a quoted
+# value cut out (``space_cut_input_paths``, issue #1112 review). Bound by the service to the
+# effective policy's roots, so this layer never sees a root itself; the workspace is never read
+# from, by path or by identity.
+type OutsideInputReader = Callable[
+    [tuple[str, ...], int, str, frozenset[str]], tuple[TaskInputFile, ...]
+]
 
 
 def _within(path: str, workspace: str) -> bool:
@@ -440,6 +465,7 @@ def _with_outside_inputs(
     workspace: str,
     *,
     verification_paths: frozenset[str],
+    space_cut_paths: frozenset[str] = frozenset(),
 ) -> CheckChangeCapture:
     """Add inputs the task names beneath an admitted outside root, in the room left (#1082).
 
@@ -454,9 +480,15 @@ def _with_outside_inputs(
     workspace by device and inode at every level of its walk, so an admitted directory that
     contains the workspace, or a differently spelled path to it, cannot enumerate its files
     (PR #1086 review R1-02); every file the reader returns is checked here again.
+
+    Issue #1102: a file the task names outside the workspace outranks what the repository read
+    chose beneath a task-named directory (its listing and the members FinishUP picked), so that
+    material gives way to it and keeps only the room left after it.
     """
 
-    room = MAX_TASK_INPUT_FILES - len(capture.inputs)
+    named = tuple(item for item in capture.inputs if not _directory_material(item))
+    chosen = tuple(item for item in capture.inputs if _directory_material(item))
+    room = MAX_TASK_INPUT_FILES - len(named)
     outside = tuple(
         value
         for value in input_paths
@@ -468,7 +500,7 @@ def _with_outside_inputs(
         return capture
     present = {item.path for item in capture.inputs}
     added: list[TaskInputFile] = []
-    for item in reader(outside, room, workspace):
+    for item in reader(outside, room, workspace, space_cut_paths & frozenset(outside)):
         if (
             item.origin != "outside_workspace"
             or not item.path.startswith("/")
@@ -481,7 +513,21 @@ def _with_outside_inputs(
         added.append(item)
     if not added:
         return capture
-    return replace(capture, inputs=(*capture.inputs, *added))
+    return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES])
+
+
+def _directory_material(item: TaskInputFile) -> bool:
+    """A listing of a task-named directory, or a member FinishUP chose beneath one (#1102)."""
+
+    return item.origin == "task_directory" or (item.summary and item.path.endswith("/"))
+
+
+class _CaptureOptions(TypedDict, total=False):
+    """The ``ChangeCapturePort.capture`` options a check asks for; absent when not asked."""
+
+    priority_paths: tuple[str, ...]
+    input_paths: tuple[str, ...]
+    space_cut_paths: frozenset[str]
 
 
 def _capture_redacted(
@@ -492,28 +538,50 @@ def _capture_redacted(
     input_paths: tuple[str, ...] = (),
     verification_paths: frozenset[str] = frozenset(),
     outside_reader: OutsideInputReader | None = None,
+    *,
+    admitted_roots: tuple[str, ...] = (),
+    task_started_at: float | None = None,
+    space_cut_paths: frozenset[str] = frozenset(),
 ) -> CheckChangeCapture:
     # A port without deliverable ordering or task inputs (an embedded or test port) is called
     # exactly as before when neither is asked for.
-    options: dict[str, tuple[str, ...]] = {}
+    options: _CaptureOptions = {}
     if priority_paths:
         options["priority_paths"] = priority_paths
     if input_paths:
         options["input_paths"] = input_paths
+    # Issue #1112 review: only these candidates may give way to a spaced one on disk.
+    space_cut_paths = space_cut_paths & frozenset(input_paths)
+    if space_cut_paths:
+        options["space_cut_paths"] = space_cut_paths
     capture = port.capture(workspace, base, **options)
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
     capture = _with_input_origins(capture, verification_paths, workspace)
     # Every input, inside the repository or beneath an admitted root, takes the same redaction.
-    return _redacted(
+    capture = _redacted(
         _with_outside_inputs(
             capture,
             input_paths,
             outside_reader,
             workspace,
             verification_paths=verification_paths,
+            space_cut_paths=space_cut_paths,
         )
     )
+    # Issue #1102 (RC6f): decided once, here, against the root this read used, and frozen into
+    # the stored object, so a recovered job replays the decision instead of re-reading the disk.
+    if outside_inputs_not_admitted(
+        input_paths,
+        verification_paths,
+        workspace,
+        admitted_roots,
+        priority_paths,
+        task_started_at=task_started_at,
+        space_cut=space_cut_paths,
+    ):
+        capture = replace(capture, outside_inputs_not_admitted=True)
+    return capture
 
 
 async def capture_check_time_change(
@@ -528,6 +596,8 @@ async def capture_check_time_change(
     input_paths: tuple[str, ...] = (),
     verification_paths: frozenset[str] = frozenset(),
     outside_reader: OutsideInputReader | None = None,
+    admitted_roots: tuple[str, ...] = (),
+    space_cut_paths: frozenset[str] = frozenset(),
 ) -> CheckChangeOutcome:
     """Capture, redact and store one check's change; every failure is a disclosed absence.
 
@@ -537,7 +607,11 @@ async def capture_check_time_change(
     inputs are labelled as the verification's oracle and are never read outside the workspace.
     ``outside_reader`` reads the task's own candidates beneath the outside-workspace roots the
     owner admitted in the repository grant (#1082); the service passes it only when the effective
-    policy admits a root and the recipe carries task inputs.
+    policy admits a root and the recipe carries task inputs. ``admitted_roots`` are those roots
+    themselves: the capture records, as one closed flag, whether the task names an existing input
+    outside the workspace that none of them covers (``outside_inputs_not_admitted``, #1102).
+    ``space_cut_paths`` are the candidates only the spaces of a quoted value cut out
+    (``space_cut_input_paths``); no other candidate ever gives way to a spaced one on disk.
     """
 
     if type(source) is not CheckWorkspaceSource:
@@ -554,7 +628,7 @@ async def capture_check_time_change(
             request_id=request_id,
         )
         return CheckChangeOutcome(unavailable=True, reason="repository_mismatch")
-    base = await _load_task_base(runtime, request_id)
+    base, task_started_at = await _load_task_base_and_start(runtime, request_id)
     if base is None:
         base = await _pin_first_check_base(runtime, port, source.workspace, clock, request_id)
     try:
@@ -569,6 +643,9 @@ async def capture_check_time_change(
             input_paths,
             verification_paths,
             outside_reader,
+            admitted_roots=admitted_roots,
+            task_started_at=task_started_at,
+            space_cut_paths=space_cut_paths,
         )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
@@ -777,6 +854,30 @@ _STATEMENT_FILE_NAME: Final = re.compile(
     r"(?P<stem>[A-Za-z0-9_@+~=-][A-Za-z0-9_.@+~=-]*)\.(?P<extension>[A-Za-z0-9]{1,10})"
 )
 _MAX_STATEMENT_INPUT_CANDIDATES: Final = 16
+# Issue #1102 (RC6d): a path the statement quotes or escapes keeps its spaces
+# (``"/app/My Docs/spec.md"``, ``/app/My\ Docs/spec.md``). One token is a quoted span or a word,
+# and a word may hold ``\ ``. Unquoted, unescaped text splits exactly as ``_STATEMENT_WORD`` does,
+# and a quoted span still yields those same words; when it holds a spaced path, the path comes
+# first and the words the spaces cut from its head and middle are dropped (``_statement_words``).
+# An apostrophe inside a word (``don't``) never opens a span.
+_STATEMENT_TOKEN: Final = re.compile(
+    r"`(?P<tick>[^`\n]{1,1024})`"
+    r"|\"(?P<double>[^\"\n]{1,1024})\""
+    r"|(?<![A-Za-z0-9])'(?P<single>[^'\n]{1,1024})'(?![A-Za-z0-9])"
+    r"|(?P<word>(?:\\ |[^\s`'\"()<>\[\]{},;])+)"
+)
+_SPACED_NOT_PLAIN: Final = re.compile(r"[\t\n\r\f\v*?\[\]{}~$`]|://|  ")
+_SPACED_FILE_NAME: Final = re.compile(r"[^/]*[A-Za-z0-9_)]\.(?P<extension>[A-Za-z0-9]{1,10})")
+_MAX_PATH_SPACES: Final = 8
+# A quoted shell command (``cd /app/vllm && pytest``, ``cat a | grep b``, ``make > out.txt``) is
+# never one path: a word that is or starts with a shell operator or redirection marks it.
+_SPACED_COMMAND_WORD: Final = re.compile(r"\A(?:[&|;<>]|[0-9]+[<>])")
+# A word like these between two parts holding ``/`` may join two paths (``"src/dedup and
+# src/util"``) or sit inside one folder name (``"/app/Terms and Conditions/terms.pdf"``): only the
+# disk can tell, so the read decides (``_spaced_candidate``).
+_SPACED_JOINING_WORDS: Final = frozenset(
+    {"and", "or", "then", "to", "into", "from", "with", "vs", "versus", "plus"}
+)
 
 
 def _statement_file_word(word: str) -> str | None:
@@ -793,6 +894,154 @@ def _statement_file_word(word: str) -> str | None:
     if len(match.group("extension")) == 1 and len(match.group("stem")) < 2:
         return None
     return value
+
+
+def _names_a_file(word: str) -> bool:
+    """Whether one space-free word ends in a file name with a lettered extension."""
+
+    match = _STATEMENT_FILE_NAME.fullmatch(word.rsplit("/", 1)[-1])
+    return match is not None and any(char.isalpha() for char in match.group("extension"))
+
+
+def _spaced_candidate(value: str) -> tuple[str, bool] | None:
+    """One literal read-only path holding single spaces, and whether it is one for certain.
+
+    Issue #1102 (RC6d). The value must have a directory part or end in ``/``, or end in a file
+    name with a lettered extension; hold one to eight single spaces and no other whitespace, glob,
+    brace, home or variable expansion, backtick or URL; and be at most 1024 characters. Prose
+    ahead of an absolute path (``see /app/My Docs/spec.md``) is dropped. ``None`` for a span that
+    is surely no one path: two absolute paths (``ls /app/data /app/models``), a command word ahead
+    of two paths (``diff src/dedup src/util``), earlier words that already name a whole file
+    (``docs/a.md and docs/b.md``) or a folder (``/app/parser/ fails``), an option-like word
+    (``pytest -q tests/test_a.py``) or a shell operator (``cd /app/vllm && pytest``). ``False``
+    when only the disk can tell: a word like ``and`` joins two parts holding ``/``
+    (``/app/Terms and Conditions/terms.pdf``, ``src/dedup and src/util``), a later word starts
+    with the first one's first component (``docs/Makefile docs/Dockerfile``), or the spaced last
+    component is no file name and no ``/`` follows it (``/app/test data``, ``/app/config is
+    read-only``). Such a span is offered ahead of its own words, and the read keeps those words
+    only when the whole value names nothing there (``drop_space_cut_words``).
+    """
+
+    value = value.strip(_STATEMENT_WORD_EDGE)
+    if " /" in value:
+        value = value[value.index(" /") + 1 :]
+    words = value.split(" ")
+    if (
+        " " not in value
+        or " /" in value
+        or value != value.strip(" ")
+        or value.count(" ") > _MAX_PATH_SPACES
+        or len(value) > 1_024
+        or _SPACED_NOT_PLAIN.search(value) is not None
+        or any(_names_a_file(word) or word.endswith("/") for word in words[:-1])
+        or any(word.startswith("-") for word in words[1:])
+        or any(_SPACED_COMMAND_WORD.match(word) is not None for word in words)
+        or ("/" not in words[0] and sum("/" in word for word in words[1:]) > 1)
+    ):
+        return None
+    name = value.rstrip("/").rsplit("/", 1)[-1]
+    if not name or name.startswith("-"):
+        return None
+    head = words[0].split("/", 1)[0]
+    certain = not any(
+        word.casefold() in _SPACED_JOINING_WORDS and "/" in before and "/" in after
+        for before, word, after in zip(words, words[1:], words[2:], strict=False)
+    ) and not (
+        # A later word that starts where the first one does (``docs/Makefile docs/Dockerfile``)
+        # may be a second path.
+        head and "/" in words[0] and any(word.split("/", 1)[0] == head for word in words[1:])
+    )
+    # The last component may hold a space only as a file name with a lettered extension, or
+    # when a ``/`` follows it: ``/app/My Docs/`` is a folder, ``/app/test data`` may be one.
+    last = value.rsplit("/", 1)[-1]
+    if " " in last:
+        match = _SPACED_FILE_NAME.fullmatch(last)
+        if match is None or not any(char.isalpha() for char in match.group("extension")):
+            if "/" not in value:
+                return None
+            certain = False
+    return value, certain
+
+
+def _statement_words(text: str) -> list[tuple[str, bool]]:
+    """The statement's words, a quoted or escaped path with spaces kept whole (issue #1102).
+
+    Each word comes with whether the spaces cut it from a quoted spaced value offered whole
+    beside it (``True``) rather than standing alone in the statement (``False``). Only a cut word
+    may give way to that value on disk (``drop_space_cut_words``); a word the statement also names
+    on its own is never dropped (#1112 review).
+    """
+
+    words: list[tuple[str, bool]] = []
+    for match in _STATEMENT_TOKEN.finditer(text):
+        word = match.group("word")
+        if word is not None:
+            words.append((word.replace("\\ ", " "), False))
+            continue
+        content = match.group("tick") or match.group("double") or match.group("single") or ""
+        spaced = _spaced_candidate(content)
+        if spaced is None:
+            words.extend((part, False) for part in _STATEMENT_WORD.findall(content))
+            continue
+        value, certain = spaced
+        words.append((value, False))
+        start = content.find(value)
+        end = start + len(value)
+        if not certain:
+            # Only the disk can tell a folder from prose: every word still counts after the
+            # whole value, and the read drops the ones the spaces cut from it when the whole value
+            # names something. Prose before the value is no word of it; a word overlapping the
+            # value is one, even with an edge character the value lost (``'*src/test data*'``).
+            words.extend(
+                (fragment.group(0), fragment.end() > start)
+                for fragment in _STATEMENT_WORD.finditer(content)
+            )
+            continue
+        # Prose before the path still counts. So does the last word of a relative path whose
+        # earlier words hold no ``/``, when it names a file or a folder with a directory part: a
+        # quoted command (``cat docs/spec.md``) can pass for a spaced path, and the file it names
+        # must not be lost. No other word the spaces cut counts: ``/shared/legacy`` of
+        # ``"/shared/legacy app/main.c"``, ``data/`` of ``"src/test data/"`` and ``Notes.md`` of
+        # ``"docs/My Notes.md"`` are no path the task names (#1102 review).
+        tail = not value.startswith("/") and not any("/" in part for part in value.split(" ")[:-1])
+        for fragment in _STATEMENT_WORD.finditer(content):
+            text_value = fragment.group(0)
+            if fragment.end() <= start:
+                words.append((text_value, False))
+            elif tail and fragment.end() >= end:
+                kept = text_value.strip(_STATEMENT_WORD_EDGE)
+                if _names_a_file(kept) or (kept.endswith("/") and "/" in kept.rstrip("/")):
+                    words.append((text_value, True))
+    return words
+
+
+def _input_path(value: str) -> bool:
+    """Whether a read-only input value is one literal path: plain, or with single spaces.
+
+    Read-only inputs only. A requested output keeps ``_plain_path``: a requested value with
+    whitespace is prose and is never reported absent (#977).
+    """
+
+    if _plain_path(value):
+        return True
+    spaced = _spaced_candidate(value)
+    return spaced is not None and spaced[0] == value
+
+
+def _statement_directory(value: str) -> bool:
+    """Whether a statement word names a directory the read may list (issues #1082, #1102).
+
+    A word ending in ``/`` (``src/dedup/``, ``/shared/legacy_app/``), or an absolute path of one
+    component (``/app``, the commonest way a task names its whole workspace). Never ``/`` or
+    ``./`` and never a word without a letter. Whether it is a directory at all is the read's
+    business: a value that is not one is skipped there.
+    """
+
+    if not value or value in {"/", "./"} or not any(char.isalpha() for char in value):
+        return False
+    if not value.endswith("/") and not (value.startswith("/") and value.count("/") == 1):
+        return False
+    return _input_path(value)
 
 
 def _named_files(text: str) -> list[str]:
@@ -855,7 +1104,7 @@ def verification_input_paths(projection: ProjectionState) -> tuple[str, ...]:
             if word.startswith("-"):
                 continue
             value = _statement_file_word(_PYTEST_NODE_SUFFIX.sub("", word).removeprefix("./"))
-            if value is not None and _plain_path(value) and "." in value.rsplit("/", 1)[-1]:
+            if value is not None and _input_path(value) and "." in value.rsplit("/", 1)[-1]:
                 candidates.append(value)
     return tuple(dict.fromkeys(candidates))[:_MAX_VERIFICATION_INPUT_CANDIDATES]
 
@@ -878,47 +1127,276 @@ def review_input_paths(
 
 
 def task_input_paths(projection: ProjectionState, statement: str | None) -> tuple[str, ...]:
-    """Candidate read-only task input files for the check-time read (issue #1045).
+    """Candidate read-only task input files and directories for the check-time read (#1045).
 
     The files the task statement names (a spec, the source to port, a rulebook, ``DESIGN.md``) in
-    the order it names them, then the ``role: input`` requested files of effective obligations.
-    Only plain literal paths count, at most 16. The statement is read in process only to find
-    these words; nothing here is stored or logged, and the adapter reads a candidate only when it
-    lies inside the repository, is unchanged by the task, is not ignored and is not
-    credential-named.
+    the order it names them, then the ``role: input`` requested files of effective obligations,
+    then the directories either names (issues #1082, #1102). A path the statement quotes or
+    escapes keeps its spaces; otherwise only plain literal paths count, at most 16 in all. A
+    quoted span only the disk can tell apart (``"/app/test data"``) comes whole ahead of its own
+    words, and the read keeps those words only when the whole value names nothing there
+    (``drop_space_cut_words``, for the ``space_cut_input_paths`` among them). The statement is
+    read in process only to find these words; nothing here is stored or logged, and the adapter
+    reads a candidate only when it lies inside the repository, is unchanged by the task, is not
+    ignored and is not credential-named.
     """
+
+    return _task_input_candidates(projection, statement)[0]
+
+
+def space_cut_input_paths(projection: ProjectionState, statement: str | None) -> frozenset[str]:
+    """The review candidates only the spaces of a quoted spaced value cut out (#1102, #1112).
+
+    Among ``review_input_paths``' candidates, those the statement names only as a word of a quoted
+    spaced value it offers whole (``/app/test`` of ``"/app/test data"``): the only candidates a
+    read may drop when that whole value names something there (``drop_space_cut_words``). A path
+    the statement also names on its own (``Notes.md`` of ``Read "docs/My Notes.md" and
+    Notes.md``), a ``role: input`` item or a recorded verification operand is never one. In
+    process only, derived from the frozen case like the candidates themselves; never stored.
+    """
+
+    candidates, cut = _task_input_candidates(projection, statement)
+    if not cut:
+        return frozenset()
+    named = set(candidates)
+    return frozenset(cut - set(verification_input_paths(projection))) & named
+
+
+def _task_input_candidates(
+    projection: ProjectionState, statement: str | None
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """``task_input_paths``' candidates, and those only the spaces of a quoted value cut out."""
 
     candidates: list[str] = []
     directories: list[str] = []
+    # Issue #1112 review: which candidate values stood alone somewhere, and which only came from
+    # splitting a quoted spaced value, so a split word never takes an independently named path
+    # down with it.
+    alone: set[str] = set()
+    cut: set[str] = set()
     if type(statement) is str:
-        for word in _STATEMENT_WORD.findall(statement):
-            value = _statement_file_word(word)
-            if value is not None and _plain_path(value):
+        for word, split in _statement_words(statement):
+            spaced = _spaced_candidate(word) if " " in word else None
+            value = spaced[0] if spaced is not None else _statement_file_word(word)
+            if value is not None and not value.endswith("/") and _input_path(value):
                 candidates.append(value)
+                (cut if split else alone).add(value)
                 continue
-            # Issue #1082: an absolute directory the statement names ("the legacy app in
-            # /shared/legacy_app/") is offered last; only an outside-workspace root the owner
-            # admitted lists it, and the repository read never opens a directory as an input.
-            folder = word.strip(_STATEMENT_WORD_EDGE)
-            if (
-                folder.startswith("/")
-                and folder.endswith("/")
-                and folder.count("/") >= 3
-                and _plain_path(folder)
-            ):
+            # Issue #1102: a directory the statement names ("the code lives in src/dedup/", "the
+            # legacy app in /shared/legacy_app/", the workspace "/app") is offered after every
+            # file, so named files keep priority. Inside the repository the read lists its
+            # unchanged files and reads the ones most related to the change; outside it, only a
+            # root the owner admitted lists one. A no-slash ``/app/vllm`` keeps its place above:
+            # the read decides by what the path is.
+            folder = word.strip(_STATEMENT_WORD_EDGE) if value is None else value
+            if _statement_directory(folder):
                 directories.append(folder)
+                (cut if split else alone).add(folder)
     for obligation in effective_obligations(projection):
         payload = projection.obligations[obligation].payload
         if payload is None:
             continue
         for item in payload.requested_items:
-            if (
-                item.item_kind is RequestedItemKind.FILE
-                and item.role is RequestedItemRole.INPUT
-                and _plain_path(item.value)
-            ):
+            if item.role is not RequestedItemRole.INPUT or not _input_path(item.value):
+                continue
+            if item.item_kind is RequestedItemKind.FILE:
                 candidates.append(item.value)
-    return tuple(dict.fromkeys((*candidates, *directories)))[:_MAX_STATEMENT_INPUT_CANDIDATES]
+                alone.add(item.value)
+            elif item.item_kind is RequestedItemKind.DIRECTORY:
+                directories.append(item.value)
+                alone.add(item.value)
+    ordered = tuple(dict.fromkeys((*candidates, *directories)))[:_MAX_STATEMENT_INPUT_CANDIDATES]
+    return ordered, frozenset(value for value in ordered if value in cut and value not in alone)
+
+
+# Issue #1102 (RC6f): absolute trees that hold the system's own programs, libraries, devices,
+# processes and host configuration. A task that names ``/usr/bin/python3`` names a tool, not an
+# input the reviewer lacks, and no root beneath the device, process or configuration trees may be
+# admitted at all (``domain.privacy``).
+_SYSTEM_TREES: Final = (
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/nix",
+    "/private/etc",
+    "/private/var/run",
+    "/proc",
+    "/run",
+    "/sbin",
+    "/snap",
+    "/sys",
+    "/usr",
+    "/var/run",
+)
+# Scratch, log, cache, package-state and output trees: a task names them as places to write
+# ("write the answer to /tmp/answer.txt", "log to /var/log/app.log", "results go in /output/"),
+# not as material to read.
+_OUTPUT_TREES: Final = (
+    "/logs",
+    "/output",
+    "/outputs",
+    "/private/tmp",
+    "/private/var/folders",
+    "/private/var/tmp",
+    "/results",
+    "/tmp",
+    "/var/cache",
+    "/var/folders",
+    "/var/lib",
+    "/var/log",
+    "/var/tmp",
+)
+# A top-level folder named whole is a candidate (``/data``, ``/legacy``) unless it is a tree of
+# homes, installed software or system state, never itself one task's input folder.
+_TOP_LEVEL_CONTAINERS: Final = frozenset(
+    {
+        "/Applications",
+        "/Library",
+        "/System",
+        "/Users",
+        "/Volumes",
+        "/home",
+        "/media",
+        "/mnt",
+        "/opt",
+        "/private",
+        "/root",
+        "/srv",
+        "/var",
+    }
+)
+# A path through an installed program or package tree names a tool (``/opt/conda/bin/python``).
+_TOOL_COMPONENTS: Final = frozenset(
+    {"bin", "dist-packages", "node_modules", "sbin", "site-packages"}
+)
+
+
+def _lstat_or_none(path: str) -> os.stat_result | None:
+    try:
+        return os.lstat(path)
+    except OSError, ValueError:
+        return None
+
+
+def outside_input_candidates(
+    candidates: Iterable[str],
+    oracle: frozenset[str],
+    workspace: str,
+    admitted_roots: Iterable[str],
+    outputs: Iterable[str],
+) -> tuple[str, ...]:
+    """The candidates that lexically could be an unadmitted outside input, normalized (#1102).
+
+    The lexical half of ``outside_inputs_not_admitted``: an absolute candidate the task itself
+    names (not in ``oracle``), outside ``workspace`` (case-folded, as the outside read compares
+    it), not a declared output (``outputs``), in no system, scratch, log, cache or package-state
+    tree, through no ``bin`` or installed-package directory, with no hidden component, at or
+    beneath a path the owner may admit as a root (``admitted_input_root_valid``), not
+    credential-named, and at or beneath none of ``admitted_roots``. A top-level folder named
+    whole (``/data``) counts unless it is a tree of homes, installed software or system state
+    (``/home``, ``/opt``, ``/var``). Nothing on disk is consulted; in process only.
+    """
+
+    roots = tuple(os.path.normpath(root) for root in admitted_roots)
+    declared = {os.path.normpath(value) for value in outputs if value.startswith("/")}
+    eligible: list[str] = []
+    for value in candidates:
+        if not value.startswith("/") or value in oracle or "\x00" in value:
+            continue
+        path = os.path.normpath(value)
+        parts = path.split("/")[1:]
+        ancestors = ("/" + "/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+        if (
+            not parts
+            or not parts[0]
+            or path in _TOP_LEVEL_CONTAINERS
+            or path in declared
+            or _within(path, workspace)
+            or any(
+                path == tree or path.startswith(tree + "/")
+                for tree in (*_SYSTEM_TREES, *_OUTPUT_TREES)
+            )
+            or any(part.startswith(".") or part in _TOOL_COMPONENTS for part in parts)
+            or not any(admitted_input_root_valid(ancestor) for ancestor in ancestors)
+            or credential_named_bytes(os.fsencode(path))
+            or any(path == root or path.startswith(root + "/") for root in roots)
+        ):
+            continue
+        eligible.append(path)
+    return tuple(dict.fromkeys(eligible))
+
+
+def outside_inputs_not_admitted(
+    candidates: Iterable[str],
+    oracle: frozenset[str],
+    workspace: str,
+    admitted_roots: Iterable[str],
+    outputs: Iterable[str],
+    *,
+    task_started_at: float | None,
+    probe: Callable[[str], os.stat_result | None] | None = None,
+    space_cut: Collection[str] = frozenset(),
+) -> bool:
+    """Whether the task names an existing input outside the workspace no admitted root covers.
+
+    Issue #1102 (RC6f). ``candidates`` are ``review_input_paths``' candidates and ``oracle`` those
+    only a recorded verification command named, which are never read outside the workspace and
+    so never count. A candidate counts only when FinishUP can tell it is an input:
+
+    * lexically, it is one of ``outside_input_candidates``: absolute, outside ``workspace``,
+      not a declared output, in no system, scratch, log, cache or package-state tree, not
+      hidden or credential-named, at or beneath a path the owner may admit, and at or beneath
+      none of ``admitted_roots``; a top-level folder (``/data``) counts, a tree of homes,
+      installed software or system state (``/home``, ``/opt``, ``/var``) does not;
+    * a word the spaces cut from a spaced candidate that ``probe`` finds there
+      (``/shared/legacy`` of ``/shared/legacy app``) never counts (``drop_space_cut_words``),
+      when it is one of ``space_cut`` (``space_cut_input_paths``) and so not also named alone;
+    * on disk, ``probe`` (``lstat``: metadata only, never following a final link, never opening
+      content) finds a regular file or a directory there whose modification and change times
+      both predate ``task_started_at``; a top-level path only as a directory, since no root the
+      owner may admit covers a file like ``/spec.md``. A route (``GET /api/v1/users``) names
+      nothing on disk, and a file the agent wrote during the task (``/root/model.pt``) is its
+      output, not an input. Without a task-start time nothing counts.
+
+    A closed yes or no, decided once when the check-time read runs and frozen into its object:
+    no path is returned or kept.
+    """
+
+    if task_started_at is None:
+        return False
+    lookup = _lstat_or_none if probe is None else probe
+    found: dict[str, os.stat_result | None] = {}
+
+    def metadata(path: str) -> os.stat_result | None:
+        if path not in found:
+            found[path] = lookup(path)
+        return found[path]
+
+    def names_something(path: str) -> bool:
+        status = metadata(path)
+        return status is not None and (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
+
+    lexical = outside_input_candidates(candidates, oracle, workspace, admitted_roots, outputs)
+    # The lexical candidates are normalized, so the cut words are compared normalized too; a
+    # spelling the task also named on its own keeps the path.
+    alone = {os.path.normpath(value) for value in candidates if value not in space_cut}
+    cut = {os.path.normpath(value) for value in space_cut if value.startswith("/")} - alone
+    for path in drop_space_cut_words(lexical, names_something, cut):
+        status = metadata(path)
+        if (
+            status is None
+            or not (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
+            # A top-level path counts only as a folder: no root can cover ``/spec.md``.
+            or (path.count("/") == 1 and not stat.S_ISDIR(status.st_mode))
+            or max(status.st_mtime, status.st_ctime) >= task_started_at
+        ):
+            continue
+        return True
+    return False
 
 
 async def requested_output_states(

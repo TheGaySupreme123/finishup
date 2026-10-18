@@ -299,6 +299,13 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_excerpt_ceiling_rounds",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
+        # Issue #1102: task-input pilot counters (integers only, never a path).
+        "semantic_task_input_candidates",
+        "semantic_task_input_excerpts_selected",
+        "semantic_task_input_listings",
+        "semantic_task_input_outside_candidates",
+        "semantic_task_inputs_outside_not_admitted",
+        "semantic_task_inputs_read",
         # Closed control-plane identity of an abandoned response write (tb4n2 NEW-8): the wire
         # method enum value and the handshake client kind, never a body or a peer identity.
         "control_method",
@@ -431,6 +438,13 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_excerpt_ceiling_rounds",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
+        # Issue #1102: task-input pilot counters (integers only, never a path).
+        "semantic_task_input_candidates",
+        "semantic_task_input_excerpts_selected",
+        "semantic_task_input_listings",
+        "semantic_task_input_outside_candidates",
+        "semantic_task_inputs_outside_not_admitted",
+        "semantic_task_inputs_read",
     }
 )
 _BOOLEAN_FIELDS: Final = frozenset({"sqlite_compile_options_ok"})
