@@ -791,6 +791,23 @@ def test_observed_output_is_a_witness_even_when_the_check_source_is_outside_the_
     assert "[FinishUP: observed command output captured from a command the agent ran" in reading
 
 
+def test_a_hook_observed_runs_command_is_never_read_as_its_witness() -> None:
+    """#1108 review R2: the rule let a check's command show what a verdict-only line measures, but
+    a hook-observed run's command never reaches the provider (only its keyed identity does), so
+    the only command text the reviewer could read was the agent's own account of it."""
+
+    grounding = _section("Ground every conclusion")
+    assert (
+        "For a hook-observed run FinishUP does not send the command text: a command the agent "
+        "recorded or named for it is the agent's account, not the witness." in grounding
+    )
+    own_checks = _collapsed(openai_responses.REVIEWER_LENSES["own_checks"])
+    assert (
+        "for a hook-observed run FinishUP does not send the command text, so a command the agent "
+        "named for it is the agent's account." in own_checks
+    )
+
+
 def test_one_reading_of_disclosure() -> None:
     """n7 RC7 (#1108): "a disclosed caveat is not support" and "mark a disclosed limit
     not_assessable" both stood, and the reviewer took the second. One reading now: a disclosure

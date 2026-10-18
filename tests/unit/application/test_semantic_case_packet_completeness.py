@@ -433,8 +433,109 @@ def test_the_first_task_input_keeps_its_floor_beside_a_large_first_part() -> Non
         item = next(
             item for item in semantic.items if item.item_id == f"{TASK_INPUT_ITEM_PREFIX}01"
         )
-        assert item.content.endswith(spec), budget
+        # Whole, or (#1108 review R2: no decisive run here, so no hold for one) its head and tail
+        # within at least the clip floor.
+        assert item.content.endswith(spec[-90:]), budget
+        assert item.content_bytes >= 2_048, budget
         assert sum(sizes.values()) <= budget, budget
+
+
+def _change_and_input_bytes(
+    diff: bytes, spec: bytes | None, budget: int
+) -> tuple[int, int, bool, int]:
+    """Change bytes, input bytes, whether the change is marked truncated, and unused room."""
+
+    inputs = () if spec is None else (TaskInputFile("DESIGN.md", spec, len(spec)),)
+    expanded = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    semantic = _build(
+        _statement_case(),
+        change=_change(diff, inputs=inputs),
+        profile=ReviewContextProfile.CUSTOM,
+        selection=replace(expanded, max_total_excerpt_bytes=budget),
+    )
+    refs = semantic.packet.targeted_excerpts
+    change_bytes = sum(
+        ref.content_bytes for ref in refs if ref.excerpt_item_id.startswith("change-check-time-")
+    )
+    input_bytes = sum(
+        ref.content_bytes for ref in refs if ref.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
+    )
+    truncated = "check_time_change_truncated" in semantic.packet.coverage.known_gaps
+    return change_bytes, input_bytes, truncated, budget - sum(ref.content_bytes for ref in refs)
+
+
+def test_a_small_task_input_never_cuts_a_change_that_fits_beside_it() -> None:
+    """#1108 review R2: the first offer held the full 2 KiB clip floor and the decisive run's hold
+    whatever the input's size and whether or not the case had a run, so a one-part change beside a
+    230-byte specification arrived cut and marked truncated, with 3-4 KB of room unused, where it
+    had arrived whole. The offer now holds only what the first input needs, the hold only when a
+    run exists, and a cut first part grows back into the room the packet has left."""
+
+    spec = b"Keep the VBA captions.\n" * 10
+    for lines in (1_200, 1_400):
+        diff = b"diff --git a/form.py b/form.py\n" + b"+value = 1\n" * lines
+        for budget in (16_384, 18_000, 20_000, 24_000):
+            alone, _none, alone_cut, _room = _change_and_input_bytes(diff, None, budget)
+            change, given, cut, unused = _change_and_input_bytes(diff, spec, budget)
+            assert not alone_cut, (lines, budget)
+            assert (change, cut) == (alone, False), (lines, budget)
+            assert given > len(spec), (lines, budget)
+            assert unused >= 0, (lines, budget)
+
+
+def test_a_change_part_cut_for_the_decisive_hold_grows_back_into_unused_room() -> None:
+    """#1108 review R2: with a verification output recorded, the first offer still holds room for
+    the decisive run and may cut the change's first part. Room that run leaves unused goes back to
+    that part, so a one-part change that fits arrives whole and is not marked truncated."""
+
+    spec = b"Keep the VBA captions.\n" * 10
+    diff = b"diff --git a/form.py b/form.py\n" + b"+value = 1\n" * 1_400
+    case = _statement_case()
+    evidence = dict(case.projection.evidence)
+    evidence[evd(2)] = evidence_record(
+        EvidenceRecordedPayload(
+            evd(2),
+            EvidenceKind.TEST_RESULT,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-10-13T00:00:00.000Z"),
+            description="81 passed",
+        ),
+        22,
+    )
+    case = replace(case, projection=replace(case.projection, evidence=evidence))
+    expanded = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    for budget in (16_384, 18_000):
+        semantic = _build(
+            case,
+            change=_change(diff, inputs=(TaskInputFile("DESIGN.md", spec, len(spec)),)),
+            profile=ReviewContextProfile.CUSTOM,
+            selection=replace(expanded, max_total_excerpt_bytes=budget),
+        )
+        parts = [
+            ref
+            for ref in semantic.packet.targeted_excerpts
+            if ref.excerpt_item_id.startswith("change-check-time-")
+        ]
+        assert len(parts) == 1, budget
+        item = next(item for item in semantic.items if item.item_id == parts[0].excerpt_item_id)
+        assert b"cut to the packet's room" not in item.content, budget
+        assert item.content.endswith(b"+value = 1\n"), budget
+        assert "check_time_change_truncated" not in semantic.packet.coverage.known_gaps, budget
+        assert sum(ref.content_bytes for ref in semantic.packet.targeted_excerpts) <= budget
+
+
+def test_a_small_task_input_costs_a_large_change_no_more_than_its_size() -> None:
+    """#1108 review R2: a 574-byte specification cost a 44 KB change up to 3.5 KB under a narrowed
+    budget, room that then stayed unused. The change now loses at most what the input carries."""
+
+    diff = b"diff --git a/form.py b/form.py\n" + b"+value = 1\n" * 4_000
+    spec = b"Keep the VBA captions on every button.\n" * 14
+    for budget in (16_384, 18_000, 20_000, 24_000):
+        alone, _none, _cut, _room = _change_and_input_bytes(diff, None, budget)
+        change, given, _cut, unused = _change_and_input_bytes(diff, spec, budget)
+        assert given > len(spec), budget
+        assert change >= min(alone, budget - given), budget
+        assert unused >= 0, budget
 
 
 def test_the_change_reservation_follows_the_planned_budget() -> None:

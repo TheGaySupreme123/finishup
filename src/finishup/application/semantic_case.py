@@ -876,6 +876,30 @@ def _first_task_input_slots(
     return max(0, min(MAX_TASK_INPUT_FILES, selection.max_excerpts - admitted - decisive))
 
 
+def _has_verification_output(projection: ProjectionState) -> bool:
+    """Whether the case records a run whose output could decide the change (#1108 review R2).
+
+    A readable command result, command or test output, or a hook-captured output. Only then does
+    the first task-input offer hold room for the decisive run.
+    """
+
+    if any(row.payload is not None and not row.redacted for row in projection.results.values()):
+        return True
+    for row in projection.evidence.values():
+        payload = row.payload
+        if payload is None or row.redacted:
+            continue
+        if payload.evidence_kind in {EvidenceKind.COMMAND_OUTPUT, EvidenceKind.TEST_RESULT}:
+            return True
+        binding = payload.digest_binding
+        if (
+            binding is not None
+            and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+        ):
+            return True
+    return False
+
+
 def carries_task_inputs(selection: ReviewSelectionPolicy) -> bool:
     """Whether a review under ``selection`` carries read-only task input files (issue #1045).
 
@@ -1826,7 +1850,42 @@ def _head_tail(raw: bytes, limit: int) -> str:
 
 def _head_tail_kept(raw: bytes, limit: int) -> tuple[str, tuple[tuple[int, int], ...]]:
     """``_head_tail`` and the byte intervals of ``raw`` it kept (tb4n5): the head and the tail,
-    never the elided middle, so a clipped excerpt never reads as the whole source."""
+    never the elided middle, so a clipped excerpt never reads as the whole source.
+
+    The elision marker ends on a newline, so the tail's first bytes start a line even when they
+    sat mid-line in ``raw``, where no fence marked them. A tail that then begins like a FinishUP
+    label is cut again with room for one ``(agent text) `` prefix, and that line is prefixed
+    (#1108 review R2): a cut never makes agent bytes read as a FinishUP label. Only the cut edge
+    is marked; every other line keeps the bytes the caller gave. Kept intervals index ``raw``.
+    """
+
+    text, kept = _head_tail_cut(raw, limit)
+    if len(kept) != 2 or not _tail_begins_like_label(raw, kept[1]):
+        return text, kept
+    prefix = _AGENT_TEXT_PREFIX
+    text, kept = _head_tail_cut(raw, limit - len(prefix.encode("ascii")))
+    if len(kept) != 2:
+        return text, kept
+    (_head_start, head_end), (tail_start, tail_end) = kept
+    head = raw[:head_end].decode("utf-8", errors="ignore")
+    tail = raw[tail_start:tail_end].decode("utf-8", errors="ignore")
+    first = tail.splitlines(keepends=True)[0] if tail else ""
+    lead = _label_lead(first)
+    if lead is not None:
+        tail = tail[:lead] + prefix + tail[lead:]
+    elided = len(raw) - head_end - (tail_end - tail_start)
+    return head + _elision_marker(elided, len(raw)) + tail, kept
+
+
+def _tail_begins_like_label(raw: bytes, interval: tuple[int, int]) -> bool:
+    """Whether the kept tail ``interval`` of ``raw`` starts the way a FinishUP label does."""
+
+    low, high = interval
+    return _begins_like_label(raw[low:high])
+
+
+def _head_tail_cut(raw: bytes, limit: int) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """The head-and-tail cut of ``raw`` within ``limit`` bytes, no fence applied to its edges."""
 
     total = len(raw)
     if total <= limit:
@@ -3544,11 +3603,24 @@ _INVISIBLE_CATEGORIES: Final = frozenset(
     {"Cc", "Cf", "Cn", "Co", "Cs", "Me", "Mn", "Zl", "Zp", "Zs"}
 )
 _INVISIBLE_FILLERS: Final = frozenset("\u115f\u1160\u2800\u3164\uffa0")
-# Brackets a reader may take for the ``[`` that opens a label, after NFKC folding.
-_LABEL_OPENERS: Final = frozenset("[\u2045\u27e6\u27e8\u3014\u301a\u3010\u2772")
+# Brackets a reader may take for the ``[`` that opens a label, after NFKC folding: these, and
+# every opening bracket or initial quote (Unicode categories Ps and Pi; #1108 review R2).
+_LABEL_OPENERS: Final = frozenset(
+    "[<\u2045\u27e6\u27e8\u3014\u301a\u3010\u2772"
+    # Bracket pieces, corners and box corners: U+23A1-U+23A3, U+2308, U+230A, U+231C, U+231E,
+    # U+250C, U+250F, U+2552-U+2554, U+256D, U+2E22, U+2E24, U+300C, U+300E.
+    "\u23a1\u23a2\u23a3\u2308\u230a\u231c\u231e\u250c\u250f\u2552\u2553\u2554"
+    "\u256d\u2e22\u2e24\u300c\u300e"
+)
+_LABEL_OPENER_CATEGORIES: Final = frozenset({"Ps", "Pi"})
 _LABEL_NAMES: Final = (PRODUCT_NAME.casefold(), LEGACY_PRODUCT_NAME.casefold())
 # The name is read from at most this many characters after the bracket.
 _LABEL_PROBE_CHARS: Final = 64
+# ASCII a reader may take for a letter of the name: ``F1nishUP``, ``Y0etz``.
+_LABEL_DIGIT_LOOKALIKES: Final = {"0": "o", "1": "i", "5": "s", "|": "i"}
+# Scripts whose letters a reader may take for a Latin letter of the name (``F\u0456nishUP``
+# with a Cyrillic i, ``FinishU\u03a1`` with a Greek Rho): such a letter matches any letter there.
+_LABEL_LOOKALIKE_SCRIPTS: Final = ("LATIN", "GREEK", "CYRILLIC", "ARMENIAN", "CHEROKEE", "COPTIC")
 
 
 def _invisible(character: str) -> bool:
@@ -3567,11 +3639,54 @@ def _label_lead(line: str) -> int | None:
     at = 0
     while at < len(line) and _invisible(line[at]):
         at += 1
-    if at == len(line) or unicodedata.normalize("NFKC", line[at])[:1] not in _LABEL_OPENERS:
+    if at == len(line) or not _label_opener(line[at]):
         return None
     probe = unicodedata.normalize("NFKC", line[at + 1 : at + 1 + _LABEL_PROBE_CHARS])
-    name = "".join(character for character in probe if not _invisible(character)).casefold()
-    return at if name.startswith(_LABEL_NAMES) else None
+    name = _label_skeleton(probe)
+    return at if any(_skeleton_matches(name, target) for target in _LABEL_NAMES) else None
+
+
+def _label_opener(character: str) -> bool:
+    """Whether a reader may take ``character`` for the bracket that opens a FinishUP label."""
+
+    folded = unicodedata.normalize("NFKC", character)[:1]
+    return (
+        folded in _LABEL_OPENERS
+        or character in _LABEL_OPENERS
+        or unicodedata.category(folded or character) in _LABEL_OPENER_CATEGORIES
+    )
+
+
+def _label_skeleton(probe: str) -> str:
+    """The letters of ``probe`` as a reader sees them, a lookalike letter as ``?``.
+
+    Marks are stripped (NFKD), and characters that are not letters (punctuation, separators,
+    invisibles: ``Finish-UP``, ``F.inishUP``) are dropped. ASCII lookalikes fold to the letter they
+    imitate; a letter of a lookalike script that does not fold to ASCII becomes ``?``, matching
+    any letter. Over-marking is safe, so the match errs toward a label.
+    """
+
+    letters: list[str] = []
+    for character in unicodedata.normalize("NFKD", probe):
+        if character in _LABEL_DIGIT_LOOKALIKES:
+            letters.append(_LABEL_DIGIT_LOOKALIKES[character])
+        elif not character.isalpha():
+            continue
+        elif character.isascii():
+            letters.append(character.casefold())
+        elif unicodedata.name(character, "").startswith(_LABEL_LOOKALIKE_SCRIPTS):
+            letters.append("?")
+        else:
+            letters.append(character.casefold())
+    return "".join(letters)
+
+
+def _skeleton_matches(name: str, target: str) -> bool:
+    """Whether ``name`` begins with ``target``, ``?`` standing for any letter."""
+
+    return len(name) >= len(target) and all(
+        seen in {"?", wanted} for seen, wanted in zip(name, target, strict=False)
+    )
 
 
 def _neutralised_agent_text(text: str) -> str:
@@ -7171,7 +7286,6 @@ def _build_semantic_case_once(
         admitted_items: list[SemanticCaseItem] = []
         admitted_refs: list[TargetedExcerptRef] = []
         bytes_used = 0
-        part_limit = _check_time_change_part_limit(selection)
         while (
             not check_change_cut
             and check_change_admitted < len(check_change_parts)
@@ -7192,51 +7306,98 @@ def _build_semantic_case_once(
                 if cut is None:
                     break
                 part, check_change_cut = cut
-            item = _content_item(
-                item_id=f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{check_change_admitted + 1:03d}",
-                section="excerpt",
-                # The service read this from the repository itself: it leaves only where the
-                # channel allows repository excerpts, never as recorded evidence.
-                category=DataCategory.REPOSITORY_EXCERPT,
-                source_kind="diff",
-                source_ref=_CHECK_TIME_CHANGE_SOURCE_REF,
-                linked_subject_refs=check_change_links,
-                # Ordered ahead of every recorded excerpt: it is the change under review.
-                occurred_order=0,
-                text=part,
-                over_limit=over_limit,
-                limit=part_limit,
-            )
+            item, ref, part_key = check_time_change_item(check_change_admitted, part)
             admitted_items.append(item)
-            admitted_refs.append(
-                TargetedExcerptRef(
-                    excerpt_item_id=item.item_id,
-                    source_kind="diff",
-                    linked_subject_refs=check_change_links,
-                    subject_state_relation=SubjectStateRelation.UNKNOWN,
-                    content_visibility="available",
-                    content_digest=item.content_digest,
-                    content_bytes=item.content_bytes,
-                )
-            )
+            admitted_refs.append(ref)
             bytes_used += item.content_bytes
-            assert check_time_change is not None
-            chunk_bytes = _check_time_change_part_chunk_bytes(item.content)
-            if chunk_bytes and check_change_admitted < len(check_change_offsets):
-                part_start = check_change_offsets[check_change_admitted]
-                excerpt_part_keys.append(
-                    (
-                        item.item_id,
-                        excerpt_span_key(
-                            _CHECK_TIME_CHANGE_SOURCE_REF,
-                            part_start,
-                            part_start + chunk_bytes,
-                            len(check_time_change.capture.text),
-                        ),
-                    )
-                )
+            if part_key is not None:
+                excerpt_part_keys.append(part_key)
             check_change_admitted += 1
         return tuple(admitted_items), tuple(admitted_refs)
+
+    def check_time_change_item(
+        index: int, part: str
+    ) -> tuple[SemanticCaseItem, TargetedExcerptRef, tuple[str, str] | None]:
+        """Change part ``index`` (zero-based) as an excerpt, its ref, and where its bytes sit."""
+
+        item = _content_item(
+            item_id=f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index + 1:03d}",
+            section="excerpt",
+            # The service read this from the repository itself: it leaves only where the
+            # channel allows repository excerpts, never as recorded evidence.
+            category=DataCategory.REPOSITORY_EXCERPT,
+            source_kind="diff",
+            source_ref=_CHECK_TIME_CHANGE_SOURCE_REF,
+            linked_subject_refs=check_change_links,
+            # Ordered ahead of every recorded excerpt: it is the change under review.
+            occurred_order=0,
+            text=part,
+            over_limit=over_limit,
+            limit=_check_time_change_part_limit(selection),
+        )
+        ref = TargetedExcerptRef(
+            excerpt_item_id=item.item_id,
+            source_kind="diff",
+            linked_subject_refs=check_change_links,
+            subject_state_relation=SubjectStateRelation.UNKNOWN,
+            content_visibility="available",
+            content_digest=item.content_digest,
+            content_bytes=item.content_bytes,
+        )
+        assert check_time_change is not None
+        chunk_bytes = _check_time_change_part_chunk_bytes(item.content)
+        part_key: tuple[str, str] | None = None
+        if chunk_bytes and index < len(check_change_offsets):
+            part_start = check_change_offsets[index]
+            part_key = (
+                item.item_id,
+                excerpt_span_key(
+                    _CHECK_TIME_CHANGE_SOURCE_REF,
+                    part_start,
+                    part_start + chunk_bytes,
+                    len(check_time_change.capture.text),
+                ),
+            )
+        return item, ref, part_key
+
+    def regrow_cut_check_time_change() -> None:
+        """Give a first change part cut at the first offer the room the packet has left (#1108 R2).
+
+        The first offer may cut the change's first part so the first task input and the decisive
+        run keep their room. Room every other excerpt then left goes back to that part, ahead of
+        the backfill: whole when it fits, so the parts after it may follow, else a longer cut.
+        """
+
+        nonlocal excerpt_bytes_used, check_change_cut
+        if not check_change_cut or check_change_admitted != 1:
+            return
+        item_id = f"{CHECK_TIME_CHANGE_ITEM_PREFIX}001"
+        position = next(
+            (at for at, ref in enumerate(targeted) if ref.excerpt_item_id == item_id), None
+        )
+        if position is None:
+            return
+        carried = targeted[position].content_bytes
+        room = total_excerpt_budget - excerpt_bytes_used + carried
+        part = next(iter(check_change_parts), "")
+        if not part:
+            return
+        whole = len(part.encode("utf-8")) <= room
+        if not whole:
+            cut = _check_time_change_cut_part(part, 1, len(check_change_parts), room)
+            if cut is None:
+                return
+            part = cut[0]
+        if len(part.encode("utf-8")) <= carried:
+            return
+        item, ref, part_key = check_time_change_item(0, part)
+        items[next(at for at, held in enumerate(items) if held.item_id == item_id)] = item
+        targeted[position] = ref
+        excerpt_part_keys[:] = [key for key in excerpt_part_keys if key[0] != item_id]
+        if part_key is not None:
+            excerpt_part_keys.append(part_key)
+        excerpt_bytes_used += item.content_bytes - carried
+        check_change_cut = not whole
 
     def admit_check_time_change(slot_limit: int, byte_limit: int) -> None:
         """Admit the next parts within one share and what the whole budget still has free."""
@@ -7254,10 +7415,13 @@ def _build_semantic_case_once(
         # n7 RC6e (#1108): the service-captured change under review takes its reserved share of
         # this packet's budget first; see ``_check_time_change_reservation`` for how the rest of
         # the budget is shared.
-        decisive_hold = min(
-            selection.max_excerpt_bytes, total_excerpt_budget // _DECISIVE_RUN_HOLD_DIVISOR
-        )
         follow_up_count = 0 if follow_up is None else len(follow_up.items)
+        # The hold is taken only when a verification run can decide the change (#1108 review R2).
+        decisive_hold = (
+            min(selection.max_excerpt_bytes, total_excerpt_budget // _DECISIVE_RUN_HOLD_DIVISOR)
+            if follow_up_count or _has_verification_output(projection)
+            else 0
+        )
         reserved_slots, reserved_bytes = _check_time_change_reservation(
             selection,
             len(check_change_parts[0].encode("utf-8")) if check_change_parts else 0,
@@ -7267,15 +7431,19 @@ def _build_semantic_case_once(
             selection, min(reserved_slots, len(check_change_parts)), follow_up_count
         ):
             # The share is rounded up to the change's first part; under a narrowed budget that
-            # rounding never takes the first task input's clip floor or the decisive run's hold
-            # (#1108 review R1). The change keeps at least its half, its first part cut to the
-            # room as a narrowed case already allows.
+            # rounding never takes the room the first task input needs (the whole input, at most
+            # its 2 KiB clip floor) or the decisive run's hold, when the case has such a run
+            # (#1108 reviews R1 and R2). The change keeps at least its half, its first part cut to
+            # the room as a narrowed case already allows; ``regrow_cut_check_time_change`` gives
+            # that part the room the packet has left before the backfill.
+            first_input_need = min(
+                _MIN_TASK_INPUT_CLIP_BYTES,
+                task_input_limit,
+                len(task_inputs[0][0].encode("utf-8")),
+            )
             reserved_bytes = max(
                 total_excerpt_budget // 2,
-                min(
-                    reserved_bytes,
-                    total_excerpt_budget - decisive_hold - _MIN_TASK_INPUT_CLIP_BYTES,
-                ),
+                min(reserved_bytes, total_excerpt_budget - decisive_hold - first_input_need),
             )
         admit_check_time_change(reserved_slots, reserved_bytes)
         # The controlling inputs the task names (a specification, a dataset, a test the
@@ -7352,8 +7520,10 @@ def _build_semantic_case_once(
         truncated_item_ids.update(excerpts.truncated_item_ids)
         excerpt_bytes_used += sum(ref.content_bytes for ref in excerpts.targeted)
 
-        # Parts still left backfill whatever budget every other excerpt left, then task inputs
-        # the first offer's share left out (issue #1045).
+        # A first change part the first offer cut grows back first (#1108 review R2). Parts still
+        # left backfill whatever budget every other excerpt left, then task inputs the first
+        # offer's share left out (issue #1045).
+        regrow_cut_check_time_change()
         admit_check_time_change(selection.max_excerpts, selection.max_total_excerpt_bytes)
         input_items, input_refs = task_input_excerpts(
             max(0, selection.max_excerpts - len(targeted)),
@@ -10131,12 +10301,22 @@ def _drop_catalog_row(envelope: dict[str, JsonValue]) -> bool:
     Catalog order is the case's own section/occurrence order, so the tail is the least
     structurally load-bearing row. Dropping a row without also dropping its ids would leave
     ``*_item_ids`` and ``targeted_excerpts`` pointing at an item the packet no longer carries.
+    The agent-disclosures row sits in the decision section, after the claims and obligations it
+    discloses limits for; it stays while any obligation row does (#1108 review R2), so bounding
+    never carries an obligation without the disclosure the agent recorded on it.
     """
 
     rows = _catalog_rows(envelope)
     if not rows:
         return False
-    dropped = rows.pop()
+    index = len(rows) - 1
+    if (
+        index
+        and rows[index].get("item_id") == AGENT_DISCLOSURES_ITEM_ID
+        and any(row.get("section") == "obligation" for row in rows)
+    ):
+        index -= 1
+    dropped = rows.pop(index)
     envelope["item_catalog"] = cast(JsonValue, rows)
     dropped_id = dropped.get("item_id")
     if type(dropped_id) is not str:

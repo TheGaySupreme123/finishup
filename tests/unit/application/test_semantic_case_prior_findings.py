@@ -32,6 +32,7 @@ from builders.policy_cases import (
     record,
     res,
 )
+from finishup.application import semantic_case as semantic_case_module
 from finishup.application.missing_for_assessment import ReviewFollowUp, ReviewFollowUpItem
 from finishup.application.semantic_case import (
     AGENT_DISCLOSURES_ITEM_ID,
@@ -813,6 +814,54 @@ def test_disclosures_travel_in_one_agent_assertion_row() -> None:
         "acknowledged_not_done": True,
         "already_disclosed": True,
     }
+
+
+def test_envelope_bounding_keeps_the_disclosures_while_an_obligation_travels() -> None:
+    """#1108 review R2: bounding drops catalog rows from the tail, and the agent-disclosures row
+    sits in the decision section after the claims and obligations, so it dropped first and an
+    obligation could travel without its disclosure. It now stays while any obligation row does."""
+
+    def row(item_id: str, section: str) -> JsonValue:
+        return {"item_id": item_id, "section": section}
+
+    envelope: dict[str, JsonValue] = {
+        "item_catalog": [
+            row("obligation-1", "obligation"),
+            row("claim-1", "claim"),
+            row(AGENT_DISCLOSURES_ITEM_ID, "decision"),
+            row("decision-1", "decision"),
+            row("timeline-1", "timeline"),
+        ],
+        "review_packet": {"decision_item_ids": [AGENT_DISCLOSURES_ITEM_ID, "decision-1"]},
+    }
+    order: list[str] = []
+    while semantic_case_module._drop_catalog_row(envelope):  # pyright: ignore[reportPrivateUsage]
+        remaining = {
+            cast(str, cast(Mapping[str, JsonValue], item)["item_id"])
+            for item in cast(list[JsonValue], envelope["item_catalog"])
+        }
+        order.append(
+            next(
+                item_id
+                for item_id in (
+                    "timeline-1",
+                    "decision-1",
+                    "claim-1",
+                    "obligation-1",
+                    AGENT_DISCLOSURES_ITEM_ID,
+                )
+                if item_id not in remaining and item_id not in order
+            )
+        )
+        if "obligation-1" in remaining:
+            assert AGENT_DISCLOSURES_ITEM_ID in remaining
+    assert order == [
+        "timeline-1",
+        "decision-1",
+        "claim-1",
+        "obligation-1",
+        AGENT_DISCLOSURES_ITEM_ID,
+    ]
 
 
 def test_unanswered_local_finding_is_not_carried() -> None:

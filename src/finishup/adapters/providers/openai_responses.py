@@ -311,8 +311,9 @@ REVIEWER_LENSES: Final[Mapping[str, str]] = MappingProxyType(
             "cite one as support, confirm that it measures the quantity the task defines, over the "
             "same inputs, window and exclusions, with the same aggregation and threshold, and that "
             "it does not reuse the logic it checks. Its source, its command or its observed lines "
-            "can show this. A check that shares the implementation's assumption shows only that "
-            "the code ran. Example: a validator reuses another criterion's exclusion mask and "
+            "can show this, though for a hook-observed run FinishUP does not send the command "
+            "text, so a command the agent named for it is the agent's account. A check that "
+            "shares the implementation's assumption shows only that the code ran. Example: a validator reuses another criterion's exclusion mask and "
             "reports PASS on samples the requirement does not cover."
         ),
         # gsea-proteomics and roy-polymorph-cn class: an unexamined choice decided the answer.
@@ -392,7 +393,9 @@ REVIEWER_GROUNDING_RULES: Final[tuple[str, ...]] = (
     "insufficient_packet, or ask for the check's source only because that source is absent. A "
     "line that prints only a verdict (PASS, OK, a pass count) witnesses that the check passed, "
     "not what it measured: a row resting on it is supported only as far as the check's command, "
-    "name or printed criteria show what it measures, and says so. An aggregate pass count, an "
+    "name or printed criteria show what it measures, and says so. For a hook-observed run "
+    "FinishUP does not send the command text: a command the agent recorded or named for it is "
+    "the agent's account, not the witness. An aggregate pass count, an "
     "agent's PASS line, or a caveat the agent disclosed is not by itself support.",
     "Scope each supported row to the check actually performed: say what you traced, or which "
     "recorded check it rests on and what that check covers. Never imply agreement with a hidden "
