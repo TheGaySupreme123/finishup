@@ -2147,3 +2147,74 @@ a model follows them; [the evaluation runbook](../runbooks/reviewer-instruction-
 the procedure for a live replay. The instruction grew from 22.5 KB to about 29.8 KB, about 1.8k
 more input tokens per review under the bytes/4 estimate, against a median native review footprint
 of about 110k tokens.
+
+### Observed witnesses, one reading of disclosure, primary material first (2026-10-18, n7, issue #1108)
+
+The n7 investigation traced the reviewer's extra `insufficient_packet` verdicts and its wrong
+verdicts to the instruction and the packet layout, not to missing material: 15 of 27 wrong verdicts
+had the decisive fact in the packet. Three causes are fixed here; the round goal is that an
+AI-powered review receives the material it needs and judges from primary material.
+
+- **Observed output is a witness** (RC6c). "Support needs a witness" made the reviewer abstain on
+  the agent's own validators, probes and tests, whose files agents keep outside the workspace
+  (FinishUP never sends them), although the packet held what those checks printed. A hook-captured
+  tool output now leads its first-packet excerpt with
+  `[FinishUP: observed output captured by a host hook (evidence <evd_>)…; not an agent-published result]`
+  (`_OBSERVED_OUTPUT_LABEL`). The label carries ids and closed tokens only and is prefixed after the
+  capture's text is neutralised, so a capture cannot forge it; its recorded spans stay placed in
+  the capture's own bytes. A run clause (`run of command action <act_>, host-reported outcome
+  <outcome>, exit status <n>`) appears only when the action and its result are hook-observed
+  records (ADR-022 decision 2) and the action's keyed command identity is the one the capture was
+  resolved under, the test auto-supply already applies; an agent-published or plaintext record
+  never lends a capture an outcome. The grounding rule now names such output as a witness, tells
+  the reviewer never to abstain only because a check's source is absent, and says a bare verdict
+  line (PASS, OK, a pass count) witnesses only that the check passed. The own-checks lens separates
+  the check's verdict (the claim) from what FinishUP observed it print (evidence of what it
+  printed). The `excerpt-supplied-` summary rule moved beside the `prior_missing_for_assessment`
+  sentence, since supplied answers arrive in the next check's packet (issue #1094 round-3 note), and
+  now says that observed output, the check-time change or a file answering the same request is the
+  witness; `supplied_since` is said to include the re-runs of a requested command FinishUP observed.
+- **One reading of disclosure** (RC7). The instruction said both "a caveat the agent disclosed is
+  not by itself support" and "a hidden-evaluator requirement is `not_assessable`, not a challenge,
+  once the packet shows the agent disclosed it", and the reviewer took the second: 9 of 27 wrong
+  verdicts leaned on a disclosure. This amendment deliberately replaces three earlier sentences
+  rather than keeping each one, an exception to the #1082 convention above:
+  - the final-phase rule now makes such a requirement `not_assessable` *when the packet holds no
+    material that settles it*; a disclosure states the limit, is not support, and never stops the
+    reviewer judging what the packet shows, or challenging the requirement when that material shows
+    it unmet;
+  - the final-phase question (`REVIEW_PHASE_QUESTIONS["final"]`) says the same;
+  - the blockers lens now says a disclosed limitation outside the agent's control *excuses an unmet
+    requirement* and never supports a claim that the work is done (it said "supports a claim").
+  The unbounded-quantifier and never-demand-the-unobtainable sentences stay, so tb4n3 RC-1 (#1024)
+  still holds: nothing asks for an artifact the agent cannot obtain.
+- **Primary material first** (RC7). Items now come in `SEMANTIC_CASE_SECTION_ORDER`: the task
+  statement, then excerpts (the check-time change, task inputs, observed output, other recorded
+  excerpts), then FinishUP's deterministic findings, then the agent's account (plan, obligations,
+  claims, decisions and the `agent-disclosures` row, ADR-040), then earlier findings and the
+  timeline. The port and the builder share that one tuple. The "Reading the packet" section states
+  the order and says to read the work before the agent's account of it. Envelope bounding drops
+  catalog rows from the tail, so past `MAX_EGRESS_ENVELOPE_BYTES` the timeline and the agent's rows
+  now yield before any excerpt (disclosed through `selection_accounting.catalog_dropped_count`).
+- **Wording from issue #1094.** The environment lens raises a run-time file only when the
+  deliverable does not ship it *and the task does not supply it*, and network access only when *the
+  task does not provide it* (R2-N1). A `[FinishUP summary of` excerpt is said to stand for a binary,
+  an image or a data file FinishUP cannot send as text; a large text input keeps its head and tail
+  (R2-N3).
+
+Every provider route reads the same text: the Responses and Chat Completions adapters send
+`SEMANTIC_REVIEW_INSTRUCTION` (Chat Completions with its JSON-shape suffix), and the Codex app-server
+sends it as `baseInstructions`; the local-model adapter sends no instruction and the fake provider a
+fixed digest. The instruction grew from 29.9 KB to about 33.3 KB, about 860 more input tokens per
+review under the bytes/4 estimate. Case digests change for every case (item order is bound into
+`case_digest`), so a review frozen by an older build and recovered by this one ends `failed` /
+`coordinator_failure` through `semantic_execution_case_changed`, as for every case-builder change,
+and a pending disclosure approval bound to the older digest is reported `stale` and re-prepared.
+
+Four n7 cases join the offline evaluation set (`tests/fixtures/reviewer_accuracy/n7_cases.json`):
+an observed validator outside the workspace, an answer supplied after a request, a disclosed limit
+with the decisive fact in the packet, and a task-supplied input and service (R2-N1). As with the N6
+set, the tests prove the directives are present, not that a model follows them; the pilot or a live
+replay ([the evaluation runbook](../runbooks/reviewer-instruction-evaluation.md)) is the behavioural
+check. Watch for a supported row resting only on an observed bare PASS, and for
+`state_unresolved_limitation` loops on disclosed hidden-grader limits.

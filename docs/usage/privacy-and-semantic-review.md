@@ -398,8 +398,10 @@ travels only when the task's starting commit was kept, Git compares it normally 
 skip-worktree or assume-unchanged never travels) and its content still matches that commit
 exactly. A test or fixture file a recorded verification command ran is offered the same way, so the
 reviewer can read the assertions behind a passing run; a test your agent wrote or changed is
-already in the change. Task inputs travel ahead of the change, within a quarter of the room for
-excerpts and never in the places the change and the latest test run need. A binary, image or data
+already in the change. Task inputs travel after the change's own share, within an eighth of the
+room for excerpts and never in the places the latest test run needs, so a large change cannot push
+the specification out entirely; a task input larger than the room left arrives as its first and
+last lines, marked as shortened. A binary, image or data
 input (a PDF included) is never sent: FinishUP sends its own short description instead (format, size, image dimensions, an estimated page count, a spreadsheet's sheet names and
 first rows, an archive's file names, an array's shape), labelled as FinishUP's description; a value
 in it that looks like a credential is replaced by a marker before anything is shortened. A large
@@ -512,7 +514,12 @@ carry as problems in the work, and it never asks the agent to install tools or c
 environment. It does flag delivery risks it can see, such as an import the recorded environment
 lacks or files written outside the requested location, and it tests an "impossible" or
 "infeasible" conclusion against what the task asked for. A limitation outside the agent's control
-is acceptable when disclosed; one the agent could reduce is not support. Work left open while completion is claimed is still reported, and so is a real
+is acceptable when disclosed; one the agent could reduce is not support. A disclosure is never
+support for the work itself, and it never stops the reviewer judging what the packet shows. The
+reviewer reads the work before the agent's account of it: the packet lists the task, the change,
+task inputs and the output FinishUP observed before the agent's plan, claims and disclosures, and
+output FinishUP observed from a check the agent ran counts as that check's witness even when the
+check's own file is not in the packet. Work left open while completion is claimed is still reported, and so is a real
 discrepancy in the agent's own record, such as a completion claim beyond the plan or a recorded
 command that differs from the one observed. Every provider — the Codex subscription, OpenAI, and
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing
