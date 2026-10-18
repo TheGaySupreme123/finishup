@@ -12,7 +12,7 @@ import io
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -573,6 +573,118 @@ def test_revoking_observation_removes_the_snapshots_and_the_reading_tally(tmp_pa
     assert not directory.exists()
 
 
+def test_a_post_pass_that_read_consent_before_a_revoke_recreates_nothing(tmp_path: Path) -> None:
+    """Greptile P2 on PR #1113: the post hook checked consent, then the revoke removed the store.
+
+    Its fingerprint pass still runs; it reads ``no_pre_snapshot`` and neither the tally nor the
+    digest cache re-creates the store (or leaves a call id behind) after the revoke.
+    """
+
+    from finishup.adapters.workspace_fingerprint import workspace_fingerprint_dir
+    from finishup.cli.workspace_effect_hook import workspace_fingerprint_pass
+    from finishup.domain.observation import ObservationRevokeCommand
+
+    workspace, state, commitment = _setup(tmp_path)
+    emit, pre, _post, _shape = _host("codex", workspace, state)
+    emit(pre, _codex(pre, "call_late", "rg -n reviewed deliverable.txt"))
+    directory = workspace_fingerprint_dir(state / "observation", commitment)
+    assert directory is not None and any(directory.glob("pending/*.bin"))
+    LocalObservationStore(_state=state).revoke(ObservationRevokeCommand(commitment))
+    assert not directory.exists()
+    reading = workspace_fingerprint_pass(
+        "PostToolUse",
+        call_identity="codex\x00session\x00call_late",
+        workspace_locator=str(workspace),
+        workspace_commitment=commitment,
+        key_material=b"k" * 32,
+        observation_root=state / "observation",
+        complete=True,
+        call_token="call_late",
+        admitted=_still_granted(state, commitment),
+    )
+    assert reading is not None
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert not directory.exists()
+    assert list(directory.parent.iterdir()) == []
+
+
+def _still_granted(state: Path, commitment: str) -> Callable[[], bool]:
+    """The consent re-check the live hook hands the fingerprint store."""
+
+    def granted() -> bool:
+        consent = LocalObservationStore(_state=state).consent_for(commitment)
+        return consent is not None and consent.active
+
+    return granted
+
+
+def test_a_pre_pass_that_raced_a_revoke_leaves_nothing_for_a_later_post_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-call half checks consent outside the store lock too (review of PR #1113).
+
+    A revoke that lands during a real Codex pre hook's walk leaves no pending snapshot and no
+    store, and a post pass for an earlier call that also read consent before the revoke records
+    nothing: the store asks for consent again under its lock before it publishes or tallies.
+    """
+
+    from finishup.adapters.workspace_fingerprint import (
+        WorkspaceFingerprintStore,
+        reading_tally_summary,
+        workspace_fingerprint_dir,
+    )
+    from finishup.cli.workspace_effect_hook import workspace_fingerprint_pass
+    from finishup.domain.observation import ObservationRevokeCommand
+
+    workspace, state, commitment = _setup(tmp_path)
+    emit, pre, _post, _shape = _host("codex", workspace, state)
+    identities: list[str] = []
+    real_capture = WorkspaceFingerprintStore.capture_before
+
+    def recording_capture(
+        self: WorkspaceFingerprintStore, root: str, call_identity: str, **kwargs: Any
+    ) -> Any:
+        identities.append(call_identity)
+        return real_capture(self, root, call_identity, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "capture_before", recording_capture)
+    emit(pre, _codex(pre, "call_early", "rg -n reviewed deliverable.txt"))
+    directory = workspace_fingerprint_dir(state / "observation", commitment)
+    assert directory is not None and len(identities) == 1
+    early = WorkspaceFingerprintStore(directory, LocalObservationStore(_state=state).key_material())
+    assert (directory / "pending" / f"{early.call_key(identities[0])}.bin").is_file()
+    real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
+    revoked: list[bool] = []
+
+    def revoke_during_walk(self: WorkspaceFingerprintStore, *args: Any, **kwargs: Any) -> Any:
+        if not revoked:
+            revoked.append(True)
+            LocalObservationStore(_state=state).revoke(ObservationRevokeCommand(commitment))
+            assert not directory.exists()
+        return real_walk(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", revoke_during_walk)
+    emit(pre, _codex(pre, "call_raced", "rg -n reviewed deliverable.txt"))
+    assert revoked
+    assert not directory.exists()
+    reading = workspace_fingerprint_pass(
+        "PostToolUse",
+        call_identity=identities[0],
+        workspace_locator=str(workspace),
+        workspace_commitment=commitment,
+        key_material=LocalObservationStore(_state=state).key_material(),
+        observation_root=state / "observation",
+        complete=True,
+        call_token="call_early",
+        admitted=_still_granted(state, commitment),
+    )
+    assert reading is not None
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert not directory.exists()
+    assert list(directory.parent.iterdir()) == []
+    assert reading_tally_summary(directory)["status"] == "absent"
+
+
 def test_a_codex_0159_read_is_unchanged_and_its_outcome_stays_unknown(tmp_path: Path) -> None:
     """The ``Bash`` post is the completion fact; it states no exit, so no success is invented."""
 
@@ -876,3 +988,40 @@ def test_a_store_failure_after_the_call_is_counted_best_effort(
         "store_unusable",
     )
     assert noted == [("unavailable", "store_unusable", "call_1")]
+
+
+def test_a_consent_re_check_that_fails_records_nothing_but_is_diagnosed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store's consent re-check under its lock fails closed (review of 59a23b06): the call is
+    unverified and its reading is not tallied, as after a revoke, but unlike a revoke the hook
+    names it, so a re-check that keeps failing while consent stands is visible locally."""
+
+    import inspect
+
+    workspace, state, commitment = _setup(tmp_path)
+    emit, pre, post, _shape = _host("codex", workspace, state)
+    command = "rg -n reviewed deliverable.txt"
+    emit(pre, _codex(pre, "call_ok", command))
+    emit(post, _codex(post, "call_ok", command, tool_response="1:reviewed\n"))
+    real_consent_for = LocalObservationStore.consent_for
+
+    def failing_re_check(self: LocalObservationStore, commitment: str) -> Any:
+        caller = inspect.currentframe()
+        caller = None if caller is None else caller.f_back
+        if caller is not None and caller.f_code.co_name == "still_granted":
+            raise RuntimeError("consent unreadable")
+        return real_consent_for(self, commitment)
+
+    monkeypatch.setattr(LocalObservationStore, "consent_for", failing_re_check)
+    emit(pre, _codex(pre, "call_failed", command))
+    emit(post, _codex(post, "call_failed", command, tool_response="1:reviewed\n"))
+    _first, second = _posts(state, commitment)
+    assert second.structural_payload["workspace_effect"] == "unavailable"
+    diagnostics = state / "observation" / "hook-diagnostics.jsonl"
+    rows = [json.loads(line) for line in diagnostics.read_text().splitlines()]
+    assert [
+        row["event"] for row in rows if row["reason"] == "workspace_fingerprint_consent_unreadable"
+    ] == ["PreToolUse", "PostToolUse"]
+    tally = cast(dict[str, object], _readings(state, commitment)["all"])
+    assert (tally["unchanged"], tally["unavailable"]) == (1, 0)

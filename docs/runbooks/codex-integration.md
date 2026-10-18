@@ -3648,7 +3648,7 @@ bytecode, a saved receipt) gets no unchanged command; a declared `.git/config`, 
 network, a deliverable path outside the root, judged against the task's absolute `workspace_ref`)
 are out of scope, as before. `finishup observe status` names a degraded comparison once as a
 `workspace_fingerprint_<reason>` diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`,
-`store_unusable`, `process_table_unreadable`); a call without its pre-call snapshot or still running
+`store_unusable`, `process_table_unreadable`), and names `workspace_fingerprint_consent_unreadable` when the pass could not re-read consent and so recorded nothing; a call without its pre-call snapshot or still running
 is recorded on its result as `(workspace unverified)` instead. `finishup observe status` also counts
 every reading by its closed reason (`workspace_effect:` line; JSON `workspace_effect_readings`, with
 the last 64 readings and their call ids): `call_incomplete` (no completion stated),

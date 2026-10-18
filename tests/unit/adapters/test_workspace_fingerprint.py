@@ -12,6 +12,7 @@ import pytest
 from builders.process_reaping import not_a_child_subreaper
 from finishup.adapters import workspace_fingerprint as fingerprint
 from finishup.adapters.workspace_fingerprint import WorkspaceFingerprintStore
+from finishup.config.paths import ensure_owner_only_dir
 from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
 
 _KEY = b"w" * 32
@@ -19,6 +20,13 @@ _KEY = b"w" * 32
 
 def _store(tmp_path: Path) -> WorkspaceFingerprintStore:
     return WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY)
+
+
+def _granted(tmp_path: Path) -> WorkspaceFingerprintStore:
+    """A store whose directory exists, as the pre-call half leaves it under granted observation."""
+
+    ensure_owner_only_dir(tmp_path / "state" / "fp")
+    return _store(tmp_path)
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -876,7 +884,7 @@ def test_an_incomplete_call_reads_as_the_reason_its_caller_names(
 
 
 def test_reading_tally_is_bounded_exact_and_payload_free(tmp_path: Path) -> None:
-    store = _store(tmp_path)
+    store = _granted(tmp_path)
     directory = tmp_path / "state" / "fp"
     readings = [
         fingerprint.WorkspaceEffectReading("unchanged"),
@@ -911,7 +919,7 @@ def test_reading_tally_is_bounded_exact_and_payload_free(tmp_path: Path) -> None
 def test_reading_tally_drops_and_counts_a_sample_under_contention(tmp_path: Path) -> None:
     import fcntl
 
-    store = _store(tmp_path)
+    store = _granted(tmp_path)
     directory = tmp_path / "state" / "fp"
     assert store.note_reading(fingerprint.WorkspaceEffectReading("unchanged"), "call-1")
     holder = os.open(directory / ".readings.lock", os.O_RDWR)
@@ -930,7 +938,7 @@ def test_a_damaged_tally_restarts_and_a_status_read_creates_nothing(tmp_path: Pa
     assert _tally(directory)["status"] == "absent"
     assert _tally(None)["status"] == "absent"
     assert not directory.exists()
-    store = _store(tmp_path)
+    store = _granted(tmp_path)
     assert store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call-1")
     (directory / "readings.json").write_text('{"format": "something else"}')
     assert _tally(directory)["status"] == "unreadable"
@@ -938,3 +946,283 @@ def test_a_damaged_tally_restarts_and_a_status_read_creates_nothing(tmp_path: Pa
     summary = _tally(directory)
     assert summary["status"] == "retained"
     assert (summary["all"]["unchanged"], summary["all"]["changed"]) == (1, 0)
+
+
+# --- #1105 (PR #1113): a post-call pass after a revoke records and creates nothing -------------
+
+
+def test_a_tally_never_creates_the_store(tmp_path: Path) -> None:
+    """A first post reading with no snapshot store (never granted here) is not tallied."""
+
+    store = _store(tmp_path)
+    reading = fingerprint.WorkspaceEffectReading("unavailable", "no_pre_snapshot")
+    assert not store.note_reading(reading, "call-1")
+    assert not (tmp_path / "state").exists()
+
+
+def test_a_reading_after_a_normal_call_is_tallied(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    reading = store.effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert reading.effect == "unchanged"
+    assert store.note_reading(reading, "call_1")
+    summary = _tally(tmp_path / "state" / "fp")
+    assert summary["status"] == "retained" and summary["all"]["unchanged"] == 1
+    assert [item["call"] for item in summary["recent_readings"]] == ["call_1"]
+
+
+def test_a_revoke_between_the_consent_check_and_the_tally_leaves_nothing(tmp_path: Path) -> None:
+    """Greptile P2 on PR #1113: the post hook read consent, then observation was revoked."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    assert store.note_reading(fingerprint.WorkspaceEffectReading("unchanged"), "call_0")
+    fingerprint.remove_workspace_fingerprints(directory)  # the revoke
+    assert not directory.exists()
+    reading = store.effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert not store.note_reading(reading, "call_1")
+    assert not directory.exists()
+    # The revoke left no renamed sibling behind either.
+    assert os.listdir(directory.parent) == []
+
+
+def test_a_tally_writer_that_waited_across_a_revoke_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The writer opened the store's lock, then a revoke (and a re-grant) ran before it got it."""
+
+    directory = tmp_path / "state" / "fp"
+    store = _granted(tmp_path)
+    real_acquire = fingerprint._acquire_lock  # pyright: ignore[reportPrivateUsage]
+    revoked: list[bool] = []
+
+    def revoke_first(descriptor: int, wait: float = 0.1) -> bool:
+        if not revoked:
+            revoked.append(True)
+            fingerprint.remove_workspace_fingerprints(directory)
+            ensure_owner_only_dir(directory)  # a fresh grant's pre-call half
+        return real_acquire(descriptor, wait)
+
+    monkeypatch.setattr(fingerprint, "_acquire_lock", revoke_first)
+    assert not store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call_1")
+    assert revoked
+    assert not (directory / "readings.json").exists()
+    assert _tally(directory)["status"] == "absent"
+
+
+def test_a_revoke_during_the_post_call_walk_does_not_recreate_the_store(tmp_path: Path) -> None:
+    """The digest cache and the standing marker are post-call writes too: neither re-creates."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+
+    def revoke_then(answer: bool | None) -> fingerprint.LingeringProbe:
+        def probe(_window_ns: int, _root: str) -> bool | None:
+            fingerprint.remove_workspace_fingerprints(directory)
+            return answer
+
+        return probe
+
+    for answer, expected in ((False, "unchanged"), (None, "process_table_unreadable")):
+        store = WorkspaceFingerprintStore(directory, _KEY, lingering=revoke_then(answer))
+        assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+        reading = store.effect_after(
+            str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+        )
+        assert (reading.reason or reading.effect) == expected
+        assert not store.note_reading(reading, "call_1")
+        assert not directory.exists()
+
+
+# --- #1105 (PR #1113 review): the store asks for consent again under its lock ------------------
+
+
+class _Grant:
+    """A consent answer the test flips, as a revoke flips the stored consent."""
+
+    def __init__(self) -> None:
+        self.granted = True
+        self.asked = 0
+
+    def __call__(self) -> bool:
+        self.asked += 1
+        return self.granted
+
+
+@pytest.mark.parametrize("checked", [True, False], ids=["consent-rechecked", "rename-only"])
+def test_a_revoke_during_the_pre_call_walk_publishes_and_recreates_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool
+) -> None:
+    """A pre-call pass that read consent before a revoke neither re-creates the store nor leaves
+    a pending snapshot a later post pass (for an earlier call) could tally into."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant if checked else None)
+    assert store.capture_before(str(root), "call_a", deadline=time.monotonic() + 10) is None
+    real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
+
+    def revoke_during_walk(self: WorkspaceFingerprintStore, *args: Any, **kwargs: Any) -> Any:
+        grant.granted = False  # the revoked consent is saved first
+        fingerprint.remove_workspace_fingerprints(directory)
+        return real_walk(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", revoke_during_walk)
+    assert store.capture_before(str(root), "call_b", deadline=time.monotonic() + 10) is None
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", real_walk)
+    assert not directory.exists()
+    assert os.listdir(directory.parent) == []
+    reading = store.effect_after(
+        str(root), "call_a", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert not store.note_reading(reading, "call_a")
+    assert not directory.exists()
+    assert _tally(directory)["status"] == "absent"
+
+
+def test_a_pre_call_pass_after_a_revoke_creates_nothing(tmp_path: Path) -> None:
+    """The revoke landed between the hook's consent check and the pre-call half."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    grant.granted = False
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    assert grant.asked == 1
+    assert not directory.exists()
+    assert os.listdir(directory.parent) == []
+
+
+def test_the_tally_counts_a_first_reading_only_while_observation_is_granted(
+    tmp_path: Path,
+) -> None:
+    """With a consent re-check the tally may create the store, so a reading with no pre-call
+    snapshot (and no store yet) is still counted; after a revoke it is not."""
+
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    first = fingerprint.WorkspaceEffectReading("unavailable", "no_pre_snapshot")
+    assert store.note_reading(first, "call_1")
+    summary = _tally(directory)
+    assert summary["status"] == "retained"
+    assert dict(summary["all"]["unavailable_reasons"]) == {"no_pre_snapshot": 1}
+    fingerprint.remove_workspace_fingerprints(directory)
+    grant.granted = False
+    assert not store.note_reading(first, "call_2")
+    assert not directory.exists()
+    assert os.listdir(directory.parent) == []
+
+
+def test_a_withdrawn_grant_keeps_an_existing_store_but_records_nothing(tmp_path: Path) -> None:
+    """A pause also makes the re-check fail; it records nothing but does not delete the store
+    (only a revoke removes it)."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    assert store.capture_before(str(root), "call_a", deadline=time.monotonic() + 10) is None
+    assert store.note_reading(fingerprint.WorkspaceEffectReading("unchanged"), "call_0")
+    grant.granted = False
+    assert store.capture_before(str(root), "call_b", deadline=time.monotonic() + 10) is None
+    assert sorted(path.name for path in (directory / "pending").iterdir()) == [
+        f"{store.call_key('call_a')}.bin"
+    ]
+    assert not store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call_1")
+    summary = _tally(directory)
+    assert (summary["all"]["unchanged"], summary["all"]["changed"]) == (1, 0)
+
+
+def test_a_consent_check_that_raises_is_not_a_grant(tmp_path: Path) -> None:
+    def broken() -> bool:
+        raise RuntimeError("store busy")
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=broken)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    assert not store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call_1")
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("checked", [True, False], ids=["consent-rechecked", "unchecked"])
+def test_a_pre_call_snapshot_is_never_published_into_a_store_re_created_during_its_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool
+) -> None:
+    """A revoke and a re-grant during one pass's walk (review of 59a23b06): another pass re-creates
+    the store, and the straddling pass publishes nothing into it, so no snapshot taken partly while
+    observation was revoked is compared or tallied after the re-grant."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    admitted = grant if checked else None
+    straddling = WorkspaceFingerprintStore(directory, _KEY, admitted=admitted)
+    other = WorkspaceFingerprintStore(directory, _KEY, admitted=admitted)
+    real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
+    regranted: list[bool] = []
+
+    def revoke_and_regrant_during_walk(
+        self: WorkspaceFingerprintStore, *args: Any, **kwargs: Any
+    ) -> Any:
+        if self is straddling and not regranted:
+            regranted.append(True)
+            grant.granted = False
+            fingerprint.remove_workspace_fingerprints(directory)
+            grant.granted = True
+            assert other.capture_before(str(root), "call_b", deadline=time.monotonic() + 10) is None
+        return real_walk(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", revoke_and_regrant_during_walk)
+    assert straddling.capture_before(str(root), "call_a", deadline=time.monotonic() + 10) is None
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", real_walk)
+    assert regranted
+    assert sorted(path.name for path in (directory / "pending").iterdir()) == [
+        f"{other.call_key('call_b')}.bin"
+    ]
+    reading = straddling.effect_after(
+        str(root), "call_a", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    later = other.effect_after(
+        str(root), "call_b", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert later.effect == "unchanged"
+    assert [name for name in os.listdir(directory.parent) if ".revoked." in name] == []
+
+
+def test_a_pre_call_pass_holds_no_lock_across_its_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entered store is pinned by an open lock file, not by the lock: a tally (and a revoke)
+    during the walk take the lock at once."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
+    noted: list[bool] = []
+
+    def tally_during_walk(self: WorkspaceFingerprintStore, *args: Any, **kwargs: Any) -> Any:
+        if not noted:
+            noted.append(store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "c1"))
+        return real_walk(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", tally_during_walk)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    assert noted == [True]
+    assert not (directory / ".readings.dropped").exists()
+    assert (directory / "pending" / f"{store.call_key('call')}.bin").is_file()

@@ -1508,9 +1508,14 @@ pytest` recorded a failing run as a success.
    counts, and the last 64 readings with the host call id when it is already a closed token),
    reported by `observe status` as `workspace_effect_readings`. A `store_unusable` reading is
    counted only when the store directory still accepts the tally (best effort); one whose store
-   directory cannot be resolved or written goes uncounted. Per-call reasons never enter the
-   hook diagnostic window. Putting the reason on the wire is deferred (a control-request change an
-   older running service would refuse).
+   directory cannot be resolved or written goes uncounted. A hook checks consent once, outside
+   any store lock, so its pass can race a revoke: the pre-call snapshot and the tally (the only
+   writes that may create the store directory) take the store lock and ask again whether
+   observation is still granted before they write, and revocation saves the revoked consent first,
+   then takes the same lock and renames the directory away before removing it. A pass that raced a
+   revoke therefore records nothing and re-creates nothing after it; its reading is not counted.
+   Per-call reasons never enter the hook diagnostic window. Putting the reason on the wire is deferred (a
+   control-request change an older running service would refuse).
 5. **Shell-wrapped FinishUP CLI calls keep no lexical exemption.** With (1) and (3) a `finishup
    check` or `finishup status` run through the shell reads `unchanged` and is quiet like any other
    read; one during which the workspace changed stays material.

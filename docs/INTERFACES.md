@@ -5869,7 +5869,8 @@ RC1, #1105) is the workspace's bounded fingerprint reading tally
 matches the envelope token pattern (else `null`); the text form is one `workspace_effect:` line of
 closed tokens and counts. A status read never creates the tally. A `store_unusable` reading is
 counted best effort: one whose fingerprint store directory cannot be resolved or written goes
-uncounted. `delivery_lag` is the outbox
+uncounted, as does a reading whose hook pass raced a revoke (observation is no longer granted when
+the tally asks again under its lock). `delivery_lag` is the outbox
 delivery measure, enqueue to the acknowledgement after the service accepted the row:
 `{"measured": "enqueue_to_accept", "count", "bucket_upper_bounds_ms", "bucket_counts", "p50_ms_at_most",
 "p95_ms_at_most", "mean_ms", "max_ms", "last_ms", "since"}` (only `measured`, `count` and the bounds
@@ -11124,7 +11125,22 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   all time and the current and previous clock hour, plus a ring of the last `READING_RING` (64)
   readings `{at_ms, effect, reason, call}`; at most `READING_FILE_BYTES` (16 KiB), staged and
   renamed, a 0.1 s lock whose contention drops and counts the sample; no path, digest or command
-  text), `discard()`; `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
+  text; it returns `False` and records nothing when observation is no longer granted or the lock
+  file it holds is no longer the one at the store's path), `discard()`
+  (`remove_workspace_fingerprints(directory)`: takes the store lock, waiting at most 1 s, renames
+  the directory to a private sibling, releases the lock, then removes it; observation revoke calls
+  it after saving the revoked consent). The store takes `admitted: Callable[[], bool] | None`
+  (the hook passes a fresh consent read): `capture_before` and `note_reading` take the store lock
+  (`.readings.lock`) and call it before they create or enter the store, publish the pending
+  snapshot or write the tally, so a pass that raced a revoke records and re-creates nothing; a
+  withdrawn grant on an existing store records nothing and leaves the store to revocation, and a
+  check that raises is not a grant (the hook then records `workspace_fingerprint_consent_unreadable`
+  once for the pass). Without `admitted` the tally never creates the store. The pending snapshot
+  is published only into the store its pass entered: the pass keeps that store's lock file open
+  (not locked) across its walk and publishes only while the same file is at the store's path, so a
+  revoke and re-grant during the walk leave the re-created store without it; the post-call digest
+  cache and standing marker write only into an existing one;
+  `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
   `<observation>/workspace-fingerprints/<commitment digest>/` (`pending/` per open call,
   `latest.bin` for digest reuse; owner-only; keyed BLAKE2b path and content digests plus a keyed
   MAC, never a path or byte of content; revoking observation removes it). Record format
