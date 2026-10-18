@@ -134,3 +134,40 @@ async def test_a_hook_outcome_contradicting_an_earlier_hook_correction_is_refuse
     await cell.ingest(_copy(cell, "PostToolUse", stream=False, exit_status=3))
     assert cell.record_count() == count
     assert _results(cell) == [(ResultOutcome.UNKNOWN, None), (ResultOutcome.SUCCESS, 0)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("restart", [False, True], ids=["live", "after-restart"])
+async def test_a_hook_outcome_waits_for_a_lagging_projection_instead_of_dropping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restart: bool
+) -> None:
+    """#1106 r1: a hook copy that may still fill the stream copy's UNKNOWN never returns silently.
+
+    While the outcome projection lags, the delivery is refused as retryable and nothing is
+    recorded; once the projection is current the same delivery records its outcome once.
+    """
+
+    cell = _reattach_fixture(tmp_path, f"n7-hook-lag-{restart}")
+    await _stream_first_unknown(cell)
+    if restart:
+        cell.coordinator = cell.build_coordinator()
+    count = cell.record_count()
+    original = cell.ledger.load_projection
+
+    async def _lagging(*args: object, **kwargs: object) -> object:
+        loaded = await original(*args, **kwargs)  # type: ignore[arg-type]
+        assert loaded is not None
+        return replace(loaded, lag=1)
+
+    monkeypatch.setattr(cell.ledger, "load_projection", _lagging)
+    refused = await cell.ingest(_copy(cell, "PostToolUse", stream=False, exit_status=0))
+    assert refused.disposition not in {
+        ObservationIngestDisposition.ACCEPTED,
+        ObservationIngestDisposition.DUPLICATE,
+    }
+    assert refused.reason == "service_unavailable"
+    assert cell.record_count() == count
+    assert _results(cell) == [(ResultOutcome.UNKNOWN, None)]
+    monkeypatch.setattr(cell.ledger, "load_projection", original)
+    await _ingest(cell, _copy(cell, "PostToolUse", stream=False, exit_status=0))
+    assert _results(cell) == [(ResultOutcome.UNKNOWN, None), (ResultOutcome.SUCCESS, 0)]

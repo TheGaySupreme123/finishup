@@ -193,6 +193,7 @@ from finishup.ports.host_lineage import (
     HostLineageRegistryError,
     HostLineageRegistryPort,
     HostLineageRegistryReason,
+    source_mask_for,
 )
 from finishup.ports.ids import IdPort
 from finishup.ports.ledger import (
@@ -4286,13 +4287,14 @@ class ObservationCoordinator:
                 for item in batch.drafts
             ):
                 return
-        # A hook copy replaying its own committed operation (a restart, a reattach) recorded its
-        # own result: it never waits on the projection to say so.
-        hook_replay = (
-            hook_copy
-            and not already_committed
-            and (append_result is None or append_result.outcome == "replayed")
-        )
+        if hook_copy and append_result is None and not already_committed:
+            # No append result names what was committed (a completed operation whose stored
+            # result cannot be decoded, or the structural-only override seam of an older
+            # in-process coordinator): nothing shows that another copy's UNKNOWN is there to
+            # fill, so the hook copy keeps its pre-#1092 behaviour and reads no projection.
+            return
+        # A replay (outcome "replayed") may resolve to the stream copy's operation, whose UNKNOWN
+        # this hook copy may still fill: it waits on a lagging projection like a stream copy does.
         # A partial replay can append new evidence while its core result was committed by
         # the hook. Inspect that result even after an append, so UNKNOWN still gets the
         # stream's explicit outcome (and a disagreement still gets its conflict correction).
@@ -4302,12 +4304,24 @@ class ObservationCoordinator:
         )
         if (
             projection is None
+            and hook_copy
+            and not already_committed
+            and append_result is not None
+            and append_result.outcome == "replayed"
+        ):
+            # A workflow reattach rotates the routed session, and a session that has recorded
+            # nothing yet opens no projection, so a hook copy replaying the operation an earlier
+            # session committed (#560) cannot read the call here. It acknowledges rather than hold
+            # the drain on a projection this session may not open until its next write. A
+            # projection that exists but lags may still show the stream copy's UNKNOWN this hook
+            # copy fills, so that case waits below (#1106 r1).
+            return
+        if (
+            projection is None
             or type(projection.state) is not ProjectionState
             or projection.lag != 0
             or projection.rebuild_required
         ):
-            if hook_replay:
-                return
             raise PublicOperationError(
                 PublicErrorCode.SERVICE_UNAVAILABLE,
                 "Observation outcome projection is unavailable.",
@@ -4456,9 +4470,7 @@ class ObservationCoordinator:
                     ),
                     materialization_digest=correction_digest,
                     operation_id=correction_operation_id,
-                    source_mask=(
-                        2 if envelope.source is ObservationSource.CODEX_SESSION_STREAM else 1
-                    ),
+                    source_mask=source_mask_for(envelope.source),
                     mapping_version=correction_mapping_version,
                     materialized_at=timestamp_from_datetime(self.clock.now_utc()),
                 )
