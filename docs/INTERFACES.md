@@ -1223,20 +1223,27 @@ shape changed) and whose result's `exit_status` is exactly that stop's `128 + si
 owns the observed failed-command finding (`is_observed_failed_command_shape(finding)`: deterministic,
 `work-integrity`, `failed_work_omitted`, no `clm_` subject ref; `is_observed_failed_command_finding(
 record)` adds observation authorship stamped at replay), `failed_run_of(...)`, `retirement_witness(
-failed, results, actions, observed) -> (event_id, frontier) | None`, and the reducer entry points
+failed, results, actions, observed, planned=no_planned_verifications) -> Witness | None` with
+`Witness = (event_id, frontier, planned_verification)`, and the reducer entry points
 `on_finding_recorded`, `on_observed_result`, `on_plan_changed` and `recompute_all` (after a
-redaction). Since the owner decision of 2026-10-18 a witness is `(event_id, frontier,
-planned_verification)`: a later hook-observed success of another call also retires every earlier
-observed failed command when it passed a **planned verification**, read from the current plan by
+redaction). A witness is a later hook-observed success of another call whose action was recorded
+after the failed call's first hook-observed result (`_call_floors`), of the same command or, since
+the owner decision of 2026-10-18, of a **planned verification**, which retires every earlier
+observed failed command. The planned verifications are read from the current plan by
 `task_facts.planned_verification_commands(plans, obligations, coverage_gaps)` (effective
-obligations' requested `command` items, through `effective_obligation_ids`; empty without the
-installation key) and matched by `task_facts.planned_verification_passed(command, planned)`
-(`planned_match` kind `exact` with a `success` outcome for the planned command: the ADR-033 keyed
-commitment or segment rule only). Every entry point takes the planned verifications as a lazy
-`PlannedVerifications` callable; the reducer re-derives the linked candidates in
-`on_plan_changed` after a plan, obligation or unknown event when the planned set changed, so the
-fact stays a pure function of the current projection and the key. The same command wins when one
-run is both.
+obligations' requested `command` items, through `effective_obligation_ids`, skipping an
+`acknowledged_not_done` obligation; empty without the installation key) and matched by
+`task_facts.planned_verification_passed(command, planned)` (`planned_match` kind `exact` with a
+`success` outcome for the planned command, over the run's certified segments only, the
+same-command bare-segment rule; a masked planned command never counts). Every entry point takes
+the planned verifications as a lazy `PlannedVerifications` callable; the reducer re-derives the
+linked candidates in `on_plan_changed` after a plan, obligation or unknown event when the planned
+set changed, so the fact stays a pure function of the current projection and the key (the service
+registers the key before its startup bundle upgrade, so every projection it stores or compares is
+folded with it). The same command wins when one run is both.
+`finding_resolution.retired_failed_command_finding_ids(state)` names the retired, resolved
+observed failed-command findings; the status advice view drops their `failed_command_unresolved`
+items.
 `FindingProjectionRecord` gains `observed_failed_command`, `failed_run_result_id`,
 `retired_by_event_id`, `retired_frontier` (set together with the event id) and
 `retired_by_planned_verification` (only with a retirement), each emitted into

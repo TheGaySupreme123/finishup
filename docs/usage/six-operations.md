@@ -255,7 +255,8 @@ decision) discloses it, with no repair attempt required, and the receipt lists t
 instead of reading clean. A finding about a command FinishUP saw fail needs no answer once you
 rerun the same command, exactly as written, and it passes (alone or inside a passing `&&` chain):
 the pass retires it. A passing run of a verification command your plan asks for retires it too,
-along with every other earlier failed-command finding.
+along with every other earlier failed-command finding; your completion claim still names such a
+failure in `limitation_refs`, because that command never passed.
 If the failure is expected or will stay, one `acknowledged` with the reason discloses it on the
 receipt. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
 cannot prove after a later check because of its own limits: say how you verified the repair in

@@ -1178,7 +1178,17 @@ A failed `Bash` call becomes an observation finding (`failed_command_unresolved`
   failed-command finding, even one for another command (closure basis
   `retired_by_planned_verification`). Pinned with the real Claude Code hook handler by
   `test_claude_passing_planned_verification_retires_an_unrelated_failure` in
-  `tests/integration/observation/test_failure_supersession_hosts.py`.
+  `tests/integration/observation/test_failure_supersession_hosts.py`, and through status and the
+  receipt by `test_failed_install_then_planned_verification_pass_retires_it` in
+  `tests/integration/application/test_failed_command_retirement_e2e.py`. A parallel call whose
+  `PreToolUse` was recorded before the other call's failure began before it and retires nothing.
+  A planned segment must have run as is (a leading assignment, `env`, `exec`, `nohup`, `time` or an
+  input redirection passes nothing), a planned command that masks its own exit (`| tail`, `!`,
+  `|| true`, `&`, `;`) never counts, and the passing call must have begun after the failed call
+  finished. A failure it retires must still be named in a completion claim's `limitation_refs`.
+  Known gap (follow-up on #1104): the hook-side advice can still list the retired item until the
+  observation evidence changes; `status view=advice`, the Stop gate, check and the receipt read
+  the ledger and do not.
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
   clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
 - **Read-only chains and FinishUP's own CLI: supported**, as on every host (`cd`, banners,

@@ -134,8 +134,8 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    identity. Canonical, prefix, flag and marker commitments are domain-separated and never equal
    a command identity. A
    failure never uses its segments. Edits still never retire anything (#909). For this shared
-   supersession rule (the claim-revision invariant, the packs, the receipt history sentence and
-   the advice rule) a passing run of a different command, including the planned verification
+   supersession rule (the claim-revision invariant, the packs, the receipt's observed-failure
+   history sentence, "1 was later passed by the same command", and the advice rule) a passing run of a different command, including the planned verification
    after an edit, supersedes nothing: it proves the planned check passes, not that the command
    that failed now works. The observed failed-command *finding* below is the one exception the
    owner decided (2026-10-18).
@@ -152,7 +152,13 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    (`kernel/finding_retirement.py`, called by the reducer in ledger order) records on the
    finding record the earliest later hook-observed **success of another call** whose command
    identity is the failed run's or certifies it as a segment (`retired_by_event_id`,
-   `retired_frontier`). It reads the outcome the ledger finally records for each call: a
+   `retired_frontier`). "Later" is judged by the passing *call*, not only by where its outcome
+   lands: its action must be recorded after the failed call's first hook-observed result (when
+   FinishUP first knew that call had finished), as well as its passing result after the failed
+   result. A call that began before the failure was known (a parallel call, a Claude Code
+   `PreToolUse` recorded before the other call's failure, a Codex hook recorded before the
+   failed call's) is no repair of it, however late its own exit (a lagging stream correction)
+   arrives; on Codex the failed call's hook result is that first point, so both exits may lag. It reads the outcome the ledger finally records for each call: a
    hook-stated exit, a Codex stream correction joined to the call, or a stream-first copy that
    committed with its own outcome. **An `unknown` outcome never retires anything**: a Codex call
    whose exit never reached FinishUP stays open. `finding_is_resolved` reads the fact, so status,
@@ -166,13 +172,23 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    #1104; final).** "A later pass" has the broad reading: every open observed failed-command
    finding whose failed run precedes, in ledger order, a hook-observed success of another call
    that passed a **planned verification** is retired too, whatever command failed. A planned
-   verification is an effective obligation's requested item of kind `command` (ADR-033), matched
-   by the recorded rule only (`task_facts.planned_verification_passed` over `planned_match` kind
+   verification is a requested item of kind `command` (ADR-033) of an effective obligation the
+   agent has not acknowledged as not done (the obligation set the planned-verification task facts
+   read; an obligation with a recorded blocker still counts, since a blocker decision is not a
+   plan event and its command passing is still the planned verification passing), matched by the
+   recorded rule only (`task_facts.planned_verification_passed` over `planned_match` kind
    `exact`): the installation-keyed whole-command commitment, or the planned command as a
    segment of the run, with the outcome that rule establishes for the planned command, which is
-   a success only for a passing `single` run or `&&` chain. A canonical, prefix or flag match, an
-   agent link, a masked composition (`;`, `|`, `||`, `&`) or a masked planned command never
-   counts, and neither does an `unknown` outcome: on Codex 0.159, whose `PostToolUse` states no
+   a success only for a passing `single` run or `&&` chain. For retirement the segment must be
+   one the success certifies, under the same bare-segment rule as above: a passing
+   `PYTEST_ADDOPTS=--collect-only pytest -q`, `FOO=1 pytest -q`, `exec pytest -q` or
+   `pytest -q < answers.txt` ran a different command and passes no planned `pytest -q` (the
+   ADR-033 task facts keep their looser reading). A canonical, prefix or flag match, an agent
+   link and a masked composition (`;`, `|`, `||`, `&`) never count. A planned command whose own
+   composition is masked (`pytest -q | tail -5`, `! pytest -q`, `pytest -q || true`,
+   `pytest -q &`, `pytest -q; true`) never counts either, even run exactly as planned: its
+   recorded exit is not the planned work's, so its success is not a known one. Neither does an
+   `unknown` outcome: on Codex 0.159, whose `PostToolUse` states no
    exit, only the session stream's correction joined by call id (or a stream-first copy with its
    own outcome) makes the planned run a known success. The owner accepted the trade-off that a
    passing planned verification also clears an unrelated earlier failure (a failed install that
@@ -182,7 +198,12 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    drops the command or waives its obligation un-retires what only that match retired (a reverse
    state), and a plan that names the command after its pass retires the earlier failure. The
    match needs the installation key the service registers (ADR-033); a process without it
-   treats no run as a planned verification, which only ever retires less. The fact is
+   treats no run as a planned verification, which only ever retires less. This makes the
+   projection fold, and so the stored projection snapshot and `projection_digest`, depend on the
+   key as well as on the ledger: the service registers it before its startup bundle upgrade can
+   replay or rebuild any task projection, and every process that stores or compares a task
+   projection (only the service writes task ledgers) must hold it; a replay without the key
+   derives fewer retirements, never more. The fact is
    `retired_by_planned_verification` beside `retired_by_event_id`, and every surface names the
    kind: closure basis `retired_by_planned_verification` (status, check, lineage), the receipt's
    history sentence ("retired by a later passing run of a planned verification, not of the
@@ -190,7 +211,26 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    command and a planned verification it is recorded as the same command; the earliest
    qualifying run decides. The claim-level duty is unchanged: a completion claim must still
    name a failure in `limitation_refs` unless the same command passed later (the shared rule
-   above).
+   above). A failure retired only by a planned verification therefore still has to be named
+   there, and the agent-facing text says so (the finding's resolution explanation, the shipped
+   guidance and the product docs), so a retired finding never reads as a failure the claim may
+   leave out.
+
+   The advice snapshot's `failed_command_unresolved` item follows the shared rule, so after a
+   retirement by a planned verification its rule still sees no pass of the failed command. The
+   status advice view drops an item whose finding the ledger already retired
+   (`finding_resolution.retired_failed_command_finding_ids`), so the advice and findings views
+   agree, and the item's detail says only that the command has no later pass of itself. Known
+   gap, follow-up owned by #1104: the hook-side advice (the top item a hook prints, read from the
+   stored snapshot without the ledger) can still list that item until the observation evidence
+   changes; the Stop gate, status, check and the receipt read the ledger and do not block on it.
+
+   Open for the owner (#1104), as implemented until decided: any command of kind `command` the
+   agent's own plan requests counts, with no verifier runner class, and the plan is read as it
+   stands now, so a plan published after a pass also retires the failures before that pass. The
+   alternatives the round-1 review raised are to require a verifier runner class (test, build,
+   lint, typecheck) for the passing planned run, or to require the obligation to be effective
+   when the pass was recorded.
 
    No check resolves such a finding: no local rule re-reads the advice condition, so a check's
    silence proves nothing, and `resolution_blockers` names `observed_failure_not_rerun` for it

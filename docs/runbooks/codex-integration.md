@@ -1783,7 +1783,17 @@ A failed shell call becomes an observation finding (`failed_command_unresolved`,
   stream's correction joined by call id or a stream-first copy, never from the outcome-less hook
   post. Pinned by `test_a_passing_planned_verification_joined_from_the_stream_retires_another_failure`
   and `test_an_unknown_planned_verification_never_retires_another_failure` in
-  `tests/integration/application/test_codex_failed_command_retirement.py`.
+  `tests/integration/application/test_codex_failed_command_retirement.py`. Order is by the call,
+  not by its correction: a call whose hook was recorded before the failed call's hook began before
+  the failure and retires nothing, though its exit lands after it, while both exits may lag for a
+  call begun after it (`test_a_lagging_correction_retires_only_a_pass_begun_after_the_failure`).
+  A planned segment must have run as is (a leading assignment, `env`, `exec`, `nohup`, `time` or an
+  input redirection passes nothing), a planned command that masks its own exit (`| tail`, `!`,
+  `|| true`, `&`, `;`) never counts, and the passing call must have begun after the failed call
+  finished. A failure it retires must still be named in a completion claim's `limitation_refs`.
+  Known gap (follow-up on #1104): the hook-side advice can still list the retired item until the
+  observation evidence changes; `status view=advice`, the Stop gate, check and the receipt read
+  the ledger and do not.
 - **No check resolves it** (`observed_failure_not_rerun`). An edit never retires it either.
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
   clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.

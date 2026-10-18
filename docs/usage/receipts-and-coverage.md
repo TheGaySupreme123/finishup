@@ -341,15 +341,18 @@ Two more things decide what the receipt will say, and status tells you before yo
   A later passing run of a verification command your plan asks for retires it as well, together
   with every other earlier failed-command finding, even for a command you never reran (basis
   `retired_by_planned_verification`; the receipt says the planned verification passed, not the
-  command that failed). If you later drop that command from the plan, what only it retired opens
-  again. An edit does not retire it, a passing run of an unplanned different command does not, a run whose outcome
+  command that failed). The planned command counts only run as written (no added `FOO=1`, `env` or
+  `exec`, no input redirection), with an exit that is its own (a planned `pytest -q | tail -5` or
+  `pytest -q || true` never counts), and only when it began after the failure. If you later drop
+  that command from the plan, what only it retired opens again. An edit does not retire it, a passing run of an unplanned different command does not, a run whose outcome
   FinishUP never learned does not, and a check cannot prove it absent. If the failure is expected or
   will stay, answer `acknowledged` with the reason: the receipt lists it as a disclosed failed
   command and reads at best `insufficient_coverage`, and a later passing run still retires it. A
   failed read or inspection (including a chain of reads with banners and `cd`), a failed FinishUP
   status read, and a command that stopped the background job it started itself with exactly the
-  exit that stop produces do not raise one at all. Your completion claim must still name any
-  failure that stays in `limitation_refs`.
+  exit that stop produces do not raise one at all. Your completion claim must still name in
+  `limitation_refs` any failure that stays, and any failure only a planned verification retired:
+  the failed command itself never passed.
 
 While the work is in progress, the reviewer judges incomplete work only (something marked done that
 is not, verification you planned and did not run, a missing or emptied output, a claim the record
