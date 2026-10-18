@@ -95,3 +95,24 @@ def installed_launcher(name: str = LAUNCHER_NAME) -> tuple[str, str] | None:
         return str(candidate), "sha256:" + digest.hexdigest()
     except OSError, ValueError, PackageNotFoundError, InstanceIdentityError, PathSafetyError:
         return None
+
+
+def own_launcher_paths(command: object) -> frozenset[str]:
+    """The proven installed launcher paths a command text may name, computed only when needed.
+
+    A read exemption for FinishUP's own CLI spelled by its absolute launcher (#1104) must rest on
+    path equality to this runtime's RECORD-owned console script, never on a name match. The proof
+    reads the install record, so it runs only for a command text that names a path ending in
+    ``/finishup`` or ``/yoetz``; every other command gets the empty set at no cost.
+    """
+
+    if type(command) is not str or not any(f"/{name}" in command for name in _SCRIPT_DISTRIBUTIONS):
+        return frozenset()
+    proven: set[str] = set()
+    for name in _SCRIPT_DISTRIBUTIONS:
+        if f"/{name}" not in command:
+            continue
+        launcher = installed_launcher(name)
+        if launcher is not None:
+            proven.add(launcher[0])
+    return frozenset(proven)

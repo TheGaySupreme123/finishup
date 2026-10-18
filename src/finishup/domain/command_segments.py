@@ -75,12 +75,15 @@ __all__ = [
     "canonical_words",
     "command_segment_commitments",
     "command_segments",
+    "command_separators",
     "exact_segment_commitments",
     "command_structure",
     "planned_segments",
     "requested_command_shape",
+    "segment_words_without_redirections",
     "strip_one_wrapper",
     "strip_wrappers",
+    "top_level_segments",
     "wrapped_shell_argument",
 ]
 
@@ -532,6 +535,84 @@ def command_segments(normalized: str) -> CommandSegments | None:
         return None
     composition = "masked" if masked else "and_chain" if chained else "single"
     return CommandSegments(distinct, composition)
+
+
+def command_separators(normalized: str) -> frozenset[str] | None:
+    """Every shell separator the splitter saw, at every depth, or ``None`` when unsplittable.
+
+    Quote-aware like ``command_segments``: a quoted ``&`` or ``;`` is no separator. The walk
+    descends into shell-wrapper arguments (``bash -lc '...'``) and the bodies of here-documents fed
+    to a shell, bounded by the same depth. ``&`` in the result is a background job somewhere in
+    the command; ``&&`` is an and-chain. Exists only to classify; never stored or sent.
+    """
+
+    if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
+        return None
+    seen: set[str] = set()
+
+    def walk(text: str, depth: int) -> bool:
+        split = _split_top_level(text)
+        if split is None:
+            return False
+        seen.update(split.separators)
+        for position, segment in enumerate(split.segments):
+            cleaned = _clean_segment(segment)
+            if cleaned.text is not None and depth < _MAX_DEPTH:
+                inner = _wrapped_argument(cleaned.text)
+                if inner is not None and not walk(inner, depth + 1):
+                    return False
+            if cleaned.shell_reads_stdin and depth < _MAX_DEPTH:
+                for body in split.bodies.get(position, ()):
+                    if not walk(body, depth + 1):
+                        return False
+        return True
+
+    return frozenset(seen) if walk(normalized, 0) else None
+
+
+def top_level_segments(normalized: str) -> tuple[tuple[str, ...], frozenset[str]] | None:
+    """The top-level simple-command segments of one command, in order, and the separators seen.
+
+    Depth 0 only (no descent into wrappers or here-document bodies), quote-aware like
+    ``command_segments``. ``None`` when the text cannot be split. Exists only to classify a
+    closed command shape (``domain.process_control``); never stored or sent.
+    """
+
+    if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
+        return None
+    split = _split_top_level(normalized)
+    if split is None:
+        return None
+    return tuple(split.segments), frozenset(split.separators)
+
+
+def segment_words_without_redirections(segment: str) -> list[str] | None:
+    """The shell words of one simple-command segment with only its redirections removed.
+
+    Unlike ``canonical_words`` this keeps assignments, wrappers and the executable's exact
+    spelling, so a read-only recheck still sees ``PATH=...`` or ``./cat``; ``2>/dev/null``,
+    ``> /dev/null`` and ``<<'EOF'`` are dropped so they no longer hide the program's own words.
+    ``None`` when the segment's quoting is unbalanced.
+    """
+
+    words = _words(segment)
+    if words is None:
+        return None
+    kept: list[str] = []
+    skip_next = False
+    for word in words:
+        if skip_next:
+            skip_next = False
+            continue
+        redirection = _REDIRECTION_RE.match(word)
+        if redirection is not None:
+            skip_next = not redirection.group(2)
+            continue
+        kept.append(word)
+    try:
+        return shlex.split(" ".join(kept), posix=True)
+    except ValueError:
+        return None
 
 
 def command_structure(normalized: str) -> CommandStructure | None:
