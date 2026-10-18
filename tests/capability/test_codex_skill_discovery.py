@@ -198,8 +198,12 @@ def test_skill_and_guidance_define_exact_agent_attested_chat_authorization() -> 
     skill = read_verified_resource("skills/codex/finishup/SKILL.md").decode("utf-8")
     guidance = read_verified_resource("guidance/agent-instructions.md").decode("utf-8")
 
-    for entrypoint in (skill, guidance):
-        assert "finishup://guidance/request-templates.md" in entrypoint
+    # ADR-047 makes the operating card the route to on-demand procedure pages.
+    assert "`finishup://guidance/agent-instructions.md` before `start`" in skill
+    assert "setup `consent.md`" in guidance
+    consent = read_verified_resource("guidance/consent.md").decode("utf-8")
+    assert "request-templates.md#setup-and-consent" in consent
+    assert "finishup://guidance/request-templates.md" in guidance
     for document in (read_verified_resource("guidance/request-templates.md").decode("utf-8"),):
         assert "agent-attested trust model, not host-verified proof" in document
         assert "explicitly instructs you in the current chat" in document

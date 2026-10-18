@@ -242,7 +242,12 @@ def test_portable_tree_is_skills_only_and_guidance_is_byte_identical() -> None:
     assert rendered.plan.mcp_ownership is McpOwnership.EXTERNAL_REGISTRATION
     assert rendered.plan.mcp_route_profile is None
     skill = tree["skills/finishup/SKILL.md"].decode("utf-8")
-    assert "The first workflow operation is `start`." in skill
+    # ADR-047 keeps discovery before start and routes subsequent rules through the card.
+    assert (
+        "The first workflow operation is `start`, after a discovery step that reads guidance "
+        "and discovers schemas."
+    ) in " ".join(skill.split())
+    assert "`finishup://guidance/agent-instructions.md` before `start`" in skill
     assert "Carrier has no authority." in skill
     for name in _GUIDANCE_NAMES:
         assert tree[f"skills/finishup/references/{name}"] == read_verified_resource(
