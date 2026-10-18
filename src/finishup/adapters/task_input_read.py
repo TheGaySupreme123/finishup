@@ -303,12 +303,16 @@ def _read_ends(
         if size > head_limit:
             span = _TAIL_BYTES + _CUT_SCAN_WINDOW
             tail = os.pread(descriptor, span, max(0, size - span))
+        # Drift and identity (#1118 R6): the descriptor's facts are unchanged and the name still
+        # leads to that same file, so an ordinary replacement or permission change mid-read is
+        # refused rather than kept. Not a defence against a hostile process of the same user.
         after = os.fstat(descriptor)
-        if (before.st_size, before.st_mtime_ns, before.st_ino) != (
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ino,
-        ) or read != min(size, head_limit):
+        named = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+        if (
+            _identity(before) != _identity(after)
+            or (named.st_dev, named.st_ino) != (after.st_dev, after.st_ino)
+            or read != min(size, head_limit)
+        ):
             return None
         return head, tail, size
     except OSError:
@@ -317,6 +321,19 @@ def _read_ends(
     finally:
         for descriptor in reversed(opened):
             os.close(descriptor)
+
+
+def _identity(facts: os.stat_result) -> tuple[int, ...]:
+    return (
+        facts.st_dev,
+        facts.st_ino,
+        facts.st_size,
+        facts.st_mtime_ns,
+        facts.st_ctime_ns,
+        facts.st_mode,
+        facts.st_uid,
+        facts.st_nlink,
+    )
 
 
 def _folded_inside(path: str, folded_directories: tuple[str, ...]) -> bool:
@@ -518,12 +535,14 @@ def snapshot_outside_inputs(
     """Whole-file reads of task-named outside inputs for a snapshot (#1118 unit 1), bounded.
 
     The same trusted walk as ``read_outside_inputs``: the same roots, exclusions and file
-    tests, at most ``limit`` files within ``seconds``. A file is kept whole only when it is text
+    tests, at most ``limit`` candidates within ``seconds``. A file is kept whole only when it is text
     of at most ``max_bytes``; a larger, binary or undecodable file is reported with its reason
     and no bytes, so no partial read is ever kept as an original.
     """
 
     reads: list[OutsideSnapshotRead] = []
+    # ``limit`` bounds the candidates attempted, readable or not, directory members included:
+    # the walk is lazy, so stopping here stops it before the next member is opened.
     for root, full, ends in _outside_files(
         roots,
         values,
@@ -533,23 +552,27 @@ def snapshot_outside_inputs(
         head_limit=max_bytes,
         seconds=seconds,
     ):
-        if ends is None:
-            reads.append(OutsideSnapshotRead(root, full, 0, None, "unreadable"))
-            continue
-        head, _tail, size = ends
-        if size > max_bytes:
-            reads.append(OutsideSnapshotRead(root, full, size, None, "too_large"))
-            continue
-        try:
-            head.decode("utf-8", errors="strict")
-        except UnicodeDecodeError:
-            reads.append(OutsideSnapshotRead(root, full, size, None, "not_text"))
-            continue
-        if _binary(head):
-            reads.append(OutsideSnapshotRead(root, full, size, None, "not_text"))
-            continue
-        reads.append(OutsideSnapshotRead(root, full, size, head, None))
+        reads.append(_snapshot_row(root, full, ends, max_bytes))
+        if len(reads) >= limit:
+            break
     return tuple(reads)
+
+
+def _snapshot_row(
+    root: str, full: str, ends: tuple[bytes, bytes, int] | None, max_bytes: int
+) -> OutsideSnapshotRead:
+    if ends is None:
+        return OutsideSnapshotRead(root, full, 0, None, "unreadable")
+    head, _tail, size = ends
+    if size > max_bytes:
+        return OutsideSnapshotRead(root, full, size, None, "too_large")
+    try:
+        head.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return OutsideSnapshotRead(root, full, size, None, "not_text")
+    if _binary(head):
+        return OutsideSnapshotRead(root, full, size, None, "not_text")
+    return OutsideSnapshotRead(root, full, size, head, None)
 
 
 def _outside_files(

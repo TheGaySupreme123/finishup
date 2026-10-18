@@ -1711,11 +1711,20 @@ sets `CandidateContextItem.input_root`, which `_semantic_decision` refuses once 
 policy no longer admits that root (issue #1118 unit 1, E2E-2). Kept copies (ADR-031 #1118
 amendment) arrive as `snapshots` with a `current_reader` and are offered first, with
 `baseline` (`task_start` or `admission_time`) and `current_state` (`same`, `changed`,
-`unavailable`); an input from an older object without `root` is never offered. Snapshots are
-kept by `application.input_snapshot.record_input_snapshot` through
-`Application.input_snapshot_scope(context, task_id) -> InputSnapshotScope | None` (roots only
-under `snapshot_roots(policy, carries_task_inputs)`) and read with
-`task_input_read.snapshot_outside_inputs`. The reader opens each root one
+`unavailable`; `same` compares redacted bytes, and the label says so when the copy was
+redacted); an input from an older object without `root` is never offered. Snapshots are kept by
+`application.input_snapshot.record_input_snapshot(runtime=, key=, values=, scope=, boundary=, ...)`
+inside the admitting operation: `execute_start(..., input_capture=)` calls it before the
+lifecycle append (key: the lifecycle event id; `task_start` when the event opens the session,
+else `admission_time`), and `execute_publish_work(app, request, input_capture)` calls it for a
+validated new batch before the append (key: the request id). `Application.input_snapshot_scope(
+context, task_id) -> InputSnapshotScope | None` gives the roots, only under
+`snapshot_roots(policy, carries_task_inputs)` (recipe carries inputs, conversation setting not
+`local_only`, and the inference channel or local model admits ordinary `repository_excerpt`).
+The task ledger's `reserve_task_input_snapshot(key) -> SnapshotUsage | None` (``None``: already
+reserved, read nothing), `complete_task_input_snapshot(key, spent, ref)` and
+`load_task_input_snapshots()` hold the task-wide accounting (`snapshot_grant`); the reader is
+`task_input_read.snapshot_outside_inputs`, whose `limit` bounds candidates attempted. The reader opens each root one
 component at a time from `/`, trusts a directory or file only when the service user or root owns
 it and `writable_by_others` is false (a sticky directory excepted), and refuses the excluded
 directories by device and inode at every level (PR #1086 review R1-02, R1-03, R1-05, R1-07).
@@ -4473,12 +4482,11 @@ Before the consume it builds the `transport_failed/outcome_unknown` receipt the 
 and passes it as `PrivacyAuditPort.consume(authorization_id, dispatch_id, now, owed_receipt=)`,
 which parks it in the consume transaction itself (issue #1118 unit 1); parking asserts no outcome
 and leaves the row `receipt_pending`, and a failed consume parks nothing and dispatches nothing.
-`park_attempt_reconciliation(dispatch_id, receipt)` remains on the port but the gateway no longer
-calls it. At that consume, under the gateway lock policy mutation holds, the gateway refuses
-(`authorization_stale`) an `ApprovedOutboundCase` whose `input_roots` its current registry
-(`ProviderRegistry.admitted_input_roots`) no longer admits; `dispatch_local_semantic` makes the
-same check and runs `consume_local` under the same lock. `asyncio.CancelledError` inside that admitted window (a foreground
-runtime rebind yielding an advisory attempt) records the parked receipt through a shielded
+There is no separate parking method. At that consume, under the gateway lock policy mutation
+holds, the gateway refuses (`authorization_stale`) an `ApprovedOutboundCase` whose `input_roots`
+its current registry (`ProviderRegistry.admitted_input_roots`) no longer admits;
+`dispatch_local_semantic` makes the same check and runs `consume_local` under the same lock.
+`asyncio.CancelledError` inside that admitted window (a foreground runtime rebind yielding an advisory attempt) records the parked receipt through a shielded
 `complete_egress` and then re-raises, so cancellation still propagates promptly and no provider is
 re-entered. `PrivacyAuditPort.reconcile_started_attempts(consumed_before, limit) -> int` is the
 bounded, idempotent startup sweep for rows whose dispatcher died before that write: it runs once

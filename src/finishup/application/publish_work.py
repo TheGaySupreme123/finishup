@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -1867,6 +1867,7 @@ async def _execute_dry_run(
 async def execute_publish_work(
     app: Application,
     request: PublishWorkRequestModel,
+    input_capture: Callable[[TaskRuntime], Awaitable[None]] | None = None,
 ) -> PublishWorkInternalResult | PublishWorkResult:
     """Publish one all-or-nothing batch behind the ready application facade.
 
@@ -1996,6 +1997,9 @@ async def execute_publish_work(
             request, channel=channel, app=app, occurred_at=occurred_at, task_id=runtime.task_id
         )
         _validate_new_completion_scope(request, prepared)
+        if input_capture is not None:
+            # #1118 unit 1: a validated new batch, before its append; a replay returned above.
+            await input_capture(runtime)
         commitments, digest = await _commitments_and_digest(runtime, request, prepared)
         refs: list[ObjectRef] = []
         entries: list[AppendEntry] = []
