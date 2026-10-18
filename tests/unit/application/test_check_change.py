@@ -819,6 +819,64 @@ def test_a_rerun_command_ranks_by_its_latest_run() -> None:
     assert ordered[:4] == ("x.py", "y.py", "z.py", "tests/test_a.py")
 
 
+def test_a_verification_operand_resolves_against_its_cd_or_is_omitted_and_disclosed() -> None:
+    """#1118 unit 4 (AIP-2): ``cd tests && pytest check.py`` names ``tests/check.py``, never the
+    workspace-root ``check.py``; a directory change FinishUP cannot follow omits the operand and
+    reports it instead of guessing."""
+
+    from finishup.application.check_change import (
+        verification_input_paths,
+        verification_inputs_unresolved,
+    )
+
+    def paths(command: str) -> tuple[tuple[str, ...], bool]:
+        projection = cast(Any, _verification_case((command, "success"))).projection
+        return verification_input_paths(projection), verification_inputs_unresolved(projection)
+
+    assert paths("cd tests && pytest check.py") == (("tests/check.py",), False)
+    assert paths("cd tests/unit; pytest -q test_a.py ../check.py") == (
+        ("tests/unit/test_a.py", "tests/check.py"),
+        False,
+    )
+    assert paths("cd /app/tests && pytest check.py") == (("/app/tests/check.py",), False)
+    assert paths("cd tests && cd .. && pytest check.py") == (("check.py",), False)
+    assert paths("pytest tests/check.py") == (("tests/check.py",), False)
+    assert paths("pytest ../outside.py") == ((), True)
+    assert paths("make test > out/report.txt") == ((), False)
+    for unresolvable in (
+        'cd "$TESTDIR" && pytest check.py',
+        "cd - && pytest check.py",
+        "cd .. && pytest check.py",
+        "cd && pytest check.py",
+        "pushd tests && popd && pytest check.py",
+        "(cd tests && pytest check.py)",
+    ):
+        assert paths(unresolvable) == ((), True), unresolvable
+
+
+def test_dot_relative_statement_paths_keep_their_meaning() -> None:
+    """#1118 unit 4 (AIP-5): ``./docs/spec.md`` is the workspace's ``docs/spec.md``, never
+    ``/docs/spec.md``; ``../shared/spec.md`` is refused, never rewritten to ``/shared/spec.md``."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    projection = make_case().projection
+    assert task_input_paths(projection, "Read ./docs/spec.md.") == ("docs/spec.md",)
+    assert task_input_paths(projection, 'Read "./docs/spec.md".') == ("docs/spec.md",)
+    # The space-cut tail word stays a fallback the read drops when the whole path exists (#1102).
+    assert task_input_paths(projection, "Read `./spec files/guide.md`.") == (
+        "spec files/guide.md",
+        "files/guide.md",
+    )
+    assert task_input_paths(projection, "Read ../shared/spec.md.") == ()
+    assert task_input_paths(projection, "The inputs are in ./data/ now.") == ("data/",)
+    assert task_input_paths(projection, "Read /app/spec.md. Then src/a.py!") == (
+        "/app/spec.md",
+        "src/a.py",
+    )
+
+
 def test_an_input_only_a_verification_named_is_labelled_as_its_oracle() -> None:
     from finishup.ports.change_capture import TaskInputFile
 

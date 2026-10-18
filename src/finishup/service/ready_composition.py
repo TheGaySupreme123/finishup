@@ -92,6 +92,7 @@ from finishup.application.check_change import (
     recover_check_time_change,
     review_input_paths,
     space_cut_input_paths,
+    verification_inputs_unresolved,
 )
 from finishup.application.coordination import (
     EncryptedCoordinationDetailStore,
@@ -270,6 +271,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
+    VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
@@ -2711,6 +2713,24 @@ def _with_baseline_gap(gaps: Sequence[str], outcome: CheckChangeOutcome) -> tupl
     if not any(i.origin == "outside_workspace" and i.baseline == "current" for i in inputs):
         return tuple(gaps)
     return tuple(sorted({*gaps, TASK_INPUT_BASELINE_UNAVAILABLE_GAP}, key=str.encode))
+
+
+def _with_oracle_directory_gap(
+    gaps: Sequence[str], case: DeterministicCase, selection: ReviewSelectionPolicy
+) -> tuple[str, ...]:
+    """``gaps`` plus ``verification_input_directory_unresolved`` when it applies (#1118 AIP-2).
+
+    Only where the recipe reads task inputs: a verification oracle named after a ``cd`` FinishUP
+    cannot follow was left out rather than guessed at the workspace root. A closed code, no path.
+    """
+
+    if not (
+        check_time_change_selected(selection)
+        and carries_task_inputs(selection)
+        and verification_inputs_unresolved(case.projection)
+    ):
+        return tuple(gaps)
+    return tuple(sorted({*gaps, VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP}, key=str.encode))
 
 
 def _current_input_reader(roots: tuple[str, ...], excluded: tuple[str, ...]) -> CurrentInputReader:
@@ -5377,6 +5397,9 @@ def _privacy_gated_semantic_evaluator(
             # names no path and only the owner's trusted-terminal step can clear it.
             outside_not_admitted = _outside_not_admitted(check_change)
             captured_content_gaps = _with_baseline_gap(captured_content_gaps, check_change)
+            captured_content_gaps = _with_oracle_directory_gap(
+                captured_content_gaps, frozen.case, review_selection
+            )
             if outside_not_admitted:
                 captured_content_gaps = tuple(
                     sorted(

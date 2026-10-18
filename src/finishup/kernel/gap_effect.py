@@ -431,7 +431,11 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         d_route="D",
         review_route="D",
         changed=True,
-        codes=("task_input_baseline_unavailable", "task_input_outside_not_admitted"),
+        codes=(
+            "task_input_baseline_unavailable",
+            "task_input_outside_not_admitted",
+            "verification_input_directory_unresolved",
+        ),
     ),
     _Family(
         rule="G6",
@@ -874,6 +878,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "task_statement_unavailable",
         "unpaired_event",
         "unresolved_verification_limitation",
+        "verification_input_directory_unresolved",
         "verification_only_as_root",
         "write_outside_workspace",
     }

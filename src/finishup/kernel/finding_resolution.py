@@ -88,6 +88,7 @@ from finishup.domain.receipts import (
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     UNRESOLVED_VERIFICATION_GAP,
+    VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
 )
 from finishup.domain.task_statement import (
     TASK_STATEMENT_FINDING_SUMMARIES,
@@ -264,6 +265,7 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
         # AI-powered review input only; local packs never read task inputs.
         TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
         TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
+        VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
         # The reduced review's sent content could not be recorded (issue #904): a limit of that
         # review, never of the complete local case. For AI-powered proof it blocks.
         SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP,
@@ -412,6 +414,7 @@ SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS: Final = (
             SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
             TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
             TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
+            VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
         }
     )
     | TASK_STATEMENT_GAPS

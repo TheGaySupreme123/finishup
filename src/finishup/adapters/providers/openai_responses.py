@@ -235,6 +235,11 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
             "a file or folder the task names lies outside the workspace and the owner has not "
             "admitted it, so it is not in this packet; judge what depends on it as not assessable"
         ),
+        # #1118 unit 4 (AIP-2): a verification oracle after a directory change not followed.
+        "verification_input_directory_unresolved": (
+            "a verification command named a file after a directory change FinishUP could not "
+            "follow, so that file is not in this packet"
+        ),
         "truncated_payload": "a payload was cut to a bounded prefix",
         "unknown_event": "an event of a schema this version cannot read was kept unread",
         "unknown_event_schema_preserved": (

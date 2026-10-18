@@ -1875,6 +1875,12 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   reviewer could not tell whether the agent changed it (issue #1118 unit 1, ADR-031 amendment;
   `ready_composition._with_baseline_gap`). A closed disclosure code with no path; it is
   classified like `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only).
+- `verification_input_directory_unresolved` — a recorded verification command named a file after
+  a directory change FinishUP cannot follow (`cd -`, `cd $X`, `cd` with no or several operands, a
+  `..` above the workspace, `popd`, a subshell), so that oracle was left out rather than read as a
+  same-named file elsewhere (#1118 unit 4, AIP-2). A literal `cd`/`pushd` is followed: `cd tests
+  && pytest check.py` names `tests/check.py`. A closed disclosure code with no path, classified like
+  `task_input_baseline_unavailable`.
 - `task_input_outside_not_admitted` — the recipe carries task inputs and the task itself names an
   absolute file or folder outside the workspace that no `admitted_input_roots` entry covers (not a
   declared output, not in a system, scratch, log, cache, output, package-state, `bin` or

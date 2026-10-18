@@ -91,6 +91,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
+    VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
@@ -421,6 +422,8 @@ SEMANTIC_CASE_CONTENT_GAPS: Final = frozenset(
         TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
         # #1118 unit 1: an outside input sent as current bytes with no kept copy.
         TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
+        # #1118 unit 4 (AIP-2): a verification oracle left out for an unresolvable directory.
+        VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
     }
 )
 # Every packet gap an evaluation may report: the content gaps above plus the codes whose resolution
