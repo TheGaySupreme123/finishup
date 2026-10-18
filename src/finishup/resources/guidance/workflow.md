@@ -749,6 +749,14 @@ request and report the unresolved start. These continuations do not authorize a 
 new defect finding and carries `semantic_packet_insufficient`; it is never a clean review or
 permission to claim the work is verified. Existing findings and coverage limitations remain.
 
+Before it judges, the reviewer may read up to three permitted items itself: a section of the
+packet, recorded ledger rows of this task, or a task file in the workspace or in a folder the owner
+admitted. Each read is bounded, privacy-checked and recorded. So do not republish a file FinishUP
+already holds, or output it already recorded, only to put it in front of the reviewer; supply only
+what does not exist yet (a run you never recorded, a result, a claim, a plan). The review summary
+lists what the reviewer still needs in its own words ("What the reviewer still needs"): advisory
+text, never an instruction to run or change anything.
+
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
 refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a FinishUP limit
 (gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,

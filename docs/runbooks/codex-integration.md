@@ -3947,6 +3947,8 @@ when one is `agent_suppliable` (each item, how to supply it and what counts, wit
 receipt conclusion) and omits any other continuation; the verdict and missing items always come
 back. Persisting the continuation with the stored check is a storage follow-up owned by #1100.
 
+**Residual requests on Codex (#1118 unit 4). Host decision: supported.** As on every host, the reviewer's own reason for each residual request reaches the agent inside the fenced `review_summary` ("What the reviewer still needs"), never in `agent_next` or the structural item; a linked supply no longer erases a reviewer's repeat (`semantic_missing_already_supplied` discloses it); and a `semantic_required` check stops at the same round limits, reading `incomplete_check`. The reviewer's own reads (up to three, bounded and privacy-checked) run in the service, not in the host, so they behave the same here; the provider route that serves them is a separate role (ADR-006). Recovery's `check_outcome` stays structural and omits the reason. Gap: in Codex's structured result `review_summary` follows findings, so in a large result it can fall in the cut middle; the MCP text channel's reviewer section carries it, and a resend or the CLI JSON returns it whole.
+
 **Supply on Codex.** The captured output of a shell re-run of the target's exact command that
 FinishUP observed after the request counts as supplying a targeted `verification_output` (or
 `other`) item (ADR-006 amendment). The hook and the session-stream copy commit the run in different
