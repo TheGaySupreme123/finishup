@@ -266,13 +266,22 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `ready`: nothing further to do and nothing to disclose; request the receipt.
 - `unknown`: read `status` again once the projection is readable.
 
+After a script or tool changes source, rerun the affected tests and any requested verification.
+FinishUP uses observed workspace changes even when the command itself names no file write.
+Documentation and conventional notes, scratch, logs, caches and build output leave verification
+current only when their classes are exempt and the task's declared outputs do not override that
+exemption. If FinishUP cannot classify or verify the workspace effect, it treats earlier
+verification as stale. For `edited_after_last_verification` or `planned_verification_stale`, rerun
+the tests or requested command after the change, then check again; a FinishUP check alone does not
+rerun them.
+
 If you stop while `agent_actionable` still names open obligations, an unrepaired
 finding, a finding you rejected that still awaits the reviewer's ruling
 (`finding_rejection_awaiting_ruling`: run `check` with `final_review: true` so the reviewer rules;
 do not acknowledge a finding you dispute), a planned verification that was not observed, failed, or ran before your last edit, an
 edit to the work after your last test, lint, typecheck or build run (`edited_after_last_verification`;
-temporary scratch files and FinishUP receipt files never count, and documentation such as a README
-or changelog does not unless the task declares that file, or any output directory, as an output; run each verification in the
+exempt scratch and FinishUP receipt files do not count, and documentation such as a README
+or changelog does not stale verification unless the task's declared outputs override the exemption; run each verification in the
 foreground, in one tool call: a job you start in the background (`&`, `nohup`, or your host's
 run-in-background option) and poll from a later call is recorded when it starts, not when it
 finishes), a git-ignored requested output, or a declared deliverable you deleted or renamed away

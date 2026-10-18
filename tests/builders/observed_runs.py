@@ -432,6 +432,7 @@ class ObservedLedger:
         runner: str | None = None,
         write_scope: str | None = None,
         workspace_effect: str | None = None,
+        workspace_write_scopes: tuple[str, ...] | None = None,
     ) -> ResultId:
         """Record one tool call as the coordinator materializes it: action, then result.
 
@@ -459,6 +460,7 @@ class ObservedLedger:
             observed=observed,
             subject_state=subject_state,
             workspace_effect=workspace_effect,
+            workspace_write_scopes=workspace_write_scopes,
         )
 
     def begin(
@@ -536,6 +538,7 @@ class ObservedLedger:
         observed: bool = True,
         subject_state: SubjectStateRef | None = None,
         workspace_effect: str | None = None,
+        workspace_write_scopes: tuple[str, ...] | None = None,
     ) -> ResultId:
         """Record the result of a call ``begin`` recorded."""
 
@@ -549,7 +552,9 @@ class ObservedLedger:
                 outcome,
                 exit_status=exit_status,
                 summary=result_summary_with_workspace_effect(
-                    f"Observed result status={outcome.value}", workspace_effect
+                    f"Observed result status={outcome.value}",
+                    workspace_effect,
+                    workspace_write_scopes,
                 ),
                 subject_state=subject_state,
             ),
@@ -595,7 +600,12 @@ class ObservedLedger:
         return result
 
     def annotate_workspace_effect(
-        self, result: ResultId, effect: str, *, observed: bool = True
+        self,
+        result: ResultId,
+        effect: str,
+        *,
+        observed: bool = True,
+        scopes: tuple[str, ...] | None = None,
     ) -> EventId:
         """Append a later delivery's workspace fact for the call of *result* (PR #1080 round 6).
 
@@ -618,7 +628,7 @@ class ObservedLedger:
             and record.payload.action_id == action
         )
         self.runs += 1
-        description = workspace_effect_annotation(effect)
+        description = workspace_effect_annotation(effect, scopes)
         assert description is not None
         return self._append(
             EventSchema("evidence_recorded", EVIDENCE_SCHEMA_VERSION),

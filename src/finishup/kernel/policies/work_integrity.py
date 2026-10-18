@@ -601,7 +601,7 @@ def _observed_verification_facts(
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     exempt = non_counting_edits_exempt(case.projection)
     stale_exempt = stale_exempt_write_tokens(case.projection)
-    latest_edit: int | None = None
+    latest_edit: int | None = case.workspace_verification_edit_frontier or None
     for action in case.projection.actions.values():
         payload = action.payload
         if (

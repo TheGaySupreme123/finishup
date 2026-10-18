@@ -2770,6 +2770,15 @@ recorded for this change; native Windows is not claimed.
 
 Host decisions for Claude Code:
 
+- **Actual workspace changes (DET-2).** The shared hook fingerprint makes a source change by a
+  script or opaque tool stale earlier verification, even without a lexical write token.
+  Optional `workspace_write_scopes` contains only closed classes for actual additions, changes
+  and deletions; no paths or content. Exempt documentation and conventional notes, scratch, logs,
+  caches and build output preserve freshness under ADR-042, with declared outputs taking
+  precedence. Unavailable effects and changed effects without usable classes
+  conservatively stale verification. Task facts and completion evidence share the same observed
+  facts; Stop, status and all receipt formats name the existing stale-verification gaps. Rerun
+  the affected tests or requested verification after the change, then check again.
 - **Patch-then-test commands.** Shared classifier: a `Bash` command that applies a heredoc patch
   (`git apply <<EOF`, `patch -p1 <<EOF`) and then runs a test is a verification run even when
   the patch body holds an odd quote, and the patch is a write of the files its diff headers name.

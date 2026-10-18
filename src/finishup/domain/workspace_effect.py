@@ -38,9 +38,9 @@ from __future__ import annotations
 import posixpath
 import re
 from collections.abc import Sequence
-from typing import Final
+from typing import Final, cast
 
-from finishup.domain.write_scope import finishup_artifact_name
+from finishup.domain.write_scope import WRITE_SCOPES, finishup_artifact_name
 
 __all__ = [
     "BYTECODE_CACHE_DIRECTORY",
@@ -65,6 +65,40 @@ __all__ = [
 ]
 
 WORKSPACE_EFFECT_KEY: Final = "workspace_effect"
+WORKSPACE_WRITE_SCOPES_KEY: Final = "workspace_write_scopes"
+_SCOPES_RE: Final = re.compile(
+    r" \(workspace writes ([a-z_,]+)\)(?= \(workspace (?:unchanged|changed|unverified)\)\Z|\Z)"
+)
+
+
+def workspace_write_scopes(value: object) -> tuple[str, ...] | None:
+    """A bounded canonical set of existing closed classes; never paths or free text."""
+
+    if type(value) not in {tuple, list}:
+        return None
+    items = cast(tuple[object, ...] | list[object], value)
+    if len(items) > len(WRITE_SCOPES) or any(
+        type(item) is not str or item not in WRITE_SCOPES for item in items
+    ):
+        return None
+    scopes = cast(tuple[str, ...], tuple(items))
+    return tuple(sorted(scopes)) if len(set(scopes)) == len(scopes) else None
+
+
+def workspace_write_scopes_from_summary(value: str | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    match = _SCOPES_RE.search(value)
+    if match is None:
+        return None
+    return () if match.group(1) == "none" else workspace_write_scopes(match.group(1).split(","))
+
+
+def _scope_suffix(scopes: object) -> str:
+    known = workspace_write_scopes(scopes)
+    return "" if known is None else f" (workspace writes {','.join(known) or 'none'})"
+
+
 WORKSPACE_UNCHANGED: Final = "unchanged"
 WORKSPACE_CHANGED: Final = "changed"
 WORKSPACE_UNAVAILABLE: Final = "unavailable"
@@ -177,12 +211,14 @@ _PLACE_BYTECODE: Final = 3
 _PLACE_VCS_ROOT: Final = 4
 
 
-def result_summary_with_workspace_effect(summary: str, effect: object) -> str:
+def result_summary_with_workspace_effect(
+    summary: str, effect: object, scopes: object = None
+) -> str:
     """Append the closed workspace suffix to an observed result summary when *effect* is known."""
 
     if type(effect) is not str or effect not in _SUMMARY_WORDS:
         return summary
-    return f"{summary} (workspace {_SUMMARY_WORDS[effect]})"
+    return f"{summary}{_scope_suffix(scopes)} (workspace {_SUMMARY_WORDS[effect]})"
 
 
 def workspace_effect_from_result_summary(summary: object) -> str | None:
@@ -194,12 +230,12 @@ def workspace_effect_from_result_summary(summary: object) -> str | None:
     return None if match is None else _SUMMARY_EFFECTS[match.group(1)]
 
 
-def workspace_effect_annotation(effect: object) -> str | None:
+def workspace_effect_annotation(effect: object, scopes: object = None) -> str | None:
     """The exact evidence description carrying *effect* for an already recorded call."""
 
     if type(effect) is not str or effect not in WORKSPACE_EFFECTS:
         return None
-    return f"{WORKSPACE_EFFECT_ANNOTATION_PREFIX}{effect}"
+    return f"{WORKSPACE_EFFECT_ANNOTATION_PREFIX}{effect}{_scope_suffix(scopes)}"
 
 
 def workspace_effect_from_annotation(description: object) -> str | None:
@@ -209,8 +245,9 @@ def workspace_effect_from_annotation(description: object) -> str | None:
         WORKSPACE_EFFECT_ANNOTATION_PREFIX
     ):
         return None
-    effect = description[len(WORKSPACE_EFFECT_ANNOTATION_PREFIX) :]
-    return effect if effect in WORKSPACE_EFFECTS else None
+    effect = description[len(WORKSPACE_EFFECT_ANNOTATION_PREFIX) :].split(" (", 1)[0]
+    scopes = workspace_write_scopes_from_summary(description)
+    return effect if description == workspace_effect_annotation(effect, scopes) else None
 
 
 def bytecode_artifact_name(name: str) -> bool:

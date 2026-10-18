@@ -59,6 +59,133 @@ def test_nothing_done_is_unchanged_and_a_write_is_changed(tmp_path: Path) -> Non
     assert _around(store, root, lambda: (root / "README.md").chmod(0o700)) == "changed"
 
 
+@pytest.mark.parametrize("operation", ["add", "modify", "delete"])
+@pytest.mark.parametrize(
+    ("relative", "scope"),
+    [
+        ("src/app.py", "workspace"),
+        ("README.md", "docs"),
+        ("docs/guide.md", "docs"),
+        ("NOTES.md", "notes"),
+        ("run.log", "notes"),
+        ("scratch/probe.py", "notes"),
+        ("build/generated.py", "notes"),
+        ("dist/app.js", "notes"),
+        (".cache/x", "notes"),
+        (".pytest_cache/lastfailed", "notes"),
+        ("tests/README.md", "workspace"),
+        ("fixtures/run.log", "workspace"),
+        ("data/scratch/probe.py", "workspace"),
+    ],
+)
+def test_actual_file_effects_carry_their_closed_write_class(
+    tmp_path: Path, relative: str, scope: str, operation: str
+) -> None:
+    """DET-2: classification comes from changed entries, including persisted deleted entries."""
+
+    root = _workspace(tmp_path)
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if operation == "add":
+        target.unlink(missing_ok=True)
+    else:
+        target.write_text("before\n")
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    if operation == "delete":
+        target.unlink()
+    else:
+        target.write_text("after the opaque script\n")
+    # A fresh store must recover classes from the private snapshot, not an in-memory path map.
+    reading = _store(tmp_path).effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert reading.effect == "changed"
+    assert reading.write_scopes == (scope,)
+
+
+@pytest.mark.parametrize(
+    ("relatives", "scopes"),
+    [
+        (("src/app.py", "README.md"), ("docs", "workspace")),
+        (("README.md", "run.log", "NOTES.md"), ("docs", "notes")),
+    ],
+)
+def test_actual_changes_aggregate_all_classes_without_duplicates(
+    tmp_path: Path, relatives: tuple[str, ...], scopes: tuple[str, ...]
+) -> None:
+    root = _workspace(tmp_path)
+    for relative in relatives:
+        (root / relative).write_text("before\n")
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    for relative in relatives:
+        (root / relative).write_text("after\n")
+    reading = store.effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert reading.effect == "changed"
+    assert reading.write_scopes == scopes
+
+
+@pytest.mark.parametrize("delete", [False, True])
+def test_directory_entries_alone_carry_no_file_write_class(tmp_path: Path, delete: bool) -> None:
+    root = _workspace(tmp_path)
+    target = root / "empty"
+    if delete:
+        target.mkdir()
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    if delete:
+        target.rmdir()
+    else:
+        target.mkdir()
+    reading = store.effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert reading.effect == "changed"
+    assert reading.write_scopes == ()
+
+
+def test_an_older_snapshot_magic_cannot_supply_write_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _workspace(tmp_path)
+    store = _store(tmp_path)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(fingerprint, "_MAGIC", b"FUWF\x02")
+        assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    (root / "README.md").unlink()
+    reading = store.effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert reading.write_scopes is None
+
+
+def test_persisted_write_classes_expose_neither_private_paths_nor_content(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    relative = "private-customer-project/undisclosed-source-name.py"
+    private_content = "private DET-2 workspace content that must never be stored"
+    target = root / relative
+    target.parent.mkdir()
+    target.write_text(private_content)
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    persisted = b"".join(
+        path.read_bytes() for path in (tmp_path / "state").rglob("*") if path.is_file()
+    )
+    assert persisted
+    for private_value in (relative, target.name, str(root), private_content):
+        assert private_value.encode() not in persisted
+    target.unlink()
+    reading = _store(tmp_path).effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert reading.effect == "changed"
+    assert reading.write_scopes == ("workspace",)
+
+
 def test_a_write_that_restores_size_and_mtime_is_still_seen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -278,6 +405,7 @@ def test_finishup_receipts_and_owned_state_are_not_the_workspace(tmp_path: Path)
     )
     # ``output/`` itself is a new directory: creating it is a workspace change.
     assert reading.effect == "changed"
+    assert reading.write_scopes == ()
     (root / "output" / "yoetz_receipt.json").unlink()
     (root / "output").rmdir()
     assert (
@@ -296,6 +424,7 @@ def test_finishup_receipts_and_owned_state_are_not_the_workspace(tmp_path: Path)
         excluded=(".state",),
     )
     assert reading.effect == "unchanged"
+    assert reading.write_scopes == ()
 
 
 def test_links_are_compared_by_target_and_never_followed(tmp_path: Path) -> None:
@@ -358,11 +487,13 @@ def test_unestablished_comparisons_are_unavailable(tmp_path: Path, setup: str, r
         call_complete=setup != "incomplete",
     )
     assert (reading.effect, reading.reason) == ("unavailable", reason)
+    assert reading.write_scopes is None
     # The pending snapshot is consumed either way: a replayed post cannot reuse it.
     again = store.effect_after(
         str(root), "call", deadline=time.monotonic() + 10, call_complete=True
     )
     assert (again.effect, again.reason) == ("unavailable", "no_pre_snapshot")
+    assert again.write_scopes is None
 
 
 def test_walk_bounds_make_the_comparison_unavailable(

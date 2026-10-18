@@ -193,3 +193,40 @@ async def test_a_stream_copy_whose_hook_never_arrives_stays_material(tmp_path: P
     await _ingest(cell, _post(cell, "date", None, stream=True))
     assert _facts(cell) == ([None], [])
     assert _material(cell)
+
+
+@pytest.mark.anyio
+async def test_same_effect_with_different_classes_keeps_the_code_fact(tmp_path: Path) -> None:
+    from finishup.kernel.observed_failures import observed_event_ids_from_records
+    from finishup.kernel.task_facts import workspace_verification_edits
+
+    cell = _reattach_fixture(tmp_path, "effect-class-change")
+    first = _post(cell, "script", "changed", stream=False)
+    first = replace(
+        first,
+        structural_payload=JsonObject(
+            {**first.structural_payload, "workspace_write_scopes": ("docs",)}
+        ),
+    )
+    await _ingest(cell, first)
+    records = _records(cell)
+    assert not workspace_verification_edits(
+        replay(records), observed_event_ids_from_records(records), records
+    )
+    code = replace(
+        first,
+        source_identity=first.source_identity + ":code",
+        structural_payload=JsonObject(
+            {**first.structural_payload, "workspace_write_scopes": ("workspace",)}
+        ),
+    )
+    await _ingest(cell, code)
+    records = _records(cell)
+    assert _facts(cell) == (["changed"], ["changed"])
+    assert workspace_verification_edits(
+        replay(records), observed_event_ids_from_records(records), records
+    )
+    count = cell.record_count()
+    cell.coordinator = cell.build_coordinator()
+    await _ingest(cell, code)
+    assert cell.record_count() == count

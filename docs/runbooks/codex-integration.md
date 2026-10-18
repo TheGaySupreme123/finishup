@@ -3835,6 +3835,16 @@ recorded for this change; native Windows is not claimed.
 
 Host decisions for Codex; the shared classifier parts apply to Claude Code and Cursor too.
 
+- **Actual workspace changes (DET-2).** The hook's before/after fingerprint makes a source
+  change by a script or opaque tool stale earlier verification, even without a lexical write
+  token. Optional `workspace_write_scopes` contains only closed classes for actual additions,
+  changes and deletions; no paths or content. Exempt documentation and conventional notes,
+  scratch, logs, caches and build output preserve freshness under ADR-042, with declared outputs
+  taking precedence. Unavailable effects and changed effects without usable classes
+  conservatively stale verification. A hook fact arriving after its rollout copy is preserved
+  through the existing duplicate annotation. Task facts and completion evidence share the rule;
+  Stop, status and all receipt formats name the existing stale-verification gaps. Rerun the
+  affected tests or requested verification after the change, then check again.
 - **Patch-then-test commands.** One apostrophe in a heredoc body no longer makes a patch followed
   by a test `compound`: the test is a verification run and clears "edited after the last
   verification". `git apply <<EOF` and `patch -p1 <<EOF` heredocs are writes of the files their

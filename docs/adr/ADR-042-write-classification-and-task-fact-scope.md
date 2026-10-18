@@ -54,8 +54,7 @@ did not stop the agent:
    receipt or export file named `finishup[-_.]receipt*.{md,markdown,json,txt,text}` /
    `finishup[-_.]export*.…`, FinishUP's state directory or isolation root, `.agents/plugins/finishup`,
    `.agents/skills/finishup`). The rule is lexical and never resolves a path through the filesystem.
-   Every path inside the workspace counts, a log file included (a log may be a deliverable; shell
-   redirects into logs are commands, never edits, and a log under a temporary root is scratch), and
+   Workspace paths count subject to the notes/docs and owner-E churn exemptions below, and
    a path whose workspace relation is unknown counts (a temporary directory may be the workspace).
    Only `deliverable` and `workspace` (and real outside) writes make an earlier verification stale.
    Deliverables take precedence, per class (`task_facts.non_counting_edits_exempt`): no scratch
@@ -162,14 +161,14 @@ did not stop the agent:
 ## Amendment (tb4n3 RC-5, issue #1028, ADR-045): notes and shell writes
 
 Two write classes are added. `notes` is the agent's own working notes inside the workspace
-(`NOTES.md`, `todo.txt`; a narrow name list, never `.log`, never README or report names): it is
+(`NOTES.md`, `todo.txt`; extended to conventional logs and churn paths by owner decision E below): it is
 non-counting like `scratch` and `yoetz_owned`, and a declared output (or any declared directory)
 with such a name overrides the class. `workspace` is carried by a shell command whose attributable
 writes (redirect targets, `tee`, `sed -i`, the destination of `cp`/`mv`/`install`/`rsync`, `touch`,
 `truncate`, `dd of=`) include a path in the workspace; the kernel counts a command carrying
 `workspace` or `outside_workspace` as an edit, so `cat > solve.py <<EOF` after the last test makes
 the verification stale. A write the hook cannot attribute (`$VAR`, `~`, a script that opens files
-itself) is not counted.
+itself) has no lexical write token; trusted workspace effects now cover it as described below.
 
 ## Amendment (2026-10-13, tb4n5, issue #1049): a command mismatch is scoped like a task fact
 
@@ -362,3 +361,30 @@ is pinned by the `manifest_mismatch` cases in `tests/unit/service/test_control_p
 back with the pre-`docs` enum, and the stamp probe), and by `c2l`/`c2m` in
 `tests/unit/kernel/test_tb4n3_facts.py` (a fixture written after `cd`, the host's `cwd`, and the
 fallback class through each host's hook chain).
+
+## Amendment (2026-10-18, DET-2): classify actual workspace effects for verification freshness
+
+A script can modify source without a lexical shell-write token: `python generate.py` and an
+opaque tool call are examples. Verification freshness therefore also consumes the hook's actual
+before/after workspace comparison (ADR-033), through the same provenance-checked facts used for
+duplicate deliveries. A changed result carries optional `workspace_write_scopes`: a bounded set
+of the existing write classes for entries actually added, changed or deleted. Paths and content
+are never included. Deleted entries retain their closed class in the fingerprint snapshot.
+
+The shared path classifier also recognizes conventional logs, scratch files, caches and build
+outputs as non-counting churn. Source, tests, fixtures and data remain ordinary work even when
+their names resemble documentation or scratch. These are lexical conventions, not proof that a
+program never reads the files; declared outputs retain the existing precedence over exemptions.
+
+An actual `workspace` or `outside_workspace` change makes earlier verification stale. A complete
+set containing only exempt `docs`, `notes`, `scratch` or `yoetz_owned` classes leaves it current;
+each class is checked against the task's declared outputs. Documentation still counts as material
+work. A changed comparison without usable classes, an unavailable comparison, or a changed effect with unknown
+classes conservatively makes earlier verification stale. No command-text guess can grant an
+exemption to such a comparison, and an agent-published suffix cannot establish one.
+
+Task facts and completion-evidence freshness share this effective-change rule, including facts
+that arrive in a duplicate-delivery annotation. Existing `edited_after_last_verification` and
+`planned_verification_stale` gaps carry the result through Stop, status, CLI and MCP, and receipt
+JSON, markdown and text. The remedy is to rerun the affected tests or other requested verification
+after the change; another FinishUP check alone does not refresh verification.
