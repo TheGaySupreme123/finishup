@@ -438,6 +438,7 @@ def read_outside_inputs(
     *,
     limit: int = MAX_TASK_INPUT_FILES,
     excluded: tuple[str, ...] = (),
+    space_cut: frozenset[str] = frozenset(),
 ) -> tuple[TaskInputFile, ...]:
     """Read the files ``values`` names beneath admitted ``roots`` (issue #1082), bounded.
 
@@ -452,7 +453,9 @@ def read_outside_inputs(
     directories never read from (the workspace, FinishUP's own directories): refused by their
     case-folded path and by device and inode at every level, so neither an enumeration nor a
     differently spelled path re-enters them. At most ``limit`` files and 16 candidates are read
-    within five seconds; a file that fails any test is skipped silently.
+    within five seconds; a file that fails any test is skipped silently. ``space_cut`` are the
+    values only the spaces of a quoted spaced value cut out (``space_cut_input_paths``): when
+    that value names something beneath a root, they are not read (``drop_space_cut_words``).
     """
 
     usable = tuple(root for root in roots if admitted_input_root_valid(root))
@@ -491,7 +494,8 @@ def read_outside_inputs(
     try:
         # Issue #1102: a spaced value that names something beneath a root keeps its own words
         # out (``drop_space_cut_words``): ``/shared/legacy`` is never read for ``legacy app``.
-        for value in drop_space_cut_words(values[:_MAX_OUTSIDE_CANDIDATES], names_something):
+        candidates = values[:_MAX_OUTSIDE_CANDIDATES]
+        for value in drop_space_cut_words(candidates, names_something, space_cut):
             if len(inputs) >= limit or time.monotonic() > deadline:
                 break
             opened = located_open(value)

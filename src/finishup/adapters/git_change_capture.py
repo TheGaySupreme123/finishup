@@ -1217,6 +1217,7 @@ class GitChangeCaptureAdapter:
         *,
         priority_paths: tuple[str, ...] = (),
         input_paths: tuple[str, ...] = (),
+        space_cut_paths: frozenset[str] = frozenset(),
     ) -> CheckChangeCapture:
         """Render the change; ``priority_paths`` are the task's declared deliverables (tb4n2 R7).
 
@@ -1229,7 +1230,9 @@ class GitChangeCaptureAdapter:
         since are baseline and left out; a nested Git repository's own change is rendered under
         its directory; and ``input_paths`` (files the task statement names) that lie in the
         repository, are not part of the change, are not ignored and are not credential-named are
-        read into ``inputs`` as read-only task input files.
+        read into ``inputs`` as read-only task input files. Of those, only ``space_cut_paths``
+        (the words the spaces cut from a quoted spaced candidate, named nowhere else) give way to
+        that candidate when it names something here (``drop_space_cut_words``).
         """
 
         # One deadline bounds the whole capture: every Git call gets at most what is left of it.
@@ -1245,7 +1248,14 @@ class GitChangeCaptureAdapter:
         for _ in range(_CAPTURE_ATTEMPTS):
             try:
                 return self._capture_once(
-                    pinned, object_format, base, assembly, deadline, priority, input_paths
+                    pinned,
+                    object_format,
+                    base,
+                    assembly,
+                    deadline,
+                    priority,
+                    input_paths,
+                    space_cut=space_cut_paths,
                 )
             except _ChangedDuringCapture:
                 if _expired(assembly):
@@ -1810,6 +1820,8 @@ class GitChangeCaptureAdapter:
         deadline: float,
         priority: tuple[bytes, ...] = (),
         input_paths: tuple[str, ...] = (),
+        *,
+        space_cut: frozenset[str] = frozenset(),
     ) -> CheckChangeCapture:
         packs = self._refuse_unsafe_object_store(pinned)
         head = self._rev(pinned, "HEAD^{commit}", assembly)
@@ -1881,6 +1893,7 @@ class GitChangeCaptureAdapter:
             base_id=base_id,
             object_format=object_format,
             moved=tracked.rename_sources,
+            space_cut=space_cut,
         )
         return self._render(
             base_kind,
@@ -2070,6 +2083,7 @@ class GitChangeCaptureAdapter:
         base_id: str,
         object_format: Literal["sha1", "sha256"],
         moved: frozenset[bytes] = frozenset(),
+        space_cut: frozenset[str] = frozenset(),
     ) -> tuple[TaskInputFile, ...]:
         """Read the read-only task input files ``values`` names (issue #1045), bounded.
 
@@ -2096,6 +2110,7 @@ class GitChangeCaptureAdapter:
         paths: the task touched them too, so they are never read or listed as unchanged. A
         value holding a space that names a file or directory here keeps the words its spaces cut
         out of the read (``drop_space_cut_words``): ``test/`` is never listed for ``test data``.
+        Only ``space_cut`` values are such words; a value the task also named on its own is read.
         """
 
         if type(values) is not tuple or not values:
@@ -2119,7 +2134,9 @@ class GitChangeCaptureAdapter:
             )
 
         # Issue #1102: a spaced value that names something here keeps its own words out.
-        probed = drop_space_cut_words(values[:_MAX_REQUESTED_PATH_PROBES], names_something)
+        probed = drop_space_cut_words(
+            values[:_MAX_REQUESTED_PATH_PROBES], names_something, space_cut
+        )
         for value in probed:
             if len(inputs) >= MAX_TASK_INPUT_FILES or _expired(deadline):
                 break

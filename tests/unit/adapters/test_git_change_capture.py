@@ -2391,6 +2391,49 @@ def test_the_head_word_of_a_quoted_spaced_path_is_never_a_task_named_directory(
     ]
 
 
+def test_a_path_the_task_also_names_alone_is_read_beside_the_spaced_one(tmp_path: Path) -> None:
+    """PR #1112 review: in ``Read "docs/My Notes.md" and Notes.md`` the task names both files;
+    ``Notes.md`` is no word the spaces cut, so it is read even though the spaced file is there.
+    Likewise a folder named alone beside a spaced folder whose head word names it."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import space_cut_input_paths, task_input_paths
+
+    repository = _repository(tmp_path)
+    (repository / "docs").mkdir()
+    (repository / "docs" / "My Notes.md").write_text("SPACED_NOTES\n", encoding="utf-8")
+    (repository / "Notes.md").write_text("ROOT_NOTES\n", encoding="utf-8")
+    (repository / "src" / "test data").mkdir(parents=True)
+    (repository / "src" / "test data" / "case1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (repository / "src" / "test").mkdir()
+    (repository / "src" / "test" / "helpers.py").write_text("HELPERS = 1\n", encoding="utf-8")
+    _git(repository, "add", "--", ".")
+    _commit(repository, "inputs")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    projection = make_case().projection
+
+    def read(statement: str) -> list[tuple[str, str]]:
+        capture = adapter.capture(
+            os.fspath(repository),
+            base,
+            input_paths=task_input_paths(projection, statement),
+            space_cut_paths=space_cut_input_paths(projection, statement),
+        )
+        return [(item.path, item.origin) for item in capture.inputs]
+
+    assert read('Read "docs/My Notes.md" and Notes.md') == [
+        ("docs/My Notes.md", "task"),
+        ("Notes.md", "task"),
+    ]
+    assert read("Check 'src/test data' against src/test/ helpers.") == [
+        ("src/test data/", "task"),
+        ("src/test data/case1.csv", "task_directory"),
+        ("src/test/", "task"),
+        ("src/test/helpers.py", "task_directory"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("statement", "folder", "unrelated"),
     [
@@ -2415,7 +2458,7 @@ def test_a_spaced_folder_the_task_names_never_lists_a_folder_its_words_name(
     for ``test data``, ``data/`` for ``src/test data/``) is never listed as one the task names."""
 
     from builders.policy_cases import make_case
-    from finishup.application.check_change import task_input_paths
+    from finishup.application.check_change import space_cut_input_paths, task_input_paths
 
     repository = _repository(tmp_path)
     (repository / folder).mkdir(parents=True)
@@ -2427,10 +2470,14 @@ def test_a_spaced_folder_the_task_names_never_lists_a_folder_its_words_name(
     adapter = GitChangeCaptureAdapter()
     base = adapter.read_task_base(os.fspath(repository))
 
-    candidates = task_input_paths(
-        make_case().projection, statement.format(repository=os.fspath(repository))
+    text = statement.format(repository=os.fspath(repository))
+    candidates = task_input_paths(make_case().projection, text)
+    capture = adapter.capture(
+        os.fspath(repository),
+        base,
+        input_paths=candidates,
+        space_cut_paths=space_cut_input_paths(make_case().projection, text),
     )
-    capture = adapter.capture(os.fspath(repository), base, input_paths=candidates)
 
     assert [(item.path, item.origin) for item in capture.inputs] == [
         (f"{folder}/", "task"),

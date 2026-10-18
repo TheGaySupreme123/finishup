@@ -245,22 +245,51 @@ def test_a_quoted_spaced_folder_beneath_a_root_never_lists_the_folder_its_head_n
     is never listed; when it is not, the folder the first word names still is."""
 
     from builders.policy_cases import make_case
-    from finishup.application.check_change import task_input_paths
+    from finishup.application.check_change import space_cut_input_paths, task_input_paths
 
     root = os.fspath(shared)
     (shared / "legacy").mkdir()
     (shared / "legacy" / "unrelated_notes.txt").write_text("UNRELATED_MARKER\n", "utf-8")
     statement = f'The legacy sources are in "{root}/legacy app"; port them.'
     candidates = task_input_paths(make_case().projection, statement)
+    cut = space_cut_input_paths(make_case().projection, statement)
 
     assert candidates == (f"{root}/legacy app", f"{root}/legacy")
-    assert [item.path for item in read_outside_inputs((root,), candidates, limit=4)] == [
-        f"{root}/legacy/unrelated_notes.txt"
-    ]
+    assert cut == {f"{root}/legacy"}
+    assert [
+        item.path for item in read_outside_inputs((root,), candidates, limit=4, space_cut=cut)
+    ] == [f"{root}/legacy/unrelated_notes.txt"]
     (shared / "legacy app").mkdir()
     (shared / "legacy app" / "main.c").write_text("int main(void) { return 0; }\n", "utf-8")
-    assert [item.path for item in read_outside_inputs((root,), candidates, limit=4)] == [
-        f"{root}/legacy app/main.c"
+    assert [
+        item.path for item in read_outside_inputs((root,), candidates, limit=4, space_cut=cut)
+    ] == [f"{root}/legacy app/main.c"]
+
+
+def test_a_folder_the_task_also_names_alone_is_read_beside_the_spaced_one(shared: Path) -> None:
+    """PR #1112 review: ``/shared/legacy`` named on its own beside ``"/shared/legacy app"`` is
+    an input the task asked for, not a word the spaces cut, so the reader still lists it."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import space_cut_input_paths, task_input_paths
+
+    root = os.fspath(shared)
+    (shared / "legacy app").mkdir()
+    (shared / "legacy app" / "main.c").write_text("int main(void) { return 0; }\n", "utf-8")
+    (shared / "legacy").mkdir()
+    (shared / "legacy" / "notes.txt").write_text("NOTES_MARKER\n", "utf-8")
+    statement = f'Port "{root}/legacy app", keeping {root}/legacy/ in mind.'
+    projection = make_case().projection
+
+    candidates = task_input_paths(projection, statement)
+    cut = space_cut_input_paths(projection, statement)
+    inputs = read_outside_inputs((root,), candidates, limit=4, space_cut=cut)
+
+    assert candidates == (f"{root}/legacy app", f"{root}/legacy", f"{root}/legacy/")
+    assert cut == {f"{root}/legacy"}
+    assert [item.path for item in inputs] == [
+        f"{root}/legacy app/main.c",
+        f"{root}/legacy/notes.txt",
     ]
 
 
@@ -288,15 +317,20 @@ def test_links_and_unsafe_roots_admit_nothing(shared: Path, tmp_path: Path) -> N
 def test_the_service_reader_binds_only_the_admitted_roots_and_the_room(
     shared: Path, tmp_path: Path
 ) -> None:
-    """The reader the service hands the capture takes ``(values, room, workspace)`` positionally,
-    and never reads the workspace or the service's own protected directories (R1-02)."""
+    """The reader the service hands the capture takes ``(values, room, workspace, space_cut)``
+    positionally, and never reads the workspace or the service's own protected directories
+    (R1-02)."""
 
     from finishup.service import ready_composition
 
     workspace = os.fspath(tmp_path / "repo")
-    reader = ready_composition._outside_input_reader(  # pyright: ignore[reportPrivateUsage]
+    bound = ready_composition._outside_input_reader(  # pyright: ignore[reportPrivateUsage]
         (os.fspath(shared),), (os.fspath(shared / "legacy_app" / "forms"),)
     )
+
+    def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+        return bound(values, room, workspace, frozenset())
+
     values = (f"{shared}/spec.md", f"{shared}/legacy_app/")
     assert [item.path for item in reader(values, 1, workspace)] == [f"{shared}/spec.md"]
     # The protected directory is never listed, so only Module1.bas is offered from legacy_app.
@@ -308,6 +342,18 @@ def test_the_service_reader_binds_only_the_admitted_roots_and_the_room(
     assert reader(values, 3, os.fspath(shared / "legacy_app")) == (
         next(iter(reader(values, 1, workspace))),
     )
+    # The words the spaces cut from a spaced value found beneath a root are passed through.
+    (shared / "legacy app").mkdir()
+    (shared / "legacy app" / "main.c").write_text("int main(void) { return 0; }\n", "utf-8")
+    (shared / "legacy").mkdir()
+    (shared / "legacy" / "notes.txt").write_text("UNRELATED_MARKER\n", "utf-8")
+    spaced = (f"{shared}/legacy app", f"{shared}/legacy")
+    assert [item.path for item in bound(spaced, 4, workspace, frozenset(spaced[1:]))] == [
+        f"{shared}/legacy app/main.c"
+    ]
+    assert f"{shared}/legacy/notes.txt" in [
+        item.path for item in bound(spaced, 4, workspace, frozenset())
+    ]
 
 
 # --- PR #1086 review R1-02: an admitted directory never re-enters the workspace -----------------
@@ -328,8 +374,12 @@ def test_an_admitted_directory_that_contains_the_workspace_never_lists_it(tmp_pa
     (workspace / "solution.py").write_text("AGENT_WRITTEN_CODE\n", encoding="utf-8")
     (root / "spec.md").write_text("SPEC_MARKER\n", encoding="utf-8")
 
-    def reader(values: tuple[str, ...], room: int, excluded: str) -> tuple[TaskInputFile, ...]:
-        return read_outside_inputs((os.fspath(root),), values, limit=room, excluded=(excluded,))
+    def reader(
+        values: tuple[str, ...], room: int, excluded: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        return read_outside_inputs(
+            (os.fspath(root),), values, limit=room, excluded=(excluded,), space_cut=space_cut
+        )
 
     capture = CheckChangeCapture(
         base="task_start",
@@ -419,8 +469,12 @@ def test_a_case_alias_of_the_workspace_is_refused_on_a_case_insensitive_file_sys
     if not alias.exists():
         pytest.skip("this file system distinguishes case")
 
-    def reader(values: tuple[str, ...], room: int, excluded: str) -> tuple[TaskInputFile, ...]:
-        return read_outside_inputs((os.fspath(root),), values, limit=room, excluded=(excluded,))
+    def reader(
+        values: tuple[str, ...], room: int, excluded: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        return read_outside_inputs(
+            (os.fspath(root),), values, limit=room, excluded=(excluded,), space_cut=space_cut
+        )
 
     capture = CheckChangeCapture(
         base="task_start",

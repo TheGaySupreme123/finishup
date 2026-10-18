@@ -110,3 +110,18 @@ def test_the_outside_candidate_counter_tells_undecided_from_none_named() -> None
     assert _outside_candidate_count(named, None, (), ()) == 0
     none = _review_inputs(_case("Fix src/dedup/core.py per DESIGN.md."), _EXPANDED)
     assert _outside_candidate_count(none, "/app", (), ()) == 0
+
+
+def test_the_space_cut_words_come_from_the_frozen_case_where_inputs_are_carried() -> None:
+    """PR #1112 review: the composition hands the read only the words the spaces cut from a
+    quoted spaced candidate, never a path the statement names on its own."""
+
+    _review_space_cut = ready_composition._review_space_cut  # pyright: ignore[reportPrivateUsage]
+    structural = ReviewSelectionPolicy.for_profile(ReviewContextProfile.STRUCTURAL)
+
+    cut = _case("Summarise the CSVs in '/shared/test data' for /app/report.md.")
+    assert _review_space_cut(cut, _EXPANDED) == {"/shared/test"}
+    assert _review_space_cut(cut, structural) == frozenset()
+    named = _case('Read "docs/My Notes.md" and Notes.md, then write /app/report.md.')
+    assert _review_inputs(named, _EXPANDED)[0][:2] == ("docs/My Notes.md", "Notes.md")
+    assert _review_space_cut(named, _EXPANDED) == frozenset()

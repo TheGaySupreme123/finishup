@@ -1581,8 +1581,9 @@ reports `repository_privacy_grant_missing`. The terminal interface shows
 `PrivacyPosture.admitted_input_roots_summary`. The service passes
 `_outside_input_reader(policy.admitted_input_roots, (bundle, state))` to
 `capture_check_time_change` as `outside_reader` (`OutsideInputReader`, called as
-`(values, room, workspace)`) only when a root is admitted and `carries_task_inputs` holds; it reads
-with `read_outside_inputs(roots, values, limit=room, excluded=(workspace, bundle, state))`.
+`(values, room, workspace, space_cut)`) only when a root is admitted and `carries_task_inputs`
+holds; it reads with `read_outside_inputs(roots, values, limit=room, excluded=(workspace, bundle,
+state), space_cut=space_cut)`.
 `_with_outside_inputs` offers it only task-declared candidates (never `verification_paths`) and
 rechecks every returned path against the workspace, case-folded. The reader opens each root one
 component at a time from `/`, trusts a directory or file only when the service user or root owns
@@ -9317,7 +9318,12 @@ listing of a task-named directory's unchanged files (`[FinishUP summary of task 
 backslash-escaped path keeping its single spaces, `role: input` files and directories, then the
 directories the statement names, relative or absolute, ending in `/`, or an absolute one-component
 path such as the workspace `/app`) with the newest verification oracle (`verification_input_paths`,
-spaced operands included) in fourth place. The repository read expands a candidate that is a
+spaced operands included) in fourth place. Beside them, in process only and never stored,
+`space_cut_input_paths` names the candidates that came solely from splitting a quoted spaced value
+(`capture_check_time_change(space_cut_paths=...)`, `ChangeCapturePort.capture(space_cut_paths=...)`,
+the reader's `space_cut`): only those give way to that value when it names something on disk
+(`drop_space_cut_words`); a path also named on its own, a `role: input` item or a verification
+operand is always kept (PR #1112 review). The repository read expands a candidate that is a
 directory inside the repository (at most two, then the workspace root) only after every named file,
 into its listing and the members sharing the most identifiers with the change, within
 `MAX_TASK_INPUT_FILES` (ADR-031 #1102 amendment); a task-named outside input outranks that

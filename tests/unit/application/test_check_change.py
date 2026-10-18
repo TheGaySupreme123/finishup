@@ -362,7 +362,9 @@ def test_unquoted_statements_tokenize_exactly_as_before() -> None:
         "Unbalanced \"quote and 'apostrophe and `tick here.",
     )
     for statement in statements:
-        words = check_change._statement_words(statement)  # pyright: ignore[reportPrivateUsage]
+        tokens = check_change._statement_words(statement)  # pyright: ignore[reportPrivateUsage]
+        words = [word for word, split in tokens if not split]
+        assert len(words) == len(tokens), statement
         before = check_change._STATEMENT_WORD.findall(  # pyright: ignore[reportPrivateUsage]
             statement
         )
@@ -428,6 +430,168 @@ def test_a_verification_operand_with_a_space_is_an_oracle_candidate() -> None:
     case = _verification_case(('pytest -q "tests/my test.py"', "success"))
 
     assert verification_input_paths(cast(Any, case).projection) == ("tests/my test.py",)
+
+
+def test_only_words_the_spaces_cut_may_give_way_to_a_spaced_candidate() -> None:
+    """PR #1112 review: a path the statement also names on its own, a ``role: input`` item or a
+    verification operand is never a space-cut word, so no read drops it for the spaced value."""
+
+    from builders.policy_cases import make_case, obl, obligation_record, plan_record
+    from finishup.application.check_change import space_cut_input_paths, task_input_paths
+    from finishup.domain.events import (
+        ObligationPublishedPayload,
+        ObligationStatus,
+        PlanPublishedPayload,
+        RequestedItem,
+        RequestedItemKind,
+        RequestedItemRole,
+    )
+
+    projection = make_case().projection
+
+    def both(statement: str) -> tuple[tuple[str, ...], frozenset[str]]:
+        return (
+            task_input_paths(projection, statement),
+            space_cut_input_paths(projection, statement),
+        )
+
+    # The review's case: ``Notes.md`` is named on its own beside the quoted spaced path.
+    assert both('Read "docs/My Notes.md" and Notes.md') == (
+        ("docs/My Notes.md", "Notes.md"),
+        frozenset(),
+    )
+    # A word of a span only the disk can tell apart is a cut word, unless named alone too.
+    assert both("Summarise the CSVs in '/app/test data' now.") == (
+        ("/app/test data", "/app/test"),
+        frozenset({"/app/test"}),
+    )
+    assert both("Summarise '/app/test data', then fix /app/test too.") == (
+        ("/app/test data", "/app/test"),
+        frozenset(),
+    )
+    assert both("Summarise '/app/test data' and the folder /app/test/.") == (
+        ("/app/test data", "/app/test", "/app/test/"),
+        frozenset({"/app/test"}),
+    )
+    # Prose ahead of a spaced value is no word of it.
+    assert space_cut_input_paths(projection, "Note 'see docs/a.md /app/test data'") == {"/app/test"}
+    assert space_cut_input_paths(projection, None) == frozenset()
+
+    statement = 'Compare "src/test and src/x.py" first.'
+    assert both(statement) == (
+        ("src/test and src/x.py", "src/test", "src/x.py"),
+        frozenset({"src/test", "src/x.py"}),
+    )
+    # A recorded verification operand names ``src/x.py`` on its own.
+    verified = _verification_case(("pytest -q src/x.py", "success"))
+    assert space_cut_input_paths(cast(Any, verified).projection, statement) == {"src/test"}
+    # So does a ``role: input`` item.
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Compare",
+            "the comparison is written",
+            ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(RequestedItemKind.FILE, "src/x.py", RequestedItemRole.INPUT),
+                RequestedItem(RequestedItemKind.DIRECTORY, "src/test", RequestedItemRole.INPUT),
+            ),
+        ),
+        1,
+    )
+    requested = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Compare", (obl(1),)), 1)},
+        obligations={obl(1): obligation},
+        extra_refs=(obl(1),),
+    )
+    assert space_cut_input_paths(requested.projection, statement) == frozenset()
+
+
+def test_the_capture_hands_the_port_and_reader_only_the_space_cut_words() -> None:
+    """PR #1112 review: the provenance reaches the repository read and the outside reader, in
+    process only; a port is still called without it when there is none."""
+
+    from finishup.application.check_change import (
+        _capture_redacted,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.ports.change_capture import TaskInputFile
+
+    asked: list[tuple[tuple[str, ...], frozenset[str] | None]] = []
+    read: list[frozenset[str]] = []
+
+    class CutPort:
+        def capture(
+            self,
+            workspace: str,
+            base: object,
+            *,
+            priority_paths: tuple[str, ...] = (),
+            input_paths: tuple[str, ...] = (),
+            space_cut_paths: frozenset[str] | None = None,
+        ) -> CheckChangeCapture:
+            del workspace, base, priority_paths
+            # ``None``: the port was called without the option at all.
+            asked.append((input_paths, space_cut_paths))
+            return CheckChangeCapture(
+                base="task_start",
+                text=b"diff --git a/a.py b/a.py\n+x\n",
+                tracked_files=1,
+                untracked_files=0,
+                omitted_files=0,
+                truncated=False,
+            )
+
+    def reader(
+        values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        del values, room, workspace
+        read.append(space_cut)
+        return ()
+
+    paths = ("/shared/test data", "/shared/test", "docs/My Notes.md", "docs/My")
+    cut = frozenset({"/shared/test", "docs/My", "never/offered.md"})
+    port = cast(Any, CutPort())
+    _capture_redacted(port, "/repo", None, (), paths, frozenset(), reader, space_cut_paths=cut)
+    _capture_redacted(port, "/repo", None, (), paths, frozenset(), reader)
+
+    assert asked == [(paths, frozenset({"/shared/test", "docs/My"})), (paths, None)]
+    assert read == [frozenset({"/shared/test"}), frozenset()]
+
+
+def test_the_outside_decision_keeps_a_path_named_alone_beside_a_spaced_one() -> None:
+    """PR #1112 review: ``/shared/new`` named on its own still counts when ``/shared/new data``
+    is there; only the word the spaces cut gives way."""
+
+    from finishup.application.check_change import outside_inputs_not_admitted
+
+    probe = _probe(_ON_DISK)
+    candidates = ("/shared/new data", "/shared/new")
+
+    def decide(cut: frozenset[str]) -> bool:
+        return outside_inputs_not_admitted(
+            candidates,
+            frozenset(),
+            "/app",
+            (),
+            (),
+            task_started_at=_STARTED,
+            probe=probe,
+            space_cut=cut,
+        )
+
+    assert not decide(frozenset({"/shared/new"}))
+    assert decide(frozenset())
+    # Compared normalized: a lone ``/shared/new/`` names the same folder, so it still counts.
+    assert outside_inputs_not_admitted(
+        ("/shared/new data", "/shared/new", "/shared/new/"),
+        frozenset(),
+        "/app",
+        (),
+        (),
+        task_started_at=_STARTED,
+        probe=probe,
+        space_cut=frozenset({"/shared/new"}),
+    )
 
 
 _STARTED = 1_000_000.0
@@ -531,9 +695,19 @@ def test_outside_inputs_not_admitted_is_closed_and_bounded(
 
     probe = _probe(_ON_DISK)
 
+    # Every unspaced candidate may be a word the spaces cut (``space_cut_input_paths``).
+    cut = frozenset(value for value in candidates if " " not in value)
+
     def decide(oracle: frozenset[str], started: float | None) -> bool:
         return outside_inputs_not_admitted(
-            candidates, oracle, "/app", roots, outputs, task_started_at=started, probe=probe
+            candidates,
+            oracle,
+            "/app",
+            roots,
+            outputs,
+            task_started_at=started,
+            probe=probe,
+            space_cut=cut,
         )
 
     assert decide(frozenset(), _STARTED) is expected
@@ -708,7 +882,10 @@ def test_outside_inputs_join_the_capture_in_the_room_left_and_are_redacted() -> 
 
     secret = b'password = "a8F3kL9qZx7Pw2Rt"\n'
 
-    def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+    def reader(
+        values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        assert space_cut == frozenset()
         asked.append((values, room, workspace))
         return (
             # A reader that returns a workspace file, in any spelling, is not trusted with it.
@@ -774,7 +951,10 @@ def test_a_named_outside_input_outranks_directory_material_the_read_chose() -> N
                 ),
             )
 
-    def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+    def reader(
+        values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        assert space_cut == frozenset()
         del values, workspace
         asked.append(room)
         return (TaskInputFile("/shared/spec.md", b"spec\n", 5, origin="outside_workspace"),)
@@ -911,7 +1091,10 @@ def test_an_outside_path_only_a_verification_command_names_is_never_read() -> No
                 truncated=False,
             )
 
-    def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
+    def reader(
+        values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        assert space_cut == frozenset()
         asked.append(values)
         return tuple(
             TaskInputFile(value, b"OUTSIDE\n", 8, origin="outside_workspace") for value in values

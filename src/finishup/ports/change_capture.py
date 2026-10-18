@@ -15,7 +15,7 @@ gateway apply to it exactly as to every other case item.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Collection, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -296,7 +296,9 @@ TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset(
 
 
 def drop_space_cut_words(
-    values: Sequence[str], names_something: Callable[[str], bool]
+    values: Sequence[str],
+    names_something: Callable[[str], bool],
+    space_cut: Collection[str],
 ) -> tuple[str, ...]:
     """``values`` without the words the spaces cut from a spaced value that names something.
 
@@ -305,8 +307,11 @@ def drop_space_cut_words(
     candidate ahead of its own words. A read asks ``names_something`` (a metadata look at that
     one value, inside what the read may look at) for each value holding a space; when it says
     yes, a value that is one of that value's space-cut words (``/app/test``) is no path the task
-    named and is dropped, so an unrelated folder is never read under the task's name. A spaced
-    value is never dropped. Order is kept.
+    named and is dropped, so an unrelated folder is never read under the task's name. Only a
+    value in ``space_cut`` may be dropped: one that came only from splitting a quoted span
+    (``space_cut_input_paths``). A value the task also named on its own (``Notes.md`` of
+    ``Read "docs/My Notes.md" and Notes.md``), a ``role: input`` item or a verification operand
+    is never in it and is always kept. A spaced value is never dropped. Order is kept.
     """
 
     cut: set[str] = set()
@@ -315,7 +320,11 @@ def drop_space_cut_words(
             cut.update(word.rstrip("/") for word in value.split(" ") if word.rstrip("/"))
     if not cut:
         return tuple(values)
-    return tuple(value for value in values if " " in value or value.rstrip("/") not in cut)
+    return tuple(
+        value
+        for value in values
+        if " " in value or value not in space_cut or value.rstrip("/") not in cut
+    )
 
 
 def _listing_path(value: str) -> bool:
@@ -561,6 +570,7 @@ class ChangeCapturePort(Protocol):
         *,
         priority_paths: tuple[str, ...] = (),
         input_paths: tuple[str, ...] = (),
+        space_cut_paths: frozenset[str] = frozenset(),
     ) -> CheckChangeCapture:
         """Render the change from ``base`` (or HEAD when ``None``) to the working tree.
 
@@ -571,7 +581,8 @@ class ChangeCapturePort(Protocol):
         A candidate may name a directory inside the repository (issue #1102): its unchanged files
         are listed and the ones most related to the change read, within the same input bound.
         A candidate holding a space that names something there keeps the words its spaces cut
-        out of the read (``drop_space_cut_words``).
+        out of the read (``drop_space_cut_words``); ``space_cut_paths`` are the candidates that
+        are only such words, and no other candidate is ever dropped that way.
         """
         ...
 

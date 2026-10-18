@@ -17,9 +17,9 @@ import os
 import re
 import shlex
 import stat
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Final, cast
+from typing import Final, TypedDict, cast
 
 from finishup.application.semantic_case import CheckTimeChange, check_time_change_shown_record
 from finishup.domain.events import (
@@ -78,6 +78,7 @@ __all__ = [
     "outside_input_candidates",
     "outside_inputs_not_admitted",
     "review_input_paths",
+    "space_cut_input_paths",
     "task_input_paths",
     "verification_input_paths",
     "CheckChangeOutcome",
@@ -435,9 +436,13 @@ def _with_input_origins(
 
 
 # Reads the candidate paths beneath the owner's admitted outside-workspace roots (issue #1082):
-# ``(values, room, workspace)``. Bound by the service to the effective policy's roots, so this
-# layer never sees a root itself; the workspace is never read from, by path or by identity.
-type OutsideInputReader = Callable[[tuple[str, ...], int, str], tuple[TaskInputFile, ...]]
+# ``(values, room, workspace, space_cut)``, ``space_cut`` the values only the spaces of a quoted
+# value cut out (``space_cut_input_paths``, issue #1112 review). Bound by the service to the
+# effective policy's roots, so this layer never sees a root itself; the workspace is never read
+# from, by path or by identity.
+type OutsideInputReader = Callable[
+    [tuple[str, ...], int, str, frozenset[str]], tuple[TaskInputFile, ...]
+]
 
 
 def _within(path: str, workspace: str) -> bool:
@@ -460,6 +465,7 @@ def _with_outside_inputs(
     workspace: str,
     *,
     verification_paths: frozenset[str],
+    space_cut_paths: frozenset[str] = frozenset(),
 ) -> CheckChangeCapture:
     """Add inputs the task names beneath an admitted outside root, in the room left (#1082).
 
@@ -494,7 +500,7 @@ def _with_outside_inputs(
         return capture
     present = {item.path for item in capture.inputs}
     added: list[TaskInputFile] = []
-    for item in reader(outside, room, workspace):
+    for item in reader(outside, room, workspace, space_cut_paths & frozenset(outside)):
         if (
             item.origin != "outside_workspace"
             or not item.path.startswith("/")
@@ -516,6 +522,14 @@ def _directory_material(item: TaskInputFile) -> bool:
     return item.origin == "task_directory" or (item.summary and item.path.endswith("/"))
 
 
+class _CaptureOptions(TypedDict, total=False):
+    """The ``ChangeCapturePort.capture`` options a check asks for; absent when not asked."""
+
+    priority_paths: tuple[str, ...]
+    input_paths: tuple[str, ...]
+    space_cut_paths: frozenset[str]
+
+
 def _capture_redacted(
     port: ChangeCapturePort,
     workspace: str,
@@ -527,14 +541,19 @@ def _capture_redacted(
     *,
     admitted_roots: tuple[str, ...] = (),
     task_started_at: float | None = None,
+    space_cut_paths: frozenset[str] = frozenset(),
 ) -> CheckChangeCapture:
     # A port without deliverable ordering or task inputs (an embedded or test port) is called
     # exactly as before when neither is asked for.
-    options: dict[str, tuple[str, ...]] = {}
+    options: _CaptureOptions = {}
     if priority_paths:
         options["priority_paths"] = priority_paths
     if input_paths:
         options["input_paths"] = input_paths
+    # Issue #1112 review: only these candidates may give way to a spaced one on disk.
+    space_cut_paths = space_cut_paths & frozenset(input_paths)
+    if space_cut_paths:
+        options["space_cut_paths"] = space_cut_paths
     capture = port.capture(workspace, base, **options)
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
@@ -547,6 +566,7 @@ def _capture_redacted(
             outside_reader,
             workspace,
             verification_paths=verification_paths,
+            space_cut_paths=space_cut_paths,
         )
     )
     # Issue #1102 (RC6f): decided once, here, against the root this read used, and frozen into
@@ -558,6 +578,7 @@ def _capture_redacted(
         admitted_roots,
         priority_paths,
         task_started_at=task_started_at,
+        space_cut=space_cut_paths,
     ):
         capture = replace(capture, outside_inputs_not_admitted=True)
     return capture
@@ -576,6 +597,7 @@ async def capture_check_time_change(
     verification_paths: frozenset[str] = frozenset(),
     outside_reader: OutsideInputReader | None = None,
     admitted_roots: tuple[str, ...] = (),
+    space_cut_paths: frozenset[str] = frozenset(),
 ) -> CheckChangeOutcome:
     """Capture, redact and store one check's change; every failure is a disclosed absence.
 
@@ -588,6 +610,8 @@ async def capture_check_time_change(
     policy admits a root and the recipe carries task inputs. ``admitted_roots`` are those roots
     themselves: the capture records, as one closed flag, whether the task names an existing input
     outside the workspace that none of them covers (``outside_inputs_not_admitted``, #1102).
+    ``space_cut_paths`` are the candidates only the spaces of a quoted value cut out
+    (``space_cut_input_paths``); no other candidate ever gives way to a spaced one on disk.
     """
 
     if type(source) is not CheckWorkspaceSource:
@@ -621,6 +645,7 @@ async def capture_check_time_change(
             outside_reader,
             admitted_roots=admitted_roots,
             task_started_at=task_started_at,
+            space_cut_paths=space_cut_paths,
         )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
@@ -938,26 +963,38 @@ def _spaced_candidate(value: str) -> tuple[str, bool] | None:
     return value, certain
 
 
-def _statement_words(text: str) -> list[str]:
-    """The statement's words, a quoted or escaped path with spaces kept whole (issue #1102)."""
+def _statement_words(text: str) -> list[tuple[str, bool]]:
+    """The statement's words, a quoted or escaped path with spaces kept whole (issue #1102).
 
-    words: list[str] = []
+    Each word comes with whether the spaces cut it from a quoted spaced value offered whole
+    beside it (``True``) rather than standing alone in the statement (``False``). Only a cut word
+    may give way to that value on disk (``drop_space_cut_words``); a word the statement also names
+    on its own is never dropped (#1112 review).
+    """
+
+    words: list[tuple[str, bool]] = []
     for match in _STATEMENT_TOKEN.finditer(text):
         word = match.group("word")
         if word is not None:
-            words.append(word.replace("\\ ", " "))
+            words.append((word.replace("\\ ", " "), False))
             continue
         content = match.group("tick") or match.group("double") or match.group("single") or ""
         spaced = _spaced_candidate(content)
         if spaced is None:
-            words.extend(_STATEMENT_WORD.findall(content))
+            words.extend((part, False) for part in _STATEMENT_WORD.findall(content))
             continue
         value, certain = spaced
-        words.append(value)
+        words.append((value, False))
+        start = content.find(value)
+        end = start + len(value)
         if not certain:
             # Only the disk can tell a folder from prose: every word still counts after the
-            # whole value, and the read drops them when the whole value names something.
-            words.extend(_STATEMENT_WORD.findall(content))
+            # whole value, and the read drops the ones the spaces cut from it when the whole value
+            # names something. Prose before the value is no word of it.
+            words.extend(
+                (fragment.group(0), fragment.start() >= start)
+                for fragment in _STATEMENT_WORD.finditer(content)
+            )
             continue
         # Prose before the path still counts. So does the last word of a relative path whose
         # earlier words hold no ``/``, when it names a file or a folder with a directory part: a
@@ -965,17 +1002,15 @@ def _statement_words(text: str) -> list[str]:
         # must not be lost. No other word the spaces cut counts: ``/shared/legacy`` of
         # ``"/shared/legacy app/main.c"``, ``data/`` of ``"src/test data/"`` and ``Notes.md`` of
         # ``"docs/My Notes.md"`` are no path the task names (#1102 review).
-        start = content.find(value)
-        end = start + len(value)
         tail = not value.startswith("/") and not any("/" in part for part in value.split(" ")[:-1])
         for fragment in _STATEMENT_WORD.finditer(content):
             text_value = fragment.group(0)
             if fragment.start() < start:
-                words.append(text_value)
+                words.append((text_value, False))
             elif tail and fragment.end() >= end:
                 kept = text_value.strip(_STATEMENT_WORD_EDGE)
                 if _names_a_file(kept) or (kept.endswith("/") and "/" in kept.rstrip("/")):
-                    words.append(text_value)
+                    words.append((text_value, True))
     return words
 
 
@@ -1099,19 +1134,52 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
     escapes keeps its spaces; otherwise only plain literal paths count, at most 16 in all. A
     quoted span only the disk can tell apart (``"/app/test data"``) comes whole ahead of its own
     words, and the read keeps those words only when the whole value names nothing there
-    (``drop_space_cut_words``). The statement is read in process only to find these words;
-    nothing here is stored or logged, and the adapter reads a candidate only when it lies inside
-    the repository, is unchanged by the task, is not ignored and is not credential-named.
+    (``drop_space_cut_words``, for the ``space_cut_input_paths`` among them). The statement is
+    read in process only to find these words; nothing here is stored or logged, and the adapter
+    reads a candidate only when it lies inside the repository, is unchanged by the task, is not
+    ignored and is not credential-named.
     """
+
+    return _task_input_candidates(projection, statement)[0]
+
+
+def space_cut_input_paths(projection: ProjectionState, statement: str | None) -> frozenset[str]:
+    """The review candidates only the spaces of a quoted spaced value cut out (#1102, #1112).
+
+    Among ``review_input_paths``' candidates, those the statement names only as a word of a quoted
+    spaced value it offers whole (``/app/test`` of ``"/app/test data"``): the only candidates a
+    read may drop when that whole value names something there (``drop_space_cut_words``). A path
+    the statement also names on its own (``Notes.md`` of ``Read "docs/My Notes.md" and
+    Notes.md``), a ``role: input`` item or a recorded verification operand is never one. In
+    process only, derived from the frozen case like the candidates themselves; never stored.
+    """
+
+    candidates, cut = _task_input_candidates(projection, statement)
+    if not cut:
+        return frozenset()
+    named = set(candidates)
+    return frozenset(cut - set(verification_input_paths(projection))) & named
+
+
+def _task_input_candidates(
+    projection: ProjectionState, statement: str | None
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """``task_input_paths``' candidates, and those only the spaces of a quoted value cut out."""
 
     candidates: list[str] = []
     directories: list[str] = []
+    # Issue #1112 review: which candidate values stood alone somewhere, and which only came from
+    # splitting a quoted spaced value, so a split word never takes an independently named path
+    # down with it.
+    alone: set[str] = set()
+    cut: set[str] = set()
     if type(statement) is str:
-        for word in _statement_words(statement):
+        for word, split in _statement_words(statement):
             spaced = _spaced_candidate(word) if " " in word else None
             value = spaced[0] if spaced is not None else _statement_file_word(word)
             if value is not None and not value.endswith("/") and _input_path(value):
                 candidates.append(value)
+                (cut if split else alone).add(value)
                 continue
             # Issue #1102: a directory the statement names ("the code lives in src/dedup/", "the
             # legacy app in /shared/legacy_app/", the workspace "/app") is offered after every
@@ -1122,6 +1190,7 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
             folder = word.strip(_STATEMENT_WORD_EDGE) if value is None else value
             if _statement_directory(folder):
                 directories.append(folder)
+                (cut if split else alone).add(folder)
     for obligation in effective_obligations(projection):
         payload = projection.obligations[obligation].payload
         if payload is None:
@@ -1131,9 +1200,12 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
                 continue
             if item.item_kind is RequestedItemKind.FILE:
                 candidates.append(item.value)
+                alone.add(item.value)
             elif item.item_kind is RequestedItemKind.DIRECTORY:
                 directories.append(item.value)
-    return tuple(dict.fromkeys((*candidates, *directories)))[:_MAX_STATEMENT_INPUT_CANDIDATES]
+                alone.add(item.value)
+    ordered = tuple(dict.fromkeys((*candidates, *directories)))[:_MAX_STATEMENT_INPUT_CANDIDATES]
+    return ordered, frozenset(value for value in ordered if value in cut and value not in alone)
 
 
 # Issue #1102 (RC6f): absolute trees that hold the system's own programs, libraries, devices,
@@ -1266,6 +1338,7 @@ def outside_inputs_not_admitted(
     *,
     task_started_at: float | None,
     probe: Callable[[str], os.stat_result | None] | None = None,
+    space_cut: Collection[str] = frozenset(),
 ) -> bool:
     """Whether the task names an existing input outside the workspace no admitted root covers.
 
@@ -1279,7 +1352,8 @@ def outside_inputs_not_admitted(
       none of ``admitted_roots``; a top-level folder (``/data``) counts, a tree of homes,
       installed software or system state (``/home``, ``/opt``, ``/var``) does not;
     * a word the spaces cut from a spaced candidate that ``probe`` finds there
-      (``/shared/legacy`` of ``/shared/legacy app``) never counts (``drop_space_cut_words``);
+      (``/shared/legacy`` of ``/shared/legacy app``) never counts (``drop_space_cut_words``),
+      when it is one of ``space_cut`` (``space_cut_input_paths``) and so not also named alone;
     * on disk, ``probe`` (``lstat``: metadata only, never following a final link, never opening
       content) finds a regular file or a directory there whose modification and change times
       both predate ``task_started_at``; a top-level path only as a directory, since no root the
@@ -1306,7 +1380,11 @@ def outside_inputs_not_admitted(
         return status is not None and (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
 
     lexical = outside_input_candidates(candidates, oracle, workspace, admitted_roots, outputs)
-    for path in drop_space_cut_words(lexical, names_something):
+    # The lexical candidates are normalized, so the cut words are compared normalized too; a
+    # spelling the task also named on its own keeps the path.
+    alone = {os.path.normpath(value) for value in candidates if value not in space_cut}
+    cut = {os.path.normpath(value) for value in space_cut if value.startswith("/")} - alone
+    for path in drop_space_cut_words(lexical, names_something, cut):
         status = metadata(path)
         if (
             status is None

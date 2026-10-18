@@ -689,10 +689,14 @@ issue #1045 proof, or FinishUP's own text naming such files.
    candidate holding a space, only where it may look at all, and when one names a file or
    directory there it drops the candidates that are its space-cut words
    (`change_capture.drop_space_cut_words`): `/app/test` is never read for `/app/test data`, and
-   `/app/config` is still read for the prose. For a span accepted as one path, prose ahead of it
-   still counts, and so does the last word of a relative span whose earlier words hold no `/`, when
-   it names a file or a folder with a directory part, so a quoted command (`cat docs/spec.md`)
-   never loses the file it names. No other word the spaces cut counts: `/app/data` of
+   `/app/config` is still read for the prose. Only a candidate that came solely from splitting a
+   quoted span is dropped (`check_change.space_cut_input_paths`, carried in process beside the
+   candidates and never stored): one the statement also names on its own (`Notes.md` of
+   ``Read "docs/My Notes.md" and Notes.md``), a `role: input` item or a verification operand is
+   always kept (#1112 review). For a span accepted as one path, prose ahead of it still counts,
+   and so does the last word of a relative span whose earlier words hold no `/`, when it names a
+   file or a folder with a directory part, so a quoted command (`cat docs/spec.md`) never loses
+   the file it names. No other word the spaces cut counts: `/app/data` of
    `'/app/data files/input.csv'`, `data/` of `'src/test data/'` and `Notes.md` of
    `'docs/My Notes.md'` never expand an unrelated file or folder. Unquoted text splits exactly as
    before. A `role: input` file with a space, a `role: input` directory, and a spaced operand of a

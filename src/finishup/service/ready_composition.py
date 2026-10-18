@@ -90,6 +90,7 @@ from finishup.application.check_change import (
     outside_input_candidates,
     recover_check_time_change,
     review_input_paths,
+    space_cut_input_paths,
 )
 from finishup.application.coordination import (
     EncryptedCoordinationDetailStore,
@@ -2648,8 +2649,12 @@ def _outside_input_reader(
     them (PR #1086 review R1-02).
     """
 
-    def read(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
-        return read_outside_inputs(roots, values, limit=room, excluded=(workspace, *protected))
+    def read(
+        values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
+    ) -> tuple[TaskInputFile, ...]:
+        return read_outside_inputs(
+            roots, values, limit=room, excluded=(workspace, *protected), space_cut=space_cut
+        )
 
     return read
 
@@ -4326,6 +4331,18 @@ def _review_inputs(
     return review_input_paths(case.projection, statement)
 
 
+def _review_space_cut(case: DeterministicCase, selection: ReviewSelectionPolicy) -> frozenset[str]:
+    """The candidate task inputs only the spaces of a quoted spaced value cut out (#1112 review).
+
+    Derived from the frozen case alone, like ``_review_inputs``, and only where it offers any.
+    """
+
+    if not (check_time_change_selected(selection) and carries_task_inputs(selection)):
+        return frozenset()
+    statement = None if case.task_statement is None else case.task_statement.text
+    return space_cut_input_paths(case.projection, statement)
+
+
 def _outside_not_admitted(check_change: CheckChangeOutcome) -> bool:
     """Whether the check-time read found a task-named outside input no admitted root covers.
 
@@ -5244,6 +5261,9 @@ def _privacy_gated_semantic_evaluator(
                             # Issue #1102: so the read can say a task-named outside input
                             # lies beneath none of them.
                             admitted_roots=policy.admitted_input_roots,
+                            # Issue #1112 review: only the words the spaces cut from a quoted
+                            # spaced candidate give way to it, never a path named on its own.
+                            space_cut_paths=_review_space_cut(frozen.case, review_selection),
                         )
             test_edit_gaps = (
                 ()
