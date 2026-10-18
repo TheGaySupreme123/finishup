@@ -1445,7 +1445,8 @@ admit a root. ADR-031's amendment of the same date holds the read; ADR-006's hol
   read-only"`), the whole value comes first and its words follow; the read looks at the whole
   value's metadata where it may read at all (inside the repository, or beneath an admitted root)
   and drops those words when it names something, so a folder one of its words names is never read
-  under the task's name.
+  under the task's name. Only words that came solely from splitting the quoted value are dropped:
+  a path the task also names on its own, a `role: input` item or a verification operand is kept.
 - **An outside directory named without its trailing `/`** is listed like one named with it, still
   only beneath an admitted root and only when the task itself names it. Known limit: a file read
   from such a listing keeps the `outside_workspace` label ("named by the task, outside the

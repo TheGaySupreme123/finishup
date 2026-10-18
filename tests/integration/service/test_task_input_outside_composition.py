@@ -21,6 +21,7 @@ import pytest
 import finishup.service.ready_composition as ready_composition_module
 import integration.service.test_semantic_non_dispatch as non_dispatch
 from builders.ledger_adapters import FixedClock, append_command, memory_adapter, sqlite_adapter
+from builders.policy_cases import evt
 from finishup.adapters.memory.ledger import MemoryLedgerAdapter
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.application.check import FinalSemanticEvaluation
@@ -37,6 +38,7 @@ from finishup.domain.receipts import (
     receipt_document_to_json,
     render_receipt_human,
 )
+from finishup.domain.task_statement import RecordedTaskStatement
 from finishup.ports.ledger import FrozenCase
 from finishup.ports.runtime import TaskRuntime
 from integration.service.test_review_follow_up_composition import (
@@ -73,6 +75,8 @@ async def _composition(
     monkeypatch: pytest.MonkeyPatch,
     *,
     flagged: bool,
+    statement: str | None = None,
+    captures: list[Mapping[str, object]] | None = None,
 ) -> tuple[FrozenCase, TaskRuntime, _PacketPrivacy, _Evaluator, list[Mapping[str, object]]]:
     from unit.application.test_review_follow_up import (
         _stale_edit_case,  # pyright: ignore[reportPrivateUsage]
@@ -102,6 +106,8 @@ async def _composition(
     async def capture(**kwargs: object) -> CheckChangeOutcome:
         # The service hands the read its admitted roots, so the read can decide.
         assert kwargs["admitted_roots"] == ()
+        if captures is not None:
+            captures.append(kwargs)
         return CheckChangeOutcome(change=change)
 
     async def recover(runtime: object, binding: object) -> CheckChangeOutcome:
@@ -118,6 +124,16 @@ async def _composition(
     )
     durable, runtime = await _durable_semantic_case(adapter)
     case = _at_lease_frontier(built, durable)
+    if statement is not None:
+        case = replace(
+            case,
+            task_statement=RecordedTaskStatement(
+                text=statement,
+                source_event_id=evt(1),
+                source_family="session_opened",
+                ingestion_sequence=case.frontier.sequence,
+            ),
+        )
     privacy = _PacketPrivacy(task_id=runtime.task_id)
     factory = cast(
         "Callable[..., _Evaluator]",
@@ -194,6 +210,30 @@ async def test_an_object_frozen_without_the_flag_records_no_code(
 
     assert first is not None and _CODE not in first.case_content_gaps
     assert counts[0]["semantic_task_inputs_outside_not_admitted"] == 0
+
+
+@pytest.mark.anyio
+async def test_the_service_hands_the_read_the_words_the_spaces_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #1112 review: without this set the read drops no word, so ``/shared/test`` would be
+    read under the task's name beside ``/shared/test data``; a path named alone is never in it."""
+
+    captures: list[Mapping[str, object]] = []
+    frozen, runtime, _privacy, evaluator, _counts = await _composition(
+        memory_adapter(append_command()),
+        monkeypatch,
+        flagged=False,
+        statement="Summarise the CSVs in '/shared/test data' and read Notes.md for /app/out.md.",
+        captures=captures,
+    )
+
+    await evaluator(frozen, (), runtime)
+
+    ((kwargs),) = captures
+    assert kwargs["space_cut_paths"] == frozenset({"/shared/test"})
+    inputs = cast("tuple[str, ...]", kwargs["input_paths"])
+    assert {"/shared/test data", "/shared/test", "Notes.md"} <= set(inputs)
 
 
 def test_every_surface_renders_the_owner_step_and_no_path() -> None:

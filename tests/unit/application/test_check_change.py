@@ -476,6 +476,16 @@ def test_only_words_the_spaces_cut_may_give_way_to_a_spaced_candidate() -> None:
     # Prose ahead of a spaced value is no word of it.
     assert space_cut_input_paths(projection, "Note 'see docs/a.md /app/test data'") == {"/app/test"}
     assert space_cut_input_paths(projection, None) == frozenset()
+    # A quote opening on an edge character the value loses still cuts its first word.
+    assert both("Summarise '*src/test data*' now.") == (
+        ("src/test data", "src/test"),
+        frozenset({"src/test"}),
+    )
+    # A sure span keeps none of its cut words, edge character or not.
+    assert both("Port '*/shared/legacy app/main.c*'") == (
+        ("/shared/legacy app/main.c",),
+        frozenset(),
+    )
 
     statement = 'Compare "src/test and src/x.py" first.'
     assert both(statement) == (

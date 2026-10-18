@@ -990,9 +990,10 @@ def _statement_words(text: str) -> list[tuple[str, bool]]:
         if not certain:
             # Only the disk can tell a folder from prose: every word still counts after the
             # whole value, and the read drops the ones the spaces cut from it when the whole value
-            # names something. Prose before the value is no word of it.
+            # names something. Prose before the value is no word of it; a word overlapping the
+            # value is one, even with an edge character the value lost (``'*src/test data*'``).
             words.extend(
-                (fragment.group(0), fragment.start() >= start)
+                (fragment.group(0), fragment.end() > start)
                 for fragment in _STATEMENT_WORD.finditer(content)
             )
             continue
@@ -1005,7 +1006,7 @@ def _statement_words(text: str) -> list[tuple[str, bool]]:
         tail = not value.startswith("/") and not any("/" in part for part in value.split(" ")[:-1])
         for fragment in _STATEMENT_WORD.finditer(content):
             text_value = fragment.group(0)
-            if fragment.start() < start:
+            if fragment.end() <= start:
                 words.append((text_value, False))
             elif tail and fragment.end() >= end:
                 kept = text_value.strip(_STATEMENT_WORD_EDGE)
