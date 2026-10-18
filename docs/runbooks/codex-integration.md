@@ -3760,10 +3760,12 @@ back. Persisting the continuation with the stored check is a storage follow-up o
 **Supply on Codex.** The captured output of a shell re-run of the target's exact command that
 FinishUP observed after the request counts as supplying a targeted `verification_output` (or
 `other`) item (ADR-006 amendment). The hook and the session-stream copy commit the run in different
-shapes: hook first, the observed result cites the captured output; stream first (the usual order on
+shapes: hook first, the observed result cites the captured output but reads `unknown`, and the
+stream item then appends the corrected result to the same action; stream first (the usual order on
 0.159), the stream copy commits the action and result and the hook's captured output arrives late,
-linked to the run's action event, and no result cites it. Supply matching reads both shapes as the
-same run's output. Only captured `tool_output` counts; the captured command input does not. Codex
+linked to the run's action event, and no result cites it. Every result of one action is one run, so
+supply matching reads both shapes as the same run's output and never takes the corrected result for
+a newer run without output. Only captured `tool_output` counts; the captured command input does not. Codex
 shell calls are observed on the default hook registration, but output bytes are captured only under
 the workspace's content-capture consent, so without it a re-run records no output and supplies
 nothing. The output must also reach the reviewer whole before a repeat is dropped as already
@@ -3777,8 +3779,8 @@ counts only for a finding target; a description never counts.
 **Verification:** `tests/unit/mcp/test_codex_structured_head.py` emulates the cut on the real bridge
 projection. `tests/integration/application/test_observed_rerun_host_copies.py` feeds the recorded
 Codex `PostToolUse` payload through the real hook mapping and the recorded rollout through the
-session-stream reader and the service coordinator, in both commit orders, then shows the re-run's
-output in the real packet and the repeat dropped as already supplied, and kept when the selection
+session-stream reader and the service coordinator, in both commit orders (hook first leaves two
+results on the one action, stream first one), then shows the re-run's output in the real packet and the repeat dropped as already supplied, and kept when the selection
 sends no excerpt. `tests/integration/application/test_observed_rerun_supply.py` runs two real checks
 around an already-normalized observed re-run whose output the packet does not carry.
 `tests/integration/application/test_status_operation_view.py` covers the recovery page.
