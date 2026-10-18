@@ -1781,8 +1781,8 @@ bytes, so the count constant was the real limit.
   item per slot: excerpts are never concatenated to fit a count.
 - The excerpt budget and `SemanticCase`'s aggregate item bound (`MAX_SEMANTIC_CASE_BYTES`,
   262,144) are independent, and 64 approved excerpts beside rich finding prose can cross the
-  aggregate bound. Before constructing the case, the builder drops the lowest-ranked excerpts until
-  it fits, each disclosed as a `not_selected` omission with `content_unselected` (and
+  aggregate bound. Before constructing the case, the builder omits ordinary agent narrative and
+  history before reducing the lowest-ranked excerpts until it fits, each disclosed as a `not_selected` omission with `content_unselected` (and
   `truncated_payload` when only later parts of a split excerpt go). Only a case the constructor
   would otherwise refuse changes, so every constructible case keeps its bytes and digest. The
   guarantee is that the excerpt selection never causes the bound to be exceeded. It does not cover
@@ -1804,8 +1804,10 @@ bytes, so the count constant was the real limit.
   described in the ADR-009 amendment. It sizes the payload the channel releases: items whose
   category or data class the destination's ceiling withholds (the LLM channel for an external
   provider, the local-model ceiling for a local one, the union with a fallback) are left out of
-  the measure, because local minimization removes them before egress. The first rebuild carries no
-  excerpts, to measure the fixed part of the packet. Later rebuilds size the excerpt budget from
+  the measure, because local minimization removes them before egress. The first rebuild omits
+  lower-priority narrative while keeping the primary excerpt recipe. A no-excerpt sizing probe
+  measures the remaining fixed cost but cannot be returned below the protected diff floor.
+  Later rebuilds size the excerpt budget from
   the prepared bytes each excerpt byte actually cost, since JSON escaping can multiply it.
 - The privacy side (consent, re-approval, egress denial) is recorded in the ADR-009 amendment of
   the same date.
@@ -2362,3 +2364,20 @@ chooses content; it is untrusted advisory output and is never recorded. No wire 
 `review_input_missing.kind` already admitted `other`, and the manifest prints `other=supplied` like
 any kind. A build before this one rejects a follow-up job case holding an `other` item (downgrade
 only, in the release notes).
+
+
+### Total packet priority (AIP-4, follow-up to issue #1108)
+
+The controlling task statement and admitted specification, useful current diff, and decisive
+verification output take priority over agent plan/claim/obligation prose and ordinary history at
+both aggregate and final prepared-packet limits. Over-limit prepared cases narrow those narrative
+sections before reducing excerpts; decisions (including blockers) and independent lineage remain.
+Every omission uses existing `not_selected` rows and `content_unselected`; the manifest's total
+omission count remains available when its listed rows reach their cap. Small packets keep their
+bytes and digest. No protocol, privacy category, or egress authorization changes.
+
+The diff floor is the lesser of its initial carried bytes and the line-aligned parts fitting half the lesser of the approved
+excerpt budget and final packet ceiling (a clipped first part keeps its bounded prefix). Later planner trials cannot redefine that floor using
+their smaller excerpt budget. If the remaining protected material cannot fit, egress still refuses
+the packet; a reduced floor is not used to manufacture a successful dispatch. This is packet
+coverage, not proof that the specification is complete or the verification establishes correctness.

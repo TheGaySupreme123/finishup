@@ -58,6 +58,7 @@ from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
 from finishup.ports.semantic import SemanticCase
 from finishup.protocol.canonical import strict_json_parse
 from finishup.protocol.coverage import LedgerFreshness
+from finishup.protocol.models import DataCategory
 from unit.application.test_semantic_case import (
     _captured_case_values,  # pyright: ignore[reportPrivateUsage]
     _case_with_material,  # pyright: ignore[reportPrivateUsage]
@@ -830,13 +831,21 @@ def test_leftover_parts_rank_after_reserved_excerpts_and_before_older_hunks_and_
 
 
 def test_a_planned_case_narrows_general_output_before_the_change() -> None:
-    # A narrower owner ceiling: the planner drops the 5 KiB tool outputs, not the change's parts.
+    # Narrative yields before primary material. General output can now keep some of the room
+    # that narrative released; it must never displace the current change's reservation.
     roomy, ledger = _ledger_build(_change(_large_change(40)))
     narrow, _ = _ledger_build(_change(_large_change(40)), ceiling=200_000)
 
     outputs = {str(ref) for ref in ledger.outputs}
     assert any(item.source_ref in outputs for item in roomy.items if item.section == "excerpt")
-    assert not any(item.source_ref in outputs for item in narrow.items if item.section == "excerpt")
+    assert sum(
+        item.source_ref in outputs for item in narrow.items if item.section == "excerpt"
+    ) <= sum(item.source_ref in outputs for item in roomy.items if item.section == "excerpt")
+    assert (
+        len(semantic_case_to_prepared_payload(narrow, {item.item_id for item in narrow.items}))
+        <= 200_000
+    )
+    assert any(item.reason == "not_selected" for item in narrow.packet.omissions)
     assert len(_change_items(narrow)) >= 5
     assert "content_unselected" in narrow.packet.coverage.known_gaps
     assert CHECK_TIME_CHANGE_TRUNCATED_GAP in narrow.packet.coverage.known_gaps
@@ -896,21 +905,25 @@ def test_the_change_keeps_its_leading_part_beside_sixteen_prior_findings(ceiling
     assert len(prepared) <= ceiling
 
 
-def test_a_tight_case_cuts_the_first_part_to_the_room_and_says_so() -> None:
+def test_a_tight_case_omits_narrative_before_cutting_the_diff_floor() -> None:
     text = _cracker_change()
-    # About 4 KiB of room is left above the fixed material: less than one whole part. (The planner
-    # searches excerpt budgets in 1 KiB steps, so a ceiling within about 2 KiB of the fixed
-    # material can land on no part at all; FinishUP's labels are 3 bytes longer than Yoetz's were.)
     semantic, _ = _ledger_build(_change(text), ceiling=162_000, findings=_open_prior_findings())
-
-    (first,) = [
-        item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
-    ]
-    assert first.content.startswith(
-        b"[FinishUP check-time change, part 1 of 9, cut to the packet's room]\n"
+    assert len(semantic.packet.prior_finding_refs) == 16
+    assert _assert_change_leads_and_is_accounted(semantic, text) >= 4
+    assert check_time_change_bytes_carried(semantic) >= 64_000
+    assert all(
+        item.category is DataCategory.BOUNDED_STRUCTURAL_METADATA
+        for item in semantic.items
+        if item.section == "prior_finding"
     )
-    assert first.content_bytes < 16_384
-    assert _assert_change_leads_and_is_accounted(semantic, text) == 1
+    omitted = {
+        item.subject_ref for item in semantic.packet.omissions if item.reason == "not_selected"
+    }
+    assert set(semantic.packet.prior_finding_refs) <= omitted
+    assert (
+        len(semantic_case_to_prepared_payload(semantic, {item.item_id for item in semantic.items}))
+        <= 162_000
+    )
 
 
 @pytest.mark.parametrize("limit", (200_000, 170_000, 162_000))

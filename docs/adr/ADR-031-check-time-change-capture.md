@@ -549,8 +549,8 @@ repository.
 ## Amendment (issue #1077): a dropped synthetic excerpt names its linked subjects
 
 A check-time change part and a current-file section an in-check follow-up serves both use the
-synthetic source ref `check-time-change`. That token is a valid excerpt source and is not a ledger
-subject. `ReviewOmission` still accepts only ledger subject ids. When selection or the aggregate
+synthetic source ref `check-time-change`; task-input excerpts use `task-input` (AIP-3).
+These tokens are valid excerpt sources and are not ledger subjects. `ReviewOmission` still accepts only ledger subject ids. When selection or the aggregate
 case bound drops one of those excerpts, the omission is recorded against each valid linked subject
 (the edit the section answers, or the change's claims, obligations, or plan) with the same category
 and `not_selected` reason. `content_unselected` remains. No linked ledger subject means no omission
@@ -725,10 +725,8 @@ What this amendment does not remove, left as follow-ups for the workstream issue
   change's *last* part to the room (the design's C3b, open question Q5), rather than only its
   first, is what would let the change use the bytes the input clip frees; it reworks the
   shown-file accounting (#983).
-- **Planner room.** Fixed material (the agent's account, timeline rows and earlier-finding prose)
-  is measured before excerpts and narrows none of them, so primary material is still a minority
-  of a full packet. Rebalancing that room, with per-section byte measurements from a pilot dump,
-  touches the #905 dialogue guarantees and is its own decision.
+- **Planner room.** Addressed by the AIP-4 total-packet-priority amendment below: ordinary
+  narrative yields before primary excerpts, with omissions and total accounting.
 
 ## Amendment (2026-10-18, issue #1102): directories the task names, quoted paths, outside gaps
 
@@ -848,3 +846,15 @@ Downgrade only: a build before this amendment rejects a check-change object hold
 the #1082 keys; it also reads a recorded `task_input_outside_not_admitted` as an unclassified code,
 which it treats as agent work. Upgrade over a running earlier build changes no recovered case: its
 frozen objects never carry the flag, so the code is never added to a job it froze.
+
+
+## Amendment (AIP-3/AIP-4, issue #1108): final packet priority
+
+The aggregate case bound and both prepared/channel planners now omit lower-priority narrative
+before cutting primary material. The current diff's half-share is bound to the final limit as
+specified in ADR-006's total packet priority amendment, so a later trial cannot undercut it.
+Controlling inputs retain their existing bounded head/tail selection and decisive output retains
+its existing reservation. Each removed narrative or synthetic excerpt uses the same omission,
+coverage and total-count disclosures; omission subjects remain valid linked ledger identities.
+MCP, CLI and hook-triggered reviews share this composer on Codex, Claude Code and Cursor. There is
+no reviewer fetch tool or capture-policy change in this repair.
