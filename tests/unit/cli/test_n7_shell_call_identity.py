@@ -328,3 +328,50 @@ def test_only_a_shell_call_output_header_states_an_exit(
     ]
     assert len(outputs) == 1
     assert outputs[0].get("exit_status") == exit_status
+
+
+_DIFF: Final = "--- a/src/x.py\n+++ b/src/x.py\n@@ -1 +1 @@\n-a\n+# it's\n"
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "git apply <<'EOF'\n" + _DIFF + "EOF\npytest -q",
+        "git apply <<EOF\n" + _DIFF + "EOF",
+        "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/x.py\n@@\n-a\n+it's\n"
+        "*** End Patch\nEOF\npytest -q",
+    ],
+    ids=["git-apply-then-test", "git-apply-alone", "apply-patch-then-test"],
+)
+def test_an_argv_command_execution_names_its_heredoc_patch_write(script: str) -> None:
+    """A rollout ``CommandExecution`` records ``['/bin/bash', '-lc', CMD]`` (#1106 r1).
+
+    The heredoc sits inside the quoted script, so the write reader goes through that one host
+    shell layer, as the argv shape of OUT-001 (``codex-post-tool-outcomes-0.157.1``) records it.
+    """
+
+    record = CodexParsedRecord(
+        1,
+        0,
+        200,
+        "event_msg",
+        "CommandExecution",
+        JsonObject(
+            {
+                "payload": {
+                    "item": {
+                        "id": "exec-argv",
+                        "type": "CommandExecution",
+                        "command": ["/bin/bash", "-lc", script],
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                    "type": "item_completed",
+                }
+            }
+        ),
+    )
+    structural, _gaps = structural_from_stream_record(record, key_material=_KEY)
+    assert structural["write_scope"] == "workspace"
+    if "pytest" in script:
+        assert structural["runner_class"] == "test"

@@ -1035,8 +1035,12 @@ _INTERCEPTED_APPLY_PATCH: Final = re.compile(
     r"\A\s*(?:cd[ \t]+(?:'[^'\n]*'|\"[^\"\n]*\"|[^\s'\"\;&|()<>$`-][^\s'\"\;&|()<>$`]*)"
     r"[ \t]*&&[ \t]*)?(?:apply_patch|applypatch)[ \t]*\Z"
 )
-# The last simple command of the text before ``<<`` (the one the heredoc feeds).
-_LAST_COMMAND: Final = re.compile(r"(?:^|&&|\|\||[;|&(])\s*([^;&|()]*)$")
+# The separators before the last simple command of the text before ``<<`` (the one the heredoc
+# feeds). A split, never a search anchored at ``$``: that backtracks quadratically over a long
+# blank run between two separators (#1106 r1).
+_PREFIX_SEPARATOR: Final = re.compile(r"&&|\|\||[;|&(]")
+# A ``git apply``/``patch`` invocation is a few words; a longer one is not read.
+_MAX_PATCH_COMMAND_CHARS: Final = 4_096
 # Unified-diff file headers; a path is the text up to a tab (a timestamp may follow).
 _DIFF_NEW_PATH: Final = re.compile(r"\+\+\+ ([^\t\n]+)")
 _DIFF_OLD_PATH: Final = re.compile(r"--- ([^\t\n]+)")
@@ -1175,11 +1179,37 @@ def heredoc_patch_paths(command: str) -> tuple[str, ...]:
     leading ``a/``/``b/``). An invocation that writes nothing (``git apply --check``/``--cached``,
     ``patch --dry-run``), reads its patch from a file (an operand, ``-i``), moves what it writes
     (``-d``, ``-o``, ``--directory``) or uses an option this reader does not know names nothing,
-    as does a header it cannot place (a quoted path).
+    as does a header it cannot place (a quoted path). A whole command ``bash -lc '...'`` (a joined
+    native argv) is read through that one shell layer.
+
+    Every step is linear in the text (a hook payload is at most 1 MiB). Unlike the token parsers,
+    the heredoc reader is not cut at ``MAX_SHELL_WRITE_CHARS``: a patch longer than that is still
+    a write, and missing it would leave an earlier verification current.
     """
 
     if "<<" not in command:
         return ()
+    paths = _heredoc_patch_paths(command)
+    if paths:
+        return paths
+    # A native argv joined into one string (``/bin/bash -lc 'git apply <<EOF ...'``, the shape a
+    # Codex ``CommandExecution`` item or a legacy ``shell`` call records): the heredoc sits inside
+    # the quoted script, so read that script once, as ``shell_write_scope`` does.
+    script = _wrapped_script(command)
+    return _heredoc_patch_paths(script) if script is not None else ()
+
+
+def _wrapped_script(command: str) -> str | None:
+    """``X`` for a whole command ``bash -lc X`` / ``sh -c X`` in any quoting, else ``None``."""
+
+    try:
+        words = shlex.split(bound_command(command), posix=True)
+    except ValueError:
+        return None
+    return wrapped_shell_argument(words)
+
+
+def _heredoc_patch_paths(command: str) -> tuple[str, ...]:
     paths: list[str] = []
     for heredoc in _heredocs(command):
         if SHELL_APPLY_PATCH.search(heredoc.prefix):
@@ -1194,11 +1224,11 @@ def heredoc_patch_paths(command: str) -> tuple[str, ...]:
 def _diff_patch_strip(prefix: str) -> int | None:
     """The ``-p`` strip of a ``git apply``/``patch`` a heredoc feeds; ``None`` when it names no write."""
 
-    match = _LAST_COMMAND.search(prefix)
-    if match is None:
+    last = _PREFIX_SEPARATOR.split(prefix)[-1]
+    if ")" in last or len(last) > _MAX_PATCH_COMMAND_CHARS:
         return None
     try:
-        words = strip_wrappers(shlex.split(match.group(1), posix=True))
+        words = strip_wrappers(shlex.split(last, posix=True))
     except ValueError:
         return None
     if not words:

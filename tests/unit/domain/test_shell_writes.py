@@ -426,3 +426,65 @@ def test_a_heredoc_patch_of_only_docs_is_docs() -> None:
         inside=_inside,
         also_written=shell_writes.heredoc_patch_paths(command),
     ) == ("docs")
+
+
+_PATCH = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+it's\n"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A long blank run between two separators before ``<<`` (quadratic under a regex search).
+        ";" + " " * 500_000 + ";git apply <<EOF\n" + _PATCH + "EOF\npytest -q\n",
+        "echo a;" + " " * 32_000 + ";git apply <<EOF\n" + _PATCH + "EOF\npytest -q\n",
+        "git apply " + "-v " * 200_000 + "<<EOF\n" + _PATCH + "EOF\n",
+        "<<  " * 100_000 + "\n",
+        "git apply <<'EOF'\n" + _PATCH * 20_000 + "EOF\npytest -q\n",
+    ],
+    ids=["blank-run", "blank-run-32k", "long-invocation", "many-heredoc-starts", "long-patch"],
+)
+def test_heredoc_patch_readers_are_linear(command: str) -> None:
+    """Every heredoc patch reader is fast on a megabyte-sized command (#1106 r1)."""
+
+    started = time.perf_counter()
+    shell_writes.heredoc_patch_paths(command)
+    shell_writes.codex_intercepts_shell_apply_patch(command)
+    assert time.perf_counter() - started < _DEADLINE_SECONDS
+
+
+def test_a_long_patch_past_the_token_bound_is_still_a_write() -> None:
+    command = "git apply <<'EOF'\n" + "+" * (MAX_SHELL_WRITE_CHARS + 10) + "\n" + _PATCH + "EOF\n"
+    assert shell_writes.heredoc_patch_paths(command) == ("x.py",)
+
+
+@pytest.mark.parametrize(
+    ("script", "paths"),
+    [
+        ("git apply <<'EOF'\n" + _PATCH + "EOF\npytest -q", ("x.py",)),
+        ("git apply <<EOF\n" + _PATCH + "EOF\npytest -q", ("x.py",)),
+        (
+            "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/a.py\n@@\n-a\n+it's\n"
+            "*** End Patch\nEOF\npytest -q",
+            ("src/a.py",),
+        ),
+        ("patch -p1 <<'EOF'\n" + _PATCH + "EOF", ("x.py",)),
+    ],
+)
+def test_a_joined_native_argv_names_its_heredoc_patch(script: str, paths: tuple[str, ...]) -> None:
+    """A Codex ``CommandExecution`` command is ``['/bin/bash', '-lc', CMD]`` (#1106 r1)."""
+
+    for shell in ("/bin/bash", "bash", "/bin/zsh", "sh"):
+        joined = shlex.join([shell, "-lc", script])
+        assert shell_writes.heredoc_patch_paths(joined) == paths
+        assert (
+            shell_write_scope(
+                joined,
+                workspace=None,
+                inside=lambda _path: False,
+                relative_only=True,
+                also_written=shell_writes.heredoc_patch_paths(joined),
+            )
+            == "workspace"
+        )
+    # A quoted heredoc in an argument that is not a host shell's script stays unread.
+    assert shell_writes.heredoc_patch_paths(shlex.join(["echo", script])) == ()
