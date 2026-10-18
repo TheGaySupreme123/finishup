@@ -1172,6 +1172,13 @@ A failed `Bash` call becomes an observation finding (`failed_command_unresolved`
   `tests/integration/application/test_failed_command_retirement_e2e.py`, and per host by
   `tests/integration/observation/test_failure_supersession_hosts.py`. An edit never retires it, and no check resolves it
   (`observed_failure_not_rerun`).
+- **Retire on a passing planned verification: supported** (owner decision 2026-10-18, ADR-025).
+  A later `PostToolUse` success of a command an effective obligation requests (the ADR-033 keyed
+  commitment, or as a segment of a passing `single` run or `&&` chain) retires every earlier
+  failed-command finding, even one for another command (closure basis
+  `retired_by_planned_verification`). Pinned with the real Claude Code hook handler by
+  `test_claude_passing_planned_verification_retires_an_unrelated_failure` in
+  `tests/integration/observation/test_failure_supersession_hosts.py`.
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
   clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
 - **Read-only chains and FinishUP's own CLI: supported**, as on every host (`cd`, banners,

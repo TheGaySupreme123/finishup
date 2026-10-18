@@ -988,6 +988,12 @@ A failed `Shell` call becomes an observation finding (`failed_command_unresolved
   `tests/integration/observation/test_failure_supersession_hosts.py`. A post without `exitCode` (#1091 N4) is `unknown` and retires nothing,
   which is honest; the fix stays with #1091. An edit never retires it, and no check resolves it
   (`observed_failure_not_rerun`).
+- **Retire on a passing planned verification: supported when `postToolUse` states `exitCode`**
+  (owner decision 2026-10-18, ADR-025). A later passing run of a command an effective obligation
+  requests retires every earlier failed-command finding, even one for another command (closure
+  basis `retired_by_planned_verification`); a post without `exitCode` is `unknown` and retires
+  nothing. Pinned by `test_cursor_passing_planned_verification_retires_an_unrelated_failure` in
+  `tests/integration/observation/test_failure_supersession_hosts.py`.
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
   clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
 - **Read-only chains and FinishUP's own CLI: supported**, as on every host.

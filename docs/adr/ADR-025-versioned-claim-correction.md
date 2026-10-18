@@ -133,9 +133,12 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    here-document) certifies no segment, and a failed chain is superseded only by its own whole
    identity. Canonical, prefix, flag and marker commitments are domain-separated and never equal
    a command identity. A
-   failure never uses its segments. Edits still never retire anything (#909), and neither does a
-   passing run of a different command, including the planned verification after an edit: it
-   proves the planned check passes, not that the command that failed now works.
+   failure never uses its segments. Edits still never retire anything (#909). For this shared
+   supersession rule (the claim-revision invariant, the packs, the receipt history sentence and
+   the advice rule) a passing run of a different command, including the planned verification
+   after an edit, supersedes nothing: it proves the planned check passes, not that the command
+   that failed now works. The observed failed-command *finding* below is the one exception the
+   owner decided (2026-10-18).
 
    The observation coordinator materializes the advice copy of a live failure as a
    `finding_recorded` (rule `failed_command_unresolved`, kind `failed_work_omitted`). An
@@ -158,6 +161,36 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    are retired at replay from facts they already hold; rows without a command identity never
    are. Redacting the passing run, the failed run, its action or the finding drops the fact
    (unreadable proof is no proof); nothing is deleted.
+
+   **A passing planned verification also retires it (owner decision 2026-10-18, recorded on
+   #1104; final).** "A later pass" has the broad reading: every open observed failed-command
+   finding whose failed run precedes, in ledger order, a hook-observed success of another call
+   that passed a **planned verification** is retired too, whatever command failed. A planned
+   verification is an effective obligation's requested item of kind `command` (ADR-033), matched
+   by the recorded rule only (`task_facts.planned_verification_passed` over `planned_match` kind
+   `exact`): the installation-keyed whole-command commitment, or the planned command as a
+   segment of the run, with the outcome that rule establishes for the planned command, which is
+   a success only for a passing `single` run or `&&` chain. A canonical, prefix or flag match, an
+   agent link, a masked composition (`;`, `|`, `||`, `&`) or a masked planned command never
+   counts, and neither does an `unknown` outcome: on Codex 0.159, whose `PostToolUse` states no
+   exit, only the session stream's correction joined by call id (or a stream-first copy with its
+   own outcome) makes the planned run a known success. The owner accepted the trade-off that a
+   passing planned verification also clears an unrelated earlier failure (a failed install that
+   was never rerun). The plan is read as it stands now, the way the planned-verification task
+   facts read it: the reducer re-derives these retirements whenever a plan or obligation event
+   (or an unreadable plan event) changes the set of planned commands, so a plan revision that
+   drops the command or waives its obligation un-retires what only that match retired (a reverse
+   state), and a plan that names the command after its pass retires the earlier failure. The
+   match needs the installation key the service registers (ADR-033); a process without it
+   treats no run as a planned verification, which only ever retires less. The fact is
+   `retired_by_planned_verification` beside `retired_by_event_id`, and every surface names the
+   kind: closure basis `retired_by_planned_verification` (status, check, lineage), the receipt's
+   history sentence ("retired by a later passing run of a planned verification, not of the
+   command that failed") and its per-finding resolution line. When one run is both the same
+   command and a planned verification it is recorded as the same command; the earliest
+   qualifying run decides. The claim-level duty is unchanged: a completion claim must still
+   name a failure in `limitation_refs` unless the same command passed later (the shared rule
+   above).
 
    No check resolves such a finding: no local rule re-reads the advice condition, so a check's
    silence proves nothing, and `resolution_blockers` names `observed_failure_not_rerun` for it

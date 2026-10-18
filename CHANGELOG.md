@@ -686,6 +686,12 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   with exactly that stop's exit (`process_control`, added in place to the unreleased
   control-request 2.9.0) carry no failed-work duty. An unknown outcome never retires anything; on
   Codex the pass's exit comes from the session stream (#1104).
+- A later passing run of a verification command the plan requests (an effective obligation's
+  `command` item, matched by the keyed commitment or segment rule) also retires every earlier
+  failed-command finding, even for another command, as the owner decided on 2026-10-18 (closure
+  basis `retired_by_planned_verification`, added in place to the same unreleased results). The plan
+  is read as it stands now, so dropping the command or waiving its obligation reopens what only it
+  retired (#1104).
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a

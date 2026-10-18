@@ -1224,9 +1224,22 @@ owns the observed failed-command finding (`is_observed_failed_command_shape(find
 `work-integrity`, `failed_work_omitted`, no `clm_` subject ref; `is_observed_failed_command_finding(
 record)` adds observation authorship stamped at replay), `failed_run_of(...)`, `retirement_witness(
 failed, results, actions, observed) -> (event_id, frontier) | None`, and the reducer entry points
-`on_finding_recorded`, `on_observed_result` and `recompute_all` (after a redaction).
+`on_finding_recorded`, `on_observed_result`, `on_plan_changed` and `recompute_all` (after a
+redaction). Since the owner decision of 2026-10-18 a witness is `(event_id, frontier,
+planned_verification)`: a later hook-observed success of another call also retires every earlier
+observed failed command when it passed a **planned verification**, read from the current plan by
+`task_facts.planned_verification_commands(plans, obligations, coverage_gaps)` (effective
+obligations' requested `command` items, through `effective_obligation_ids`; empty without the
+installation key) and matched by `task_facts.planned_verification_passed(command, planned)`
+(`planned_match` kind `exact` with a `success` outcome for the planned command: the ADR-033 keyed
+commitment or segment rule only). Every entry point takes the planned verifications as a lazy
+`PlannedVerifications` callable; the reducer re-derives the linked candidates in
+`on_plan_changed` after a plan, obligation or unknown event when the planned set changed, so the
+fact stays a pure function of the current projection and the key. The same command wins when one
+run is both.
 `FindingProjectionRecord` gains `observed_failed_command`, `failed_run_result_id`,
-`retired_by_event_id` and `retired_frontier` (set together with the event id), each emitted into
+`retired_by_event_id`, `retired_frontier` (set together with the event id) and
+`retired_by_planned_verification` (only with a retirement), each emitted into
 the projection snapshot only when set, so tasks without such a finding keep their exact snapshot
 bytes; `proof_event_id` is the proving check, else the passing run. `finding_is_resolved` accepts
 either proof; for the `acknowledged_not_done`/`self_verified` reverse edge the later proof frontier
@@ -8156,7 +8169,9 @@ ledger prefix and never stored. Names:
   `acknowledged_not_done`, owner decision 2026-10-12),
   `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`,
   and since #1104 `retired_by_passing_run` (`resolved`: a later passing run of the same command
-  retired an observed failed-command finding) and `failed_run_disclosed` (`settled_disclosed`,
+  retired an observed failed-command finding), `retired_by_planned_verification` (`resolved`: a
+  later passing run of a planned verification retired it, owner decision 2026-10-18) and
+  `failed_run_disclosed` (`settled_disclosed`,
   `insufficient_coverage`: `acknowledged` on such a finding); `is_bookkeeping_finding`).
 - `finishup.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
   tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),

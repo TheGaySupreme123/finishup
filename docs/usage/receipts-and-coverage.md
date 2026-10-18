@@ -338,7 +338,11 @@ Two more things decide what the receipt will say, and status tells you before yo
   inside a passing `&&` chain such as `cd /app && pytest -q`, exactly as written (`FOO=1 pytest -q`,
   or `pytest -q` behind `env`, `nohup` or `time`, is a different command): when that run passes, the finding is
   retired by itself (`verified_resolved`, basis `retired_by_passing_run`) and stays in the history.
-  An edit does not retire it, a passing run of a different command does not, a run whose outcome
+  A later passing run of a verification command your plan asks for retires it as well, together
+  with every other earlier failed-command finding, even for a command you never reran (basis
+  `retired_by_planned_verification`; the receipt says the planned verification passed, not the
+  command that failed). If you later drop that command from the plan, what only it retired opens
+  again. An edit does not retire it, a passing run of an unplanned different command does not, a run whose outcome
   FinishUP never learned does not, and a check cannot prove it absent. If the failure is expected or
   will stay, answer `acknowledged` with the reason: the receipt lists it as a disclosed failed
   command and reads at best `insufficient_coverage`, and a later passing run still retires it. A

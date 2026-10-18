@@ -1775,6 +1775,15 @@ A failed shell call becomes an observation finding (`failed_command_unresolved`,
   0.157.1 shapes; a raw 0.159 hook stdin capture is still owed on #1104). Advice itself raises a
   Codex failure only from envelopes that carry the exit under a command tool name; stream-side
   command identity for `function_call` rows is #1092/W2's work.
+- **Retire on a passing planned verification: supported** (owner decision 2026-10-18, ADR-025).
+  A later passing run of a command an effective obligation requests (the ADR-033 keyed commitment,
+  or as a segment of a passing `single` run or `&&` chain) retires every earlier failed-command
+  finding, even one for another command (closure basis `retired_by_planned_verification`). The
+  same outcome rule applies: on 0.159 the planned run is a known success only through the session
+  stream's correction joined by call id or a stream-first copy, never from the outcome-less hook
+  post. Pinned by `test_a_passing_planned_verification_joined_from_the_stream_retires_another_failure`
+  and `test_an_unknown_planned_verification_never_retires_another_failure` in
+  `tests/integration/application/test_codex_failed_command_retirement.py`.
 - **No check resolves it** (`observed_failure_not_rerun`). An edit never retires it either.
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
   clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.

@@ -254,7 +254,8 @@ request, not work: one reasoned `acknowledged` (or a `finishup-verification-limi
 decision) discloses it, with no repair attempt required, and the receipt lists the disclosed limit
 instead of reading clean. A finding about a command FinishUP saw fail needs no answer once you
 rerun the same command, exactly as written, and it passes (alone or inside a passing `&&` chain):
-the pass retires it.
+the pass retires it. A passing run of a verification command your plan asks for retires it too,
+along with every other earlier failed-command finding.
 If the failure is expected or will stay, one `acknowledged` with the reason discloses it on the
 receipt. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
 cannot prove after a later check because of its own limits: say how you verified the repair in
@@ -314,7 +315,7 @@ yet stated (answer once with `acknowledged`; it is not work). `receipt_blocking_
 is `to_do` plus `unmet`: the findings that keep a receipt from concluding
 `no_unresolved_deterministic_findings` even after every response; only a later qualifying check
 of the repaired record shrinks `to_do`, except for a command FinishUP saw fail, which a later
-passing run of the same command retires and no check can. Accordingly, `findings_unanswered` is answered;
+passing run of the same command or of a planned verification retires and no check can. Accordingly, `findings_unanswered` is answered;
 `receipt_findings_unresolved` is repaired and rechecked once, and should not trigger another
 response loop. After that recheck, read the finding's `resolved` value. If the issue re-fires,
 or it does not re-fire but remains `resolved=false` because the check did not qualify, stop
