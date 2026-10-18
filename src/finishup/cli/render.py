@@ -22,6 +22,7 @@ from finishup.domain.receipts import (
 )
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
+    overall_next_instruction,
     render_missing_for_assessment_lines,
     render_review_input_manifest_compat_line,
     render_review_input_manifest_lines,
@@ -374,40 +375,13 @@ def _open_findings_next_text(checklist: CheckFindingChecklistModel, default: str
 def _render_overall_next(
     next_step: CheckOverallNextModel, checklist: CheckFindingChecklistModel | None = None
 ) -> str:
-    if next_step.action == "supply_missing_input":
-        action = (
-            "If `missing_for_assessment` names an `agent_suppliable` item you can supply, "
-            "publish exactly that item once, linked to its target, then `check` again. If it "
-            "is already supplied, or it is a packet, type or authority limit, go to the receipt "
-            "and state that specific limit. Never change your work to fit the reviewer"
-        )
-    elif next_step.action == "disclose_limitations":
-        action = (
-            "Disclose the named limitation requests (respond acknowledged with the reason if the "
-            "requirement may be met but cannot be verified here; acknowledged_not_done only when "
-            "you know it is not met; no repair is needed)"
-        )
-    elif next_step.action == "work_open_findings":
-        if _open_limitation_requests(checklist):
-            action = (
-                "Repair or answer the named open findings (a limitation request among them needs "
-                "only a response: acknowledged with the reason if it may be met but cannot be "
-                "verified here, acknowledged_not_done only when you know it is not met; an "
-                "agent_criterion_unmet is your own criterion: fix it, or narrow it with "
-                "acknowledged and a reason)"
-            )
-        else:
-            action = "Repair or answer the named open findings"
-    elif next_step.action == "request_ruling":
-        action = "Run check with final_review: true so the reviewer rules on the rejected findings"
-    elif next_step.action == "review_recorded_work":
-        action = "Review the recorded work for open obligations or undisclosed failures"
-    else:
-        action = (
-            "Disclose the limitation at the receipt endpoint"
-            if next_step.status == "ready_with_limitations"
-            else "Request the receipt"
-        )
+    # One per-action table with the ``agent_next`` lead of the result (W6), so the CLI line and
+    # what a Codex model reads never drift apart.
+    action = overall_next_instruction(
+        next_step.action,
+        next_step.status,
+        limitation_requests=_open_limitation_requests(checklist),
+    )
     targets = ""
     if next_step.target_refs:
         targets = " (targets: " + ", ".join(next_step.target_refs) + ")"
@@ -855,6 +829,13 @@ def render_human_status(result: StatusSuccessModel) -> str:
                     f"Replay request ID: {result.page.continuation.replay_request_id}",
                 )
             )
+        if result.page.check_outcome is not None:
+            # W6: a finished check's verdict and lead, the same a same-id replay returns.
+            outcome = result.page.check_outcome
+            lines.append(f"Check outcome: {outcome.verdict}")
+            if outcome.agent_next is not None:
+                lines.append(f"Next: {outcome.agent_next.removeprefix('Next: ')}")
+            lines.extend(render_missing_for_assessment_lines(outcome.missing_for_assessment))
         if result.page.semantic_progress is not None:
             lines.extend(render_semantic_progress_lines(result.page.semantic_progress))
         if result.page.semantic_withheld_items:

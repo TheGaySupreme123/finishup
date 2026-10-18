@@ -728,6 +728,17 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   point to the check's own advice (at most one new check, none after a retry that also returned no
   judgment), otherwise a finish that reports a required review as unmet (#1105).
 
+- Agents on Codex now see what an AI-powered reviewer needs. Codex shows a model only the start
+  and end of a long tool result, and the reviewer's "what to supply" list sat in the middle, so it
+  was cut from most review results. Every check result now leads with `agent_next`, one short line
+  naming the next step and, for each requested item, how to supply it and what counts;
+  `status view=operation` for a finished check returns the same outcome, so a lost or cut result is
+  recovered without re-running the check. Supplying now counts when an agent actually did it: a
+  re-run's captured output of the same command that FinishUP observed (once the reviewer saw that
+  output, whichever Codex copy recorded the run), the same command spelled as text or as the hook
+  recorded it, and evidence naming the record by its event id or with stray whitespace. A
+  description still never counts, and a respond counts only for a finding (#1107).
+
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a

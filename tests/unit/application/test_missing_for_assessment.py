@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -12,12 +12,14 @@ from typing import cast
 import pytest
 
 from builders.policy_cases import (
+    FRONTIER,
     act,
     claim_record,
     clm,
     evd,
     evidence_record,
     evt,
+    fnd,
     make_case,
     obl,
     obligation_record,
@@ -25,9 +27,13 @@ from builders.policy_cases import (
     res,
 )
 from builders.privacy_policies import local_only_policy, minimal_external_policy
+from finishup.application import missing_for_assessment as missing_module
 from finishup.application.missing_for_assessment import (
+    agent_supplied_answer_refs,
     check_change_binary_paths,
     check_change_text_paths,
+    excerpt_span_key,
+    plan_review_follow_up,
     review_missing_for_assessment,
     supplied_since,
     unsuppliable_missing_kinds,
@@ -50,11 +56,13 @@ from finishup.domain.events import (
     MissingForAssessmentItem,
     ObligationPublishedPayload,
     ObligationStatus,
+    ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
     RuntimeProfile,
     SessionOpenedPayload,
 )
+from finishup.domain.findings import ResponseDisposition
 from finishup.domain.privacy import (
     EgressChannel,
     PrivacyPolicy,
@@ -79,6 +87,7 @@ from finishup.kernel.projections import (
     PendingMissingForAssessment,
     ProjectionRecord,
 )
+from finishup.kernel.task_facts import register_command_identity_key, requested_command_identity
 from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
 from finishup.ports.change_capture import CheckChangeCapture
 from finishup.ports.runtime import TaskRuntime
@@ -1604,3 +1613,565 @@ def test_the_content_sniff_decides_before_the_suffix() -> None:
     assert _named_file_review("renamed.txt", binary_paths=frozenset({"renamed.txt"})) == [
         "yoetz_limit_unsupported_data_type"
     ]
+
+
+# --- W6 (issue #1107, ADR-006 amendment): real supply counts, conservatively ---------------------
+
+_W6_KEY = b"w6-supply-installation-key-32byt"
+_W6_COMMAND = "uv run pytest -q"
+
+
+@pytest.fixture
+def w6_key() -> Iterable[str]:
+    """Register a test installation key; yield the keyed identity a hook records for the command."""
+
+    register_command_identity_key(_W6_KEY)
+    try:
+        identity = requested_command_identity(_W6_COMMAND)
+        assert identity is not None
+        yield identity
+    finally:
+        register_command_identity_key(None)
+
+
+def _w6_plain(number: int, *, reference: str | None = None, description: str | None = None):
+    return EvidenceRecordedPayload(
+        evd(number),
+        EvidenceKind.OTHER,
+        EvidenceImmutability.METADATA_ONLY,
+        timestamp_from_string("2026-09-27T00:00:00.000Z"),
+        reference=reference,
+        description=description,
+    )
+
+
+def _w6_case(
+    *,
+    target_command: str = _W6_COMMAND,
+    actions: Mapping[ActionId, ProjectionRecord[ActionRecordedPayload]] | None = None,
+    results: Mapping[ResultId, ProjectionRecord[ResultRecordedPayload]] | None = None,
+    evidence: Mapping[EvidenceId, EvidenceProjectionRecord] | None = None,
+    observed: Iterable[int] = (),
+    kind: MissingForAssessmentKind = "verification_output",
+    target: str | None = None,
+) -> DeterministicCase:
+    """A failed agent run ``act(1)``/``res(2)`` requested at frontier 50, plus later rows.
+
+    ``observed`` numbers the later rows the service stamped as observation-authored (their event
+    is ``evt(number)``), the envelope fact the frozen case carries.
+    """
+
+    all_actions = {
+        act(1): record(_run(1, target_command), 10),
+        **(actions or {}),
+    }
+    all_results = {
+        res(2): record(
+            ResultRecordedPayload(res(2), act(1), ResultOutcome.FAILURE, summary="1 failed"), 11
+        ),
+        **(results or {}),
+    }
+    case = _cases(actions=all_actions, results=all_results, evidence=evidence)
+    case = _pending(
+        case,
+        MissingForAssessmentItem(kind, ((target or str(res(2))),), "agent_suppliable"),
+    )
+    return replace(case, observation_event_ids=frozenset(evt(number) for number in observed))
+
+
+def _w6_supplied(case: DeterministicCase) -> tuple[tuple[str, ...], ...]:
+    pending = case.projection.pending_missing_for_assessment
+    assert pending is not None
+    return supplied_since(
+        case.projection,
+        pending,
+        frozenset(str(ref) for ref in case.allowed_ids),
+        frozenset(str(item) for item in case.observation_event_ids),
+    )
+
+
+def _w6_captured(
+    number: int, *, content: str = "tool_output", reference: str | None = None
+) -> EvidenceRecordedPayload:
+    """A captured part as the observation writer materializes it (``tool_output`` by default)."""
+
+    return replace(
+        _captured(number),
+        description=f"Observation-captured {content} bytes part=1/1",
+        reference=reference,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _W6Rerun:
+    actions: Mapping[ActionId, ProjectionRecord[ActionRecordedPayload]]
+    results: Mapping[ResultId, ProjectionRecord[ResultRecordedPayload]]
+    evidence: Mapping[EvidenceId, EvidenceProjectionRecord]
+
+
+def _w6_observed_rerun(
+    identity: str, *, output: bool = True, stream_first: bool = False
+) -> _W6Rerun:
+    """A Codex shell re-run as the hook or its session-stream copy records it, after the request.
+
+    Hook first, the observed result cites the captured output. Stream first (Codex 0.159), the
+    hook's output arrives late as evidence the observation writer links to the run's action event
+    (``reference`` = that event id) and no result cites it.
+    """
+
+    return _W6Rerun(
+        actions={
+            act(70): record(
+                ActionRecordedPayload(
+                    act(70), ActionKind.COMMAND, "Observed command", command=f"omitted:{identity}"
+                ),
+                70,
+            )
+        },
+        results={
+            res(71): record(
+                ResultRecordedPayload(
+                    res(71),
+                    act(70),
+                    ResultOutcome.SUCCESS,
+                    exit_status=0,
+                    summary="Observed result status=success",
+                    evidence_refs=(evd(72),) if output and not stream_first else (),
+                ),
+                71,
+            )
+        },
+        evidence=(
+            {
+                evd(72): evidence_record(
+                    _w6_captured(72, reference=str(evt(70)) if stream_first else None), 72
+                )
+            }
+            if output
+            else {}
+        ),
+    )
+
+
+def _w6_rerun_case(
+    rerun: _W6Rerun, kind: MissingForAssessmentKind = "verification_output"
+) -> DeterministicCase:
+    observed = (70, 71, 72) if rerun.evidence else (70, 71)
+    return _w6_case(
+        actions=rerun.actions,
+        results=rerun.results,
+        evidence=rerun.evidence,
+        observed=observed,
+        kind=kind,
+    )
+
+
+@pytest.mark.parametrize("stream_first", [False, True])
+def test_an_observed_rerun_of_the_targets_command_supplies_it(
+    w6_key: str, stream_first: bool
+) -> None:
+    # Whichever Codex copy committed first, the observed result and the captured output of its
+    # run answer a request for the output (W6 round 1: the stream-first order links the output to
+    # the action event instead of the result).
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key, stream_first=stream_first))
+    assert _w6_supplied(case) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
+    kinds, gaps = _w6_repeat_review(case, excerpt_refs=frozenset({str(evd(72))}))
+    assert kinds == [] and "semantic_missing_already_supplied" in gaps
+    # The kind ``other`` reads the same output.
+    other = _w6_rerun_case(_w6_observed_rerun(w6_key, stream_first=stream_first), "other")
+    assert _w6_supplied(other) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
+
+
+def _w6_observed_target(
+    identity: str, *, stream_first: bool
+) -> tuple[
+    dict[ActionId, ProjectionRecord[ActionRecordedPayload]],
+    dict[ResultId, ProjectionRecord[ResultRecordedPayload]],
+    dict[EvidenceId, EvidenceProjectionRecord],
+]:
+    """A run ``act(3)``/``res(4)`` FinishUP observed before the request, with output ``evd(5)``.
+
+    Hook first, ``res(4)`` cites ``evd(5)``; stream first, ``evd(5)`` names ``act(3)``'s event.
+    """
+
+    return (
+        {
+            act(3): record(
+                ActionRecordedPayload(
+                    act(3), ActionKind.COMMAND, "Observed command", command=f"omitted:{identity}"
+                ),
+                12,
+            )
+        },
+        {
+            res(4): record(
+                ResultRecordedPayload(
+                    res(4),
+                    act(3),
+                    ResultOutcome.FAILURE,
+                    exit_status=1,
+                    summary="Observed result status=failure",
+                    evidence_refs=() if stream_first else (evd(5),),
+                ),
+                13,
+            )
+        },
+        {
+            evd(5): evidence_record(
+                _w6_captured(5, reference=str(evt(12)) if stream_first else None), 14
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize("stream_first", [False, True])
+def test_a_captured_output_target_is_tied_to_its_run_from_either_copy(
+    w6_key: str, stream_first: bool
+) -> None:
+    # W6 round 2: the reviewer names the captured output of an observed run. Whichever Codex
+    # copy committed that run first, an observed re-run of the same command answers it ...
+    actions, results, evidence = _w6_observed_target(w6_key, stream_first=stream_first)
+    rerun = _w6_observed_rerun(w6_key, stream_first=stream_first)
+    case = _w6_case(
+        actions={**actions, **rerun.actions},
+        results={**results, **rerun.results},
+        evidence={**evidence, **rerun.evidence},
+        observed=(70, 71, 72),
+        target=str(evd(5)),
+    )
+    assert _w6_supplied(case) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
+    # ... and so does the agent's own result for the target's action, as agent_next asks.
+    published = _w6_case(
+        actions=actions,
+        results={
+            **results,
+            res(90): record(
+                ResultRecordedPayload(
+                    res(90), act(3), ResultOutcome.FAILURE, exit_status=1, summary="1 failed"
+                ),
+                90,
+            ),
+        },
+        evidence=evidence,
+        target=str(evd(5)),
+    )
+    assert _w6_supplied(published) == ((str(res(90)),),)
+
+
+def test_observed_reruns_never_crowd_out_the_agents_published_output(w6_key: str) -> None:
+    # W6 round 2: the agent publishes the target run's output, then two observed re-runs follow
+    # (the n7 replay loop). The agent's result keeps its slot among the supplied refs.
+    actions: dict[ActionId, ProjectionRecord[ActionRecordedPayload]] = {}
+    results: dict[ResultId, ProjectionRecord[ResultRecordedPayload]] = {
+        res(60): record(
+            ResultRecordedPayload(
+                res(60), act(1), ResultOutcome.SUCCESS, exit_status=0, summary="3 passed"
+            ),
+            60,
+        )
+    }
+    evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
+    observed: list[int] = []
+    for run, result, output in ((70, 71, 72), (73, 74, 75)):
+        actions[act(run)] = record(
+            ActionRecordedPayload(
+                act(run), ActionKind.COMMAND, "Observed command", command=f"omitted:{w6_key}"
+            ),
+            run,
+        )
+        results[res(result)] = record(
+            ResultRecordedPayload(
+                res(result),
+                act(run),
+                ResultOutcome.SUCCESS,
+                exit_status=0,
+                summary="Observed result status=success",
+                evidence_refs=(evd(output),),
+            ),
+            result,
+        )
+        evidence[evd(output)] = evidence_record(_w6_captured(output), output)
+        observed += [run, result, output]
+    case = _w6_case(actions=actions, results=results, evidence=evidence, observed=observed)
+    answered = _w6_supplied(case)
+    assert len(answered[0]) == 4 and str(res(60)) in answered[0]
+    agent = agent_supplied_answer_refs(
+        case.projection, answered, frozenset(str(item) for item in case.observation_event_ids)
+    )
+    assert str(res(60)) in agent
+    assert str(res(71)) not in agent and str(res(74)) not in agent
+
+
+def test_an_observed_capture_of_the_command_input_is_not_output(w6_key: str) -> None:
+    rerun = _w6_observed_rerun(w6_key)
+    case = _w6_rerun_case(
+        replace(
+            rerun, evidence={evd(72): evidence_record(_w6_captured(72, content="tool_input"), 72)}
+        )
+    )
+    assert _w6_supplied(case) == ((),)
+    # Linked late to the run's action event, a command-input capture is not output either.
+    late = _w6_rerun_case(
+        replace(
+            _w6_observed_rerun(w6_key, stream_first=True),
+            evidence={
+                evd(72): evidence_record(
+                    _w6_captured(72, content="tool_input", reference=str(evt(70))), 72
+                )
+            },
+        )
+    )
+    assert _w6_supplied(late) == ((),)
+
+
+def test_an_observed_run_of_another_command_never_supplies_it(w6_key: str) -> None:
+    other = requested_command_identity("uv run pytest -q tests/other")
+    assert other is not None and other != w6_key
+    case = _w6_rerun_case(_w6_observed_rerun(other))
+    assert _w6_supplied(case) == ((),)
+
+
+def test_an_observed_run_never_answers_an_untargeted_request(w6_key: str) -> None:
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key))
+    pending = PendingMissingForAssessment(
+        evt(50), 50, (MissingForAssessmentItem("verification_output", (), "agent_suppliable"),)
+    )
+    assert supplied_since(
+        case.projection,
+        pending,
+        frozenset(str(ref) for ref in case.allowed_ids),
+        frozenset(str(item) for item in case.observation_event_ids),
+    ) == ((),)
+
+
+def test_text_and_keyed_spellings_of_one_command_are_one_run(w6_key: str) -> None:
+    # The target is a hook-observed run; the agent re-runs it and publishes the plain command.
+    observed_target = {
+        act(3): record(
+            ActionRecordedPayload(
+                act(3), ActionKind.COMMAND, "Observed command", command=f"omitted:{w6_key}"
+            ),
+            12,
+        ),
+        act(93): record(_run(93, _W6_COMMAND), 93),
+    }
+    published = {
+        res(4): record(
+            ResultRecordedPayload(res(4), act(3), ResultOutcome.FAILURE, exit_status=1), 13
+        ),
+        res(94): record(_output(94, 93), 94),
+    }
+    case = _w6_case(actions=observed_target, results=published, target=str(res(4)))
+    assert _w6_supplied(case) == ((str(res(94)),),)
+    # The other direction: a plain-text target and a hook-observed re-run (see above). Without the
+    # installation key FinishUP cannot tell the two spellings are one command, so neither counts.
+    register_command_identity_key(None)
+    assert _w6_supplied(case) == ((),)
+    keyless = _w6_rerun_case(_w6_observed_rerun(w6_key))
+    assert _w6_supplied(keyless) == ((),)
+
+
+def test_evidence_naming_the_targets_event_id_or_padded_id_supplies_it() -> None:
+    target_event = str(evt(11))  # ``res(2)`` was recorded by ``evt(11)``
+    by_event = _w6_case(
+        evidence={evd(81): evidence_record(_w6_plain(81, reference=target_event), 81)}
+    )
+    assert _w6_supplied(by_event) == ((str(evd(81)),),)
+    padded = _w6_case(
+        evidence={evd(82): evidence_record(_w6_plain(82, reference=f"  {res(2)} \n"), 82)}
+    )
+    assert _w6_supplied(padded) == ((str(evd(82)),),)
+    # A target named by its event id reads as that row.
+    by_event_target = _w6_case(
+        evidence={evd(83): evidence_record(_w6_plain(83, reference=str(res(2))), 83)},
+        target=target_event,
+    )
+    assert _w6_supplied(by_event_target) == ((str(evd(83)),),)
+    # The requesting check's own event id names the request, not which target (Q4).
+    by_request = _w6_case(
+        evidence={evd(84): evidence_record(_w6_plain(84, reference=str(evt(50))), 84)}
+    )
+    assert _w6_supplied(by_request) == ((),)
+
+
+def test_a_description_or_respond_reason_alone_never_supplies() -> None:
+    described = _w6_case(
+        evidence={
+            evd(80): evidence_record(
+                _w6_plain(80, reference="pytest output", description=f"Output for {res(2)}"), 80
+            )
+        }
+    )
+    assert _w6_supplied(described) == ((),)
+    response = ResponseRecordedPayload(
+        fnd(5),
+        FRONTIER,
+        ResponseDisposition.ACKNOWLEDGED,
+        reason=f"The output of {res(2)} was 3 passed.",
+    )
+    responded = replace(
+        described,
+        projection=replace(described.projection, responses={fnd(5): record(response, 85)}),
+    )
+    assert _w6_supplied(responded) == ((),)
+
+
+def _w6_repeat_review(
+    case: DeterministicCase,
+    *,
+    excerpt_refs: frozenset[str] | None = None,
+    excerpt_parts: frozenset[str] | None = None,
+    kind: MissingForAssessmentKind = "verification_output",
+    uncitable: frozenset[str] = frozenset(),
+) -> tuple[list[str], frozenset[str]]:
+    review = review_missing_for_assessment(
+        case,
+        (),
+        _repeat(kind, str(res(2))),
+        unsuppliable_kinds=frozenset(),
+        citable_refs=frozenset(str(ref) for ref in case.allowed_ids) - uncitable,
+        excerpt_refs=excerpt_refs,
+        excerpt_parts=excerpt_parts,
+    )
+    return [item.kind for item in review.items], review.gaps
+
+
+def test_a_repeat_is_not_dropped_for_observed_material_the_packet_did_not_carry(
+    w6_key: str,
+) -> None:
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key))
+    # Unknown, or known not to hold the captured output: the item stays the agent's.
+    for refs, parts in ((None, None), (frozenset({str(res(71))}), frozenset[str]())):
+        kinds, gaps = _w6_repeat_review(case, excerpt_refs=refs, excerpt_parts=parts)
+        assert kinds == ["verification_output"]
+        assert "semantic_missing_already_supplied" not in gaps
+        assert "semantic_missing_non_convergent" in gaps
+    # The packet carried the captured output, whole or as the marked observed span.
+    for refs, parts in (
+        (frozenset({str(evd(72))}), None),
+        (None, frozenset({f"observed-command-output:{evd(72)}#0-10/10"})),
+    ):
+        kinds, gaps = _w6_repeat_review(case, excerpt_refs=refs, excerpt_parts=parts)
+        assert kinds == []
+        assert "semantic_missing_already_supplied" in gaps
+    # What the reviewer can cite is what it was shown: an uncitable capture never counts.
+    kinds, _gaps = _w6_repeat_review(
+        case, excerpt_refs=frozenset({str(evd(72))}), uncitable=frozenset({str(evd(72))})
+    )
+    assert kinds == ["verification_output"]
+
+
+def test_supply_judgement_computes_each_commands_keyed_identity_once(
+    w6_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One review builds the links several times; the keyed identity is memoized per text."""
+
+    calls: list[str] = []
+
+    def counted(command: str) -> str | None:
+        calls.append(command)
+        return requested_command_identity(command)
+
+    monkeypatch.setattr(missing_module, "requested_command_identity", counted)
+    missing_module._keyed_identity.cache_clear()  # pyright: ignore[reportPrivateUsage]
+    commands = [f"uv run pytest tests/test_{number}.py -q" for number in range(15)]
+    rerun = _w6_observed_rerun(w6_key)
+    case = _w6_case(
+        actions={
+            **rerun.actions,
+            **{act(51 + i): record(_run(51 + i, text), 51 + i) for i, text in enumerate(commands)},
+        },
+        results=rerun.results,
+        evidence=rerun.evidence,
+        observed=(70, 71, 72),
+    )
+    _w6_supplied(case)
+    _w6_repeat_review(case, excerpt_refs=frozenset({str(evd(72))}))
+    _w6_repeat_review(case, excerpt_refs=frozenset({str(evd(72))}))
+    assert sorted(calls) == sorted({_W6_COMMAND, *commands})
+    # A new installation key never reuses an identity derived with the old one.
+    register_command_identity_key(_W6_KEY)
+    calls.clear()
+    _w6_supplied(case)
+    assert sorted(calls) == sorted({_W6_COMMAND, *commands})
+
+
+def test_a_repeat_for_observed_output_shown_only_in_part_keeps_the_item_and_its_follow_up(
+    w6_key: str,
+) -> None:
+    """Long output clipped for packet room still has parts to add, so the repeat is not dropped."""
+
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key))
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    output = str(evd(72))
+    marked = f"observed-command-output:{output}"
+    for parts in (
+        frozenset({excerpt_span_key(output, 0, 100, 5000)}),
+        frozenset(
+            {excerpt_span_key(marked, 0, 100, 5000), excerpt_span_key(marked, 200, 5000, 5000)}
+        ),
+    ):
+        review = review_missing_for_assessment(
+            case,
+            (),
+            _repeat("verification_output", str(res(2))),
+            unsuppliable_kinds=frozenset(),
+            citable_refs=allowed,
+            excerpt_refs=frozenset(),
+            excerpt_parts=parts,
+        )
+        assert [item.kind for item in review.items] == ["verification_output"]
+        assert "semantic_missing_already_supplied" not in review.gaps
+        follow_up = plan_review_follow_up(
+            case.projection,
+            allowed,
+            review.items,
+            previous=None,
+            shown_refs=frozenset(),
+            shown_parts=parts,
+        )
+        assert follow_up is not None
+    # Parts that together cover the whole output carry it, like one whole excerpt.
+    whole = frozenset(
+        {excerpt_span_key(marked, 0, 2500, 5000), excerpt_span_key(marked, 2500, 5000, 5000)}
+    )
+    kinds, gaps = _w6_repeat_review(case, excerpt_refs=frozenset(), excerpt_parts=whole)
+    assert kinds == [] and "semantic_missing_already_supplied" in gaps
+
+
+def test_observed_rows_never_answer_command_identity(w6_key: str) -> None:
+    """An observed run records ``omitted:<keyed identity>``, never the command text asked for."""
+
+    for output in (False, True):
+        rerun = _w6_observed_rerun(w6_key, output=output)
+        identity = _w6_rerun_case(rerun, "command_identity")
+        assert _w6_supplied(identity) == ((),)
+        # Even when every observed row was citable and its output carried, the repeat stays the
+        # agent's: only an action_recorded with the command text answers it.
+        kinds, gaps = _w6_repeat_review(
+            identity, kind="command_identity", excerpt_refs=frozenset({str(evd(72))})
+        )
+        assert kinds == ["command_identity"]
+        assert "semantic_missing_already_supplied" not in gaps
+    # Without captured output an observed re-run answers no output request either.
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key, output=False))
+    assert _w6_supplied(case) == ((),)
+    kinds, gaps = _w6_repeat_review(case)
+    assert kinds == ["verification_output"]
+    assert "semantic_missing_already_supplied" not in gaps
+
+
+def test_a_hook_observed_target_is_answered_by_the_published_command_text(w6_key: str) -> None:
+    """command_identity for a hook-observed target: the agent publishes the exact command."""
+
+    observed_target = {
+        act(3): record(
+            ActionRecordedPayload(
+                act(3), ActionKind.COMMAND, "Observed command", command=f"omitted:{w6_key}"
+            ),
+            12,
+        ),
+        act(93): record(_run(93, _W6_COMMAND), 93),
+    }
+    case = _w6_case(actions=observed_target, kind="command_identity", target=str(act(3)))
+    assert _w6_supplied(case) == ((str(act(93)),),)

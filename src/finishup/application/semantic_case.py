@@ -30,6 +30,7 @@ from finishup.application.missing_for_assessment import (
     CHECK_TIME_CHANGE_SOURCE_REF,
     OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
     ReviewFollowUp,
+    agent_supplied_answer_refs,
     check_change_binary_paths,
     check_change_text_paths,
     command_run_key,
@@ -3317,6 +3318,7 @@ def _verification_identities(
     enrichments = observed_enrichment_refs(projection)
     by_result: dict[str, _VerificationRun] = {}
     newest: dict[str, tuple[int, str]] = {}
+    first_result: dict[str, str] = {}
     cited_actions: set[object] = set()
     for result_ref, row in sorted(
         projection.results.items(),
@@ -3338,9 +3340,19 @@ def _verification_identities(
         if key is None:
             continue
         identity = "command:" + hashlib.sha256("\x00".join(key).encode("utf-8")).hexdigest()
-        run = (identity, payload.outcome, str(payload.action_id), str(result_ref))
+        # A later result of the same action (a Codex session-stream item's outcome correction of
+        # the hook's ``unknown`` result, #1105) is the same run: it keeps the run's first result
+        # ref and gives the whole run its outcome, so it never supersedes the run's own output.
+        action_ref = str(payload.action_id)
+        run_ref = first_result.setdefault(action_ref, str(result_ref))
+        run = (identity, payload.outcome, action_ref, run_ref)
         by_result[str(result_ref)] = run
-        newest[identity] = (row.source_frontier, str(result_ref))
+        newest[identity] = (row.source_frontier, run_ref)
+        if run_ref != str(result_ref):
+            for table in (by_result, by_evidence):
+                for ref, earlier in table.items():
+                    if earlier[2] == action_ref:
+                        table[ref] = run
         for evidence_ref in payload.evidence_refs:
             by_evidence[str(evidence_ref)] = run
         for evidence_ref in enrichments.get(str(action.source_event_id), ()):
@@ -4682,7 +4694,7 @@ def _select_targeted_excerpts(
     # Agent-published output that answers a pending missing item (issue #1079). Failure rows
     # are already candidates. A success or partial summary is the same evidence-excerpt
     # category the selection already allows, never a new category and never hook capture
-    # (those refs are not in ``supplied_refs``).
+    # (the caller leaves hook-observed results out of ``supplied_refs``, W6).
     summary_kind = (
         "evidence"
         if "evidence" in selection.excerpt_kinds
@@ -6634,16 +6646,17 @@ def _build_semantic_case_once(
     missing_answers: tuple[tuple[str, ...], ...] = ()
     pending_missing = projection.pending_missing_for_assessment
     answered_since: tuple[tuple[str, ...], ...] = ()
+    observed_events = frozenset(str(item) for item in frozen_case.observation_event_ids)
     if pending_missing is not None:
         answered_since = supplied_since(
             projection,
             pending_missing,
             frozenset(allowed),
-            frozenset(str(item) for item in frozen_case.observation_event_ids),
+            observed_events,
             _edit_paths_by_ref(captured_groups),
             workspace_root,
         )
-    supplied_answer_refs = frozenset(ref for group in answered_since for ref in group)
+    supplied_answer_refs = agent_supplied_answer_refs(projection, answered_since, observed_events)
     if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
         answered = answered_since
         missing_answers = answered

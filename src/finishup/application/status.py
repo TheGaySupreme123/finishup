@@ -14,7 +14,13 @@ from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import BaseModel
 
-from finishup.application.check import CheckScope, run_deterministic_policies
+from finishup.application.check import Application as CheckApplication
+from finishup.application.check import (
+    CheckScope,
+    check_internal_json,
+    replayed_check_view,
+    run_deterministic_policies,
+)
 from finishup.application.closure_basis import (
     ClosureBasisUnavailable,
     LoadedClosureBasis,
@@ -136,6 +142,7 @@ from finishup.protocol.models import (
     StatusCandidateFindingsPageModel,
     StatusCheckAdmissionModel,
     StatusCheckCauseModel,
+    StatusCheckOutcomeModel,
     StatusClosureReadinessModel,
     StatusCompactItemModel,
     StatusCompactPageModel,
@@ -1077,6 +1084,68 @@ async def _operation_semantic_omissions(
     return None, None
 
 
+# The check-result fields a finished check's operation page carries (W6), in wire order.
+_CHECK_OUTCOME_FIELDS: Final = (
+    "verdict",
+    "agent_next",
+    "overall_next",
+    "missing_for_assessment",
+    "semantic_status",
+    "semantic_reason",
+    "semantic_conclusion",
+    "result_frontier",
+)
+
+
+def _thawed(value: JsonValue) -> JsonValue:
+    """A check-result value as built-in JSON containers (its frozen mappings become dicts)."""
+
+    if isinstance(value, Mapping):
+        source = cast(Mapping[str, JsonValue], value)
+        return {key: _thawed(item) for key, item in source.items()}
+    if isinstance(value, tuple | list):
+        return tuple(_thawed(item) for item in cast(Sequence[JsonValue], value))
+    return value
+
+
+async def _operation_check_outcome(
+    app: Application, runtime: TaskRuntime, operation: object | None
+) -> dict[str, JsonValue] | None:
+    """A completed check's verdict and continuation for its operation page (W6); best effort.
+
+    Rebuilt exactly as a same-id replay rebuilds it (``replayed_check_view``), so the page and a
+    resend read by the same session agree on ``overall_next`` and ``agent_next``. Both need the
+    closure basis at the result frontier (a process-local memo, or a prefix the ledger may refuse
+    to re-read); without it only a stored agent_suppliable request still yields them (W6). A check an older build recorded projects
+    too: its missing items default to none and ``overall_next`` is derived at its result frontier.
+    Any failure omits the outcome with a bounded diagnostic and never fails recovery.
+    """
+
+    if (
+        type(operation) is not OperationRecord
+        or operation.operation_kind is not OperationKind.CHECK
+        or operation.state is not OperationState.COMPLETE
+    ):
+        return None
+    try:
+        stored = await runtime.ledger.load_check_result(operation.writer_id, operation.operation_id)
+        if stored is None:
+            return None
+        replayed = await replayed_check_view(cast(CheckApplication, app), runtime, stored)
+        wire = check_internal_json(replayed)
+        outcome = {name: _thawed(wire[name]) for name in _CHECK_OUTCOME_FIELDS if name in wire}
+        StatusCheckOutcomeModel.model_validate(outcome)
+        return outcome
+    except Exception as exc:  # noqa: BLE001 - the outcome enriches recovery, never blocks it
+        record_unexpected_exception_without_raising(
+            exc,
+            component="application.status",
+            operation="status_check_outcome_unavailable",
+            request_id=operation.operation_id,
+        )
+        return None
+
+
 def check_admission_wire(
     record: CheckAdmissionRecord, observed_at: datetime
 ) -> dict[str, JsonValue]:
@@ -1140,6 +1209,7 @@ def _operation_page_from_record(
     semantic_withheld_items: tuple[Mapping[str, JsonValue], ...] | None = None,
     admission: Mapping[str, JsonValue] | None = None,
     semantic_redacted_values: tuple[Mapping[str, JsonValue], ...] | None = None,
+    check_outcome: Mapping[str, JsonValue] | None = None,
 ) -> StatusOperationPageModel:
     """Project one operation record into the recovery page, or a bounded not-found page.
 
@@ -1200,6 +1270,8 @@ def _operation_page_from_record(
                 "state": "complete",
                 "operation_kind": kind,
             }
+            if check_outcome is not None and kind == "check":
+                complete["check_outcome"] = cast(JsonValue, dict(check_outcome))
             if semantic_progress is not None and kind == "check":
                 complete["semantic_progress"] = cast(JsonValue, dict(semantic_progress))
             if semantic_withheld_items is not None and kind == "check":
@@ -2286,6 +2358,7 @@ async def execute_status(
             semantic_withheld_items, semantic_redacted_values = await _operation_semantic_omissions(
                 runtime, operation
             )
+            check_outcome = await _operation_check_outcome(app, runtime, operation)
             admission = (
                 await _operation_admission(
                     app, runtime, request.writer_id, request.filter.operation_request_id
@@ -2302,6 +2375,7 @@ async def execute_status(
                     semantic_withheld_items=semantic_withheld_items,
                     admission=admission,
                     semantic_redacted_values=semantic_redacted_values,
+                    check_outcome=check_outcome,
                 )
             except (AttributeError, TypeError, ValueError) as exc:
                 raise StatusFault(

@@ -3021,6 +3021,18 @@ class MemoryLedgerAdapter:
             ]
         return matches[0] if len(matches) == 1 else None
 
+    async def load_check_result(
+        self, writer_id: str, operation_id: str
+    ) -> CheckCommitResult | None:
+        async with self._lock:
+            prior = self._state.operations.get((writer_id, operation_id))
+            if prior is None or prior[0].state is not OperationState.COMPLETE:
+                return None
+            if prior[0].operation_kind is not OperationKind.CHECK:
+                return None
+            result = self._state.check_results.get((writer_id, operation_id))
+        return None if result is None else replace(result, outcome="replayed")
+
     async def reclaim_operation(
         self, writer_id: str, operation_id: str, request_digest: str
     ) -> OperationLease | PendingVerdict:

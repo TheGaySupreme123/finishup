@@ -10,7 +10,7 @@ write with an unknown outcome, retain the original body and request id, then rea
 | Stored state | Next action |
 | --- | --- |
 | `absent` | Replay the exact original body once with the same request id. |
-| `complete` | Use the stored result; never replay. |
+| `complete` | Use the stored result; never replay. For a check, the page's `check_outcome` carries the verdict, `agent_next` and the missing items; never re-run the check to read them. |
 | `pending` with a typed continuation | Follow that continuation and required approval, then replay the original body once. |
 | `pending` without a continuation | Retain and report pending; do not guess. |
 | `quarantined` or unknown | Retain and report the boundary; do not create a sibling. |

@@ -2663,3 +2663,23 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Claude Code session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+## Review result lead and supply that counts (W6, #1107)
+
+**Host decision: supported, same field.** Claude Code delivers `structuredContent` for successful
+tools, so every check result's `agent_next` (ADR-043 amendment) reaches the model beside the
+unchanged 4,096-byte text summary, whose missing-item sentences now name the linking field; what
+counts as supplied rides in `agent_next`. Claude Code's MCP output limit is far above these sizes; the field order
+(`agent_next`, `overall_next`, `missing_for_assessment` before findings) costs nothing here.
+`isError` results are unchanged. `status view=operation` for a finished check returns
+`check_outcome`, and its text summary adds `check outcome: <verdict>; next: <action>;` and the lead
+when room remains. Same gap as Codex: after an attach or a service restart the page keeps only a
+`supply_missing_input` lead rebuilt from the stored missing items and omits any other continuation
+(storage follow-up owned by #1100). The captured output of a Bash re-run of the target's exact command the PostToolUse
+hook observed after the request counts as supplying a targeted `verification_output` (or `other`)
+item once the reviewer was sent it (ADR-006 amendment). That path exists only on the ordinary-work observation
+profile: the default structural profile observes no generic `Bash` calls, so there the agent
+publishes `result_recorded` of the target's action with the output in `summary`, which `agent_next`
+says on every host (capability gap owned by #910). An observed run never answers
+`command_identity`; a respond counts only for a finding target, and a description never counts. Verified by `tests/unit/cli/test_status_operation_render.py` and the host-neutral tests named in
+the Codex runbook.

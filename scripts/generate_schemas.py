@@ -12,6 +12,7 @@ registry, not module walking.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -3932,10 +3933,86 @@ def _check_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
     document = _check_result_v1_4_schema(entry)
     _admit_deferred_before_first_edit(document)
+    _add_check_agent_next(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     # New document (ADR-048): prose title uses FinishUP; the yoetz.dev $id stays frozen.
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
+
+
+# W6 (ADR-043 amendment): the service-composed lead of a check result, one printable ASCII line.
+_AGENT_NEXT_TEXT: Final[Mapping[str, JsonValue]] = MappingProxyType(
+    {"maxLength": 2048, "minLength": 1, "pattern": "^[ -~]+$", "type": "string"}
+)
+
+
+def _add_check_agent_next(document: dict[str, JsonValue]) -> None:
+    """Admit ``agent_next`` on the check success branch (W6; unreleased 1.5.0, in place).
+
+    Closed sentences and admitted ids the service composes from ``overall_next`` and
+    ``missing_for_assessment``; it leads the MCP wire so a host that keeps only the head of a
+    large structured result still shows it.
+    """
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    success = cast(dict[str, JsonValue], definitions["success"])
+    properties = cast(dict[str, JsonValue], success["properties"])
+    properties["agent_next"] = dict(_AGENT_NEXT_TEXT)
+
+
+def _add_status_check_outcome(definitions: dict[str, JsonValue]) -> None:
+    """A completed check's outcome on its operation page (W6; unreleased 1.4.0, in place).
+
+    The verdict, ``agent_next``, ``overall_next``, the missing items, the AI-powered review outcome
+    and the result frontier, in the exact shapes check-result 1.5.0 gives them.
+    """
+
+    entry = next(
+        item
+        for item in _REGISTRY
+        if item.relative_path == "operations/check-result-1.5.0.schema.json"
+    )
+    check_definitions = cast(dict[str, JsonValue], _check_result_v1_5_schema(entry)["$defs"])
+    check_success = cast(dict[str, JsonValue], check_definitions["success"])
+    check_properties = cast(dict[str, JsonValue], check_success["properties"])
+    definitions["check_overall_next"] = copy.deepcopy(check_definitions["overall_next"])
+    definitions["check_missing_item"] = copy.deepcopy(check_definitions["missing_item"])
+    definitions["status_check_outcome"] = {
+        "additionalProperties": False,
+        "properties": {
+            "agent_next": dict(_AGENT_NEXT_TEXT),
+            "missing_for_assessment": {
+                "items": {"$ref": "#/$defs/check_missing_item"},
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "overall_next": {"$ref": "#/$defs/check_overall_next"},
+            "result_frontier": copy.deepcopy(check_properties["result_frontier"]),
+            "semantic_conclusion": copy.deepcopy(check_properties["semantic_conclusion"]),
+            "semantic_reason": copy.deepcopy(check_properties["semantic_reason"]),
+            "semantic_status": copy.deepcopy(check_properties["semantic_status"]),
+            "verdict": copy.deepcopy(check_properties["verdict"]),
+        },
+        "required": ["result_frontier", "semantic_reason", "semantic_status", "verdict"],
+        "type": "object",
+    }
+    page = cast(dict[str, JsonValue], definitions["operation_page"])
+    cast(dict[str, JsonValue], page["properties"])["check_outcome"] = {
+        "$ref": "#/$defs/status_check_outcome"
+    }
+    cast(list[JsonValue], page.setdefault("allOf", [])).append(
+        {
+            "if": {"required": ["check_outcome"]},
+            "then": {
+                "properties": {
+                    "operation_kind": {"const": "check"},
+                    "state": {"const": "complete"},
+                },
+                "required": ["operation_kind", "state"],
+            },
+        }
+    )
 
 
 # Issue #1048 (ADR-047): the closed vocabularies of a ``mode: inspect`` result.
@@ -5167,6 +5244,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_review_mode(definitions)
     _add_status_requested_item_role(definitions)
     _add_status_operation_server_filled(definitions)
+    _add_status_check_outcome(definitions)
     _add_status_brief_success(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)

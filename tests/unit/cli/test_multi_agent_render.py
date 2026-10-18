@@ -113,7 +113,8 @@ def test_check_lists_named_missing_items_as_a_limitation_not_a_finding() -> None
     assert f"- verification_output ({claim}): agent_suppliable" in rendered
     assert "- command_identity (no packet ref): structurally_unavailable_on_this_host" in rendered
     assert "publish exactly that item once, linked to its target, then `check` again" in rendered
-    assert "result_recorded of that target whose summary is the command output" in rendered
+    # W6: the instruction names the field that links the result to the target.
+    assert "result_recorded whose action_id is the target's action and whose summary" in rendered
     assert (
         "Overall next [action_required]: If `missing_for_assessment` names an `agent_suppliable` "
         "item you can supply, publish exactly that item once, linked to its target, then `check` "

@@ -3523,3 +3523,73 @@ async def test_task_change_base_is_kept_once_with_adapter_parity(tmp_path: Path)
         objects=sqlite_objects,
     )
     assert await restarted.load_task_change_base() == kept
+
+
+@pytest.mark.anyio
+async def test_load_check_result_reads_a_stored_insufficient_packet_check_after_restart() -> None:
+    """W6 (#1107): the operation page's recovery read returns what a same-id replay rebuilds."""
+
+    items = (
+        MissingForAssessmentItem(
+            "verification_output", ("res_00000000-0000-4000-8000-000000000071",), "agent_suppliable"
+        ),
+    )
+    for adapter_factory in (memory_ledger, sqlite_ledger):
+        command = ledger_command()
+        adapter = adapter_factory(command)
+        await adapter.append_batch(command)
+        frozen = await _ready_case(
+            adapter,
+            command,
+            "req_00000000-0000-4000-8000-000000000071",
+            "sha256:" + "7" * 64,
+        )
+        provenance = _descending_rank_findings(
+            frozen.case.frontier, command.entries[0].coverage, semantic_lead=True
+        )[0].provenance
+        committed = await adapter.commit_check_if_current(
+            frozen,
+            RankedFindings((), 0, CheckVerdict.INSUFFICIENT_COVERAGE, command.entries[0].coverage),
+            (CheckPolicyExecution("work-integrity", "0.1.0", "run", "completed"),),
+            SemanticStatus.SUCCEEDED,
+            SemanticReason.SEMANTIC_COMPLETED,
+            provenance,
+            frozen.lease.operation_id,
+            semantic_conclusion="insufficient_packet",
+            missing_for_assessment=items,
+        )
+        loaded = await adapter.load_check_result(command.writer_id, frozen.lease.operation_id)
+        assert loaded is not None
+        assert loaded.missing_for_assessment == items == committed.missing_for_assessment
+        assert loaded.semantic_conclusion == "insufficient_packet"
+        assert loaded.result_frontier == committed.result_frontier
+        assert (
+            await adapter.load_check_result(
+                command.writer_id, "req_00000000-0000-4000-8000-000000000072"
+            )
+            is None
+        )
+    assert type(adapter) is SqliteLedger
+    restarted = SqliteLedger(
+        db=adapter._db,  # pyright: ignore[reportPrivateUsage]
+        task_id=command.task_id,
+        ownership_fence=_fence(),
+        clock=adapter._clock,  # pyright: ignore[reportPrivateUsage]
+        ids=adapter._ids,  # pyright: ignore[reportPrivateUsage]
+        objects=adapter._objects,  # pyright: ignore[reportPrivateUsage]
+    )
+    recovered = await restarted.load_check_result(command.writer_id, frozen.lease.operation_id)
+    assert recovered is not None
+    assert recovered.missing_for_assessment == items
+    assert recovered.semantic_conclusion == "insufficient_packet"
+    assert recovered.verdict is CheckVerdict.INSUFFICIENT_COVERAGE
+    replayed = await restarted.freeze_case(
+        command.session_id,
+        command.writer_id,
+        1,
+        frozen.lease.operation_id,
+        "sha256:" + "7" * 64,
+    )
+    assert type(replayed) is CheckCommitResult and replayed.outcome == "replayed"
+    assert replayed.missing_for_assessment == recovered.missing_for_assessment
+    assert replayed.result_frontier == recovered.result_frontier

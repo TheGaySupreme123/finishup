@@ -118,8 +118,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # canonical vector (#1019). ADR-049: +1 schema decision-recorded 1.1.0, +1 canonical
 # review-mode vectors (CAN-020). n6 item 4: +2 schemas (check-result 1.5.0,
 # check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021). #1084: +1
-# canonical server-filled publish and brief status vectors (CAN-022).
-REVIEWED_RESOURCE_COUNT: Final = 316
+# canonical server-filled publish and brief status vectors (CAN-022). W6 #1107: +1 canonical
+# check agent_next vectors (AGN-001), +1 status check_outcome vector (AGN-002).
+REVIEWED_RESOURCE_COUNT: Final = 318
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

@@ -2092,6 +2092,15 @@ def summary_for_status(envelope: object) -> str:
                 priority=_P_BOILERPLATE,
             )
         )
+        # W6: a finished check's verdict and lead, so a recovery read repeats what to do next.
+        parts.append(
+            _opt(
+                *render.variants(
+                    "check_outcome", lambda: _operation_check_outcome_variants(source)
+                ),
+                priority=_P_ACTION,
+            )
+        )
     if view == "findings":
         parts.append(
             _opt(
@@ -2467,6 +2476,31 @@ def _operation_progress_clause(source: Mapping[str, JsonValue]) -> str:
             f"({_safe_token(fields.get('terminal_reason'))}); "
         )
     return clause + f"remaining ms: {_safe_count(fields.get('remaining_ms'))}; "
+
+
+# ``agent_next`` is service-composed printable ASCII (check-result 1.5.0); re-gated before use.
+_AGENT_NEXT_TEXT: Final = re.compile(r"^[ -~]{1,2048}$", re.ASCII)
+
+
+def _operation_check_outcome_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """A completed check's verdict, next action and ``agent_next`` from its operation page."""
+
+    page = source.get("page")
+    if not isinstance(page, Mapping):
+        return ()
+    outcome = cast(Mapping[str, JsonValue], page).get("check_outcome")
+    if not isinstance(outcome, Mapping):
+        return ()
+    fields = cast(Mapping[str, JsonValue], outcome)
+    head = f"check outcome: {_safe_token(fields.get('verdict'))};"
+    next_step = fields.get("overall_next")
+    if isinstance(next_step, Mapping):
+        action = _safe_token(cast(Mapping[str, JsonValue], next_step).get("action"))
+        head += f" next: {action};"
+    lead = fields.get("agent_next")
+    if type(lead) is str and _AGENT_NEXT_TEXT.fullmatch(lead) is not None:
+        return (f"{head} {lead}", head)
+    return (head,)
 
 
 def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) -> str:

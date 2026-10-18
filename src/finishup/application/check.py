@@ -92,6 +92,7 @@ from finishup.domain.receipts import (
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
+from finishup.domain.review_input_render import render_agent_next
 from finishup.domain.task_statement import TASK_STATEMENT_GAPS, SpecificationPreflight
 from finishup.domain.values import (
     REPOSITORY_GRANT_CONTINUATION_KIND,
@@ -344,6 +345,7 @@ __all__ = [
     "execute_check_commit",
     "normalize_check_scope",
     "prior_finding_ids",
+    "replayed_check_view",
     "run_deterministic_policies",
     "semantic_coverage_gap_code",
     "validate_semantic_judgment",
@@ -807,6 +809,9 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             if result.overall_next is None
             else {"overall_next": _overall_next_json(result.overall_next)}
         ),
+        # W6 (ADR-043 amendment): the bounded lead every host reads first, derived here so the
+        # MCP result, CLI JSON, an import's check result and a status recovery read agree.
+        **({} if not (agent_next := _agent_next(result)) else {"agent_next": agent_next}),
         **(
             {}
             if result.review_input_manifest is None
@@ -825,6 +830,27 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             }
         ),
     }
+
+
+def _agent_next(result: CheckCommitResult) -> str:
+    """The ``agent_next`` lead of a committed check, or empty without a continuation.
+
+    Derived at serialization from the attached ``overall_next`` and the recorded missing items,
+    so older ``check_recorded`` rows project it too. A committed check never fails on it.
+    """
+
+    if result.overall_next is None:
+        return ""
+    checklist = result.finding_checklist
+    limitation_requests = checklist is not None and any(
+        item.closure_class == "agent_work" and item.closure_basis == "limitation_requested"
+        for item in checklist.items
+    )
+    return render_agent_next(
+        result.overall_next,
+        result.missing_for_assessment,
+        limitation_requests=limitation_requests,
+    )
 
 
 def _checklist_json(checklist: CheckFindingChecklist) -> JsonValue:
@@ -959,6 +985,21 @@ async def _lineage_at_frontier(
         tested_through_sequence=frontier.sequence,
         base_coverage=base_coverage,
     )
+
+
+async def replayed_check_view(
+    app: Application, runtime: TaskRuntime, result: CheckCommitResult
+) -> CheckCommitResult:
+    """A stored committed check as a same-id replay returns it (before project advice).
+
+    The ledger result is frozen; the child preview, fact lineage, finding checklist and
+    ``overall_next`` are rebuilt from the exact recorded prefix. ``status view=operation`` reads
+    a finished check's outcome through this too (W6), so the two always agree.
+    """
+
+    replayed = await _attach_replayed_lineage_preview(runtime, result)
+    replayed = await _attach_replayed_fact_lineage(runtime, replayed)
+    return await _attach_finding_checklist(app, runtime, replayed)
 
 
 async def _attach_replayed_lineage_preview(
@@ -1499,6 +1540,49 @@ def build_finding_checklist(
     )
 
 
+def _supply_overall_next(
+    result: CheckCommitResult, predicted_conclusion: str | None
+) -> CheckOverallNext | None:
+    """``supply_missing_input`` when the stored check names an agent_suppliable item.
+
+    The first branch of ``build_overall_next``: it reads only the recorded missing items, never
+    the finding list or the closure basis, so a replay or a status recovery read can rebuild it
+    from the stored check alone (W6) when the basis at its result frontier is no longer readable.
+    """
+
+    actionable_missing = tuple(
+        item for item in result.missing_for_assessment if item.availability == "agent_suppliable"
+    )
+    if not actionable_missing:
+        return None
+    return CheckOverallNext(
+        status="action_required",
+        action="supply_missing_input",
+        # A global missing input is actionable even when the reviewer could not attach a
+        # subject id.  The empty target list is the honest representation of that request.
+        target_refs=_bounded_overall_refs(
+            ref for item in actionable_missing for ref in item.target_refs
+        ),
+        predicted_conclusion=predicted_conclusion,
+    )
+
+
+def _with_stored_supply_next(result: CheckCommitResult) -> CheckCommitResult:
+    """The check with the supply continuation its stored missing items alone determine (W6).
+
+    Used when the finding list and closure basis cannot be read at the result frontier (a later
+    material record on a cold closure-basis memo, or a successor writer after a same-task attach):
+    an agent_suppliable request then still leads with what to supply and how, from durable rows.
+    The predicted conclusion needs the basis, so it is omitted, never guessed; every other
+    continuation needs the finding list, so it stays omitted too.
+    """
+
+    if result.overall_next is not None:
+        return result
+    supply = _supply_overall_next(result, None)
+    return result if supply is None else replace(result, overall_next=supply)
+
+
 def build_overall_next(
     result: CheckCommitResult,
     checklist: CheckFindingChecklist | None,
@@ -1521,20 +1605,9 @@ def build_overall_next(
         # fabricated. The structured continuation is therefore omitted and the caller keeps the
         # existing coverage/result fields.
         return None
-    actionable_missing = tuple(
-        item for item in result.missing_for_assessment if item.availability == "agent_suppliable"
-    )
-    if actionable_missing:
-        return CheckOverallNext(
-            status="action_required",
-            action="supply_missing_input",
-            # A global missing input is actionable even when the reviewer could not attach a
-            # subject id.  The empty target list is the honest representation of that request.
-            target_refs=_bounded_overall_refs(
-                ref for item in actionable_missing for ref in item.target_refs
-            ),
-            predicted_conclusion=predicted_conclusion,
-        )
+    supply = _supply_overall_next(result, predicted_conclusion)
+    if supply is not None:
+        return supply
     # A limitation request nobody answered yet is agent work that asks for a disclosure, not a
     # repair: alone it is ``disclose_limitations``; beside real work it rides in the same
     # ``work_open_findings`` target list (the text names both). The agent's own criterion is
@@ -1959,7 +2032,8 @@ async def _attach_finding_checklist(
     Like project advice this is current projection context beside the frozen check: it never
     changes the recorded event or its verdict. It reads only the adapter-owned projection at the
     result frontier (never a replay or a status page); when that is unavailable, or anything
-    fails, the check is returned without the list rather than stranded after its commit.
+    fails, the check is returned without the list rather than stranded after its commit, keeping
+    only the supply continuation its stored missing items determine (``_with_stored_supply_next``).
 
     The list holds the current actionable items (the newest row per issue, in rank order, at most
     100); the counts and the ``next`` token are computed over all of them. Coverage limitations
@@ -1976,7 +2050,7 @@ async def _attach_finding_checklist(
             runtime.ledger, result.session_id, result.result_frontier
         )
         if projection is None:
-            return result
+            return _with_stored_supply_next(result)
         # ADR-046: the receipt's own context at the result frontier gives the predicted
         # conclusion and the records the classes need. A read that fails omits the prediction
         # (never guesses one) and leaves a bounded diagnostic.
@@ -1992,7 +2066,7 @@ async def _attach_finding_checklist(
             # obligations are emptied or blocked). Without it any class would be a guess that
             # status, reading the real basis, could contradict; the check is returned without the
             # list, like every other failed read here (the diagnostic above is the trace).
-            return result
+            return _with_stored_supply_next(result)
         checklist = build_finding_checklist(
             projection, attempt_budget=budget, records=loaded.records
         )
@@ -2015,7 +2089,7 @@ async def _attach_finding_checklist(
             component="check",
             operation="finding_checklist_read",
         )
-        return result
+        return _with_stored_supply_next(result)
 
 
 async def _attach_current_project_advisory_notes(
@@ -5524,6 +5598,8 @@ async def _review_follow_up(
             workspace_root=result.case_workspace_root,
             binary_paths=result.case_binary_paths,
             text_paths=result.case_text_paths,
+            excerpt_refs=result.case_excerpt_refs,
+            excerpt_parts=result.case_excerpt_parts,
             **_packet_limits(result, deterministic),
         )
         follow_up = plan_review_follow_up(
@@ -5916,9 +5992,7 @@ async def execute_check_commit(
                 digest,
             )
         if isinstance(frozen_or_replay, CheckCommitResult):
-            replayed = await _attach_replayed_lineage_preview(runtime, frozen_or_replay)
-            replayed = await _attach_replayed_fact_lineage(runtime, replayed)
-            replayed = await _attach_finding_checklist(app, runtime, replayed)
+            replayed = await replayed_check_view(app, runtime, frozen_or_replay)
             # The ledger replay is frozen; only the additive project-advice projection is current.
             return await _attach_current_project_advisory_notes(app, runtime.task_id, replayed)
         frozen = frozen_or_replay
@@ -6322,6 +6396,8 @@ async def execute_check_commit(
                 workspace_root=semantic_result.case_workspace_root,
                 binary_paths=semantic_result.case_binary_paths,
                 text_paths=semantic_result.case_text_paths,
+                excerpt_refs=semantic_result.case_excerpt_refs,
+                excerpt_parts=semantic_result.case_excerpt_parts,
                 **_packet_limits(semantic_result, deterministic),
             )
             declared_gaps |= missing.gaps

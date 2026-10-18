@@ -155,3 +155,65 @@ returns `LIMIT_EXCEEDED` (`closure_result_too_large`) naming the scoped phases a
   remedy sentence in `REASON_REMEDIES`.
 - Not done: the receipt document has no schema field for omitted-row counts (they are stated in the
   summary section text); a larger change would need a receipt-document version.
+
+## Amendment: Codex reads structured JSON, cut head and tail (2026-10-18, issue #1107)
+
+**Context.** In the n7 trials every one of 195 review results reached the Codex model cut in the
+middle. Codex 0.159 (`rust-v0.159.0`) shows a model the MCP `structuredContent`, never the text
+channel, whenever structured content is present: `CallToolResult::as_function_call_output_payload`
+(`codex-rs/protocol/src/models.rs:2302-2331`) returns `serde_json::to_string(structured_content)`.
+`McpToolOutput::response_payload` (`codex-rs/core/src/tools/context.rs:185-212`) prefixes
+`Wall time: N seconds\nOutput:\n` and truncates the body with `truncate_middle_chars`, a 50/50 head
+and tail split (`codex-rs/utils/string/src/truncate.rs:38-69, 126-129`). For a model slug that is
+not in the bundled `models.json`, `model_info.rs:127` falls back to `bytes(10_000)`; with the ×1.2
+serialization allowance (`codex-rs/utils/output-truncation/src/lib.rs:16-18`) the model sees the
+first 6,000 and the last 6,000 bytes. A bundled slug uses `tokens: 10000` (24,000 + 24,000 bytes).
+Codex's `serde_json` is built with `indexmap` (`preserve_order`), so the model sees FinishUP's own
+field order. The check result declared `findings`, provenance and the reviewer summary before
+`missing_for_assessment` and `overall_next`, and the manifest, totals, fact lineage, coverage and
+privacy projection after them, so the continuation sat exactly where the cut falls; and the
+per-kind "publish exactly" instruction reached only the text channel, which Codex never shows.
+
+**Decision.**
+
+- Every committed check success result carries `agent_next` (check-result 1.5.0, extended in place
+  while 0.3.0 is unreleased): one printable-ASCII line of 1 to 2,048 bytes, composed by the service
+  (`domain/review_input_render.render_agent_next`) from closed tokens, fixed sentences and admitted
+  subject ids only, never reviewer prose, task text, paths or command text. It states the overall
+  next action and status; for `supply_missing_input`, each `agent_suppliable` item with its kind,
+  targets and exactly how to supply it, then what counts as supplied (ADR-006 amendment of the same
+  date) and the FinishUP-limit count; for every other action the one shared per-action instruction
+  (`OVERALL_NEXT_INSTRUCTIONS`, which the CLI's `Overall next` line also reads) and its targets; and
+  the predicted receipt conclusion when room remains. It is composed with the one composer under
+  its own 2,048-byte bound; any failure omits the field, never the result (a committed check never
+  fails on its text). It is derived at serialization, so older `check_recorded` rows project it too.
+- **Field order is part of the contract on the MCP wire.** The check success model declares
+  `agent_next`, `overall_next` and `missing_for_assessment` right after `verdict`; the continuation
+  precedes every bulky field, and a new bulky field goes after `missing_for_assessment`. Schema
+  documents and their digests are canonical (sorted keys) and do not change with this order. With
+  the header and the identity prefix, `agent_next` ends below byte 2,700 of the compact JSON, inside
+  the smallest head window, whatever the size of the rest of the result. The two structured fields
+  are best effort; `agent_next` is the guarantee.
+- `status view=operation` returns a finished check's `check_outcome` (status-result 1.4.0, extended
+  in place): the verdict, `agent_next`, `overall_next`, `missing_for_assessment`, the AI-powered
+  review status, reason and conclusion and the result frontier, rebuilt exactly as a same-id replay
+  rebuilds them (`ledger.load_check_result`, then `check.replayed_check_view`). Like a replay's,
+  `agent_next` and `overall_next` need the closure basis at the check's result frontier, read from
+  a process-local memo (per reading session, eight frontiers) or re-read from a prefix the ledger
+  stops re-reading once a later material record (such as an attach's `session_resumed`) exists.
+  Without it, a stored `agent_suppliable` item still yields `supply_missing_input` and its lead
+  from the stored rows alone (no predicted conclusion); any other continuation is omitted. So
+  presence depends on that memo, and after an attach the original writer's resend and the
+  successor's page can differ; persisting the continuation with the stored check is a storage
+  follow-up (#1100). It is the recovery read for a lost or cut check result; a failure omits it with the bounded diagnostic
+  `status_check_outcome_unavailable` and never fails recovery.
+- A remedy that exists only on the text channel does not reach a Codex model; anything an agent
+  must act on goes in the structured result.
+
+**Consequences.** Codex, Claude Code, Cursor and generic MCP hosts all receive the same structured
+field; Cursor's canonical text copy sorts `agent_next` first or second. Up to 2 KB more structured
+output per check result. A newer service with an older bridge would reject the new optional field
+(closed model); that skew is gated by the version-manifest and control-result digests, as for every
+earlier optional field. Canonical vectors: `fixtures/canonical/check-agent-next-1.5.0.case.json`
+(AGN-001) and `fixtures/canonical/status-check-outcome-1.4.0.case.json` (AGN-002, the status
+page's `check_outcome`), both from `scripts/generate_review_result_delivery_fixture.py`.

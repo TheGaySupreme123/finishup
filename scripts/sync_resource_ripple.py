@@ -176,6 +176,7 @@ def _check(repo_root: Path) -> bool:
         and _run(repo_root, "generate_task_statement_fixture.py", "--check")
         and _run(repo_root, "generate_publish_action_notices_fixture.py", "--check")
         and _run(repo_root, "generate_publish_server_filled_fixture.py", "--check")
+        and _run(repo_root, "generate_review_result_delivery_fixture.py", "--check")
         and _run(repo_root, "generate_schemas.py", "--check")
         and _run(repo_root, "verify_resource_manifest.py", "--check")
         and _installed_manifest_agrees_with_schema(repo_root)
@@ -215,6 +216,7 @@ def _write_pass(repo_root: Path) -> bool:
         ("generate_task_statement_fixture.py", "--write"),
         ("generate_publish_action_notices_fixture.py", "--write"),
         ("generate_publish_server_filled_fixture.py", "--write"),
+        ("generate_review_result_delivery_fixture.py", "--write"),
         (
             "generate_schemas.py",
             "--write",

@@ -2746,3 +2746,23 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Cursor session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+## Review result lead and supply that counts (W6, #1107)
+
+**Host decision: supported.** Cursor's text copy is the canonical JSON of the structured result
+(sorted keys), so a check result's `agent_next` (ADR-043 amendment) sorts first or second, after
+`advisory_notes` when that is present; the structured result carries the same field ahead of the
+bulky ones. `status view=operation` for a finished check returns `check_outcome` with the same
+verdict, lead, `overall_next` and missing items a same-id resend from the same session returns;
+after an attach or a service restart it keeps only a `supply_missing_input` lead rebuilt from the
+stored missing items and omits any other continuation (same gap as Codex, storage follow-up owned
+by #1100). The captured output of a
+shell re-run of the target's exact command the Cursor hook observed after the request counts as
+supplying a targeted `verification_output` (or `other`) item once the reviewer was sent it (ADR-006
+amendment).
+That path exists only on the ordinary-work observation profile: the default structural profile
+observes no shell calls, so there the agent publishes `result_recorded` of the target's action with
+the output in `summary`, which `agent_next` says on every host (capability gap owned by #910). An
+observed run never answers `command_identity`; a respond counts only for a finding target, and a
+description never counts. Verified by
+`tests/unit/mcp/test_codex_structured_head.py::test_cursor_canonical_copy_lists_agent_next_first_or_second`.

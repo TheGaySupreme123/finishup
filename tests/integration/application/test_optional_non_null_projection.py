@@ -15,6 +15,7 @@ is visibly missing from the inventory table rather than silently unswept.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -98,6 +99,7 @@ from finishup.protocol.models import (
     StatusBlockedObligationModel,
     StatusBriefSuccessModel,
     StatusCheckCauseModel,
+    StatusCheckOutcomeModel,
     StatusClosureReadinessModel,
     StatusClosureStateModel,
     StatusCompactItemModel,
@@ -241,6 +243,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "fact_lineage",
                 # ADR-049: absent when the owner's conversation setting was not read.
                 "review_mode",
+                # W6 #1107: absent exactly when ``overall_next`` is.
+                "agent_next",
             }
         ),
     ),
@@ -473,9 +477,12 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "semantic_withheld_items",
                 "semantic_redacted_values",
                 "server_filled",
+                # W6 #1107: only on a completed check whose stored result was readable.
+                "check_outcome",
             }
         ),
     ),
+    (StatusCheckOutcomeModel, frozenset({"agent_next", "overall_next", "semantic_conclusion"})),
     (SemanticRedactedValueModel, frozenset({"source_ref"})),
     (
         StatusSemanticProgressModel,
@@ -1967,6 +1974,14 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["StatusOperationPageModel", "server_filled"] = (
         "test_server_filled_and_brief_fields_omit_when_unset"
     )
+    covered["CheckSuccessModel", "agent_next"] = "test_check_lead_and_check_outcome_omit_when_unset"
+    covered["StatusOperationPageModel", "check_outcome"] = (
+        "test_check_lead_and_check_outcome_omit_when_unset"
+    )
+    for field in StatusCheckOutcomeModel.optional_non_null_fields:
+        covered["StatusCheckOutcomeModel", field] = (
+            "test_check_lead_and_check_outcome_omit_when_unset"
+        )
     for field in StatusBriefSuccessModel.optional_non_null_fields:
         covered["StatusBriefSuccessModel", field] = (
             "test_brief_status_is_a_strict_subset_of_the_full_body"
@@ -2362,3 +2377,39 @@ def test_inspection_omits_every_unset_optional_field() -> None:
     assert "observations_awaited" not in model.model_dump(mode="json", exclude_unset=True)
     with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
         CheckInspectionModel.model_validate({**body, "observations_awaited": None})
+
+
+def test_check_lead_and_check_outcome_omit_when_unset() -> None:
+    """W6 (#1107): ``agent_next`` and a page's ``check_outcome`` are omitted, never null."""
+
+    from tests.unit.protocol.test_models_and_schemas import (
+        _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    check_wire = cast(dict[str, Any], json.loads(json.dumps(_check_result_wire())))
+    check = CheckSuccessModel.model_validate(check_wire)
+    assert "agent_next" not in check.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        CheckSuccessModel.model_validate({**check_wire, "agent_next": None})
+    page_body: dict[str, Any] = {
+        "operation_request_id": protocol_id("req_", 1107),
+        "found": True,
+        "state": "complete",
+        "operation_kind": "check",
+    }
+    page = StatusOperationPageModel.model_validate(page_body)
+    assert "check_outcome" not in page.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusOperationPageModel.model_validate({**page_body, "check_outcome": None})
+    outcome_body: dict[str, Any] = {
+        "verdict": "action_required",
+        "semantic_status": "not_requested",
+        "semantic_reason": "deterministic_mode",
+        "result_frontier": {"sequence": "1", "head_digest": "sha256:" + "2" * 64},
+    }
+    outcome = StatusCheckOutcomeModel.model_validate(outcome_body)
+    dumped = outcome.model_dump(mode="json", exclude_unset=True)
+    for field in StatusCheckOutcomeModel.optional_non_null_fields:
+        assert field not in dumped
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusCheckOutcomeModel.model_validate({**outcome_body, field: None})

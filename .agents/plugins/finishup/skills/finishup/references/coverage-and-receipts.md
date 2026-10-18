@@ -678,18 +678,17 @@ refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_ho
 Never reshape a deliverable to fit the reviewer. What answers each kind is in
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
 remain, the reviewer named none (`semantic_missing_items_rejected`), or
-`semantic_missing_already_supplied` says it repeated a request after you published material for it,
-report the named limitation instead. Hook-captured output never counts as supplied. A verification follow-up may include observed test, build, lint, or typecheck output the agent ran only when a repository excerpt would already be allowed. Withheld whole: an environment dump, a credential-named path, a path outside the workspace, a path the check-time change refused, and output the secret scan hits (a private-key body or its END line). Ignore rules are not re-checked for a path the change did not list. The omission names the gate. Private sends nothing. A command the agent did not run is never included; included output is marked observed. A named
+`semantic_missing_already_supplied` says it repeated a request after you published or re-ran material for it,
+report the named limitation instead. A verification follow-up may include observed test, build, lint, or typecheck output the agent ran only when a repository excerpt would already be allowed. Withheld whole: an environment dump, a credential-named path, a path outside the workspace, a path the check-time change refused, and output the secret scan hits (a private-key body or its END line). Ignore rules are not re-checked for a path the change did not list. The omission names the gate. Private sends nothing. A command the agent did not run is never included; included output is marked observed. A named
 item is a check limitation, never a finding.
 
 FinishUP may already have answered part of the request inside the same check: when the reviewer names
 recorded run output, an exact command or a captured edit the packet had no room for, FinishUP sends the
 packet again with that content first, up to three times. A manifest with `follow_up_round` shows the
 recorded review answered such a follow-up; its `missing_inputs` name what FinishUP added
-(`supplied_refs`). Do not publish that material again; what `missing_for_assessment` still lists is
-what remained after the follow-up.
+(`supplied_refs`). Do not publish it again; `missing_for_assessment` lists what remained.
 
-If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. The structured
+If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to its target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material tied to the target counts as supplied. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
 it. When open obligations or undisclosed live failures remain, or a delivered file may read a
