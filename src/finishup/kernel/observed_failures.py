@@ -240,8 +240,10 @@ def certified_identities(segments: object, composition: object) -> frozenset[str
     ``domain.command_segments.segment_certification_commitment``. A segment the hook listed after
     dropping a leading assignment, ``env``, ``time``, ``nohup``, ``exec`` or an input redirection
     (``PYTEST_ADDOPTS=--co pytest -q``) ran a different command and certifies nothing. A
-    ``masked`` composition can exit zero while a segment failed, so it certifies none, and a list
-    written before the marker existed certifies none. A malformed list never widens a match:
+    ``masked`` composition can exit zero while a segment failed, so it certifies none (the hook
+    also records an ``&&`` chain as ``masked`` when an earlier segment may not hand control back:
+    ``exec true && pytest -q``, ``exit 0 && pytest -q``), and a list written before the marker
+    existed certifies none. A malformed list never widens a match:
     anything but bounded keyed commitments certifies none.
     """
 

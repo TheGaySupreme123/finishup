@@ -214,3 +214,76 @@ def test_only_segments_that_ran_exactly_as_listed_carry_a_marker(
         if segment_certification_commitment(observed_command_commitment(_KEY, text)) in listed
     }
     assert marked == certified
+
+
+# --- chains that may not reach their later segments (#1104, PR #1116 review) -----------------
+
+_NEVER_REACHED = [
+    # ``exec`` replaces the shell and ``exit``/``return`` end it: the chain exits zero without
+    # running ``pytest -q``.
+    "exec true && pytest -q",
+    "exit 0 && pytest -q",
+    "return 0 && pytest -q",
+    "logout && pytest -q",
+    "command exit 0 && pytest -q",
+    "FOO=1 exit 0 && pytest -q",
+    "exec -a name true && pytest -q",
+    # Unseen text: it may exit, or redefine what ``pytest`` runs.
+    "eval true && pytest -q",
+    "source env.sh && pytest -q",
+    ". env.sh && pytest -q",
+    "trap 'exit 0' DEBUG && pytest -q",
+    "hash -p /bin/true pytest && pytest -q",
+    "$RUN && pytest -q",
+    # ``set -n`` reads the rest but never runs it.
+    "set -n && pytest -q",
+    "set -o noexec && pytest -q",
+    # A signal to the shell itself, directly or through a wrapper.
+    "kill $$ && pytest -q",
+    "env kill 0 && pytest -q",
+    "pkill -f pytest && pytest -q",
+    # The same chain inside a shell wrapper or after another segment.
+    "bash -lc 'exit 0 && pytest -q'",
+    "cd /app && exec true && pytest -q",
+]
+
+
+@pytest.mark.parametrize("command", _NEVER_REACHED)
+def test_a_chain_that_may_not_reach_a_later_segment_is_masked_and_certifies_nothing(
+    command: str,
+) -> None:
+    from finishup.domain.command_segments import segment_certification_commitment
+
+    segments = _segments(command)
+    assert segments is not None
+    assert segments[1] == "masked"
+    committed = command_segment_commitments(_KEY, command)
+    assert committed is not None
+    assert committed[1] == "masked"
+    listed = set(committed[0])
+    pytest_q = observed_command_commitment(_KEY, "pytest -q")
+    # Still listed for planned matching, never certified as having passed.
+    assert pytest_q in listed
+    assert not any(segment_certification_commitment(item) in listed for item in listed)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd /app && pytest -q",
+        "exec >log.txt && pytest -q",
+        "pytest -q && exit 0",
+        "set -euo pipefail && pytest -q",
+        "bash -lc 'exit 0' && pytest -q",
+        "export CI=1 && pytest -q",
+    ],
+)
+def test_a_chain_whose_earlier_segments_return_control_still_certifies(command: str) -> None:
+    from finishup.domain.command_segments import segment_certification_commitment
+
+    committed = command_segment_commitments(_KEY, command)
+    assert committed is not None
+    assert committed[1] == "and_chain"
+    listed = set(committed[0])
+    pytest_q = observed_command_commitment(_KEY, "pytest -q")
+    assert segment_certification_commitment(pytest_q) in listed

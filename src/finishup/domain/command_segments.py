@@ -45,7 +45,10 @@ verification. A single-token planned command only ever matches whole.
 The composition says what the whole command's outcome means for one of its segments: ``single``
 (one simple command with prefixes or redirections: its outcome is the segment's), ``and_chain``
 (``&&`` only: a success means every segment succeeded, a failure names no segment) and ``masked``
-(any other composition, where the whole outcome says nothing about one segment).
+(any other composition, where the whole outcome says nothing about one segment). An ``&&`` chain
+is ``masked`` too when a segment before its last may not hand control back to the next one
+(``_returns_control``): ``exec true && pytest -q`` and ``exit 0 && pytest -q`` exit zero without
+running ``pytest -q``, and ``eval``/``source`` run text the reader cannot see (#1104).
 """
 
 from __future__ import annotations
@@ -129,6 +132,41 @@ _PLACEHOLDER_RE: Final = re.compile(
 )
 _PROSE_WORD_RE: Final = re.compile(r"^[A-Za-z]+[,.:;]?$", re.ASCII)
 _MASKING_SEPARATORS: Final = frozenset({"||", ";", "|", "&", "\n", "(", ")"})
+# Builtins after which an ``&&`` chain may never reach its next command (``exit``, ``return``,
+# ``logout``, ``break``, ``continue``; ``exec`` with a command, handled apart), may reach one the
+# text does not show (``eval``, ``source``, ``.`` run unseen text; ``alias``, ``hash``, ``enable``
+# rebind a later command name; ``trap`` runs unseen text before a later command), or may stop or
+# end the shell itself (``suspend``; ``kill``, ``pkill``, ``killall``, ``skill``: ``kill $$``,
+# ``kill 0``, and a ``pkill -f`` pattern that matches the shell's own command line).
+_CONTROL_TRANSFER: Final = frozenset(
+    {
+        "exit",
+        "return",
+        "logout",
+        "break",
+        "continue",
+        "eval",
+        "source",
+        ".",
+        "alias",
+        "hash",
+        "enable",
+        "trap",
+        "kill",
+        "pkill",
+        "killall",
+        "skill",
+        "suspend",
+    }
+)
+# ``set`` options that keep every later command running as written (errexit and nounset can only
+# end the shell with a failure, which names no segment anyway); anything else (``set -n``,
+# ``set -o noexec``, ``set -- ...``) is refused.
+_SAFE_SET_LETTERS: Final = frozenset("euxvo")
+_SAFE_SET_OPTIONS: Final = frozenset({"errexit", "nounset", "xtrace", "verbose", "pipefail"})
+_INTRODUCING_KEYWORDS: Final = frozenset(
+    {"if", "then", "do", "else", "elif", "while", "until", "{", "!"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +464,72 @@ def _clean_segment(segment: str) -> _Cleaned:
     )
 
 
+def _safe_set(arguments: Sequence[str]) -> bool:
+    """Whether ``set`` with these arguments leaves every later command running as written."""
+
+    expect_name = False
+    for word in arguments:
+        if expect_name:
+            if word not in _SAFE_SET_OPTIONS:
+                return False
+            expect_name = False
+            continue
+        if len(word) < 2 or word[0] not in "-+" or not set(word[1:]) <= _SAFE_SET_LETTERS:
+            return False
+        expect_name = "o" in word[1:]
+    return not expect_name
+
+
+def _returns_control(segment: str) -> bool:
+    """Whether one ``&&`` segment is known to hand control back to the shell for the next one.
+
+    ``False`` for ``exec`` with a command (it replaces the shell: ``exec true && pytest -q`` exits
+    zero without running ``pytest -q``), the builtins in ``_CONTROL_TRANSFER`` (``exit 0``,
+    ``return 0``, ``eval ...``, ``source env.sh``, ``kill $$``), a ``set`` outside
+    ``_safe_set`` (``set -n`` reads but never runs the rest), a command word the reader cannot
+    resolve (``$CMD``, a substitution) and a segment whose words cannot be read. Wrappers that run
+    an external program (``env``, ``timeout``, ``nice``) are looked through, so ``env kill $$`` is
+    refused as well. Conservative by construction: an unrecognized ordinary program counts as
+    returning, exactly as a separate earlier call always has (ADR-025).
+    """
+
+    words = segment_words_without_redirections(segment)
+    if words is None:
+        return False
+    rest = list(words)
+    while rest:
+        head = rest[0]
+        if _ASSIGNMENT_RE.match(head) or head in _INTRODUCING_KEYWORDS:
+            rest.pop(0)
+        elif head == "time":
+            rest.pop(0)
+            if rest[:1] == ["-p"]:
+                rest.pop(0)
+        elif head in {"command", "builtin"}:
+            rest.pop(0)
+            while rest and rest[0].startswith("-"):
+                rest.pop(0)
+        else:
+            break
+    if not rest:
+        return True
+    if rest[0] == "exec":
+        # Only redirections (``exec >log``, ``exec 3>f``): the shell keeps running.
+        return len(rest) == 1
+    rest = strip_wrappers(rest, launchers=False)
+    if not rest:
+        return True
+    head = rest[0]
+    if any(marker in head for marker in ("$", "`")):
+        return False
+    name = _basename(head)
+    if name in _CONTROL_TRANSFER:
+        return False
+    if name == "set":
+        return _safe_set(rest[1:])
+    return True
+
+
 def wrapped_shell_argument(words: Sequence[str]) -> str | None:
     """``X`` for the words of ``bash -lc X`` / ``sh -c X`` (any shell path), else ``None``."""
 
@@ -505,6 +609,8 @@ def _collect(
         return False, False, False
     masked = bool(split.separators & _MASKING_SEPARATORS)
     chained = len(split.segments) > 1
+    # A success of ``A && B`` says ``B`` passed only when ``A`` handed control back to the shell.
+    masked = masked or any(not _returns_control(segment) for segment in split.segments[:-1])
     for position, segment in enumerate(split.segments):
         cleaned = _clean_segment(segment)
         masked = masked or cleaned.negated

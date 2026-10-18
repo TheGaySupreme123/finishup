@@ -1068,6 +1068,25 @@ def test_a_negated_or_backgrounded_plan_does_not_take_the_runs_outcome(planned: 
     }
 
 
+@pytest.mark.parametrize(
+    "observed",
+    [
+        "exec true && pytest -q",
+        "exit 0 && pytest -q",
+        "return 0 && pytest -q",
+        "eval true && pytest -q",
+    ],
+)
+def test_a_chain_that_never_reached_the_planned_command_names_no_outcome(observed: str) -> None:
+    """PR #1116 review: the chain exits zero without running ``pytest -q``, so ADR-033 segment
+    matching counts the run but never reads it as the planned command passing."""
+
+    assert _planned_codes("pytest -q", (observed, ResultOutcome.SUCCESS)) == {
+        PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP
+    }
+    assert _planned_codes("pytest -q", ("cd /app && pytest -q", ResultOutcome.SUCCESS)) == set()
+
+
 def test_a_failed_chain_names_no_failing_segment() -> None:
     assert _planned_codes("npm test", ("npm test && npm run build", ResultOutcome.FAILURE)) == {
         PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP

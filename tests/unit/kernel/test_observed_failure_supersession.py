@@ -536,6 +536,27 @@ def test_a_masked_composition_never_certifies_a_segment(later: str) -> None:
     assert omitted_results(ledger) == (failed,)
 
 
+@pytest.mark.parametrize(
+    "later",
+    [
+        "exec true && pytest -q tests/x.py",
+        "exit 0 && pytest -q tests/x.py",
+        "return 0 && pytest -q tests/x.py",
+        "eval true && pytest -q tests/x.py",
+    ],
+)
+def test_a_chain_that_never_reached_the_failed_command_does_not_supersede_it(later: str) -> None:
+    """PR #1116 review: ``exec true && pytest -q`` exits zero without running ``pytest -q``
+    (``exec`` replaces the shell, ``exit``/``return`` end it, ``eval`` runs unseen text), so its
+    success proves nothing about the earlier failure."""
+
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q tests/x.py")
+    ledger.passes(later)
+    ledger.claim()
+    assert omitted_results(ledger) == (failed,)
+
+
 def test_a_failed_chain_is_superseded_only_by_its_own_whole_command() -> None:
     ledger = ObservedLedger()
     failed = ledger.fail("cd /app && pytest -q")

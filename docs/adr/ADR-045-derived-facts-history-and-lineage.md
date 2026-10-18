@@ -164,7 +164,9 @@ exactly as listed, so a passing `cd /app && pytest -q` supersedes an earlier fai
 and retires its observation finding, while `PYTEST_ADDOPTS=--co pytest -q` (listed as `pytest -q`
 for planned matching) certifies nothing. The hook marks each such segment with a derived
 commitment in the same list (`segment_certification_commitment`, ADR-025). A `masked` composition
-certifies nothing about a segment. Canonical commitments stay planned-verification matching only,
+certifies nothing about a segment; that includes an `&&` chain whose earlier segment may not hand
+control back (`exec true && pytest -q`, `exit 0 && pytest -q`, ADR-025).
+Canonical commitments stay planned-verification matching only,
 and the derived markers come out of their budget, so the list stays within 80 commitments. A
 segment that only redirects (`exec >out.txt`) or a read-write `<>` also keeps a chain
 `compound`. A composition without a verifier is

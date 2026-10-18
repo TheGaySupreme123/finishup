@@ -131,7 +131,21 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    `command_segment_commitments` list; a list without markers (every ledger written before this
    amendment) certifies nothing. A `masked` composition (`;`, `||`, `|`, `&`, a shell
    here-document) certifies no segment, and a failed chain is superseded only by its own whole
-   identity. Canonical, prefix, flag and marker commitments are domain-separated and never equal
+   identity. An `&&` chain is `masked` too when a segment before its last may not hand control
+   back to the shell (PR #1116 review): `exec` with a command replaces the shell and `exit`,
+   `return`, `logout`, `break` and `continue` end it, so `exec true && pytest -q` and
+   `exit 0 && pytest -q` exit zero without running `pytest -q`; `eval`, `source`, `.`, `trap`,
+   `alias`, `hash` and `enable` run or bind text the reader cannot see; `kill`, `pkill`,
+   `killall`, `skill` and `suspend` may signal or stop the shell itself; a `set` beyond `-e`,
+   `-u`, `-x`, `-v` and `-o errexit|nounset|xtrace|verbose|pipefail` (`set -n` reads the rest
+   without running it) and an unresolvable command word (`$RUN`) are refused alike. Every other
+   earlier segment counts as returning, exactly as a separate earlier call always has. The hook
+   classifies this once (`domain/command_segments._returns_control`), so supersession, finding
+   retirement, the planned-verification pass and ADR-033 segment matching all read the same
+   `masked` token.
+   The token is an existing value, so no wire shape changes; a row recorded before this rule
+   keeps the composition it was recorded with, since the kernel never sees command text.
+   Canonical, prefix, flag and marker commitments are domain-separated and never equal
    a command identity. A
    failure never uses its segments. Edits still never retire anything (#909). For this shared
    supersession rule (the claim-revision invariant, the packs, the receipt's observed-failure

@@ -854,6 +854,47 @@ def test_a_planned_no_op_chained_to_an_unplanned_verifier_retires_nothing(
 
 
 @pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    "ran",
+    [
+        f"exec true && {_PLANNED}",
+        f"exit 0 && {_PLANNED}",
+        f"return 0 && {_PLANNED}",
+        f"eval true && {_PLANNED}",
+    ],
+)
+def test_a_planned_verifier_the_chain_never_reached_retires_nothing(ran: str) -> None:
+    """PR #1116 review: ``exec true && pytest -q`` exits zero without running ``pytest -q``. Its
+    success neither passes the planned verification nor retires the same command's failure."""
+
+    from finishup.domain.events import ActionRecordedPayload
+    from finishup.kernel.task_facts import planned_verification_passed
+
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    unrelated = _finding_for(ledger, ledger.fail(_INSTALL))
+    same = _finding_for(ledger, ledger.fail(_PLANNED))
+    ledger.passes(ran)
+    action = ledger.records[-2].payload
+    assert type(action) is ActionRecordedPayload
+    state = _state(ledger)
+    (item,) = planned_verification_commands(state.plans, state.obligations, state.coverage_gaps)
+    assert item.verifier
+    assert not planned_verification_passed(action.command, (item,))
+    _assert_open(ledger, unrelated)
+    _assert_open(ledger, same)
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_planned_verifier_after_cd_still_retires() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(f"cd /app && {_PLANNED}")
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
 def test_a_planned_verifier_chained_after_a_no_op_still_retires() -> None:
     ledger = ObservedLedger()
     ledger.plan(_PLANNED)
