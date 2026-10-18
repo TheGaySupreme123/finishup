@@ -1163,16 +1163,21 @@ def _working_directory_of(command: str, depth: int) -> tuple[str | None, bool]:
         if script is not None and not words[offset + 2].literal:
             script = None  # expanded by the outer shell first: read as a word below
         nested = words[offset + 2] if script is not None else None
-        for index, word in enumerate(words):
-            if word is nested:
-                continue
-            if word.text in _DIRECTORY_WORDS or _text_changes_directory(word.text):
-                return None, True
-            name = posixpath.basename(word.text)
-            if name in _CHDIR_WRAPPERS and any(
-                _option_changes_directory(later.text, name) for later in words[index + 1 :]
+        # Read from the end, so each wrapper word sees whether any later word changes its
+        # directory in one pass (``git git git ... -C`` stays linear).
+        later_chdir: set[str] = set()
+        for word in reversed(words):
+            if word is not nested and (
+                word.text in _DIRECTORY_WORDS or _text_changes_directory(word.text)
             ):
                 return None, True
+            if posixpath.basename(word.text) in later_chdir:
+                return None, True
+            later_chdir.update(
+                wrapper
+                for wrapper in _CHDIR_WRAPPERS
+                if _option_changes_directory(word.text, wrapper)
+            )
         if script is None:
             continue
         if depth >= _MAX_SHELL_DEPTH:

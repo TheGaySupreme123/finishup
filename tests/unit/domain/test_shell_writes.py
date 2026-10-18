@@ -835,6 +835,31 @@ def test_the_working_directory_reader_is_linear(command: str) -> None:
     assert time.perf_counter() - started < _DEADLINE_SECONDS
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("git " * 4_000 + "> README.md", (None, False)),
+        ("sudo " * 3_200 + "> README.md", (None, False)),
+        ("env " * 4_000 + "-C x", (None, True)),
+    ],
+    ids=["many-git", "many-sudo", "many-env-then-chdir"],
+)
+def test_many_wrapper_words_inside_the_bound_are_read_in_one_pass(
+    command: str, expected: tuple[str | None, bool]
+) -> None:
+    """Each wrapper word asks whether a later word changes its directory: one pass, not n^2.
+
+    The command is inside ``MAX_SHELL_WRITE_CHARS``, so every word is lexed, and a hook may read
+    it three times for one call (a Codex hook that looks up its call's workdir).
+    """
+
+    assert len(command) <= shell_writes.MAX_SHELL_WRITE_CHARS
+    started = time.perf_counter()
+    for _ in range(3):
+        assert shell_writes.command_working_directory(command) == expected
+    assert time.perf_counter() - started < 0.5
+
+
 def test_a_long_patch_whose_tail_says_cd_is_still_docs() -> None:
     """Past the token bound the text is searched less its heredoc bodies."""
 
