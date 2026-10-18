@@ -17,9 +17,11 @@ An observed edit is one of six classes:
   name is a deliverable and keeps counting; a ``.log`` file is never named by its extension, since
   a workspace may itself sit under a temporary root and a log may be the deliverable;
 * ``docs`` — project documentation inside the workspace (``README.md``, ``CHANGELOG``,
-  ``docs/guide.md``): conventional documentation names in any directory, and documentation
-  extensions (``.md``, ``.rst``, ``.adoc``) outside test, fixture, data, prompt and template
-  directories (n7 RC2, ADR-042 amendment). It is real work: it counts as acting and as material
+  ``docs/guide.md``): conventional documentation names and documentation extensions (``.md``,
+  ``.rst``, ``.adoc``) outside test, fixture, data, golden, resource, prompt and template
+  directories, an extensionless name also outside program directories (``bin``, ``scripts``)
+  (n7 RC2, ADR-042 amendment). A shell write's relative target is documentation only where the
+  command's working directory is known (``domain.shell_writes``). It is real work: it counts as acting and as material
   for a later review, but it never makes an earlier verification of the code stale. A declared
   output with such a name, or any declared output directory, keeps it stale-making. ``.txt`` is
   never documentation by its extension (``requirements.txt`` is read by the build).
@@ -56,6 +58,7 @@ __all__ = [
     "finishup_artifact_name",
     "finishup_tree_overlap",
     "scratch_path",
+    "without_docs_scope",
 ]
 
 # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a recorded hook fact and wire enum value.
@@ -101,27 +104,38 @@ _NOTES_NAME: Final = re.compile(
     r"(?:[-_.][a-z0-9]+)*\.(?:md|markdown|txt|text)$",
     re.IGNORECASE,
 )
-# Conventional project documentation names, in any directory. With a documentation extension a
-# name may carry a ``-``/``_`` suffix and a language tag (``README.ja.md``, ``CHANGES-1.x.rst``).
-# Without one only names no script plausibly has qualify: the bare ``README``, ``CHANGELOG``,
-# ``AUTHORS`` and ``CONTRIBUTORS``, and the license family with an optional suffix
-# (``LICENSE-MIT``); ``bin/security-scan``, ``scripts/history`` or ``news`` may be programs a test
-# runs, and ``history.py`` or ``changes.json`` is not documentation.
+# Conventional project documentation names. With a documentation extension a name may carry a
+# ``-``/``_`` suffix and a language tag (``README.ja.md``, ``CHANGES-1.x.rst``).
 _DOCS_NAME: Final = re.compile(
-    r"^(?:"
-    r"(?:readme|changelog|changes|history|news|authors|contributors|contributing|licen[cs]e"
+    r"^(?:readme|changelog|changes|history|news|authors|contributors|contributing|licen[cs]e"
     r"|copying|notice|code[-_]of[-_]conduct|security)"
-    r"(?:[-_][a-z0-9]+)*(?:\.[a-z]{2}(?:[-_][a-z]{2})?)?\.(?:md|markdown|rst|txt|adoc)"
-    r"|readme|changelog|authors|contributors"
-    r"|(?:licen[cs]e|copying|notice)(?:[-_][a-z0-9]+)*"
+    r"(?:[-_][a-z0-9]+)*(?:\.[a-z]{2}(?:[-_][a-z]{2})?)?\.(?:md|markdown|rst|txt|adoc)$",
+    re.IGNORECASE,
+)
+# Without an extension only names no script plausibly has qualify: the bare ``README``,
+# ``CHANGELOG``, ``AUTHORS`` and ``CONTRIBUTORS``, and ``LICENSE``/``LICENCE``/``COPYING``/
+# ``NOTICE`` alone or with a license identifier (``LICENSE-MIT``, ``LICENSE-APACHE-2.0``,
+# ``COPYING-GPL-3.0-or-later``). ``bin/license-check``, ``scripts/notice-gen``, ``news`` or
+# ``scripts/history`` may be a program a test runs, and ``history.py`` is not documentation.
+_DOCS_BARE_NAME: Final = re.compile(
+    r"^(?:readme|changelog|authors|contributors"
+    r"|(?:licen[cs]e|copying|notice)(?:[-_](?:"
+    r"(?:mit|isc|zlib|cc0|unlicense|wtfpl|bsl|boost|psf|python|apache|bsd|[al]?gpl|mpl|epl"
+    r"|cddl|eupl|ofl|artistic|cc[-_]by(?:[-_](?:sa|nc|nd))*)"
+    r"(?:[-_]?v?[0-9]+(?:\.[0-9]+)*)?(?:[-_](?:clause|only|or[-_]later|plus))*"
+    r"|third[-_]?party))?"
     r")$",
     re.IGNORECASE,
 )
+# Directories that hold programs: an extensionless conventional name there (``bin/readme``,
+# ``scripts/authors``) may be a script a test runs, so only a documentation extension is read.
+_PROGRAM_SEGMENTS: Final = frozenset({"bin", "sbin", "libexec", "script", "scripts", "tools"})
 # Documentation extensions; never ``.txt`` (``requirements.txt`` is read by the build).
 _DOCS_EXTENSION: Final = re.compile(r"\.(?:md|markdown|rst|adoc|asciidoc)$", re.IGNORECASE)
-# Directories whose files a test or a program reads as data: a documentation extension there is
-# an input of the work (a fixture, a prompt, a template, a snapshot, an agent host's skill or
-# rule file), so it keeps counting. Only the directories inside the workspace are read: a
+# Directories whose files a test or a program reads as data: documentation there, by name or by
+# extension, is an input of the work (a fixture, a golden or expected output, a prompt, a
+# template, a snapshot, a packaged resource, an agent host's skill or rule file), so it keeps
+# counting. Only the directories inside the workspace are read when its root is known: a
 # workspace that itself sits under ``.claude/worktrees`` or ``/srv/data`` is not data.
 _DOCS_DATA_SEGMENTS: Final = frozenset(
     {
@@ -140,6 +154,10 @@ _DOCS_DATA_SEGMENTS: Final = frozenset(
         "testdata",
         "test_data",
         "data",
+        "golden",
+        "goldens",
+        "expected",
+        "resources",
         "prompts",
         "templates",
         "snapshots",
@@ -261,37 +279,49 @@ def docs_artifact_name(path: str) -> bool:
     if type(path) is not str or not path:
         return False
     name = posixpath.basename(_normalize(path))
-    return _DOCS_NAME.match(name) is not None or _DOCS_EXTENSION.search(name) is not None
+    return (
+        _DOCS_NAME.match(name) is not None
+        or _DOCS_BARE_NAME.match(name) is not None
+        or _DOCS_EXTENSION.search(name) is not None
+    )
 
 
 def _docs_path(normalized: str, workspace: str | None) -> bool:
     """Whether an in-workspace path is project documentation.
 
-    A conventional name is documentation anywhere. A documentation extension is documentation only
-    outside the data directories, read on the path *inside* the workspace: a relative path as it
-    is, an absolute one less the workspace root. An absolute path with no root to strip (the Codex
-    session stream knows none), or a relative one that climbs out (``../``), cannot be placed, so
-    only its name decides: it keeps counting as an ordinary edit.
+    A conventional name or a documentation extension is documentation only outside the data
+    directories, and an extensionless name only outside the program directories too. The
+    directories are read on the path *inside* the workspace: a relative path as it is, an
+    absolute one less the workspace root. An absolute path with no root to strip (the Codex
+    session stream knows none) is read on all its directories, so a workspace under a data
+    directory only loses the exemption; and such a path, or a relative one that climbs out
+    (``../``), cannot be placed, so a documentation extension alone does not make it ``docs``.
     """
 
     name = posixpath.basename(normalized)
-    if _DOCS_NAME.match(name) is not None:
-        return True
-    if _DOCS_EXTENSION.search(name) is None:
+    named = _DOCS_NAME.match(name) is not None
+    bare = not named and _DOCS_BARE_NAME.match(name) is not None
+    if not (named or bare) and _DOCS_EXTENSION.search(name) is None:
         return False
+    placed = True
+    relative = normalized
     if normalized.startswith("/"):
-        if type(workspace) is not str or not workspace.startswith("/"):
-            return False
-        root = _normalize(workspace)
-        if root == "/" or normalized == root or not _under(normalized, root):
-            return False
-        relative = normalized[len(root.rstrip("/")) + 1 :]
-    else:
-        relative = normalized
-    directories = relative.split("/")[:-1]
-    if any(part == ".." for part in directories):
+        root = (
+            _normalize(workspace) if type(workspace) is str and workspace.startswith("/") else None
+        )
+        if root is not None and root != "/" and normalized != root and _under(normalized, root):
+            relative = normalized[len(root.rstrip("/")) + 1 :]
+        else:
+            placed = False
+            relative = normalized.lstrip("/")
+    directories = [part.casefold() for part in relative.split("/")[:-1]]
+    if ".." in directories:
+        placed = False
+    if any(part in _DOCS_DATA_SEGMENTS for part in directories):
         return False
-    return not any(part.casefold() in _DOCS_DATA_SEGMENTS for part in directories)
+    if bare and any(part in _PROGRAM_SEGMENTS for part in directories):
+        return False
+    return named or bare or placed
 
 
 def scratch_overlap(path: str) -> bool:
@@ -376,3 +406,18 @@ def edit_write_scope(classes: Iterable[WriteClass]) -> str | None:
         # round 3).
         return None
     return next(iter(seen))
+
+
+def without_docs_scope(scope: str | None, *, shell: bool) -> str | None:
+    """*scope* as a build without the ``docs`` class records it (n7 RC2, #1106 r2).
+
+    The running service and every hook share one local observation store, and a build that
+    predates ``docs`` refuses a stored row naming it, for the whole workspace. Where the service
+    may be such a build, a documentation write is recorded as it was before the class existed:
+    a shell command's as ``workspace``, an edit tool's (or a ``FileChange``'s) with no scope.
+    Both count as ordinary edits, so the fallback only ever keeps an edit stale-making.
+    """
+
+    if scope != "docs":
+        return scope
+    return "workspace" if shell else None

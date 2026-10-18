@@ -17,6 +17,7 @@ from finishup.domain.write_scope import (
     edit_write_scope,
     finishup_artifact_name,
     finishup_tree_overlap,
+    without_docs_scope,
 )
 
 
@@ -158,7 +159,7 @@ def test_only_fixed_temp_roots_are_scratch(monkeypatch: pytest.MonkeyPatch) -> N
         "LICENSE-MIT",
         "CONTRIBUTING.md",
         "docs/index.adoc",
-        "tests/README.md",  # a conventional name is documentation in any directory
+        "docs/tests.md",  # a data word in the file name, not a directory, is not data
     ],
 )
 def test_project_docs_are_docs(path: str) -> None:
@@ -215,7 +216,12 @@ def test_an_absolute_doc_extension_without_a_root_is_an_ordinary_edit() -> None:
     assert (
         classify_write_path("/srv/data/repo/guide.md", workspace=None, inside=None) == "workspace"
     )
-    assert classify_write_path("/srv/data/repo/README.md", workspace=None, inside=None) == "docs"
+    # A conventional name decides without a root, unless a directory on the whole path is data
+    # (``/srv/data``): with no root to strip, a workspace there only loses the exemption.
+    assert classify_write_path("/home/u/repo/README.md", workspace=None, inside=None) == "docs"
+    assert (
+        classify_write_path("/srv/data/repo/README.md", workspace=None, inside=None) == "workspace"
+    )
     assert classify_write_path("../data/guide.md", workspace="/app", inside=None) == "workspace"
     assert _file_change_write_scope({"/home/u/repo/docs/a.md": {}}) is None
     assert _file_change_write_scope({"/home/u/repo/README.md": {}}) == "docs"
@@ -284,3 +290,68 @@ def test_codex_stream_file_change_names_docs() -> None:
     assert _file_change_write_scope({"README.md": {"type": "update"}}) == "docs"
     assert _file_change_write_scope([{"path": "docs/a.md"}, {"path": "CHANGELOG.md"}]) == "docs"
     assert _file_change_write_scope({"README.md": {}, "src/a.py": {}}) is None
+
+
+# --- #1106 r2: extensionless names, names in data directories, and the skew fallback ----------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "bin/license-check",
+        "scripts/notice-gen",
+        "tools/license_scan",
+        "copying-helper",
+        "license-check",
+        "bin/license",
+        "bin/readme",
+        "bin/changelog",
+        "scripts/authors",
+        "tests/fixtures/CHANGELOG.md",
+        "tests/data/README.md",
+        "tests/snapshots/README.md",
+        "fixtures/LICENSE",
+        "tests/fixtures/news.txt",
+        "src/pkg/data/history.txt",
+        "golden/out.md",
+        "goldens/README.md",
+        "expected/out.md",
+        "src/pkg/resources/help.md",
+    ],
+)
+def test_program_and_data_names_are_not_docs(path: str) -> None:
+    """correctness-r2-3 / goal-r2-3: a script named like documentation, and documentation a test
+    reads as data, keep counting as ordinary edits."""
+
+    assert classify_write_path(path, workspace="/app", inside=None) == "workspace"
+    assert classify_write_path(f"/app/{path}", workspace="/app", inside=True) == "workspace"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "LICENSE",
+        "LICENCE",
+        "COPYING",
+        "NOTICE",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "LICENSE-APACHE-2.0",
+        "LICENSE_BSD-3-Clause",
+        "COPYING-GPL-3.0-or-later",
+        "LICENSE-THIRD-PARTY",
+        "vendor/lib/LICENSE",
+        "README",
+        "pkg/CHANGELOG",
+        "scripts/README.md",  # an extension is documentation in a program directory too
+    ],
+)
+def test_conventional_extensionless_names_are_docs(path: str) -> None:
+    assert classify_write_path(path, workspace="/app", inside=None) == "docs"
+
+
+def test_without_docs_scope_records_the_older_class() -> None:
+    assert without_docs_scope("docs", shell=True) == "workspace"
+    assert without_docs_scope("docs", shell=False) is None
+    for scope in ("notes", "workspace", "outside_workspace", None):
+        assert without_docs_scope(scope, shell=True) == scope

@@ -21,7 +21,7 @@ from types import MappingProxyType
 from typing import Final, Literal, cast
 
 from finishup.domain.command_segments import command_structure, strip_one_wrapper, strip_wrappers
-from finishup.domain.shell_writes import shell_write_paths
+from finishup.domain.shell_writes import patch_command_words, shell_write_paths
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import strict_json_parse
 from finishup.protocol.errors import ProtocolValueError
@@ -1022,11 +1022,12 @@ def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerCla
                 default=-1,
             )
             for command in commands[last_verifying + 1 :]:
-                words = command.words
+                # ``sudo patch`` and ``git -C dir apply`` are the patch tools too (#1106 r2).
+                words = patch_command_words(command.words)
                 if (
                     command.writes
                     or (words and words[0] in {"apply_patch", "applypatch", "patch", "gpatch"})
-                    or words[:2] == ("git", "apply")
+                    or words[:2] == ["git", "apply"]
                     or any(shell_write_paths(source) for source in command.sources)
                 ):
                     return "compound"

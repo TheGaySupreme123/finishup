@@ -263,6 +263,9 @@ def test_unterminated_quote_or_heredoc_stays_compound(command: str) -> None:
         "*** End Patch\nP",
         "pytest -q && cat > a.py <<EOF\n# don't\nEOF",
         "pytest -q && sed -i s/a/b/ a.py\ncat <<EOF\nit's\nEOF",
+        # #1106 r2: ``sudo patch`` and ``git -C <dir> apply`` are the patch tools too.
+        "pytest -q && sudo patch -p1 <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+        "pytest -q && git -C /app apply <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
     ],
 )
 def test_a_write_after_the_test_in_an_odd_quote_command_stays_compound(command: str) -> None:

@@ -34,9 +34,9 @@ import os
 import posixpath
 import re
 import shlex
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Final, NamedTuple
+from typing import Final, NamedTuple, cast
 
 from finishup.domain.command_segments import strip_wrappers, wrapped_shell_argument
 from finishup.domain.write_scope import classify_write_path, scratch_path
@@ -47,7 +47,10 @@ __all__ = [
     "SHELL_APPLY_PATCH",
     "bound_command",
     "codex_intercepts_shell_apply_patch",
+    "command_working_directory",
     "heredoc_patch_paths",
+    "patch_command_words",
+    "shell_command_text",
     "shell_heredocs",
     "shell_write_paths",
     "shell_write_scope",
@@ -960,6 +963,8 @@ def shell_write_scope(
     owned_roots: tuple[str, ...] = (),
     relative_only: bool = False,
     also_written: Iterable[str] = (),
+    relocated: bool = False,
+    working_directory: str | None = None,
 ) -> str | None:
     """The ``write_scope`` a shell command earns: ``outside_workspace``, ``workspace`` or ``None``.
 
@@ -979,12 +984,34 @@ def shell_write_scope(
     what a working directory makes certain. ``also_written`` adds files the caller knows the
     command writes although its tokens cannot show it (the files a shell ``apply_patch <<EOF``
     heredoc names, #1046 review); they are classified by the same rules.
+
+    A relative target is read against the command's working directory (#1106 r2). A command that
+    starts with one ``cd <literal word> &&`` and changes directory nowhere else has its relative
+    targets read under that word (``cd tests && cat > golden.md`` writes ``tests/golden.md``);
+    any other directory change (a later or second ``cd``, ``pushd``, ``git -C``, a ``cd`` whose
+    target is not one literal word), or a working directory the caller cannot place
+    (``relocated``), leaves a relative target unplaced, and an unplaced target is never project
+    documentation: it counts as ``workspace``. ``working_directory`` is the absolute directory
+    the command starts in when the caller knows it (the host's ``cwd``, a Codex call's
+    ``workdir``); a relative ``cd`` word is read under it. ``relative_only`` never reads under a
+    directory (an absolute target would be dropped); it only marks the targets unplaced.
     """
 
     targets = dict(_write_targets(command))
     for extra in also_written:
         if extra:
             targets.setdefault(extra, False)
+    base, unplaced = command_working_directory(command)
+    if relocated:
+        base, unplaced = None, True
+    elif working_directory is not None and not unplaced:
+        start = posixpath.normpath(working_directory)
+        if not start.startswith("/"):
+            base, unplaced = None, True
+        elif base is None:
+            base = start
+        elif not base.startswith("/"):
+            base = posixpath.normpath(posixpath.join(start, base))
     classes: set[str] = set()
     for path, directory in targets.items():
         absolute = path.startswith("/")
@@ -995,6 +1022,23 @@ def shell_write_scope(
         written_class = classify_write_path(
             written, workspace=workspace, inside=is_inside, owned_roots=owned_roots
         )
+        if written_class == "docs" and not absolute and (unplaced or base is not None):
+            # A relative target lands under the command's working directory. Only placed there
+            # is it read as documentation: one that cannot be placed, or that is no documentation
+            # where it lands (``cd tests && cat > golden.md``), may be a fixture or a golden file
+            # and counts as an ordinary write. The class is otherwise read as before, so a write
+            # never becomes scratch or outside the workspace by its directory alone.
+            written_class = (
+                "workspace"
+                if base is None
+                else _placed_docs_class(
+                    posixpath.join(base, written),
+                    workspace=workspace,
+                    inside=inside,
+                    owned_roots=owned_roots,
+                    relative_only=relative_only,
+                )
+            )
         if written_class == "scratch":
             continue
         # The hook may consult its own environment (a ``TMPDIR`` outside the workspace is scratch
@@ -1019,6 +1063,81 @@ def shell_write_scope(
         if scope in classes:
             return scope
     return None
+
+
+# A directory change anywhere in a command: ``cd``/``pushd``/``popd`` as a command word, or a
+# ``git -C <dir>``. Searched over the whole text (a heredoc body that says ``cd`` only makes the
+# reader more careful).
+_DIRECTORY_CHANGE: Final = re.compile(
+    r"(?:^|[\s;&|(`])(?:cd|pushd|popd)(?=$|[\s;&|)])"
+    r"|(?:^|[\s;&|(])git(?:[ \t]+-c[ \t]+[^\s;&|()]+)*[ \t]+-C(?=[\s=]|$)",
+    re.MULTILINE,
+)
+# One leading ``cd <word> &&``: the word is a literal path (no expansion, quoting or option).
+_LEADING_CD: Final = re.compile(r"\A[ \t]*cd[ \t]+([A-Za-z0-9_./+@%:,=-]+)[ \t]*&&")
+
+
+def command_working_directory(command: str) -> tuple[str | None, bool]:
+    """Where a shell command's relative writes land, as ``(directory, unplaced)`` (#1106 r2).
+
+    ``(None, False)``: the command changes no directory, so its relative targets are read against
+    the caller's working directory. ``(word, False)``: it starts with one ``cd <word> &&`` (a
+    literal word, not ``-``, never starting with ``~``) and changes directory nowhere else.
+    ``(None, True)``: any other directory change, so a relative target cannot be placed.
+    """
+
+    head = _LEADING_CD.match(command)
+    rest = command[head.end() :] if head is not None else command
+    if _DIRECTORY_CHANGE.search(rest) is not None:
+        return None, True
+    if head is None:
+        return None, False
+    word = head.group(1)
+    if word.startswith(("-", "~")):
+        return None, True
+    return posixpath.normpath(word), False
+
+
+def shell_command_text(value: object) -> str | None:
+    """The shell text a command value runs, for the write readers (#1106 r2).
+
+    A string is itself. A native argv is its script when it is one host-shell layer
+    (``["/bin/bash", "-lc", SCRIPT]``, the shape a Codex ``CommandExecution`` item or a legacy
+    ``shell`` call records), so a long heredoc patch is read from the script itself rather than
+    from a joined copy the token parsers cut at ``MAX_SHELL_WRITE_CHARS``; any other argv is
+    its ``shlex.join``. Anything else is ``None``.
+    """
+
+    if type(value) is str:
+        return value
+    if isinstance(value, (list, tuple)) and value:
+        words = cast(Sequence[object], value)
+        if all(type(word) is str for word in words):
+            argv = [cast(str, word) for word in words]
+            script = wrapped_shell_argument(argv)
+            return script if script is not None else shlex.join(argv)
+    return None
+
+
+def _placed_docs_class(
+    path: str,
+    *,
+    workspace: str | None,
+    inside: Callable[[str], bool],
+    owned_roots: tuple[str, ...],
+    relative_only: bool,
+) -> str:
+    """``docs`` when a relative documentation target is still documentation where it lands."""
+
+    absolute = path.startswith("/")
+    is_inside = None if relative_only or workspace is None or not absolute else inside(path)
+    landed = classify_write_path(
+        path,
+        workspace=None if relative_only else workspace,
+        inside=is_inside,
+        owned_roots=owned_roots,
+    )
+    return "docs" if landed == "docs" else "workspace"
 
 
 # A heredoc that feeds a patch tool writes the files the patch names, which no shell token shows.
@@ -1200,7 +1319,11 @@ def heredoc_patch_paths(command: str) -> tuple[str, ...]:
 
 
 def _wrapped_script(command: str) -> str | None:
-    """``X`` for a whole command ``bash -lc X`` / ``sh -c X`` in any quoting, else ``None``."""
+    """``X`` for a whole command ``bash -lc X`` / ``sh -c X`` in any quoting, else ``None``.
+
+    Read only within ``MAX_SHELL_WRITE_CHARS``: a caller holding the native argv passes its script
+    instead (``shell_command_text``), so a longer joined copy is never re-split here.
+    """
 
     try:
         words = shlex.split(bound_command(command), posix=True)
@@ -1228,7 +1351,7 @@ def _diff_patch_strip(prefix: str) -> int | None:
     if ")" in last or len(last) > _MAX_PATCH_COMMAND_CHARS:
         return None
     try:
-        words = strip_wrappers(shlex.split(last, posix=True))
+        words = patch_command_words(shlex.split(last, posix=True))
     except ValueError:
         return None
     if not words:
@@ -1255,6 +1378,47 @@ def _diff_patch_strip(prefix: str) -> int | None:
         elif flag not in known and _VALUE_FLAG.match(flag) is None:
             return None
     return _STRIP_DIFF_PREFIX if strip is None else strip
+
+
+# ``sudo`` options that take no value, and the ones that take one (``-u root``).
+_SUDO_FLAGS: Final = frozenset({"-n", "-E", "-H", "-S", "-k", "-b", "-P", "--non-interactive"})
+_SUDO_VALUE_FLAGS: Final = frozenset({"-u", "-g", "--user", "--group"})
+# ``git`` global options before the subcommand: ``-C <dir>`` and ``-c <name>=<value>``.
+_GIT_GLOBAL_VALUE_FLAGS: Final = frozenset({"-C", "-c"})
+
+
+def patch_command_words(words: Sequence[str]) -> list[str]:
+    """*words* of one simple command as a patch reader reads them (#1106 r2).
+
+    The wrappers ``strip_wrappers`` drops, then a leading ``sudo`` with its options (it changes
+    who writes, never what), and ``git``'s ``-C <dir>``/``-c <name>=<value>`` before its
+    subcommand, so ``sudo patch -p1`` and ``git -C . apply`` read as the patch tools they run.
+    The directory ``-C`` names is a directory change (``command_working_directory``), so the
+    files it writes are never read as documentation. Anything else is returned as it is.
+    """
+
+    rest = strip_wrappers(words)
+    if rest and rest[0].rsplit("/", 1)[-1] == "sudo":
+        rest.pop(0)
+        while rest and rest[0].startswith("-"):
+            option = rest.pop(0)
+            if option == "--":
+                break
+            if option in _SUDO_VALUE_FLAGS:
+                if not rest:
+                    return []
+                rest.pop(0)
+            elif option not in _SUDO_FLAGS:
+                return []
+        rest = strip_wrappers(rest)
+    if rest and rest[0].rsplit("/", 1)[-1] == "git":
+        index = 1
+        while index < len(rest) and rest[index] in _GIT_GLOBAL_VALUE_FLAGS:
+            index += 2
+        if index > len(rest):
+            return []
+        rest = [rest[0], *rest[index:]]
+    return rest
 
 
 def _diff_paths(body: str, strip: int) -> list[str]:

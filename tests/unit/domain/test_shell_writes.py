@@ -488,3 +488,168 @@ def test_a_joined_native_argv_names_its_heredoc_patch(script: str, paths: tuple[
         )
     # A quoted heredoc in an argument that is not a host shell's script stays unread.
     assert shell_writes.heredoc_patch_paths(shlex.join(["echo", script])) == ()
+
+
+# --- #1106 r2: a relative write lands under the command's working directory --------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd tests/fixtures && cat > expected.md <<'EOF'\nnew\nEOF",
+        "cd tests && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: golden.md\n@@\n-a\n+b\n"
+        "*** End Patch\nEOF",
+        "cd tests/data && git apply <<'EOF'\n--- a/expected.md\n+++ b/expected.md\n@@\n-a\n+b\nEOF",
+        "cd /app/tests && echo x > golden.md",
+        "cd tests/fixtures && echo x > CHANGELOG.md",
+        # Any directory change but one leading literal ``cd`` cannot be placed.
+        "(cd docs && echo x > guide.md)",
+        "cd a && cd b && echo x > README.md",
+        "pushd docs && echo x > guide.md",
+        "cd ~/repo && echo x > README.md",
+        'cd "$DIR" && echo x > README.md',
+        "git -C docs apply <<'EOF'\n--- a/guide.md\n+++ b/guide.md\n@@\n-a\n+b\nEOF",
+    ],
+)
+def test_a_relative_doc_write_after_a_directory_change_is_placed_or_counts(command: str) -> None:
+    """correctness-r2-2: ``cd tests && cat > golden.md`` wrote a fixture that read as docs."""
+
+    assert (
+        shell_write_scope(
+            command,
+            workspace="/app",
+            inside=_inside,
+            also_written=shell_writes.heredoc_patch_paths(command),
+        )
+        == "workspace"
+    )
+    # The session stream knows no root: it never claims docs where the target lands unknown.
+    assert shell_write_scope(
+        command,
+        workspace=None,
+        inside=lambda _path: False,
+        relative_only=True,
+        also_written=shell_writes.heredoc_patch_paths(command),
+    ) in {None, "workspace"}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd /app && echo x > README.md",
+        "cd docs && echo x > guide.md",
+        "cd /app/docs && cat > guide.md <<'EOF'\n# Guide\nEOF",
+    ],
+)
+def test_a_doc_write_placed_by_its_cd_stays_docs(command: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "docs"
+
+
+def test_a_working_directory_places_relative_writes() -> None:
+    assert (
+        shell_write_scope(
+            "echo x > README.md", workspace="/app", inside=_inside, working_directory="/app/tests"
+        )
+        == "workspace"
+    )
+    assert (
+        shell_write_scope(
+            "echo x > guide.md", workspace="/app", inside=_inside, working_directory="/app/docs"
+        )
+        == "docs"
+    )
+    assert (
+        shell_write_scope(
+            "cd fixtures && echo x > a.md",
+            workspace="/app",
+            inside=_inside,
+            working_directory="/app/docs",
+        )
+        == "workspace"
+    )
+    assert (
+        shell_write_scope("echo x > README.md", workspace="/app", inside=_inside, relocated=True)
+        == "workspace"
+    )
+    # The directory places documentation only: an ordinary write keeps its class.
+    assert (
+        shell_write_scope(
+            "echo x > a.py", workspace="/app", inside=_inside, working_directory="/app/src"
+        )
+        == "workspace"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("pytest -q", (None, False)),
+        ("cd /app && pytest -q", ("/app", False)),
+        ("cd ./docs/ && x", ("docs", False)),
+        ("cd /app && cd tests && x", (None, True)),
+        ("cd - && x", (None, True)),
+        ("ls; cd tests", (None, True)),
+        ("git -C sub status", (None, True)),
+        ("git -c a.b=c -C sub apply", (None, True)),
+        ("echo cdrom > x; abcd y", (None, False)),
+    ],
+)
+def test_command_working_directory(command: str, expected: tuple[str | None, bool]) -> None:
+    assert shell_writes.command_working_directory(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "paths"),
+    [
+        (f"git -C . apply <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"git -c core.x=y -C /app apply -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"sudo patch -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"sudo -n -u root git apply <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"env A=1 sudo -E patch -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+    ],
+)
+def test_heredoc_patch_paths_reads_sudo_and_git_global_options(
+    command: str, paths: tuple[str, ...]
+) -> None:
+    """goal-r2-6: ``git -C <dir> apply`` and ``sudo patch`` are the patch tools too."""
+
+    assert shell_writes.heredoc_patch_paths(command) == paths
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"sudo -x patch -p1 <<'EOF'\n{_DIFF}EOF",  # an option sudo does not document here
+        f"sudo -u <<'EOF'\n{_DIFF}EOF",
+        f"git -C <<'EOF'\n{_DIFF}EOF",
+    ],
+)
+def test_heredoc_patch_paths_refuses_an_unknown_sudo_or_git_shape(command: str) -> None:
+    assert shell_writes.heredoc_patch_paths(command) == ()
+
+
+def test_a_long_heredoc_patch_in_a_native_argv_is_still_a_write() -> None:
+    """correctness-r2-4: a >16 KiB patch in ``["/bin/bash", "-lc", SCRIPT]`` named nothing once
+    joined, cut and re-split; the script is read from the argv itself."""
+
+    body = "".join(f"-old line {index}\n+new line {index}\n" for index in range(1500))
+    script = f"git apply <<'EOF'\n--- a/x.py\n+++ b/x.py\n@@\n{body}EOF\npytest -q"
+    assert len(script) > shell_writes.MAX_SHELL_WRITE_CHARS
+    argv = ["/bin/bash", "-lc", script]
+    text = shell_writes.shell_command_text(argv)
+    assert text == script
+    assert text is not None
+    assert shell_writes.heredoc_patch_paths(text) == ("x.py",)
+    assert (
+        shell_write_scope(
+            text,
+            workspace=None,
+            inside=lambda _path: False,
+            relative_only=True,
+            also_written=shell_writes.heredoc_patch_paths(text),
+        )
+        == "workspace"
+    )
+    assert shell_writes.shell_command_text(["pytest", "-q"]) == "pytest -q"
+    assert shell_writes.shell_command_text("ls") == "ls"
+    assert shell_writes.shell_command_text([1, 2]) is None
