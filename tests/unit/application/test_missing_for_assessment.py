@@ -1686,6 +1686,18 @@ def _w6_supplied(case: DeterministicCase) -> tuple[tuple[str, ...], ...]:
     )
 
 
+def _w6_captured(
+    number: int, *, content: str = "tool_output", reference: str | None = None
+) -> EvidenceRecordedPayload:
+    """A captured part as the observation writer materializes it (``tool_output`` by default)."""
+
+    return replace(
+        _captured(number),
+        description=f"Observation-captured {content} bytes part=1/1",
+        reference=reference,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _W6Rerun:
     actions: Mapping[ActionId, ProjectionRecord[ActionRecordedPayload]]
@@ -1693,8 +1705,15 @@ class _W6Rerun:
     evidence: Mapping[EvidenceId, EvidenceProjectionRecord]
 
 
-def _w6_observed_rerun(identity: str, *, output: bool = True) -> _W6Rerun:
-    """A Codex shell re-run as the hook (or its session-stream copy) records it, after the request."""
+def _w6_observed_rerun(
+    identity: str, *, output: bool = True, stream_first: bool = False
+) -> _W6Rerun:
+    """A Codex shell re-run as the hook or its session-stream copy records it, after the request.
+
+    Hook first, the observed result cites the captured output. Stream first (Codex 0.159), the
+    hook's output arrives late as evidence the observation writer links to the run's action event
+    (``reference`` = that event id) and no result cites it.
+    """
 
     return _W6Rerun(
         actions={
@@ -1713,12 +1732,20 @@ def _w6_observed_rerun(identity: str, *, output: bool = True) -> _W6Rerun:
                     ResultOutcome.SUCCESS,
                     exit_status=0,
                     summary="Observed result status=success",
-                    evidence_refs=(evd(72),) if output else (),
+                    evidence_refs=(evd(72),) if output and not stream_first else (),
                 ),
                 71,
             )
         },
-        evidence={evd(72): evidence_record(_captured(72), 72)} if output else {},
+        evidence=(
+            {
+                evd(72): evidence_record(
+                    _w6_captured(72, reference=str(evt(70)) if stream_first else None), 72
+                )
+            }
+            if output
+            else {}
+        ),
     )
 
 
@@ -1735,15 +1762,42 @@ def _w6_rerun_case(
     )
 
 
-def test_an_observed_rerun_of_the_targets_command_supplies_it(w6_key: str) -> None:
-    case = _w6_rerun_case(_w6_observed_rerun(w6_key))
-    # The observed result and the captured output it cites answer a request for the output.
+@pytest.mark.parametrize("stream_first", [False, True])
+def test_an_observed_rerun_of_the_targets_command_supplies_it(
+    w6_key: str, stream_first: bool
+) -> None:
+    # Whichever Codex copy committed first, the observed result and the captured output of its
+    # run answer a request for the output (W6 round 1: the stream-first order links the output to
+    # the action event instead of the result).
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key, stream_first=stream_first))
     assert _w6_supplied(case) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
-    # A request for the command identity is answered by the observed run and its result.
-    identity = _w6_rerun_case(_w6_observed_rerun(w6_key), "command_identity")
-    assert _w6_supplied(identity) == (
-        tuple(sorted((str(act(70)), str(evd(72)), str(res(71))), key=str.encode)),
+    kinds, gaps = _w6_repeat_review(case, excerpt_refs=frozenset({str(evd(72))}))
+    assert kinds == [] and "semantic_missing_already_supplied" in gaps
+    # The kind ``other`` reads the same output.
+    other = _w6_rerun_case(_w6_observed_rerun(w6_key, stream_first=stream_first), "other")
+    assert _w6_supplied(other) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
+
+
+def test_an_observed_capture_of_the_command_input_is_not_output(w6_key: str) -> None:
+    rerun = _w6_observed_rerun(w6_key)
+    case = _w6_rerun_case(
+        replace(
+            rerun, evidence={evd(72): evidence_record(_w6_captured(72, content="tool_input"), 72)}
+        )
     )
+    assert _w6_supplied(case) == ((),)
+    # Linked late to the run's action event, a command-input capture is not output either.
+    late = _w6_rerun_case(
+        replace(
+            _w6_observed_rerun(w6_key, stream_first=True),
+            evidence={
+                evd(72): evidence_record(
+                    _w6_captured(72, content="tool_input", reference=str(evt(70))), 72
+                )
+            },
+        )
+    )
+    assert _w6_supplied(late) == ((),)
 
 
 def test_an_observed_run_of_another_command_never_supplies_it(w6_key: str) -> None:
@@ -1883,19 +1937,39 @@ def test_a_repeat_is_not_dropped_for_observed_material_the_packet_did_not_carry(
     assert kinds == ["verification_output"]
 
 
-def test_an_observed_result_without_output_answers_command_identity_only(w6_key: str) -> None:
-    rerun = _w6_observed_rerun(w6_key, output=False)
-    case = _w6_rerun_case(rerun)
+def test_observed_rows_never_answer_command_identity(w6_key: str) -> None:
+    """An observed run records ``omitted:<keyed identity>``, never the command text asked for."""
+
+    for output in (False, True):
+        rerun = _w6_observed_rerun(w6_key, output=output)
+        identity = _w6_rerun_case(rerun, "command_identity")
+        assert _w6_supplied(identity) == ((),)
+        # Even when every observed row was citable and its output carried, the repeat stays the
+        # agent's: only an action_recorded with the command text answers it.
+        kinds, gaps = _w6_repeat_review(
+            identity, kind="command_identity", excerpt_refs=frozenset({str(evd(72))})
+        )
+        assert kinds == ["command_identity"]
+        assert "semantic_missing_already_supplied" not in gaps
+    # Without captured output an observed re-run answers no output request either.
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key, output=False))
     assert _w6_supplied(case) == ((),)
-    identity = _w6_rerun_case(rerun, "command_identity")
-    assert _w6_supplied(identity) == (tuple(sorted((str(act(70)), str(res(71))), key=str.encode)),)
-    kinds, gaps = _w6_repeat_review(identity, kind="command_identity")
-    assert kinds == [] and "semantic_missing_already_supplied" in gaps
-    # Neither observed row citable: nothing the reviewer saw answers it.
-    kinds, gaps = _w6_repeat_review(
-        identity, kind="command_identity", uncitable=frozenset({str(act(70)), str(res(71))})
-    )
-    assert kinds == ["command_identity"]
     kinds, gaps = _w6_repeat_review(case)
     assert kinds == ["verification_output"]
     assert "semantic_missing_already_supplied" not in gaps
+
+
+def test_a_hook_observed_target_is_answered_by_the_published_command_text(w6_key: str) -> None:
+    """command_identity for a hook-observed target: the agent publishes the exact command."""
+
+    observed_target = {
+        act(3): record(
+            ActionRecordedPayload(
+                act(3), ActionKind.COMMAND, "Observed command", command=f"omitted:{w6_key}"
+            ),
+            12,
+        ),
+        act(93): record(_run(93, _W6_COMMAND), 93),
+    }
+    case = _w6_case(actions=observed_target, kind="command_identity", target=str(act(3)))
+    assert _w6_supplied(case) == ((str(act(93)),),)

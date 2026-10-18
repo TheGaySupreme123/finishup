@@ -9,9 +9,10 @@ everything else is ``agent_suppliable``. Only ``agent_suppliable`` is ever agent
 an item re-requested after it was supplied is dropped unless the reviewer cites that new material.
 "Supplied" is judged per named target: only new material directly tied to that target counts
 (its run, exact command, file path, or a correction of it), so a record that relates only to
-another path, run or claim never answers it. A re-run of the target's exact command that FinishUP
-observed after the request counts for a targeted item too (W6, ADR-006 amendment), but a repeat
-is never dropped as supplied for observed material the packet did not carry.
+another path, run or claim never answers it. The captured output of a re-run of the target's
+exact command that FinishUP observed after the request counts for a targeted output request too
+(W6, ADR-006 amendment), but a repeat is never dropped as supplied for observed material the
+packet did not carry, and observed rows never answer ``command_identity``.
 
 Reads the frozen projection and review selection. Its only filesystem access is resolving the
 workspace root the caller supplies (an ``isdir`` check, then ``os.path.realpath``, once per
@@ -43,6 +44,7 @@ from finishup.domain.events import (
     ResultRecordedPayload,
 )
 from finishup.domain.findings import Finding
+from finishup.domain.observation import ObservationContentKind
 from finishup.domain.privacy import ReviewSelectionPolicy
 from finishup.domain.receipts import (
     SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP,
@@ -74,6 +76,7 @@ __all__ = [
     "MissingItemsReview",
     "ReviewFollowUp",
     "ReviewFollowUpItem",
+    "agent_supplied_answer_refs",
     "check_change_binary_paths",
     "check_change_text_paths",
     "command_run_key",
@@ -304,6 +307,14 @@ _ANSWERING_FAMILIES: Final[Mapping[str, tuple[str, ...]]] = {
     "plan_or_claim_text": ("plans", "claims"),
     "prior_finding_context": ("responses",),
     "task_statement": ("plans",),
+    "verification_output": ("evidence", "output_results"),
+}
+# W6 (ADR-006 amendment): what a re-run FinishUP observed can answer. Its action and result rows
+# hold no command text (``omitted:<keyed identity>``) and its result summary is FinishUP's own
+# status line, so only the captured command output the run produced answers, and only a request
+# for output; never ``command_identity`` or any other kind.
+_OBSERVED_ANSWERING_FAMILIES: Final[Mapping[str, tuple[str, ...]]] = {
+    "other": ("evidence", "output_results"),
     "verification_output": ("evidence", "output_results"),
 }
 _FAMILY_NAMES: Final = (
@@ -889,6 +900,26 @@ def supplied_since(
     return tuple(answered)
 
 
+def agent_supplied_answer_refs(
+    projection: ProjectionState,
+    answered: tuple[tuple[str, ...], ...],
+    observation_event_ids: frozenset[str] = frozenset(),
+) -> frozenset[str]:
+    """The ``supplied_since`` refs a packet may offer as agent-published output (issue #1079).
+
+    W6 (ADR-006 amendment): a re-run FinishUP observed may answer a pending item and ranks as
+    supplied, but its result's summary is FinishUP's own status line, never agent-published
+    output; its captured output stays an excerpt candidate only where it already was one.
+    """
+
+    observed_results = frozenset(
+        str(ref)
+        for ref, row in projection.results.items()
+        if str(row.source_event_id) in observation_event_ids
+    )
+    return frozenset(ref for group in answered for ref in group) - observed_results
+
+
 def _answers_by_target(
     projection: ProjectionState,
     pending: PendingMissingForAssessment,
@@ -960,7 +991,7 @@ def _answers_by_target(
             continue
         candidates += tuple(
             entry
-            for family in _ANSWERING_FAMILIES[item.kind]
+            for family in _OBSERVED_ANSWERING_FAMILIES.get(item.kind, ())
             for entry in recorded_observed[family]
             if entry[1] in allowed
         )
@@ -1024,8 +1055,10 @@ class _Links:
     keyed identity a hook records for exactly that text (``_run_identities``), so an
     agent-published run and a hook-observed re-run of the same whole command are one command. A
     hook-observed re-run of a target's command after the request, its observed results and the
-    captured output they cite, answer the target too (never paths: observed ``git diff`` text is
-    not recorded and observed edits stay excluded). An evidence ``reference`` matches the target
+    captured tool output they cite or the observation writer linked to the run, answer an output
+    request for the target too (never paths: observed ``git diff`` text is not recorded and
+    observed edits stay excluded; never ``command_identity``: observed rows hold no command
+    text, see ``_OBSERVED_ANSWERING_FAMILIES``). An evidence ``reference`` matches the target
     id or the target row's own event id, with surrounding whitespace ignored; an ``evt_`` target
     that names exactly one row's event is read as that row. The requesting check's own event id
     names the request, not a target, so it never matches. A claim is answered by material tied to
@@ -1048,7 +1081,8 @@ class _Links:
     new_plans: Mapping[str, PlanPublishedPayload | PlanRevisedPayload]
     actions_by_key: Mapping[_RunKey, frozenset[str]]
     # Hook-observed command runs recorded after the request, with their identities; their
-    # observed results; and the hook-captured evidence those results cite.
+    # observed results; and, per observed result, the captured tool output of its run (what the
+    # result cites, and the late capture linked to the run's action event).
     observed_runs: Mapping[str, frozenset[_RunKey]]
     observed_results: Mapping[str, ResultRecordedPayload]
     observed_output: Mapping[str, frozenset[str]]
@@ -1099,18 +1133,36 @@ class _Links:
             and row.payload is not None
             and str(row.payload.action_id) in observed_runs
         }
-        # Only evidence holding captured bytes is output; a digest-only observed row is not.
+        # Only evidence holding captured tool output is output: a digest-only observed row is
+        # not, and neither is the captured command input (the hook's ``tool_input`` bytes).
         captured_output = {
-            str(ref)
+            str(ref): row.payload.reference
             for ref, row in projection.evidence.items()
             if readable(row)
             and observed(row)
             and row.payload is not None
-            and row.payload.captured_object_id is not None
+            and _captured_tool_output(row.payload)
+        }
+        # The run's output is what its result cites, and the late capture the observation writer
+        # linked to the run's action event (``observed_enrichment_refs``): when Codex's
+        # session-stream copy commits first, the hook's output arrives that way and no result
+        # cites it. Either copy's capture is the same run's output.
+        action_events = {
+            str(ref): str(row.source_event_id)
+            for ref, row in projection.actions.items()
+            if str(ref) in observed_runs
         }
         observed_output = {
             ref: frozenset(
-                str(item) for item in result.evidence_refs if str(item) in captured_output
+                {
+                    *(str(item) for item in result.evidence_refs if str(item) in captured_output),
+                    *(
+                        item
+                        for item, reference in captured_output.items()
+                        if reference is not None
+                        and reference == action_events.get(str(result.action_id))
+                    ),
+                }
             )
             for ref, result in observed_results.items()
         }
@@ -1658,6 +1710,24 @@ def _carries_output(payload: ResultRecordedPayload) -> bool:
     return bool(payload.evidence_refs) or bool(payload.summary and payload.summary.strip())
 
 
+# The service-authored description of a materialized captured tool-output part (see
+# ``observation_materialize._captured_evidence_drafts``; ``semantic_content`` reads the edit kinds
+# the same way).
+_CAPTURED_TOOL_OUTPUT_DESCRIPTION: Final = (
+    f"Observation-captured {ObservationContentKind.TOOL_OUTPUT.value} bytes "
+)
+
+
+def _captured_tool_output(payload: EvidenceRecordedPayload) -> bool:
+    """Whether a hook-observed row holds captured tool output bytes (not input, not a digest)."""
+
+    return (
+        _hook_observed(payload)
+        and payload.captured_object_id is not None
+        and (payload.description or "").startswith(_CAPTURED_TOOL_OUTPUT_DESCRIPTION)
+    )
+
+
 def _hook_observed(payload: object) -> bool:
     """Hook-captured bytes carry service-stamped observation provenance on their evidence row."""
 
@@ -1712,12 +1782,13 @@ def review_missing_for_assessment(
     is dropped unless the reviewer cites that newer material
     (``semantic_missing_already_supplied``), so the same request cannot loop; only new material
     directly tied to a target answers it (see ``_Links``; ``captured_edit_paths`` as in
-    ``supplied_since``). A hook-observed re-run answers only when this packet carried it (W6,
-    ADR-006 amendment): its run and result rows among the citable refs, and for
-    ``verification_output`` the captured output its result cites among the excerpts the sent
-    packet held (``excerpt_refs`` whole, or any of its ``excerpt_parts``; ``None``: unknown, so
-    nothing observed was carried). Every kept item is recorded with FinishUP's own availability
-    class.
+    ``supplied_since``). A hook-observed re-run answers only an output request
+    (``verification_output`` or ``other``) and only when this packet carried its output (W6,
+    ADR-006 amendment): the captured tool output the run produced among the citable refs and
+    among the excerpts the sent packet held (``excerpt_refs`` whole, or any of its
+    ``excerpt_parts``; ``None``: unknown, so nothing observed was carried). Observed rows never
+    answer ``command_identity``: they hold no command text. Every kept item is recorded with
+    FinishUP's own availability class.
 
     Content the packet cannot show is FinishUP's own limit, never agent work (tb4n1 D1, #983): a
     target whose recorded file is an image or other binary format, by suffix or because the
@@ -1755,25 +1826,27 @@ def review_missing_for_assessment(
     if pending is not None:
         # W6: never drop a repeat as already supplied for observed material the reviewer could
         # not see; the item then stays the agent's under the rules below.
-        unseen, unseen_output = _unseen_observed(
-            _Links.of(
-                projection,
-                pending.source_frontier,
-                observed,
-                captured_edit_paths or {},
-                workspace_root,
-                request_event_id=str(pending.source_check_event_id),
-            ),
-            shown,
-            _carried_excerpts(excerpt_refs, excerpt_parts),
+        observed_links = _Links.of(
+            projection,
+            pending.source_frontier,
+            observed,
+            captured_edit_paths or {},
+            workspace_root,
+            request_event_id=str(pending.source_check_event_id),
         )
+        unseen = _unseen_observed(
+            observed_links, shown, _carried_excerpts(excerpt_refs, excerpt_parts)
+        )
+        # Observed rows answer only the output kinds; for every other kind none of them counts
+        # (``supplied_since`` already leaves them out; this keeps the drop rule from relying on it).
+        never = observed_links.observed_material()
         answered = tuple(
             {
                 target: tuple(
                     entry
                     for entry in entries
                     if entry[1]
-                    not in (unseen_output if prior.kind == "verification_output" else unseen)
+                    not in (unseen if prior.kind in _OBSERVED_ANSWERING_FAMILIES else never)
                 )
                 for target, entries in per_target.items()
             }
@@ -1866,24 +1939,26 @@ def _carried_excerpts(
 
 def _unseen_observed(
     links: _Links, shown: frozenset[str], carried: frozenset[str]
-) -> tuple[frozenset[str], frozenset[str]]:
-    """Observed refs a packet did not carry: for any kind, and for ``verification_output``.
+) -> frozenset[str]:
+    """Observed refs a packet did not carry, for an output request.
 
-    A run or result row is carried when it was citable; captured output only when an excerpt
-    held its bytes. For ``verification_output`` an observed result also needs some captured
-    output it cites carried, because the output is what was asked for.
+    Captured output is carried only when it was citable and an excerpt held its bytes. A run or
+    result row is carried only when it was citable and some captured output its result cites
+    was carried, because the output is what was asked for.
     """
 
-    output = frozenset(ref for refs in links.observed_output.values() for ref in refs)
     unseen = {ref for ref in links.observed_material() if ref not in shown}
+    output = frozenset(ref for refs in links.observed_output.values() for ref in refs)
     unseen.update(ref for ref in output if ref not in carried)
-    unseen_output = set(unseen)
-    unseen_output.update(
+    seen_results = {
         ref
         for ref, cited in links.observed_output.items()
-        if not any(item in carried and item in shown for item in cited)
-    )
-    return frozenset(unseen), frozenset(unseen_output)
+        if any(item in carried and item in shown for item in cited)
+    }
+    unseen.update(ref for ref in links.observed_results if ref not in seen_results)
+    seen_runs = {str(links.observed_results[ref].action_id) for ref in seen_results}
+    unseen.update(ref for ref in links.observed_runs if ref not in seen_runs)
+    return frozenset(unseen)
 
 
 # Read every recorded row as "older" when only a target's files are wanted, never its answers.

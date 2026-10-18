@@ -30,6 +30,7 @@ from finishup.application.missing_for_assessment import (
     CHECK_TIME_CHANGE_SOURCE_REF,
     OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
     ReviewFollowUp,
+    agent_supplied_answer_refs,
     check_change_binary_paths,
     check_change_text_paths,
     command_run_key,
@@ -6644,14 +6645,7 @@ def _build_semantic_case_once(
             _edit_paths_by_ref(captured_groups),
             workspace_root,
         )
-    # W6 (ADR-006 amendment): a re-run FinishUP observed may answer a pending item and ranks as
-    # supplied, but its service-authored result summary is never offered as agent-published
-    # output; its captured output stays a candidate only where it already was one.
-    supplied_answer_refs = frozenset(ref for group in answered_since for ref in group) - frozenset(
-        str(ref)
-        for ref, row in projection.results.items()
-        if str(row.source_event_id) in observed_events
-    )
+    supplied_answer_refs = agent_supplied_answer_refs(projection, answered_since, observed_events)
     if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
         answered = answered_since
         missing_answers = answered
