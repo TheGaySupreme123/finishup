@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import os
 import re
+import shlex
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -61,7 +62,7 @@ from finishup.domain.observation_selection import (
     native_command_runner_class,
     without_routine_read,
 )
-from finishup.domain.shell_writes import shell_write_scope
+from finishup.domain.shell_writes import heredoc_patch_paths, shell_write_scope
 from finishup.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
 from finishup.domain.write_scope import (
     NON_COUNTING_WRITE_SCOPES,
@@ -1162,6 +1163,143 @@ def _restore_stream_individual_deliveries(plan: AdmissionPlan) -> AdmissionPlan:
     )
 
 
+# Codex's own shell tools whose ``function_call`` arguments name the command their hook commits
+# to: 0.159 ``exec_command`` sends ``tool_input: {"command": args.cmd}`` (``exec_command.rs``
+# ``pre_tool_use_payload``), the legacy ``shell`` tools an argv. Never the code-mode ``exec``
+# cell, whose input is a script, ``write_stdin`` (a poll names no command) or an MCP tool.
+_STREAM_SHELL_CALL_TOOLS: Final = frozenset(
+    {"exec_command", "shell", "shell_command", "local_shell", "bash"}
+)
+# The hook's argument keys, in its order (``cli.observe_hooks._COMMAND_ARGUMENT_KEYS``, #909).
+_STREAM_COMMAND_ARGUMENT_KEYS: Final = ("cmd", "command", "argv")
+# The header Codex 0.159 writes before a shell call's output (``codex-rs/core/src/tools/
+# context.rs``): unified exec's ``response_header`` (``Chunk ID``, ``Wall time``, ``Process exited
+# with code N`` once the process exited, ``Process running with session ID N`` while it runs,
+# ``Original token count``) and the classic ``format_exec_output_for_model`` (``Exit code: N``,
+# ``Wall time``, ``Total output lines``), each ending at the ``Output:`` line. Only that closed,
+# anchored grammar is read; the output after it is never searched.
+_EXEC_OUTPUT_HEADER: Final = re.compile(
+    r"\A(?:"
+    r"(?:Chunk ID: [A-Za-z0-9._-]{1,64}\n)?"
+    r"Wall time: [0-9]{1,12}(?:\.[0-9]{1,12})? seconds\n"
+    r"(?:Process exited with code (?P<exited>-?[0-9]{1,4})\n"
+    r"|Process running with session ID [0-9]{1,20}\n)?"
+    r"(?:Original token count: [0-9]{1,12}\n)?"
+    r"|Exit code: (?P<classic>-?[0-9]{1,4})\n"
+    r"Wall time: [0-9]{1,12}(?:\.[0-9]{1,12})? seconds\n"
+    r"(?:Total output lines: [0-9]{1,12}\n)?"
+    r")Output:(?:\n|\Z)",
+    re.ASCII,
+)
+_EXEC_OUTPUT_HEADER_CHARS: Final = 512
+
+
+def _stream_call_command(
+    record: CodexParsedRecord, fields: Mapping[str, JsonValue]
+) -> JsonValue | None:
+    """The command a Codex shell ``function_call`` row's arguments name, or ``None``.
+
+    The arguments are parsed transiently, exactly as for the routine-read classifier; only the
+    keyed facts ``_command_facts`` derives from the value leave this adapter.
+    """
+
+    if fields.get("action") != "function_call":
+        return None
+    tool = fields.get("tool_name")
+    if type(tool) is not str or tool.casefold() not in _STREAM_SHELL_CALL_TOOLS:
+        return None
+    tool_input = _stream_classification_payload(record, fields).get("tool_input")
+    if not isinstance(tool_input, Mapping):
+        return None
+    arguments = cast(Mapping[str, JsonValue], tool_input)
+    for key in _STREAM_COMMAND_ARGUMENT_KEYS:
+        value = arguments.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _command_facts(
+    fields: dict[str, JsonValue],
+    gaps: set[str],
+    value: JsonValue | None,
+    *,
+    key_material: bytes | None,
+    post: bool,
+) -> None:
+    """Add the closed command facts the call's hook copy carries for one rollout command.
+
+    The commitment and segment commitments use the hook's normalization and the local store key,
+    so a passing rerun seen here supersedes a failure seen by either path and a planned
+    verification matches either copy (#909, #910, n7 RC2); the text itself is dropped here. The
+    compound-outcome gap belongs to a result, so only a completed item (``post``) carries it, as
+    only the hook's post event does.
+    """
+
+    if key_material is not None:
+        normalized = normalize_observed_command(value)
+        if normalized is not None:
+            fields["command_commitment"] = observed_command_commitment(key_material, normalized)
+            segments = command_segment_commitments(key_material, normalized)
+            if segments is not None:
+                fields["command_segment_commitments"] = segments[0]
+                fields["command_composition"] = segments[1]
+    # Identity normalization may recursively erase shell executable paths. Read-only
+    # classification retains them beyond the one ordinary native host-shell layer.
+    runner = native_command_runner_class(value)
+    if runner is not None:
+        fields["runner_class"] = runner
+    if type(value) is str:
+        raw_command = value
+    elif isinstance(value, (list, tuple)) and value and all(type(word) is str for word in value):
+        raw_command = shlex.join(cast(list[str], list(value)))
+    else:
+        return
+    if "write_scope" not in fields:
+        # ADR-045: the stream knows no workspace root, so it claims only a relative write
+        # (a working directory makes it certain); an absolute path is left to the hook. A
+        # heredoc-fed patch writes the files its headers name, as the hook reads them.
+        scope = shell_write_scope(
+            raw_command,
+            workspace=None,
+            inside=lambda _path: False,
+            relative_only=True,
+            also_written=heredoc_patch_paths(raw_command),
+        )
+        if scope is not None:
+            # The closed token as the hook would send it (workspace, or the non-counting
+            # notes / finishup_owned scope a declared output of that kind overrides).
+            fields["write_scope"] = scope
+    if post and compound_verification_gap_required({"command": raw_command}):
+        # Preserve the host's outer result. The bounded gap records that a
+        # masking-capable composition does not expose each nested outcome (#968).
+        gaps.add(ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value)
+
+
+def _exec_output_exit_status(record: CodexParsedRecord) -> int | None:
+    """The exit code Codex's own header states for one call output, read from that header only.
+
+    A header that names a running process, no exit, or an exit outside ``-1..255`` states none.
+    The caller keeps the fact only for the output of a Codex shell call (pairing decides), so an
+    MCP or dynamic tool whose own text imitates the header never reads as a process exit.
+    """
+
+    if record.item_type != "function_call_output":
+        return None
+    body = _structural_body(record)
+    text = None if body is None else _output_status_text(body)
+    if text is None:
+        return None
+    match = _EXEC_OUTPUT_HEADER.match(text[:_EXEC_OUTPUT_HEADER_CHARS])
+    if match is None:
+        return None
+    raw = match.group("exited") or match.group("classic")
+    if raw is None:
+        return None
+    code = int(raw)
+    return code if -1 <= code <= 255 else None
+
+
 def structural_from_stream_record(
     record: CodexParsedRecord,
     *,
@@ -1239,38 +1377,15 @@ def structural_from_stream_record(
         # ``SubAgentActivity.id`` identifies the rollout item itself, not the
         # parent tool call.  Keep it out of the parent correlation family; only
         # an explicit call alias may identify that parent.
-        if key_material is not None and item_type == "CommandExecution":
-            # The rollout names the command as the argv Codex ran (``/bin/bash -lc <cmd>``). Commit
-            # to it with the hook's normalization and key so a passing rerun seen here supersedes
-            # a failure seen by either path; the text itself is dropped here (#909, #910).
-            normalized = normalize_observed_command(body.get("command"))
-            if normalized is not None:
-                fields["command_commitment"] = observed_command_commitment(key_material, normalized)
-                segments = command_segment_commitments(key_material, normalized)
-                if segments is not None:
-                    fields["command_segment_commitments"] = segments[0]
-                    fields["command_composition"] = segments[1]
         if item_type == "CommandExecution":
-            # Identity normalization may recursively erase shell executable paths. Read-only
-            # classification retains them beyond the one ordinary native host-shell layer.
-            runner = native_command_runner_class(body.get("command"))
-            if runner is not None:
-                fields["runner_class"] = runner
-            raw_command = body.get("command")
-            if type(raw_command) is str and "write_scope" not in fields:
-                # ADR-045: the stream knows no workspace root, so it claims only a relative write
-                # (a working directory makes it certain); an absolute path is left to the hook.
-                scope = shell_write_scope(
-                    raw_command, workspace=None, inside=lambda _path: False, relative_only=True
-                )
-                if scope is not None:
-                    # The closed token as the hook would send it (workspace, or the non-counting
-                    # notes / finishup_owned scope a declared output of that kind overrides).
-                    fields["write_scope"] = scope
-                if compound_verification_gap_required({"command": raw_command}):
-                    # Preserve the host's outer result. The bounded gap records that a
-                    # masking-capable composition does not expose each nested outcome (#968).
-                    gaps.add(ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value)
+            # The rollout names the command as the argv Codex ran (``/bin/bash -lc <cmd>``).
+            _command_facts(fields, gaps, body.get("command"), key_material=key_material, post=True)
+        else:
+            call_command = _stream_call_command(record, fields)
+            if call_command is not None:
+                # A direct shell call's own row: whichever copy of the call commits first, its
+                # action carries the identity and runner class its hook copy carries (n7 RC2).
+                _command_facts(fields, gaps, call_command, key_material=key_material, post=False)
         if item_type != "SubAgentActivity":
             # A response-item call and its output share ``call_id``; since Codex 0.150.1 each row
             # also carries an ``id`` naming the row itself (``fc_``/``fco_``, ``ctc_``/``ctco_``),
@@ -1460,6 +1575,10 @@ class SessionStreamAdvance:
     # Per-envelope code-mode facts (#1038 follow-up): the host's ``exec``/``wait`` status header
     # and a ``wait`` call's target cell, read before structural mapping discards the output text.
     cell_facts: tuple[CodeModeCellFact | None, ...] = ()
+    # Per-envelope exit codes Codex's own header states for a call output (n7 RC2), read before
+    # structural mapping discards the output text. Reconcile keeps one only for the output of a
+    # Codex shell call, which pairing names: the output row itself names no tool.
+    output_exits: tuple[int | None, ...] = ()
 
 
 def stream_admission(
@@ -1815,6 +1934,7 @@ class SessionStreamReader:
         envelopes: list[ObservationEnvelope] = []
         classifications: list[ObservationClassification | None] = []
         cell_facts: list[CodeModeCellFact | None] = []
+        output_exits: list[int | None] = []
         reason_codes: set[str] = set()
         hold = b""
         for index, line in enumerate(parsed.lines):
@@ -1863,6 +1983,7 @@ class SessionStreamReader:
                     )
                     classifications.append(None)
                     cell_facts.append(None)
+                    output_exits.append(None)
                 continue
             event_position += 1
             abs_cursor = ObservationCursor(
@@ -1895,6 +2016,7 @@ class SessionStreamReader:
             )
             classifications.append(_stream_record_classification(record, structural))
             cell_facts.append(_code_mode_cell_fact(record))
+            output_exits.append(_exec_output_exit_status(record))
 
         if "unsupported_codex_profile" in parsed.stream_gaps and consumed > 0:
             # A refused chunk holds no tail: the durable refused state is exactly
@@ -1925,6 +2047,7 @@ class SessionStreamReader:
             tuple(sorted(reason_codes, key=str.encode)),
             tuple(classifications),
             tuple(cell_facts),
+            tuple(output_exits),
         )
 
 
@@ -3156,6 +3279,7 @@ def _reconcile_session_stream_path(
 
     advance_classifications = advance.classifications
     advance_cell_facts = advance.cell_facts
+    advance_output_exits = advance.output_exits
     tool_items_recorded = _profile_records_tool_items(reader.profile)
     for index, unpaired_envelope in enumerate(advance.envelopes):
         if delivery_blocked:
@@ -3185,6 +3309,21 @@ def _reconcile_session_stream_path(
                 False if base_classification is None else base_classification.routine_candidate
             ),
         )
+        output_exit = advance_output_exits[index] if index < len(advance_output_exits) else None
+        if (
+            output_exit is not None
+            and paired_tool is not None
+            and paired_tool.casefold() in _STREAM_SHELL_CALL_TOOLS
+            and "exit_status" not in envelope.structural_payload
+        ):
+            # A direct shell call's output states its exit only in Codex's own header, and a
+            # Codex 0.159 ``PostToolUse`` for it states none: this is the call's only exit (n7 RC2).
+            envelope = replace(
+                envelope,
+                structural_payload=JsonObject(
+                    {**envelope.structural_payload, "exit_status": output_exit}
+                ),
+            )
         classification = base_classification
         action = envelope.structural_payload.get("action")
         if action in {"function_call_output", "custom_tool_call_output"}:
