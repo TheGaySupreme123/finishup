@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import Final, Literal, Protocol, TypedDict, cast
+from typing import Final, Literal, Protocol, cast
 
 import apsw
 
@@ -315,7 +315,6 @@ from finishup.ports.change_capture import (
     MAX_SNAPSHOT_ADMISSION_SECONDS,
     MAX_SNAPSHOT_FILE_BYTES,
     ChangeCapturePort,
-    CheckWorkspaceSource,
     TaskInputFile,
     TaskInputSnapshotSet,
     current_check_workspace_source,
@@ -2670,34 +2669,28 @@ def _outside_input_reader(
     return read
 
 
-class _OutsideInputOptions(TypedDict):
-    outside_reader: OutsideInputReader | None
-    snapshots: tuple[TaskInputSnapshotSet, ...]
-    current_reader: CurrentInputReader | None
-
-
-async def _outside_input_options(
+async def _outside_inputs(
     runtime: TaskRuntime,
     policy: PrivacyPolicy,
     selection: ReviewSelectionPolicy,
-    source: CheckWorkspaceSource,
-    protected: tuple[str, ...],
+    excluded: tuple[str, ...],
     request_id: str,
-) -> _OutsideInputOptions:
-    """The check-time outside reads (issue #1082) and the task's kept copies (#1118 unit 1).
+) -> tuple[OutsideInputReader | None, tuple[TaskInputSnapshotSet, ...], CurrentInputReader | None]:
+    """The check-time outside reader (#1082), the task's kept copies and the current-bytes reader
+    (#1118 unit 1); none unless the owner admitted a root and the recipe carries task inputs.
 
-    Nothing outside the workspace is read unless the owner admitted a root in this repository's
-    grant and the recipe carries task inputs; the workspace and ``protected`` never are.
+    ``excluded`` is the workspace first, then the service's protected directories; neither is
+    ever read. Kept out of the evaluator for its type checker's complexity bound.
     """
 
-    roots = policy.admitted_input_roots
-    if not roots or not carries_task_inputs(selection):
-        return {"outside_reader": None, "snapshots": (), "current_reader": None}
-    return {
-        "outside_reader": _outside_input_reader(roots, protected),
-        "snapshots": await load_input_snapshots(runtime, request_id),
-        "current_reader": _current_input_reader(roots, (source.workspace, *protected)),
-    }
+    roots = policy.admitted_input_roots if carries_task_inputs(selection) else ()
+    if not roots:
+        return None, (), None
+    return (
+        _outside_input_reader(roots, excluded[1:]),
+        await load_input_snapshots(runtime, request_id),
+        _current_input_reader(roots, excluded),
+    )
 
 
 def _with_baseline_gap(gaps: Sequence[str], outcome: CheckChangeOutcome) -> tuple[str, ...]:
@@ -5311,6 +5304,13 @@ def _privacy_gated_semantic_evaluator(
                 else:
                     workspace_source = current_check_workspace_source()
                     if workspace_source is not None and change_capture is not None:
+                        outside_reader, snapshots, current_reader = await _outside_inputs(
+                            runtime,
+                            policy,
+                            review_selection,
+                            (workspace_source.workspace, *protected_directories),
+                            frozen.lease.operation_id,
+                        )
                         check_change = await capture_check_time_change(
                             runtime=runtime,
                             source=workspace_source,
@@ -5323,19 +5323,12 @@ def _privacy_gated_semantic_evaluator(
                             input_paths=review_inputs[0],
                             verification_paths=review_inputs[1],
                             # Issue #1082: only roots the owner admitted in this repository's
-                            # grant, and only where the recipe carries task inputs at all.
-                            # Issue #1082: only roots the owner admitted in this repository's
                             # grant, and only where the recipe carries task inputs at all. #1118
                             # unit 1: with the task's kept copies of named outside inputs, sent in
                             # place of current bytes while their roots stay admitted.
-                            **await _outside_input_options(
-                                runtime,
-                                policy,
-                                review_selection,
-                                workspace_source,
-                                protected_directories,
-                                frozen.lease.operation_id,
-                            ),
+                            outside_reader=outside_reader,
+                            snapshots=snapshots,
+                            current_reader=current_reader,
                             # Issue #1102: so the read can say a task-named outside input
                             # lies beneath none of them.
                             admitted_roots=policy.admitted_input_roots,

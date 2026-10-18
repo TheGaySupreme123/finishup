@@ -221,8 +221,8 @@ async def test_a_base_that_cannot_be_recorded_never_fails_the_start(tmp_path: Pa
 async def test_a_start_keeps_its_named_outside_input_only_where_the_scope_allows(
     tmp_path: Path, admitted: bool
 ) -> None:
-    """#1118 unit 1: the creating start keeps a ``task_start`` copy before it returns; with no
-    admitted root (or no review), it reads nothing and routes no runtime."""
+    """#1118 unit 1: the admitting operation keeps a copy in the runtime it holds; with no
+    admitted root (or no review), it reads nothing."""
 
     from finishup.adapters.task_input_read import snapshot_outside_inputs  # noqa: PLC0415
     from finishup.application.input_snapshot import (  # noqa: PLC0415
@@ -234,7 +234,6 @@ async def test_a_start_keeps_its_named_outside_input_only_where_the_scope_allows
     shared.mkdir()
     (shared / "spec.md").write_text("ORIGINAL\n", encoding="utf-8")
     runtime, _adapter = _runtime()
-    router = _Router(runtime)
     scopes: list[str] = []
 
     async def scope(context: RepositoryPrivacyContext, task_id: str) -> InputSnapshotScope | None:
@@ -247,26 +246,23 @@ async def test_a_start_keeps_its_named_outside_input_only_where_the_scope_allows
 
     app = replace(
         _application(_Catalog(_route())),
-        runtime=cast(BundleRuntimePort, router),
         clock=FixedClock(),  # pyright: ignore[reportArgumentType]
         input_snapshot_scope=scope,
     )
-    record = getattr(Application, "_record_input_snapshot")
+    capture = getattr(Application, "_capture_inputs")
 
-    await record(
+    await capture(
         app,
-        runtime.task_id,
-        runtime.session_id,
-        runtime.writer_id,
+        runtime,
+        "evt_00000000-0000-4000-8000-000000000001",
         (os.fspath(shared / "spec.md"),),
         "task_start",
         _context(os.fspath(tmp_path / "repo")),
-        None,
+        "req_00000000-0000-4000-8000-000000000001",
     )
 
     kept = await load_input_snapshots(runtime, None)
     assert scopes == [runtime.task_id]
-    assert len(router.routes) == (1 if admitted else 0)
     assert [s.boundary for s in kept] == (["task_start"] if admitted else [])
 
 

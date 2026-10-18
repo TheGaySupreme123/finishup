@@ -1408,6 +1408,13 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   - The bytes take the same redaction as every task input, leave as `repository_excerpt` items
     labelled "outside the workspace beneath a root the owner admitted", and pass the gateway and
     never-send scan. A channel that withholds `repository_excerpt` drops them.
+  - Every outside read ends by checking that the file's identity, size, mtime, ctime, mode, owner
+    and link count did not change and that its name still leads to it; otherwise nothing is
+    returned (issue #1118 review R6). A task-input snapshot (ADR-031 #1118 amendment) uses the
+    same roots, walk and checks. It reads nothing when the owner's conversation setting is
+    `local_only`, when neither the inference channel nor a separately enabled local model admits
+    ordinary `repository_excerpt` content, or when the recipe carries no task inputs: no file is
+    read to prepare a review that could not send it.
   - Removal wins over bytes already read (issue #1118 unit 1, E2E-2). Each outside item keeps the
     root it was read beneath, from the capture (or the ADR-031 snapshot) through the case to the
     privacy candidate (`CandidateContextItem.input_root`). The coordinator refuses an item whose

@@ -1711,11 +1711,20 @@ sets `CandidateContextItem.input_root`, which `_semantic_decision` refuses once 
 policy no longer admits that root (issue #1118 unit 1, E2E-2). Kept copies (ADR-031 #1118
 amendment) arrive as `snapshots` with a `current_reader` and are offered first, with
 `baseline` (`task_start` or `admission_time`) and `current_state` (`same`, `changed`,
-`unavailable`); an input from an older object without `root` is never offered. Snapshots are
-kept by `application.input_snapshot.record_input_snapshot` through
-`Application.input_snapshot_scope(context, task_id) -> InputSnapshotScope | None` (roots only
-under `snapshot_roots(policy, carries_task_inputs)`) and read with
-`task_input_read.snapshot_outside_inputs`. The reader opens each root one
+`unavailable`; `same` compares redacted bytes, and the label says so when the copy was
+redacted); an input from an older object without `root` is never offered. Snapshots are kept by
+`application.input_snapshot.record_input_snapshot(runtime=, key=, values=, scope=, boundary=, ...)`
+inside the admitting operation: `execute_start(..., input_capture=)` calls it before the
+lifecycle append (key: the lifecycle event id; `task_start` when the event opens the session,
+else `admission_time`), and `execute_publish_work(app, request, input_capture)` calls it for a
+validated new batch before the append (key: the request id). `Application.input_snapshot_scope(
+context, task_id) -> InputSnapshotScope | None` gives the roots, only under
+`snapshot_roots(policy, carries_task_inputs)` (recipe carries inputs, conversation setting not
+`local_only`, and the inference channel or local model admits ordinary `repository_excerpt`).
+The task ledger's `reserve_task_input_snapshot(key) -> SnapshotUsage | None` (``None``: already
+reserved, read nothing), `complete_task_input_snapshot(key, spent, ref)` and
+`load_task_input_snapshots()` hold the task-wide accounting (`snapshot_grant`); the reader is
+`task_input_read.snapshot_outside_inputs`, whose `limit` bounds candidates attempted. The reader opens each root one
 component at a time from `/`, trusts a directory or file only when the service user or root owns
 it and `writable_by_others` is false (a sticky directory excepted), and refuses the excluded
 directories by device and inode at every level (PR #1086 review R1-02, R1-03, R1-05, R1-07).
