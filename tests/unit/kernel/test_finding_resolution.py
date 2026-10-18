@@ -41,12 +41,14 @@ from finishup.domain.receipts import (
 )
 from finishup.domain.values import FindingId, Frontier
 from finishup.kernel.finding_resolution import (
+    OBSERVED_FAILURE_NOT_RERUN,
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
     apply_check_resolution,
     finding_is_resolved,
     issue_key,
     qualifying_check_resolves,
     reopen_findings_resolved_by,
+    resolution_blockers,
     resolved_finding_ids,
 )
 from finishup.kernel.plan_drift import PLAN_DRIFT_GAPS
@@ -3866,3 +3868,33 @@ def test_an_unresolved_verification_limit_never_vetoes_a_repaired_ai_powered_fin
     raised_under = replace(finding, coverage=_coverage(gaps=(gap,), semantic=True))
     assert _blockers(raised_under, later) == ()
     assert _resolves(raised_under, later) is True
+
+
+# --- observed failed-command findings (#1104) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "finding_gaps", [(), ("advice_semantic_deferred",), ("observation_qualified_partial",)]
+)
+@pytest.mark.parametrize("check_gaps", [(), ("host_outcome_unavailable",)])
+def test_no_check_resolves_an_observed_failed_command_finding(
+    finding_gaps: tuple[str, ...], check_gaps: tuple[str, ...]
+) -> None:
+    """No local rule re-reads the advice condition, so a check's silence proves nothing: even with
+    no coverage gaps at all, only a later passing run retires it (``finding_retirement``)."""
+
+    finding = replace(
+        _finding(kind=FindingKind.FAILED_WORK_OMITTED, subject_refs=(evt(2), evt(3))),
+        coverage=_coverage(gaps=finding_gaps),
+    )
+    check = _check(coverage=_coverage(gaps=check_gaps))
+    assert OBSERVED_FAILURE_NOT_RERUN in resolution_blockers(finding, 4, check, frozenset())
+
+
+def test_pack_failed_work_finding_keeps_ordinary_resolution() -> None:
+    """The work-integrity pack's own finding names its claim and still resolves by a check."""
+
+    finding = _finding(kind=FindingKind.FAILED_WORK_OMITTED, subject_refs=(clm(1), evt(3)))
+    check = _check(coverage=_coverage(gaps=()))
+    assert OBSERVED_FAILURE_NOT_RERUN not in resolution_blockers(finding, 4, check, frozenset())
+    assert resolution_blockers(finding, 4, check, frozenset()) == ()

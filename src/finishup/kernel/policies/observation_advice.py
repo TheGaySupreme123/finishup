@@ -14,9 +14,11 @@ from finishup.domain.observation import (
     ObservationGapCode,
     ObservationLifecycle,
 )
+from finishup.domain.process_control import PROCESS_CONTROLS, stopped_own_job
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
     ObservedRun,
+    certified_identities,
     classify_observed_runs,
 )
 from finishup.protocol.canonical import JsonValue, canonical_digest
@@ -263,6 +265,10 @@ _FIELD_ACTION: Final = "action"
 _FIELD_ATTEMPT: Final = "attempt"
 _FIELD_DENIED: Final = "denied"
 _FIELD_COMMAND_COMMITMENT: Final = "command_commitment"
+_FIELD_SEGMENT_COMMITMENTS: Final = "command_segment_commitments"
+_FIELD_COMMAND_COMPOSITION: Final = "command_composition"
+_FIELD_RUNNER_CLASS: Final = "runner_class"
+_FIELD_PROCESS_CONTROL: Final = "process_control"
 # The post-phase event kinds that report a completed tool call (Cursor's is mapped to the first).
 _POST_TOOL_EVENT_KINDS: Final = frozenset({"PostToolUse", "postToolUse"})
 # Read only as correlation keys.
@@ -309,6 +315,51 @@ def _denied(envelope: ObservationEnvelope) -> bool:
 def _command_commitment(envelope: ObservationEnvelope) -> str | None:
     value = envelope.structural_payload.get(_FIELD_COMMAND_COMMITMENT)
     return value if type(value) is str and value.startswith("hmac-sha256:") else None
+
+
+def _command_certifies(envelope: ObservationEnvelope) -> frozenset[str]:
+    """The segment commitments a stated success of this envelope proves passed (#1104)."""
+
+    return certified_identities(
+        envelope.structural_payload.get(_FIELD_SEGMENT_COMMITMENTS),
+        envelope.structural_payload.get(_FIELD_COMMAND_COMPOSITION),
+    )
+
+
+def _stop_shapes(envelopes: Sequence[ObservationEnvelope]) -> Mapping[str, str]:
+    """The own-background-job stop shape (#1104) each keyed command identity carries.
+
+    The shape is a function of the command text alone, and the keyed commitment binds that text,
+    so a Codex session-stream copy that states the exit (but carries no shape) is judged by the
+    shape its hook copy recorded for the same command.
+    """
+
+    shapes: dict[str, str] = {}
+    for envelope in envelopes:
+        identity = _command_commitment(envelope)
+        shape = envelope.structural_payload.get(_FIELD_PROCESS_CONTROL)
+        if identity is not None and type(shape) is str and shape in PROCESS_CONTROLS:
+            shapes[identity] = shape
+    return shapes
+
+
+def _failure_exempt(envelope: ObservationEnvelope, stop_shapes: Mapping[str, str]) -> bool:
+    """A command failure the hook classified as carrying no failed-work duty.
+
+    A known read or exploration (``runner_class == "exploration"``, #972, #1104), and a command
+    that stopped the background job it launched itself when the stated exit is exactly that
+    stop's status (``domain.process_control.stopped_own_job``, #1104), are not verification
+    commands. Unknown command classes, and any other exit, stay on the ordinary advice path.
+    """
+
+    payload = envelope.structural_payload
+    if payload.get(_FIELD_RUNNER_CLASS) == "exploration":
+        return True
+    shape = payload.get(_FIELD_PROCESS_CONTROL)
+    identity = _command_commitment(envelope)
+    if shape is None and identity is not None:
+        shape = stop_shapes.get(identity)
+    return stopped_own_job(shape, _exit_status(envelope))
 
 
 def _changed_paths_digest(envelope: ObservationEnvelope) -> str | None:
@@ -438,22 +489,26 @@ def _candidate(
 
 
 def _failed_commands(envelopes: Sequence[ObservationEnvelope]) -> list[ObservationAdviceCandidate]:
-    """Report a failed command only while it is still live (#909).
+    """Report a failed command only while it is still live (#909, #1104).
 
     A failure clears when the same host call later reports success (its correlation key), or when
     a later run of the same command identity reports a success, failure, or partial outcome (the
     keyed ``command_commitment`` the hook computed, never command text; only the latest limiting
-    run is judged). An unknown outcome cannot certify repair. An edit changes the state under test
-    but proves no covering rerun. This is the shared supersession rule the local packs and
-    claim-revision invariant apply, so advice cannot keep a failure the packs already treat as
-    history. An envelope without a commitment keeps its disclosure duty until it is explicitly
-    acknowledged.
+    run is judged), or when a later success certifies that identity as one of its segments (a
+    passing ``single`` or ``and_chain`` command, ``certified_identities``). An unknown outcome
+    cannot certify repair. An edit changes the state under test but proves no covering rerun.
+    This is the shared supersession rule the local packs and claim-revision invariant apply, so
+    advice cannot keep a failure the packs already treat as history; the recorded finding is
+    retired by the same rule at replay (``kernel.finding_retirement``). An envelope without a
+    commitment can never be retired by a rerun: the agent answers it ``acknowledged`` (disclosed
+    on the receipt) or ``acknowledged_not_done``.
     """
 
     results: list[ObservationAdviceCandidate] = []
     unresolved: dict[_ToolCorrelationKey, tuple[str, ObservationEnvelope]] = {}
     runs: list[ObservedRun] = []
     originating_tools, fallback_tools = _tool_resolution(envelopes)
+    stop_shapes = _stop_shapes(envelopes)
     for position, envelope in enumerate(envelopes):
         tool, key = _resolved_tool(envelope, originating_tools, fallback_tools)
         if key is None:
@@ -465,19 +520,38 @@ def _failed_commands(envelopes: Sequence[ObservationEnvelope]) -> list[Observati
         failed = (exit_status is not None and exit_status != 0) or success is False
         passed = not failed and (exit_status == 0 or success is True)
         ref = str(position)
-        runner_class = envelope.structural_payload.get("runner_class")
         if tool is not None and tool in _COMMAND_TOOLS:
-            if runner_class == "exploration":
-                # Known read/exploration failures are not verification commands. Keep unknown
-                # command classes on the ordinary advice path (#972).
-                continue
             identity = _command_commitment(envelope)
+            if _failure_exempt(envelope, stop_shapes):
+                # Known read/exploration failures and a stopped own background job are not
+                # verification commands (#972, #1104). A stated success still certifies what it
+                # ran, exactly as the ledger-side rule reads the same recorded run.
+                if passed and not failed:
+                    unresolved.pop(key, None)
+                    runs.append(
+                        ObservedRun(
+                            ref,
+                            position,
+                            ResultOutcome.SUCCESS,
+                            identity,
+                            certifies=_command_certifies(envelope),
+                        )
+                    )
+                continue
             if failed:
                 unresolved[key] = (ref, envelope)
                 runs.append(ObservedRun(ref, position, ResultOutcome.FAILURE, identity))
             elif passed:
                 unresolved.pop(key, None)
-                runs.append(ObservedRun(ref, position, ResultOutcome.SUCCESS, identity))
+                runs.append(
+                    ObservedRun(
+                        ref,
+                        position,
+                        ResultOutcome.SUCCESS,
+                        identity,
+                        certifies=_command_certifies(envelope),
+                    )
+                )
             elif identity is not None and envelope.event_kind in _POST_TOOL_EVENT_KINDS:
                 # Preserve the unknown observation for ordering, but it cannot certify or retire
                 # the earlier failure. Only a later success, failure, or partial result is a

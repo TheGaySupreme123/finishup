@@ -244,7 +244,7 @@ def _child_finding_snapshot(
         priority=priority,
         actionable=actionable,
         resolved=resolved,
-        resolution_event_id=record.resolved_by_check_event_id if resolved else None,
+        resolution_event_id=record.proof_event_id if resolved else None,
         self_verified=(not resolved and actionable and todo is FindingTodoState.SELF_VERIFIED),
     )
 

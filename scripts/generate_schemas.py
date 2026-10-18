@@ -5673,6 +5673,7 @@ _FINDING_CLOSURE_BASES: Final = (
     "acknowledged_not_done_bookkeeping",
     "acknowledged_not_done_requirement",
     "disputed_after_rebuttal",
+    "failed_run_disclosed",
     "limitation_acknowledged_not_done",
     "limitation_disclosed",
     "limitation_requested",
@@ -5682,6 +5683,7 @@ _FINDING_CLOSURE_BASES: Final = (
     "rejected_review_unavailable",
     "rejection_accepted",
     "reopened",
+    "retired_by_passing_run",
     "self_verified",
 )
 _OBLIGATION_CLOSURE_BASES: Final = (
@@ -8246,6 +8248,14 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
         fields["workspace_effect"] = {
             "enum": cast(list[JsonValue], sorted(WORKSPACE_EFFECTS)),
+            "type": "string",
+        }
+        # The command stops the background job it launched itself (#1104): a shape fact from the
+        # command text, judged later against the recorded exit. The hook's own closed set.
+        from finishup.domain.process_control import PROCESS_CONTROLS
+
+        fields["process_control"] = {
+            "enum": cast(list[JsonValue], sorted(PROCESS_CONTROLS)),
             "type": "string",
         }
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013): the

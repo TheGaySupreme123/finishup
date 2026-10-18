@@ -151,9 +151,12 @@ _RULE_SUMMARIES: Final[Mapping[str, str]] = {
 }
 
 _RULE_DETAILS: Final[Mapping[str, str]] = {
+    # #1104: what actually retires it. An edit never does (#909); a passing rerun of the same
+    # command, alone or as a segment of a passing ``&&`` chain, does; ``acknowledged`` discloses it.
     "failed_command_unresolved": (
-        "A tool result failed and neither a later passing run of the same command "
-        "nor a completed edit followed it"
+        "A command FinishUP saw fail has no later passing run of the same command. Rerunning it "
+        "after the fix retires this, alone or inside a passing and-chain; an edit does not. If "
+        "the failure stays, respond acknowledged with the reason"
     ),
     "edit_after_successful_check": "A check that predates a later edit is no longer current verification",
     "completion_without_verification": "A completion claim lacks current admissible verification evidence",

@@ -56,10 +56,10 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
-    observed_action_is_exploratory,
     observed_action_runner_class,
     observed_edit_counts,
     observed_event_ids_from_coverage,
+    observed_failure_exempt,
     observed_failure_states,
     observed_shell_write_counts,
 )
@@ -505,11 +505,12 @@ def _failed_work_findings(case: DeterministicCase) -> list[DeterministicAssessme
             state = states.get(result_id)
             action = case.projection.actions.get(record.payload.action_id)
             if state is not None and action is not None and action.payload is not None:
-                if action.source_event_id in observed and observed_action_is_exploratory(
-                    action.payload
+                if action.source_event_id in observed and observed_failure_exempt(
+                    action.payload, record.payload
                 ):
-                    # A known read/exploration command is useful context but is not a required
-                    # validation result. Unknown command classes remain limiting.
+                    # A known read/exploration command, or a stopped own background job (#1104),
+                    # is useful context but is not a required validation result. Unknown command
+                    # classes remain limiting.
                     continue
             if state is not None and state is not ObservedFailureState.LIVE:
                 continue

@@ -63,6 +63,7 @@ from finishup.domain.values import (
     result_id,
     validate_sha256_digest,
 )
+from finishup.kernel import finding_retirement
 from finishup.kernel.claim_limitations import (
     DISCLOSABLE_LIMITING_OUTCOMES,
     required_limitation_result_ids,
@@ -1459,6 +1460,12 @@ def reduce_event(
                 if payload is None
                 else _projection_record(accepted, cast(ResultRecordedPayload, payload))
             )
+            if payload is not None and accepted.event_id in replay_index.observed_event_ids:
+                # #1104: a hook-observed pass retires the observed failed-command findings whose
+                # failed run it reruns; a failure may be the failed run a finding already names.
+                finding_retirement.on_observed_result(
+                    findings, key, results, actions, replay_index.observed_event_ids
+                )
         elif family == "evidence_recorded":
             key = _locator_id(accepted, evidence_id)
             evidence[key] = EvidenceProjectionRecord(
@@ -1481,6 +1488,14 @@ def reduce_event(
             key = _locator_id(accepted, finding_id)
             findings[key] = _finding_record(
                 accepted, None if payload is None else cast(FindingRecordedPayload, payload)
+            )
+            finding_retirement.on_finding_recorded(
+                findings,
+                key,
+                results,
+                actions,
+                replay_index.observed_event_ids,
+                replay_index.observation_finding_event_ids,
             )
         elif family == "response_recorded":
             key = _locator_id(accepted, finding_id)
@@ -1626,6 +1641,9 @@ def reduce_event(
             ):
                 pending_missing = None
             reopen_findings_resolved_by(findings, frozenset(ordered_event_targets))
+            finding_retirement.recompute_all(
+                findings, results, actions, replay_index.observed_event_ids
+            )
             for target_event in ordered_event_targets:
                 gaps.add(f"redacted_event:{target_event}")
             for target_object in object_targets:

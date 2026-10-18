@@ -94,6 +94,10 @@ from finishup.domain.task_statement import (
 )
 from finishup.domain.values import ClaimId, EventId, EvidenceId, FindingId, ObligationId, ResultId
 from finishup.kernel.claims import effective_claim_items
+from finishup.kernel.finding_retirement import (
+    is_observed_failed_command_finding,
+    is_observed_failed_command_shape,
+)
 from finishup.kernel.plan_drift import (
     INSTRUCTION_REQUIREMENT_UNMAPPED_GAP,
     OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP,
@@ -134,6 +138,7 @@ from finishup.protocol.policy_packs import (
 
 __all__ = [
     "AGENT_SETTLED_DISPOSITION_VALUES",
+    "OBSERVED_FAILURE_NOT_RERUN",
     "CAPTURE_FAILURE_GAPS",
     "DETERMINISTIC_PROOF_TOLERATED_GAPS",
     "SEMANTIC_ONLY_GAPS",
@@ -162,6 +167,11 @@ __all__ = [
     "resolved_finding_ids",
     "standing_position_of",
 ]
+
+# #1104: an observed failed-command finding (``kernel.finding_retirement``) is never proved absent
+# by a check. No local rule re-reads the advice condition that raised it, so a check's silence
+# proves nothing; only a later passing run of the same command retires it.
+OBSERVED_FAILURE_NOT_RERUN: Final = "observed_failure_not_rerun"
 
 IssueKey = tuple[object, ...]
 
@@ -1405,6 +1415,9 @@ def resolution_blockers(
                 reasons.append("command_relation_independence_unproven")
         if not _deterministic_freshness_proven(finding, check, freshness_gaps):
             reasons.append("freshness_or_original_proof_unreadable")
+        if is_observed_failed_command_shape(finding):
+            # Structural, no authorship needed: a pack finding always names its claim.
+            reasons.append(OBSERVED_FAILURE_NOT_RERUN)
     reasons.extend("coverage:" + gap for gap in sorted(gaps - tolerated))
     return tuple(reasons)
 
@@ -1643,6 +1656,12 @@ def _finding_resolution_explanation(
     disposition = (
         None if response is None or response.payload is None else response.payload.disposition
     )
+    if is_observed_failed_command_finding(finding_record):
+        observed = _observed_failed_command_explanation(
+            state, finding_id, finding_record, disposition
+        )
+        if observed is not None:
+            return observed
     if disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE:
         return (
             "Acknowledged, not done: the agent recorded with a reason that it will not do this. "
@@ -1763,6 +1782,55 @@ def _finding_resolution_explanation(
         f"{relation} in check {attempt.check_event_id} of subject frontier "
         f"{attempt.subject_sequence}. Resolution requirements not met: {detail}."
         f"{later} {UNRESOLVED_FINDING_NEXT_STEPS}"
+    )
+
+
+def _observed_failed_command_explanation(
+    state: ProjectionState,
+    finding_id: FindingId,
+    record: FindingProjectionRecord,
+    disposition: ResponseDisposition | None,
+) -> str | None:
+    """What settles an observed failed-command finding (#1104); ``None`` for a generic answer.
+
+    No check ever proves it absent (``OBSERVED_FAILURE_NOT_RERUN``); a later passing run of the
+    same command retires it (``kernel.finding_retirement``), and ``acknowledged`` discloses it.
+    Fixed sentences only: the one id named is the passing run's event.
+    """
+
+    if record.retired_by_event_id is not None and finding_is_resolved(state, finding_id):
+        return (
+            f"Retired by a later passing run of the same command (event "
+            f"{record.retired_by_event_id}); retained as history. A check never proves an "
+            "observed command failure absent; only a passing rerun does."
+        )
+    if disposition is ResponseDisposition.ACKNOWLEDGED:
+        return (
+            "Disclosed failed command: the agent acknowledged that this observed command failure "
+            "is expected or stays. It does not block, the receipt discloses it and cannot read "
+            "clean, and a later passing run of the same command still retires it."
+        )
+    if disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE:
+        return (
+            "Acknowledged, not done: the agent recorded with a reason that it will not repair "
+            "this observed command failure. It is settled as bookkeeping and does not block; "
+            "the receipt discloses it and cannot read clean, and a later passing run of the same "
+            "command still retires it."
+        )
+    if disposition is not None and disposition is not ResponseDisposition.REOPENED:
+        return None
+    if record.failed_run_result_id is None:
+        return (
+            "Unresolved: FinishUP could not link this finding to exactly one observed failed "
+            "run, so no rerun can retire it. If the failure is expected or will stay, respond "
+            "acknowledged with the reason (disclosed on the receipt); respond "
+            "acknowledged_not_done only if you will not fix it."
+        )
+    return (
+        "Unresolved: no later passing run of the same command was observed. Rerun the same "
+        "command after the fix, alone or inside a passing && chain: the pass retires this by "
+        "itself, and an edit or a check does not. If the failure is expected or will stay, "
+        "respond acknowledged with the reason (disclosed on the receipt)."
     )
 
 
@@ -2525,14 +2593,16 @@ def reopen_findings_resolved_by(
 def finding_is_resolved(state: ProjectionState, finding_id: FindingId) -> bool:
     """The one shared answer every surface reads for ``resolved``.
 
-    True only when a later qualifying check proved the issue absent *and* the finding's latest
-    response, if any, is readable and is not ``provenance_disputed``. The released
-    ``status-result`` wire pins ``provenance_disputed`` rows to ``resolved=false``; that pin is
-    honoured here, conservatively, rather than letting the receipt and status disagree.
+    True only when a later qualifying check proved the issue absent, or a later hook-observed
+    passing run of the same command retired an observed failed-command finding
+    (``kernel.finding_retirement``, #1104), *and* the finding's latest response, if any, is
+    readable and is not ``provenance_disputed``. The released ``status-result`` wire pins
+    ``provenance_disputed`` rows to ``resolved=false``; that pin is honoured here,
+    conservatively, rather than letting the receipt and status disagree.
     """
 
     record = state.findings.get(finding_id)
-    if record is None or record.payload is None or record.resolved_by_check_event_id is None:
+    if record is None or record.payload is None or record.proof_event_id is None:
         return False
     response = state.responses.get(finding_id)
     if response is None:
@@ -2551,10 +2621,12 @@ def finding_is_resolved(state: ProjectionState, finding_id: FindingId) -> bool:
         # row. Reverse edge (tb4n3 RC-7, owner decision 8, ADR-034/040 amendment): a qualifying
         # check that tested the work *after* that answer proves the issue absent, so the agent's
         # later repair is no longer a one-way door.
-        return (
-            record.resolution_frontier is not None
-            and record.resolution_frontier > response.source_frontier
+        # A retirement is the same kind of proof: the later of the two proof frontiers decides.
+        proof_frontier = max(
+            record.resolution_frontier or 0,
+            record.retired_frontier or 0,
         )
+        return proof_frontier > response.source_frontier
     return True
 
 

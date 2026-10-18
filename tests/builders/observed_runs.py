@@ -11,12 +11,16 @@ case builder, composed local packs and receipt builder over that prefix.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import cast
 
 from finishup.application.check import CheckScope, run_deterministic_policies
+from finishup.application.closure_basis import finding_states
 from finishup.application.observation_materialize import observation_author
 from finishup.domain.command_segments import command_segment_commitments
 from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
+    RESPONSE_EVENT_SCHEMA_VERSION,
+    RESPONSE_V1_1_DISPOSITIONS,
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -31,18 +35,29 @@ from finishup.domain.events import (
     LedgerRecord,
     PayloadRef,
     ProjectionLocator,
+    RedactionMethod,
+    RedactionReasonCategory,
+    RedactionRecordedPayload,
     RedactionState,
+    ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
     WriterChain,
     encode_payload,
     media_type_for,
 )
-from finishup.domain.findings import FindingKind
+from finishup.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    ResponseDisposition,
+)
 from finishup.domain.observation import normalize_observed_command, observed_command_commitment
 from finishup.domain.observation_selection import command_runner_class
 from finishup.domain.receipts import (
     PolicyVersionEntry,
+    ReceiptDocument,
     ReceiptSectionKey,
     ReceiptVersionSlice,
     SchemaVersionEntry,
@@ -52,6 +67,7 @@ from finishup.domain.values import (
     ActorType,
     ClaimId,
     EventId,
+    FindingId,
     Frontier,
     ResultId,
     SubjectStateRef,
@@ -60,6 +76,7 @@ from finishup.domain.values import (
     claim_id,
     event_id,
     evidence_id,
+    finding_id,
     object_id,
     receipt_id,
     request_id,
@@ -95,6 +112,7 @@ from finishup.protocol.coverage import (
     coverage_to_json,
 )
 from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+from finishup.protocol.policy_packs import CURRENT_POLICY_VERSIONS
 
 __all__ = [
     "INSTALLATION_KEY",
@@ -102,6 +120,7 @@ __all__ = [
     "ObservedLedger",
     "command_identity_for",
     "omissions",
+    "observed_receipt",
     "omitted_results",
     "receipt_limitations",
 ]
@@ -139,9 +158,11 @@ def command_identity_for(command: str) -> str:
 
 
 def _logical_key(payload: EventPayload, identifier: EventId) -> str | None:
-    if type(payload).__name__ == "SessionOpenedPayload":
-        # A session event projects no record of its own.
+    if type(payload).__name__ in {"SessionOpenedPayload", "RedactionRecordedPayload"}:
+        # A session or redaction event projects no record of its own.
         return None
+    if isinstance(payload, Finding | ResponseRecordedPayload):
+        return str(payload.finding_id)
     for name in ("result_id", "action_id", "claim_id", "obligation_id", "evidence_id"):
         value = getattr(payload, name, None)
         if value is not None:
@@ -170,6 +191,7 @@ class ObservedLedger:
         known_gaps: tuple[str, ...] = (),
         causal_parents: tuple[EventId, ...] = (),
         operation: str | None = None,
+        channel: PublicationChannel | None = None,
     ) -> EventId:
         sequence = len(self.records) + 1
         operation_ref = _OPERATION if operation is None else request_id(operation)
@@ -179,7 +201,8 @@ class ObservedLedger:
         reference = object_id(f"obj_00000000-0000-4000-8000-{sequence:012d}")
         commitment = "hmac-sha256:" + f"{sequence:064x}"
         author = observation_author() if observed else _AGENT
-        channel = PublicationChannel.HOOK_OBSERVED if observed else PublicationChannel.LOCAL_CLI
+        if channel is None:
+            channel = PublicationChannel.HOOK_OBSERVED if observed else PublicationChannel.LOCAL_CLI
         coverage = coverage_for_channel(channel)
         if known_gaps:
             coverage = replace(coverage, known_gaps=known_gaps)
@@ -246,12 +269,119 @@ class ObservedLedger:
                     schema=schema,
                     logical_key=_logical_key(payload, identifier),
                     canonical_payload_digest=canonical_digest(encode_payload(payload)),
-                    redaction_target_event_ids=(),
+                    redaction_target_event_ids=(
+                        payload.target_event_ids
+                        if isinstance(payload, RedactionRecordedPayload)
+                        else ()
+                    ),
                     redaction_target_object_ids=(),
                 ),
             )
         )
         return identifier
+
+    def events_of(self, result: ResultId) -> tuple[EventId, EventId]:
+        """The action and result event ids of the call that recorded *result*."""
+
+        result_record = next(
+            record
+            for record in self.records
+            if isinstance(record, AcceptedEvent)
+            and isinstance(record.payload, ResultRecordedPayload)
+            and record.payload.result_id == result
+        )
+        payload = cast(ResultRecordedPayload, result_record.payload)
+        action_event = next(
+            record.event_id
+            for record in self.records
+            if isinstance(record, AcceptedEvent)
+            and isinstance(record.payload, ActionRecordedPayload)
+            and record.payload.action_id == payload.action_id
+        )
+        return action_event, result_record.event_id
+
+    def advice_finding(
+        self,
+        refs: tuple[EventId, ...],
+        *,
+        number: int = 1,
+        subject: tuple[str, ...] | None = None,
+    ) -> FindingId:
+        """Append the observation coordinator's ``failed_command_unresolved`` finding.
+
+        Mirrors ``ObservationCoordinator._materialize_advice_findings``: an observation-authored,
+        engine-derived ``finding_recorded`` (work-integrity, ``failed_work_omitted``) whose
+        subject refs are the event ids the failed envelope materialized, sorted.
+        """
+
+        identifier = finding_id(f"fnd_00000000-0000-4000-8000-{number:012d}")
+        kind = FindingKind.FAILED_WORK_OMITTED
+        subject_refs = (
+            tuple(sorted({str(ref) for ref in refs}, key=str.encode))
+            if subject is None
+            else subject
+        )
+        finding = Finding(
+            identifier,
+            kind,
+            FindingOrigin.DETERMINISTIC,
+            FINDING_KIND_TRAITS[kind][0],
+            "Unresolved failed command observed",
+            "A command FinishUP saw fail has no later passing run of the same command.",
+            subject_refs,  # type: ignore[arg-type]
+            "work-integrity",
+            CURRENT_POLICY_VERSIONS["work-integrity"],
+            self.frontier,
+            coverage_for_channel(PublicationChannel.ENGINE_DERIVED),
+            None,
+        )
+        self._append(
+            EventSchema("finding_recorded", "1.2.0"),
+            finding,
+            observed=True,
+            channel=PublicationChannel.ENGINE_DERIVED,
+        )
+        return identifier
+
+    def respond(
+        self,
+        finding: FindingId,
+        disposition: ResponseDisposition,
+        *,
+        reason: str | None = None,
+    ) -> EventId:
+        """Append the agent's ``response_recorded`` answer to *finding* at the current frontier."""
+
+        version = (
+            RESPONSE_EVENT_SCHEMA_VERSION if disposition in RESPONSE_V1_1_DISPOSITIONS else "1.0.0"
+        )
+        return self._append(
+            EventSchema("response_recorded", version),
+            ResponseRecordedPayload(finding, self.frontier, disposition, reason),
+            observed=False,
+        )
+
+    def redact(self, *targets: EventId) -> EventId:
+        """Append a logical redaction of *targets* (their payloads become unreadable)."""
+
+        return self._append(
+            EventSchema("redaction_recorded", "1.0.0"),
+            RedactionRecordedPayload(
+                target_event_ids=targets,
+                target_object_ids=(),
+                method=RedactionMethod.LOGICAL_REDACTION,
+                reason_category=RedactionReasonCategory.SECRET,
+                authority=actor_id("agt_observed_runs"),
+                remaining_gap="One event payload is no longer readable.",
+            ),
+            observed=False,
+        )
+
+    @property
+    def frontier(self) -> Frontier:
+        if not self.records:
+            return Frontier.genesis()
+        return Frontier(len(self.records), self.records[-1].entry_digest)
 
     def append(
         self,
@@ -289,6 +419,7 @@ class ObservedLedger:
         runner: str | None = None,
         write_scope: str | None = None,
         workspace_effect: str | None = None,
+        process_control: str | None = None,
     ) -> ResultId:
         """Record one tool call as the coordinator materializes it: action, then result.
 
@@ -334,6 +465,7 @@ class ObservedLedger:
                     write_outside_workspace=write_outside_workspace,
                     effective_user=effective_user,
                     write_scope=write_scope,
+                    process_control=process_control,
                 ),
                 command=recorded,
                 subject_state=subject_state,
@@ -523,7 +655,11 @@ def omitted_results(ledger: ObservedLedger) -> tuple[str, ...]:
     return tuple(refs)
 
 
-def receipt_limitations(ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] = ()) -> str:
+def observed_receipt(
+    ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] = ()
+) -> ReceiptDocument:
+    """The production receipt over the ledger's exact prefix, with no check recorded."""
+
     records = ledger.prefix
     projection = replay(records)
     coverage = Coverage(
@@ -541,7 +677,9 @@ def receipt_limitations(ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] =
         availability=CaseAvailabilityFacts(),
         coverage=coverage,
         gaps=tuple(CaseGap(code, code, ()) for code in sorted({"check_not_recorded", *extra_gaps})),
-        finding_states=(),
+        # The production per-finding states (to-do state and closure class), as the receipt
+        # operation computes them; empty for a ledger without findings.
+        finding_states=finding_states(projection, records),
         applicable_check=None,
         records=records,
     )
@@ -570,6 +708,11 @@ def receipt_limitations(ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] =
         ReceiptRedactionProfile.FULL_LOCAL,
         ReceiptInclude.FULL,
     )
+    return receipt
+
+
+def receipt_limitations(ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] = ()) -> str:
+    receipt = observed_receipt(ledger, extra_gaps=extra_gaps)
     return next(
         section.body
         for section in receipt.sections

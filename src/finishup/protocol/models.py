@@ -3774,6 +3774,8 @@ FindingClosureBasisLiteral = Literal[
     "absence_proved",
     "absence_proved_after_acknowledged_not_done",
     "absence_proved_after_self_verified",
+    "retired_by_passing_run",
+    "failed_run_disclosed",
 ]
 ObligationClosureBasisLiteral = Literal[
     "open",
@@ -4183,6 +4185,7 @@ class CheckInspectionFindingModel(_ClosedModel):
         "acknowledged_not_done_bookkeeping",
         "acknowledged_not_done_requirement",
         "disputed_after_rebuttal",
+        "failed_run_disclosed",
         "limitation_acknowledged_not_done",
         "limitation_disclosed",
         "limitation_requested",
@@ -4192,6 +4195,7 @@ class CheckInspectionFindingModel(_ClosedModel):
         "rejected_review_unavailable",
         "rejection_accepted",
         "reopened",
+        "retired_by_passing_run",
         "self_verified",
     ]
 

@@ -60,6 +60,7 @@ from finishup.domain.task_fact_tokens import (
 )
 from finishup.domain.values import EventId, FindingId, ObligationId
 from finishup.kernel.check_standing import check_standing
+from finishup.kernel.finding_retirement import is_observed_failed_command_finding
 from finishup.kernel.finding_todo import (
     FindingTodoState,
     duplicate_counting_id,
@@ -99,6 +100,7 @@ __all__ = [
     "finding_closure",
     "finding_closure_class",
     "finding_closures",
+    "is_bookkeeping_finding",
     "obligation_closure",
     "obligation_closures",
     "review_can_rule",
@@ -157,6 +159,11 @@ FINDING_BASES: Final[Mapping[str, tuple[FindingClosureClass, ReceiptEffect]]] = 
         "absence_proved": (_F.RESOLVED, _NONE),
         "absence_proved_after_acknowledged_not_done": (_F.RESOLVED, _NONE),
         "absence_proved_after_self_verified": (_F.RESOLVED, _NONE),
+        # #1104: a later hook-observed passing run of the same command retired an observed
+        # failed-command finding; never worded as "a check proved".
+        "retired_by_passing_run": (_F.RESOLVED, _NONE),
+        # #1104: the agent acknowledged an observed failed command. Disclosed, never clean.
+        "failed_run_disclosed": (_F.SETTLED_DISCLOSED, _INSUFFICIENT),
     }
 )
 
@@ -190,6 +197,21 @@ NEXT_ACTIONS: Final = (
 # requirement: an action recorded without a result (priority 3). Kept as data so the set is
 # reviewed in one place.
 BOOKKEEPING_KINDS: Final = frozenset({FindingKind.ACTION_WITHOUT_RESULT})
+
+
+def is_bookkeeping_finding(state: ProjectionState, finding_id: FindingId) -> bool:
+    """Whether an ``acknowledged_not_done`` answer on this finding is bookkeeping (#1104).
+
+    A kind in ``BOOKKEEPING_KINDS``, or an observed failed-command finding: that finding is the
+    observation service's early copy of a failure, and the requirement-level duty stays with the
+    work-integrity pack, which still raises its own claim-level ``failed_work_omitted`` when a
+    completion claim leaves a live failure out of ``limitation_refs``.
+    """
+
+    record = state.findings.get(finding_id)
+    if record is None or record.payload is None:
+        return False
+    return record.payload.kind in BOOKKEEPING_KINDS or is_observed_failed_command_finding(record)
 
 
 def basis_class(basis: str) -> FindingClosureClass:
@@ -431,13 +453,23 @@ def finding_closure(
     limitation = is_limitation_request(finding)
 
     if todo is FindingTodoState.VERIFIED_RESOLVED:
+        proof = record.resolved_by_check_event_id
+        if proof is None and record.retired_by_event_id is not None:
+            # #1104: the proof is the later passing run, not a check.
+            return _make(
+                state,
+                finding,
+                "retired_by_passing_run",
+                ("none",),
+                since=response_frontier,
+                sources=(record.retired_by_event_id,),
+            )
         if disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE:
             basis = "absence_proved_after_acknowledged_not_done"
         elif disposition is ResponseDisposition.SELF_VERIFIED:
             basis = "absence_proved_after_self_verified"
         else:
             basis = "absence_proved"
-        proof = record.resolved_by_check_event_id
         return _make(
             state,
             finding,
@@ -484,7 +516,7 @@ def finding_closure(
         else:
             basis = (
                 "acknowledged_not_done_bookkeeping"
-                if finding.kind in BOOKKEEPING_KINDS
+                if is_bookkeeping_finding(state, finding_id)
                 else "acknowledged_not_done_requirement"
             )
         return _make(
@@ -523,6 +555,19 @@ def finding_closure(
                 since=standing[1],
                 sources=response_event,
             )
+    if disposition is ResponseDisposition.ACKNOWLEDGED and is_observed_failed_command_finding(
+        record
+    ):
+        # #1104: ``acknowledged`` on an observed failed command says the failure is expected or
+        # will stay: disclosed on the receipt, never clean. A later pass still retires it.
+        return _make(
+            state,
+            finding,
+            "failed_run_disclosed",
+            ("repair",),
+            since=response_frontier,
+            sources=response_event,
+        )
     if limitation and not rejected:
         # One implementation of the Q4 lifecycle: ``kernel.limitation`` (recorded facts only, G2).
         standing_limit = limitation_standing(state, finding_id)

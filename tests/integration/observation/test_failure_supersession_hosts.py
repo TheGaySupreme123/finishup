@@ -14,6 +14,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from builders.codex_rollout import encode_lines, item_completed, session_meta
 from builders.observed_runs import ObservedLedger, omissions, omitted_results, receipt_limitations
 from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
@@ -386,3 +388,71 @@ def test_codex_patch_never_retires_a_failure_without_a_covering_rerun(tmp_path: 
     # A patch that states ``Exit code: 0`` still needs an explicit acknowledgement or rerun.
     assert red not in omitted_results(applied)
     assert "hook-observed failing" in receipt_limitations(applied)
+
+
+# --- failures that carry no failed-work duty (#1104) ------------------------------------------
+
+_SERVER = "python app.py & sleep 2; curl -s localhost:8000; kill $!; wait $!"
+
+
+def _codex_shell(emit: _Emit, call: str, command: str, *, exit_code: int) -> None:
+    """A direct Codex shell hook pair in the recorded 0.157.1 ``Process exited`` shape."""
+
+    base = {"session_id": "codex-1104", "turn_id": "turn-1", "tool_name": "Bash"}
+    tool_input = {"command": command}
+    emit(
+        "PreToolUse",
+        {**base, "hook_event_name": "PreToolUse", "tool_use_id": call, "tool_input": tool_input},
+    )
+    emit(
+        "PostToolUse",
+        {
+            **base,
+            "hook_event_name": "PostToolUse",
+            "tool_use_id": call,
+            "tool_input": tool_input,
+            "tool_response": (
+                f"Chunk ID: 5e0c7a\nWall time: 2.2 seconds\nProcess exited with code {exit_code}\n"
+                f"Original token count: 4\nOutput:\n{_CANARY}\n"
+            ),
+        },
+    )
+
+
+def _run_on(host: str, emit: _Emit, call: str, command: str, exit_code: int) -> None:
+    if host == "claude":
+        _claude_bash(emit, call, command, failed=exit_code != 0, exit_code=exit_code)
+    elif host == "cursor":
+        _cursor_shell(emit, call, command, exit_code=exit_code)
+    else:
+        _codex_shell(emit, call, command, exit_code=exit_code)
+
+
+@pytest.mark.parametrize("host", ["claude", "cursor", "codex"])
+def test_read_only_chain_failure_carries_exploration_runner_class(
+    tmp_path: Path, host: str
+) -> None:
+    emit, build = _host(tmp_path, host)
+    _run_on(host, emit, "call-read", f"cd /app && ls {_CANARY}-missing", 2)
+    ledger = build()
+    (action,) = _results(ledger).values()
+    assert "(runner exploration)" in action.description
+    ledger.claim()
+    assert omissions(ledger) == ()
+
+
+@pytest.mark.parametrize("host", ["claude", "cursor", "codex"])
+@pytest.mark.parametrize(("exit_code", "omitted"), [(143, False), (1, True)])
+def test_background_kill_failure_carries_process_control(
+    tmp_path: Path, host: str, exit_code: int, omitted: bool
+) -> None:
+    emit, build = _host(tmp_path, host)
+    _run_on(host, emit, "call-server", _SERVER, exit_code)
+    ledger = build()
+    ((result, action),) = _results(ledger).items()
+    assert "(process stop_own_job_term)" in action.description
+    ledger.claim()
+    # Claude Code's ``PostToolUseFailure`` states no exit status (only error text, which FinishUP
+    # never parses), so the exemption, which needs exactly 128 + signal, never applies there.
+    stated = host != "claude"
+    assert omitted_results(ledger) == ((result,) if omitted or not stated else ())

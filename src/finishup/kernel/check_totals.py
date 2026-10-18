@@ -22,9 +22,9 @@ from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
-    observed_action_is_exploratory,
     observed_action_runner_class,
     observed_event_ids_from_coverage,
+    observed_failure_exempt,
     observed_failure_states,
 )
 from finishup.kernel.outcome_corrections import superseded_unknown_results
@@ -129,7 +129,7 @@ def build_check_totals(
         if (
             failure_state is not ObservedFailureState.LIVE
             or not relevant
-            or observed_action_is_exploratory(action.payload)
+            or observed_failure_exempt(action.payload, payload)
         ):
             continue
         commands["live_failed"] += 1
