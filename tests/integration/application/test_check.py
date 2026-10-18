@@ -2057,6 +2057,14 @@ async def test_insufficient_packet_names_each_missing_item_as_a_check_limitation
     assert app.ledger.last_missing == checked.missing_for_assessment
     assert app.ledger.last_conclusion == "insufficient_packet"
     wire = check_internal_json(checked)
+    # #1118 unit 4 (AIM-1): each kept request's own reason reaches the agent in the fenced
+    # summary; the invented target's reason does not, and no structural field carries reasons.
+    summary = str(app.ledger.last_review_summary)
+    assert "What the reviewer still needs" in summary
+    assert f"verification_output ({clm(1)}): test output absent" in summary
+    assert "command_identity (no named target): which command ran is not shown" in summary
+    assert "invented target" not in summary
+    assert "test output absent" not in str(wire["missing_for_assessment"])
     assert wire["missing_for_assessment"] == (
         {
             "availability": "structurally_unavailable_on_this_host",
@@ -2120,10 +2128,14 @@ async def test_insufficient_packet_naming_nothing_records_none_and_says_so() -> 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("cites_new_material", [False, True])
-async def test_supplied_item_is_not_listed_again_unless_the_reviewer_cites_the_new_material(
+async def test_a_supplied_item_the_reviewer_asks_for_again_stays_listed(
     cites_new_material: bool,
 ) -> None:
-    """Scripted provider: the agent answered the prior request, the reviewer asks again."""
+    """Scripted provider: the agent answered the prior request, the reviewer asks again.
+
+    Owner decision B (#1118 unit 4): the linked supply counts as supplied (disclosed), but the
+    reviewer's repeat is never erased by it.
+    """
 
     app = _App(semantic=True)
     app.ledger.frozen = replace(app.ledger.frozen, case=_missing_case(pending=True, supplied=True))
@@ -2147,10 +2159,11 @@ async def test_supplied_item_is_not_listed_again_unless_the_reviewer_cites_the_n
         ]
         assert "semantic_missing_already_supplied" not in gaps
     else:
-        # The repeat is dropped and disclosed: the agent sees nothing it can add for it.
-        assert checked.missing_for_assessment == ()
+        # The repeat is kept; the earlier supply is disclosed, not called non-convergent.
+        assert [item.target_refs for item in checked.missing_for_assessment] == [targets]
         assert "semantic_missing_already_supplied" in gaps
-        assert "semantic_missing_agent_suppliable" not in gaps
+        assert "semantic_missing_non_convergent" not in gaps
+        assert "still cannot assess" in str(app.ledger.last_review_summary)
 
 
 @pytest.mark.anyio
@@ -2312,7 +2325,8 @@ async def test_a_fresh_diff_answers_a_captured_edit_only_for_the_path_it_records
     checked = await execute_check_commit(app, _request("semantic_required"))
     gaps = set(checked.coverage.known_gaps)
     if diff_path in {"src/a.py", "/work/repo/src/a.py"}:
-        assert checked.missing_for_assessment == ()
+        # Owner decision B (#1118 unit 4): supplied, disclosed, and the repeat still stands.
+        assert len(checked.missing_for_assessment) == 1
         assert "semantic_missing_already_supplied" in gaps
     else:
         assert [item.target_refs for item in checked.missing_for_assessment] == [(str(evd(1)),)]

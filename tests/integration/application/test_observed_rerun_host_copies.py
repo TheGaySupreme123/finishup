@@ -347,7 +347,8 @@ async def test_a_codex_rerun_supplies_the_request_from_either_host_copy(
 
     contents, kinds, gaps = review(ReviewContextProfile.ASSISTED)
     assert b"w6-rerun-output" in contents
-    assert kinds == []
+    # Owner decision B (#1118 unit 4): supplied and disclosed; the reviewer's repeat stays.
+    assert kinds == ["verification_output"]
     assert "semantic_missing_already_supplied" in gaps
 
     # A selection that sends no repository excerpt never carries it: the item stays the agent's.

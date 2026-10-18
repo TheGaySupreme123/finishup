@@ -1680,8 +1680,10 @@ FinishUP's own limit, marked as such for the agent, never a blocker; the agent v
   review was skipped, not that it was not requested. Such a check counts as the current and
   closing review for closure readiness and never weakens local proof. Publishing evidence does not
   re-arm it (feeding the reviewer is the loop this ends); a recorded edit does until the task
-  cap, and a completed review with another conclusion resets both counts. A `semantic_required`
-  check is never skipped. A packet row privacy withheld is `structurally_unavailable_on_this_host`,
+  cap, and a completed review with another conclusion resets both counts. Since the #1118 unit 4
+  amendment a `semantic_required` check obeys the same limits: it is skipped like any other, and
+  its stopped required review makes the check `incomplete_check` (never success, never a local
+  fallback). A packet row privacy withheld is `structurally_unavailable_on_this_host`,
   never packet room. Accepted limits: a response object written before this change carries no
   withheld refs, so a recovered pre-upgrade check classifies nothing as packet room; an unreadable
   ledger prefix fails open to a review. Once stopped for the task cap, open AI-powered findings
@@ -2196,7 +2198,7 @@ workstream W6 (Q1, Q4; the owner may overturn it), recorded on #1107:
   published output out of the packet. But an observed result's summary is never offered as
   agent-published output and captured output stays a candidate only where the repository-excerpt
   gate already allowed it (ADR-009). No new category is sent.
-- **Never drop a repeat for material the reviewer could not see.** A repeat is dropped as
+- **Never drop a repeat for material the reviewer could not see.** A repeat counts as
   `semantic_missing_already_supplied` on observed material only when the packet carried its
   output whole: the captured output among the citable refs and held whole by the sent packet's
   excerpts (one excerpt, or parts that together cover the source or its marked observed span).
@@ -2381,3 +2383,34 @@ excerpt budget and final packet ceiling (a clipped first part keeps its bounded 
 their smaller excerpt budget. If the remaining protected material cannot fit, egress still refuses
 the packet; a reduced floor is not used to manufacture a successful dispatch. This is packet
 coverage, not proof that the specification is complete or the verification establishes correctness.
+
+
+### Residual requests, linked supply and required-review limits (#1118 unit 4)
+
+Amends the supply rules above (owner decisions recorded on #1118). The reviewer can now read
+permitted evidence itself (unit 2), so FinishUP stops treating a linked publication as the end of
+a request:
+
+- **A linked item counts as supplied, but the reviewer may still re-raise it (owner decision B).**
+  The check fence no longer drops a repeat whose earlier request was answered by linked material.
+  The repeat is kept with its usual availability and discloses `semantic_missing_already_supplied`
+  (not `semantic_missing_non_convergent`). Empty, unrelated, clipped or unseen material therefore
+  never erases an ask; the round limits below end an unchanged repeat. `supplied_since` and the
+  manifest's `supplied` count are unchanged.
+- **The reviewer's reason reaches the solving agent (AIM-1).** Each kept item's bounded `reason`
+  is appended to the fenced `review_summary` under the fixed header "What the reviewer still
+  needs", as `<kind> (<targets or "no named target">): <reason>`, with targets trimmed to the
+  same fence as the item; an item left with no target is not repeated. The text stays advisory
+  reviewer output, governed by the summary's privacy projection (`finding_summary`); it never
+  enters `missing_for_assessment`, `agent_next`, recovery's structural `check_outcome`, a log or a
+  structural record, and it never chooses content or authorizes a command. This supersedes "never
+  recorded" above for the reason text only.
+- **Required review obeys the exhaustion limits (AIM-5).** The two-in-a-row / four-since-assessed
+  stop applies to `semantic_required` checks too; such a check skips the redispatch, discloses
+  `semantic_review_skipped_insufficient_packet` and reads `incomplete_check` (required review not
+  satisfied), never success or a local fallback.
+- **Verification oracles follow `cd` (AIP-2).** Operands of a recorded verification command
+  resolve against literal `cd`/`pushd` directories; an unresolvable change omits them and discloses
+  `verification_input_directory_unresolved`. **Task-statement paths keep `./` (AIP-5)**: `./x` is the
+  workspace-relative `x`, and `../x` is refused instead of becoming `/x`.
+

@@ -382,7 +382,7 @@ def test_an_output_free_result_never_answers_a_request_for_verification_output()
         (str(res(64)),),
     )
     dropped = review_missing_for_assessment(answered, (), judgment, unsuppliable_kinds=frozenset())
-    assert dropped.items == ()
+    assert dropped.items != ()  # owner decision B: the repeat stays
     assert "semantic_missing_already_supplied" in dropped.gaps
 
 
@@ -459,7 +459,7 @@ def test_material_for_another_target_never_answers_a_named_request() -> None:
             _repeat("verification_output", str(act(1))),
             unsuppliable_kinds=frozenset(),
         )
-        assert dropped.items == ()
+        assert dropped.items != ()  # owner decision B: the repeat stays
         assert "semantic_missing_already_supplied" in dropped.gaps
 
 
@@ -495,7 +495,7 @@ def test_new_evidence_without_a_target_answers_an_untargeted_other_request() -> 
     repeated = review_missing_for_assessment(
         case, (), _repeat("other"), unsuppliable_kinds=frozenset()
     )
-    assert repeated.items == ()
+    assert repeated.items != ()  # owner decision B: the repeat stays
     assert "semantic_missing_already_supplied" in repeated.gaps
 
 
@@ -525,7 +525,7 @@ def test_a_diff_of_another_path_never_answers_a_request_for_this_path() -> None:
     dropped = review_missing_for_assessment(
         same, (), _repeat("current_diff_for_path", str(evd(1))), unsuppliable_kinds=frozenset()
     )
-    assert dropped.items == ()
+    assert dropped.items != ()  # owner decision B: the repeat stays
     assert "semantic_missing_already_supplied" in dropped.gaps
 
 
@@ -559,7 +559,7 @@ def test_a_request_naming_two_targets_converges_per_target() -> None:
     dropped = review_missing_for_assessment(
         case, (), _repeat("verification_output", str(act(2))), unsuppliable_kinds=frozenset()
     )
-    assert dropped.items == ()
+    assert dropped.items != ()  # owner decision B: the repeat stays
     assert "semantic_missing_already_supplied" in dropped.gaps
 
 
@@ -605,7 +605,7 @@ def test_a_claim_is_answered_only_by_material_its_correction_cites() -> None:
         _repeat("verification_output", str(clm(1))),
         unsuppliable_kinds=frozenset(),
     )
-    assert bound.items == ()
+    assert bound.items != ()  # owner decision B: the repeat stays
     assert "semantic_missing_already_supplied" in bound.gaps
 
 
@@ -632,7 +632,7 @@ def test_hook_command_placeholders_never_make_two_runs_the_same_command() -> Non
 # --- R940-01 follow-up: binding is a direct relation, normalized but exact ------------------------
 
 
-def _dropped(
+def _supplied(
     case: DeterministicCase,
     kind: MissingForAssessmentKind,
     target: str,
@@ -641,7 +641,11 @@ def _dropped(
     captured_edit_paths: Mapping[str, frozenset[str]] | None = None,
     workspace_root: str | None = None,
 ) -> bool:
-    """Whether a repeat of the pending request for ``target`` is dropped as already supplied."""
+    """Whether a repeat of the pending request for ``target`` reads as already supplied.
+
+    Owner decision B (#1118 unit 4): the repeat itself is always kept; only the disclosure says
+    linked material answered the earlier request.
+    """
 
     case = _pending(case, MissingForAssessmentItem(kind, (target,), "agent_suppliable"))
     case = replace(case, observation_event_ids=frozenset(event_id(item) for item in observed))
@@ -658,12 +662,8 @@ def _dropped(
         unsuppliable_kinds=frozenset(),
         **options,  # pyright: ignore[reportArgumentType]
     )
-    if review.items == ():
-        assert "semantic_missing_already_supplied" in review.gaps
-        return True
     assert [item.target_refs for item in review.items] == [(target,)]
-    assert "semantic_missing_already_supplied" not in review.gaps
-    return False
+    return "semantic_missing_already_supplied" in review.gaps
 
 
 def _refs(*mappings: Iterable[object]) -> tuple[FindingBasisRef, ...]:
@@ -708,7 +708,7 @@ def test_reciting_the_old_target_beside_another_paths_diff_never_answers_it() ->
             )
         },
     )
-    assert not _dropped(via_result, "current_diff_for_path", str(evd(1)))
+    assert not _supplied(via_result, "current_diff_for_path", str(evd(1)))
     via_claim = _cases(
         evidence=diffs,
         claims={
@@ -718,7 +718,7 @@ def test_reciting_the_old_target_beside_another_paths_diff_never_answers_it() ->
             )
         },
     )
-    assert not _dropped(via_claim, "current_diff_for_path", str(evd(1)))
+    assert not _supplied(via_claim, "current_diff_for_path", str(evd(1)))
 
 
 def test_a_shared_obligation_never_ties_a_sibling_run_to_the_target() -> None:
@@ -753,7 +753,7 @@ def test_a_shared_obligation_never_ties_a_sibling_run_to_the_target() -> None:
             res(64): record(_output(64, 63), 64),
         },
     )
-    assert not _dropped(case, "verification_output", str(act(1)))
+    assert not _supplied(case, "verification_output", str(act(1)))
 
 
 def test_a_generic_shared_reference_is_not_the_same_subject() -> None:
@@ -763,7 +763,7 @@ def test_a_generic_shared_reference_is_not_the_same_subject() -> None:
             evd(70): evidence_record(_diff(70, "stdout"), 70),
         }
     )
-    assert not _dropped(case, "current_diff_for_path", str(evd(1)))
+    assert not _supplied(case, "current_diff_for_path", str(evd(1)))
     # Naming the target itself as the reference is an explicit tie.
     tied = _cases(
         evidence={
@@ -771,7 +771,7 @@ def test_a_generic_shared_reference_is_not_the_same_subject() -> None:
             evd(70): evidence_record(_diff(70, str(evd(1))), 70),
         }
     )
-    assert _dropped(tied, "current_diff_for_path", str(evd(1)))
+    assert _supplied(tied, "current_diff_for_path", str(evd(1)))
 
 
 def test_a_claim_correction_answers_only_with_material_tied_to_the_claims_support() -> None:
@@ -799,8 +799,8 @@ def test_a_claim_correction_answers_only_with_material_tied_to_the_claims_suppor
             },
         )
 
-    assert not _dropped(case_with("pytest tests/b"), "verification_output", str(clm(1)))
-    assert _dropped(case_with("pytest tests/a"), "verification_output", str(clm(1)))
+    assert not _supplied(case_with("pytest tests/b"), "verification_output", str(clm(1)))
+    assert _supplied(case_with("pytest tests/a"), "verification_output", str(clm(1)))
 
 
 def test_paths_and_commands_compare_normalized_but_exact() -> None:
@@ -811,10 +811,10 @@ def test_paths_and_commands_compare_normalized_but_exact() -> None:
                 evd(70): evidence_record(_diff(70, reference), 70),
             }
         )
-        assert _dropped(case, "current_diff_for_path", str(evd(1))), reference
+        assert _supplied(case, "current_diff_for_path", str(evd(1))), reference
     # An absolute path is anchored to the workspace root (see the root tests below).
     absolute = _reference_case("src/a.py", "/work/repo/src/a.py")
-    assert _dropped(absolute, "current_diff_for_path", str(evd(1)), workspace_root="/work/repo")
+    assert _supplied(absolute, "current_diff_for_path", str(evd(1)), workspace_root="/work/repo")
     for reference in ("src/A.py", "src/a.pyc", "lib/src/a.py.bak"):
         case = _cases(
             evidence={
@@ -822,7 +822,7 @@ def test_paths_and_commands_compare_normalized_but_exact() -> None:
                 evd(70): evidence_record(_diff(70, reference), 70),
             }
         )
-        assert not _dropped(case, "current_diff_for_path", str(evd(1))), reference
+        assert not _supplied(case, "current_diff_for_path", str(evd(1))), reference
     spaced = _cases(
         actions={
             act(1): record(_run(1, "pytest  tests/a"), 10),
@@ -830,7 +830,7 @@ def test_paths_and_commands_compare_normalized_but_exact() -> None:
         },
         results={res(71): record(_output(71, 70), 71)},
     )
-    assert _dropped(spaced, "verification_output", str(act(1)))
+    assert _supplied(spaced, "verification_output", str(act(1)))
 
 
 def test_a_hook_rerun_with_the_same_command_digest_is_the_same_command() -> None:
@@ -846,9 +846,9 @@ def test_a_hook_rerun_with_the_same_command_digest_is_the_same_command() -> None
         return case, frozenset({str(case.projection.actions[act(70)].source_event_id)})
 
     same, observed = case_with("a")
-    assert _dropped(same, "verification_output", str(act(1)), observed=observed)
+    assert _supplied(same, "verification_output", str(act(1)), observed=observed)
     other, observed = case_with("b")
-    assert not _dropped(other, "verification_output", str(act(1)), observed=observed)
+    assert not _supplied(other, "verification_output", str(act(1)), observed=observed)
 
 
 def _captured(number: int) -> EvidenceRecordedPayload:
@@ -899,14 +899,14 @@ def test_a_fresh_git_diff_of_the_captured_path_answers_a_hook_captured_edit() ->
         )
 
     paths = {str(evd(1)): frozenset({"src/a.py"})}
-    assert _dropped(
+    assert _supplied(
         case_with("src/a.py"), "current_diff_for_path", str(evd(1)), captured_edit_paths=paths
     )
-    assert not _dropped(
+    assert not _supplied(
         case_with("src/b.py"), "current_diff_for_path", str(evd(1)), captured_edit_paths=paths
     )
     # Without the capture's paths (a recovered review), the request stays named.
-    assert not _dropped(case_with("src/a.py"), "current_diff_for_path", str(evd(1)))
+    assert not _supplied(case_with("src/a.py"), "current_diff_for_path", str(evd(1)))
 
 
 # --- R940-01 second follow-up: workspace-anchored paths, git diff forms, full coverage -----------
@@ -960,7 +960,7 @@ def _diff_run_case(*commands: str) -> DeterministicCase:
 def _answers_capture(
     paths: frozenset[str], *commands: str, workspace_root: str | None = None
 ) -> bool:
-    return _dropped(
+    return _supplied(
         _diff_run_case(*commands),
         "current_diff_for_path",
         str(evd(1)),
@@ -978,15 +978,15 @@ def test_an_absolute_path_answers_only_inside_the_workspace_root() -> None:
         # Without a workspace root, and with a different one, an absolute path never matches.
         for root in (None, "/work/repo"):
             case = _reference_case(target, reference)
-            assert not _dropped(case, "current_diff_for_path", str(evd(1)), workspace_root=root), (
+            assert not _supplied(case, "current_diff_for_path", str(evd(1)), workspace_root=root), (
                 target,
                 reference,
                 root,
             )
     assert not _answers_capture(frozenset({"src/a.py"}), "git diff /other/repo/src/a.py")
     inside = _reference_case("src/a.py", "/work/repo/src/a.py")
-    assert _dropped(inside, "current_diff_for_path", str(evd(1)), workspace_root="/work/repo")
-    assert not _dropped(inside, "current_diff_for_path", str(evd(1)), workspace_root="/work")
+    assert _supplied(inside, "current_diff_for_path", str(evd(1)), workspace_root="/work/repo")
+    assert not _supplied(inside, "current_diff_for_path", str(evd(1)), workspace_root="/work")
     assert _answers_capture(
         frozenset({"src/a.py"}), "git diff /work/repo/src/a.py", workspace_root="/work/repo"
     )
@@ -1000,9 +1000,9 @@ def test_an_aliased_workspace_root_resolves_to_the_same_files(tmp_path: Path) ->
     # The root is resolved; an agent path is only compared lexically, never resolved.
     for written in (link, real):
         case = _reference_case("src/a.py", f"{written}/src/a.py")
-        assert _dropped(case, "current_diff_for_path", str(evd(1)), workspace_root=str(link))
+        assert _supplied(case, "current_diff_for_path", str(evd(1)), workspace_root=str(link))
     via_link = _reference_case("src/a.py", f"{link}/src/a.py")
-    assert not _dropped(via_link, "current_diff_for_path", str(evd(1)), workspace_root=str(real))
+    assert not _supplied(via_link, "current_diff_for_path", str(evd(1)), workspace_root=str(real))
 
 
 def test_an_agent_named_absolute_path_is_never_resolved_on_the_filesystem(
@@ -1023,7 +1023,7 @@ def test_an_agent_named_absolute_path_is_never_resolved_on_the_filesystem(
     monkeypatch.setattr(os.path, "realpath", guarded)
     for reference in ("/net/unreachable/src/a.py", f"{root}/src/a.py"):
         case = _reference_case("src/a.py", reference)
-        _dropped(case, "current_diff_for_path", str(evd(1)), workspace_root=root)
+        _supplied(case, "current_diff_for_path", str(evd(1)), workspace_root=root)
     assert not _answers_capture(
         frozenset({"src/a.py"}), "git diff /net/unreachable/src/a.py", workspace_root=root
     )
@@ -1032,18 +1032,18 @@ def test_an_agent_named_absolute_path_is_never_resolved_on_the_filesystem(
 
 def test_a_bare_or_dot_file_name_is_a_path_when_the_other_side_is_one() -> None:
     for name in ("Makefile", "Dockerfile", ".gitignore", ".env"):
-        assert _dropped(_reference_case(name, f"./{name}"), "current_diff_for_path", str(evd(1)))
-        assert _dropped(
+        assert _supplied(_reference_case(name, f"./{name}"), "current_diff_for_path", str(evd(1)))
+        assert _supplied(
             _reference_case(name, f"/work/repo/{name}"),
             "current_diff_for_path",
             str(evd(1)),
             workspace_root="/work/repo",
         )
         # Two bare words are never assumed to be the same file.
-        assert not _dropped(_reference_case(name, name), "current_diff_for_path", str(evd(1)))
+        assert not _supplied(_reference_case(name, name), "current_diff_for_path", str(evd(1)))
         assert _answers_capture(frozenset({name}), f"git diff -- {name}")
     # Naming the target's id is always an explicit tie.
-    assert _dropped(_reference_case("Makefile", str(evd(1))), "current_diff_for_path", str(evd(1)))
+    assert _supplied(_reference_case("Makefile", str(evd(1))), "current_diff_for_path", str(evd(1)))
 
 
 def test_every_content_form_of_git_diff_answers_and_summary_forms_do_not() -> None:
@@ -1116,9 +1116,9 @@ def test_an_artifact_a_command_wrote_is_answered_only_by_that_commands_runs() ->
             },
         )
 
-    assert not _dropped(case_with("pytest tests/b", True), "verification_output", str(evd(3)))
-    assert not _dropped(case_with("pytest tests/b", False), "verification_output", str(evd(3)))
-    assert _dropped(case_with("pytest tests/a", True), "verification_output", str(evd(3)))
+    assert not _supplied(case_with("pytest tests/b", True), "verification_output", str(evd(3)))
+    assert not _supplied(case_with("pytest tests/b", False), "verification_output", str(evd(3)))
+    assert _supplied(case_with("pytest tests/a", True), "verification_output", str(evd(3)))
 
 
 class _OpenedLedger:
@@ -1344,7 +1344,7 @@ def test_agent_rendered_text_of_a_binary_answers_a_request_for_it() -> None:
     dropped = review_missing_for_assessment(
         case, (), _repeat("other", str(evd(5))), unsuppliable_kinds=frozenset()
     )
-    assert dropped.items == ()
+    assert dropped.items != ()  # owner decision B: the repeat stays
     assert "semantic_missing_already_supplied" in dropped.gaps
 
 
@@ -1801,7 +1801,7 @@ def test_an_observed_rerun_of_the_targets_command_supplies_it(
     case = _w6_rerun_case(_w6_observed_rerun(w6_key, stream_first=stream_first))
     assert _w6_supplied(case) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
     kinds, gaps = _w6_repeat_review(case, excerpt_refs=frozenset({str(evd(72))}))
-    assert kinds == [] and "semantic_missing_already_supplied" in gaps
+    assert kinds == ["verification_output"] and "semantic_missing_already_supplied" in gaps
     # The kind ``other`` reads the same output.
     other = _w6_rerun_case(_w6_observed_rerun(w6_key, stream_first=stream_first), "other")
     assert _w6_supplied(other) == (tuple(sorted((str(res(71)), str(evd(72))), key=str.encode)),)
@@ -2077,7 +2077,7 @@ def test_a_repeat_is_not_dropped_for_observed_material_the_packet_did_not_carry(
         (None, frozenset({f"observed-command-output:{evd(72)}#0-10/10"})),
     ):
         kinds, gaps = _w6_repeat_review(case, excerpt_refs=refs, excerpt_parts=parts)
-        assert kinds == []
+        assert kinds == ["verification_output"]  # owner decision B: the repeat stays
         assert "semantic_missing_already_supplied" in gaps
     # What the reviewer can cite is what it was shown: an uncitable capture never counts.
     kinds, _gaps = _w6_repeat_review(
@@ -2161,7 +2161,7 @@ def test_a_repeat_for_observed_output_shown_only_in_part_keeps_the_item_and_its_
         {excerpt_span_key(marked, 0, 2500, 5000), excerpt_span_key(marked, 2500, 5000, 5000)}
     )
     kinds, gaps = _w6_repeat_review(case, excerpt_refs=frozenset(), excerpt_parts=whole)
-    assert kinds == [] and "semantic_missing_already_supplied" in gaps
+    assert kinds == ["verification_output"] and "semantic_missing_already_supplied" in gaps
 
 
 def test_observed_rows_never_answer_command_identity(w6_key: str) -> None:

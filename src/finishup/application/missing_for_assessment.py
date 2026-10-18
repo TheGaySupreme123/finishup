@@ -1876,9 +1876,10 @@ def review_missing_for_assessment(
     reviewer named nothing the packet held.
     An ``insufficient_packet`` that named no item at all discloses the same gap.
     An item the prior review already requested and the agent answered since, target by target,
-    is dropped unless the reviewer cites that newer material
-    (``semantic_missing_already_supplied``), so the same request cannot loop; only new material
-    directly tied to a target answers it (see ``_Links``; ``captured_edit_paths`` as in
+    is kept and disclosed as ``semantic_missing_already_supplied`` (owner decision B, #1118 unit
+    4): a linked publication counts as supplied, never as proof the reviewer's need was met, and
+    the round limits stop an unchanged repeat; only new material directly tied to a target
+    answers it (see ``_Links``; ``captured_edit_paths`` as in
     ``supplied_since``). A hook-observed re-run answers only an output request
     (``verification_output`` or ``other``) and only when this packet carried its output (W6,
     ADR-006 amendment): the captured tool output the run produced among the citable refs and
@@ -1976,9 +1977,15 @@ def review_missing_for_assessment(
                 )
             )
         )
-        if any(_answered(prior, prior_answers, refs) for prior, prior_answers in matching_prior):
+        # Owner decision B (#1118 unit 4): material linked to the earlier request counts as
+        # supplied, but it never proves the reviewer's need met. The repeat is kept, with the
+        # reviewer's reason in the fenced summary, and the supply is disclosed; the round limits,
+        # not this projection, end an unchanged repeat.
+        supplied_repeat = any(
+            _answered(prior, prior_answers, refs) for prior, prior_answers in matching_prior
+        )
+        if supplied_repeat:
             gaps.add(SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP)
-            continue
         availability = (
             STRUCTURALLY_UNAVAILABLE
             if entry.kind in unsuppliable_kinds or set(refs) & (redacted | privacy_withheld_refs)
@@ -1990,7 +1997,7 @@ def review_missing_for_assessment(
                 change_clipped=change_clipped,
             )
         )
-        if matching_prior and availability == AGENT_SUPPLIABLE:
+        if matching_prior and availability == AGENT_SUPPLIABLE and not supplied_repeat:
             # The reviewer named only an earlier target set and no directly related publication
             # answered it. It stays the agent's work (a run never recorded is still owed), with
             # the non-convergent disclosure; the review round itself stops after the one retry
