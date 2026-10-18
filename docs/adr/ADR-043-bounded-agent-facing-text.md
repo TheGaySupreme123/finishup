@@ -190,7 +190,8 @@ per-kind "publish exactly" instruction reached only the text channel, which Code
   with an explicit `(+N more)`, and longer directions only after them, so a direction is never
   dropped for a target id (the ids also ride in `missing_for_assessment`, the direction only here).
   It is composed with the one composer under its own 2,048-byte bound; any failure omits the field,
-  never the result (a committed check never fails on its text). It is derived at serialization, so older `check_recorded` rows project it too.
+  never the result (a committed check never fails on its text). It is derived at serialization,
+  so older `check_recorded` rows project it too.
 - **Field order is part of the contract on the MCP wire.** The check success model declares
   `agent_next`, `overall_next` and `missing_for_assessment` right after `verdict`; the continuation
   precedes every bulky field, and a new bulky field goes after `missing_for_assessment`. Schema

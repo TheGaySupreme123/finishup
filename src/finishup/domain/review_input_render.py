@@ -351,7 +351,8 @@ _PUBLISH_EXACTLY: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             "re-run: the output of a run FinishUP observes counts only once it reaches the "
             "reviewer, which the owner's privacy settings may not allow.",
             "Publish one result_recorded whose action_id is the target's action and whose "
-            "summary is the command output, with its evidence_refs, even after a re-run.",
+            "summary is the command output, with its evidence_refs, even after a re-run: a "
+            "re-run counts only once its output reaches the reviewer.",
         ),
     }
 )

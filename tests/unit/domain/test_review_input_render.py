@@ -425,13 +425,17 @@ def test_agent_next_keeps_every_requested_kinds_direction_in_the_worst_case() ->
                 items,
             )
             assert len(text.encode("ascii")) <= MAX_AGENT_NEXT_BYTES
-            assert not text.endswith("..."), "a required part was cut"
+            assert "..." not in text, "a required part was cut"
             # One direction per requested kind, each a variant from the shared table.
             assert text.count("How: ") == len(kinds)
             for kind in kinds:
                 variants = _PUBLISH_EXACTLY[kind]
                 assert type(variants) is tuple
                 assert any(f"How: {variant}" in text for variant in variants), kind
+            # Whichever verification_output variant fits keeps the re-run rule the Codex runbook
+            # quotes: publish even after a re-run, which counts only once it reaches the reviewer.
+            for variant in _PUBLISH_EXACTLY["verification_output"]:
+                assert "even after a re-run" in variant and "reaches the reviewer" in variant
             own = [item for item in items if item["availability"] == "agent_suppliable"]
             # Every item is named with the same number of its targets and an explicit remainder.
             shown = {
