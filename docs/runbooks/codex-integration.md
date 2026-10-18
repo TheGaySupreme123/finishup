@@ -3181,6 +3181,22 @@ agent learns from the review guidance that only the owner can admit a folder. No
 capability gap. The consent-gated local copy of each outbound packet is not part of this change
 (#1085).
 
+Issue #1102 (same decision for Codex, service-side, no host step and no new host payload): a
+directory the task names inside the repository reaches the reviewer as FinishUP's listing of its
+unchanged files plus the members sharing the most names with the change; a quoted or escaped path
+with spaces is one candidate; an admitted outside directory named without a trailing `/` is listed;
+an `other` follow-up request is answered only from rows FinishUP recorded for the run or edit it
+names. When the task names a file or folder outside the workspace that no admitted root covers, the
+check records `task_input_outside_not_admitted`, whose fixed sentence names the owner's step
+(`finishup privacy input-roots add <folder>` on a trusted terminal); it is a disclosure only, never
+a Stop-gate item or a continuation on Codex. Codex still has no write path to admitted roots,
+and FinishUP adds no unattended one: a non-interactive harness can admit roots only through an
+owner-attended ceremony while it is provisioned. The code is decided once by the check-time read,
+only for a path that exists outside the workspace and predates the task, so a route or an output
+the agent writes never counts. The terminal interface shows the code without its sentence (it
+renders coverage codes only); the owner's route there is the privacy panel, which lists the
+admitted roots, while the CLI, MCP and receipt print the sentence.
+
 ## Possible-credential filter opt-out (issue #982)
 
 Decision for Codex: supported, service-side, identical on every host. `credential_heuristic` is a

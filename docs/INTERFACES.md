@@ -1739,6 +1739,19 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   be a different finding. The review still dispatches once with the other findings.
 - `task_statement_unavailable`, `task_statement_not_supplied`, `task_statement_not_authorized` —
   what the reviewer knew of the user's request (issue #908; see "Task statement" below).
+- `task_input_outside_not_admitted` — the recipe carries task inputs and the task itself names an
+  absolute file or folder outside the workspace that no `admitted_input_roots` entry covers (not a
+  declared output, not in a system, scratch, log, cache, package-state, `bin` or installed-package
+  tree, not hidden or credential-named) and that an `lstat` finds as a regular file or directory
+  predating the task-start base, so the reviewer judged without it (issue #1102, ADR-031 and
+  ADR-009 amendments; `check_change.outside_inputs_not_admitted`). The check-time read decides it
+  against its own root and freezes it into the check-change object as
+  `CheckChangeCapture.outside_inputs_not_admitted` (stored key written only when true), which the
+  composition reads for new and recovered jobs alike; it carries no path. Its fixed sentence
+  (`check_time_change_gap_sentence`) names the owner's step, `finishup privacy input-roots add
+  <folder>` on a trusted terminal. Readiness `S`, disclosed on both routes (gap rule G4c): never
+  agent work, a Stop-gate item or a closure blocker. A capture baseline for AI-powered absence
+  proof (`SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS`), never a veto of local proof.
 
 Four codes bound the ADR-031 check-time change, the service's one read of the task's repository
 for a check whose recipe selects diff excerpts. They appear on the packet and check coverage only
@@ -2497,7 +2510,8 @@ semantic_prior_findings_over_limit|semantic_prior_verdicts_unsupported|
 semantic_restatements_suppressed|semantic_process_state_filtered|
 semantic_review_deferred_before_first_edit|check_time_change_unavailable|
 check_time_change_base_unavailable|check_time_change_truncated|
-check_time_change_redacted|check_time_change_path_unrepresentable`) plus the evidence-strength
+check_time_change_redacted|check_time_change_path_unrepresentable|
+task_input_outside_not_admitted`) plus the evidence-strength
 codes
 (`evidence_content_digest_only|evidence_content_withheld|evidence_digest_subject_legacy_unknown`)
 and the host-observation codes (`captured_object_unavailable|capture_handoff_retired|
@@ -9291,10 +9305,20 @@ and #1082 amendments) are admitted first, ahead of the check-time change, within
 packet's excerpt budget and within `_first_task_input_slots` (the recipe's count less the change's
 reservation, at most one per part, and two slots per decisive verification run: the latest, or
 each run a follow-up asked for); one that does not fit is skipped and backfills last. `TaskInputFile.origin`
-(`task`, `verification`, `outside_workspace`) and `TaskInputFile.summary` choose the label; both are
-optional stored keys written only when not the default. Candidates come from `review_input_paths`
-(statement words, `role: input` files, then named absolute directories) with the newest
-verification oracle (`verification_input_paths`) in fourth place; a binary input (a signature
+(`task`, `verification`, `outside_workspace`, and since issue #1102 `task_directory`: a member
+FinishUP chose beneath a task-named directory, never labelled as named by the task) and
+`TaskInputFile.summary` choose the label; both are optional stored keys written only when not the
+default. A `task` summary whose path ends in `/` (`./` for the workspace root) is FinishUP's own
+listing of a task-named directory's unchanged files (`[FinishUP summary of task input directory
+...]`). Candidates come from `review_input_paths` (`task_input_paths`: statement words, a quoted or
+backslash-escaped path keeping its single spaces, `role: input` files and directories, then the
+directories the statement names, relative or absolute, ending in `/`, or an absolute one-component
+path such as the workspace `/app`) with the newest verification oracle (`verification_input_paths`,
+spaced operands included) in fourth place. The repository read expands a candidate that is a
+directory inside the repository (at most two, then the workspace root) only after every named file,
+into its listing and the members sharing the most identifiers with the change, within
+`MAX_TASK_INPUT_FILES` (ADR-031 #1102 amendment); a task-named outside input outranks that
+material; a binary input (a signature
 `declared_binary_format` recognizes, or a NUL in its first 8000 bytes) becomes
 `summarize_task_input` text, stored `redacted` when it quoted a scanned value only as a marker,
 and a large untracked one keeps its two ends, each cut moved clear of a recognized credential
@@ -9422,7 +9446,8 @@ check text list each item and its availability; status, TUI and receipts carry t
 reviewer's reason stays in the encrypted durable semantic response object.
 
 In-check follow-up (issue #1047, ADR-006). While a review concludes `insufficient_packet` and names
-a `current_diff_for_path`, `verification_output` or `command_identity` item that the fence kept as
+a `current_diff_for_path`, `verification_output`, `command_identity` or (since issue #1102) `other`
+item that the fence kept as
 `agent_suppliable` or `yoetz_limit_packet_room` and whose targets FinishUP holds rows for
 (`application.missing_for_assessment.plan_review_follow_up`; `FOLLOW_UP_KINDS`;
 `ReviewFollowUp`), the same `check` rebuilds the case with those rows' excerpts ranked first within
@@ -9430,8 +9455,12 @@ a `current_diff_for_path`, `verification_output` or `command_identity` item that
 asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times and only when the rebuilt packet carries
 a requested excerpt no earlier packet of the check carried. A target resolves to itself, the rows
 an `evt_` target recorded, and for a run its results, its action and the evidence they cite;
-redacted rows never count. A `verification_output` item may also name hook-captured output of the
-newest run of each command those targets name (`observed_command_output_refs`). Selection admits
+redacted rows never count. A `verification_output` or `other` item (`OBSERVED_FOLLOW_UP_KINDS`) may
+also name hook-captured output of the newest run of each command those targets name
+(`observed_command_output_refs`), and a `current_diff_for_path` or `other` item
+(`SECTION_FOLLOW_UP_KINDS`) the current check-time change sections of a named edit's paths. An
+`other` item is answered only from those recorded sources; one naming only an obligation, claim,
+plan or the statement plans no round, and the reviewer's reason never chooses content. Selection admits
 those bytes only when the recipe would already send a repository excerpt, as category
 `repository_excerpt` and source kind `command`, labelled observed rather than agent-published, and
 only inside the existing excerpt budget. The command must already class as test, build, lint, or
@@ -9566,7 +9595,9 @@ with integer counts: `semantic_capture_parts_resolved`, `semantic_diff_parts_res
 `semantic_excerpt_bytes_selected`, `semantic_check_change_parts_selected` (ADR-031 parts in the
 packet), and `semantic_edit_evidence_in_case` (materialized native edit captures in the frozen
 case, before any resolver fence; zero beside known native edits means their captures never reached
-the ledger). Resolved parts have passed capture authentication; selected excerpts are in the built
+the ledger), and since issue #1102 `semantic_task_input_candidates`, `semantic_task_inputs_read`,
+`semantic_task_input_listings`, `semantic_task_input_excerpts_selected` and
+`semantic_task_inputs_outside_not_admitted` (0 or 1). Resolved parts have passed capture authentication; selected excerpts are in the built
 packet. These counts precede privacy minimization and do not prove provider delivery or code
 correctness. The record contains no content, paths, or content hashes.
 

@@ -1935,9 +1935,10 @@ packet only lacked room for.
   `agent_suppliable` or `yoetz_limit_packet_room`, naming targets FinishUP holds rows for. Each target
   resolves to the rows whose excerpts carry it: the target, the rows an `evt_` target recorded, and
   for a run (an action or its result) the run's results, its action and the evidence they cite;
-  redacted rows never count (`plan_review_follow_up`). `task_statement`, `plan_or_claim_text`,
-  `prior_finding_context` and `other` are never answered by FinishUP; a structurally unavailable,
-  privacy-withheld, redacted or unsupported-type item is never re-sent.
+  redacted rows never count (`plan_review_follow_up`). `task_statement`, `plan_or_claim_text` and
+  `prior_finding_context` are never answered by FinishUP (nor was `other`, until the 2026-10-18
+  amendment below); a structurally unavailable, privacy-withheld, redacted or unsupported-type item
+  is never re-sent.
 - **What the packet becomes.** The same case is rebuilt with those excerpts ranked first, item by
   item in request order, while their bytes fit half of the approved `max_total_excerpt_bytes`
   (`follow_up_byte_budget`), the per-check share every round of the check draws from; requests
@@ -2147,3 +2148,29 @@ a model follows them; [the evaluation runbook](../runbooks/reviewer-instruction-
 the procedure for a live replay. The instruction grew from 22.5 KB to about 29.8 KB, about 1.8k
 more input tokens per review under the bytes/4 estimate, against a median native review footprint
 of about 110k tokens.
+
+### `other` follow-up requests answered from recorded rows (2026-10-18, issue #1102)
+
+**Decision (privacy/egress gate; the n7 workstream lead's binding decision Q1 for the RC6g fix,
+acknowledgement to be recorded on issue #1102 with a link to #1082; the owner may overturn it).**
+By the n7 pilot, `other` was 54% of the items reviewers named, and FinishUP answered none of them,
+even when the item named a run whose rows FinishUP held. `other` joins `FOLLOW_UP_KINDS`, and it is
+answered inside the check only from what FinishUP already recorded for its targets:
+
+- the rows the target names, or that an `evt_` target recorded, and for a run its action, results
+  and cited evidence (the same `_recorded_sources` as every other kind);
+- the hook-observed output of the newest run of each command those targets name
+  (`OBSERVED_FOLLOW_UP_KINDS`, as for `verification_output` under the 2026-10-15 amendment above);
+- the current check-time change sections of the paths a named edit changed
+  (`SECTION_FOLLOW_UP_KINDS`, as for `current_diff_for_path`).
+
+Every gate the other kinds pass applies unchanged: the fence's `agent_suppliable` or
+`yoetz_limit_packet_room` classification, a verification-class command only for observed output,
+the environment-dump, credential-path, outside-path and refused-path rules, the secret scan, the
+repository-excerpt gate, Private sending nothing, the byte budget and the three-round limit. A target
+with no recorded row (an obligation, a claim, a plan or the statement alone) plans no round, so
+`other` about anything else stays the agent's to supply. The reviewer's own reason text never
+chooses content; it is untrusted advisory output and is never recorded. No wire shape changes:
+`review_input_missing.kind` already admitted `other`, and the manifest prints `other=supplied` like
+any kind. A build before this one rejects a follow-up job case holding an `other` item (downgrade
+only, in the release notes).

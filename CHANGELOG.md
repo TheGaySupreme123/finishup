@@ -351,6 +351,17 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   large data file sends its first and last lines; duplicate captured edits give their room to the
   latest verification output; and an agent's digest of output FinishUP already captured now reaches
   that output.
+- **Review packets read what the task names, the way the task names it** (#1102). A folder the
+  task names in your repository (`src/dedup/`, `/app/vllm`, or the workspace itself) reaches the
+  reviewer as FinishUP's own list of its unchanged files plus, in the room left, the files in it
+  that share the most names with the change, labelled as chosen by FinishUP. A quoted or escaped
+  path with spaces is read as one path, and an admitted outside folder named without a trailing
+  `/` is read like one named with it. A reviewer's `other` request is answered in the same check
+  from what FinishUP recorded for the run or edit it names, under the same privacy rules as every
+  other follow-up. When the task names an existing file or folder outside the workspace that you
+  have not admitted, the check and the receipt say so (`task_input_outside_not_admitted`) and name
+  the one command that admits it; that note never stops your agent or asks it to change the work
+  (your agent only tells you which folder the task named) and never lowers the receipt.
 - **Agents write each fact once.** A `publish_work` request may leave out its request id, its
   frontier, and each event's id, time, empty lists and repeated references. The MCP tool and
   `finishup publish-work` give each call its own request id and name it in every answer: retry a
