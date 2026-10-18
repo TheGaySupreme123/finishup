@@ -210,49 +210,75 @@ generation), so a key change in the process recomputes it.
 ## Amendment (2026-10-18, n7 RC2, issue #1106): project documentation never makes verification stale
 
 In n7, a README or changelog edit after the last test raised `edited_after_last_verification`
-(and its Stop prompt), although a documentation edit changes nothing a test, build or check
-verified. Folding documentation into `notes` would have made it non-counting (not acting, not
+(and its Stop prompt), although such an edit usually changes nothing the test, build or check
+exercised. Folding documentation into `notes` would have made it non-counting (not acting, not
 material for a later review), which conflates the agent's scratch notes with project work and
 contradicts the README exclusion above. A sixth class is added instead.
 
 - **`docs`** is a write whose every path is project documentation inside the workspace
-  (`domain.write_scope.docs_artifact_name`, lexical like every class): a conventional
-  documentation name in any directory (`README`, `CHANGELOG`, `CHANGES`, `HISTORY`, `NEWS`,
-  `AUTHORS`, `CONTRIBUTORS`, `CONTRIBUTING`, `LICENSE`/`LICENCE`, `COPYING`, `NOTICE`,
-  `CODE_OF_CONDUCT`, `SECURITY`, with an optional `-`/`_` suffix, an optional language tag and an
-  optional `.md`/`.markdown`/`.rst`/`.txt`/`.adoc`), or a `.md`/`.markdown`/`.rst`/`.adoc`/
-  `.asciidoc` file outside a directory whose files a test or program reads as data (`test`,
-  `tests`, `testing`, `spec`, `specs`, `__tests__`, `fixtures`, `testdata`, `test_data`, `data`,
-  `prompts`, `templates`, `snapshots`, `__snapshots__`, and the agent hosts' `.agents`,
-  `.claude`, `.codex`, `.cursor` and `skills` trees). `.txt` is never documentation by its
-  extension (`requirements.txt` is read by the build). `notes` wins over `docs`; outside the
-  workspace nothing changes. An edit tool names `docs` only when every path is documentation; a
-  shell command only when documentation is the one class it writes; a Codex `FileChange` is named
-  from its own paths. Any mix is an ordinary edit.
+  (`domain.write_scope.classify_write_path`, lexical like every class):
+  - a conventional documentation name in any directory: `README`, `CHANGELOG`, `CHANGES`,
+    `HISTORY`, `NEWS`, `AUTHORS`, `CONTRIBUTORS`, `CONTRIBUTING`, `LICENSE`/`LICENCE`, `COPYING`,
+    `NOTICE`, `CODE_OF_CONDUCT` or `SECURITY` with a `.md`/`.markdown`/`.rst`/`.txt`/`.adoc`
+    extension (optionally after a `-`/`_` suffix and a language tag: `CHANGES-1.x.rst`,
+    `README.ja.md`). Without an extension only names no script plausibly has qualify: a bare
+    `README`, `CHANGELOG`, `AUTHORS` or `CONTRIBUTORS`, and `LICENSE`/`LICENCE`/`COPYING`/`NOTICE`
+    with an optional suffix (`LICENSE-MIT`). `bin/security-scan`, `scripts/history` or `news` may
+    be a program a test runs, so they stay ordinary edits;
+  - a `.md`/`.markdown`/`.rst`/`.adoc`/`.asciidoc` file outside a directory whose files a test or
+    program reads as data (`test`, `tests`, `testing`, `spec`, `specs`, `__tests__`, `fixtures`,
+    `testdata`, `test_data`, `data`, `prompts`, `templates`, `snapshots`, `__snapshots__`, and the
+    agent hosts' `.agents`, `.claude`, `.codex`, `.cursor` and `skills` trees). Those directories
+    are read on the path *inside* the workspace: a relative path as it is, an absolute one less the
+    workspace root, so a workspace that itself sits in a host-managed worktree
+    (`<repo>/.claude/worktrees/<name>`, `~/.cursor/worktrees/…`, `~/.codex/worktrees/…`) or under
+    `/srv/data` is not data. An absolute path with no root to strip (the Codex session stream knows
+    none) or a relative path that climbs out (`../`) cannot be placed, so only a conventional name
+    makes it `docs`.
+
+  `.txt` is never documentation by its extension (`requirements.txt` is read by the build).
+  `notes` wins over `docs`; outside the workspace nothing changes. An edit tool names `docs` only
+  when every path is documentation; a shell command only when documentation is the one class it
+  writes; a Codex `FileChange` is named from its own paths. Any mix is an ordinary edit.
 - **Semantics.** A `docs` write counts as acting, as a material edit (`material_edit_recorded`),
   as later material after a check (closing-review currency, `kernel.later_material`) and for
   concern-fold materiality. It never advances the latest edit for `edited_after_last_verification`,
   `planned_verification_stale` or work-integrity's "a completion claim must cite a verification
   after the latest observed edit" (`observed_failures.observed_write_stales_verification`,
-  `STALE_EXEMPT_WRITE_TOKENS`).
+  `STALE_EXEMPT_WRITE_TOKENS`). `work-integrity/0.3.0` is unreleased, so this rule changes within
+  that policy generation without a version bump.
 - **Deliverables win**, by the same precedence rule as `notes`: a declared non-input file with a
-  documentation name, or any declared non-input directory, turns the exemption off
-  (`task_facts.stale_exempt_write_tokens`). Removing the declaration turns it back on.
+  documentation name or extension (in any directory: the declared-path test is deliberately wider
+  than the class), or any declared non-input directory, turns the exemption off
+  (`task_facts.stale_exempt_write_tokens`, `write_scope.docs_artifact_name`). Removing the
+  declaration turns it back on.
 - **Wire.** The unreleased control-request 2.9.0 `write_scope` enum is edited in place (decision
   2; maintainer request on #1106) and stays generated from `WRITE_SCOPES`. Version skew cannot
   reach the ledger: the schema manifest pins the 2.9.0 bytes, and both sides of the control
   handshake compare the whole manifest digest before any request frame, so a new hook never sends
   `docs` to an older service. It is refused as `manifest_mismatch`; the hook keeps its rows, and
   the MCP bridge's start, or `finishup service restart`, supersedes the stale holder through its
-  lock stamp, after which the rows drain. The check-result inspection row keeps its own scope
-  list: a `docs` row shows no `write_scope`, still class `edit_or_write`.
-- **Risk accepted.** A Markdown file a program reads at run time outside those directories (a
-  prompt kept at the repository root) no longer makes verification stale unless it is declared.
-  Rows recorded before the class existed keep `write workspace` and count as before. An older
-  reader does not parse `(write docs)`; downgrade over 0.3 ledgers is already unsupported.
+  lock stamp, after which the rows drain. The check-result 1.5.0 inspection row keeps its own scope
+  list: a `docs` row shows no `write_scope`, still class `edit_or_write`. Naming `docs` there is a
+  separate protocol change, left to a follow-up the #1106 owner opens.
+- **Risks accepted.** The exemption is lexical, so it is bounded to what a path can show:
+  - a verification that reads the documentation itself (doctests over a README or `.rst` file:
+    `pytest --doctest-glob`, `python -m doctest`, a Rust doc test that includes `README.md`; a
+    docs build such as `sphinx-build -W` or `mkdocs build --strict`; a Markdown lint) is not made
+    stale by a later edit of that file. Declaring the file, or its directory, as an output turns
+    the exemption back on;
+  - a Markdown file a program reads at run time outside those directories (a prompt kept at the
+    repository root) no longer makes verification stale unless it is declared.
+
+  Rows recorded before the class existed keep counting as before (an edit-tool row with no scope, a
+  shell row with `write workspace`). An older reader does not parse `(write docs)`; downgrade over
+  0.3 ledgers is already unsupported.
 
 Verification: `tests/unit/domain/test_write_scope.py`, `tests/unit/domain/test_shell_writes.py`,
 `tests/unit/kernel/test_tb4n3_facts.py` (`c2i`-`c2k`, through each host's real hook chain),
 `tests/unit/kernel/test_requirement_coverage_findings.py`,
-`tests/unit/kernel/test_shell_write_supersedes.py` and
-`tests/unit/protocol/test_structural_fact_wire_parity.py`.
+`tests/unit/kernel/test_shell_write_supersedes.py`,
+`tests/unit/protocol/test_structural_fact_wire_parity.py` and
+`tests/unit/protocol/test_service_control_schemas.py` (the 2.9.0 enum pin); the handshake refusal
+is pinned by the `manifest_mismatch` cases in `tests/unit/service/test_control_protocol.py` and
+`tests/unit/service/test_client.py`.

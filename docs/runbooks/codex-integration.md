@@ -2938,10 +2938,11 @@ through the tool registry and fires its own `apply_patch` hooks with the same sh
 `tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` that
 is the whole script (or `cd <dir> && apply_patch <<EOF`; Codex 0.159 `invocation.rs`) is
 intercepted by `exec_command` and fires only PreToolUse, so its patch is captured from that event
-with outcome `unknown`. With anything before or after it (the patch, then `pytest -q`), Codex runs
-the script in the shell through its `apply_patch` alias and fires PostToolUse as usual; the patch is
-captured from that post and the attempt is an ordinary one (#1106). Its pending attempt is pre-only (#1041): it does not wait for a post Codex
-never sends. A `FileChange` item the rollout writes in the same session closes it: the attempt
+with outcome `unknown`. The intercepted call's pending attempt is pre-only (#1041): it does not
+wait for a post Codex never sends. (With anything before or after it, such as the patch and then
+`pytest -q`, Codex runs the script in the shell through its `apply_patch` alias and fires
+PostToolUse as usual; the patch is captured from that post and the attempt is an ordinary one,
+#1106.) A `FileChange` item the rollout writes in the same session closes it: the attempt
 whose call id the item names; an item naming another call the session's hooks reported (in direct
 mode a native `apply_patch` item carries its own call id) is that call's change and closes none;
 only an item whose id names no reported call (code mode's `exec-<uuid>`) closes the session's oldest
@@ -3633,7 +3634,12 @@ Host decisions for Codex; the shared classifier parts apply to Claude Code and C
   carries the same keyed command identity, runner class and relative write scope as the hook, so a
   planned verification it ran is observed either way. Hook-only facts (an absolute-path write
   scope, `effective_user`, `install_target`) are not derivable from the rollout; for a call whose
-  stream copy is recorded first they are missing, never invented. Supported, with that limit.
+  stream copy is recorded first they are missing, never invented, and a missing fact never stands
+  for its opposite: `verification_only_as_root` is decided over the runs that state a user, so it
+  is raised or cleared the same way whichever copy came first. A completed `CommandExecution` item
+  records an argv (`["/bin/bash", "-lc", CMD]`); its heredoc patch writes are read through that one
+  shell layer. Supported, with that limit; the follow-up for the hook-only facts is the #1106
+  owner's.
 - **Exit codes of direct calls.** A Codex 0.159 `Bash` PostToolUse states no exit code. The
   rollout's `function_call_output` for a direct shell call starts with Codex's own header, and its
   `Process exited with code N` (or `Exit code: N`) line is the call's exit; the output after
@@ -3641,10 +3647,21 @@ Host decisions for Codex; the shared classifier parts apply to Claude Code and C
   `item_completed` row (or a later poll) arrives. Supported.
 - **A hook outcome after a stream copy.** When the stream copy was recorded first without an
   outcome and the hook post states one, the hook's outcome is recorded as one correction of the
-  call; a contradiction keeps the refusal (#1092 item 1). Supported.
+  call; a contradiction keeps the refusal (#1092 item 1). While the outcome projection lags, the
+  hook delivery is refused as retryable and recorded on the retry. Supported; right after a
+  workflow reattach, before the new session records anything, a replayed hook post is acknowledged
+  without its correction (the outcome stays `unknown`).
 - **Documentation edits.** A write of only project documentation (README, changelog, `docs/*.md`)
   is named `docs`: real work, never stale-making for an earlier verification unless a declared
-  output is documentation. Supported on edit tools, shell writes and the rollout `FileChange`.
+  output is documentation or a directory. Supported on edit tools, shell writes and the rollout
+  `FileChange`. Data directories (`tests`, `fixtures`, `prompts`, …) are read inside the
+  workspace only, so a Codex app worktree under `~/.codex/worktrees/` is not data. The rollout
+  knows no workspace root, so a stream-first `FileChange` with an absolute `docs/guide.md` path is
+  an ordinary edit there (only a conventional name such as `README.md` is `docs`); the hook copy
+  names it. The exemption is lexical: a doctest, docs build or Markdown lint that reads the file
+  is not made stale by a later edit of it unless the file is declared. A `docs` row's check
+  inspection shows no `write_scope` (check-result 1.5.0 keeps its list; follow-up is the #1106
+  owner's).
 - **Background verification.** A job started with `&` or `nohup` and polled from a later call is
   recorded when it starts; its log is never read, so its completion is not a verification. A
   unified-exec run that yields and is polled to exit is recognized through its `item_completed`

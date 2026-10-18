@@ -1202,7 +1202,11 @@ edit, and follows the same rule for failure supersession. For the stale-verifica
 command counts as an edit when it visibly writes the workspace (`write_scope: workspace`, ADR-045).
 A write of only project documentation (`write_scope: docs`, ADR-042 amendment of 2026-10-18,
 #1106) counts as acting and as material, but never makes an earlier verification stale unless a
-declared output is documentation or a directory. A heredoc-fed `apply_patch`, `git apply` or
+declared output is documentation or a directory. The exemption is lexical: a verification that reads
+the documentation itself (a doctest over a README, a docs build, a Markdown lint) is not made stale
+by a later edit of that file unless the file is declared. Data directories (`tests`, `fixtures`,
+`data`, `prompts`, `templates`, the agent hosts' trees, …) are read only on the path inside the
+workspace. A heredoc-fed `apply_patch`, `git apply` or
 `patch` writes the files its patch headers name (`domain/shell_writes.heredoc_patch_paths`), and
 a heredoc body's quotes never decide a command's runner class (ADR-045 amendment of 2026-10-18).
 
@@ -5938,8 +5942,12 @@ way before it can quarantine (issue #1027, tb4n3 N3-7). A Codex hook post (`Post
 (#1106, #1092 item 1): a ledger whose only outcome for the call is `UNKNOWN` agrees with it, and its
 stated outcome is appended as one correction; a hook copy that contradicts a stated outcome keeps
 the refusal (it never records a conflict correction), a fact a prior correction already states is
-not appended again, and a hook copy that just recorded or replays its own result reads no
-projection. A Codex stream completion is bound to its hook
+not appended again, and a hook copy that just recorded its own result reads no projection; a
+replay, which may resolve to the stream copy's operation, waits while the projection lags or awaits
+a rebuild (`service_unavailable`, retryable); a replay into a just-rotated session that opens no
+projection is acknowledged without a correction (#560). `verification_only_as_root` is decided over the verification
+runs that state an `effective_user`, so a stream-first run (no user fact) neither raises nor clears
+it. A Codex stream completion is bound to its hook
 call's generation before its captured-content manifests are looked up, so a content-bearing hook post
 and its contentless stream copy resolve the same committed operation across a `compact`, `resume` or
 `clear` generation bump. Event ids derived from a source identity alone (unpaired evidence) can be

@@ -2619,11 +2619,18 @@ Host decisions for Claude Code:
 - **Stream-first calls and hook outcome corrections.** Not applicable: Claude Code has no second
   (session-stream) copy of a call, so its hook copy is the only record and keeps its own identity
   and outcome.
-- **Documentation edits.** `Write`, `Edit`, `MultiEdit` and `NotebookEdit` and `Bash` writes of only project documentation (README,
-  changelog, `docs/*.md`) are named `docs`: real work, never stale-making for an earlier
-  verification unless a declared output is documentation or a directory. Supported.
-- **Background verification.** Gap kept: A `Bash` call with `run_in_background` that the agent polls through `BashOutput` is recorded when it launches; its completion is not a verification (output text is never read). Run verification in the foreground, in one tool
-  call (the shipped guidance says so).
+- **Documentation edits.** `Write`, `Edit`, `MultiEdit`, `NotebookEdit` and `Bash` writes of only
+  project documentation (README, changelog, `docs/*.md`) are named `docs`: real work, never
+  stale-making for an earlier verification unless a declared output is documentation or a directory.
+  Data directories (`tests`, `fixtures`, `prompts`, …) are read inside the workspace only, so a
+  host-managed worktree (`<repo>/.claude/worktrees/<name>`) is not data. The exemption is lexical: a
+  doctest, docs build or Markdown lint that reads the file is not made stale by a later edit of it
+  unless the file is declared. A `docs` row's check inspection shows no `write_scope` (check-result
+  1.5.0 keeps its list; follow-up is the #1106 owner's). Supported.
+- **Background verification.** Gap kept: A `Bash` call with `run_in_background` that the agent polls
+  through `BashOutput` is recorded when it launches; its completion is not a verification (output
+  text is never read). Run verification in the foreground, in one tool call (the shipped guidance
+  says so).
 - **Upgrade.** The control-request 2.9.0 `write_scope` enum gained `docs` in place; a new hook
   and an older running service fail the handshake as `manifest_mismatch` before any frame, and
   hook rows wait until the next MCP bridge start or `finishup service restart` supersedes the old

@@ -916,7 +916,11 @@ scope (Codex 0.159 `exec_command.rs` sends the hook `tool_input: {"command": arg
 hook's `tool_use_id` is the row's `call_id`). Only the post copy carries the compound-outcome gap.
 Facts only the hook can know stay hook-only (absolute-path write scope, `effective_user`,
 `install_target`; `workspace_effect` is already reconciled). A command containing a secret the
-importer redacts commits to the redacted text: a missed match, never a false one.
+importer redacts commits to the redacted text: a missed match, never a false one. A missing hook
+fact never stands for its opposite: `verification_only_as_root` is decided over the verification
+runs that state a user, so a stream-first run with no `effective_user` neither raises nor clears
+it (#1106 r1). A rollout `CommandExecution` item records an argv (`["/bin/bash", "-lc", CMD]`):
+its heredoc patch writes are read through that one host-shell layer.
 
 A Codex 0.159 `Bash` post states no exit, so for a direct `exec_command` call the rollout is the
 only place the exit is stated. The reader takes it from the header Codex itself writes before
@@ -934,7 +938,12 @@ committed `UNKNOWN` gets one correction result linked to the same action, and th
 counts a ledger whose only outcome for the call is `UNKNOWN` as agreeing. A hook copy never records
 a disagreement: one that contradicts a stated outcome keeps the ledger's refusal and quarantine
 (fail closed, #560), a fact a prior correction already states is not stated twice, and a hook copy
-that just recorded its own result, or replays its own operation, reads no projection. Mapping
+that just recorded its own result reads no projection. A replay may resolve to the stream copy's
+operation, so while the projection lags or awaits a rebuild it is refused as retryable
+(`service_unavailable`), like a stream copy, and the outcome is recorded on the retry. A replay
+into a routed session that opens no projection yet (a workflow reattach rotated it and it has
+recorded nothing, #560) is acknowledged without a correction: the stream copy's `UNKNOWN` then
+stays, which is a missed outcome, never a hidden one. Mapping
 versions are unchanged; calls already recorded identity-less stay so. The shapes are pinned by
 OUT-005 (`observations/codex-shell-call-identity-0.159.0.case.json`), derived from the Codex
 0.159.0 source; a raw hook stdin capture is pending.

@@ -686,7 +686,8 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
     "never observed"; and when that copy has no outcome, the hook's outcome is recorded (#1092).
   - Editing only documentation (a README, a changelog, `docs/*.md`) is still recorded as work but
     no longer makes an earlier test stale, unless the task declares that file or a directory as an
-    output.
+    output. Declare it when a check reads the file itself (a doctest over the README, a docs
+    build), so that check goes stale again after the edit.
   - A verification started in the background and polled from a later call is still recorded only
     when it starts; FinishUP's guidance now asks agents to run verification in the foreground.
 

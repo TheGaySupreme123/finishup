@@ -340,6 +340,12 @@ Kept limits, documented rather than fixed:
 - One command that writes and verifies is one run at one ledger position, so its verification
   covers its own writes. `pytest -q && sed -i …` (verify, then write) is not reported; fixing it
   needs per-segment write order, and a lexical writer rule would demote `pytest | tee /tmp/log`.
+  The segmenter fallback above does not widen this limit: when the whole-text split fails and a
+  simple command after the last verifying one writes (a redirect, a `sed -i`/`cp`/`tee` target, or
+  a `apply_patch`/`patch`/`git apply` invocation: `pytest -q && git apply <<'EOF' …it's… EOF`),
+  the run stays `compound`, as that shape always was. Commands are compared in first-seen order,
+  so a repeated test after the write (`pytest; git apply <<EOF …; pytest`) also stays `compound`:
+  a missed verification, never a hidden edit.
 - A job started in the background (`&`, `nohup`) and polled from a later tool call is recorded
   when it starts, with a masked composition; its completion is visible only in its log, which
   FinishUP never reads (output text is never an outcome). A `wait` in a later call is another
@@ -350,4 +356,9 @@ Kept limits, documented rather than fixed:
 Verification: `tests/unit/domain/test_observation_selection.py`,
 `tests/unit/domain/test_shell_writes.py`, `tests/unit/cli/test_runtime_facts.py`,
 `tests/unit/kernel/test_tb4n3_facts.py::test_c2h_patch_then_test_with_an_apostrophe_clears_edited_after`
-and `tests/integration/observation/test_codex_pre_only_apply_patch.py`.
+(and `::test_c2h_a_patch_after_the_test_in_one_odd_quote_command_still_stales`),
+`tests/unit/cli/test_n7_shell_call_identity.py` (a rollout `CommandExecution` argv names its
+heredoc patch through its one host-shell layer) and
+`tests/integration/observation/test_codex_pre_only_apply_patch.py`. The heredoc readers are linear
+in the text (`test_heredoc_patch_readers_are_linear`); unlike the token parsers they are not cut at
+`MAX_SHELL_WRITE_CHARS`, since a patch past that bound is still a write.
