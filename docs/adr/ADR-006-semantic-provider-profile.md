@@ -2270,14 +2270,15 @@ from primary material.
   any other author), and the instruction names both, says a `source_kind` `diff` evidence excerpt
   holds hook-captured edit bytes, and reads only the remaining unlabelled evidence as the agent's
   published description. A run clause (`run of command action <act_>, host-reported outcome
-  <outcome>, exit status <n>`) appears only when the action and its result are hook-observed
-  records (ADR-022 decision 2) and the action's keyed command identity is the one the capture was
-  resolved under, the test auto-supply already applies; an agent-published or plaintext record
-  never lends a capture an outcome. The grounding rule now names such output as a witness, tells
-  the reviewer never to abstain only because a check's source is absent, and says a bare verdict
-  line (PASS, OK, a pass count) witnesses only that the check passed. Because FinishUP never sends
-  a hook-observed run's command text (only its keyed `omitted:hmac-sha256:` identity), the
-  grounding rule and the
+  <outcome>[, exit status <n>]`, the exit status only when the host reported one, which a Codex
+  hook-only result does not since #1105) appears only when the action and its result are
+  hook-observed records (ADR-022 decision 2) and the action's keyed command identity is the one the
+  capture was resolved under, the test auto-supply already applies; an agent-published or
+  plaintext record never lends a capture an outcome. The grounding rule now names such output as a
+  witness, tells the reviewer never to abstain only because a check's source is absent, and says a
+  bare verdict line (PASS, OK, a pass count) witnesses only that the check passed. Because FinishUP
+  never sends a hook-observed run's command text (only its keyed `omitted:hmac-sha256:` identity),
+  the grounding rule and the
   own-checks lens say a command the agent recorded or named for such a run is the agent's account,
   not the witness (#1108 review R2). The own-checks lens separates
   the check's verdict (the claim) from what FinishUP observed it print (evidence of what it
