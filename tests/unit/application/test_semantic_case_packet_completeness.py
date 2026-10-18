@@ -391,7 +391,8 @@ def test_a_directory_listing_and_a_chosen_member_carry_their_own_labels() -> Non
     )
     assert second.startswith(
         f"[FinishUP task input file dedup/config.py ({len(member)} bytes): beneath a directory "
-        "the task names, chosen by FinishUP for the names it shares with the change"
+        "the task names, chosen by FinishUP as possibly related to the change (by names it "
+        "shares with the change, or else by its place beside the changed files)"
     )
     assert "threshold must be > 0" in second
     assert "named by the task" not in second

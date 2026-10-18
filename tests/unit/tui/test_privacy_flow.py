@@ -295,7 +295,15 @@ def test_the_privacy_screen_names_admitted_outside_workspace_roots() -> None:
     from finishup.tui.models import PrivacyPosture
 
     none = PrivacyPosture(profile="assisted_review", llm_inference_enabled=True, readable=True)
-    assert none.admitted_input_roots_summary is None
+    # Issue #1102 (review surfaces-r2-3): with none admitted the screen still names the way in.
+    assert none.admitted_input_roots_summary == (
+        "Outside-workspace task inputs: none admitted"
+        " (add one with `finishup privacy input-roots add <folder>`)"
+    )
+    unreadable = PrivacyPosture(
+        profile="assisted_review", llm_inference_enabled=True, readable=False
+    )
+    assert unreadable.admitted_input_roots_summary is None
     some = PrivacyPosture(
         profile="assisted_review",
         llm_inference_enabled=True,

@@ -476,8 +476,8 @@ CHECK_TIME_CHANGE_GAPS: Final = frozenset(
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP: Final = "task_input_outside_not_admitted"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
-    "Review lacked a task-named file outside the workspace; only the owner can admit it:"
-    " `finishup privacy input-roots add <folder>`."
+    "Review lacked a task-named file or folder outside the workspace; only the owner can admit"
+    " it: `finishup privacy input-roots add <folder>`."
 )
 
 

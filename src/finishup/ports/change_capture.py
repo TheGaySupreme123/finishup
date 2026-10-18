@@ -322,8 +322,8 @@ class TaskInputFile:
     # task ships reaches the reviewer as the oracle. ``outside_workspace``: named by the task and
     # read beneath a root the owner admitted in the repository's privacy grant.
     # ``task_directory`` (issue #1102): beneath a directory the task names inside the repository,
-    # chosen by FinishUP for the identifiers it shares with the change, under the ``task`` rule;
-    # never labelled as named by the task.
+    # chosen by FinishUP by the identifiers it shares with the change, or else by its place
+    # beside the changed files, under the ``task`` rule; never labelled as named by the task.
     origin: TaskInputOrigin = "task"
     # Issue #1082: ``text`` is FinishUP's own bounded summary of a binary or data file it never
     # sends whole (``finishup.adapters.input_summary``), not the file's bytes. Issue #1102: a

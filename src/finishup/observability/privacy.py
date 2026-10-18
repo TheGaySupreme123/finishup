@@ -303,6 +303,7 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_task_input_candidates",
         "semantic_task_input_excerpts_selected",
         "semantic_task_input_listings",
+        "semantic_task_input_outside_candidates",
         "semantic_task_inputs_outside_not_admitted",
         "semantic_task_inputs_read",
         # Closed control-plane identity of an abandoned response write (tb4n2 NEW-8): the wire
@@ -441,6 +442,7 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_task_input_candidates",
         "semantic_task_input_excerpts_selected",
         "semantic_task_input_listings",
+        "semantic_task_input_outside_candidates",
         "semantic_task_inputs_outside_not_admitted",
         "semantic_task_inputs_read",
     }

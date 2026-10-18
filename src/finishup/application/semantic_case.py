@@ -830,8 +830,9 @@ _TASK_INPUT_LISTING_LABEL: Final = (
 )
 _TASK_INPUT_DIRECTORY_LABEL: Final = (
     "[FinishUP task input file {path} ({size} bytes{cut}): beneath a directory the task names, "
-    "chosen by FinishUP for the names it shares with the change, unchanged since the task "
-    "started, read by the FinishUP service when this check ran; not the agent's work]\n"
+    "chosen by FinishUP as possibly related to the change (by names it shares with the change, "
+    "or else by its place beside the changed files), unchanged since the task started, read by "
+    "the FinishUP service when this check ran; not the agent's work]\n"
 )
 
 

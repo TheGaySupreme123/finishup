@@ -415,10 +415,19 @@ class PrivacyPosture:
 
     @property
     def admitted_input_roots_summary(self) -> str | None:
-        """One line naming the admitted outside-workspace input roots, or ``None``."""
+        """One line naming the admitted outside-workspace input roots, or ``None`` if unreadable.
 
-        if not self.admitted_input_roots:
+        Issue #1102 (review surfaces-r2-3): with none admitted the line still names the owner's
+        step, so a check's ``task_input_outside_not_admitted`` has a route on this screen too.
+        """
+
+        if not self.readable:
             return None
+        if not self.admitted_input_roots:
+            return (
+                "Outside-workspace task inputs: none admitted"
+                " (add one with `finishup privacy input-roots add <folder>`)"
+            )
         return (
             "Outside-workspace task inputs: "
             + ", ".join(self.admitted_input_roots)

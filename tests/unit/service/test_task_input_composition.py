@@ -30,6 +30,7 @@ from unit.application.test_semantic_case_packet_completeness import (
 _review_inputs = ready_composition._review_inputs  # pyright: ignore[reportPrivateUsage]
 _outside_not_admitted = ready_composition._outside_not_admitted  # pyright: ignore[reportPrivateUsage]
 _task_input_counts = ready_composition._task_input_counts  # pyright: ignore[reportPrivateUsage]
+_outside_candidate_count = ready_composition._outside_candidate_count  # pyright: ignore[reportPrivateUsage]
 
 _EXPANDED = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 _OUTSIDE = "/shared/legacy app/main.c"
@@ -81,15 +82,31 @@ def test_the_task_input_counters_are_counts_only() -> None:
     )
     semantic = _build(case, change=change)
 
-    counts = _task_input_counts(inputs, CheckChangeOutcome(change=change), semantic, True)
+    outside = _outside_candidate_count(inputs, "/app", (), ())
+    counts = _task_input_counts(inputs, CheckChangeOutcome(change=change), semantic, True, outside)
 
     assert counts == {
         "semantic_task_input_candidates": len(inputs[0]),
         "semantic_task_inputs_read": 2,
         "semantic_task_input_listings": 1,
         "semantic_task_input_excerpts_selected": 2,
+        "semantic_task_input_outside_candidates": 1,
         "semantic_task_inputs_outside_not_admitted": 1,
     }
     assert all(type(value) is int for value in counts.values())
     empty = _task_input_counts(((), frozenset()), CheckChangeOutcome(), _build(case), False)
     assert set(empty.values()) == {0}
+
+
+def test_the_outside_candidate_counter_tells_undecided_from_none_named() -> None:
+    """Review goal-r2-3: a 0 flag alone cannot say whether the task named an outside input that
+    FinishUP could not count (no task-start base, nothing on disk) or named none at all."""
+
+    named = _review_inputs(_case(f'Port "{_OUTSIDE}" to /app/main.py using /data/.'), _EXPANDED)
+    assert _outside_candidate_count(named, "/app", (), ()) == 2
+    # Beneath an admitted root, inside the workspace, or with no known root: nothing to count.
+    assert _outside_candidate_count(named, "/app", ("/data", "/shared"), ()) == 0
+    assert _outside_candidate_count(named, "/", (), ()) == 0
+    assert _outside_candidate_count(named, None, (), ()) == 0
+    none = _review_inputs(_case("Fix src/dedup/core.py per DESIGN.md."), _EXPANDED)
+    assert _outside_candidate_count(none, "/app", (), ()) == 0

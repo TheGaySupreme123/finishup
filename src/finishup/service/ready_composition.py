@@ -87,6 +87,7 @@ from finishup.application.check_change import (
     check_change_shown_files,
     check_time_change_selected,
     declared_output_paths,
+    outside_input_candidates,
     recover_check_time_change,
     review_input_paths,
 )
@@ -4343,12 +4344,16 @@ def _task_input_counts(
     check_change: CheckChangeOutcome,
     semantic_case: SemanticCase,
     outside_not_admitted: bool,
+    outside_candidates: int = 0,
 ) -> dict[str, int]:
     """Issue #1102 pilot counters for ``semantic_case_built``; counts only, never a path.
 
     How many task inputs the statement and the recorded verification named, how many the
-    check-time read kept (directory listings among them), how many the packet selected, and
-    whether a named outside input lacked an admitted root.
+    check-time read kept (directory listings among them), how many the packet selected, how
+    many named outside candidates could lexically be an unadmitted input (before any ``lstat``),
+    and whether a named outside input lacked an admitted root. A candidate count beside a 0 flag
+    says FinishUP saw such a path but could not count it (no ``task_start`` base, nothing on disk,
+    written during the task), which a 0 flag alone cannot tell from "none named" (review goal-r2-3).
     """
 
     read = () if check_change.change is None else check_change.change.capture.inputs
@@ -4362,8 +4367,36 @@ def _task_input_counts(
             item.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
             for item in semantic_case.packet.targeted_excerpts
         ),
+        "semantic_task_input_outside_candidates": outside_candidates,
         "semantic_task_inputs_outside_not_admitted": int(outside_not_admitted),
     }
+
+
+def _outside_candidate_count(
+    review_inputs: tuple[tuple[str, ...], frozenset[str]],
+    workspace: str | None,
+    admitted_roots: tuple[str, ...],
+    outputs: tuple[str, ...],
+) -> int:
+    """How many named outside candidates could lexically be an unadmitted input (#1102).
+
+    Counted against the connection's root the check-time read uses, else ``workspace`` (the
+    session's workspace); 0 when neither is known, so the count never claims an outside path it
+    could not place.
+    """
+
+    # A diagnostic count must never fail the case: anything but a bound source's string root
+    # falls back to the session's workspace.
+    read_root: object = getattr(current_check_workspace_source(), "workspace", None)
+    if type(read_root) is str:
+        workspace = read_root
+    if workspace is None:
+        return 0
+    return len(
+        outside_input_candidates(
+            review_inputs[0], review_inputs[1], workspace, admitted_roots, outputs
+        )
+    )
 
 
 async def _workspace_root_for_runtime(runtime: TaskRuntime | None) -> str | None:
@@ -5360,7 +5393,16 @@ def _privacy_gated_semantic_evaluator(
                         frozen.case.projection
                     ),
                     **_task_input_counts(
-                        review_inputs, check_change, semantic_case, outside_not_admitted
+                        review_inputs,
+                        check_change,
+                        semantic_case,
+                        outside_not_admitted,
+                        _outside_candidate_count(
+                            review_inputs,
+                            workspace_root,
+                            policy.admitted_input_roots,
+                            declared_output_paths(frozen.case.projection),
+                        ),
                     ),
                 },
             )

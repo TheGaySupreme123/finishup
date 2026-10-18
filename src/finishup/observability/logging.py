@@ -96,6 +96,7 @@ _FIELD_ORDER: Final = (
     "semantic_task_input_candidates",
     "semantic_task_input_excerpts_selected",
     "semantic_task_input_listings",
+    "semantic_task_input_outside_candidates",
     "semantic_task_inputs_outside_not_admitted",
     "semantic_task_inputs_read",
     # Admits the loop-health connection count into _CALLER_FIELDS/_COUNT_FIELDS below, so a
