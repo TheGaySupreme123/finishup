@@ -10906,8 +10906,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   (`.readings.lock`) and call it before they create or enter the store, publish the pending
   snapshot or write the tally, so a pass that raced a revoke records and re-creates nothing; a
   withdrawn grant on an existing store records nothing and leaves the store to revocation, and a
-  check that raises is not a grant. Without `admitted` the tally never creates the store. The
-  pending snapshot is published only into the store its pass entered, and the post-call digest
+  check that raises is not a grant (the hook then records `workspace_fingerprint_consent_unreadable`
+  once for the pass). Without `admitted` the tally never creates the store. The pending snapshot
+  is published only into the store its pass entered: the pass keeps that store's lock file open
+  (not locked) across its walk and publishes only while the same file is at the store's path, so a
+  revoke and re-grant during the walk leave the re-created store without it; the post-call digest
   cache and standing marker write only into an existing one;
   `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
   `<observation>/workspace-fingerprints/<commitment digest>/` (`pending/` per open call,

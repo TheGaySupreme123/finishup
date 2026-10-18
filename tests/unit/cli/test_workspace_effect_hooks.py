@@ -988,3 +988,40 @@ def test_a_store_failure_after_the_call_is_counted_best_effort(
         "store_unusable",
     )
     assert noted == [("unavailable", "store_unusable", "call_1")]
+
+
+def test_a_consent_re_check_that_fails_records_nothing_but_is_diagnosed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store's consent re-check under its lock fails closed (review of 59a23b06): the call is
+    unverified and its reading is not tallied, as after a revoke, but unlike a revoke the hook
+    names it, so a re-check that keeps failing while consent stands is visible locally."""
+
+    import inspect
+
+    workspace, state, commitment = _setup(tmp_path)
+    emit, pre, post, _shape = _host("codex", workspace, state)
+    command = "rg -n reviewed deliverable.txt"
+    emit(pre, _codex(pre, "call_ok", command))
+    emit(post, _codex(post, "call_ok", command, tool_response="1:reviewed\n"))
+    real_consent_for = LocalObservationStore.consent_for
+
+    def failing_re_check(self: LocalObservationStore, commitment: str) -> Any:
+        caller = inspect.currentframe()
+        caller = None if caller is None else caller.f_back
+        if caller is not None and caller.f_code.co_name == "still_granted":
+            raise RuntimeError("consent unreadable")
+        return real_consent_for(self, commitment)
+
+    monkeypatch.setattr(LocalObservationStore, "consent_for", failing_re_check)
+    emit(pre, _codex(pre, "call_failed", command))
+    emit(post, _codex(post, "call_failed", command, tool_response="1:reviewed\n"))
+    _first, second = _posts(state, commitment)
+    assert second.structural_payload["workspace_effect"] == "unavailable"
+    diagnostics = state / "observation" / "hook-diagnostics.jsonl"
+    rows = [json.loads(line) for line in diagnostics.read_text().splitlines()]
+    assert [
+        row["event"] for row in rows if row["reason"] == "workspace_fingerprint_consent_unreadable"
+    ] == ["PreToolUse", "PostToolUse"]
+    tally = cast(dict[str, object], _readings(state, commitment)["all"])
+    assert (tally["unchanged"], tally["unavailable"]) == (1, 0)

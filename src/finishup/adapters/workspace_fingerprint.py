@@ -98,7 +98,9 @@ revoking observation for the workspace removes its directory (``remove_workspace
 The hook checks consent once, outside any store lock, so a pass may race a revoke. Only two writes
 may create the directory, the pre-call snapshot and the tally, and both take the store lock and ask
 again (``admitted``) whether observation is still granted before they write; the pre-call snapshot
-is published into the store it entered, never into a re-created one. The other post-call writes
+is published into the store it entered, never into a re-created one (the pass keeps the entered
+store's lock file open across its walk and publishes only while that same file is at the store's
+path). The other post-call writes
 (the digest cache, a standing marker) go by path into a store that already exists. Revocation
 saves the revoked consent, then takes the same lock and renames the directory away before removing
 it, so a pass that raced the revoke records nothing and creates nothing after it.
@@ -470,17 +472,21 @@ class WorkspaceFingerprintStore:
         """
 
         window = process_clock_ns() or 0
+        # The lock file of the store this pass entered, held open (not locked) across the walk:
+        # the snapshot is published only while that same file is at the store's path.
+        entered: int | None = None
         try:
             # The store is created (or entered) only under its lock with observation still
             # granted: a pass that read consent before a revoke records nothing after it.
             with _store_access(
                 self._directory, create=True, admitted=self._admitted, wait=_left(deadline)
-            ) as access:
+            ) as (access, lock):
                 if access == "busy":
                     raise _Unavailable("timeout", backoff=False)
                 if access == "withdrawn":
                     return None
                 self._prepare()
+                entered = _pin_lock(self._directory, lock)
             self._expire_pending(deadline)
             bounded = self._recently_bounded()
             if bounded is not None:
@@ -520,10 +526,15 @@ class WorkspaceFingerprintStore:
             pending = self._pending_path(call_identity)
             # Published under the store lock, into the store this pass entered, and only while
             # observation is still granted: a revoke during the walk renamed the store away (or
-            # withdrew consent), and nothing is re-created or published after it.
+            # withdrew consent), and nothing is re-created or published after it, not even into
+            # a store a re-grant re-created meanwhile (its lock file is not the pinned one).
             with _store_access(
-                self._directory, create=False, admitted=self._admitted, wait=_left(deadline)
-            ) as access:
+                self._directory,
+                create=False,
+                admitted=self._admitted,
+                wait=_left(deadline),
+                entered=entered,
+            ) as (access, _lock):
                 if access == "busy":
                     raise _Unavailable("timeout", backoff=False)
                 if access == "withdrawn":
@@ -546,6 +557,10 @@ class WorkspaceFingerprintStore:
             return failure.reason
         except OSError, PathSafetyError, ValueError:
             return "store_unusable"
+        finally:
+            if entered is not None:
+                with contextlib.suppress(OSError):
+                    os.close(entered)
 
     def effect_after(
         self,
@@ -1286,7 +1301,7 @@ def _note_reading(
         # observation is still granted: a reading after a revoke is never recorded.
         with _store_access(
             directory, create=admitted is not None, admitted=admitted, wait=_LOCK_WAIT_SECONDS
-        ) as access:
+        ) as (access, _lock):
             if access == "busy":
                 _count_drop(directory)
                 return False
@@ -1343,6 +1358,31 @@ def _holds_lock_of(directory: Path, lock: int) -> bool:
     return (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
 
 
+def _same_file(first: int, second: int) -> bool:
+    try:
+        one, other = os.fstat(first), os.fstat(second)
+    except OSError:
+        return False
+    return (one.st_dev, one.st_ino) == (other.st_dev, other.st_ino)
+
+
+def _pin_lock(directory: Path, lock: int) -> int:
+    """Open the held lock file *lock* again by path, as a pin of the store it belongs to.
+
+    Called under the lock, where the file at the path is the held one. The pin is its own open
+    file description, so it holds no lock and closing it releases none; it only keeps the lock
+    file's inode allocated, so a store re-created at the path later never has a lock file with the
+    same (device, inode). Raises ``OSError`` when the file at the path is not the held one.
+    """
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    pin = os.open(directory / _READING_LOCK, flags)
+    if not _same_file(pin, lock):
+        os.close(pin)
+        raise OSError("store_moved")
+    return pin
+
+
 def _still_admitted(admitted: Admission) -> bool:
     try:
         return admitted() is True
@@ -1353,38 +1393,47 @@ def _still_admitted(admitted: Admission) -> bool:
 
 @contextlib.contextmanager
 def _store_access(
-    directory: Path, *, create: bool, admitted: Admission | None, wait: float
-) -> Generator[_Access]:
+    directory: Path,
+    *,
+    create: bool,
+    admitted: Admission | None,
+    wait: float,
+    entered: int | None = None,
+) -> Generator[tuple[_Access, int]]:
     """Hold the store lock for one write into *directory* while observation is still granted.
 
-    Yields ``write`` while the caller may write (the lock is held until the block ends), ``busy``
-    when the lock was not taken within *wait*, and ``withdrawn`` when there is no store to write
-    into: none exists and *create* is false, revocation renamed it away while this writer waited,
-    or *admitted* says observation is no longer granted. A store this call created for a withdrawn
-    grant is removed again under the lock; an existing one is left to revocation (a pause keeps
-    it). Raises ``OSError`` or ``PathSafetyError`` for an unusable store.
+    Yields the access and the held lock descriptor (``-1`` when none is held): ``write`` while
+    the caller may write (the lock is held until the block ends), ``busy`` when the lock was not
+    taken within *wait*, and ``withdrawn`` when there is no store to write into: none exists and
+    *create* is false, revocation renamed it away while this writer waited, the store at the path
+    is not the one *entered* pins (``_pin_lock``: a store re-created since), or *admitted* says
+    observation is no longer granted. A store this call created for a withdrawn grant is removed
+    again under the lock; an existing one is left to revocation (a pause keeps it). Raises
+    ``OSError`` or ``PathSafetyError`` for an unusable store.
     """
 
     existed = existing_owner_only_dir(directory)
     if not existed:
         if not create:
-            yield "withdrawn"
+            yield "withdrawn", -1
             return
         ensure_owner_only_dir(directory)
     lock = _open_lock(directory)
     try:
         if not _acquire_lock(lock, wait):
-            yield "busy"
+            yield "busy", -1
             return
-        if not _holds_lock_of(directory, lock):
-            yield "withdrawn"
+        if not _holds_lock_of(directory, lock) or (
+            entered is not None and not _same_file(lock, entered)
+        ):
+            yield "withdrawn", -1
             return
         if admitted is not None and not _still_admitted(admitted):
             if not existed:
                 _remove_renamed(directory)
-            yield "withdrawn"
+            yield "withdrawn", -1
             return
-        yield "write"
+        yield "write", lock
     finally:
         os.close(lock)
 

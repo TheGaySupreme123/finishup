@@ -4867,9 +4867,17 @@ def _workspace_fingerprint_hook_pass(
 
         def still_granted() -> bool:
             # Asked again under the fingerprint store's lock: this pass checked consent before
-            # it began, and a revoke since then must leave nothing behind (#1105).
-            consent = store.consent_for(workspace_commitment)
+            # it began, and a revoke since then must leave nothing behind (#1105). A re-check
+            # that fails is not a grant, but it is named once below (outside the store lock):
+            # otherwise it would read exactly like a revoke while consent still stands.
+            try:
+                consent = store.consent_for(workspace_commitment)
+            except Exception:
+                consent_recheck_failed.append(True)
+                raise
             return consent is not None and consent.active
+
+        consent_recheck_failed: list[bool] = []
 
         reading = workspace_fingerprint_pass(
             resolved_event,
@@ -4898,6 +4906,11 @@ def _workspace_fingerprint_hook_pass(
             ),
             admitted=still_granted,
         )
+        if consent_recheck_failed:
+            with contextlib.suppress(Exception):
+                record_hook_diagnostic(
+                    "workspace_fingerprint_consent_unreadable", resolved_event, _state=_state
+                )
     if resolved_event == "PostToolUse" and reading is None:
         reading = WorkspaceEffectReading("unavailable", "store_unusable")
     if reading is not None and reading.fresh and reading.reason in _FINGERPRINT_DIAGNOSED:
