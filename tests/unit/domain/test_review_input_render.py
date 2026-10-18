@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from finishup.domain.events import PAYLOAD_TYPES, EventSchema
 from finishup.domain.review_input_render import (
@@ -261,12 +262,15 @@ def _publish_claims(instruction: str) -> list[tuple[str, str | None, str | None]
 def test_publish_exactly_names_fields_the_payload_admits() -> None:
     """Each named event exists, and each named field exists on that version's payload."""
 
-    assert _PUBLISH_EXACTLY["task_statement"] == (
+    assert publish_exactly("task_statement") == (
         "Publish one plan_revised 1.1.0 whose task_statement is the user's whole request, "
         "linked to the target."
     )
     checked = 0
-    for instruction in _PUBLISH_EXACTLY.values():
+    # Every variant, the short ones ``agent_next`` falls back to included, longest first.
+    for variants in _PUBLISH_EXACTLY.values():
+        assert variants and variants[0] == max(variants, key=len)
+    for instruction in (item for variants in _PUBLISH_EXACTLY.values() for item in variants):
         for event, version, field in _publish_claims(instruction):
             versions = (version,) if version is not None else _event_versions(event)
             assert versions, event
@@ -396,6 +400,66 @@ def test_agent_next_names_every_item_and_how_to_supply_it() -> None:
     for action in _AGENT_NEXT_ACTIONS[1:]:
         lead = render_agent_next({"action": action, "status": "action_required"}, ())
         assert overall_next_instruction(action, "action_required") + "." in lead
+
+
+def test_agent_next_keeps_every_requested_kinds_direction_in_the_worst_case() -> None:
+    """Directions are reserved before target lists expand (Greptile on PR #1114, RC6a)."""
+
+    kinds = tuple(sorted(_PUBLISH_EXACTLY))
+    for rotation in range(len(kinds)):
+        order = (*kinds[rotation:], *kinds[:rotation])
+        for extra in ("agent_suppliable", "yoetz_limit_packet_room"):
+            # Eight items (the schema bound) of four targets each (the item bound): every kind
+            # once, and the first again either as a second request or as a FinishUP limit.
+            items = [
+                {"kind": kind, "availability": "agent_suppliable", "target_refs": _item_refs(i, 4)}
+                for i, kind in enumerate(order)
+            ]
+            items.append({"kind": order[0], "availability": extra, "target_refs": _item_refs(7, 4)})
+            text = render_agent_next(
+                {
+                    "action": "supply_missing_input",
+                    "status": "action_required",
+                    "target_refs": [ref for index in range(8) for ref in _item_refs(index, 4)],
+                },
+                items,
+            )
+            assert len(text.encode("ascii")) <= MAX_AGENT_NEXT_BYTES
+            assert "..." not in text, "a required part was cut"
+            # One direction per requested kind, each a variant from the shared table.
+            assert text.count("How: ") == len(kinds)
+            for kind in kinds:
+                variants = _PUBLISH_EXACTLY[kind]
+                assert type(variants) is tuple
+                assert any(f"How: {variant}" in text for variant in variants), kind
+            # Whichever verification_output variant fits keeps the re-run rule the Codex runbook
+            # quotes: publish even after a re-run, which counts only once it reaches the reviewer.
+            for variant in _PUBLISH_EXACTLY["verification_output"]:
+                assert "even after a re-run" in variant and "reaches the reviewer" in variant
+            own = [item for item in items if item["availability"] == "agent_suppliable"]
+            # Every item is named with the same number of its targets and an explicit remainder.
+            shown = {
+                index: sum(ref in text for ref in cast(list[str], item["target_refs"]))
+                for index, item in enumerate(own, start=1)
+            }
+            assert len(set(shown.values())) == 1 and shown[1] > 0, shown
+            for index, item in enumerate(own, start=1):
+                assert f"({index}) {item['kind']} for " in text
+            assert text.count(f" (+{4 - shown[1]} more).") == (len(own) if shown[1] < 4 else 0)
+            if extra != "agent_suppliable":
+                assert "FinishUP limit" in text
+    # The canonical worst-case vector carries a direction for each of its kinds.
+    path = (
+        Path(__file__).resolve().parents[3] / "fixtures/canonical/check-agent-next-1.5.0.case.json"
+    )
+    vectors = {
+        vector["vector_id"]: vector["payload"]
+        for vector in json.loads(path.read_bytes())["input"]["vectors"]
+    }
+    worst = vectors["supply_worst_case_shrinks_to_the_bound"]
+    for item in worst["missing_for_assessment"]:
+        variants = _PUBLISH_EXACTLY[item["kind"]]
+        assert any(f"How: {variant}" in worst["agent_next"] for variant in variants), item
 
 
 def test_agent_next_carries_only_closed_tokens_and_admitted_ids() -> None:

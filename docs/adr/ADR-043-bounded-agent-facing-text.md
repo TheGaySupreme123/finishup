@@ -184,9 +184,14 @@ per-kind "publish exactly" instruction reached only the text channel, which Code
   targets and exactly how to supply it, then what counts as supplied (ADR-006 amendment of the same
   date) and the FinishUP-limit count; for every other action the one shared per-action instruction
   (`OVERALL_NEXT_INSTRUCTIONS`, which the CLI's `Overall next` line also reads) and its targets; and
-  the predicted receipt conclusion when room remains. It is composed with the one composer under
-  its own 2,048-byte bound; any failure omits the field, never the result (a committed check never
-  fails on its text). It is derived at serialization, so older `check_recorded` rows project it too.
+  the predicted receipt conclusion when room remains. Under the bound, every item's kind and target
+  count, one direction per requested kind (its shortest variant in the one shared per-kind table)
+  and every limit count are reserved first; target lists then expand, every item to the same bound
+  with an explicit `(+N more)`, and longer directions only after them, so a direction is never
+  dropped for a target id (the ids also ride in `missing_for_assessment`, the direction only here).
+  It is composed with the one composer under its own 2,048-byte bound; any failure omits the field,
+  never the result (a committed check never fails on its text). It is derived at serialization,
+  so older `check_recorded` rows project it too.
 - **Field order is part of the contract on the MCP wire.** The check success model declares
   `agent_next`, `overall_next` and `missing_for_assessment` right after `verdict`; the continuation
   precedes every bulky field, and a new bulky field goes after `missing_for_assessment`. Schema

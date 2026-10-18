@@ -10325,10 +10325,12 @@ Wire (the earlier checklist fields remain available in their original versions):
   admitted subject ids (`act_`/`clm_`/`evd_`/`evt_`/`fnd_`/`obl_`/`res_`), never reviewer prose,
   task text, paths or command text. It begins `Next: <overall_next.action> (<overall_next.status>).`;
   for `supply_missing_input` it names each `agent_suppliable` item with its kind, targets and how to
-  supply it, what counts as supplied, and the FinishUP-limit count; for every other action it
-  carries the one shared per-action instruction (`domain.review_input_render.OVERALL_NEXT_INSTRUCTIONS`,
-  also the CLI's `Overall next` line) and its targets. It is absent whenever `overall_next` is
-  absent, and omitted (never null) if composition fails.
+  supply it, what counts as supplied, and the FinishUP-limit count (each requested kind's direction
+  and each count are reserved before any target list expands; lists are then bounded alike per
+  item with an explicit `(+N more)`); for every other action it carries the one shared per-action
+  instruction (`domain.review_input_render.OVERALL_NEXT_INSTRUCTIONS`, also the CLI's `Overall
+  next` line) and its targets. It is absent whenever `overall_next` is absent, and omitted (never
+  null) if composition fails.
   Field order on the MCP wire is `... verdict, agent_next, overall_next, missing_for_assessment,
   findings, ...`: the continuation precedes every bulky field (Codex shows a model only the head and
   tail of a large structured result), and a new bulky field goes after `missing_for_assessment`.
