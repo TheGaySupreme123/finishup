@@ -2313,8 +2313,10 @@ from primary material.
 - **Wording from issue #1094.** The environment lens raises a run-time file only when the
   deliverable does not ship it *and the task does not supply it*, and network access only when *the
   task does not provide it* (R2-N1). A `[FinishUP summary of` excerpt is said to stand for a binary,
-  an image or a data file FinishUP cannot send as text; a large text input keeps its head and tail
-  (R2-N3).
+  an image or a data file FinishUP cannot send as text, or for FinishUP's own listing of a directory
+  the task names; a large text input keeps its head and tail (R2-N3). A `[FinishUP task input file`
+  excerpt is an input the task names or a file FinishUP chose beneath a directory the task names
+  (issue #1102); the instruction never says the task named a file FinishUP chose.
 
 Every provider route reads the same text: the Responses and Chat Completions adapters send
 `SEMANTIC_REVIEW_INSTRUCTION` (Chat Completions with its JSON-shape suffix), and the Codex

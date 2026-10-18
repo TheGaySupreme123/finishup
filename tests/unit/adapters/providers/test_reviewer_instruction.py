@@ -913,3 +913,14 @@ def test_task_inputs_and_delivery_risks_are_worded_as_built() -> None:
         "head and tail instead)" in _TEXT
     )
     assert "or a large data file" not in _TEXT
+
+
+def test_a_directory_listing_and_a_chosen_member_are_described_as_built() -> None:
+    """Issue #1102: a file FinishUP chose beneath a named directory is not said to be named by the
+    task, and a directory listing is not said to describe a binary or data file."""
+
+    assert (
+        "or a file FinishUP chose beneath a directory the task names, read by FinishUP itself"
+        in _TEXT
+    )
+    assert "or its own listing of a directory the task names: judge what that description" in _TEXT

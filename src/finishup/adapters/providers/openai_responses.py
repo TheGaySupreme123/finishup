@@ -446,14 +446,18 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             # Issue #908: how to read the task-statement and agent-plan sections, kept as its own
             # constant so the text around it can change without touching this rule.
             TASK_STATEMENT_REVIEW_INSTRUCTION,
-            # Issues #1045 and #1082: inputs FinishUP read itself are specification, not work.
+            # Issues #1045, #1082 and #1102: inputs FinishUP read itself are specification, not
+            # work, including a file it chose beneath a named directory and that directory's
+            # listing.
             "An excerpt that begins [FinishUP task input file is a read-only input the task names "
-            "(a specification, a dataset, the source to port, a test the verification runs), read "
-            "by FinishUP itself: treat it as part of the specification, never as the agent's work. "
-            "An excerpt that begins [FinishUP summary of is FinishUP's own bounded description of an "
-            "input it did not send whole (a binary, an image, or a data file it cannot send as "
-            "text; a large text input keeps its head and tail instead): judge what that "
-            "description states, and treat what it leaves out as not assessable.",
+            "(a specification, a dataset, the source to port, a test the verification runs), or a "
+            "file FinishUP chose beneath a directory the task names, read by FinishUP itself: "
+            "treat it as part of the specification, never as the agent's work. An excerpt that "
+            "begins [FinishUP summary of is FinishUP's own bounded description of an input it did "
+            "not send whole (a binary, an image, or a data file it cannot send as text; a large "
+            "text input keeps its head and tail instead), or its own listing of a directory the "
+            "task names: judge what that description states, and treat what it leaves out as not "
+            "assessable.",
         ),
         _section(
             "Review phase",
