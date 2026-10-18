@@ -1339,6 +1339,68 @@ def _task_lane_for_result(
     return None
 
 
+def _reconcile_codex_stream(
+    store: LocalObservationStore,
+    payload: Mapping[str, JsonValue],
+    *,
+    resolved_event: str,
+    lane: _ObservationLane,
+    workspace_commitment: str,
+    session_commitment: str,
+    codex_session_id: str,
+    workspace_locator: str | None,
+) -> None:
+    """Reconcile the Codex session stream this hook's lane reads, with the hook's own facts.
+
+    A validated child lane reconciles that child's own rollout (#841); every other Codex lane
+    keeps the host-session stream. The reader takes this process's command facts
+    (``_stream_command_facts``), so a call its stream row defines carries them (#1106 r2).
+    """
+
+    from finishup.adapters.integrations.codex_session_stream import (
+        CodexSessionStreamLocator,
+        reconcile_session_stream,
+        reconcile_session_stream_path,
+        resolve_codex_home,
+        should_trigger_stream_reconcile,
+    )
+
+    hook_path = payload.get("session_file") or payload.get("transcript_path")
+    hook_path_token = hook_path if type(hook_path) is str else None
+    session_source = payload.get("source")
+    if not should_trigger_stream_reconcile(
+        resolved_event,
+        last_reconcile_mono=store.last_stream_reconcile_mono(workspace_commitment),
+        session_source=session_source if type(session_source) is str else None,
+    ):
+        return
+    locator = CodexSessionStreamLocator(resolve_codex_home())
+    command_facts = _stream_command_facts(workspace_locator)
+    if not lane.is_child:
+        reconcile_session_stream(
+            store,
+            workspace_commitment=workspace_commitment,
+            session_commitment=session_commitment,
+            codex_session_id=codex_session_id,
+            locator=locator,
+            hook_provided_path=hook_path_token,
+            command_facts=command_facts,
+        )
+        return
+    child_rollout = _child_lane_rollout(
+        payload, lane=lane, locator=locator, hook_provided_path=hook_path_token
+    )
+    if child_rollout is not None:
+        reconcile_session_stream_path(
+            store,
+            workspace_commitment=workspace_commitment,
+            session_commitment=session_commitment,
+            codex_session_id=codex_session_id,
+            path=child_rollout,
+            command_facts=command_facts,
+        )
+
+
 def _child_lane_rollout(
     payload: Mapping[str, JsonValue],
     *,
@@ -1706,6 +1768,35 @@ def _absolute_path_key(value: str) -> tuple[str, bool] | None:
     if text.startswith(("/", "~")) or _WINDOWS_DRIVE_RELATIVE.match(text):
         return text, False
     return None
+
+
+def _stream_command_facts(
+    workspace_locator: str | None,
+) -> Callable[[str, str | None], Mapping[str, object]] | None:
+    """The hook's own runtime facts for a command its session stream names (n7 RC2, #1106 r2).
+
+    Codex writes every ``function_call`` row of a turn before it runs them, so with parallel calls
+    a call's stream row often commits before its own hook fires and defines the action. This
+    process runs as the hook copy would and knows the same workspace root, so the stream copy
+    carries the same ``write_scope`` (an absolute-path write included, placed under the call's
+    ``workdir``), ``install_target`` and ``effective_user`` as the hook copy. Without a workspace
+    root the reader keeps its own relative-only rule.
+    """
+
+    if workspace_locator is None:
+        return None
+    root = workspace_locator
+
+    def facts(script: str, workdir: str | None) -> Mapping[str, object]:
+        return runtime_structural_facts(
+            {"tool_input": {"command": script}},
+            tool_name="Bash",
+            workspace_locator=root,
+            inside=lambda value: workspace_relative_edit_path(value, root) is not None,
+            working_directory=workdir,
+        )
+
+    return facts
 
 
 def workspace_relative_edit_path(value: str, workspace_locator: str | None) -> str | None:
@@ -5936,47 +6027,16 @@ def handle_observe(
             # Codex lane keeps the host-session stream.
             if source is ObservationSource.CODEX_HOOK:
                 with contextlib.suppress(Exception):
-                    from finishup.adapters.integrations.codex_session_stream import (
-                        CodexSessionStreamLocator,
-                        reconcile_session_stream,
-                        reconcile_session_stream_path,
-                        resolve_codex_home,
-                        should_trigger_stream_reconcile,
+                    _reconcile_codex_stream(
+                        store,
+                        payload,
+                        resolved_event=resolved_event,
+                        lane=lane,
+                        workspace_commitment=workspace_commitment,
+                        session_commitment=session_commitment,
+                        codex_session_id=codex_session_id,
+                        workspace_locator=workspace_locator,
                     )
-
-                    hook_path = payload.get("session_file") or payload.get("transcript_path")
-                    hook_path_token = hook_path if type(hook_path) is str else None
-                    session_source = payload.get("source")
-                    if should_trigger_stream_reconcile(
-                        resolved_event,
-                        last_reconcile_mono=store.last_stream_reconcile_mono(workspace_commitment),
-                        session_source=session_source if type(session_source) is str else None,
-                    ):
-                        locator = CodexSessionStreamLocator(resolve_codex_home())
-                        if not lane.is_child:
-                            reconcile_session_stream(
-                                store,
-                                workspace_commitment=workspace_commitment,
-                                session_commitment=session_commitment,
-                                codex_session_id=codex_session_id,
-                                locator=locator,
-                                hook_provided_path=hook_path_token,
-                            )
-                        else:
-                            child_rollout = _child_lane_rollout(
-                                payload,
-                                lane=lane,
-                                locator=locator,
-                                hook_provided_path=hook_path_token,
-                            )
-                            if child_rollout is not None:
-                                reconcile_session_stream_path(
-                                    store,
-                                    workspace_commitment=workspace_commitment,
-                                    session_commitment=session_commitment,
-                                    codex_session_id=codex_session_id,
-                                    path=child_rollout,
-                                )
         session_end_uncommitted = False
         capture_committed = True
         if _pass_timing is not None:

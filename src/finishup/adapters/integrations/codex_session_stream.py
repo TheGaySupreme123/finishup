@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import os
@@ -62,13 +63,18 @@ from finishup.domain.observation_selection import (
     native_command_runner_class,
     without_routine_read,
 )
-from finishup.domain.shell_writes import heredoc_patch_paths, shell_write_scope
+from finishup.domain.shell_writes import (
+    heredoc_patch_paths,
+    shell_command_text,
+    shell_write_scope,
+)
 from finishup.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
 from finishup.domain.write_scope import (
     NON_COUNTING_WRITE_SCOPES,
     STALE_EXEMPT_WRITE_SCOPES,
     classify_write_path,
     edit_write_scope,
+    without_docs_scope,
 )
 from finishup.ports.importer import ImportLineStatus
 from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
@@ -76,6 +82,7 @@ from finishup.protocol.errors import ProtocolValueError
 
 __all__ = [
     "STREAM_ADMISSION_STATES",
+    "StreamCommandFacts",
     "CodexChildRolloutHeader",
     "CodexChildRolloutHeaderResult",
     "CodexSessionStreamLocator",
@@ -689,7 +696,17 @@ def _file_change_write_scope(changes: object) -> str | None:
     scope = edit_write_scope(
         classify_write_path(path, workspace=None, inside=None) for path in paths
     )
+    if scope == "docs" and not _docs_admitted():
+        scope = without_docs_scope(scope, shell=False)
     return scope if scope in NON_COUNTING_WRITE_SCOPES | STALE_EXEMPT_WRITE_SCOPES else None
+
+
+def _docs_admitted() -> bool:
+    """Whether the running service reads ``docs`` (``service.write_scope_admission``, #1106 r2)."""
+
+    from finishup.service import write_scope_admission
+
+    return write_scope_admission.docs_write_scope_admitted()
 
 
 def _completed_tool_item(record: CodexParsedRecord) -> bool:
@@ -1223,6 +1240,32 @@ def _stream_call_command(
     return None
 
 
+def _stream_call_workdir(
+    record: CodexParsedRecord, fields: Mapping[str, JsonValue]
+) -> tuple[bool, str | None]:
+    """``(stated, workdir)`` for a Codex shell ``function_call`` row's ``workdir`` argument.
+
+    Read transiently like the command; a stated value that is not a string still counts as a
+    working directory the reader cannot place.
+    """
+
+    tool_input = _stream_classification_payload(record, fields).get("tool_input")
+    if not isinstance(tool_input, Mapping):
+        return False, None
+    arguments = cast(Mapping[str, JsonValue], tool_input)
+    if "workdir" not in arguments or arguments.get("workdir") is None:
+        return False, None
+    workdir = arguments.get("workdir")
+    return True, workdir if type(workdir) is str and workdir else None
+
+
+# The hook process's own facts for one command a rollout row names: ``(script, workdir) ->``
+# ``install_target``, ``write_scope`` and ``effective_user`` exactly as its hook copy would carry
+# them (``cli.runtime_facts.runtime_structural_facts``, #1106 r2). Only the closed tokens return.
+type StreamCommandFacts = Callable[[str, str | None], Mapping[str, object]]
+_HOOK_COMMAND_FACT_KEYS: Final = ("install_target", "write_scope", "effective_user")
+
+
 def _command_facts(
     fields: dict[str, JsonValue],
     gaps: set[str],
@@ -1230,6 +1273,8 @@ def _command_facts(
     *,
     key_material: bytes | None,
     post: bool,
+    command_facts: StreamCommandFacts | None = None,
+    workdir: tuple[bool, str | None] = (False, None),
 ) -> None:
     """Add the closed command facts the call's hook copy carries for one rollout command.
 
@@ -1238,6 +1283,11 @@ def _command_facts(
     verification matches either copy (#909, #910, n7 RC2); the text itself is dropped here. The
     compound-outcome gap belongs to a result, so only a completed item (``post``) carries it, as
     only the hook's post event does.
+
+    In the hook process (``command_facts``), the write scope, install target and effective user
+    are the hook's own, placed under the call's ``workdir``, so whichever copy of a call commits
+    first carries them (#1106 r2). Without it only a relative write is claimed, and a relative
+    documentation target under a stated ``workdir`` is placed under it with no workspace root.
     """
 
     if key_material is not None:
@@ -1259,17 +1309,38 @@ def _command_facts(
         raw_command = shlex.join(cast(list[str], list(value)))
     else:
         return
-    if "write_scope" not in fields:
+    # A native argv is read as its script, so a long heredoc patch is still named (#1106 r2).
+    script = shell_command_text(value) or raw_command
+    stated, directory = workdir
+    if command_facts is not None:
+        hook_facts: Mapping[str, object] = {}
+        with contextlib.suppress(Exception):
+            # A stated ``workdir`` that is no string is passed as ``.``: a relative directory,
+            # which the hook's rule never places.
+            hook_facts = command_facts(
+                script, (directory if directory is not None else ".") if stated else None
+            )
+        for key in _HOOK_COMMAND_FACT_KEYS:
+            item = hook_facts.get(key)
+            if type(item) is str and key not in fields:
+                fields[key] = item
+    elif "write_scope" not in fields:
         # ADR-045: the stream knows no workspace root, so it claims only a relative write
         # (a working directory makes it certain); an absolute path is left to the hook. A
         # heredoc-fed patch writes the files its headers name, as the hook reads them.
         scope = shell_write_scope(
-            raw_command,
+            script,
             workspace=None,
             inside=lambda _path: False,
             relative_only=True,
-            also_written=heredoc_patch_paths(raw_command),
+            also_written=heredoc_patch_paths(script),
+            relocated=stated and (directory is None or not directory.startswith("/")),
+            working_directory=directory
+            if directory is not None and directory.startswith("/")
+            else None,
         )
+        if scope == "docs" and not _docs_admitted():
+            scope = without_docs_scope(scope, shell=True)
         if scope is not None:
             # The closed token as the hook would send it (workspace, or the non-counting
             # notes / finishup_owned scope a declared output of that kind overrides).
@@ -1309,6 +1380,7 @@ def structural_from_stream_record(
     *,
     profile: CodexCapabilityProfile | None = None,
     key_material: bytes | None = None,
+    command_facts: StreamCommandFacts | None = None,
 ) -> tuple[JsonObject, tuple[str, ...]]:
     """Map a parsed stream record to allowlisted structural fields + opaque gaps.
 
@@ -1383,13 +1455,28 @@ def structural_from_stream_record(
         # an explicit call alias may identify that parent.
         if item_type == "CommandExecution":
             # The rollout names the command as the argv Codex ran (``/bin/bash -lc <cmd>``).
-            _command_facts(fields, gaps, body.get("command"), key_material=key_material, post=True)
+            _command_facts(
+                fields,
+                gaps,
+                body.get("command"),
+                key_material=key_material,
+                post=True,
+                command_facts=command_facts,
+            )
         else:
             call_command = _stream_call_command(record, fields)
             if call_command is not None:
                 # A direct shell call's own row: whichever copy of the call commits first, its
                 # action carries the identity and runner class its hook copy carries (n7 RC2).
-                _command_facts(fields, gaps, call_command, key_material=key_material, post=False)
+                _command_facts(
+                    fields,
+                    gaps,
+                    call_command,
+                    key_material=key_material,
+                    post=False,
+                    command_facts=command_facts,
+                    workdir=_stream_call_workdir(record, fields),
+                )
         if item_type != "SubAgentActivity":
             # A response-item call and its output share ``call_id``; since Codex 0.150.1 each row
             # also carries an ``id`` naming the row itself (``fc_``/``fco_``, ``ctc_``/``ctco_``),
@@ -1453,9 +1540,10 @@ def envelope_from_stream_record(
     cursor: ObservationCursor,
     profile: CodexCapabilityProfile | None = None,
     key_material: bytes | None = None,
+    command_facts: StreamCommandFacts | None = None,
 ) -> ObservationEnvelope:
     structural, gaps = structural_from_stream_record(
-        record, profile=profile, key_material=key_material
+        record, profile=profile, key_material=key_material, command_facts=command_facts
     )
     host_ids: dict[str, JsonValue] = {}
     body = _structural_body(record)
@@ -1616,6 +1704,8 @@ class SessionStreamReader:
     cursor: ObservationCursor
     key_material: bytes
     partial_line: bytes = b""
+    # The hook process's own command facts (``StreamCommandFacts``); ``None`` elsewhere.
+    command_facts: StreamCommandFacts | None = None
     _inode: int | None = None
     _source_identity: str | None = None
     _size_at_generation: int = 0
@@ -2013,6 +2103,7 @@ class SessionStreamReader:
                     cursor=abs_cursor,
                     profile=self.profile,
                     key_material=self.key_material,
+                    command_facts=self.command_facts,
                 )
             )
             structural, _structural_gaps = structural_from_stream_record(
@@ -3136,8 +3227,13 @@ def reconcile_session_stream(
     codex_session_id: str,
     locator: CodexSessionStreamLocator,
     hook_provided_path: str | None = None,
+    command_facts: StreamCommandFacts | None = None,
 ) -> dict[str, JsonValue]:
-    """Advance the session stream cursor and ingest envelopes. Path stays local-only."""
+    """Advance the session stream cursor and ingest envelopes. Path stays local-only.
+
+    ``command_facts`` is the reconciling hook's own fact reader (``StreamCommandFacts``); a
+    caller outside a hook passes none.
+    """
 
     path = locator.resolve(session_id=codex_session_id, hook_provided_path=hook_provided_path)
     if path is None:
@@ -3153,6 +3249,7 @@ def reconcile_session_stream(
         session_commitment=session_commitment,
         codex_session_id=codex_session_id,
         path=path,
+        command_facts=command_facts,
     )
 
 
@@ -3163,6 +3260,7 @@ def reconcile_session_stream_path(
     session_commitment: str,
     codex_session_id: str,
     path: Path,
+    command_facts: StreamCommandFacts | None = None,
 ) -> dict[str, JsonValue]:
     """Reconcile one path under one durable local-store batch."""
 
@@ -3173,6 +3271,7 @@ def reconcile_session_stream_path(
             session_commitment=session_commitment,
             codex_session_id=codex_session_id,
             path=path,
+            command_facts=command_facts,
         )
 
 
@@ -3183,6 +3282,7 @@ def _reconcile_session_stream_path(
     session_commitment: str,
     codex_session_id: str,
     path: Path,
+    command_facts: StreamCommandFacts | None = None,
 ) -> dict[str, JsonValue]:
     """Reconcile a locally selected path with the same durable frontier on every entry point."""
 
@@ -3245,6 +3345,7 @@ def _reconcile_session_stream_path(
         cursor=existing,
         key_material=store.key_material(),
         partial_line=partial,
+        command_facts=command_facts,
         _source_identity=source_identity,
     )
     # Tool hooks ingested before this pass reads fired before any row it does

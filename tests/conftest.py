@@ -62,6 +62,25 @@ def _isolated_host_config_locks(  # pyright: ignore[reportUnusedFunction]
 
 
 @pytest.fixture(autouse=True)
+def _compatible_service_reads_docs(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model a running service of this build in-process: it reads the ``docs`` write scope.
+
+    The real answer reads the singleton lock stamp of whatever state directory the process
+    resolves (#1106 r2), which would make a test depend on whether a service happens to run.
+    Tests of the fallback patch it to ``False``; tests of the probe call the real function,
+    imported before this fixture runs. Spawned processes always use the real probe.
+    """
+
+    try:
+        import finishup.service.write_scope_admission as admission_module
+    except ImportError:
+        return
+    monkeypatch.setattr(admission_module, "docs_write_scope_admitted", lambda: True)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_command_identity_key() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     """Undo a service composition's process-wide command-identity key after each test (#977).
 

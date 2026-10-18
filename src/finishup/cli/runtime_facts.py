@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -59,10 +60,11 @@ from finishup.domain.shell_writes import (
     SHELL_APPLY_PATCH,
     bound_command,
     heredoc_patch_paths,
+    shell_command_text,
     shell_heredocs,
     shell_write_scope,
 )
-from finishup.domain.write_scope import classify_write_path, edit_write_scope
+from finishup.domain.write_scope import classify_write_path, edit_write_scope, without_docs_scope
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
@@ -369,19 +371,56 @@ def _edit_paths(
             return
 
 
+def _docs_admitted() -> bool:
+    from finishup.service import write_scope_admission
+
+    return write_scope_admission.docs_write_scope_admitted()
+
+
+def _working_directory(
+    value: object, workspace_locator: str | None, inside: Callable[[str], bool]
+) -> tuple[str | None, bool]:
+    """``(directory, relocated)`` for the directory a shell call starts in (#1106 r2).
+
+    An absolute directory at or under the workspace root is where relative writes land. Any
+    other stated directory (a relative one, one outside or spelled differently from the root)
+    cannot be placed, so a relative write there is never read as documentation.
+    """
+
+    if value is None:
+        return None, False
+    if type(value) is not str or not value or "\x00" in value:
+        return None, True
+    if workspace_locator is not None and value.startswith("/"):
+        normalized = posixpath.normpath(value)
+        if normalized == posixpath.normpath(workspace_locator) or inside(normalized):
+            return normalized, False
+    return None, True
+
+
 def runtime_structural_facts(
     payload: Mapping[str, JsonValue],
     *,
     tool_name: str | None,
     workspace_locator: str | None,
     inside: Callable[[str], bool],
+    working_directory: str | None = None,
+    docs_admitted: Callable[[], bool] | None = None,
 ) -> dict[str, JsonValue]:
     """Return the closed runtime facts for one tool-call payload (possibly empty).
 
     ``inside`` answers whether an absolute path lies under the workspace root; it must be the
     same lexical rule the hook uses for captured edit paths. Without a workspace locator no write
-    scope is claimed.
+    scope is claimed. A shell command's relative writes are placed under ``working_directory``
+    when given, else under the payload's own ``cwd`` (``domain.shell_writes``).
+
+    ``docs`` is recorded only while ``docs_admitted`` (default: the running service reads the
+    class, ``service.write_scope_admission``) says so; otherwise the older class is
+    (``domain.write_scope.without_docs_scope``), so a service that predates the class never
+    finds a stored row it refuses (#1106 r2).
     """
+
+    admitted = _docs_admitted if docs_admitted is None else docs_admitted
 
     facts: dict[str, JsonValue] = {}
     if tool_name is None:
@@ -408,6 +447,8 @@ def runtime_structural_facts(
             )
             for path in _edit_paths(tool_name, tool_input, payload)
         )
+        if scope == "docs" and not admitted():
+            scope = without_docs_scope(scope, shell=False)
         if scope is not None:
             facts["write_scope"] = scope
         return facts
@@ -427,13 +468,32 @@ def runtime_structural_facts(
         # headers name (#1046 review, n7 RC2): no shell token shows them, and for an intercepted
         # ``apply_patch`` Codex fires only this pre-event, so this token is the only record that
         # it changed the work.
-        scope = shell_write_scope(
+        # A native argv is read as its script (``["bash", "-lc", SCRIPT]``), so a heredoc patch
+        # longer than the token parsers' bound is still named (#1106 r2).
+        script = next(
+            (
+                text
+                for key in _COMMAND_KEYS
+                if (text := shell_command_text(tool_input.get(key))) is not None and text
+            ),
             command,
+        )
+        start, relocated = _working_directory(
+            working_directory if working_directory is not None else payload.get("cwd"),
+            workspace_locator,
+            inside,
+        )
+        scope = shell_write_scope(
+            script,
             workspace=workspace_locator,
             inside=inside,
             owned_roots=_owned_roots(),
-            also_written=shell_apply_patch_paths(command),
+            also_written=shell_apply_patch_paths(script),
+            relocated=relocated,
+            working_directory=start,
         )
+        if scope == "docs" and not admitted():
+            scope = without_docs_scope(scope, shell=True)
         if scope is not None:
             facts["write_scope"] = scope
     geteuid = getattr(os, "geteuid", None)

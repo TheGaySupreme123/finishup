@@ -227,7 +227,12 @@ _EDIT_CALLS: tuple[tuple[str, str, dict[str, JsonValue]], ...] = (
 
 
 def _hook_edit(
-    ledger: ObservedLedger, tool: str, tool_input: dict[str, JsonValue], path: str
+    ledger: ObservedLedger,
+    tool: str,
+    tool_input: dict[str, JsonValue],
+    path: str,
+    *,
+    cwd: str | None = None,
 ) -> str | None:
     """Record the edit a real PostToolUse hook leaves in the ledger, and return its write scope.
 
@@ -249,6 +254,8 @@ def _hook_edit(
         "tool_input": filled,
         "tool_response": "Exit code: 0\nOutput:\nSuccess.",
     }
+    if cwd is not None:
+        payload["cwd"] = cwd
     envelope: ObservationEnvelope = map_hook_payload_to_envelope(
         "PostToolUse",
         payload,
@@ -614,4 +621,80 @@ def test_c2k_docs_and_code_in_one_shell_write_stale_verification() -> None:
     ledger = _ledger()
     ledger.passes("pytest -q")
     ledger.run(command, ResultOutcome.SUCCESS, exit_status=0, write_scope="workspace")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+# --- #1106 r2: a fixture written after a ``cd`` is no documentation -----------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("cd tests/fixtures && cat > expected.md <<'EOF'\nnew\nEOF", id="cd_heredoc"),
+        pytest.param(
+            "cd tests && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: golden.md\n@@\n"
+            "-a\n+b\n*** End Patch\nEOF",
+            id="cd_apply_patch",
+        ),
+        pytest.param(
+            "cd tests/data && git apply <<'EOF'\n--- a/expected.md\n+++ b/expected.md\n@@ -1 +1 @@\n"
+            "-a\n+b\nEOF",
+            id="cd_git_apply",
+        ),
+        pytest.param("cd /app/tests && printf 'x\\n' > golden.md", id="cd_absolute"),
+    ],
+)
+def test_c2l_a_fixture_written_after_cd_stales_verification(command: str) -> None:
+    """correctness-r2-2: the relative target was read against the workspace root, so a golden
+    file written after ``cd tests`` was ``docs`` and the earlier passing test stayed current."""
+
+    ledger = _ledger()
+    ledger.edit()
+    ledger.passes("pytest -q")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert _hook_edit(ledger, "Bash", {"command": command}, "") == "workspace"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_c2l_the_hosts_cwd_places_a_relative_doc_write() -> None:
+    """The host's ``cwd`` is where a relative write lands: a README written from ``tests/`` is a
+    fixture, one written from the root or ``docs/`` is documentation."""
+
+    command: dict[str, JsonValue] = {"command": "printf 'x\\n' > README.md"}
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    assert _hook_edit(ledger, "Bash", command, "", cwd="/app") == "docs"
+    assert _hook_edit(ledger, "Bash", command, "", cwd="/app/docs") == "docs"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert _hook_edit(ledger, "Bash", command, "", cwd="/app/tests") == "workspace"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    # A cwd that cannot be placed under the root (another spelling of it) keeps it counting.
+    assert _hook_edit(_ledger(), "Bash", command, "", cwd="/private/app") == "workspace"
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input", "older"),
+    [
+        *(pytest.param(tool, tool_input, None, id=name) for name, tool, tool_input in _EDIT_CALLS),
+        pytest.param(
+            "Bash", {"command": "cat > {path} <<'EOF'\n# Usage\nEOF"}, "workspace", id="shell"
+        ),
+    ],
+)
+def test_c2m_without_a_service_that_reads_docs_the_older_class_is_recorded(
+    tool: str,
+    tool_input: dict[str, JsonValue],
+    older: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """correctness-r2-1: a service that predates ``docs`` refuses a stored row naming it for the
+    whole workspace. Unless the running service reads the class, the hook records what it
+    recorded before the class existed, which keeps the README edit counting."""
+
+    import finishup.service.write_scope_admission as admission
+
+    monkeypatch.setattr(admission, "docs_write_scope_admitted", lambda: False)
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    assert _hook_edit(ledger, tool, tool_input, "/app/README.md") == older
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
