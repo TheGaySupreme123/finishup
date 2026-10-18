@@ -1428,8 +1428,9 @@ Windows through WSL 2.
 
 ## Task-named directories, quoted paths, `other` follow-ups and unadmitted outside inputs (2026-10-18, issue #1102)
 
-The n7 workstream lead's binding decisions for RC6d, f and g (the owner may overturn them) change
-what reaches the reviewer without adding an egress class, raising a ceiling, or adding a way to
+The owner confirmed the n7 decisions for RC6d, f and g in session on 2026-10-18, including the
+`other` answers and the coverage-note-only handling of outside inputs; #1102 records them. They
+change what reaches the reviewer without adding an egress class, raising a ceiling, or adding a way to
 admit a root. ADR-031's amendment of the same date holds the read; ADR-006's holds `other`.
 
 - **A directory the task names inside the repository** contributes FinishUP's own listing of its
