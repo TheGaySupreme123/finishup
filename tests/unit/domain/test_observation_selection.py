@@ -252,3 +252,24 @@ def test_unterminated_quote_or_heredoc_stays_compound(command: str) -> None:
     heredoc command is never ``exploration`` (its body may be a write's content)."""
 
     assert command_runner_class({"command": command}) == "compound"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q && git apply <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+        "pytest -q\npatch -p1 <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+        "pytest -q && apply_patch <<'P'\n*** Begin Patch\n*** Update File: a.py\n+# don't\n"
+        "*** End Patch\nP",
+        "pytest -q && cat > a.py <<EOF\n# don't\nEOF",
+        "pytest -q && sed -i s/a/b/ a.py\ncat <<EOF\nit's\nEOF",
+    ],
+)
+def test_a_write_after_the_test_in_an_odd_quote_command_stays_compound(command: str) -> None:
+    """#1106 r1: a verification that ran before its own command's later write must not cover it.
+
+    One command is one ledger position, so classing ``pytest -q && git apply <<EOF`` a test would
+    hide the patch it applies afterwards; the odd-quote shape stays ``compound``, as it was.
+    """
+
+    assert command_runner_class({"command": command}) == "compound"

@@ -445,6 +445,21 @@ def test_c2h_patch_then_test_with_an_apostrophe_clears_edited_after(command: str
     assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
 
 
+def test_c2h_a_patch_after_the_test_in_one_odd_quote_command_still_stales() -> None:
+    """#1106 r1: ``pytest -q && git apply <<EOF`` with an apostrophe in the patch stays a
+    ``compound`` run, so the patch it applies after its test is not covered by that test."""
+
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    ledger.edit()
+    command = (
+        "cd /app && pytest -q && git apply <<'EOF'\n--- a/solve.py\n+++ b/solve.py\n@@\n-x\n"
+        "+it's\nEOF"
+    )
+    assert _hook_edit(ledger, "Bash", {"command": command}, "") == "workspace"
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
 def test_c3c_a_bare_run_of_the_canonical_form_has_a_known_outcome() -> None:
     """Planned ``python -m pytest``, run as bare ``pytest``: one simple command, so its own
     outcome, not ``unknown`` (a bare command carries no composition suffix)."""
