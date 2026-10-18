@@ -573,6 +573,40 @@ def test_revoking_observation_removes_the_snapshots_and_the_reading_tally(tmp_pa
     assert not directory.exists()
 
 
+def test_a_post_pass_that_read_consent_before_a_revoke_recreates_nothing(tmp_path: Path) -> None:
+    """Greptile P2 on PR #1113: the post hook checked consent, then the revoke removed the store.
+
+    Its fingerprint pass still runs; it reads ``no_pre_snapshot`` and neither the tally nor the
+    digest cache re-creates the store (or leaves a call id behind) after the revoke.
+    """
+
+    from finishup.adapters.workspace_fingerprint import workspace_fingerprint_dir
+    from finishup.cli.workspace_effect_hook import workspace_fingerprint_pass
+    from finishup.domain.observation import ObservationRevokeCommand
+
+    workspace, state, commitment = _setup(tmp_path)
+    emit, pre, _post, _shape = _host("codex", workspace, state)
+    emit(pre, _codex(pre, "call_late", "rg -n reviewed deliverable.txt"))
+    directory = workspace_fingerprint_dir(state / "observation", commitment)
+    assert directory is not None and any(directory.glob("pending/*.bin"))
+    LocalObservationStore(_state=state).revoke(ObservationRevokeCommand(commitment))
+    assert not directory.exists()
+    reading = workspace_fingerprint_pass(
+        "PostToolUse",
+        call_identity="codex\x00session\x00call_late",
+        workspace_locator=str(workspace),
+        workspace_commitment=commitment,
+        key_material=b"k" * 32,
+        observation_root=state / "observation",
+        complete=True,
+        call_token="call_late",
+    )
+    assert reading is not None
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert not directory.exists()
+    assert list(directory.parent.iterdir()) == []
+
+
 def test_a_codex_0159_read_is_unchanged_and_its_outcome_stays_unknown(tmp_path: Path) -> None:
     """The ``Bash`` post is the completion fact; it states no exit, so no success is invented."""
 

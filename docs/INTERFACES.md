@@ -10896,7 +10896,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   all time and the current and previous clock hour, plus a ring of the last `READING_RING` (64)
   readings `{at_ms, effect, reason, call}`; at most `READING_FILE_BYTES` (16 KiB), staged and
   renamed, a 0.1 s lock whose contention drops and counts the sample; no path, digest or command
-  text), `discard()`; `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
+  text; it never creates the store directory and returns `False` without one, and drops the sample
+  when the directory at the path is no longer the one it opened), `discard()`
+  (`remove_workspace_fingerprints(directory)`: takes the tally lock, waiting at most 1 s, renames
+  the directory to a private sibling, then removes it; observation revoke uses the same function);
+  only `capture_before` creates the directory, and the post-call digest cache and standing marker
+  write only into an existing one; `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
   `<observation>/workspace-fingerprints/<commitment digest>/` (`pending/` per open call,
   `latest.bin` for digest reuse; owner-only; keyed BLAKE2b path and content digests plus a keyed
   MAC, never a path or byte of content; revoking observation removes it). Record format

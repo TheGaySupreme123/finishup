@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import sys
 import threading
@@ -11758,12 +11757,17 @@ class LocalObservationStore:
             state.consent = next_consent
             self._save(command.workspace_commitment, state)
             # Revoking observation also removes the workspace's before/after fingerprint
-            # snapshots (keyed path and content digests only; PR #1080).
-            from finishup.adapters.workspace_fingerprint import workspace_fingerprint_dir
+            # snapshots and reading tally (keyed path and content digests and closed tokens only;
+            # PR #1080, #1105). The removal takes the tally lock and renames the store away first,
+            # so a post-call hook that read consent before this revoke cannot write into it.
+            from finishup.adapters.workspace_fingerprint import (
+                remove_workspace_fingerprints,
+                workspace_fingerprint_dir,
+            )
 
             fingerprints = workspace_fingerprint_dir(self._root, command.workspace_commitment)
-            if fingerprints is not None and fingerprints.is_dir() and not fingerprints.is_symlink():
-                shutil.rmtree(fingerprints, ignore_errors=True)
+            if fingerprints is not None:
+                remove_workspace_fingerprints(fingerprints)
             return self._status_unlocked(command.workspace_commitment)
 
     def batched(self, workspace_commitment: str) -> _ObservationBatch:
