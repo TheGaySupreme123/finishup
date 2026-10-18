@@ -1392,8 +1392,8 @@ flagged obligations that already had an admissible observed link.
   still lifts the coverage limit.
 - *Shown once.* Status, `closure_prepare`, the CLI and the terminal interface print one stateless,
   host-independent sentence in the closure guidance (`protocol/readiness_text.acceptance_risk_note`):
-  the flagged ids and reason tokens (at most eight, then "and N more"), that stopping is not
-  blocked and met work needs no action, that the receipt records a coverage limit, and that an
+  the flagged ids and reason tokens (at most eight, then "and N more"), that this limit alone never
+  blocks stopping and met work needs no action, that the receipt records a coverage limit, and that an
   output which does not meet its `acceptance_criteria` is republished `acknowledged_not_done` with
   the reason. The note does not offer the verification-limit decision as a way to clear the limit:
   a decision is a material record that supersedes the check, which is the churn this decision
@@ -1414,7 +1414,7 @@ flagged obligations that already had an admissible observed link.
 - *Receipt coverage limit.* Unchanged in code, gap-effect row and bound: a flagged resolved
   obligation with neither an admissible observed link nor a recorded `verification_limit` carries
   `unresolved_verification_limitation` (G13, readiness S, bounding on both routes), so the receipt
-  reads `insufficient_coverage`. The set has one source,
+  conclusion is at best `insufficient_coverage`. The set has one source,
   `kernel/claim_verification.unresolved_acceptance_risk`, walked without a cap; status, the check
   and the receipt all read it (ADR-046). Before this, status derived its standing limitation from
   the eight-capped `admissible_verification` list and reported a limit the check and the receipt
