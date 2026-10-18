@@ -74,7 +74,10 @@ agent must not be able to stop silently with known work left.
      `planned_verification_outcome_unknown`: a pipe, `;`, `||` or script outcome names no part,
      and neither does an `&&` chain whose earlier segment may not hand control back
      (`exec true && pytest -q`, `exit 0 && pytest -q`, `eval ...`, `source ...`; ADR-025 lists
-     the rule), which the hook records as `masked` (PR #1116 review).
+     the rule), which the hook records as `masked` (PR #1116 review). That rule reads the
+     observed run only; a planned command's composition comes from its separators, so a plain
+     `pytest -q` run still names the outcome of a planned `source .venv/bin/activate &&
+     pytest -q`.
      An unsplittable command (unterminated quote, substitution or here-document) has only its
      whole identity. Agent link (PL6-3, #1003; owner: "disclose it as an agent-asserted
      equivalence; the observed outcome still decides"): a cooperative `action_recorded` of kind

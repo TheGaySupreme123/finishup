@@ -48,7 +48,10 @@ The composition says what the whole command's outcome means for one of its segme
 (any other composition, where the whole outcome says nothing about one segment). An ``&&`` chain
 is ``masked`` too when a segment before its last may not hand control back to the next one
 (``_returns_control``): ``exec true && pytest -q`` and ``exit 0 && pytest -q`` exit zero without
-running ``pytest -q``, and ``eval``/``source`` run text the reader cannot see (#1104).
+running ``pytest -q``, and ``eval``/``source`` run text the reader cannot see (#1104). That
+reachability rule reads an observed run; a planned command's composition
+(``reachability=False``) is read from its separators alone, because a plain run's outcome is its
+own whatever the plan's earlier segments would have done.
 """
 
 from __future__ import annotations
@@ -133,11 +136,12 @@ _PLACEHOLDER_RE: Final = re.compile(
 _PROSE_WORD_RE: Final = re.compile(r"^[A-Za-z]+[,.:;]?$", re.ASCII)
 _MASKING_SEPARATORS: Final = frozenset({"||", ";", "|", "&", "\n", "(", ")"})
 # Builtins after which an ``&&`` chain may never reach its next command (``exit``, ``return``,
-# ``logout``, ``break``, ``continue``; ``exec`` with a command, handled apart), may reach one the
-# text does not show (``eval``, ``source``, ``.`` run unseen text; ``alias``, ``hash``, ``enable``
-# rebind a later command name; ``trap`` runs unseen text before a later command), or may stop or
-# end the shell itself (``suspend``; ``kill``, ``pkill``, ``killall``, ``skill``: ``kill $$``,
-# ``kill 0``, and a ``pkill -f`` pattern that matches the shell's own command line).
+# ``logout``, ``break``, ``continue``; ``exec`` with a command, handled apart), or may reach one
+# the text does not show (``eval``, ``source``, ``.`` run unseen text; ``alias``, ``hash``,
+# ``enable`` rebind a later command name; ``trap`` runs unseen text before a later command).
+# Signalling the shell (``kill $$``) is not here: a shell a signal ends exits with a failure,
+# which certifies nothing anyway, and the ``trap`` that could turn it into a success is refused.
+# Best-effort for builtins that evaluate text: ``mapfile -C`` is handled apart.
 _CONTROL_TRANSFER: Final = frozenset(
     {
         "exit",
@@ -152,17 +156,20 @@ _CONTROL_TRANSFER: Final = frozenset(
         "hash",
         "enable",
         "trap",
-        "kill",
-        "pkill",
-        "killall",
-        "skill",
-        "suspend",
     }
 )
+# A command word the reader cannot resolve to one program: a parameter or command substitution,
+# an unquoted redirection written against it (``exec>log true`` is ``exec`` with ``>log``), or a
+# brace or pathname expansion (``{exit,0}`` runs ``exit 0``). ``[`` and ``[[`` alone are the test
+# commands, not a pattern.
+_UNRESOLVED_HEAD_RE: Final = re.compile(r"[$`<>&{}*?\[]")
+_TEST_HEADS: Final = frozenset({"[", "[["})
 # ``set`` options that keep every later command running as written (errexit and nounset can only
 # end the shell with a failure, which names no segment anyway); anything else (``set -n``,
 # ``set -o noexec``, ``set -- ...``) is refused.
 _SAFE_SET_LETTERS: Final = frozenset("euxvo")
+# ``shopt`` flags; with ``-o`` it sets the same options as ``set -o`` (``shopt -os noexec``).
+_SHOPT_LETTERS: Final = frozenset("suqpo")
 _SAFE_SET_OPTIONS: Final = frozenset({"errexit", "nounset", "xtrace", "verbose", "pipefail"})
 _INTRODUCING_KEYWORDS: Final = frozenset(
     {"if", "then", "do", "else", "elif", "while", "until", "{", "!"}
@@ -480,17 +487,34 @@ def _safe_set(arguments: Sequence[str]) -> bool:
     return not expect_name
 
 
+def _safe_shopt(arguments: Sequence[str]) -> bool:
+    """Whether ``shopt`` with these arguments leaves every later command running as written.
+
+    Without ``-o`` it changes only bash's own options, none of which skip a command; with ``-o``
+    it sets ``set -o`` options, so each named one must be one ``_safe_set`` accepts.
+    """
+
+    flags = [word for word in arguments if word.startswith("-")]
+    if not any("o" in word[1:] for word in flags):
+        return True
+    return all(len(word) > 1 and set(word[1:]) <= _SHOPT_LETTERS for word in flags) and all(
+        word in _SAFE_SET_OPTIONS for word in arguments if not word.startswith("-")
+    )
+
+
 def _returns_control(segment: str) -> bool:
     """Whether one ``&&`` segment is known to hand control back to the shell for the next one.
 
     ``False`` for ``exec`` with a command (it replaces the shell: ``exec true && pytest -q`` exits
     zero without running ``pytest -q``), the builtins in ``_CONTROL_TRANSFER`` (``exit 0``,
-    ``return 0``, ``eval ...``, ``source env.sh``, ``kill $$``), a ``set`` outside
-    ``_safe_set`` (``set -n`` reads but never runs the rest), a command word the reader cannot
-    resolve (``$CMD``, a substitution) and a segment whose words cannot be read. Wrappers that run
-    an external program (``env``, ``timeout``, ``nice``) are looked through, so ``env kill $$`` is
-    refused as well. Conservative by construction: an unrecognized ordinary program counts as
-    returning, exactly as a separate earlier call always has (ADR-025).
+    ``return 0``, ``eval ...``, ``source env.sh``), ``mapfile -C`` (it evaluates its callback), a
+    ``set`` outside ``_safe_set`` or a ``shopt -o`` outside ``_safe_shopt`` (``set -n`` reads but
+    never runs the rest), a command word the reader cannot resolve (``_UNRESOLVED_HEAD_RE``:
+    ``$CMD``, ``exec>log``, ``{exit,0}``) and a segment whose words cannot be read. Wrappers that
+    run an external program (``env``, ``timeout``, ``nice``) are looked through. Conservative by
+    construction: an unrecognized ordinary program counts as returning, exactly as a separate
+    earlier call always has (ADR-025); the builtin list is best-effort for builtins that evaluate
+    text.
     """
 
     words = segment_words_without_redirections(segment)
@@ -520,13 +544,17 @@ def _returns_control(segment: str) -> bool:
     if not rest:
         return True
     head = rest[0]
-    if any(marker in head for marker in ("$", "`")):
+    if head not in _TEST_HEADS and _UNRESOLVED_HEAD_RE.search(head):
         return False
     name = _basename(head)
     if name in _CONTROL_TRANSFER:
         return False
     if name == "set":
         return _safe_set(rest[1:])
+    if name == "shopt":
+        return _safe_shopt(rest[1:])
+    if name in {"mapfile", "readarray"}:
+        return not any(word.startswith("-") and "C" in word for word in rest[1:])
     return True
 
 
@@ -596,12 +624,16 @@ def _collect(
     out: list[str],
     commands: list[SimpleCommand] | None = None,
     bare: set[str] | None = None,
+    *,
+    reachability: bool = True,
 ) -> tuple[bool, bool, bool]:
     """Append ``text``'s segments to ``out``; return ``(splittable, masked, chained)``.
 
     ``commands`` (when given) receives each simple command, not the shell wrappers around them.
     ``bare`` (when given) receives each listed segment that some occurrence ran exactly as listed
-    (``_Cleaned.conditioned`` false), wrapper arguments included.
+    (``_Cleaned.conditioned`` false), wrapper arguments included. ``reachability`` (an observed
+    run) also masks an ``&&`` chain whose earlier segment may not hand control back; a planned
+    command passes ``False``.
     """
 
     split = _split_top_level(text)
@@ -610,7 +642,8 @@ def _collect(
     masked = bool(split.separators & _MASKING_SEPARATORS)
     chained = len(split.segments) > 1
     # A success of ``A && B`` says ``B`` passed only when ``A`` handed control back to the shell.
-    masked = masked or any(not _returns_control(segment) for segment in split.segments[:-1])
+    if reachability:
+        masked = masked or any(not _returns_control(segment) for segment in split.segments[:-1])
     for position, segment in enumerate(split.segments):
         cleaned = _clean_segment(segment)
         masked = masked or cleaned.negated
@@ -634,7 +667,12 @@ def _collect(
                 )
             if inner is not None and depth < _MAX_DEPTH:
                 ok, inner_masked, inner_chained = _collect(
-                    inner, depth + 1, out, commands, bare if not cleaned.conditioned else None
+                    inner,
+                    depth + 1,
+                    out,
+                    commands,
+                    bare if not cleaned.conditioned else None,
+                    reachability=reachability,
                 )
                 masked = masked or (ok and inner_masked)
                 chained = chained or (ok and inner_chained)
@@ -654,17 +692,18 @@ def _split_words(text: str) -> list[str]:
         return text.split()
 
 
-def command_segments(normalized: str) -> CommandSegments | None:
+def command_segments(normalized: str, *, reachability: bool = True) -> CommandSegments | None:
     """The simple commands of one normalized command, or ``None`` when there is nothing new.
 
     ``normalized`` is ``normalize_observed_command``'s output. ``None`` means the command is
     unsplittable or is already a single simple command (its whole identity is its only one).
+    ``reachability=False`` reads a planned command's composition from its separators alone.
     """
 
     if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
         return None
     collected: list[str] = []
-    splittable, masked, chained = _collect(normalized, 0, collected)
+    splittable, masked, chained = _collect(normalized, 0, collected, reachability=reachability)
     if not splittable:
         return None
     distinct = tuple(dict.fromkeys(item for item in collected if item and "\x00" not in item))
@@ -1136,17 +1175,19 @@ def planned_segments(key_material: bytes, normalized: str) -> tuple[PlannedSegme
 
 
 def exact_segment_commitments(
-    key_material: bytes, normalized: str
+    key_material: bytes, normalized: str, *, reachability: bool = True
 ) -> tuple[tuple[str, ...], str] | None:
     """Sorted keyed commitments to ``normalized``'s segments, and its composition, or ``None``.
 
     The whole-command commitment is never repeated here. Beyond ``MAX_SEGMENT_COMMITMENTS``
     distinct segments only the first and last halves in command order are committed. These are
     the commitments planned-verification matching has always compared, without the canonical
-    ones (``command_segment_commitments`` adds those on the observed side).
+    ones (``command_segment_commitments`` adds those on the observed side). A planned command
+    passes ``reachability=False``: its composition says whether its own outcome is one segment's
+    (``! X``, ``X &`` is not), read from its separators alone (``_collect``).
     """
 
-    segments = command_segments(normalized)
+    segments = command_segments(normalized, reachability=reachability)
     if segments is None:
         return None
     whole = observed_command_commitment(key_material, normalized)

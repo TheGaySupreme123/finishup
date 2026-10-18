@@ -1167,7 +1167,10 @@ A failed `Bash` call becomes an observation finding (`failed_command_unresolved`
   failure (`fixtures/observations/claude-code-bash-outcomes.case.json`), so a later passing run of
   the same command, alone or as a segment of a passing `&&` chain run as is (no leading
   assignment, `env`, `nohup`, `exec`, `time` or input redirection, ADR-025), retires the finding
-  (closure basis `retired_by_passing_run`). Pinned end to end, from the real hook handler through
+  (closure basis `retired_by_passing_run`). A chain whose earlier segment may not hand control
+  back (`exec CMD`, `exit`, `eval`, `source`/`.`, an unsafe `set` or `shopt -o`, an unresolvable
+  command word such as `$RUN`, `exec>log` or `{exit,0}`) is recorded `masked` and retires
+  nothing. Pinned end to end, from the real hook handler through
   the coordinator's own finding to status and the receipt, by
   `tests/integration/application/test_failed_command_retirement_e2e.py`, and per host by
   `tests/integration/observation/test_failure_supersession_hosts.py`. An edit never retires it, and no check resolves it

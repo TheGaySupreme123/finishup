@@ -1087,6 +1087,20 @@ def test_a_chain_that_never_reached_the_planned_command_names_no_outcome(observe
     assert _planned_codes("pytest -q", ("cd /app && pytest -q", ResultOutcome.SUCCESS)) == set()
 
 
+@pytest.mark.parametrize(
+    "planned", ["source .venv/bin/activate && pytest -q", ". venv/bin/activate && pytest -q"]
+)
+def test_a_plain_run_still_names_the_outcome_of_a_plan_that_sources_first(planned: str) -> None:
+    """PR #1116 review: the reachability rule reads the observed run, not the plan. A plain
+    ``pytest -q`` is that command whatever the plan's ``source`` would have done, so its
+    failure is still the planned verification failing and its success leaves no gap."""
+
+    assert _planned_codes(planned, ("pytest -q", ResultOutcome.FAILURE)) == {
+        PLANNED_VERIFICATION_FAILED_GAP
+    }
+    assert _planned_codes(planned, ("pytest -q", ResultOutcome.SUCCESS)) == set()
+
+
 def test_a_failed_chain_names_no_failing_segment() -> None:
     assert _planned_codes("npm test", ("npm test && npm run build", ResultOutcome.FAILURE)) == {
         PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP

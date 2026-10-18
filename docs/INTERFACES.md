@@ -10618,8 +10618,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   None` keys them, excludes the whole commitment and keeps at most `MAX_SEGMENT_COMMITMENTS` (32:
   first and last 16 distinct in command order). `COMMAND_COMPOSITIONS` = `single`, `and_chain`,
   `masked`; an `&&` chain is `masked` when a segment before its last may not hand control back
-  to the shell (`exec` with a command, `exit`, `return`, `eval`, `source`, `kill`, an unsafe
-  `set`, an unresolvable command word; ADR-025).
+  to the shell (`exec` with a command, `exit`, `return`, `eval`, `source`, an unsafe `set` or
+  `shopt -o`, an unresolvable command word such as `$RUN`, `exec>log` or `{exit,0}`; ADR-025).
+  `exact_segment_commitments(..., reachability=False)` is the planned side's reading: its
+  composition comes from separators alone.
   `requested_command_shape(value) -> "command" | "placeholder" | "prose"`. Hooks put
   the result on the structural fields `command_segment_commitments` and `command_composition`
   (control-request 2.9.0, hook spool, Codex session stream);

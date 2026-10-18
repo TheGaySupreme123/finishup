@@ -886,6 +886,32 @@ def test_a_planned_verifier_the_chain_never_reached_retires_nothing(ran: str) ->
 
 
 @pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    "planned",
+    [f"exec true && {_PLANNED}", f"exit 0 && {_PLANNED}", f"{{exit,0}} && {_PLANNED}"],
+)
+def test_a_planned_chain_that_never_reaches_its_verifier_retires_nothing(planned: str) -> None:
+    """The plan's composition is read from its separators alone, so a run exactly as planned is
+    refused by the run's own reachability rule: it never ran ``pytest -q``."""
+
+    from finishup.domain.events import ActionRecordedPayload
+    from finishup.kernel.task_facts import planned_verification_passed
+
+    ledger = ObservedLedger()
+    ledger.plan(planned)
+    unrelated = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(planned)
+    action = ledger.records[-2].payload
+    assert type(action) is ActionRecordedPayload
+    state = _state(ledger)
+    (item,) = planned_verification_commands(state.plans, state.obligations, state.coverage_gaps)
+    assert item.verifier
+    assert item.composition == "and_chain"
+    assert not planned_verification_passed(action.command, (item,))
+    _assert_open(ledger, unrelated)
+
+
+@pytest.mark.usefixtures("installation_key")
 def test_a_planned_verifier_after_cd_still_retires() -> None:
     ledger = ObservedLedger()
     ledger.plan(_PLANNED)

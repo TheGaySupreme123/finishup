@@ -253,7 +253,9 @@ a hidden evaluator or something you cannot obtain could settle), that finding is
 request, not work: one reasoned `acknowledged` (or a `finishup-verification-limit:<obligation id>`
 decision) discloses it, with no repair attempt required, and the receipt lists the disclosed limit
 instead of reading clean. A finding about a command FinishUP saw fail needs no answer once you
-rerun the same command, exactly as written, and it passes (alone or inside a passing `&&` chain):
+rerun the same command, exactly as written, and it passes (alone or inside a passing `&&` chain
+whose earlier parts all hand control back: after `exec CMD`, `exit`, `eval` or `source`/`.`, as in
+`source .venv/bin/activate && pytest -q`, the pass retires nothing):
 the pass retires it. A passing run of a verification command your plan asks for retires it too,
 along with every other earlier failed-command finding; your completion claim still names such a
 failure in `limitation_refs`, because that command never passed.
@@ -368,7 +370,8 @@ typecheck or build run stops you once at Stop. Edits under a temporary directory
 FinishUP receipt you saved never count as edits for these facts. A run matches when it is the planned command or
 contains it as one part, such as `cd /app && pytest -q && git diff --check`, `pytest -q > log
 2>&1`, `time pytest -q`, or a line of a `bash <<'EOF'` script; when the run combined other
-commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested
+commands, its outcome counts for the planned command only if an `&&` chain succeeded whose earlier
+parts all hand control back (not after `exec CMD`, `exit`, `eval` or `source`/`.`). A requested
 command with a `<placeholder>` is refused when you publish it: write the concrete command; a requested output file that is missing (a
 unresolved finding, even if an action named it) or excluded from Git; one you recorded
 editing (an `edit` action naming it) that is still unchanged or lies outside the repository; and

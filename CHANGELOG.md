@@ -677,7 +677,9 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 ### Fixed
 
 - A failed-command finding is retired by a later passing run of the same command, alone or as a
-  segment of a passing `&&` chain (closure basis `retired_by_passing_run`, added in place to the
+  segment of a passing `&&` chain whose earlier segments hand control back (after `exec CMD`,
+  `exit`, `eval`, `source`/`.` or an unresolvable command word the chain is `masked` and retires
+  nothing) (closure basis `retired_by_passing_run`, added in place to the
   unreleased status-result 1.4.0 and check-result 1.4.0/1.5.0), and no check can resolve it
   (`observed_failure_not_rerun`). `acknowledged` on it settles it as a disclosed failed command
   (`failed_run_disclosed`, never clean) instead of a no-op, and `acknowledged_not_done` as

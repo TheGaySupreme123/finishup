@@ -1765,8 +1765,10 @@ A failed shell call becomes an observation finding (`failed_command_unresolved`,
   of a passing `&&` chain (`cd /app && pytest -q`), retires the finding (`verified_resolved`,
   closure basis `retired_by_passing_run`). The segment must run as is: behind a leading
   assignment, `env`, `nohup`, `exec`, `time` or an input redirection it is a different command
-  and retires nothing (ADR-025). FinishUP reads the outcome it finally records for the
-  passing call. On Codex 0.159 the `PostToolUse` of a shell call states no exit, so that outcome
+  and retires nothing (ADR-025). A chain whose earlier segment may not hand control back
+  (`exec CMD`, `exit`, `eval`, `source`/`.`, an unsafe `set` or `shopt -o`, an unresolvable
+  command word such as `$RUN`, `exec>log` or `{exit,0}`) is recorded `masked` and retires
+  nothing. FinishUP reads the outcome it finally records for the passing call. On Codex 0.159 the `PostToolUse` of a shell call states no exit, so that outcome
   is the session stream's: an outcome correction joined to the hook's call, or the stream copy
   when it committed first. A rerun whose exit never reaches FinishUP stays `unknown` and retires
   nothing. That is the main pilot risk: count `retired_by_passing_run` against open failed-command

@@ -135,14 +135,24 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    back to the shell (PR #1116 review): `exec` with a command replaces the shell and `exit`,
    `return`, `logout`, `break` and `continue` end it, so `exec true && pytest -q` and
    `exit 0 && pytest -q` exit zero without running `pytest -q`; `eval`, `source`, `.`, `trap`,
-   `alias`, `hash` and `enable` run or bind text the reader cannot see; `kill`, `pkill`,
-   `killall`, `skill` and `suspend` may signal or stop the shell itself; a `set` beyond `-e`,
-   `-u`, `-x`, `-v` and `-o errexit|nounset|xtrace|verbose|pipefail` (`set -n` reads the rest
-   without running it) and an unresolvable command word (`$RUN`) are refused alike. Every other
-   earlier segment counts as returning, exactly as a separate earlier call always has. The hook
-   classifies this once (`domain/command_segments._returns_control`), so supersession, finding
-   retirement, the planned-verification pass and ADR-033 segment matching all read the same
-   `masked` token.
+   `alias`, `hash` and `enable` run or bind text the reader cannot see, as does `mapfile -C`'s
+   callback; a `set` beyond `-e`, `-u`, `-x`, `-v` and
+   `-o errexit|nounset|xtrace|verbose|pipefail` (`set -n` reads the rest without running it), a
+   `shopt -o` naming any other option (`shopt -os noexec`), and a command word the reader cannot
+   resolve to one program are refused alike: a substitution (`$RUN`), a redirection written
+   against it (`exec>log true`, `exit>/dev/null`) or a brace or pathname expansion (`{exit,0}`).
+   Signalling the shell (`kill $$`, `pkill -f ...`) is not refused: a shell a signal ends exits
+   with a failure, which certifies nothing anyway. Every other earlier segment counts as
+   returning, exactly as a separate earlier call always has; the builtin list is best-effort for
+   builtins that evaluate text. The hook classifies this once
+   (`domain/command_segments._returns_control`), so supersession, finding retirement, the
+   planned-verification pass and ADR-033 segment matching all read the same `masked` token.
+   The rule reads the observed run only: a planned command's composition comes from its
+   separators alone, so a plain `pytest -q` run still names the outcome of a planned
+   `source .venv/bin/activate && pytest -q`, and the planned-verification pass refuses a run
+   recorded `masked` even when it is the planned text exactly (`exec true && pytest -q`).
+   `source .venv/bin/activate && pytest -q` (and its `.` spelling) therefore no longer retires a
+   failed `pytest -q`: the sourced file is text the reader cannot see.
    The token is an existing value, so no wire shape changes; a row recorded before this rule
    keeps the composition it was recorded with, since the kernel never sees command text.
    Canonical, prefix, flag and marker commitments are domain-separated and never equal

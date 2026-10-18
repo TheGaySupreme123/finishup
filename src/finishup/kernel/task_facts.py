@@ -387,6 +387,9 @@ def requested_command_identities(value: str) -> tuple[str, frozenset[str], str |
     planned ``X > log`` or ``cd /app && X`` also matches a run that shares those parts. The
     composition (``single``, ``and_chain``, ``masked``; ``None`` for a simple command) says
     whether the planned command's own outcome is its one segment's (``! X`` or ``X &`` is not).
+    It is read from the planned text's separators alone (``reachability=False``): a planned
+    ``source .venv/bin/activate && pytest -q`` stays ``and_chain``, so a plain ``pytest -q`` run
+    still names its outcome; the observed run's reachability rule is the run's own (#1104).
     """
 
     key = _COMMAND_IDENTITY_KEY[0]
@@ -397,7 +400,7 @@ def requested_command_identities(value: str) -> tuple[str, frozenset[str], str |
         return None
     try:
         whole = observed_command_commitment(key, normalized)
-        segments = exact_segment_commitments(key, normalized)
+        segments = exact_segment_commitments(key, normalized, reachability=False)
     except ValueError:
         return None
     if segments is None:
@@ -1572,7 +1575,11 @@ def planned_verification_passed(command: str | None, planned: Iterable[PlannedCo
     or ``pytest -q < answers.txt`` never passes a planned ``pytest -q``. A planned command whose
     own composition masks its outcome (``X | tail``, ``! X``, ``X || true``, ``X &``, ``X; Y``)
     never counts either, even run exactly as planned: its recorded exit is not the planned
-    work's. The task facts keep their looser ADR-033 reading.
+    work's. The task facts keep their looser ADR-033 reading. A run the hook recorded as
+    ``masked`` never counts even when its text is the planned text: the planned side reads its
+    composition from separators alone (``requested_command_identities``), so a planned
+    ``exec true && pytest -q`` run exactly as planned is refused by the run's own reachability
+    rule, which never reached ``pytest -q``.
 
     The matched planned command must itself be a verifier (``PlannedCommand.verifier``): the
     caller's check reads the whole run's class, which a compound takes from its strongest
@@ -1582,6 +1589,8 @@ def planned_verification_passed(command: str | None, planned: Iterable[PlannedCo
 
     run = observed_run_from_command(command, outcome=ResultOutcome.SUCCESS)
     if run is None:
+        return False
+    if run.composition == "masked":
         return False
     run = replace(run, segments=success_certified_identities(command))
     return any(

@@ -235,13 +235,24 @@ _NEVER_REACHED = [
     "trap 'exit 0' DEBUG && pytest -q",
     "hash -p /bin/true pytest && pytest -q",
     "$RUN && pytest -q",
-    # ``set -n`` reads the rest but never runs it.
+    # ``set -n`` reads the rest but never runs it; ``shopt -o`` sets the same options.
     "set -n && pytest -q",
     "set -o noexec && pytest -q",
-    # A signal to the shell itself, directly or through a wrapper.
-    "kill $$ && pytest -q",
-    "env kill 0 && pytest -q",
-    "pkill -f pytest && pytest -q",
+    "shopt -os noexec && pytest -q",
+    "shopt -s -o noexec && pytest -q",
+    # A redirection written against the command word: bash still runs ``exec``/``exit``.
+    "exec>log true && pytest -q",
+    "exec</dev/null true && pytest -q",
+    "exec>&2 true && pytest -q",
+    "exit>/dev/null && pytest -q",
+    "exit>&2 0 && pytest -q",
+    "eval>x true && pytest -q",
+    "source<x && pytest -q",
+    # A brace-expanded command word: ``{exit,0}`` runs ``exit 0``.
+    "{exit,0} && pytest -q",
+    "{exec,true} && pytest -q",
+    # ``mapfile -C`` evaluates its callback text in the current shell.
+    "mapfile -C 'exit 0' -c 1 lines < f && pytest -q",
     # The same chain inside a shell wrapper or after another segment.
     "bash -lc 'exit 0 && pytest -q'",
     "cd /app && exec true && pytest -q",
@@ -276,6 +287,14 @@ def test_a_chain_that_may_not_reach_a_later_segment_is_masked_and_certifies_noth
         "set -euo pipefail && pytest -q",
         "bash -lc 'exit 0' && pytest -q",
         "export CI=1 && pytest -q",
+        "shopt -s nullglob && pytest -q",
+        "shopt -os pipefail && pytest -q",
+        "[ -d .venv ] && pytest -q",
+        "[[ -d .venv ]] && pytest -q",
+        "mapfile -t lines < f && pytest -q",
+        # A shell a signal ends exits with a failure, which certifies nothing anyway.
+        "pkill -f uvicorn && pytest -q",
+        "kill $$ && pytest -q",
     ],
 )
 def test_a_chain_whose_earlier_segments_return_control_still_certifies(command: str) -> None:
@@ -287,3 +306,21 @@ def test_a_chain_whose_earlier_segments_return_control_still_certifies(command: 
     listed = set(committed[0])
     pytest_q = observed_command_commitment(_KEY, "pytest -q")
     assert segment_certification_commitment(pytest_q) in listed
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["exec true && pytest -q", "source .venv/bin/activate && pytest -q", "{exit,0} && pytest -q"],
+)
+def test_a_planned_command_reads_its_composition_from_separators_alone(command: str) -> None:
+    """The reachability rule reads an observed run; a planned chain stays ``and_chain``."""
+
+    normalized = normalize_observed_command(command)
+    assert normalized is not None
+    observed = command_segments(normalized)
+    planned = command_segments(normalized, reachability=False)
+    assert observed is not None
+    assert planned is not None
+    assert observed.composition == "masked"
+    assert planned.composition == "and_chain"
+    assert planned.segments == observed.segments

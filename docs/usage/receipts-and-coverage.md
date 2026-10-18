@@ -336,7 +336,10 @@ Two more things decide what the receipt will say, and status tells you before yo
 - **A command FinishUP saw fail.** When FinishUP observes a command fail, it records a finding
   ("Unresolved failed command observed") right away. Rerun the same command after the fix, alone or
   inside a passing `&&` chain such as `cd /app && pytest -q`, exactly as written (`FOO=1 pytest -q`,
-  or `pytest -q` behind `env`, `nohup` or `time`, is a different command): when that run passes, the finding is
+  or `pytest -q` behind `env`, `nohup` or `time`, is a different command; a chain whose earlier
+  part can end the shell or runs text FinishUP cannot read, such as `exec CMD`, `exit`, `eval`, or
+  `source`/`.` in `source .venv/bin/activate && pytest -q`, retires nothing and names no outcome
+  for a planned command): when that run passes, the finding is
   retired by itself (`verified_resolved`, basis `retired_by_passing_run`) and stays in the history.
   A later passing run of a verification command your plan asks for retires it as well, together
   with every other earlier failed-command finding, even for a command you never reran (basis

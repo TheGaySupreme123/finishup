@@ -984,7 +984,10 @@ A failed `Shell` call becomes an observation finding (`failed_command_unresolved
   (`fixtures/observations/cursor-shell-outcomes.case.json`). A later passing run of the same
   command, alone or as a segment of a passing `&&` chain run as is (no leading assignment, `env`,
   `nohup`, `exec`, `time` or input redirection, ADR-025), retires the finding (closure basis
-  `retired_by_passing_run`). Pinned by the Cursor case in
+  `retired_by_passing_run`). A chain whose earlier segment may not hand control back
+  (`exec CMD`, `exit`, `eval`, `source`/`.`, an unsafe `set` or `shopt -o`, an unresolvable
+  command word such as `$RUN`, `exec>log` or `{exit,0}`) is recorded `masked` and retires
+  nothing. Pinned by the Cursor case in
   `tests/integration/observation/test_failure_supersession_hosts.py`. A post without `exitCode` (#1091 N4) is `unknown` and retires nothing,
   which is honest; the fix stays with #1091. An edit never retires it, and no check resolves it
   (`observed_failure_not_rerun`).
