@@ -181,16 +181,77 @@ def test_project_docs_are_docs(path: str) -> None:
     ],
 )
 def test_doc_extensions_under_test_or_data_dirs_count(path: str) -> None:
+    # A declared output so named still turns the exemption off: the declared-path answer is wider.
+    assert docs_artifact_name(path)
+    assert classify_write_path(path, workspace="/app", inside=None) == "workspace"
+    assert classify_write_path(f"/app/{path}", workspace="/app", inside=True) == "workspace"
+
+
+@pytest.mark.parametrize(
+    "workspace",
+    [
+        "/home/u/repo/.claude/worktrees/feat",
+        "/home/u/.cursor/worktrees/repo/abc",
+        "/home/u/.codex/worktrees/abc/repo",
+        "/srv/data/repo",
+        "/work/tests/repo",
+    ],
+)
+def test_data_directories_are_read_inside_the_workspace_only(workspace: str) -> None:
+    """A host-managed worktree, or a workspace below a ``data`` folder, is not data (#1106 r1)."""
+
+    for path in ("docs/guide.md", "api.rst", "pkg/notes/design.adoc"):
+        absolute = f"{workspace}/{path}"
+        assert classify_write_path(absolute, workspace=workspace, inside=True) == "docs"
+        assert classify_write_path(path, workspace=workspace, inside=None) == "docs"
+    assert (
+        classify_write_path(f"{workspace}/tests/x.md", workspace=workspace, inside=True)
+        == "workspace"
+    )
+
+
+def test_an_absolute_doc_extension_without_a_root_is_an_ordinary_edit() -> None:
+    # The Codex session stream knows no workspace root: only a conventional name decides there.
+    assert (
+        classify_write_path("/srv/data/repo/guide.md", workspace=None, inside=None) == "workspace"
+    )
+    assert classify_write_path("/srv/data/repo/README.md", workspace=None, inside=None) == "docs"
+    assert classify_write_path("../data/guide.md", workspace="/app", inside=None) == "workspace"
+    assert _file_change_write_scope({"/home/u/repo/docs/a.md": {}}) is None
+    assert _file_change_write_scope({"/home/u/repo/README.md": {}}) == "docs"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "requirements.txt",
+        "notes.txt.py",
+        "history.py",
+        "news.py",
+        "changes.json",
+        "x.txt",
+        # Extensionless script names that only look like documentation (#1106 r1).
+        "bin/security-scan",
+        "scripts/history",
+        "tools/news",
+        "news",
+        "CHANGES",
+        "Security",
+        "bin/readme-check",
+        "contributing",
+    ],
+)
+def test_txt_and_code_are_never_docs_by_name_or_extension(path: str) -> None:
     assert not docs_artifact_name(path)
     assert classify_write_path(path, workspace="/app", inside=None) == "workspace"
 
 
 @pytest.mark.parametrize(
-    "path", ["requirements.txt", "notes.txt.py", "history.py", "news.py", "changes.json", "x.txt"]
+    "path", ["LICENSE", "LICENSE-APACHE", "LICENCE_MIT", "COPYING", "NOTICE", "AUTHORS", "README"]
 )
-def test_txt_and_code_are_never_docs_by_name_or_extension(path: str) -> None:
-    assert not docs_artifact_name(path)
-    assert classify_write_path(path, workspace="/app", inside=None) == "workspace"
+def test_extensionless_docs_are_only_the_unambiguous_names(path: str) -> None:
+    assert docs_artifact_name(path)
+    assert classify_write_path(path, workspace="/app", inside=None) == "docs"
 
 
 def test_notes_win_over_docs_and_outside_stays_outside() -> None:

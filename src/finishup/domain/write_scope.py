@@ -101,20 +101,28 @@ _NOTES_NAME: Final = re.compile(
     r"(?:[-_.][a-z0-9]+)*\.(?:md|markdown|txt|text)$",
     re.IGNORECASE,
 )
-# Conventional project documentation names, in any directory, with an optional ``-``/``_``
-# suffix (``LICENSE-MIT``), an optional language tag (``README.ja.md``) and an optional
-# documentation extension; ``history.py`` or ``changes.json`` is not documentation.
+# Conventional project documentation names, in any directory. With a documentation extension a
+# name may carry a ``-``/``_`` suffix and a language tag (``README.ja.md``, ``CHANGES-1.x.rst``).
+# Without one only names no script plausibly has qualify: the bare ``README``, ``CHANGELOG``,
+# ``AUTHORS`` and ``CONTRIBUTORS``, and the license family with an optional suffix
+# (``LICENSE-MIT``); ``bin/security-scan``, ``scripts/history`` or ``news`` may be programs a test
+# runs, and ``history.py`` or ``changes.json`` is not documentation.
 _DOCS_NAME: Final = re.compile(
-    r"^(?:readme|changelog|changes|history|news|authors|contributors|contributing|licen[cs]e"
+    r"^(?:"
+    r"(?:readme|changelog|changes|history|news|authors|contributors|contributing|licen[cs]e"
     r"|copying|notice|code[-_]of[-_]conduct|security)"
-    r"(?:[-_][a-z0-9]+)*(?:(?:\.[a-z]{2}(?:[-_][a-z]{2})?)?\.(?:md|markdown|rst|txt|adoc))?$",
+    r"(?:[-_][a-z0-9]+)*(?:\.[a-z]{2}(?:[-_][a-z]{2})?)?\.(?:md|markdown|rst|txt|adoc)"
+    r"|readme|changelog|authors|contributors"
+    r"|(?:licen[cs]e|copying|notice)(?:[-_][a-z0-9]+)*"
+    r")$",
     re.IGNORECASE,
 )
 # Documentation extensions; never ``.txt`` (``requirements.txt`` is read by the build).
 _DOCS_EXTENSION: Final = re.compile(r"\.(?:md|markdown|rst|adoc|asciidoc)$", re.IGNORECASE)
 # Directories whose files a test or a program reads as data: a documentation extension there is
 # an input of the work (a fixture, a prompt, a template, a snapshot, an agent host's skill or
-# rule file), so it keeps counting.
+# rule file), so it keeps counting. Only the directories inside the workspace are read: a
+# workspace that itself sits under ``.claude/worktrees`` or ``/srv/data`` is not data.
 _DOCS_DATA_SEGMENTS: Final = frozenset(
     {
         ".agents",
@@ -242,18 +250,47 @@ def _notes_name(normalized: str) -> bool:
 
 
 def docs_artifact_name(path: str) -> bool:
-    """Whether a path names project documentation (pure; declared outputs override it)."""
+    """Whether a declared path could name project documentation (pure).
 
-    return type(path) is str and bool(path) and _docs_path(_normalize(path))
+    A declared output with a documentation name or extension, in any directory, turns the
+    ``docs`` exemption off (``task_facts.stale_exempt_write_tokens``). The answer is deliberately
+    wider than ``classify_write_path``'s: no workspace root is known here, and a wider answer only
+    keeps more edits stale-making.
+    """
+
+    if type(path) is not str or not path:
+        return False
+    name = posixpath.basename(_normalize(path))
+    return _DOCS_NAME.match(name) is not None or _DOCS_EXTENSION.search(name) is not None
 
 
-def _docs_path(normalized: str) -> bool:
+def _docs_path(normalized: str, workspace: str | None) -> bool:
+    """Whether an in-workspace path is project documentation.
+
+    A conventional name is documentation anywhere. A documentation extension is documentation only
+    outside the data directories, read on the path *inside* the workspace: a relative path as it
+    is, an absolute one less the workspace root. An absolute path with no root to strip (the Codex
+    session stream knows none), or a relative one that climbs out (``../``), cannot be placed, so
+    only its name decides: it keeps counting as an ordinary edit.
+    """
+
     name = posixpath.basename(normalized)
     if _DOCS_NAME.match(name) is not None:
         return True
     if _DOCS_EXTENSION.search(name) is None:
         return False
-    directories = normalized.split("/")[:-1]
+    if normalized.startswith("/"):
+        if type(workspace) is not str or not workspace.startswith("/"):
+            return False
+        root = _normalize(workspace)
+        if root == "/" or normalized == root or not _under(normalized, root):
+            return False
+        relative = normalized[len(root.rstrip("/")) + 1 :]
+    else:
+        relative = normalized
+    directories = relative.split("/")[:-1]
+    if any(part == ".." for part in directories):
+        return False
     return not any(part.casefold() in _DOCS_DATA_SEGMENTS for part in directories)
 
 
@@ -308,7 +345,7 @@ def classify_write_path(
         # counts too, but never makes a verification of the code stale; notes win over docs.
         if _notes_name(normalized):
             return "notes"
-        return "docs" if _docs_path(normalized) else "workspace"
+        return "docs" if _docs_path(normalized, workspace) else "workspace"
     if scratch_path(normalized, workspace, environment=False):
         return "scratch"
     if scratch_path(normalized, workspace):

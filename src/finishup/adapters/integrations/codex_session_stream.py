@@ -679,7 +679,9 @@ def _file_change_paths(changes: object) -> Iterator[str]:
 
 def _file_change_write_scope(changes: object) -> str | None:
     """The ``write_scope`` of a ``FileChange`` only when every path is FinishUP-owned, notes or
-    project documentation (named by the path alone, so no workspace root is needed)."""
+    project documentation (named by the path alone, so no workspace root is needed). With no
+    root to strip, an absolute path is documentation only by a conventional name (``README.md``);
+    a documentation extension needs a relative path (``domain.write_scope``)."""
 
     paths = tuple(_file_change_paths(changes))
     if not paths:
