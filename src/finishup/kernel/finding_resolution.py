@@ -165,6 +165,7 @@ __all__ = [
     "rejection_stands",
     "reopen_findings_resolved_by",
     "resolved_finding_ids",
+    "retired_failed_command_finding_ids",
     "standing_position_of",
 ]
 
@@ -1806,12 +1807,15 @@ def _observed_failed_command_explanation(
                 f"Retired by a later passing run of a planned verification (event "
                 f"{record.retired_by_event_id}), not of the command that failed; retained as "
                 "history. A passing planned verification retires every earlier observed command "
-                "failure, so the receipt says which kind of pass retired it."
+                "failure, so the receipt says which kind of pass retired it. The failed command "
+                "itself never passed, so a completion claim must still name it in "
+                "limitation_refs."
             )
         return (
             f"Retired by a later passing run of the same command (event "
             f"{record.retired_by_event_id}); retained as history. A check never proves an "
-            "observed command failure absent; only a passing rerun does."
+            "observed command failure absent; only a later passing run of it or of a planned "
+            "verification does."
         )
     if disposition is ResponseDisposition.ACKNOWLEDGED:
         return (
@@ -2599,6 +2603,24 @@ def reopen_findings_resolved_by(
         if event_ids & set(record.check_change_raising_check_event_ids):
             record = replace(record, check_change_raised_files=None)
         findings[current_id] = record
+
+
+def retired_failed_command_finding_ids(state: ProjectionState) -> frozenset[FindingId]:
+    """Observed failed-command findings a later pass retired and that read resolved (#1104).
+
+    The advice view reads its ``failed_command_unresolved`` items from the observation snapshot,
+    whose rule supersedes a failure only on a pass of the same command; it drops an item whose
+    finding the ledger already retired (a passing planned verification included), so the advice
+    and findings views never disagree about the same finding id.
+    """
+
+    return frozenset(
+        key
+        for key, record in state.findings.items()
+        if record.retired_by_event_id is not None
+        and is_observed_failed_command_finding(record)
+        and finding_is_resolved(state, key)
+    )
 
 
 def finding_is_resolved(state: ProjectionState, finding_id: FindingId) -> bool:

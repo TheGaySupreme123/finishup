@@ -156,9 +156,9 @@ _RULE_DETAILS: Final[Mapping[str, str]] = {
     # a verification command the plan requests (owner decision 2026-10-18); ``acknowledged``
     # discloses it.
     "failed_command_unresolved": (
-        "A failed command FinishUP saw has no later pass. A passing rerun of it, alone or in an "
-        "and-chain, or of a verification your plan requests retires this; an edit does not. If "
-        "the failure stays, respond acknowledged with the reason"
+        "A failed command FinishUP saw has no later pass of itself. A passing rerun of it, alone "
+        "or in an and-chain, or of a verification your plan requests retires this; an edit does "
+        "not. If the failure stays, respond acknowledged with the reason"
     ),
     "edit_after_successful_check": "A check that predates a later edit is no longer current verification",
     "completion_without_verification": "A completion claim lacks current admissible verification evidence",

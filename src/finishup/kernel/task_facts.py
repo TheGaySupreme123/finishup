@@ -56,7 +56,7 @@ import posixpath
 import re
 import threading
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Final, cast
 
@@ -188,6 +188,7 @@ from finishup.kernel.observed_failures import (
     observed_edit_counts,
     observed_event_ids_from_records,
     observed_shell_write_counts,
+    success_certified_identities,
 )
 from finishup.kernel.plan_scope import current_plan_scope
 from finishup.kernel.projections import (
@@ -1497,8 +1498,12 @@ def planned_verification_commands(
     """The planned verifications of the effective plan, ready to match observed runs (#1104).
 
     Every effective obligation's requested item of kind ``command`` that names an observable
-    command, in plan order, each once. Empty without the installation key: a process that cannot
-    compute the identity never treats a run as the planned verification.
+    command, in plan order, each once. An obligation the agent acknowledged as not done
+    (``acknowledged_not_done``) requests nothing here, as the planned-verification task facts
+    skip it; an obligation with a recorded blocker still does (a blocker decision is not a plan
+    event, and its command passing is still the planned verification passing). Empty without the
+    installation key: a process that cannot compute the identity never treats a run as the
+    planned verification.
     """
 
     if not command_identity_key_registered():
@@ -1509,6 +1514,8 @@ def planned_verification_commands(
     for obligation in effective_obligation_ids(plans, obligations, coverage_gaps):
         payload = obligations[obligation].payload
         assert payload is not None
+        if payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            continue
         for item in payload.requested_items:
             if (
                 item.item_kind is not RequestedItemKind.COMMAND
@@ -1531,13 +1538,23 @@ def planned_verification_passed(command: str | None, planned: Iterable[PlannedCo
     for the planned command must be a success: a ``single`` run or a successful ``&&`` chain. A
     canonical, prefix or flag match, an agent link, a masked composition and a masked planned
     command never count. The caller supplies a run whose own recorded outcome is a success.
+
+    Retirement reads segments the way the same-command rule does: only a segment the success
+    certifies (``observed_failures.success_certified_identities``, one that ran exactly as
+    listed) can be the planned command, so ``PYTEST_ADDOPTS=--co pytest -q``, ``exec pytest -q``
+    or ``pytest -q < answers.txt`` never passes a planned ``pytest -q``. A planned command whose
+    own composition masks its outcome (``X | tail``, ``! X``, ``X || true``, ``X &``, ``X; Y``)
+    never counts either, even run exactly as planned: its recorded exit is not the planned
+    work's. The task facts keep their looser ADR-033 reading.
     """
 
     run = observed_run_from_command(command, outcome=ResultOutcome.SUCCESS)
     if run is None:
         return False
+    run = replace(run, segments=success_certified_identities(command))
     return any(
-        (match := planned_match(run, item)) is not None
+        item.composition != "masked"
+        and (match := planned_match(run, item)) is not None
         and match.kind == MATCH_EXACT
         and match.outcome is ResultOutcome.SUCCESS
         for item in planned

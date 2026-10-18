@@ -270,6 +270,61 @@ async def test_a_passing_planned_verification_joined_from_the_stream_retires_ano
         register_command_identity_key(None)
 
 
+def _hook_only(cell: _Replay, call: str, command: str) -> None:
+    """A direct shell call's hook pair alone: its exit reaches the stream later (or never)."""
+
+    _direct_run(cell, call, None, _RED_AT, command=command)
+
+
+@pytest.mark.parametrize("planned_first", [True, False])
+async def test_a_lagging_correction_retires_only_a_pass_begun_after_the_failure(
+    replay: _Replay, planned_first: bool
+) -> None:
+    """#1104 round 1: ordering is by the passing call, not by its correction. Both calls' hooks
+    land first (Codex 0.159 states no exit), then the stream's corrections: the failure, then the
+    planned verification's success. A planned call the hook recorded before the failed call
+    finished began before the failure and repairs nothing, though its exit lands after it; one
+    recorded after the failed call's hook result retires it even when both exits lag."""
+
+    register_command_identity_key(replay.store.key_material())
+    try:
+        session_start(replay, cli_version=_VERSION)
+        first, second = (
+            (("call_green", _COMMAND), ("call_red", "npm ci"))
+            if planned_first
+            else (("call_red", "npm ci"), ("call_green", _COMMAND))
+        )
+        _hook_only(replay, *first)
+        _hook_only(replay, *second)
+        replay.hook("Stop", last_assistant_message="Running.", stop_hook_active=False)
+        await sweep_all(replay)
+        replay.append(command_execution("call_red", "npm ci", 1, _RED_AT))
+        replay.hook("Stop", last_assistant_message="Checking.", stop_hook_active=False)
+        await sweep_all(replay)
+        red = _observed_rows(replay)
+        assert [(item.outcome, item.exit_status) for item in _results(red)] == [
+            (ResultOutcome.UNKNOWN, None),
+            (ResultOutcome.UNKNOWN, None),
+            (ResultOutcome.FAILURE, 1),
+        ]
+        replay.append(command_execution("call_green", _COMMAND, 0, _GREEN_AT))
+        replay.hook("Stop", last_assistant_message="Tests pass.", stop_hook_active=False)
+        await sweep_all(replay)
+        later = _observed_rows(replay)[len(red) :]
+        assert [(item.outcome, item.exit_status) for item in _results(later)] == [
+            (ResultOutcome.SUCCESS, 0)
+        ]
+        recorded = _Recorded(red, later, name="call", planned=(_COMMAND,))
+        if planned_first:
+            assert recorded.retired_by() is None
+            assert recorded.basis() == "open_unanswered"
+        else:
+            assert recorded.basis() == "retired_by_planned_verification"
+            assert recorded.retired_by() == recorded.passing["success:0"]
+    finally:
+        register_command_identity_key(None)
+
+
 async def test_an_unknown_planned_verification_never_retires_another_failure(
     replay: _Replay,
 ) -> None:

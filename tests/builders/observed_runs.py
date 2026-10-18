@@ -71,6 +71,7 @@ from finishup.domain.receipts import (
     SchemaVersionEntry,
 )
 from finishup.domain.values import (
+    ActionId,
     Actor,
     ActorType,
     ClaimId,
@@ -438,6 +439,48 @@ class ObservedLedger:
         summary carries; ``None`` records no fact, as every result before the fact existed.
         """
 
+        action = self.begin(
+            command,
+            kind=kind,
+            observed=observed,
+            raw_command=raw_command,
+            tool=tool,
+            subject_state=subject_state,
+            install_target=install_target,
+            write_outside_workspace=write_outside_workspace,
+            effective_user=effective_user,
+            runner=runner,
+            write_scope=write_scope,
+        )
+        return self.end(
+            action,
+            outcome,
+            exit_status=exit_status,
+            observed=observed,
+            subject_state=subject_state,
+            workspace_effect=workspace_effect,
+        )
+
+    def begin(
+        self,
+        command: str | None,
+        *,
+        kind: ActionKind = ActionKind.COMMAND,
+        observed: bool = True,
+        raw_command: str | None = None,
+        tool: str | None = None,
+        subject_state: SubjectStateRef | None = None,
+        install_target: str | None = None,
+        write_outside_workspace: bool = False,
+        effective_user: str | None = None,
+        runner: str | None = None,
+        write_scope: str | None = None,
+    ) -> ActionId:
+        """Record only a call's action (a paired ``PreToolUse``, or a call still running).
+
+        ``end`` records its result later, so another call's events can land in between.
+        """
+
         self.runs += 1
         number = self.runs
         action = action_id(f"act_00000000-0000-4000-8000-{number:012d}")
@@ -482,6 +525,21 @@ class ObservedLedger:
             ),
             observed=observed,
         )
+        return action
+
+    def end(
+        self,
+        action: ActionId,
+        outcome: ResultOutcome,
+        *,
+        exit_status: int | None = None,
+        observed: bool = True,
+        subject_state: SubjectStateRef | None = None,
+        workspace_effect: str | None = None,
+    ) -> ResultId:
+        """Record the result of a call ``begin`` recorded."""
+
+        number = int(str(action).rsplit("-", 1)[1])
         result = result_id(f"res_00000000-0000-4000-8000-{number:012d}")
         self._append(
             _RESULT,
@@ -662,6 +720,24 @@ class ObservedLedger:
             observed=False,
         )
         return identifier
+
+    def acknowledge_not_done(self, obligation: ObligationId, *commands: str) -> EventId:
+        """Republish *obligation* (requesting ``commands``) as acknowledged not done (#997)."""
+
+        return self._append(
+            _OBLIGATION,
+            ObligationPublishedPayload(
+                obligation_id=obligation,
+                description="Make the regression suite pass.",
+                evidence_expectation="A recorded passing run.",
+                status=ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+                requested_items=tuple(
+                    RequestedItem(RequestedItemKind.COMMAND, command) for command in commands
+                ),
+                acknowledged_not_done_reason="The suite needs a service this sandbox lacks.",
+            ),
+            observed=False,
+        )
 
     def waive(self, obligation: ObligationId) -> EventId:
         """Revise the current plan to waive *obligation* (its requested commands stop counting)."""

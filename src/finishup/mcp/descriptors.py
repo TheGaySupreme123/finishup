@@ -2064,7 +2064,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "cites in evidence_refs an evd_ or res_ recorded after it. "
         "For an unresolved finding: repair it and check first; for an observed failed command "
         "(Unresolved failed command observed), rerun the same command or the planned verification "
-        "instead. "
+        "instead; a completion claim still names in limitation_refs a failure only the planned "
+        "verification retired. "
         "If you repaired it and FinishUP still cannot confirm it (a FinishUP limit), verify it yourself, "
         "record that evidence, and respond self_verified saying how you checked it, with the "
         "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
@@ -2243,7 +2244,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
                 "check": "sha256:d1c5018a531b794062485d475432f89902ca81fa598b1e992a8a158cd5ff1632",
-                "respond": "sha256:4adbd99c38e09df11676068cffed399f5bfe2b6c59f9e9ac91c058c38e04493a",
+                "respond": "sha256:08d6049f4a7fb5dcf6ff5ebf3278ff2907a651225773c25d69e6c4189f93c9d6",
                 "status": "sha256:0893b0779a8ea1a854bbe748c5acad12d284dbbf5d3cf2577c319fa6d0cafe48",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2255,7 +2256,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:b07ea2b5bf859111ec5594705307ad58cdb2524283f09e301fbb58bc5a99c3dd",
                 "check": "sha256:4374e8f3ddb53fa9bf07c6de45dca86a689d37ae70b5d4c0a55ad96750a426e4",
-                "respond": "sha256:4adbd99c38e09df11676068cffed399f5bfe2b6c59f9e9ac91c058c38e04493a",
+                "respond": "sha256:08d6049f4a7fb5dcf6ff5ebf3278ff2907a651225773c25d69e6c4189f93c9d6",
                 "status": "sha256:0893b0779a8ea1a854bbe748c5acad12d284dbbf5d3cf2577c319fa6d0cafe48",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2266,8 +2267,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:98091a98f47375b92adfe5f57474d00087b37dd1de9573f64a8a7e3d6655e3f2",
-        "strict": "sha256:e985015c26804a3e36641f5efe3e2821046b77bef8b505ffabee0b9ef621c802",
+        "policy": "sha256:25ee8c08147591b898b87253884f428e7bcda75739503fa4ef6002710b0fb2b7",
+        "strict": "sha256:5d0e259907a543210b301d2dc5ac844b0fdb3928f39a345912558e8a000a04f3",
     }
 )
 

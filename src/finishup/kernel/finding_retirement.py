@@ -19,7 +19,10 @@ it one, derived at replay from events the ledger already holds:
   a rerun cannot retire it and only an answer settles it.
 * A **later pass** retires it: a hook-observed result recorded after the failed run, with outcome
   ``success`` (a host-stated exit 0 or ``success: true``, or a stream correction stating one), of a
-  *different* call, whose observed ``command`` action is one of:
+  *different* call whose action was recorded after the failed call's first hook-observed result
+  (when FinishUP first knew that call had finished: a pass that began before it, in parallel or
+  with a lagging Codex correction, is no repair of it), and whose observed ``command`` action is
+  one of:
 
   - **the same command**: it has the failed run's keyed identity or certifies it as one of its
     exact segments (``observed_failures.success_certified_identities``: a segment of a passing
@@ -29,9 +32,12 @@ it one, derived at replay from events the ledger already holds:
     passing result must belong to another call, so a conflicting second outcome for the same call
     never retires it.
   - **a planned verification** (owner decision 2026-10-18, the broad reading of "a later pass"):
-    a run that passed a command an effective obligation of the current plan requests, matched by
-    the recorded ADR-033 rule (``task_facts.planned_verification_passed``: the keyed whole-command
-    commitment, or the planned command as a segment of a passing ``single`` or ``and_chain`` run).
+    a run that passed a command an effective obligation of the current plan requests (one the
+    agent did not acknowledge as not done), matched by the recorded ADR-033 rule
+    (``task_facts.planned_verification_passed``: the keyed whole-command commitment, or the
+    planned command as a certified segment of a passing ``single`` or ``and_chain`` run, under
+    the same bare-segment rule as above; a planned command that masks its own outcome never
+    counts).
     It retires every earlier observed failed command, related or not: a passing planned
     verification also clears an unrelated earlier failure (a failed install), a trade-off the
     owner accepted. The plan is read as it stands now, as the planned-verification task facts
@@ -197,11 +203,11 @@ def failed_run_of(
     return _unique_through(direct, by_action, through)
 
 
-def _command_action(
+def _command_action_record(
     result: ProjectionRecord[ResultRecordedPayload] | None,
     actions: _Actions,
     observed: Set[EventId],
-) -> ActionRecordedPayload | None:
+) -> ProjectionRecord[ActionRecordedPayload] | None:
     if result is None or result.payload is None or result.source_event_id not in observed:
         return None
     action = actions.get(result.payload.action_id)
@@ -212,7 +218,37 @@ def _command_action(
         or action.payload.action_kind is not ActionKind.COMMAND
     ):
         return None
-    return action.payload
+    return action
+
+
+def _command_action(
+    result: ProjectionRecord[ResultRecordedPayload] | None,
+    actions: _Actions,
+    observed: Set[EventId],
+) -> ActionRecordedPayload | None:
+    action = _command_action_record(result, actions, observed)
+    return None if action is None else action.payload
+
+
+def _call_floors(results: _Results, observed: Set[EventId]) -> dict[ActionId, int]:
+    """Per call, the frontier of its earliest readable hook-observed result.
+
+    That is when FinishUP first learned the call had finished: its own failure on Claude Code or
+    Cursor, its outcome-less hook result on Codex (whose exit lands later, as a stream
+    correction). A pass whose call was recorded no later than this point of the failed call
+    started before the failure was known, so it is never a repair of it, however late its own
+    outcome (a lagging Codex correction, a parallel call) reaches the ledger.
+    """
+
+    floors: dict[ActionId, int] = {}
+    for record in results.values():
+        payload = record.payload
+        if payload is None or record.source_event_id not in observed:
+            continue
+        known = floors.get(payload.action_id)
+        if known is None or record.source_frontier < known:
+            floors[payload.action_id] = record.source_frontier
+    return floors
 
 
 def _failed_record(
@@ -258,7 +294,16 @@ class _Passes:
     candidate scans only the runs recorded after its failed run, up to the first that retires it.
     """
 
-    __slots__ = ("_frontiers", "_identities", "_planned", "_planned_rows", "_rows")
+    __slots__ = (
+        "_floors",
+        "_frontiers",
+        "_identities",
+        "_observed",
+        "_planned",
+        "_planned_rows",
+        "_results",
+        "_rows",
+    )
 
     def __init__(
         self,
@@ -267,12 +312,14 @@ class _Passes:
         observed: Set[EventId],
         planned: PlannedVerifications,
     ) -> None:
-        rows: list[tuple[ProjectionRecord[ResultRecordedPayload], ActionRecordedPayload]] = []
+        rows: list[
+            tuple[ProjectionRecord[ResultRecordedPayload], ProjectionRecord[ActionRecordedPayload]]
+        ] = []
         for record in results.values():
             payload = record.payload
             if payload is None or payload.outcome is not ResultOutcome.SUCCESS:
                 continue
-            action = _command_action(record, actions, observed)
+            action = _command_action_record(record, actions, observed)
             if action is not None:
                 rows.append((record, action))
         rows.sort(key=lambda row: row[0].source_frontier)
@@ -281,11 +328,21 @@ class _Passes:
         self._planned = _memoized(planned)
         self._identities: dict[int, tuple[str | None, frozenset[str]]] = {}
         self._planned_rows: dict[int, bool] = {}
+        self._results = results
+        self._observed = observed
+        self._floors: dict[ActionId, int] | None = None
+
+    def _floor(self, call: ActionId, failed_frontier: int) -> int:
+        if self._floors is None:
+            self._floors = _call_floors(self._results, self._observed)
+        return self._floors.get(call, failed_frontier)
 
     def _same_command(self, index: int, identity: str) -> bool:
         known = self._identities.get(index)
         if known is None:
-            command = self._rows[index][1].command
+            action = self._rows[index][1].payload
+            assert action is not None
+            command = action.command
             known = (command_identity(command), success_certified_identities(command))
             self._identities[index] = known
         return known[0] == identity or identity in known[1]
@@ -294,9 +351,9 @@ class _Passes:
         known = self._planned_rows.get(index)
         if known is None:
             planned = self._planned()
-            known = bool(planned) and planned_verification_passed(
-                self._rows[index][1].command, planned
-            )
+            action = self._rows[index][1].payload
+            assert action is not None
+            known = bool(planned) and planned_verification_passed(action.command, planned)
             self._planned_rows[index] = known
         return known
 
@@ -305,11 +362,17 @@ class _Passes:
     ) -> Witness | None:
         failed_payload = failed.payload
         assert failed_payload is not None
+        floor: int | None = None
         for index in range(bisect_right(self._frontiers, failed.source_frontier), len(self._rows)):
-            record, _action = self._rows[index]
+            record, action = self._rows[index]
             payload = record.payload
             assert payload is not None
             if payload.action_id == failed_payload.action_id:
+                continue
+            if floor is None:
+                floor = self._floor(failed_payload.action_id, failed.source_frontier)
+            if action.source_frontier <= floor:
+                # The passing call was recorded before the failed call finished.
                 continue
             if identity is not None and self._same_command(index, identity):
                 return (record.source_event_id, record.source_frontier, False)
@@ -320,30 +383,40 @@ class _Passes:
 
 def _retires(
     candidate: ProjectionRecord[ResultRecordedPayload],
-    action: ActionRecordedPayload,
+    action: ProjectionRecord[ActionRecordedPayload],
     failed: ProjectionRecord[ResultRecordedPayload],
     identity: str | None,
     planned_pass: Callable[[], bool],
+    floor: Callable[[ActionId, int], int],
 ) -> bool | None:
     """Whether the passing *candidate* retires *failed*: ``None`` when it does not, else whether it
     does so as a planned verification (``False``: the same command passed)."""
 
     payload = candidate.payload
     failed_payload = failed.payload
+    command = action.payload
     if (
         payload is None
         or failed_payload is None
+        or command is None
         or payload.outcome is not ResultOutcome.SUCCESS
         or candidate.source_frontier <= failed.source_frontier
         or payload.action_id == failed_payload.action_id
     ):
         return None
     if identity is not None and (
-        command_identity(action.command) == identity
-        or identity in success_certified_identities(action.command)
+        command_identity(command.command) == identity
+        or identity in success_certified_identities(command.command)
     ):
-        return False
-    return True if planned_pass() else None
+        kind = False
+    elif planned_pass():
+        kind = True
+    else:
+        return None
+    # Checked last, so the call floors are read only for a pass that would otherwise retire.
+    if action.source_frontier <= floor(failed_payload.action_id, failed.source_frontier):
+        return None
+    return kind
 
 
 def retirement_witness(
@@ -469,18 +542,26 @@ def on_observed_result(
         return
     if outcome is not ResultOutcome.SUCCESS:
         return
-    action = _command_action(new, actions, observed)
-    if action is None:
+    action = _command_action_record(new, actions, observed)
+    if action is None or action.payload is None:
         return
+    command = action.payload.command
     planned_once = _memoized(planned)
     verdict: list[bool] = []
+    floors: list[dict[ActionId, int]] = []
 
     def planned_pass() -> bool:
         # The new run's planned-verification match, computed once for every candidate.
         if not verdict:
             current = planned_once()
-            verdict.append(bool(current) and planned_verification_passed(action.command, current))
+            verdict.append(bool(current) and planned_verification_passed(command, current))
         return verdict[0]
+
+    def floor(call: ActionId, failed_frontier: int) -> int:
+        # One scan of the results, only once some candidate would otherwise retire.
+        if not floors:
+            floors.append(_call_floors(results, observed))
+        return floors[0].get(call, failed_frontier)
 
     for key, record in tuple(findings.items()):
         failed = record.failed_run_result_id
@@ -495,6 +576,7 @@ def on_observed_result(
             failed_record,
             _failed_identity(failed_record, actions, observed),
             planned_pass,
+            floor,
         )
         if kind is not None:
             findings[key] = replace(

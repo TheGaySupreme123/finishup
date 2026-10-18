@@ -24,6 +24,7 @@ import integration.application.test_respond_status_receipt as workflow
 from builders.ledger_adapters import MemoryObjects
 from builders.start_application import start_request
 from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application import status as status_module
 from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     build_observation_advice_snapshot,
@@ -36,9 +37,10 @@ from finishup.application.observation_materialize import (
 from finishup.cli import observe_hooks
 from finishup.domain.events import AcceptedEvent, ResultRecordedPayload, media_type_for
 from finishup.domain.findings import Finding
-from finishup.domain.observation import ObservationEnvelope, ObservationLifecycle
+from finishup.domain.observation import AdviceSnapshot, ObservationEnvelope, ObservationLifecycle
 from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
 from finishup.domain.values import Frontier
+from finishup.kernel.task_facts import register_command_identity_key
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.ledger import (
     AppendCommand,
@@ -48,7 +50,13 @@ from finishup.ports.ledger import (
     ProjectionView,
 )
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskObservationPort
+from finishup.ports.runtime import (
+    BundleRuntimePort,
+    RouteAccess,
+    RouteCommand,
+    TaskObservationPort,
+    TaskRuntime,
+)
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import StatusRequest
 from integration.application.test_closure_readiness_checklist import _Session, public_status
@@ -88,13 +96,13 @@ class _Host:
             == 0
         )
 
-    def bash(self, call: str, *, failed: bool) -> None:
+    def bash(self, call: str, *, failed: bool, command: str = _COMMAND) -> None:
         session: dict[str, JsonValue] = {
             "session_id": "claude-1104",
             "tool_name": "Bash",
             "tool_use_id": call,
         }
-        tool_input: dict[str, JsonValue] = {"command": _COMMAND, "description": "Run tests"}
+        tool_input: dict[str, JsonValue] = {"command": command, "description": "Run tests"}
         self.emit(
             "PreToolUse", {**session, "hook_event_name": "PreToolUse", "tool_input": tool_input}
         )
@@ -315,3 +323,119 @@ async def test_failed_command_then_pass_then_receipt_is_not_blocked(tmp_path: Pa
     assert retired["closure_basis"] == "retired_by_passing_run"
     assert retired["resolved"] is True
     assert await session.receipt() != "unresolved_findings_remain"
+
+
+async def _advice_finding(
+    session: _Session, runtime: Any, host: _Host
+) -> tuple[TaskRuntime, AdviceSnapshot, Finding]:
+    """Run the real advice rule and the coordinator's materialization; the one finding."""
+
+    task_runtime = await runtime.route(
+        RouteCommand(
+            session.started.session_id,
+            session.started.writer_id,
+            RouteAccess.WRITE,
+            frozenset({RuntimeCapability.WRITE}),
+        )
+    )
+    coordinator = ObservationCoordinator(
+        runtime=cast(BundleRuntimePort, runtime),
+        local=host.store,
+        clock=session.app.clock,
+        ids=session.app.ids,
+        state_root=host.state,
+    )
+    envelopes = host.store.list_envelopes(host.workspace)
+    snapshot = build_observation_advice_snapshot(
+        ObservationAdviceBuildInput(
+            envelopes=envelopes,
+            lifecycle=ObservationLifecycle.ACTIVE,
+            gaps=(),
+            has_real_observation=True,
+        )
+    )
+    assert snapshot is not None
+    await coordinator._materialize_advice_findings(
+        task_runtime, envelopes, snapshot, store=cast(TaskObservationPort, host.store)
+    )
+    findings = [
+        record.payload
+        for record in await _records(session)
+        if record.schema.name == "finding_recorded"
+        and type(record.payload) is Finding
+        and record.payload.policy_id == "work-integrity"
+    ]
+    assert len(findings) == 1
+    return cast(TaskRuntime, task_runtime), snapshot, findings[0]
+
+
+def _failed_command_items(snapshot: AdviceSnapshot) -> list[str]:
+    return [
+        str(item.finding_id)
+        for item in snapshot.ranked_items
+        if item.rule_code == "failed_command_unresolved"
+    ]
+
+
+async def test_failed_install_then_planned_verification_pass_retires_it(tmp_path: Path) -> None:
+    """Owner decision 2026-10-18 through the application: the plan requests the test command, an
+    install fails, the coordinator records its finding, and the planned test command passes.
+    Status (findings view, validated against the generated model) names the planned kind, the
+    advice view drops the retired item, and the receipt is no longer blocked by it; the
+    completion-claim duty to name the failure is unchanged (ADR-025)."""
+
+    app, runtime, _ = workflow._build_app(seed_offset=1105)
+    started = await app.start(start_request(1_104_600, title="Retire by a planned check"))
+    session = _Session(app, runtime, started)
+    host = _Host(tmp_path)
+    # The service registers the installation key the hooks commit with (ready composition).
+    register_command_identity_key(host.store.key_material())
+    try:
+        obligation = session.next("obl_")
+        await session.publish(
+            session.draft(
+                "plan_published",
+                {"plan_version": 1, "summary": "Tests", "obligation_refs": [obligation]},
+            ),
+            session.draft(
+                "obligation_published",
+                {
+                    "obligation_id": obligation,
+                    "description": "Make the suite pass.",
+                    "evidence_expectation": "The planned test run passes.",
+                    "status": "open",
+                    "requested_items": [{"item_kind": "command", "value": _COMMAND}],
+                },
+            ),
+        )
+        host.bash("toolu-install", failed=True, command="pip install -e .")
+        await _append_observed(session, host.new_envelopes())
+        task_runtime, snapshot, finding = await _advice_finding(session, runtime, host)
+        session.frontier = await _head(session)
+        (open_item,) = [
+            item
+            for item in await _findings_view(session)
+            if item["finding_id"] == str(finding.finding_id)
+        ]
+        assert open_item["closure_basis"] == "open_unanswered"
+        assert await session.receipt() == "unresolved_findings_remain"
+        kept = await status_module._without_retired_failed_commands(task_runtime, snapshot)
+        assert _failed_command_items(kept) == [str(finding.finding_id)]
+
+        host.bash("toolu-tests", failed=False)
+        await _append_observed(session, host.new_envelopes())
+        (retired,) = [
+            item
+            for item in await _findings_view(session)
+            if item["finding_id"] == str(finding.finding_id)
+        ]
+        assert retired["closure_basis"] == "retired_by_planned_verification"
+        assert retired["resolved"] is True
+        assert await session.receipt() != "unresolved_findings_remain"
+        # The advice rule still sees no pass of the install itself; the advice view reads the
+        # ledger's retirement and drops the item, so both views agree about the finding.
+        assert _failed_command_items(snapshot) == [str(finding.finding_id)]
+        dropped = await status_module._without_retired_failed_commands(task_runtime, snapshot)
+        assert _failed_command_items(dropped) == []
+    finally:
+        register_command_identity_key(None)

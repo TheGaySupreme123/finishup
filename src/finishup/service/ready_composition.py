@@ -6180,6 +6180,20 @@ async def provide_service_ready_context(
         clock=clock,
         ids=ids,
     )
+    # Name this process's store-lock ownership and route lock timeouts and long holds, with the
+    # holder's role and phase, to the diagnostic ring. Hook replays on the spool worker keep their
+    # own scoped attribution (#689).
+    set_observation_store_lock_role("service")
+    set_observation_store_lock_reporter(_record_observation_store_lock_event)
+    local_observation = LocalObservationStore(_state=paths.state)
+    # Planned-verification facts (#977) compare a requested command with observed runs through
+    # the same installation-keyed commitment the hooks compute; without the key they are omitted.
+    # The projection fold reads it too (#1104: a passing planned verification retires earlier
+    # observed failed-command findings), so it is registered before the startup upgrade can
+    # replay or rebuild any task projection: every projection this process stores or compares
+    # is then folded with the key.
+    with contextlib.suppress(Exception):
+        register_command_identity_key(local_observation.key_material())
     # The storage-owned startup phase is deliberately after catalog migration and before any
     # lineage/runtime clients are composed.  It may inspect and upgrade existing task bundles,
     # but ordinary lazy runtime opening remains fail-closed for a stale schema.  A failed phase
@@ -6641,20 +6655,10 @@ async def provide_service_ready_context(
         )
 
     versions = _receipt_versions(manifest)
-    # Name this process's store-lock ownership and route lock timeouts and long holds, with the
-    # holder's role and phase, to the diagnostic ring. Hook replays on the spool worker keep their
-    # own scoped attribution (#689).
-    set_observation_store_lock_role("service")
-    set_observation_store_lock_reporter(_record_observation_store_lock_event)
-    local_observation = LocalObservationStore(_state=paths.state)
     # Publish the loaded config gate before AI-powered review composition can resolve
     # retained bytes. The owner-private store is also the authoritative consent
     # fence while task-bundle propagation is still catching up.
     local_observation.set_runtime_enabled(config.observation.enabled)
-    # Planned-verification facts (#977) compare a requested command with observed runs through
-    # the same installation-keyed commitment the hooks compute; without the key they are omitted.
-    with contextlib.suppress(Exception):
-        register_command_identity_key(local_observation.key_material())
     require_capture_bootstrap = getattr(
         local_observation, "set_capture_reservation_bootstrap_required", None
     )

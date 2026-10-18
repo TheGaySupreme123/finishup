@@ -9,12 +9,18 @@ closure classifier and to-do predicates then decide what every surface reads.
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from collections.abc import Iterator
 
 import pytest
 
-from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, observed_receipt
+from builders.observed_runs import (
+    INSTALLATION_KEY,
+    ObservedLedger,
+    observed_receipt,
+    omitted_results,
+)
 from finishup.domain.events import ResultOutcome
 from finishup.domain.findings import ResponseDisposition
 from finishup.domain.receipts import ReceiptSectionKey, render_receipt_human
@@ -561,14 +567,15 @@ def test_a_passing_planned_verification_retires_an_unrelated_earlier_failure(
     [
         f"cd /app && {_PLANNED}",
         f"{_PLANNED} > log.txt 2>&1",
-        f"FOO=1 {_PLANNED}",
+        f"cd /app && {_PLANNED} && echo done",
     ],
 )
 def test_a_planned_verification_inside_a_passing_chain_or_with_prefixes_retires_it(
     later: str,
 ) -> None:
-    """The ADR-033 segment rule: the planned command as a segment of a passing ``single`` run
-    or ``&&`` chain is the planned verification passing."""
+    """The ADR-033 segment rule under the bare-segment reading: the planned command as a segment
+    of a passing ``single`` run or ``&&`` chain that ran exactly as planned is the planned
+    verification passing."""
 
     ledger = ObservedLedger()
     ledger.plan(_PLANNED)
@@ -613,6 +620,117 @@ def test_what_is_not_a_passing_planned_verification(later: str) -> None:
     else:
         ledger.edit()
     _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    "conditioned",
+    [
+        f"FOO=1 {_PLANNED}",
+        f"PYTEST_ADDOPTS=--collect-only {_PLANNED}",
+        f"cd /app && PYTEST_ADDOPTS=--co {_PLANNED}",
+        f"env PYTEST_ADDOPTS=--lf {_PLANNED}",
+        f"exec {_PLANNED}",
+        f"nohup {_PLANNED}",
+        f"time {_PLANNED}",
+        f"{_PLANNED} < answers.txt",
+    ],
+)
+def test_a_conditioned_planned_segment_never_retires_anything(conditioned: str) -> None:
+    """#1104 round 1 (planned path): a segment listed after dropping a leading assignment, a
+    wrapper or an input redirection ran a different command than the planned one, so it neither
+    retires the failed planned command itself nor any other earlier failure."""
+
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    same = _finding_for(ledger, ledger.fail(_PLANNED))
+    other = _finding_for(ledger, ledger.fail(_INSTALL), number=2)
+    ledger.passes(conditioned)
+    _assert_open(ledger, same)
+    _assert_open(ledger, other)
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    "masked",
+    [
+        f"{_PLANNED} 2>&1 | tail -5",
+        f"! {_PLANNED}",
+        f"{_PLANNED} || true",
+        f"{_PLANNED} &",
+        f"{_PLANNED}; true",
+    ],
+)
+def test_a_masked_planned_command_run_exactly_as_planned_never_retires(masked: str) -> None:
+    """A planned command whose own composition masks its exit (``| tail``, ``!``, ``|| true``,
+    ``&``, ``;``) records the exit of something else, so its success is not a known success of
+    the planned work, even when it is run verbatim."""
+
+    ledger = ObservedLedger()
+    ledger.plan(masked)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(masked)
+    _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_an_obligation_acknowledged_as_not_done_plans_no_verification() -> None:
+    """The obligation set is the task facts' one: an acknowledged-not-done obligation's command
+    is no planned verification, and acknowledging it un-retires what only its pass retired."""
+
+    ledger = ObservedLedger()
+    obligation = ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+    ledger.acknowledge_not_done(obligation, _PLANNED)
+    _assert_open(ledger, finding)
+    ledger.passes(_PLANNED)
+    _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize("planned", [True, False])
+def test_a_pass_whose_call_began_before_the_failure_finished_never_retires_it(
+    planned: bool,
+) -> None:
+    """Claude Code-shaped parallel calls: the passing call's ``PreToolUse`` action is recorded
+    before the failed call's result, so it started before the failure and repairs nothing, even
+    though its own result lands later. A pass begun after the failure still retires it."""
+
+    command = _PLANNED if planned else _INSTALL
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    early = ledger.begin(command)
+    failed = ledger.fail(_INSTALL)
+    finding = _finding_for(ledger, failed)
+    ledger.end(early, ResultOutcome.SUCCESS, exit_status=0)
+    _assert_open(ledger, finding)
+    later = ledger.passes(command)
+    if planned:
+        _assert_retired_by_plan(ledger, finding, _result_event(ledger, later))
+    else:
+        _assert_retired(ledger, finding, _result_event(ledger, later))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_planned_retirement_still_leaves_the_claim_level_duty() -> None:
+    """ADR-025: the completion-claim duty follows the shared supersession rule, which a planned
+    verification does not change. A retired install failure must still be named in the claim's
+    ``limitation_refs``, or the work-integrity pack reports it as omitted."""
+
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    failed = ledger.fail(_INSTALL)
+    finding = _finding_for(ledger, failed)
+    passing = ledger.passes(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+    unnamed = dataclasses.replace(ledger, records=list(ledger.records))
+    unnamed.claim()
+    assert omitted_results(unnamed) == (str(failed),)
+    named = dataclasses.replace(ledger, records=list(ledger.records))
+    named.claim(limitations=(failed,))
+    assert omitted_results(named) == ()
 
 
 @pytest.mark.usefixtures("installation_key")
