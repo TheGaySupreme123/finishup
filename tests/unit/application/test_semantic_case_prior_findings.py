@@ -34,6 +34,7 @@ from builders.policy_cases import (
 )
 from finishup.application.missing_for_assessment import ReviewFollowUp, ReviewFollowUpItem
 from finishup.application.semantic_case import (
+    AGENT_DISCLOSURES_ITEM_ID,
     MAX_PRIOR_FINDINGS,
     build_semantic_case,
     semantic_case_to_prepared_payload,
@@ -765,7 +766,11 @@ def test_a_limitation_disclosed_by_a_decision_line_is_carried_without_an_answer(
     assert f"prior-finding-{fnd(7)}" not in built.packet.prior_finding_item_ids
 
 
-def test_an_obligation_the_agent_already_disclosed_says_so_beside_the_obligation() -> None:
+def test_disclosures_travel_in_one_agent_assertion_row() -> None:
+    """tb4n3 RC-1 put each disclosure beside its obligation; n7 RC7 (#1108): there it read as
+    FinishUP's standing and the reviewer deferred to it over the packet's own material. The
+    disclosures now travel in one row, labelled as the agent's assertion (ADR-040 amendment)."""
+
     case = _numba_case()
     acknowledged = obligation_record(
         ObligationPublishedPayload(
@@ -777,18 +782,36 @@ def test_an_obligation_the_agent_already_disclosed_says_so_beside_the_obligation
         ),
         3,
     )
+    plain = _build(case)
+    assert AGENT_DISCLOSURES_ITEM_ID not in {item.item_id for item in plain.items}
     built = _build(_with_limit_decision(case, extra_obligation=(obl(2), acknowledged)))
-    plain = _row(_build(case), f"obligation-{obl(1)}")
-    assert "yoetz_already_disclosed" not in plain
-    by_decision = cast(
-        Mapping[str, JsonValue], _row(built, f"obligation-{obl(1)}")["yoetz_already_disclosed"]
-    )
+    for item in built.items:
+        if item.section == "obligation":
+            assert "yoetz_already_disclosed" not in _row(built, item.item_id), item.item_id
+    assert built.packet.decision_item_ids[0] == AGENT_DISCLOSURES_ITEM_ID
+    item = next(item for item in built.items if item.item_id == AGENT_DISCLOSURES_ITEM_ID)
+    assert item.section == "decision"
+    assert item.category is DataCategory.OBLIGATION_TEXT
+    assert item.source_kind == "obligation"
+    assert set(item.linked_subject_refs) == {str(obl(1)), str(obl(2))}
+    row = _row(built, AGENT_DISCLOSURES_ITEM_ID)
+    assert row["schema"] == "yoetz.agent-disclosures/1"
+    assert row["kind"] == "agent_disclosures"
+    assert row["standing"] == "agent_assertion"
+    assert row["not_listed_count"] == 0
+    by_obligation = {
+        cast(str, entry["obligation_id"]): entry
+        for entry in cast(list[Mapping[str, JsonValue]], row["disclosures"])
+    }
+    assert list(by_obligation) == sorted(by_obligation, key=str.encode)
+    by_decision = by_obligation[str(obl(1))]
     assert by_decision["already_disclosed"] is True
     assert "verification_limit" in by_decision
-    by_status = cast(
-        Mapping[str, JsonValue], _row(built, f"obligation-{obl(2)}")["yoetz_already_disclosed"]
-    )
-    assert by_status == {"acknowledged_not_done": True, "already_disclosed": True}
+    assert by_obligation[str(obl(2))] == {
+        "obligation_id": str(obl(2)),
+        "acknowledged_not_done": True,
+        "already_disclosed": True,
+    }
 
 
 def test_unanswered_local_finding_is_not_carried() -> None:

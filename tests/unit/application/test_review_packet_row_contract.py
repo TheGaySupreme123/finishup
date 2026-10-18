@@ -12,6 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
 from finishup.application.semantic_case import (
+    AGENT_DISCLOSURES_ITEM_ID,
     assemble_filtered_review_packet,
     bounded_case_envelope,
 )
@@ -21,6 +22,13 @@ from unit.application.test_review_follow_up import (
     _excerpt_refs,
     _follow_up,
     _verification_case,
+)
+from unit.application.test_semantic_case_prior_findings import (
+    _build as build_prior,
+)
+from unit.application.test_semantic_case_prior_findings import (
+    _numba_case,
+    _with_limit_decision,
 )
 
 _SCHEMA = (
@@ -73,3 +81,30 @@ def test_packet_row_golden_vectors_cover_compatibility_and_partial_admission() -
         validator.validate({**row, "follow_up_supplied": False})
     with pytest.raises(ValidationError):
         validator.validate({**row, "follow_up_supplied": "true"})
+
+
+def test_the_agent_disclosures_row_obeys_the_row_contract() -> None:
+    """n7 RC7 (#1108): the agent's disclosures travel in their own row, inside the closed row
+    contract: section ``decision``, category ``obligation_text``, no new label."""
+
+    validator = Draft202012Validator(json.loads(_SCHEMA.read_bytes()))
+    built = build_prior(_with_limit_decision(_numba_case()))
+    envelope = strict_json_parse(bounded_case_envelope(built))
+    assert isinstance(envelope, dict)
+    content = {item.item_id: item.content for item in built.items}
+    packet = strict_json_parse(
+        assemble_filtered_review_packet(
+            envelope, content_by_id=content, included_item_ids=frozenset(content)
+        )
+    )
+    assert isinstance(packet, dict) and isinstance(packet["items"], list)
+    (row,) = (
+        row
+        for row in packet["items"]
+        if isinstance(row, dict) and row.get("item_id") == AGENT_DISCLOSURES_ITEM_ID
+    )
+    validator.validate(row)
+    assert row["section"] == "decision"
+    assert row["category"] == "obligation_text"
+    for other in packet["items"]:
+        validator.validate(other)

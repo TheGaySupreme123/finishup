@@ -122,6 +122,9 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     finding_id as finding_id_value,
 )
+from finishup.domain.values import (
+    result_id as validate_result_id,
+)
 from finishup.kernel.claims import effective_claim_items
 from finishup.kernel.delivered_set import declared_delivered_items
 from finishup.kernel.deterministic_checks import (
@@ -138,6 +141,7 @@ from finishup.kernel.finding_todo import (
 )
 from finishup.kernel.limitation import LimitationStanding, limitation_standing
 from finishup.kernel.lineage import LineageEvaluation
+from finishup.kernel.observed_failures import observed_event_ids_from_coverage
 from finishup.kernel.projections import (
     EvidenceProjectionRecord,
     FindingProjectionRecord,
@@ -180,6 +184,7 @@ from finishup.ports.semantic import (
     MAX_REVIEW_INPUT_SECTION_ITEMS,
     MAX_SEMANTIC_CASE_ITEMS,
     MAX_SEMANTIC_ITEM_SUBJECT_REFS,
+    SEMANTIC_CASE_SECTION_ORDER,
     SETTLED_FINDING_ITEM_PREFIX,
     ChangeObservation,
     ExcerptDigestProvenance,
@@ -230,6 +235,7 @@ __all__ = [
     "CHECK_TIME_CHANGE_ITEM_PREFIX",
     "CHECK_TIME_SECTION_ITEM_PREFIX",
     "DECLARED_DELIVERABLES_ITEM_ID",
+    "AGENT_DISCLOSURES_ITEM_ID",
     "TASK_INPUT_ITEM_PREFIX",
     "CheckTimeChangeShownFile",
     "check_time_change_bytes_carried",
@@ -350,16 +356,19 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
             "packet does not show, an early stop); work not yet started is not a defect. Return a "
             "correctness concern as code_defect: FinishUP records it as an advisory note."
         ),
+        # n7 RC7 (#1108): a disclosure is the agent's statement of a limit, never a reason to
+        # stop judging what the packet shows.
         "final": (
             "Review phase: final. This is the closing review, with or without a completion "
             "claim: judge completeness against the task statement. For each stated requirement "
             "and requested output (path), say whether the change and its recorded verification "
             "deliver it, and challenge each one they do not. A requirement only a hidden "
             "evaluator or an artifact the agent cannot obtain can establish is a not_assessable "
-            "row, not a challenge, once the packet shows the agent disclosed it. For each "
-            "requirement, name the assumption, method or check its result rests on and judge that "
-            "against the task: a result that holds only under the agent's own premise or "
-            "validator is not support (issue #1082)."
+            "row, not a challenge, when the packet holds no material that settles it; a "
+            "disclosure states a limit, is not support, and never stops you from judging what "
+            "the packet shows. For each requirement, name the assumption, method or check its "
+            "result rests on and judge that against the task: a result that holds only under the "
+            "agent's own premise or validator is not support (issue #1082)."
         ),
     }
 )
@@ -790,11 +799,19 @@ class CheckTimeChange:
 CHECK_TIME_CHANGE_ITEM_PREFIX: Final = "change-check-time-"
 _CHECK_TIME_CHANGE_SOURCE_REF: Final = CHECK_TIME_CHANGE_SOURCE_REF
 # Read-only task input files the same service read carried (issue #1045): one excerpt each. Issue
-# #1082: they rank first, ahead of the check-time change, within a quarter of the packet's excerpt
-# budget; what does not fit backfills after every other excerpt.
+# #1082 ranked them ahead of the check-time change; n7 RC6e (#1108): that cut the change under
+# review more often, so the change takes its reserved share first and the inputs then take an
+# eighth of the packet's excerpt budget, an input larger than the room arriving as its head and
+# tail. What does not fit backfills after every other excerpt.
 TASK_INPUT_ITEM_PREFIX: Final = "task-input-"
 _TASK_INPUT_SOURCE_REF: Final = "task-input"
-_TASK_INPUT_SHARE_DIVISOR: Final = 4
+_TASK_INPUT_SHARE_DIVISOR: Final = 8
+# The smallest room the first task-input offer clips an input into, head and tail, rather than
+# leaving it to the backfill (#1108).
+_MIN_TASK_INPUT_CLIP_BYTES: Final = 2_048
+# Bytes the first task-input offer leaves for the decisive verification output: an eighth of the
+# packet's excerpt budget, at most one excerpt (issue #1094 R2-N2).
+_DECISIVE_RUN_HOLD_DIVISOR: Final = 8
 # Excerpt slots the first task-input offer leaves per decisive verification run: its output and
 # the failure summary or command that travels beside it. One run when no follow-up is open (the
 # latest), else one per item the reviewer asked for (PR #1086 review R1-06).
@@ -842,21 +859,20 @@ def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
 
 
 def _first_task_input_slots(
-    selection: ReviewSelectionPolicy, change_parts: int, follow_up_items: int
+    selection: ReviewSelectionPolicy, admitted: int, follow_up_items: int
 ) -> int:
     """Excerpt slots the first task-input offer may take (PR #1086 review R1-06).
 
-    The offer is bounded in count as well as in bytes. It leaves the check-time change the slots
-    its reservation would use (``_check_time_change_reservation``, at most one per part it has)
-    and leaves the decisive verification two slots per run (the latest run, or each run a
-    follow-up asked for: its output and its failure summary or command), so small inputs can
-    never take the room of the change and the run that decides it. What the offer cannot take
-    backfills after every other excerpt; the recipe's own count and bytes are never exceeded.
+    The offer is bounded in count as well as in bytes. It follows the check-time change's
+    reserved share (#1108), so it leaves the ``admitted`` excerpts already placed, and it leaves
+    the decisive verification two slots per run (the latest run, or each run a follow-up asked
+    for: its output and its failure summary or command), so small inputs can never take the room
+    of the run that decides the change. What the offer cannot take backfills after every other
+    excerpt; the recipe's own count and bytes are never exceeded.
     """
 
-    change = min(_check_time_change_reservation(selection, 0)[0], change_parts)
     decisive = _DECISIVE_RUN_SLOTS * max(1, follow_up_items)
-    return max(0, min(MAX_TASK_INPUT_FILES, selection.max_excerpts - change - decisive))
+    return max(0, min(MAX_TASK_INPUT_FILES, selection.max_excerpts - admitted - decisive))
 
 
 def carries_task_inputs(selection: ReviewSelectionPolicy) -> bool:
@@ -883,13 +899,15 @@ _CHECK_TIME_CHANGE_MIN_CHUNK: Final = 256
 
 
 def _check_time_change_reservation(
-    selection: ReviewSelectionPolicy, first_part_bytes: int
+    selection: ReviewSelectionPolicy, first_part_bytes: int, budget: int | None = None
 ) -> tuple[int, int]:
     """Excerpt slots and bytes held for the check-time change before any other excerpt (#883).
 
-    Half of the recipe's excerpt count and total bytes, and never less than one slot, are offered
-    to the service-captured change first. The byte share is rounded up to the change's first part,
-    so a recipe whose total budget carries one part always admits it ahead of every other excerpt
+    Half of the recipe's excerpt count and half of this packet's excerpt budget (``budget``, the
+    planned budget when a ceiling narrowed it, else the recipe total; issue #1094 R2-N2), and
+    never less than one slot, are offered to the service-captured change first, ahead of the task
+    inputs too (#1108). The byte share is rounded up to the change's first part, so a recipe
+    whose total budget carries one part always admits it ahead of every other excerpt
     (a part is never larger than that total, see ``_check_time_change_part_limit``). Room it does
     not use stays with the other excerpts. Its parts left over then take every byte and slot the
     reserved excerpt classes (the newest captured edit per path, the latest verification runs and
@@ -898,9 +916,10 @@ def _check_time_change_reservation(
     lower-ranked excerpts before the change.
     """
 
+    total = selection.max_total_excerpt_bytes if budget is None else budget
     return (
         max(1, selection.max_excerpts // 2),
-        max(selection.max_total_excerpt_bytes // 2, first_part_bytes),
+        max(total // 2, first_part_bytes),
     )
 
 
@@ -2094,6 +2113,13 @@ DECLARED_DELIVERABLES_ITEM_ID: Final = "declared-deliverables"
 # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
 _DECLARED_DELIVERABLES_SCHEMA: Final = "yoetz.declared-deliverables/1"
 _MAX_DECLARED_DELIVERABLE_ROWS: Final = 32
+# The agent's own disclosures (an obligation acknowledged as not done, a verification-limit or
+# assumption decision) in one row labelled as the agent's assertion, apart from the obligations
+# (n7 RC7, #1108; ADR-040). Beside each obligation they read as FinishUP's standing and the
+# reviewer followed them over the material the packet held.
+AGENT_DISCLOSURES_ITEM_ID: Final = "agent-disclosures"
+# Frozen legacy identifier (ADR-048): protocol 0.1 keeps one yoetz.<name>/<n> tag namespace.
+_AGENT_DISCLOSURES_SCHEMA: Final = "yoetz.agent-disclosures/1"
 # The check's closed delivered-set facts the reviewer reads beside the declared deliverables
 # (issue #1045). Codes only: which file a fact concerns stays in the local check result.
 _DELIVERED_SET_FACTS: Final = frozenset(
@@ -2220,6 +2246,58 @@ def _declared_deliverables_item(
         source_ref=refs[0],
         linked_subject_refs=tuple(refs[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]),
         occurred_order=order,
+        text=text,
+        over_limit=over_limit,
+    )
+
+
+def _agent_disclosures_item(
+    disclosures: Mapping[str, tuple[str, Mapping[str, JsonValue]]], over_limit: set[str]
+) -> SemanticCaseItem | None:
+    """One row listing what the agent disclosed per obligation, as its assertion (#1108).
+
+    ``disclosures`` maps each obligation this packet carries to its case-bound ref (the
+    obligation, or its source event) and its ``_obligation_disclosures`` entry. The row holds ids
+    and closed tokens only, sorted by obligation id. Rows that do not fit one structural item are
+    left out and counted, never clipped mid-row, so a listed row is always whole and the reviewer
+    is told how many are not listed.
+    """
+
+    ordered = sorted(disclosures, key=str.encode)
+    rows: list[JsonValue] = [
+        cast(JsonValue, {"obligation_id": ref, **disclosures[ref][1]}) for ref in ordered
+    ]
+    if not rows:
+        return None
+    refs = sorted({disclosures[ref][0] for ref in ordered}, key=str.encode)
+
+    def body(listed: list[JsonValue]) -> dict[str, JsonValue]:
+        return {
+            "disclosures": listed,
+            "kind": "agent_disclosures",
+            "not_listed_count": len(rows) - len(listed),
+            "schema": _AGENT_DISCLOSURES_SCHEMA,
+            "standing": "agent_assertion",
+        }
+
+    listed = list(rows)
+    while len(listed) > 1 and len(canonical_encode(cast(JsonValue, body(listed)))) > (
+        MAX_REVIEW_TEXT_BYTES
+    ):
+        listed.pop()
+    text, fit = _bounded_json(body(listed))
+    if fit != "whole":
+        over_limit.add(AGENT_DISCLOSURES_ITEM_ID)
+    return _content_item(
+        item_id=AGENT_DISCLOSURES_ITEM_ID,
+        section="decision",
+        # The same egress class the disclosure facts rode inside each obligation row.
+        category=DataCategory.OBLIGATION_TEXT,
+        source_kind="obligation",
+        source_ref=refs[0],
+        linked_subject_refs=tuple(refs[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]),
+        # Ahead of every decision row, so the decision cap never drops it.
+        occurred_order=0,
         text=text,
         over_limit=over_limit,
     )
@@ -3413,6 +3491,17 @@ _OBSERVED_COMMAND_OUTPUT_MARKER: Final = (
     "[FinishUP: observed command output captured from a command the agent ran; "
     "not an agent-published result]\n"
 )
+# n7 RC6c (#1108): every hook-captured tool output names its own provenance in the first packet,
+# so the reviewer can treat it as a witness instead of as the agent's account. Fixed text, ledger
+# ids and closed tokens only; prefixed after the agent text is neutralised, so a capture cannot
+# forge it. The run clause rides only when the host itself recorded that run of that command.
+_OBSERVED_OUTPUT_LABEL: Final = (
+    "[FinishUP: observed output captured by a host hook (evidence {ref}){run}; "
+    "not an agent-published result]\n"
+)
+_OBSERVED_RUN_CLAUSE: Final = (
+    "; run of command action {action}, host-reported outcome {outcome}{exit}"
+)
 _LEDGER_SUBJECT_PREFIXES: Final = ("evt_", "obl_", "clm_", "act_", "res_", "evd_", "fnd_")
 _BINARY_RENDERING_MARKER: Final = (
     "[FinishUP: agent-rendered text of {path} (evidence {ref}); the binary file itself is not"
@@ -3526,6 +3615,52 @@ def _binary_file_label(
     return _BINARY_NOTICE_MARKER.format(path=path, ref=ref), True
 
 
+def _observed_output_label(
+    ref: str,
+    captured_group: _CapturedGroup,
+    verification: _VerificationRun | None,
+    projection: ProjectionState,
+    observed_events: frozenset[str],
+) -> str:
+    """The observed-output label of one hook-captured tool output (#1108).
+
+    The run clause names the command action, the outcome and the exit status only when the host
+    recorded them: the action and its result are hook-observed records (ADR-022 decision 2) and
+    the action's keyed command identity is the one this capture was resolved under, the test
+    ``_auto_supply_refusal`` applies. An agent-published result that cites the capture never
+    lends it a host-reported outcome.
+    """
+
+    run = ""
+    if verification is not None and captured_group.observed_command_identity is not None:
+        _identity, outcome, action_ref, result_ref = verification
+        try:
+            action = projection.actions.get(validate_action_id(action_ref))
+            result = projection.results.get(validate_result_id(result_ref))
+        except ProtocolValueError, ValueError:
+            action, result = None, None
+        command = None if action is None or action.payload is None else action.payload.command
+        if (
+            action is not None
+            and result is not None
+            and result.payload is not None
+            and not action.redacted
+            and not result.redacted
+            and str(action.source_event_id) in observed_events
+            and str(result.source_event_id) in observed_events
+            and command is not None
+            and command.startswith("omitted:hmac-sha256:")
+            and command == captured_group.observed_command_identity
+        ):
+            exit_status = result.payload.exit_status
+            run = _OBSERVED_RUN_CLAUSE.format(
+                action=action_ref,
+                outcome=outcome.value,
+                exit="" if exit_status is None else f", exit status {exit_status}",
+            )
+    return _OBSERVED_OUTPUT_LABEL.format(ref=ref, run=run)
+
+
 def _evidence_candidates(
     *,
     projection: ProjectionState,
@@ -3542,6 +3677,7 @@ def _evidence_candidates(
     binary_paths: frozenset[str] = frozenset(),
     text_paths: frozenset[str] = frozenset(),
     workspace_root: str | None = None,
+    observed_events: frozenset[str] = frozenset(),
 ) -> list[_ExcerptCandidate]:
     candidates: list[_ExcerptCandidate] = []
     # Each admitted capture's bytes digest, mapped to its candidate's index.
@@ -3739,10 +3875,26 @@ def _evidence_candidates(
                 (excerpt_span_key(ref, low, high, len(encoded)),) for low, high in spans
             )
         else:
+            # A hook-captured tool output leads with its observed label (#1108), prefixed after the
+            # cut like the follow-up marker, so the spans below stay placed in the same bytes.
+            label = (
+                _observed_output_label(
+                    ref,
+                    captured_group,
+                    verification_by_evidence.get(ref),
+                    projection,
+                    observed_events,
+                )
+                if captured_group is not None and excerpt_kind == "evidence" and binary is None
+                else ""
+            )
+            room = excerpt_limit - len(label.encode("ascii"))
+            if room <= 2 * _MIN_HEAD_TAIL_SIDE_BYTES:
+                label, room = "", excerpt_limit
             # Long output keeps its head and its tail with the cut marked (issue #907).
-            clipped = len(encoded) > excerpt_limit
-            clip, kept = _head_tail_kept(encoded, excerpt_limit) if clipped else (text, ())
-            parts = [clip]
+            clipped = len(encoded) > room
+            clip, kept = _head_tail_kept(encoded, room) if clipped else (text, ())
+            parts = [label + clip]
             part_keys = (_span_keys(ref, kept if clipped else ((0, len(encoded)),), encoded),)
         group_refs = captured_group.evidence_refs if captured_group is not None else ()
         subjects = {
@@ -4477,6 +4629,7 @@ def _select_targeted_excerpts(
     check_time_change: CheckChangeCapture | None = None,
     supplied_refs: frozenset[str] = frozenset(),
     change_shown_paths: frozenset[str] = frozenset(),
+    observed_events: frozenset[str] = frozenset(),
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -4518,6 +4671,10 @@ def _select_targeted_excerpts(
     from ``check_time_change`` (the frozen, already redacted service capture; nothing is read
     again), unless an earlier packet carried that section: the capture may be stale, the change
     is the state when this check ran.
+
+    ``observed_events`` are the case's hook-observed source events (ADR-022 decision 2): a
+    captured tool output names its run's host-reported outcome only when its action and result
+    are among them (#1108).
     """
 
     repair_refs = repair_evidence_refs(projection, allowed)
@@ -4572,6 +4729,7 @@ def _select_targeted_excerpts(
         binary_paths=binary_paths,
         text_paths=text_paths,
         workspace_root=workspace_root,
+        observed_events=observed_events,
     )
 
     # Optional command excerpts from actions when expanded selection allows exact commands.
@@ -6199,6 +6357,8 @@ def _build_semantic_case_once(
 
     # --- Obligations ---
     disclosures = _obligation_disclosures(projection, allowed)
+    # The disclosures of the obligations this packet carries; they travel in their own row.
+    carried_disclosures: dict[str, tuple[str, dict[str, JsonValue]]] = {}
     for obligation_id, record in sorted(
         projection.obligations.items(), key=lambda pair: str(pair[0])
     ):
@@ -6235,10 +6395,10 @@ def _build_semantic_case_once(
         obligation_json = dict(cast(Mapping[str, JsonValue], encode_payload(payload)))
         disclosed = disclosures.get(ref)
         if disclosed is not None:
-            # tb4n3 RC-1: recorded limitation decisions and the acknowledgement state sit beside
-            # the obligation they cover, so the reviewer cannot read them as undisclosed.
-            # Frozen legacy identifier (ADR-048): packet key; the recorded manifest is re-verified.
-            obligation_json["yoetz_already_disclosed"] = cast(JsonValue, disclosed)
+            # tb4n3 RC-1: the reviewer must not read a recorded limit as undisclosed. n7 RC7
+            # (#1108): it reads it in the agent-disclosures row, the agent's assertion, never
+            # beside the obligation as if FinishUP had settled it.
+            carried_disclosures[ref] = (source_ref, disclosed)
         basis = _resolved_criterion_basis(payload, projection, allowed)
         if basis is not None:
             # Issue #1079: the criterion (this item), the claimed result, the latest observed
@@ -6378,6 +6538,13 @@ def _build_semantic_case_once(
             over_limit.add(item.item_id)
         if fit == "replaced":
             omissions.append(_omit(ref, DataCategory.DECISION_EXCERPT, "decision", "not_selected"))
+
+    # --- Agent disclosures (#1108): the agent's assertion, in one row ahead of every decision ---
+    disclosures_item = _agent_disclosures_item(carried_disclosures, over_limit)
+    if disclosures_item is not None:
+        items.append(disclosures_item)
+        # First in the section, so the decision cap never drops it.
+        decision_ids.insert(0, disclosures_item.item_id)
 
     # --- Frozen accepted-event history ---
     if "timeline" in sections and frozen_case.history_availability == "available":
@@ -6796,12 +6963,15 @@ def _build_semantic_case_once(
             task_inputs = tuple(_task_input_text(item) for item in check_time_change.capture.inputs)
 
     def task_input_excerpts(
-        slot_limit: int, byte_limit: int
+        slot_limit: int, byte_limit: int, clip_floor: int | None = None
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
         """The task input files not yet admitted that fit, one excerpt each (issue #1045).
 
         Issue #1082: an input too large for this offer is skipped, not a stop, so a smaller
         input the task names later still ranks first; the skipped one waits for the backfill.
+        With ``clip_floor`` (the first offer, #1108), an input too large for the room left is
+        instead admitted as its head and tail cut to that room, marked and disclosed as
+        truncated, while the room is at least ``clip_floor`` bytes.
         """
 
         admitted_items: list[SemanticCaseItem] = []
@@ -6814,8 +6984,12 @@ def _build_semantic_case_once(
             if index in task_inputs_admitted:
                 continue
             size = min(len(text.encode("utf-8")), limit)
+            item_limit = limit
             if bytes_used + size > byte_limit:
-                continue
+                room = byte_limit - bytes_used
+                if clip_floor is None or room < clip_floor:
+                    continue
+                item_limit = room
             item = _content_item(
                 item_id=f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}",
                 section="excerpt",
@@ -6825,9 +6999,9 @@ def _build_semantic_case_once(
                 linked_subject_refs=task_input_links,
                 occurred_order=0,
                 text=text,
-                limit=limit,
+                limit=item_limit,
             )
-            if cut or len(text.encode("utf-8")) > limit:
+            if cut or len(text.encode("utf-8")) > item_limit:
                 truncated_item_ids.add(item.item_id)
             admitted_items.append(item)
             admitted_refs.append(
@@ -6849,7 +7023,8 @@ def _build_semantic_case_once(
         slot_limit: int, byte_limit: int
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
         """Room the reserved excerpt classes leave: the change's remaining parts, ahead of older
-        edits and general output (#983). Task inputs took their share first (issue #1082)."""
+        edits and general output (#983). Task inputs took their floor after the change's share
+        (#1108)."""
 
         return check_time_change_parts(slot_limit, byte_limit)
 
@@ -6942,30 +7117,43 @@ def _build_semantic_case_once(
         excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
 
     if "targeted_excerpts" in sections and selection.max_excerpts > 0:
-        # Issue #1082: the controlling inputs the task names (a specification, a dataset, a test
-        # the verification runs) rank first, within a quarter of this packet's excerpt budget, so
-        # a large change can no longer push the specification out. Their slots are bounded too,
-        # so the change and the decisive verification output always keep room (PR #1086 review
-        # R1-06). What does not fit backfills after every other excerpt, as before.
-        input_items, input_refs = task_input_excerpts(
-            _first_task_input_slots(
-                selection,
-                len(check_change_parts),
-                0 if follow_up is None else len(follow_up.items),
-            ),
-            total_excerpt_budget // _TASK_INPUT_SHARE_DIVISOR,
-        )
-        items.extend(input_items)
-        targeted.extend(input_refs)
-        excerpt_bytes_used += sum(ref.content_bytes for ref in input_refs)
-        # The service-captured change takes its reserved share next; see
-        # ``_check_time_change_reservation`` for how the rest of the budget is shared.
+        # n7 RC6e (#1108): the service-captured change under review takes its reserved share of
+        # this packet's budget first; see ``_check_time_change_reservation`` for how the rest of
+        # the budget is shared.
         admit_check_time_change(
             *_check_time_change_reservation(
                 selection,
                 len(check_change_parts[0].encode("utf-8")) if check_change_parts else 0,
+                total_excerpt_budget,
             )
         )
+        # The controlling inputs the task names (a specification, a dataset, a test the
+        # verification runs; issue #1082) then take a floor: an eighth of the budget, an input
+        # larger than the room arriving as its head and tail, so a large change cannot push the
+        # specification out entirely. They hold back room for the decisive verification output
+        # (issue #1094 R2-N2), and their slots are bounded too (PR #1086 review R1-06). What does
+        # not fit backfills after every other excerpt, as before.
+        decisive_hold = min(
+            selection.max_excerpt_bytes, total_excerpt_budget // _DECISIVE_RUN_HOLD_DIVISOR
+        )
+        input_items, input_refs = task_input_excerpts(
+            _first_task_input_slots(
+                selection,
+                len(targeted),
+                0 if follow_up is None else len(follow_up.items),
+            ),
+            max(
+                0,
+                min(
+                    total_excerpt_budget // _TASK_INPUT_SHARE_DIVISOR,
+                    total_excerpt_budget - excerpt_bytes_used - decisive_hold,
+                ),
+            ),
+            clip_floor=_MIN_TASK_INPUT_CLIP_BYTES,
+        )
+        items.extend(input_items)
+        targeted.extend(input_refs)
+        excerpt_bytes_used += sum(ref.content_bytes for ref in input_refs)
         # Recorded excerpts then fill what the change left, most valuable first (#907). The
         # change's remaining parts take the room the reserved classes leave, ahead of older edit
         # hunks and general output (#983), so a planned case narrows those first.
@@ -6998,6 +7186,10 @@ def _build_semantic_case_once(
             follow_up=follow_up,
             supplied_refs=supplied_answer_refs,
             change_shown_paths=change_shown_paths,
+            observed_events=frozenset(
+                str(event)
+                for event in observed_event_ids_from_coverage(frozen_case.coverage_by_ref)
+            ),
             # A follow-up may answer from the frozen change, only when this recipe carries it.
             check_time_change=(
                 check_time_change.capture
@@ -7237,22 +7429,11 @@ def _build_semantic_case_once(
                 ),
             )[: selection.max_omissions]
 
-    # Sort items per SemanticCase order.
-    _SECTION_ORDINAL = {
-        TASK_STATEMENT_SECTION: -1,
-        "goal": 0,
-        "obligation": 1,
-        "claim": 2,
-        "decision": 3,
-        "prior_finding": 4,
-        "timeline": 5,
-        "deterministic_summary": 6,
-        "deterministic_detail": 7,
-        "excerpt": 8,
-    }
+    # Sort items per SemanticCase order: one source, ``SEMANTIC_CASE_SECTION_ORDER`` (#1108).
+    section_ordinal = {section: index for index, section in enumerate(SEMANTIC_CASE_SECTION_ORDER)}
     items.sort(
         key=lambda item: (
-            _SECTION_ORDINAL[item.section],
+            section_ordinal[item.section],
             item.occurred_order,
             item.source_ref.encode("ascii"),
             item.item_id.encode("ascii"),

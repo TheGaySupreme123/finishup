@@ -44,6 +44,7 @@ from finishup.domain.receipts import (
 )
 from finishup.domain.review_input_render import publish_exactly
 from finishup.kernel.finding_resolution import SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS
+from finishup.ports.semantic import SEMANTIC_CASE_SECTION_ORDER
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.models import MAX_REVIEW_CHALLENGES
 
@@ -520,21 +521,36 @@ def test_reviewer_asks_only_for_obtainable_remedies() -> None:
     assert "never still_present then" in verdict
 
 
-def test_a_hidden_evaluator_requirement_is_a_not_assessable_row_once_disclosed() -> None:
+def test_a_hidden_evaluator_row_is_not_assessable_only_when_the_packet_lacks_material() -> None:
     """tb4n3 RC-1 (#1024), final-phase rule: the final phase told the reviewer to challenge every
     unmet requirement, which contradicted the obtainable-remedy rule and turned a disclosed
-    hidden-evaluator requirement into work (ks S, vpp S, payments S, lake S)."""
+    hidden-evaluator requirement into work (ks S, vpp S, payments S, lake S).
+
+    n7 RC7 (#1108): "not_assessable once the packet shows the agent disclosed it" was read over
+    "a disclosed caveat is not support", and 9 of 27 wrong verdicts leaned on a disclosure. The
+    row is not_assessable only when the packet lacks the material that settles it."""
 
     for rule in (
         "A requirement that only a hidden evaluator or an artifact the agent cannot obtain can "
         "establish (a hidden test or grader, a withheld reference, a user-only answer) is a "
-        "verified row with verdict not_assessable, not a challenge, once the packet shows the "
-        "agent disclosed it: an obligation acknowledged as not done, a "
-        "finishup-verification-limit decision, or a limitation request it acknowledged.",
+        "verified row with verdict not_assessable, not a challenge, when the packet holds no "
+        "material that settles it.",
+        "The agent's disclosure of such a limit (an obligation acknowledged as not done, a "
+        "finishup-verification-limit decision, or a limitation request it acknowledged) states "
+        "the limit and is not support.",
+        "It never stops you from judging what the packet shows: when the code, an observed "
+        "output or the task text settles the requirement, judge it from that material, and "
+        "challenge it when that material shows the requirement unmet, disclosed or not.",
     ):
         assert rule in _TEXT, rule
     final = _collapsed(REVIEW_PHASE_QUESTIONS["final"])
-    assert "not_assessable row, not a challenge, once the packet shows the agent disclosed" in final
+    assert (
+        "is a not_assessable row, not a challenge, when the packet holds no material that settles "
+        "it; a disclosure states a limit, is not support, and never stops you from judging what "
+        "the packet shows." in final
+    )
+    for text in (_TEXT, final):
+        assert "once the packet shows the agent disclosed it" not in text
 
 
 def test_an_unbounded_quantifier_is_a_limitation_never_an_unmet_verdict() -> None:
@@ -706,3 +722,157 @@ def test_a_supplied_summary_is_the_agents_account_not_the_output() -> None:
     assert "stays unmet until the output itself is carried" not in _TEXT
     # The summary is never support alone; the grounding rule that says so still precedes it.
     assert _TEXT.index("Support needs a witness.") < _TEXT.index(sentence)
+
+
+def _section(heading: str) -> str:
+    marker = f"## {heading}\n"
+    start = SEMANTIC_REVIEW_INSTRUCTION.index(marker)
+    end = SEMANTIC_REVIEW_INSTRUCTION.find("\n## ", start + len(marker))
+    return _collapsed(SEMANTIC_REVIEW_INSTRUCTION[start : None if end < 0 else end])
+
+
+def test_observed_output_is_a_witness_even_when_the_check_source_is_outside_the_packet() -> None:
+    """n7 RC6c (#1108): "support needs a witness" made the reviewer abstain on checks whose
+    observed output it held, because agents keep validators and probes in /tmp and FinishUP never
+    sends those files. FinishUP's observed output is the witness; a bare verdict line still is
+    not support for what the check measured."""
+
+    grounding = _section("Ground every conclusion")
+    for rule in (
+        "Output FinishUP observed is such a witness: an excerpt that begins [FinishUP: observed "
+        "holds bytes a host hook captured from a call the agent made, and it witnesses what its "
+        "lines show, the host-reported outcome and exit status included.",
+        "when such a check's observed output is in the packet, judge its lines and scope the row "
+        "to them, and never mark the requirement not_assessable, conclude insufficient_packet, or "
+        "ask for the check's source only because that source is absent.",
+        "A line that prints only a verdict (PASS, OK, a pass count) witnesses that the check "
+        "passed, not what it measured",
+        # The #1082 rule keeps its sentence.
+        "An aggregate pass count, an agent's PASS line, or a caveat the agent disclosed is not by "
+        "itself support.",
+    ):
+        assert rule in grounding, rule
+    assert _TEXT.index("Output FinishUP observed is such a witness") < _TEXT.index(
+        "## Missing content"
+    )
+    own_checks = _collapsed(openai_responses.REVIEWER_LENSES["own_checks"])
+    assert (
+        "The claim is the check's verdict; what FinishUP observed the check print (its values, "
+        "cases and comparisons) is evidence of what it printed, which you judge against the task "
+        "yourself." in own_checks
+    )
+    # The packet's label for such output is explained where the reviewer reads labels, and it is
+    # the label the case builder writes.
+    reading = _section("Reading the packet")
+    assert (
+        "An excerpt that begins [FinishUP: observed output captured by a host hook (evidence <id>) "
+        "holds bytes a host hook captured from a call the agent made" in reading
+    )
+    assert "An evidence excerpt without such a label is the agent's own published description" in (
+        reading
+    )
+    label = semantic_case_module._OBSERVED_OUTPUT_LABEL  # pyright: ignore[reportPrivateUsage]
+    assert label.startswith("[FinishUP: observed output captured by a host hook (evidence {ref})")
+    marker = semantic_case_module._OBSERVED_COMMAND_OUTPUT_MARKER  # pyright: ignore[reportPrivateUsage]
+    assert marker.startswith("[FinishUP: observed command output captured from a command the agent")
+    assert "[FinishUP: observed command output captured from a command the agent ran" in reading
+
+
+def test_one_reading_of_disclosure() -> None:
+    """n7 RC7 (#1108): "a disclosed caveat is not support" and "mark a disclosed limit
+    not_assessable" both stood, and the reviewer took the second. One reading now: a disclosure
+    states a limit, is never support, and never stops the reviewer judging the packet."""
+
+    assert "A disclosed limitation supports a claim" not in _TEXT
+    blockers = _collapsed(openai_responses.REVIEWER_LENSES["blockers"])
+    assert (
+        "A disclosed limitation excuses an unmet requirement only when it lies outside the agent's "
+        "control (authority, credentials, an unavailable external resource), and it never supports "
+        "a claim that the work is done; a limitation the agent could reduce with available work is "
+        "a discrepancy." in blockers
+    )
+    for rule in (
+        "states the limit and is not support.",
+        "It never stops you from judging what the packet shows",
+        "a disclosed caveat is not support, and a disclosed limit is judged like any claim against "
+        "what the packet shows.",
+    ):
+        assert rule in _TEXT, rule
+    # Missing material still makes a requirement not assessable; nothing asks for the hidden.
+    assert "When you cannot judge a requirement, abstain: mark it not_assessable and say why." in (
+        _TEXT
+    )
+    assert "Never demand a hidden grader, benchmark generator, private specification" in _TEXT
+
+
+def test_a_supplied_summary_never_outweighs_observed_output_or_files() -> None:
+    """Issue #1094 round-3 note: the supplied-summary rule sat in the in-check follow-up
+    paragraph, although supplied answers arrive in the next check's packet. n7 RC6c (#1108): when
+    observed output or a file answers the same request, that material is the witness."""
+
+    supplied = "An excerpt whose item_id begins excerpt-supplied- is a result summary"
+    witness = (
+        "When the packet also carries observed output, the check-time change or the file that "
+        "answers the same request, that material is the witness: judge from it, and never withhold "
+        "support because the agent's own answer was a summary."
+    )
+    assert witness in _TEXT
+    assert (
+        _TEXT.index("An item in a prior_missing_for_assessment timeline item")
+        < _TEXT.index(supplied)
+        < _TEXT.index(witness)
+        < _TEXT.index("When review_packet.provider_input_manifest has follow_up_round")
+    )
+    # Supplied material includes the re-runs of a requested command FinishUP observed.
+    assert (
+        "what the agent published, and each re-run of a requested command that FinishUP observed"
+        in _TEXT
+    )
+
+
+def test_the_packet_order_sentence_names_primary_material_first() -> None:
+    """n7 RC7 (#1108): the packet now lists primary material before the agent's account, and the
+    instruction says so in the order the case builder and the port enforce."""
+
+    sentence = (
+        "Items come primary material first: the task statement; then excerpts (the check-time "
+        "change, task inputs, observed output and the other recorded excerpts); then FinishUP's "
+        "deterministic findings; then the agent's own account (plan, obligations, claims, "
+        "decisions and the agent-disclosures row); then earlier findings and the timeline. Read "
+        "the work before the agent's account of it."
+    )
+    assert sentence in _TEXT
+    assert "Items are listed in recorded order;" not in _TEXT
+    # Each named group, in the order the sentence names it, is the port's section order.
+    named = {
+        "task_statement": "the task statement",
+        "excerpt": "then excerpts",
+        "deterministic_summary": "then FinishUP's deterministic findings",
+        "deterministic_detail": "then FinishUP's deterministic findings",
+        "goal": "then the agent's own account (plan",
+        "obligation": "obligations,",
+        "claim": "claims,",
+        "decision": "decisions and the agent-disclosures row",
+        "prior_finding": "then earlier findings",
+        "timeline": "and the timeline",
+    }
+    assert set(named) == set(SEMANTIC_CASE_SECTION_ORDER)
+    positions = [sentence.index(named[section]) for section in SEMANTIC_CASE_SECTION_ORDER]
+    assert positions == sorted(positions)
+
+
+def test_task_inputs_and_delivery_risks_are_worded_as_built() -> None:
+    """Issue #1094 R2-N1 and R2-N3: an input or a service the task supplies is not a delivery
+    risk, and a large text input keeps its head and tail rather than becoming a summary."""
+
+    environment = _collapsed(openai_responses.REVIEWER_LENSES["environment"])
+    assert (
+        "a data, model, template or configuration file read at run time that the deliverable does "
+        "not ship and the task does not supply; network access the task does not provide;"
+        in environment
+    )
+    assert (
+        "(a binary, an image, or a data file it cannot send as text; a large text input keeps its "
+        "head and tail instead)" in _TEXT
+    )
+    assert "or a large data file" not in _TEXT

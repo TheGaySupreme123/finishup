@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -16,7 +17,11 @@ from builders.policy_cases import evidence_record, make_case, record
 from finishup.adapters.integrations.observation_local import LocalObservationStore
 from finishup.application.missing_for_assessment import plan_review_follow_up
 from finishup.application.observation_materialize import materialize_observation_envelope
-from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.application.semantic_case import CapturedSemanticContent
+from finishup.application.semantic_content import (
+    CapturedContentResolution,
+    resolve_captured_semantic_content,
+)
 from finishup.cli.observe_hooks import _visible_content_chunks, map_hook_payload_to_envelope
 from finishup.domain.events import (
     ActionRecordedPayload,
@@ -33,11 +38,13 @@ from finishup.domain.values import (
     object_id,
     timestamp_from_string,
 )
+from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.projections import EvidenceProjectionRecord, ProjectionRecord
 from finishup.ports.ledger import FrozenCase
 from finishup.ports.objects import ObjectRef, ObjectStorePort
 from finishup.ports.observation import TaskObservationPort
 from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 from fixture_loader import load_fixture_json
 from unit.application.test_review_follow_up import (
     _OBSERVED_MARKER,
@@ -56,26 +63,17 @@ from unit.application.test_semantic_content import (
 )
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    "profile",
-    (ReviewContextProfile.ASSISTED, ReviewContextProfile.EXPANDED, ReviewContextProfile.STRUCTURAL),
-)
-@pytest.mark.parametrize(
-    "command,output,expected",
-    (
-        ("pytest -q", b"12 passed native-output", True),
-        ("pytest -q; printenv", b"native-output", False),
-        ("pytest tests/id_rsa", b"native-output", False),
-        ("pytest ../outside.py", b"native-output", False),
-        ("pytest -q", b"native-output\n-----END OPENSSH PRIVATE KEY-----", False),
-        ("pytest -q", b"native-output\npassword=hunter2", False),
-        ("pytest -q", b"native-output\n-----BEGIN OPENSSH PRIVATE KEY-----", False),
-    ),
-)
-async def test_native_capture_follow_up(
-    tmp_path: Path, profile: ReviewContextProfile, command: str, output: bytes, expected: bool
-) -> None:
+async def _native_capture(
+    tmp_path: Path, command: str, output: bytes
+) -> tuple[
+    DeterministicCase,
+    CapturedContentResolution,
+    dict[ActionId, ProjectionRecord[ActionRecordedPayload]],
+    dict[ResultId, ProjectionRecord[ResultRecordedPayload]],
+]:
+    """A recorded Codex post-tool payload with ``command`` and ``output``, materialized, frozen
+    and resolved to its captured semantic content."""
+
     frozen, runtime, base_objects, _observation, _envelope = _fixture()
     fixture = load_fixture_json("observations/codex-post-tool-outcomes-0.157.1.case.json")
     hook = cast(dict[str, object], cast(dict[str, object], fixture)["input"])["hook"]
@@ -187,6 +185,30 @@ async def test_native_capture_follow_up(
         workspace_commitment=_WORKSPACE,
         local_observation=local,
     )
+    return case, resolved, actions, results
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "profile",
+    (ReviewContextProfile.ASSISTED, ReviewContextProfile.EXPANDED, ReviewContextProfile.STRUCTURAL),
+)
+@pytest.mark.parametrize(
+    "command,output,expected",
+    (
+        ("pytest -q", b"12 passed native-output", True),
+        ("pytest -q; printenv", b"native-output", False),
+        ("pytest tests/id_rsa", b"native-output", False),
+        ("pytest ../outside.py", b"native-output", False),
+        ("pytest -q", b"native-output\n-----END OPENSSH PRIVATE KEY-----", False),
+        ("pytest -q", b"native-output\npassword=hunter2", False),
+        ("pytest -q", b"native-output\n-----BEGIN OPENSSH PRIVATE KEY-----", False),
+    ),
+)
+async def test_native_capture_follow_up(
+    tmp_path: Path, profile: ReviewContextProfile, command: str, output: bytes, expected: bool
+) -> None:
+    case, resolved, actions, results = await _native_capture(tmp_path, command, output)
     assert len(resolved.content) == 1  # Input is eligibility context only.
     if expected:
         assert resolved.content[0].observed_command == command
@@ -264,3 +286,82 @@ async def test_native_capture_follow_up(
             workspace_root="/app",
         )
         assert b"native-output" not in _provider_contents(_send(blocked))
+
+
+@pytest.mark.anyio
+async def test_the_first_packet_labels_a_native_capture_with_its_host_reported_run(
+    tmp_path: Path,
+) -> None:
+    """n7 RC6c (#1108): a hook-captured tool output reached the first packet unlabelled, so it
+    read like the agent's own account and the reviewer abstained on it. It now names its
+    provenance, and names the run's outcome and exit status only when the host recorded that run
+    of that command: never from a record the host did not observe or a plaintext command."""
+
+    case, resolved, actions, results = await _native_capture(
+        tmp_path, "pytest -q", b"12 passed native-output"
+    )
+    (action_ref,) = actions
+    (result,) = (row.payload for row in results.values())
+    assert result is not None
+    hooked = replace(
+        case,
+        coverage_by_ref={
+            **case.coverage_by_ref,
+            **{
+                str(row.source_event_id): coverage_for_channel(PublicationChannel.HOOK_OBSERVED)
+                for row in (*actions.values(), *results.values())
+            },
+        },
+    )
+
+    def first(
+        frozen: DeterministicCase, content: Sequence[CapturedSemanticContent] = resolved.content
+    ) -> tuple[str, bytes, bytes]:
+        """The first packet's excerpt of the capture: its source ref, label line and body."""
+
+        built = _build(
+            frozen,
+            captured_content=content,
+            captured_content_scope=resolved.scope,
+            workspace_root="/app",
+        )
+        (item,) = (item for item in built.items if b"native-output" in item.content)
+        assert item.section == "excerpt"
+        label, _, body = item.content.partition(b"\n")
+        return item.source_ref, label, body
+
+    source_ref, label, body = first(hooked)
+    # The recorded native shape exits 0, and the hook reports it.
+    assert result.exit_status == 0
+    # The label names the excerpt's own source ref, so the instruction's trust rule applies.
+    assert (
+        label
+        == (
+            f"[FinishUP: observed output captured by a host hook (evidence {source_ref}); run of "
+            f"command action {action_ref}, host-reported outcome {result.outcome.value}"
+            ", exit status 0; not an agent-published result]"
+        ).encode()
+    )
+    assert b"12 passed native-output" in body
+
+    plain = (
+        f"[FinishUP: observed output captured by a host hook (evidence {source_ref}); "
+        "not an agent-published result]"
+    ).encode()
+    # Records the host did not observe lend the capture no outcome: the label stays, the run
+    # clause does not.
+    assert first(case)[1:] == (plain, body)
+    # Nor does an action whose command is plaintext rather than the keyed observed identity, or a
+    # capture resolved under another identity.
+    plaintext = {
+        ref: record(replace(row.payload, command="pytest -q"), row.source_frontier)
+        for ref, row in actions.items()
+        if row.payload is not None
+    }
+    forged = replace(hooked, projection=replace(hooked.projection, actions=plaintext))
+    assert first(forged)[1:] == (plain, body)
+    mismatched = tuple(
+        replace(item, observed_command_identity="omitted:hmac-sha256:" + "0" * 64)
+        for item in resolved.content
+    )
+    assert first(hooked, mismatched)[1:] == (plain, body)

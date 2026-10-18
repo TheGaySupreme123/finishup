@@ -40,6 +40,9 @@ from finishup.application.semantic_case import (
     review_input_manifest_to_json,
     semantic_case_to_prepared_payload,
 )
+from finishup.application.semantic_case import (
+    _check_time_change_reservation as check_time_change_reservation,  # pyright: ignore[reportPrivateUsage]
+)
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
@@ -271,10 +274,25 @@ def test_task_inputs_need_the_statement_and_repository_excerpts_in_the_recipe() 
     assert all(b"VBA_INPUT_MARKER" not in item.content for item in semantic.items)
 
 
-def test_task_inputs_rank_ahead_of_a_large_change_within_their_share() -> None:
-    """Issue #1082: the specification the task names ranks first, ahead of the check-time change,
-    so a change that fills the packet can no longer push it out; it never takes more than a
-    quarter of the packet's excerpt budget, so the change still keeps its own reserved share."""
+def _first_offer(semantic: SemanticCase) -> tuple[list[str], list[str]]:
+    """The change parts admitted before the first task input, and the inputs of that first offer
+    (the run of inputs directly after them)."""
+
+    order = [ref.excerpt_item_id for ref in semantic.packet.targeted_excerpts]
+    first = next(index for index, ref in enumerate(order) if ref.startswith(TASK_INPUT_ITEM_PREFIX))
+    offer: list[str] = []
+    for ref in order[first:]:
+        if not ref.startswith(TASK_INPUT_ITEM_PREFIX):
+            break
+        offer.append(ref)
+    return order[:first], offer
+
+
+def test_the_change_takes_its_share_before_task_inputs_and_inputs_keep_a_floor() -> None:
+    """n7 RC6e (#1108): #1082 ranked the task inputs ahead of the change, and the change under
+    review was cut more often (36% against 20% of reviews). The change now takes its reserved
+    share first; the inputs take at most an eighth of the packet's budget after it, and at least
+    one input still travels, cut to its head and tail when it is larger than the room."""
 
     diff = b"diff --git a/form.py b/form.py\n" + b"+value = 1\n" * 15_000
     spec = b"DESIGN RULE: buttons keep their VBA captions\n" * 300
@@ -285,39 +303,115 @@ def test_task_inputs_rank_ahead_of_a_large_change_within_their_share() -> None:
             TaskInputFile("vba/UserForm1.frm", _VBA, len(_VBA)),
         ),
     )
-
-    semantic = _build(_statement_case(), change=change)
-
-    order = [ref.excerpt_item_id for ref in semantic.packet.targeted_excerpts]
-    first_change = next(ref for ref in order if ref.startswith("change-check-time-"))
-    assert order[:2] == [f"{TASK_INPUT_ITEM_PREFIX}01", f"{TASK_INPUT_ITEM_PREFIX}02"]
-    assert order.index(f"{TASK_INPUT_ITEM_PREFIX}02") < order.index(first_change)
-    input_bytes = sum(
-        ref.content_bytes
-        for ref in semantic.packet.targeted_excerpts
-        if ref.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
-    )
     expanded = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
-    assert input_bytes <= expanded.max_total_excerpt_bytes // 4
 
-    # A narrowed packet keeps the same order, and the inputs still take at most a quarter of it.
-    narrow = replace(expanded, max_total_excerpt_bytes=24_000)
-    narrowed = _build(
-        _statement_case(), change=change, profile=ReviewContextProfile.CUSTOM, selection=narrow
+    for budget in (expanded.max_total_excerpt_bytes, 96_000, 72_000):
+        semantic = _build(
+            _statement_case(),
+            change=change,
+            profile=ReviewContextProfile.CUSTOM,
+            selection=replace(expanded, max_total_excerpt_bytes=budget),
+        )
+        before, offer = _first_offer(semantic)
+        assert before and all(ref.startswith("change-check-time-") for ref in before), budget
+        sizes = {
+            ref.excerpt_item_id: ref.content_bytes for ref in semantic.packet.targeted_excerpts
+        }
+        # The change's reserved share is half of this packet's budget, or its first part.
+        assert sum(sizes[ref] for ref in before) <= max(budget // 2, sizes[before[0]]), budget
+        assert offer and sum(sizes[ref] for ref in offer) <= budget // 8, budget
+        design = next(
+            item for item in semantic.items if item.item_id == f"{TASK_INPUT_ITEM_PREFIX}01"
+        )
+        assert design.content.startswith(b"[FinishUP task input file DESIGN.md"), budget
+        assert b"DESIGN RULE" in design.content, budget
+
+
+def test_a_large_task_input_is_clipped_into_its_floor_not_dropped() -> None:
+    """#1108: under a narrowed budget a 16 KB specification is larger than the inputs' eighth.
+    It arrives as its head and tail with the cut marked, and the manifest says it is partial,
+    instead of waiting for a backfill the change leaves no room for."""
+
+    diff = b"diff --git a/form.py b/form.py\n" + b"+value = 1\n" * 15_000
+    spec = b"DESIGN RULE: buttons keep their VBA captions\n" * 400
+    change = _change(diff, inputs=(TaskInputFile("DESIGN.md", spec[:16_000], 16_000),))
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        max_total_excerpt_bytes=64_000,
     )
-    narrowed_order = [ref.excerpt_item_id for ref in narrowed.packet.targeted_excerpts]
-    assert any(ref.startswith("change-check-time-") for ref in narrowed_order)
-    narrowed_inputs = [ref for ref in narrowed_order if ref.startswith(TASK_INPUT_ITEM_PREFIX)]
-    assert narrowed_inputs and narrowed_order.index(narrowed_inputs[-1]) < narrowed_order.index(
-        next(ref for ref in narrowed_order if ref.startswith("change-check-time-"))
+
+    semantic = _build(
+        _statement_case(), change=change, profile=ReviewContextProfile.CUSTOM, selection=selection
     )
-    first_offer = [
-        ref
-        for ref in narrowed.packet.targeted_excerpts
-        if ref.excerpt_item_id in narrowed_inputs
-        and narrowed_order.index(ref.excerpt_item_id) < narrowed_order.index(first_change)
-    ]
-    assert sum(ref.content_bytes for ref in first_offer) <= 24_000 // 4
+
+    item = next(item for item in semantic.items if item.item_id == f"{TASK_INPUT_ITEM_PREFIX}01")
+    assert item.content_bytes <= 64_000 // 8
+    assert item.content.startswith(b"[FinishUP task input file DESIGN.md (16000 bytes)")
+    assert b"elided" in item.content
+    # Head and tail: the label and the input's first rule, and its last bytes.
+    assert b"]\nDESIGN RULE: buttons keep their VBA captions\n" in item.content
+    assert item.content.endswith(spec[:16_000][-64:])
+    assert semantic.packet.input_manifest is not None
+    manifest = review_input_manifest_to_json(semantic.packet.input_manifest)
+    caller = cast(dict[str, JsonValue], manifest["caller_evidence"])
+    assert caller["status"] == "partial"
+    assert "truncated_payload" in cast(list[str], caller["omission_reasons"])
+
+
+def test_the_change_reservation_follows_the_planned_budget() -> None:
+    """Issue #1094 R2-N2: the change's reservation was half of the recipe's total even when a
+    ceiling narrowed the packet, so the change and the inputs could starve the decisive run. It
+    is now half of this packet's own budget, and the inputs hold back room for that run."""
+
+    expanded = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    assert check_time_change_reservation(expanded, 0) == (32, 65_536)
+    assert check_time_change_reservation(expanded, 0, 72_000) == (32, 36_000)
+    assert check_time_change_reservation(expanded, 40_000, 72_000) == (32, 40_000)
+
+    diff = b"diff --git a/form.py b/form.py\n" + b"+value = 1  # implementation line\n" * 3_000
+    spec = b"DESIGN RULE: buttons keep their VBA captions\n" * 400
+    change = _change(
+        diff,
+        inputs=(
+            TaskInputFile("DESIGN.md", spec[:16_000], len(spec)),
+            TaskInputFile("data.csv", spec[:16_000], 16_000),
+        ),
+    )
+    case = _react_case()
+
+    def build(selection: ReviewSelectionPolicy, ceiling: int | None = None) -> SemanticCase:
+        return build_semantic_case(
+            case_id="cas_10000000-0000-4000-8000-000000000001",
+            frozen_case=case,
+            dependency_digest="sha256:" + "b" * 64,
+            findings=(),
+            review_context_profile=ReviewContextProfile.CUSTOM,
+            review_selection=selection,
+            policy_id="pvy_10000000-0000-4000-8000-000000000001",
+            policy_version="1",
+            check_time_change=change,
+            workspace_root="/app",
+            final_review=True,
+            prepared_byte_ceiling=ceiling,
+        )
+
+    # The service planner narrows the selection itself.
+    for budget in (96_000, 72_000, 56_000):
+        semantic = build(replace(expanded, max_total_excerpt_bytes=budget))
+        before, _offer = _first_offer(semantic)
+        sizes = {
+            ref.excerpt_item_id: ref.content_bytes for ref in semantic.packet.targeted_excerpts
+        }
+        assert sum(sizes[ref] for ref in before) <= max(budget // 2, sizes[before[0]]), budget
+        assert f"excerpt-{evd(2)}" in sizes, budget
+        assert _LATEST_RUN_MARKER.encode() in b"".join(item.content for item in semantic.items)
+    # The in-builder planner narrows the excerpt budget below a prepared-byte ceiling: the change
+    # then offers less than half the recipe's total before the inputs, and the latest run stays.
+    planned = build(expanded, 120_000)
+    before, _offer = _first_offer(planned)
+    sizes = {ref.excerpt_item_id: ref.content_bytes for ref in planned.packet.targeted_excerpts}
+    assert sum(sizes[ref] for ref in before) < expanded.max_total_excerpt_bytes // 2
+    assert f"excerpt-{evd(2)}" in sizes
 
 
 def test_each_task_input_origin_and_summary_carries_its_own_label() -> None:
@@ -785,8 +879,9 @@ def test_four_small_inputs_leave_the_change_and_the_latest_run_a_slot() -> None:
         if slots >= 2:
             assert f"excerpt-{evd(2)}" in ids, (slots, ids)
         if slots == 4:
-            # One input still ranks first: a specification is never pushed out by the change.
-            assert ids[0] == f"{TASK_INPUT_ITEM_PREFIX}01", (slots, ids)
+            # The change leads (#1108), and one input still travels beside the latest run.
+            assert ids[0].startswith("change-check-time-"), (slots, ids)
+            assert f"{TASK_INPUT_ITEM_PREFIX}01" in ids, (slots, ids)
 
 
 def test_a_verification_output_follow_up_keeps_its_slots_beside_small_inputs() -> None:
