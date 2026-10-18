@@ -51,7 +51,6 @@ from finishup.domain.observation import (
     validate_observed_images,
 )
 from finishup.domain.observation_loss import ObservationSelectionLoss
-from finishup.domain.process_control import PROCESS_CONTROL_KEY, PROCESS_CONTROLS
 from finishup.domain.receipts import CAPTURE_HANDOFF_RETIRED_GAP
 from finishup.domain.values import (
     Actor,
@@ -370,7 +369,6 @@ class _RuntimeDescriptionFacts(TypedDict, total=False):
     write_outside_workspace: bool
     effective_user: str | None
     write_scope: str | None
-    process_control: str | None
 
 
 def _runtime_description_facts(structural: Mapping[str, JsonValue]) -> _RuntimeDescriptionFacts:
@@ -383,16 +381,11 @@ def _runtime_description_facts(structural: Mapping[str, JsonValue]) -> _RuntimeD
     install = structural.get("install_target")
     user = structural.get("effective_user")
     scope = structural.get("write_scope")
-    process = structural.get(PROCESS_CONTROL_KEY)
     return {
         "install_target": install if type(install) is str else None,
         "write_outside_workspace": scope == "outside_workspace",
         "effective_user": user if type(user) is str else None,
         "write_scope": scope if type(scope) is str and scope in WRITE_SCOPES else None,
-        # The own-background-job stop shape (#1104); the kernel judges it against the exit.
-        "process_control": process
-        if type(process) is str and process in PROCESS_CONTROLS
-        else None,
     }
 
 
@@ -407,9 +400,10 @@ def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
     commitment = structural.get("command_commitment")
     if type(commitment) is str:
         # A compound or wrapped command also carries its simple commands' keyed commitments
-        # (#977): planned-verification matching reads them, and failure supersession reads
-        # them for a passing ``single`` or ``and_chain`` run, whose every segment exited zero
-        # (#1104, ``observed_failures.success_certified_identities``).
+        # (#977): planned-verification matching reads them. The list also carries the derived
+        # markers of #1104 (``domain.command_segments._derived_markers``): which segments a
+        # passing ``single`` or ``and_chain`` run certifies, and an own-background-job stop
+        # shape; failure accounting reads them back from this field.
         segments = structural.get("command_segment_commitments")
         composition = structural.get("command_composition")
         return observed_command_field(

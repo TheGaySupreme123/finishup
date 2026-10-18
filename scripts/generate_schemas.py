@@ -8250,14 +8250,6 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "enum": cast(list[JsonValue], sorted(WORKSPACE_EFFECTS)),
             "type": "string",
         }
-        # The command stops the background job it launched itself (#1104): a shape fact from the
-        # command text, judged later against the recorded exit. The hook's own closed set.
-        from finishup.domain.process_control import PROCESS_CONTROLS
-
-        fields["process_control"] = {
-            "enum": cast(list[JsonValue], sorted(PROCESS_CONTROLS)),
-            "type": "string",
-        }
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013): the
         # decoded image's SHA-256 and byte count, a sniffed media type, and header dimensions.
         # No pixel crosses the wire; the domain envelope admits exactly this shape.

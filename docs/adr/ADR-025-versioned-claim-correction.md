@@ -113,12 +113,26 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    required set cannot reject any history that the stricter rule accepted.
 
    **Segment certification and retire-on-pass (#1104, owner decision D2, 2026-10-18).** A later
-   *success* also certifies each of its exact segment commitments (ADR-045) when its composition
-   is `single` or `and_chain`: every simple command of a passing `cd /app && FOO=1 pytest -q`
-   exited zero, so it supersedes a failed `pytest -q`. A `masked` composition (`;`, `||`, `|`,
-   `&`, a shell here-document) certifies no segment, and a failed chain is superseded only by its
-   own whole identity, so the direction that would drop a condition never applies. Canonical,
-   prefix and flag commitments are domain-separated and never equal a command identity. A
+   *success* also certifies an exact segment commitment (ADR-045) when its composition is
+   `single` or `and_chain` and that segment ran exactly as listed: every simple command of a
+   passing `cd /app && pytest -q > log 2>&1` exited zero, so it supersedes a failed `pytest -q`.
+   The rule makes a segment worth exactly what the same simple command run as its own call is
+   worth, and no more. A segment listed only after dropping a leading assignment, `env`, `time`,
+   `nohup`, `exec`, a shell keyword or an input redirection (`< f`, `<<EOF`, `<<< s`, `<> f`)
+   ran a different command, which can drop the very condition that failed
+   (`PYTEST_ADDOPTS=--collect-only pytest -q` runs no test), so it certifies nothing. An output
+   redirection does not change what the program runs and keeps the segment certifiable. A `cd`
+   (or any other) segment before it counts like a separate earlier call: command identity has
+   never included the working directory or the effects of earlier calls, so a passing
+   `cd /elsewhere && pytest -q` supersedes a failed `pytest -q` exactly as `cd /elsewhere`
+   followed by a separate `pytest -q` always has. The hook records which segments ran as listed
+   by committing a marker beside each (`domain/command_segments.segment_certification_commitment`,
+   SHA-256 over a domain and the segment's keyed commitment), inside the existing
+   `command_segment_commitments` list; a list without markers (every ledger written before this
+   amendment) certifies nothing. A `masked` composition (`;`, `||`, `|`, `&`, a shell
+   here-document) certifies no segment, and a failed chain is superseded only by its own whole
+   identity. Canonical, prefix, flag and marker commitments are domain-separated and never equal
+   a command identity. A
    failure never uses its segments. Edits still never retire anything (#909), and neither does a
    passing run of a different command, including the planned verification after an edit: it
    proves the planned check passes, not that the command that failed now works.
@@ -160,11 +174,22 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    (`observed_failures.observed_failure_exempt`) in every failure-accounting reader and by the
    advice rule: a proven read or exploration (`runner_class == "exploration"`, widened by #1104 to
    chains of reads, banners and `cd`, and to FinishUP's own read verbs and proven launcher), and a
-   command that stopped the background job it launched itself (`process_control`, a closed shape
-   fact the hook derives from the command text, `domain/process_control.py`) whose recorded exit
-   is exactly `128 + signal`. The exit is read from the result being judged, so a Codex stream
-   correction decides it like a hook-stated exit; Claude Code's `PostToolUseFailure` states no
-   exit, so the stop exemption never applies there.
+   command that stopped the background job it launched itself (a closed shape derived from the
+   command text, `domain/process_control.py`, never for a verifier) whose recorded exit is exactly
+   `128 + signal`. The exit is read from the result being judged, so a Codex stream correction
+   decides it like a hook-stated exit; an unknown exit never exempts; Claude Code's
+   `PostToolUseFailure` states no exit, so the stop exemption never applies there. The shape is
+   not a structural key: the local observation store and outbox are shared on disk by every build
+   running during an upgrade, and an older reader refuses a workspace document holding an envelope
+   key it does not know. It travels as a marker inside the existing `command_segment_commitments`
+   list (`process_control_commitment`, SHA-256 over a domain, the token and the whole-command
+   keyed commitment), which older builds accept as an inert commitment, and the ledger readers
+   recover it from the action's `command` field. Every producer of command commitments adds it,
+   the Codex session stream included, so a stream-first call is judged like a hook-first one.
+   Known limit: the exit alone cannot tell the command's own `kill` from a host that terminates
+   the whole command with the same signal (a timeout that sends `SIGTERM` to a hung probe). No
+   host in scope states a timeout or interrupt flag for a shell call today; when one does, a set
+   flag must refuse the exemption.
 
 4. **Replay owns the revision invariants.** Missing, unreadable, already-superseded, wrong-kind, or
    disjoint targets; irrelevant or success limitations; non-success support; and incomplete

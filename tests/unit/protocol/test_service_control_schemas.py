@@ -713,8 +713,6 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "command_composition",
             # And the before/after workspace fingerprint fact (PR #1080 round 5).
             "workspace_effect",
-            # And the own-background-job stop shape (#1104).
-            "process_control",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1367,8 +1365,7 @@ def _assert_v29_request_adds_only_command_commitment(
     v28: dict[str, Any], v29: dict[str, Any]
 ) -> None:
     """The 2.9 request adds the keyed command identity, the runner class, the closed runtime
-    facts (#909, #977), the workspace-effect fact (PR #1080) and the own-background-job stop shape
-    (#1104) and nothing else."""
+    facts (#909, #977) and the workspace-effect fact (PR #1080) and nothing else."""
 
     v28_fields = _structural_properties(v28)
     v29_fields = _structural_properties(v29)
@@ -1382,14 +1379,9 @@ def _assert_v29_request_adds_only_command_commitment(
         "command_segment_commitments",
         "command_composition",
         "workspace_effect",
-        "process_control",
     }
     assert v29_fields["workspace_effect"] == {
         "enum": ["changed", "unavailable", "unchanged"],
-        "type": "string",
-    }
-    assert v29_fields["process_control"] == {
-        "enum": ["stop_own_job_int", "stop_own_job_kill", "stop_own_job_term"],
         "type": "string",
     }
     assert v29_fields["command_segment_commitments"] == {
@@ -1452,7 +1444,6 @@ def _assert_v29_request_adds_only_command_commitment(
         "command_segment_commitments",
         "command_composition",
         "workspace_effect",
-        "process_control",
     ):
         del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {

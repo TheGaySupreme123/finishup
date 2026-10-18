@@ -155,8 +155,8 @@ _RULE_DETAILS: Final[Mapping[str, str]] = {
     # command, alone or as a segment of a passing ``&&`` chain, does; ``acknowledged`` discloses it.
     "failed_command_unresolved": (
         "A command FinishUP saw fail has no later passing run of the same command. Rerunning it "
-        "after the fix retires this, alone or inside a passing and-chain; an edit does not. If "
-        "the failure stays, respond acknowledged with the reason"
+        "as written after the fix retires this, alone or inside a passing and-chain; an edit does "
+        "not. If the failure stays, respond acknowledged with the reason"
     ),
     "edit_after_successful_check": "A check that predates a later edit is no longer current verification",
     "completion_without_verification": "A completion claim lacks current admissible verification evidence",

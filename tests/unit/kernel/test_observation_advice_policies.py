@@ -1209,6 +1209,18 @@ def _shell_post(
     return _envelope("PostToolUse", pos=pos, identity=f"hook:{call}:{pos}", payload=payload)
 
 
+def _certified(*segments: str) -> list[str]:
+    from finishup.domain.command_segments import segment_certification_commitment
+
+    return sorted({*segments, *(segment_certification_commitment(item) for item in segments)})
+
+
+def _stop_marked(commitment: str) -> list[str]:
+    from finishup.domain.process_control import process_control_commitment
+
+    return [process_control_commitment("stop_own_job_term", commitment)]
+
+
 def test_failed_command_rule_honors_segment_certification() -> None:
     chain = "hmac-sha256:" + "3" * 64
     failed = _bash(1, "toolu-1", success=False, commitment=_PYTEST_X)
@@ -1217,16 +1229,27 @@ def test_failed_command_rule_honors_segment_certification() -> None:
         "toolu-2",
         exit_status=0,
         commitment=chain,
-        command_segment_commitments=[_PYTEST_X, _PYTEST_Y],
+        command_segment_commitments=_certified(_PYTEST_X, _PYTEST_Y),
         command_composition="and_chain",
     )
     assert not _unresolved(failed, certified)
-    masked = _shell_post(
+    # The same chain without the markers listed ``pytest`` after dropping a leading assignment
+    # (``PYTEST_ADDOPTS=--co pytest ...``): it ran a different command and certifies nothing.
+    conditioned = _shell_post(
         2,
         "toolu-2",
         exit_status=0,
         commitment=chain,
         command_segment_commitments=[_PYTEST_X, _PYTEST_Y],
+        command_composition="and_chain",
+    )
+    assert len(_unresolved(failed, conditioned)) == 1
+    masked = _shell_post(
+        2,
+        "toolu-2",
+        exit_status=0,
+        commitment=chain,
+        command_segment_commitments=_certified(_PYTEST_X, _PYTEST_Y),
         command_composition="masked",
     )
     assert len(_unresolved(failed, masked)) == 1
@@ -1243,7 +1266,8 @@ def test_failed_command_rule_honors_a_stopped_own_job(
         "toolu-1",
         exit_status=exit_status,
         commitment=_PYTEST_X,
-        process_control="stop_own_job_term",
+        command_segment_commitments=_stop_marked(_PYTEST_X),
+        command_composition="masked",
         runner_class="compound",
     )
     assert bool(_unresolved(stopped)) is raised
@@ -1253,7 +1277,12 @@ def test_a_stream_copy_is_judged_by_the_shape_its_hook_copy_recorded() -> None:
     """Codex: the hook post carries the shape but no exit; the stream item states the exit."""
 
     hook = _shell_post(
-        1, "call-1", exit_status=None, commitment=_PYTEST_X, process_control="stop_own_job_term"
+        1,
+        "call-1",
+        exit_status=None,
+        commitment=_PYTEST_X,
+        command_segment_commitments=_stop_marked(_PYTEST_X),
+        command_composition="masked",
     )
     stream_stopped = _shell_post(2, "exec-1", exit_status=143, commitment=_PYTEST_X)
     assert not _unresolved(hook, stream_stopped)

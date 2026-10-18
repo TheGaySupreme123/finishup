@@ -32,6 +32,10 @@ from finishup.domain.observation_profiles import (
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
 from finishup.domain.values import JsonValue, ResultId
+from finishup.kernel.closure_class import finding_closure
+from finishup.kernel.finding_todo import FindingTodoState, finding_todo_state
+from finishup.kernel.observed_failures import observed_action_process_control
+from finishup.kernel.reducers import replay
 from finishup.protocol.canonical import canonical_encode
 
 _TASK = "tsk_00000000-0000-4000-8000-000000000909"
@@ -450,9 +454,56 @@ def test_background_kill_failure_carries_process_control(
     _run_on(host, emit, "call-server", _SERVER, exit_code)
     ledger = build()
     ((result, action),) = _results(ledger).items()
-    assert "(process stop_own_job_term)" in action.description
+    # The shape rides inside the command's commitment list, not the description (#1104 round 1).
+    assert observed_action_process_control(action) == "stop_own_job_term"
+    assert "(process" not in action.description
     ledger.claim()
     # Claude Code's ``PostToolUseFailure`` states no exit status (only error text, which FinishUP
     # never parses), so the exemption, which needs exactly 128 + signal, never applies there.
     stated = host != "claude"
     assert omitted_results(ledger) == ((result,) if omitted or not stated else ())
+
+
+# --- retire on pass from each host's real handler (#1104 round 1) -----------------------------
+
+
+@pytest.mark.parametrize("host", ["claude", "cursor", "codex"])
+@pytest.mark.parametrize(
+    ("passing", "retired"),
+    [
+        (f"pytest -q tests/{_CANARY}.py", True),
+        (f"cd /app && pytest -q tests/{_CANARY}.py > log.txt 2>&1", True),
+        # A segment run behind an assignment is a different command.
+        (f"PYTEST_ADDOPTS=--collect-only pytest -q tests/{_CANARY}.py", False),
+        # A pass of another command never retires it.
+        ("pytest -q tests/other.py", False),
+    ],
+)
+def test_a_later_pass_retires_the_hosts_failed_command_finding(
+    tmp_path: Path, host: str, passing: str, retired: bool
+) -> None:
+    """Fail, then pass, through each host's real handler; the finding is the coordinator's shape
+    (observation-authored, naming the failed call's action and result events)."""
+
+    emit, build = _host(tmp_path, host)
+    _run_on(host, emit, "call-red", f"pytest -q tests/{_CANARY}.py", 1)
+    red = build()
+    (failed,) = _results(red)
+    _run_on(host, emit, "call-green", passing, 0)
+    ledger = ObservedLedger()
+    finding = None
+    for record in build().records:
+        ledger.append(record.schema, cast(EventPayload, record.payload), observed=True)
+        payload = record.payload
+        if type(payload) is ResultRecordedPayload and payload.result_id == failed:
+            finding = ledger.advice_finding(ledger.events_of(failed))
+    assert finding is not None
+    state = replay(ledger.prefix)
+    closure = finding_closure(state, finding)
+    assert closure is not None
+    if retired:
+        assert closure.basis == "retired_by_passing_run"
+        assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
+    else:
+        assert closure.basis == "open_unanswered"
+        assert finding_todo_state(state, finding) is FindingTodoState.OPEN

@@ -24,7 +24,6 @@ from finishup.domain.observation_settings import (
     observation_selection_runtime_status_from_json,
     observation_selection_runtime_status_to_json,
 )
-from finishup.domain.process_control import PROCESS_CONTROLS
 from finishup.domain.values import (
     FindingId,
     JsonObject,
@@ -323,8 +322,6 @@ _STRUCTURAL_KEYS: Final = frozenset(
         "effective_user",
         # Whether a before/after fingerprint of the workspace saw this call change it (PR #1080).
         "workspace_effect",
-        # The command stops the background job it launched itself (#1104); a shape fact only.
-        "process_control",
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013).
         "observed_images",
         # Keyed commitments to the simple commands of a compound or wrapped command, and what the
@@ -365,7 +362,6 @@ _RUNTIME_FACT_VALUES: Final = {
     "effective_user": frozenset({"root", "non_root"}),
     "command_composition": frozenset({"single", "and_chain", "masked"}),
     "workspace_effect": WORKSPACE_EFFECTS,
-    "process_control": PROCESS_CONTROLS,
 }
 # 32 segment commitments plus 48 domain-separated canonical commitments (ADR-045); a test pins
 # this to ``domain.command_segments.MAX_COMMAND_COMMITMENTS``, which this module cannot import.

@@ -24,6 +24,7 @@ from finishup.domain.command_segments import (
     CommandStructure,
     command_separators,
     command_structure,
+    opens_files_without_a_command,
     segment_words_without_redirections,
     strip_one_wrapper,
     strip_wrappers,
@@ -1085,6 +1086,26 @@ def command_runner_class(
     return _runner_class_for_argv(argv, own_launchers)
 
 
+# A shell word that is a path whose last component is FinishUP's launcher name (``/x/bin/finishup``,
+# ``./yoetz``): only such a word can be FinishUP's own absolute launcher (#1104). A path segment
+# (``src/finishup/kernel``) or a bare ``finishup`` resolved through ``PATH`` never matches.
+_LAUNCHER_WORD_RE: Final = re.compile(
+    r"(?:^|[\s;&|()<>'\"=])[^\s;&|()<>'\"=]*/(finishup|yoetz)(?=$|[\s;&|()<>'\"])"
+)
+
+
+def launcher_names_in(text: object) -> frozenset[str]:
+    """The launcher names (``finishup``, ``yoetz``) some path-shaped word of ``text`` ends with.
+
+    A cheap text test that gates the install-record proof (``codex_launcher.own_launcher_paths``),
+    so only a command that may name FinishUP's own launcher by path pays for it.
+    """
+
+    if type(text) is not str or "/" not in text:
+        return frozenset()
+    return frozenset(match.group(1) for match in _LAUNCHER_WORD_RE.finditer(text))
+
+
 def command_is_verification(command: str) -> bool:
     """Whether ``command_runner_class`` already calls this command a test, build, lint, or typecheck.
 
@@ -1175,7 +1196,8 @@ def _compound_is_read_only(
 
     ``&&``, ``;``, ``||``, ``|``, line breaks, banners (``echo``, ``printf``), ``cd`` and a
     here-document fed to a read program (``cat <<'EOF'``) qualify. Refused: a background job
-    (``&``, quote-aware), any command or process substitution, a write into a file, a nested shell
+    (``&``, quote-aware), any command or process substitution, a write into a file (including a
+    segment that only redirects, ``exec >out.txt``, and a read-write ``<>``), a nested shell
     (a wrapper argument or a here-document fed to a shell), and any part whose original words
     (assignments and executable spelling kept, redirections dropped) are not a read: canonical
     words erase executable paths, so an agent-owned ``./cat`` or ``./finishup`` cannot acquire a
@@ -1186,6 +1208,9 @@ def _compound_is_read_only(
     if separators is None or "&" in separators:
         return False
     if any(marker in raw for marker in _HIDDEN_EXECUTION_MARKERS):
+        return False
+    if opens_files_without_a_command(raw):
+        # ``exec >out.txt`` (or ``<>``) leaves no command in the structure but writes a file.
         return False
     for command in structure.commands:
         if command.writes or command.nested or not command.sources:
@@ -1398,6 +1423,7 @@ __all__ = [
     "classify_observation",
     "compound_verification_gap_required",
     "command_runner_class",
+    "launcher_names_in",
     "native_command_runner_class",
     "without_routine_read",
     "envelope_outcome_state",

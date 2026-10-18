@@ -159,10 +159,15 @@ verification run for `edited_after_last_verification`, whatever its class: `sage
 cmp ...` is composed and classes `compound`, yet it is the check the task named.
 
 **Segments also certify a pass (#1104, ADR-025 amendment).** A hook-observed *success* whose
-composition is `single` or `and_chain` certifies each of its exact segment commitments, so a
-passing `cd /app && pytest -q` supersedes an earlier failed `pytest -q` and retires its
-observation finding. A `masked` composition certifies nothing about a segment. Canonical
-commitments stay planned-verification matching only. A composition without a verifier is
+composition is `single` or `and_chain` certifies each of its exact segment commitments that ran
+exactly as listed, so a passing `cd /app && pytest -q` supersedes an earlier failed `pytest -q`
+and retires its observation finding, while `PYTEST_ADDOPTS=--co pytest -q` (listed as `pytest -q`
+for planned matching) certifies nothing. The hook marks each such segment with a derived
+commitment in the same list (`segment_certification_commitment`, ADR-025). A `masked` composition
+certifies nothing about a segment. Canonical commitments stay planned-verification matching only,
+and the derived markers come out of their budget, so the list stays within 80 commitments. A
+segment that only redirects (`exec >out.txt`) or a read-write `<>` also keeps a chain
+`compound`. A composition without a verifier is
 `exploration` (not `compound`) when every part is a proven read: `&&`, `;`, `||`, `|` and line
 breaks between reads, banners (`echo`, `printf`), `cd` and a few inert inspectors, a here-document
 fed to a read program, and FinishUP's own read verbs. A background `&`, any command or process

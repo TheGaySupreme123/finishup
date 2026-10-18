@@ -275,3 +275,46 @@ async def test_a_stopped_own_job_is_judged_by_the_joined_stream_exit(
     )
     ledger.claim()
     assert omitted_results(ledger) == ((corrected,) if omitted else ())
+
+
+@pytest.mark.parametrize(("exit_code", "omitted"), [(143, False), (1, True)])
+async def test_a_stopped_own_job_committed_stream_first_keeps_the_same_judgment(
+    replay: _Replay, exit_code: int, omitted: bool
+) -> None:
+    """Stream-first (#1104 round 1): the stream copy carries the stop shape in its own commitment
+    list, so the ledger readers and the advice rule judge the call exactly as the hook-first one.
+    """
+
+    from finishup.kernel.policies.observation_advice import _failed_commands
+
+    server = "python app.py & sleep 2; curl -s localhost:8000; kill $!; wait $!"
+    session_start(replay, cli_version=_VERSION)
+    replay.append(command_execution("exec-1104-srv", server, exit_code, _RED_AT))
+    replay.hook("Stop", last_assistant_message="Done.", stop_hook_active=False)
+    await sweep_all(replay)
+    rows = _observed_rows(replay)
+    results = _results(rows)
+    assert [(item.outcome, item.exit_status) for item in results] == [
+        (ResultOutcome.FAILURE, exit_code)
+    ]
+    ledger = ObservedLedger()
+    for row in rows:
+        ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
+    ledger.claim()
+    assert omitted_results(ledger) == ((results[0].result_id,) if omitted else ())
+    # The advice rule reads the same stored envelopes; a stream copy alone never raises a
+    # failed-command finding on 0.159 (its tool name is not a command tool), and the stop
+    # shape it carries is the one the ledger readers used.
+    from finishup.domain.process_control import process_control_from_commitments
+
+    envelopes = replay.store.list_envelopes(replay.commitment)
+    shapes = {
+        process_control_from_commitments(
+            item.structural_payload.get("command_commitment"),
+            item.structural_payload.get("command_segment_commitments"),
+        )
+        for item in envelopes
+        if item.structural_payload.get("command_commitment") is not None
+    }
+    assert shapes == {"stop_own_job_term"}
+    assert _failed_commands(envelopes) == []

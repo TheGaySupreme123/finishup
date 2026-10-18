@@ -982,8 +982,10 @@ A failed `Shell` call becomes an observation finding (`failed_command_unresolved
 
 - **Retire on pass: supported when `postToolUse` states `exitCode`**
   (`fixtures/observations/cursor-shell-outcomes.case.json`). A later passing run of the same
-  command, alone or as a segment of a passing `&&` chain, retires the finding (closure basis
-  `retired_by_passing_run`). A post without `exitCode` (#1091 N4) is `unknown` and retires nothing,
+  command, alone or as a segment of a passing `&&` chain run as is (no leading assignment, `env`,
+  `nohup`, `exec`, `time` or input redirection, ADR-025), retires the finding (closure basis
+  `retired_by_passing_run`). Pinned by the Cursor case in
+  `tests/integration/observation/test_failure_supersession_hosts.py`. A post without `exitCode` (#1091 N4) is `unknown` and retires nothing,
   which is honest; the fix stays with #1091. An edit never retires it, and no check resolves it
   (`observed_failure_not_rerun`).
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
@@ -991,6 +993,10 @@ A failed `Shell` call becomes an observation finding (`failed_command_unresolved
 - **Read-only chains and FinishUP's own CLI: supported**, as on every host.
 - **Stopping its own background job: supported in one command** (`server & ...; kill $!;
   wait $!` with `exitCode` 143, or 130/137 for `-INT`/`-KILL`). Any other exit keeps the duty.
+  Known limit: a host timeout that terminates the whole command with `SIGTERM` also exits 143;
+  the postToolUse payload states no timeout flag, so FinishUP cannot tell the two apart. Both
+  decisions are pinned through the real handler by the Cursor variants of
+  `fixtures/observations/failed-command-exemptions.case.json` (OUT-004).
 - **Doubled skill path:** not applicable (a Codex cache layout).
 
 ### Smart observation selection (issue #687)

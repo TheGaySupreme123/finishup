@@ -208,17 +208,3 @@ def test_the_wire_admits_exactly_the_workspace_effects_the_hook_emits() -> None:
         _frame(refused)
     with pytest.raises(ProtocolValueError):
         observation_ingest_request_from_json(refused)
-
-
-def test_the_wire_admits_exactly_the_process_controls_the_hook_emits() -> None:
-    """#1104: the own-background-job stop shape crosses unchanged, and nothing else does."""
-
-    from finishup.domain.process_control import PROCESS_CONTROLS
-
-    assert set(_wire_structural_fields()["process_control"]["enum"]) == set(PROCESS_CONTROLS)
-    for token in sorted(PROCESS_CONTROLS):
-        received = _send(_shell_write_post(process_control=token))
-        assert received.envelope.structural_payload["process_control"] == token
-    refused = cast(JsonObject, freeze_json(_shell_write_post(process_control="own_job_stopped")))
-    with pytest.raises(ControlProtocolError, match="frame_invalid"):
-        _frame(refused)

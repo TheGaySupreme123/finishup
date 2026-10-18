@@ -164,9 +164,9 @@ from finishup.domain.observation_selection import (
     compound_verification_gap_required,
     is_edit_tool_name,
     is_routine_read_candidate,
+    launcher_names_in,
     without_routine_read,
 )
-from finishup.domain.process_control import PROCESS_CONTROL_KEY, own_job_stop_signal
 from finishup.domain.values import (
     JsonObject,
     Timestamp,
@@ -1113,9 +1113,6 @@ def _extract_structural(
     runner = _hook_runner_class(payload)
     if runner is not None and tool_name is not None:
         fields["runner_class"] = runner
-        process_control = _hook_process_control(payload, runner)
-        if process_control is not None:
-            fields[PROCESS_CONTROL_KEY] = process_control
     # Permission outcome aliases commonly seen in host payloads.
     decision = _token_or_none(payload.get("decision"))
     if decision is not None and "permission_decision" not in fields:
@@ -1131,17 +1128,6 @@ def _extract_structural(
     return JsonObject(fields)
 
 
-def _with_derived_command_class(
-    envelope: ObservationEnvelope, runner: RunnerClass, process_control: str | None
-) -> ObservationEnvelope:
-    """The envelope with the runner class (and own-job stop shape, #1104) its host handler derived."""
-
-    fields: dict[str, JsonValue] = {**envelope.structural_payload, "runner_class": runner}
-    if process_control is not None:
-        fields[PROCESS_CONTROL_KEY] = process_control
-    return replace(envelope, structural_payload=JsonObject(fields))
-
-
 def _hook_command_text(payload: Mapping[str, JsonValue]) -> JsonValue:
     nested = payload.get("tool_input")
     source = cast(Mapping[str, JsonValue], nested) if isinstance(nested, Mapping) else payload
@@ -1153,32 +1139,18 @@ def _hook_runner_class(payload: Mapping[str, JsonValue]) -> RunnerClass | None:
     """``command_runner_class`` with FinishUP's own proven launcher paths (#1104).
 
     The proof (``codex_launcher.own_launcher_paths``) reads this runtime's install record, so it
-    is imported and run only for a command that names a path ending in ``/finishup`` or
-    ``/yoetz``; any other command is classified exactly as before, at no extra cost.
+    is imported and run only for a command with a path-shaped word whose last component is
+    ``finishup`` or ``yoetz`` (``launcher_names_in``); any other command, ``cat
+    src/finishup/x.py`` included, is classified exactly as before, at no extra cost.
     """
 
     text = _hook_command_text(payload)
     launchers: frozenset[str] = frozenset()
-    if type(text) is str and ("/finishup" in text or "/yoetz" in text):
+    if launcher_names_in(text):
         from finishup.adapters.integrations.codex_launcher import own_launcher_paths
 
         launchers = own_launcher_paths(text)
     return command_runner_class(payload, own_launchers=launchers)
-
-
-def _hook_process_control(
-    payload: Mapping[str, JsonValue], runner: RunnerClass | None
-) -> str | None:
-    """The closed own-background-job stop shape of a shell command (#1104), else ``None``.
-
-    A shape fact from the command text only: whether its failure is exempt is decided later
-    against the exit FinishUP records for the call (``domain.process_control``). A command that
-    runs a verifier never carries it, so a stopped job can never hide a failed test or build.
-    """
-
-    if runner is None or runner in {"test", "lint", "typecheck", "build"}:
-        return None
-    return own_job_stop_signal(normalize_observed_command(_hook_command_text(payload)))
 
 
 def _pairing_contract(
@@ -4982,7 +4954,6 @@ def handle_observe(
     _include_recap: bool = True,
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
-    _derived_process_control: str | None = None,
     _stop_final_message: str | None = None,
     _request_commitment: str | None = None,
     _proven_finishup_read: bool = False,
@@ -5649,8 +5620,11 @@ def handle_observe(
                 workspace_reading=workspace_reading,
             )
             if _derived_runner_class is not None:
-                envelope = _with_derived_command_class(
-                    envelope, _derived_runner_class, _derived_process_control
+                envelope = replace(
+                    envelope,
+                    structural_payload=JsonObject(
+                        {**envelope.structural_payload, "runner_class": _derived_runner_class}
+                    ),
                 )
             if resolved_event in {"PreToolUse", "PostToolUse"}:
                 # Closed runtime facts (#977): install target, write scope, effective user.
@@ -7629,7 +7603,6 @@ def _handle_claude_observe(
             if ordinary_profile and raw_event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
             else None
         )
-        derived_process_control = _hook_process_control(payload, derived_runner_class)
         claude_ingress_gap = (
             _oversized_ingress_gap(
                 payload,
@@ -7659,7 +7632,6 @@ def _handle_claude_observe(
             ),
             _content_payload=payload if ordinary_profile and not content_omitted else None,
             _derived_runner_class=derived_runner_class,
-            _derived_process_control=derived_process_control,
             _ingress_gap=claude_ingress_gap,
             _pass_timing=_pass_timing,
             # #1050: Claude Code's Stop payload names the final message; it decides only which
@@ -8146,7 +8118,6 @@ def _handle_cursor_observe(
             if ordinary_profile and raw_event in {"preToolUse", "postToolUse", "postToolUseFailure"}
             else None
         )
-        derived_process_control = _hook_process_control(payload, derived_runner_class)
         return handle_observe(
             event_name=event_map[raw_event],
             stdin_bytes=canonical_encode(structural),
@@ -8164,7 +8135,6 @@ def _handle_cursor_observe(
             ),
             _content_payload=None if content_omitted or not ordinary_profile else payload,
             _derived_runner_class=derived_runner_class,
-            _derived_process_control=derived_process_control,
             _ingress_gap=cursor_ingress_gap,
             _pass_timing=_pass_timing,
             # The structural envelope drops ``tool_input``; commit to a FinishUP call here so a

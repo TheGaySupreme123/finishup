@@ -1165,8 +1165,12 @@ A failed `Bash` call becomes an observation finding (`failed_command_unresolved`
 
 - **Retire on pass: supported.** `PostToolUse` states success and `PostToolUseFailure` states
   failure (`fixtures/observations/claude-code-bash-outcomes.case.json`), so a later passing run of
-  the same command, alone or as a segment of a passing `&&` chain, retires the finding (closure
-  basis `retired_by_passing_run`). An edit never retires it, and no check resolves it
+  the same command, alone or as a segment of a passing `&&` chain run as is (no leading
+  assignment, `env`, `nohup`, `exec`, `time` or input redirection, ADR-025), retires the finding
+  (closure basis `retired_by_passing_run`). Pinned end to end, from the real hook handler through
+  the coordinator's own finding to status and the receipt, by
+  `tests/integration/application/test_failed_command_retirement_e2e.py`, and per host by
+  `tests/integration/observation/test_failure_supersession_hosts.py`. An edit never retires it, and no check resolves it
   (`observed_failure_not_rerun`).
 - **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
   clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
@@ -1175,7 +1179,9 @@ A failed `Bash` call becomes an observation finding (`failed_command_unresolved`
 - **Stopping its own background job: not exempt on Claude Code.** The exemption needs the exact
   exit `128 + signal`, and `PostToolUseFailure` states no exit status (only error text, which
   FinishUP never parses). Such a failure keeps the ordinary duty: rerun the probe without the
-  kill, or acknowledge it. `KillShell` and `BashOutput` are not read (payload unverified).
+  kill, or acknowledge it. `KillShell` and `BashOutput` are not read (payload unverified). Both
+  decisions are pinned through the real handler by the Claude Code variants of
+  `fixtures/observations/failed-command-exemptions.case.json` (OUT-004).
 - **Doubled skill path:** not applicable (a Codex cache layout).
 
 ### Smart observation selection (issue #687)

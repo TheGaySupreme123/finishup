@@ -1205,15 +1205,21 @@ command counts as an edit when it visibly writes the workspace (`write_scope: wo
 `ObservedRun` gains `certifies: frozenset[str]` (bounded keyed commitments, validated): the extra
 identities a *success* of the run proves passed. `success_certified_identities(command)` (ledger
 side, from the action's `command` field) and `certified_identities(segments, composition)`
-(envelope side) return the exact segment commitments of a `single` or `and_chain` command, else
-the empty set; a failure never uses them. `superseding_witnesses(runs)` maps each `superseded`
+(envelope side) return the exact segment commitments of a `single` or `and_chain` command that
+carry their certification marker (`domain.command_segments.segment_certification_commitment`, the
+hook commits one beside each segment that ran exactly as listed: no leading assignment, `env`,
+`time`, `nohup`, `exec`, keyword or input redirection), else the empty set; a failure never uses
+them. `superseding_witnesses(runs)` maps each `superseded`
 failure ref to the earliest later success that proves it. `observed_failure_exempt(action,
 result=None)` is the one failure-exemption predicate the work-integrity and research-evidence
 packs, `claim_limitations`, `check_totals` and check's live-failure accounting read:
-`observed_action_is_exploratory(action)`, or a command whose description carries
-` (process <token>)` (`observed_action_process_control`; written before the tool suffix, so older
-readers keep parsing tool, runner and runtime suffixes) and whose result's `exit_status` is exactly
-that stop's `128 + signal` (`domain.process_control.stopped_own_job`). `kernel/finding_retirement.py`
+`observed_action_is_exploratory(action)`, or a command whose `command` field lists the stop marker
+for its whole commitment (`observed_action_process_control(action)` through
+`domain.process_control.process_control_from_commitments`; the marker is
+`process_control_commitment(token, commitment)`, committed inside `command_segment_commitments` by
+`domain.command_segments.command_segment_commitments`, so no envelope, outbox, wire or description
+shape changed) and whose result's `exit_status` is exactly that stop's `128 + signal`
+(`domain.process_control.stopped_own_job`). `kernel/finding_retirement.py`
 owns the observed failed-command finding (`is_observed_failed_command_shape(finding)`: deterministic,
 `work-integrity`, `failed_work_omitted`, no `clm_` subject ref; `is_observed_failed_command_finding(
 record)` adds observation authorship stamped at replay), `failed_run_of(...)`, `retirement_witness(
@@ -9943,7 +9949,10 @@ under closed keys for effective-plan obligations, obligation-scoped requested-it
 service-observed commands, evidence strength, and returned/suppressed findings. The current
 finding-disposition counts remain in `finding_checklist`, distinguished from frozen-work totals.
 Failed exploration stays in historical command counts. A later qualifying run of the same keyed
-command identity can retire a failure; unrelated edits and unknown reruns cannot. A disclosed test
+command identity can retire a failure, as can a passing `single` or `and_chain` command one of whose
+segments ran exactly as that identity (#1104, ADR-025); unrelated edits and unknown reruns cannot. A
+stopped own background job whose exit is exactly its `128 + signal` carries no failure duty
+(`observed_failure_exempt`, #1104). A disclosed test
 failure remains live until rerun green. An attempted item or linked evidence record is an assertion
 or link, not a claim that the requirement was verified. Totals survive event replay and operation
 recovery without recounting newer work, and carry no command text, paths, or caller-defined keys.
@@ -10863,7 +10872,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   currency, which follow the `workspace_effect` fact below. Since #1104 a composition without a
   verifier is `exploration` when `_compound_is_read_only` holds: `command_separators(raw)` (new in
   `domain/command_segments`, quote-aware, every depth) has no `&`; no `$(`, backtick, `<(` or `>(`
-  appears anywhere; no part writes a file or nests a shell; and every part's original words
+  appears anywhere; no part writes a file or nests a shell; no top-level segment only redirects
+  (`exec >out.txt`) and no word opens `<>` (`opens_files_without_a_command`); and every part's original words
   (`segment_words_without_redirections`, assignments and executable spelling kept) classify
   `exploration`. `_CHAIN_NEUTRAL_COMMANDS` (`cd`, `echo`, `printf`, `true`, `:`, `nl`, `stat`,
   `which`, `uname`, `whoami`, `id`, `printenv`, `du`, `realpath`, `readlink`, `basename`,
@@ -10874,7 +10884,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `native_command_runner_class(value, *, own_launchers=...)` accept the absolute paths of this
   runtime's installed console scripts, which the hook proves lazily
   (`adapters/integrations/codex_launcher.own_launcher_paths(command)`, RECORD-owned, no PATH probe)
-  only for a command naming `/finishup` or `/yoetz`; an agent-owned `./finishup` or
+  only for a command with a path-shaped word whose last component is `finishup` or `yoetz`
+  (`domain/observation_selection.launcher_names_in`; `src/finishup/x.py` never triggers it); an agent-owned `./finishup` or
   `/app/bin/finishup` stays `other`. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
   `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
@@ -10885,10 +10896,7 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
   FinishUP's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
   writes the workspace),
-  `effective_user` (`root|non_root`), `process_control` (`stop_own_job_term|stop_own_job_int|
-  stop_own_job_kill`, #1104: produced only by the hook from the command text through
-  `domain/process_control.own_job_stop_signal`, never copied from a host payload, and never for a
-  command whose runner class is a verifier; the enum is generated from `PROCESS_CONTROLS`) and
+  `effective_user` (`root|non_root`) and
   `workspace_effect` (`unchanged|changed|unavailable`,
   PR #1080 round 5: produced only by `cli/workspace_effect_hook.workspace_fingerprint_pass` on a
   live `PostToolUse`, never copied from a host payload; materialization appends it to the observed

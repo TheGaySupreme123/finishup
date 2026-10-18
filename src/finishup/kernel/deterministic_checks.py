@@ -833,12 +833,13 @@ def render_deterministic_finding_text(
             named = f"result {run_results}" + (f" of action {run_actions}" if run_actions else "")
             detail = (
                 f"{detail} Observed run: {named} failed, and before the claim no later "
-                "hook-observed run of the same command identity followed it. status view=results lists its "
+                "hook-observed run of the same command identity followed it (alone, or as a "
+                "segment run as is inside a passing && chain). status view=results lists its "
                 "tool, occurrence, command commitment (when recorded) and exit status; command "
                 "text is never recorded. Either disclose it as above, or fix it and publish a "
                 "replacement claim once a later observed run of the same command passes. A run "
-                "without a command commitment keeps its disclosure duty until it is explicitly "
-                "acknowledged."
+                "without a command commitment keeps its disclosure duty until a completion claim "
+                "names it in limitation_refs."
             )
     if kind is FindingKind.CONTRADICTORY_CLAIMS_UNRESOLVED:
         claim_refs = tuple(ref for ref in refs if ref.startswith("clm_"))

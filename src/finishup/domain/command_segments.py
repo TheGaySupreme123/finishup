@@ -74,12 +74,14 @@ __all__ = [
     "canonical_commitment",
     "canonical_words",
     "command_segment_commitments",
+    "segment_certification_commitment",
     "command_segments",
     "command_separators",
     "exact_segment_commitments",
     "command_structure",
     "planned_segments",
     "requested_command_shape",
+    "opens_files_without_a_command",
     "segment_words_without_redirections",
     "strip_one_wrapper",
     "strip_wrappers",
@@ -327,6 +329,12 @@ class _Cleaned:
     # The segment sends its output into a file (``> f``, ``>> f``, ``>| f``), not ``/dev/null``
     # and not a file-descriptor duplication (``2>&1``).
     writes: bool = False
+    # Something other than an output redirection was dropped from the segment's words: a leading
+    # assignment, ``env``, ``time``, ``nohup``, ``exec``, a shell keyword or ``!``, or an input
+    # redirection (``< f``, ``<<EOF``, ``<<< s``, ``<> f``). The listed text is then not exactly
+    # the command that ran, so a success of it certifies nothing (#1104,
+    # ``segment_certification_commitment``).
+    conditioned: bool = False
 
 
 _OUTPUT_FILE_OPERATORS: Final = frozenset({">", ">>", ">|"})
@@ -335,8 +343,10 @@ _OUTPUT_FILE_OPERATORS: Final = frozenset({">", ">>", ">|"})
 def _clean_segment(segment: str) -> _Cleaned:
     words = _words(segment)
     if words is None:
-        return _Cleaned(" ".join(segment.split()) or None, False, False)
+        return _Cleaned(" ".join(segment.split()) or None, False, False, conditioned=True)
     negated = False
+    conditioned = False
+    prefix_words = 0
     kept: list[str] = []
     skip_next = False
     leading = True
@@ -354,6 +364,8 @@ def _clean_segment(segment: str) -> _Cleaned:
             continue
         redirection = _REDIRECTION_RE.match(word)
         if redirection is not None:
+            if redirection.group(1).startswith("<"):
+                conditioned = True
             if redirection.group(1) in _OUTPUT_FILE_OPERATORS:
                 target = redirection.group(2)
                 if target:
@@ -364,6 +376,9 @@ def _clean_segment(segment: str) -> _Cleaned:
                 skip_next = True
             continue
         if leading:
+            # Every leading word this block drops (it ``continue``s) conditions the command that
+            # ran; the first word it keeps ends the prefix.
+            prefix_words += 1
             if word == "!":
                 negated = True
                 continue
@@ -388,18 +403,27 @@ def _clean_segment(segment: str) -> _Cleaned:
             if _ASSIGNMENT_RE.match(word):
                 continue
             leading = False
+            conditioned = conditioned or prefix_words > 1
         kept.append(word)
+    before_closing = len(kept)
     while kept and kept[-1] in _CLOSING_WORDS and len(kept) > 1:
         kept.pop()
     if len(kept) == 1 and kept[0] in _CLOSING_WORDS:
         kept = []
+    conditioned = conditioned or len(kept) != before_closing
     shell_reads_stdin = bool(kept) and (
         kept[0].replace("\\", "/").rsplit("/", 1)[-1] in _SHELLS
         and all(
             word.startswith("-") and _SHELL_COMMAND_FLAG_RE.match(word) is None for word in kept[1:]
         )
     )
-    return _Cleaned(" ".join(kept) or None, negated, shell_reads_stdin, writes)
+    return _Cleaned(
+        " ".join(kept) or None,
+        negated,
+        shell_reads_stdin,
+        writes,
+        conditioned=conditioned or (leading and prefix_words > 0),
+    )
 
 
 def wrapped_shell_argument(words: Sequence[str]) -> str | None:
@@ -467,10 +491,13 @@ def _collect(
     depth: int,
     out: list[str],
     commands: list[SimpleCommand] | None = None,
+    bare: set[str] | None = None,
 ) -> tuple[bool, bool, bool]:
     """Append ``text``'s segments to ``out``; return ``(splittable, masked, chained)``.
 
     ``commands`` (when given) receives each simple command, not the shell wrappers around them.
+    ``bare`` (when given) receives each listed segment that some occurrence ran exactly as listed
+    (``_Cleaned.conditioned`` false), wrapper arguments included.
     """
 
     split = _split_top_level(text)
@@ -484,6 +511,8 @@ def _collect(
         if cleaned.text is not None:
             normalized = normalize_observed_command(cleaned.text) or cleaned.text
             out.append(normalized)
+            if bare is not None and not cleaned.conditioned:
+                bare.add(normalized)
             inner = _wrapped_argument(cleaned.text)
             if inner is None and normalized != cleaned.text:
                 inner = normalized
@@ -498,7 +527,9 @@ def _collect(
                     )
                 )
             if inner is not None and depth < _MAX_DEPTH:
-                ok, inner_masked, inner_chained = _collect(inner, depth + 1, out, commands)
+                ok, inner_masked, inner_chained = _collect(
+                    inner, depth + 1, out, commands, bare if not cleaned.conditioned else None
+                )
                 masked = masked or (ok and inner_masked)
                 chained = chained or (ok and inner_chained)
         for body in split.bodies.get(position, ()):
@@ -506,7 +537,7 @@ def _collect(
                 # A script fed to a shell: its lines are commands, and the whole outcome is the
                 # script's, which says nothing about one line.
                 masked = True
-                _collect(body, depth + 1, out, commands)
+                _collect(body, depth + 1, out, commands, None)
     return True, masked, chained
 
 
@@ -584,6 +615,33 @@ def top_level_segments(normalized: str) -> tuple[tuple[str, ...], frozenset[str]
     if split is None:
         return None
     return tuple(split.segments), frozenset(split.separators)
+
+
+def opens_files_without_a_command(normalized: str) -> bool:
+    """Whether a top-level segment only redirects (``exec >out.txt``, ``exec 3>f``, ``> f``) or
+    any word opens a file read-write (``<>``).
+
+    ``command_structure`` lists commands, so a segment with no command words of its own leaves no
+    trace there, although ``exec >f`` redirects every later command into ``f``. A read-only
+    recheck refuses such a command (#1104). ``True`` when the text cannot be split.
+    """
+
+    split = top_level_segments(normalized)
+    if split is None:
+        return True
+    for segment in split[0]:
+        words = _words(segment)
+        if words is None:
+            return True
+        operators = [
+            match.group(1) for word in words if (match := _REDIRECTION_RE.match(word)) is not None
+        ]
+        if "<>" in operators:
+            return True
+        kept = segment_words_without_redirections(segment)
+        if operators and (not kept or kept == ["exec"]):
+            return True
+    return False
 
 
 def segment_words_without_redirections(segment: str) -> list[str] | None:
@@ -1020,6 +1078,8 @@ def command_segment_commitments(
     whole = observed_command_commitment(key_material, normalized)
     exact = exact_segment_commitments(key_material, normalized)
     commitments = [] if exact is None else list(exact[0])
+    composition = exact[1] if exact is not None else structure.composition
+    markers = _derived_markers(key_material, normalized, whole, commitments, composition)
     ranked: list[tuple[int, int, str]] = []
     for order, command in enumerate(structure.commands):
         if not command.words or command.words[0] in _NEVER_VERIFICATION:
@@ -1033,11 +1093,75 @@ def command_segment_commitments(
         ranked.extend((2, order, value) for value in flags)
     taken = dict.fromkeys(value for _tier, _order, value in sorted(ranked))
     canonical = [value for value in taken if value != whole and value not in commitments]
-    merged = sorted({*commitments, *canonical[:MAX_CANONICAL_COMMITMENTS]})
+    # The derived markers come out of the canonical budget, so the whole list stays within
+    # ``MAX_COMMAND_COMMITMENTS``: a bound only ever costs the looser planned matches.
+    budget = min(
+        MAX_CANONICAL_COMMITMENTS, MAX_COMMAND_COMMITMENTS - len(commitments) - len(markers)
+    )
+    merged = sorted({*commitments, *markers, *canonical[: max(budget, 0)]})
     if not merged:
         return None
-    composition = exact[1] if exact is not None else structure.composition
     return tuple(merged), composition
+
+
+_CERTIFICATION_DOMAIN: Final = b"yoetz/command-certifies/v1/"
+
+
+def segment_certification_commitment(segment_commitment: str) -> str:
+    """The marker that a listed segment ran exactly as listed (#1104), for one segment commitment.
+
+    A keyed derivative, never a commitment to text: SHA-256 over a fixed domain and the segment's
+    installation-keyed commitment, in the same ``hmac-sha256:`` form. Only the key's holder can
+    produce it for a command, any reader holding the segment commitment can recognize it, and it
+    can never equal a command, segment or canonical commitment. A success of a ``single`` or
+    ``and_chain`` command certifies a segment only when this marker sits beside it
+    (``kernel.observed_failures.certified_identities``): ``PYTEST_ADDOPTS=--co pytest -q`` lists
+    ``pytest -q`` for planned matching, but it did not run ``pytest -q``, so it carries no marker.
+    A list written before the marker existed certifies nothing.
+    """
+
+    digest = hashlib.sha256(_CERTIFICATION_DOMAIN + segment_commitment.encode("utf-8"))
+    return "hmac-sha256:" + digest.hexdigest()
+
+
+def _derived_markers(
+    key_material: bytes,
+    normalized: str,
+    whole: str,
+    commitments: Sequence[str],
+    composition: str,
+) -> list[str]:
+    """The derived markers committed beside a command's segments (#1104).
+
+    A certification marker for each listed segment some occurrence ran exactly as listed, only in
+    a ``single`` or ``and_chain`` command (a ``masked`` one certifies nothing anyway), and the
+    own-background-job stop marker (``domain.process_control.process_control_commitment``) of a
+    command that is not itself a verification run. Both travel inside the existing commitment list,
+    so no envelope, outbox or wire shape changes and an older build reads them as inert
+    commitments that match nothing.
+    """
+
+    from finishup.domain.process_control import own_job_stop_signal, process_control_commitment
+
+    markers: list[str] = []
+    if commitments and composition in {"single", "and_chain"}:
+        bare: set[str] = set()
+        if _collect(normalized, 0, [], None, bare)[0]:
+            listed = set(commitments)
+            for text in sorted(bare):
+                if "\x00" in text:
+                    continue
+                segment = observed_command_commitment(key_material, text)
+                if segment in listed:
+                    markers.append(segment_certification_commitment(segment))
+    stop = own_job_stop_signal(normalized)
+    if stop is not None:
+        # A verifier stopped by its own ``kill`` proves nothing; it keeps the ordinary duty.
+        from finishup.domain.observation_selection import command_is_verification
+
+        if not command_is_verification(normalized):
+            markers.append(process_control_commitment(stop, whole))
+    return sorted(set(markers))
 
 
 def _unquoted(value: str) -> str:

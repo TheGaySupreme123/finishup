@@ -85,7 +85,12 @@ of the same command (never worded as "a check proved"); its source is the passin
 disclosed on the receipt as "disclosed failed command", never clean. `acknowledged_not_done` on it
 is bookkeeping (`acknowledged_not_done_bookkeeping`), because the requirement-level duty stays with
 the work-integrity pack's claim-level finding. Both tokens were added in place to the unreleased
-status-result 1.4.0 and check-result 1.4.0/1.5.0 `closure_basis` enums.
+status-result 1.4.0 and check-result 1.4.0/1.5.0 `closure_basis` enums. The receipt document
+carries them in its section text and counters sentence only: it gains no
+`failed_run_disclosed_finding_ids` or retired-id array beside the `self_verified`,
+`limitation_disclosed`, `disputed_after_rebuttal` and `acknowledged_not_done` arrays. A machine
+reader reads each finding's `closure_basis` from status or check instead; a receipt array is a
+follow-up (#1104) if a reader needs one.
 
 | Obligation basis | Class | Effect |
 |---|---|---|

@@ -9,10 +9,11 @@ failure history instead of an omission:
   can replace the earlier disclosure duty. An unknown outcome does not certify repair. The
   identity is the installation-keyed ``hmac-sha256:`` command commitment the hook computes and
   materialization stores as ``omitted:<commitment>`` in the action's ``command`` field; the raw
-  command text never reaches the ledger. A later *success* also certifies each of its exact
-  segment commitments when its composition is ``single`` or ``and_chain`` (#1104, ADR-045): every
-  simple command of a passing ``cd /app && pytest -q`` exited zero, so it retires a failed
-  ``pytest -q``. A ``masked`` composition (``;``, ``||``, ``|``, ``&``, a shell heredoc) certifies
+  command text never reaches the ledger. A later *success* also certifies each exact segment
+  commitment that ran exactly as listed when its composition is ``single`` or ``and_chain``
+  (#1104, ADR-045, ``certified_identities``): every simple command of a passing
+  ``cd /app && pytest -q`` exited zero, so it retires a failed ``pytest -q``, while a passing
+  ``PYTEST_ADDOPTS=--co pytest -q`` ran a different command and retires nothing. A ``masked`` composition (``;``, ``||``, ``|``, ``&``, a shell heredoc) certifies
   no segment, and a failed chain is retired only by its own whole identity. Any other command,
   and any unkeyed or structural placeholder, supersedes nothing.
 * **No edit inference.** A workspace edit changes the state being verified, but it does not prove
@@ -40,7 +41,10 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Final, cast
 
-from finishup.domain.command_segments import MAX_COMMAND_COMMITMENTS
+from finishup.domain.command_segments import (
+    MAX_COMMAND_COMMITMENTS,
+    segment_certification_commitment,
+)
 from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -50,7 +54,7 @@ from finishup.domain.events import (
     ResultRecordedPayload,
     is_observation_authored,
 )
-from finishup.domain.process_control import PROCESS_CONTROLS, stopped_own_job
+from finishup.domain.process_control import process_control_from_commitments, stopped_own_job
 from finishup.domain.values import ActionId, EventId, ResultId, event_id
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
 from finishup.protocol.coverage import Coverage, PublicationChannel
@@ -108,12 +112,6 @@ _RUNNER_SUFFIX_RE: Final = re.compile(
 )
 _RUNNER_CLASSES: Final = frozenset(
     {"exploration", "test", "build", "lint", "typecheck", "vcs", "other", "compound"}
-)
-# The command's own-background-job stop shape (#1104, ``domain.process_control``). Written into the
-# base text *before* the tool suffix, so a build that predates it still reads the tool, runner
-# and runtime suffixes it knows and simply keeps the ordinary failure duty.
-_PROCESS_SUFFIX_RE: Final = re.compile(
-    r" \(process (stop_own_job_term|stop_own_job_int|stop_own_job_kill)\)\Z", re.ASCII
 )
 # Hook-derived runtime facts (#977), appended after the runner suffix in this closed order:
 # where a package install resolved its interpreter, an edit outside the workspace root, and the
@@ -235,10 +233,14 @@ def command_segment_identities(command: object) -> tuple[frozenset[str], str] | 
 def certified_identities(segments: object, composition: object) -> frozenset[str]:
     """The segment commitments a *success* with this composition proves passed, else empty.
 
-    Only ``single`` (one simple command behind wrappers, prefixes or redirections) and
-    ``and_chain`` (every segment ran and exited zero for the whole to exit zero) certify their
-    segments. A ``masked`` composition can exit zero while a segment failed, so it certifies none.
-    A malformed list never widens a match: anything but bounded keyed commitments certifies none.
+    Only ``single`` and ``and_chain`` (every segment ran and exited zero for the whole to exit
+    zero) certify, and only the segments that ran exactly as listed: those the hook marked with
+    ``domain.command_segments.segment_certification_commitment``. A segment the hook listed after
+    dropping a leading assignment, ``env``, ``time``, ``nohup``, ``exec`` or an input redirection
+    (``PYTEST_ADDOPTS=--co pytest -q``) ran a different command and certifies nothing. A
+    ``masked`` composition can exit zero while a segment failed, so it certifies none, and a list
+    written before the marker existed certifies none. A malformed list never widens a match:
+    anything but bounded keyed commitments certifies none.
     """
 
     if composition not in {"single", "and_chain"} or not isinstance(segments, (list, tuple)):
@@ -248,7 +250,8 @@ def certified_identities(segments: object, composition: object) -> frozenset[str
         type(item) is not str or _COMMITMENT_PATTERN.fullmatch(item) is None for item in items
     ):
         return frozenset()
-    return frozenset(cast(list[str] | tuple[str, ...], items))
+    listed = frozenset(cast(list[str] | tuple[str, ...], items))
+    return frozenset(item for item in listed if segment_certification_commitment(item) in listed)
 
 
 def success_certified_identities(command: object) -> frozenset[str]:
@@ -462,17 +465,14 @@ def observed_action_description(
     write_outside_workspace: bool = False,
     effective_user: str | None = None,
     write_scope: str | None = None,
-    process_control: str | None = None,
 ) -> str:
     """Append bounded host facts to an observed action description, when known.
 
-    The suffix order is fixed (process, tool, runner, install, write, user) so each reader can
+    The suffix order is fixed (tool, runner, install, write, user) so each reader can
     strip the later suffixes before parsing an earlier one. Every value is a closed token.
     """
 
     result = base
-    if process_control in PROCESS_CONTROLS:
-        result = f"{result} (process {process_control})"
     if tool is not None and _TOOL_TOKEN_RE.fullmatch(tool) is not None:
         result = f"{result} (tool {tool})"
     if runner_class in _RUNNER_CLASSES:
@@ -561,14 +561,22 @@ def observed_action_runner_class(description: str) -> str | None:
     return None if match is None else match.group(1)
 
 
-def observed_action_process_control(description: str) -> str | None:
-    """Read back the own-background-job stop shape (#1104) the description carries, or ``None``."""
+def observed_action_process_control(action: ActionRecordedPayload) -> str | None:
+    """The own-background-job stop shape (#1104) an observed command's ``command`` field carries.
 
-    without_runtime, _tokens = _split_runtime_suffixes(description)
-    without_runner = _RUNNER_SUFFIX_RE.sub("", without_runtime)
-    without_tool = _TOOL_SUFFIX_RE.sub("", without_runner)
-    match = _PROCESS_SUFFIX_RE.search(without_tool)
-    return None if match is None else match.group(1)
+    Read from the keyed commitment list materialization copied from the envelope
+    (``domain.process_control.process_control_from_commitments``), never from the description:
+    the shape travels inside the commitments every build already accepts, so neither the local
+    store nor the wire gained a key. ``None`` for any other action.
+    """
+
+    if action.action_kind is not ActionKind.COMMAND:
+        return None
+    whole = command_identity(action.command)
+    parsed = command_segment_identities(action.command)
+    if whole is None or parsed is None:
+        return None
+    return process_control_from_commitments(whole, parsed[0])
 
 
 def observed_failure_exempt(
@@ -588,7 +596,7 @@ def observed_failure_exempt(
     return (
         result is not None
         and action.action_kind is ActionKind.COMMAND
-        and stopped_own_job(observed_action_process_control(action.description), result.exit_status)
+        and stopped_own_job(observed_action_process_control(action), result.exit_status)
     )
 
 

@@ -21,7 +21,8 @@ it one, derived at replay from events the ledger already holds:
   ``success`` (a host-stated exit 0 or ``success: true``, or a stream correction stating one), of a
   *different* call, whose observed ``command`` action has the failed run's keyed identity or
   certifies it as one of its exact segments (``observed_failures.success_certified_identities``:
-  a passing ``single`` or ``and_chain`` command). The rule is the shared supersession rule
+  a segment of a passing ``single`` or ``and_chain`` command that ran exactly as listed, so a
+  leading assignment or ``env``/``nohup``/``exec``/``time`` wrapper certifies nothing). The rule is the shared supersession rule
   (``observed_failures.classify_observed_runs``) with one narrowing: the passing result must belong
   to another call, so a conflicting second outcome for the same call never retires it. An
   ``unknown`` outcome never retires anything, an edit never does, and a run of another command
@@ -33,7 +34,9 @@ surface reads it through ``finding_resolution.finding_is_resolved``; the closure
 drops the fact (unreadable proof is no proof). Nothing is deleted: the finding stays in history.
 
 The reducer calls the incremental entry points (``on_finding_recorded``, ``on_observed_result``)
-in ledger order, which costs O(open candidates) per observed result; ``recompute_all`` re-derives
+in ledger order. An observed failure costs one pass over the results (to name its call's events)
+plus a set test per unlinked candidate, and rescans the ledger only for a candidate that names that
+call; a success costs O(linked candidates); ``recompute_all`` re-derives
 the same facts from a whole projection after a redaction. Both follow one definition, so a full
 replay and an incremental fold agree.
 """
@@ -271,6 +274,20 @@ def on_finding_recorded(
     findings[key] = _with_failed_run(stamped, failed, results, actions, observed)
 
 
+def _call_event_ids(action_key: ActionId, results: _Results, actions: _Actions) -> frozenset[str]:
+    """The source events of one call: its action event and every result event linked to it."""
+
+    events = {
+        str(record.source_event_id)
+        for record in results.values()
+        if record.payload is not None and record.payload.action_id == action_key
+    }
+    action = actions.get(action_key)
+    if action is not None:
+        events.add(str(action.source_event_id))
+    return frozenset(events)
+
+
 def on_observed_result(
     findings: dict[FindingId, FindingProjectionRecord],
     result_key: ResultId,
@@ -290,12 +307,18 @@ def on_observed_result(
         return
     outcome = new.payload.outcome
     if outcome in _FAILED_OUTCOMES:
+        # The new failure can change ``failed_run_of`` only for a finding that names it or its
+        # call (``_named_failures``). Collect the call's events once, so each unlinked finding
+        # costs a set test instead of a scan of the whole ledger (a lifecycle-anchored finding
+        # stays unlinked for good).
+        call_events = _call_event_ids(new.payload.action_id, results, actions)
         for key, record in tuple(findings.items()):
             payload = record.payload
             if (
                 payload is None
                 or not record.observed_failed_command
                 or record.failed_run_result_id is not None
+                or call_events.isdisjoint(str(ref) for ref in payload.subject_refs)
             ):
                 continue
             failed = failed_run_of(payload, results, actions, observed, through=new.source_frontier)

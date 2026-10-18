@@ -636,10 +636,151 @@ def _cursor_case() -> dict[str, Any]:
     }
 
 
+_EXEMPTIONS_PATH: Final = "observations/failed-command-exemptions.case.json"
+# The two command shapes whose failure carries no failed-work duty (#1104): a chain of proven
+# reads, and a command that stops the background job it launched itself. The command text is the
+# point of these variants, so it is kept; it never reaches the store, the wire or the ledger.
+_READ_CHAIN: Final = "cd /app && echo '--- files ---' && ls PLACEHOLDER_MISSING_DIR"
+_OWN_JOB_STOP: Final = "python app.py & sleep 2; curl -s localhost:8000; kill $!; wait $!"
+
+
+def _exemption(
+    runner_class: str, process_control: str | None, failure_duty: bool
+) -> dict[str, Any]:
+    return {
+        "failure_duty": failure_duty,
+        "process_control": process_control,
+        "runner_class": runner_class,
+    }
+
+
+def _exemptions_case() -> dict[str, Any]:
+    codex_source = "Codex CLI 0.157.1 direct shell PostToolUse (unified-exec status header)"
+    claude_source = "Claude Code hooks reference (code.claude.com/docs/en/hooks), Bash failure"
+    cursor_source = "Cursor hooks reference (cursor.com/docs/hooks), Shell postToolUse exitCode"
+
+    def codex(call: str, command: str, exit_code: int) -> dict[str, Any]:
+        return {
+            "event": "PostToolUse",
+            "host": "codex",
+            "payload": _codex_hook(
+                "Bash",
+                call,
+                {"command": command},
+                _unified_exec("5e0c7a", "2.2", f"Process exited with code {exit_code}", 4),
+            ),
+            "provenance": _DERIVED,
+            "source": codex_source,
+        }
+
+    def claude(call: str, command: str) -> dict[str, Any]:
+        return {
+            "event": "PostToolUseFailure",
+            "host": "claude",
+            "payload": {
+                "cwd": "/workspace/project",
+                "error": "PLACEHOLDER_ERROR",
+                "hook_event_name": "PostToolUseFailure",
+                "is_interrupt": False,
+                "permission_mode": "default",
+                "session_id": "5c1d9e0a-910a-4b2c-8d3e-000000001104",
+                "tool_input": {"command": command, "description": "PLACEHOLDER"},
+                "tool_name": "Bash",
+                "tool_use_id": call,
+            },
+            "provenance": _DOCUMENTED,
+            "source": claude_source,
+        }
+
+    def cursor(call: str, command: str, exit_code: int) -> dict[str, Any]:
+        return {
+            "event": "postToolUse",
+            "host": "cursor",
+            "payload": {
+                "conversation_id": "7d2e4f60-910c-4a1b-9c2d-000000001104",
+                "cursor_version": "3.17.8",
+                "cwd": "/workspace/project",
+                "duration": 412,
+                "generation_id": "8e3f5a71-910d-4b2c-8d3e-000000001104",
+                "hook_event_name": "postToolUse",
+                "model": "PLACEHOLDER_MODEL",
+                "tool_input": {"command": command, "cwd": "/workspace/project"},
+                "tool_name": "Shell",
+                "tool_output": (
+                    f'{{"exitCode":{exit_code},"stderr":"","stdout":"{_PLACEHOLDER_OUTPUT}"}}'
+                ),
+                "tool_use_id": call,
+                "workspace_roots": ["/workspace/project"],
+            },
+            "provenance": _DOCUMENTED,
+            "source": cursor_source,
+        }
+
+    inputs = {
+        "codex_read_chain_exit_2": codex("call_1104_read", _READ_CHAIN, 2),
+        "codex_own_job_stop_exit_143": codex("call_1104_stop", _OWN_JOB_STOP, 143),
+        "codex_own_job_crash_exit_1": codex("call_1104_crash", _OWN_JOB_STOP, 1),
+        "claude_read_chain_failure": claude("toolu_01PLACEHOLDER1104READ", _READ_CHAIN),
+        "claude_own_job_stop_failure": claude("toolu_01PLACEHOLDER1104STOP", _OWN_JOB_STOP),
+        "cursor_read_chain_exit_2": cursor("cursor-call-1104-read", _READ_CHAIN, 2),
+        "cursor_own_job_stop_exit_143": cursor("cursor-call-1104-stop", _OWN_JOB_STOP, 143),
+        "cursor_own_job_crash_exit_1": cursor("cursor-call-1104-crash", _OWN_JOB_STOP, 1),
+    }
+    term = "stop_own_job_term"
+    expected = {
+        "codex_read_chain_exit_2": _exemption("exploration", None, False),
+        "codex_own_job_stop_exit_143": _exemption("compound", term, False),
+        "codex_own_job_crash_exit_1": _exemption("compound", term, True),
+        "claude_read_chain_failure": _exemption("exploration", None, False),
+        # Claude Code states no exit status for a failed Bash call, so the stop exemption, which
+        # needs exactly 128 + signal, never applies there.
+        "claude_own_job_stop_failure": _exemption("compound", term, True),
+        "cursor_read_chain_exit_2": _exemption("exploration", None, False),
+        "cursor_own_job_stop_exit_143": _exemption("compound", term, False),
+        "cursor_own_job_crash_exit_1": _exemption("compound", term, True),
+    }
+    return {
+        "controls": _controls(),
+        "expected": {"hook": expected},
+        "fixture_id": "OUT-004",
+        "fixture_schema": "yoetz.fixture-case/1.0.0",
+        "fixture_version": "1.0.0",
+        "input": {"hook": inputs},
+        "minimum_versions": {
+            "codex_hook_mapping": "codex-obs-hook/1.0.0",
+            "cursor_hook_mapping": "cursor-hooks-ordinary-v1",
+            "fixture_contract": "1.0.0",
+            "protocol": "1.0",
+        },
+        "owns_requirements": ["ADR-025/1104-failure-exemptions", "ISSUE-1104/failed-command"],
+        "provenance": {
+            **_provenance(_DERIVED, codex_source),
+            "redaction": (
+                "structural keys kept; output, path and message text replaced by short "
+                "placeholders; the command text is the shape under test and is kept"
+            ),
+            "statement": (
+                "Codex variants derived from the recorded 0.157.1 direct-shell header (a 0.159 "
+                "post states no exit: its outcome arrives through the session stream); Claude Code "
+                "and Cursor variants derived from their documented hook shapes; raw hook stdin "
+                "capture pending"
+            ),
+        },
+        "purpose": (
+            "Pin, per host, which failed shell calls carry no failed-work duty (#1104): a chain "
+            "of reads around cd and an echo banner is exploration, and a command that stops the "
+            "background job it started itself is exempt only when its recorded exit is exactly "
+            "128 + SIGTERM; a crash before the kill, and a Claude Code failure, which states no "
+            "exit, keep the duty. The stop shape travels inside the command commitment list."
+        ),
+    }
+
+
 _CASES: Final = (
     (_CODEX_PATH, "OUT-001", _codex_case),
     (_CLAUDE_PATH, "OUT-002", _claude_case),
     (_CURSOR_PATH, "OUT-003", _cursor_case),
+    (_EXEMPTIONS_PATH, "OUT-004", _exemptions_case),
 )
 
 
@@ -696,7 +837,7 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     manifest_path.write_bytes(manifest_bytes)
-    print("wrote OUT-001..OUT-003 host outcome fixtures and manifest members")
+    print("wrote OUT-001..OUT-004 host outcome fixtures and manifest members")
     return 0
 
 

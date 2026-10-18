@@ -273,6 +273,10 @@ def test_read_only_chains_are_exploration(command: str) -> None:
         # A program that is not a read, and a nested shell kept conservative.
         ("curl -s x | jq .", "compound"),
         ("bash -lc 'cd /app && ls'", "compound"),
+        # A segment that only redirects, or a read-write open (#1104 round 1).
+        ("cd /app; exec 1>out.txt; ls", "compound"),
+        ("cd /app && exec > out.txt && ls", "compound"),
+        ("cd /app; ls <>f", "compound"),
         # A comparison reports by exit status: its failure can be a failed check.
         ("test -f x && cat x", "compound"),
         ("jq -e .ok result.json", "other"),
@@ -312,3 +316,24 @@ def test_quoted_ampersand_is_not_background() -> None:
     assert command_separators("sleep 1 & ls") == frozenset({"&"})
     assert command_separators("bash -lc 'sleep 1 & ls'") == frozenset({"&"})
     assert command_separators("echo 'unterminated") is None
+
+
+@pytest.mark.parametrize(
+    ("command", "names"),
+    [
+        ("/home/u/.venv/bin/finishup status --json", {"finishup"}),
+        ("./yoetz status", {"yoetz"}),
+        ("bash -lc '/opt/x/bin/finishup status'", {"finishup"}),
+        # A path segment or a bare name never triggers the install-record proof (#1104 round 1).
+        ("cat src/finishup/kernel/x.py", set[str]()),
+        ("pytest -q src/finishup/kernel/y.py", set[str]()),
+        ("finishup status", set[str]()),
+        ("ls /home/user/yoetzz", set[str]()),
+    ],
+)
+def test_only_a_path_ending_in_the_launcher_name_gates_the_proof(
+    command: str, names: set[str]
+) -> None:
+    from finishup.domain.observation_selection import launcher_names_in
+
+    assert launcher_names_in(command) == names

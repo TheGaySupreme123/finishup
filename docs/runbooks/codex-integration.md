@@ -1763,7 +1763,9 @@ A failed shell call becomes an observation finding (`failed_command_unresolved`,
 
 - **Retire on pass: supported.** A later passing run of the same command, alone or as a segment
   of a passing `&&` chain (`cd /app && pytest -q`), retires the finding (`verified_resolved`,
-  closure basis `retired_by_passing_run`). FinishUP reads the outcome it finally records for the
+  closure basis `retired_by_passing_run`). The segment must run as is: behind a leading
+  assignment, `env`, `nohup`, `exec`, `time` or an input redirection it is a different command
+  and retires nothing (ADR-025). FinishUP reads the outcome it finally records for the
   passing call. On Codex 0.159 the `PostToolUse` of a shell call states no exit, so that outcome
   is the session stream's: an outcome correction joined to the hook's call, or the stream copy
   when it committed first. A rerun whose exit never reaches FinishUP stays `unknown` and retires
@@ -1782,21 +1784,37 @@ A failed shell call becomes an observation finding (`failed_command_unresolved`,
 - **FinishUP's own CLI: supported** through its installed launcher path (proven from the install
   record, never by name), `observe status`, `service status`, and `| jq`.
 - **Stopping its own background job: supported in one command.** `server & ...; kill $!;
-  wait $!` exiting `143` (or `130`/`137` for `-INT`/`-KILL`) carries no duty. The hook records the
-  shape (`process_control`) without an exit, and the stream's exit decides it; any other exit keeps
-  the duty. Deferred: a `write_stdin` interrupt of a running session and a separate `kill PID`
-  call (no recorded payload), owned by #1104.
+  wait $!` exiting `143` (or `130`/`137` for `-INT`/`-KILL`) carries no duty. The shape is a
+  marker inside the command's keyed commitment list, which the hook and the session stream both
+  compute from the command text, so a hook-first call (the hook's copy carries the shape and no
+  exit, the joined stream correction states the exit) and a stream-first call (the stream copy
+  carries both) are judged alike by the ledger readers and the advice rule. Any other exit, or an
+  unknown one, keeps the duty, and a stopped verifier (`pytest -q & ...; kill $!; wait $!`) never
+  carries the shape. Pinned by `test_a_stopped_own_job_is_judged_by_the_joined_stream_exit` and
+  `test_a_stopped_own_job_committed_stream_first_keeps_the_same_judgment`, and through the real
+  hook handler by the Codex variants of `fixtures/observations/failed-command-exemptions.case.json`
+  (OUT-004, 0.157.1 header shape). Known limit: a host
+  timeout that terminates the whole command with `SIGTERM` exits `143` too; Codex states no
+  timeout flag for a shell call, so FinishUP cannot tell the two apart. Deferred: a `write_stdin`
+  interrupt of a running session and a separate `kill PID` call (no recorded payload), owned by
+  #1104.
 - **Doubled skill path: not fixed here.** Codex lists the skill under
   `<codex-home>/plugins/cache/finishup/finishup/<version>/skills/finishup/SKILL.md` because the
   marketplace and the plugin are both named `finishup`. Agents that collapse the doubled segment
   read a path that does not exist. That read is now exploration and raises no finding. Renaming
-  the marketplace is a host-registration migration, filed as a packaging follow-up.
-- **Version skew.** `process_control` was added in place to the unreleased control-request
-  2.9.0, which changes the schema manifest digest. A hook whose manifest differs from the running
-  service's is refused at the handshake (`service_incompatible`) before any frame is sent, so no
-  frame carrying the field reaches a service that would refuse it (the refusal is pinned by
-  `tests/unit/service/test_control_protocol.py`). `finishup service restart`, or the next `start`,
-  supersedes the older holder.
+  the marketplace is a host-registration migration, owed as a packaging follow-up on #1104.
+- **Version skew.** No observation key, outbox shape or control-request field was added: the
+  stop shape and the segment-certification markers are extra entries of the existing
+  `command_segment_commitments` list, which every 0.3 build accepts as inert commitments. The
+  local observation store and outbox are shared on disk by every build running during an
+  upgrade (an older service's outbox sweeper reads them directly, with no handshake, and hooks
+  run from retained release copies), and an older reader refuses a whole workspace document that
+  holds an envelope key it does not know; a new key would have stopped its sweeps for every
+  workspace. An older reader of these rows simply keeps the ordinary failure duty and certifies
+  no segment. The in-place `status-result` 1.4.0 and `check-result` 1.5.0 closure-basis values
+  still change the schema manifest digest, so a hook of this build is refused by an older
+  running service at the handshake (`service_incompatible`) and its rows wait in the outbox until
+  `finishup service restart`, or the next `start`, supersedes the older holder.
 
 ## Smart observation selection (issue #687)
 

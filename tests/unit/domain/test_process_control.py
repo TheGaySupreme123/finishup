@@ -84,3 +84,82 @@ def test_the_exit_must_be_exactly_the_stop_status(
     token: str | None, exit_status: int | None, stopped: bool
 ) -> None:
     assert stopped_own_job(token, exit_status) is stopped
+
+
+# --- how the shape travels: inside the commitment list (#1104 round 1) ------------------------
+
+_KEY = b"k" * 32
+_SERVER = "python app.py & sleep 2; curl -s localhost:8000; kill $!; wait $!"
+
+
+def _commitments(command: str) -> tuple[str, tuple[str, ...]]:
+    from finishup.domain.command_segments import command_segment_commitments
+    from finishup.domain.observation import observed_command_commitment
+
+    whole = observed_command_commitment(_KEY, command)
+    segments = command_segment_commitments(_KEY, command)
+    return whole, () if segments is None else segments[0]
+
+
+def test_the_stop_shape_is_a_marker_in_the_commitment_list() -> None:
+    from finishup.domain.process_control import (
+        process_control_commitment,
+        process_control_from_commitments,
+    )
+
+    whole, listed = _commitments(_SERVER)
+    assert process_control_commitment(STOP_OWN_JOB_TERM, whole) in listed
+    assert process_control_from_commitments(whole, listed) == STOP_OWN_JOB_TERM
+    # The marker binds the whole command: another command's list never carries this one's.
+    other, other_listed = _commitments("server & sleep 1; kill -INT %1; wait")
+    assert process_control_from_commitments(other, other_listed) == STOP_OWN_JOB_INT
+    assert process_control_from_commitments(whole, other_listed) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A verifier stopped by its own kill proves nothing, so it carries no marker.
+        "pytest -q & sleep 1; kill $!; wait $!",
+        "npm run build & sleep 5; kill %1; wait %1",
+        "server & sleep 1; kill $!; echo done",
+    ],
+)
+def test_no_marker_without_the_shape_or_for_a_verifier(command: str) -> None:
+    from finishup.domain.process_control import process_control_from_commitments
+
+    whole, listed = _commitments(command)
+    assert process_control_from_commitments(whole, listed) is None
+
+
+def test_a_damaged_list_never_grants_the_shape() -> None:
+    from finishup.domain.process_control import (
+        process_control_commitment,
+        process_control_from_commitments,
+    )
+
+    whole, _listed = _commitments(_SERVER)
+    both = [process_control_commitment(token, whole) for token in sorted(PROCESS_CONTROLS)]
+    assert process_control_from_commitments(whole, both) is None
+    assert process_control_from_commitments("omitted:structural", both[:1]) is None
+    assert process_control_from_commitments(whole, "not a list") is None
+
+
+def test_the_envelope_and_wire_gain_no_key() -> None:
+    """Version skew: an older build validates envelopes against a closed key set, so the shape
+    must never become a structural key of its own (the shared local store and outbox)."""
+
+    from finishup.domain.observation import (
+        _STRUCTURAL_KEYS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert "process_control" not in _STRUCTURAL_KEYS
+
+
+def test_markers_keep_the_list_within_its_bound() -> None:
+    from finishup.domain.command_segments import MAX_COMMAND_COMMITMENTS
+
+    chain = " && ".join(f"tool{n} --flag-a --flag-b value{n}" for n in range(40))
+    _whole, listed = _commitments(chain)
+    assert len(listed) <= MAX_COMMAND_COMMITMENTS
+    assert list(listed) == sorted(set(listed))

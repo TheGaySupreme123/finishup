@@ -6,9 +6,20 @@ the job's status, so the call exits ``143`` (``128 + SIGTERM``) and every host r
 failure, although nothing the agent was asked to do failed. That failure carries no failed-work
 duty, but only when FinishUP can tell it from a crash.
 
-The hook classifies the *shape* from the command text alone (never output, never an exit
-status), so the same token is derived on every host, including Codex, whose ``PostToolUse``
-states no exit (``own_job_stop_signal``). The exit is judged later against the outcome FinishUP
+The *shape* is classified from the command text alone (never output, never an exit status), so
+the same token is derived on every host, including Codex, whose ``PostToolUse`` states no exit
+(``own_job_stop_signal``).
+
+**How the shape travels (version skew, #1104 round 1).** Not as a structural key: the local
+observation store and the outbox are shared on disk by every build that runs during an upgrade
+(a still-running older service, hooks run from retained release copies), and an older reader
+refuses an envelope with a key it does not know, for the whole workspace. The shape therefore
+travels as one more entry of the existing ``command_segment_commitments`` list:
+``process_control_commitment``, a keyed derivative of the whole-command commitment that every
+build already accepts as an inert commitment. ``domain.command_segments`` adds it wherever a
+command's commitments are computed (a host hook and the Codex session stream alike, so a
+stream-first call carries it too), and ``process_control_from_commitments`` reads it back. An
+older build sees nothing new and keeps the ordinary failure duty. The exit is judged later against the outcome FinishUP
 finally records for the call (a hook-stated exit, or the Codex session stream's outcome joined to
 the call): ``stopped_own_job`` is true only for exactly ``128 + signal``. A job that crashed
 before the kill makes ``wait`` return the job's own status (say ``1``), and a ``kill`` of a job
@@ -31,20 +42,22 @@ a running session, a separate ``kill PID`` call, and Claude Code ``KillShell``.
 
 from __future__ import annotations
 
+import hashlib
 import re
-from typing import Final
+from collections.abc import Iterable
+from typing import Final, cast
 
 __all__ = [
     "PROCESS_CONTROLS",
-    "PROCESS_CONTROL_KEY",
     "STOP_OWN_JOB_INT",
     "STOP_OWN_JOB_KILL",
     "STOP_OWN_JOB_TERM",
     "own_job_stop_signal",
+    "process_control_commitment",
+    "process_control_from_commitments",
     "stopped_own_job",
 ]
 
-PROCESS_CONTROL_KEY: Final = "process_control"
 STOP_OWN_JOB_TERM: Final = "stop_own_job_term"
 STOP_OWN_JOB_INT: Final = "stop_own_job_int"
 STOP_OWN_JOB_KILL: Final = "stop_own_job_kill"
@@ -157,3 +170,42 @@ def stopped_own_job(token: object, exit_status: object) -> bool:
 
     expected = _EXPECTED_EXIT.get(token) if type(token) is str else None
     return expected is not None and type(exit_status) is int and exit_status == expected
+
+
+_MARKER_DOMAIN: Final = b"yoetz/process-control/v1/"
+_COMMITMENT_RE: Final = re.compile(r"\Ahmac-sha256:[0-9a-f]{64}\Z", re.ASCII)
+
+
+def process_control_commitment(token: str, command_commitment: str) -> str:
+    """The marker that the command committed as ``command_commitment`` has stop shape ``token``.
+
+    A keyed derivative in the ``hmac-sha256:`` form, never a commitment to text: SHA-256 over a
+    fixed domain, the closed token and the installation-keyed whole-command commitment. Only the
+    key's holder can produce it for a command; any reader holding the commitment can recognize
+    it, and it can never equal a command, segment or canonical commitment.
+    """
+
+    digest = hashlib.sha256(
+        _MARKER_DOMAIN + token.encode("ascii") + b"\x00" + command_commitment.encode("ascii")
+    )
+    return "hmac-sha256:" + digest.hexdigest()
+
+
+def process_control_from_commitments(command_commitment: object, commitments: object) -> str | None:
+    """The stop shape a command's commitment list carries for its whole commitment, else ``None``.
+
+    Exactly one marker must match; anything malformed, or a list naming two shapes, reads as none,
+    so a damaged list never grants the exemption.
+    """
+
+    if type(command_commitment) is not str or _COMMITMENT_RE.fullmatch(command_commitment) is None:
+        return None
+    if not isinstance(commitments, (list, tuple, frozenset, set)):
+        return None
+    present = {item for item in cast(Iterable[object], commitments) if type(item) is str}
+    found = [
+        token
+        for token in sorted(PROCESS_CONTROLS)
+        if process_control_commitment(token, command_commitment) in present
+    ]
+    return found[0] if len(found) == 1 else None

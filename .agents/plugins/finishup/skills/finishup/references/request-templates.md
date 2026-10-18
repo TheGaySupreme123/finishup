@@ -885,8 +885,9 @@ answer is final (`disputed_after_rebuttal`, `self_verified`) shows `next_actions
 takes no response, and nothing is recorded for one.
 
 A failed-command finding ("Unresolved failed command observed") needs no response once you rerun
-the same command after the fix and it passes, alone or inside a passing `&&` chain: the pass
-retires it. If the failure is expected or will stay, respond `acknowledged` with a `reason` that
+the same command after the fix, exactly as written, and it passes, alone or inside a passing `&&`
+chain: the pass retires it. A leading `VAR=value`, `env`, `nohup`, `exec` or `time` makes it a
+different command that retires nothing. If the failure is expected or will stay, respond `acknowledged` with a `reason` that
 says why: it is then disclosed on the receipt (never clean), and a later passing run still retires
 it.
 

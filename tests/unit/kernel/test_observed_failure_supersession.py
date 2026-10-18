@@ -597,12 +597,8 @@ _SERVER = "python app.py & sleep 2; curl -s localhost:8000; kill $!; wait $!"
 @pytest.mark.parametrize(("exit_status", "omitted"), [(143, False), (1, True), (137, True)])
 def test_own_job_stopped_failure_needs_no_limitation_ref(exit_status: int, omitted: bool) -> None:
     ledger = ObservedLedger()
-    failed = ledger.run(
-        _SERVER,
-        ResultOutcome.FAILURE,
-        exit_status=exit_status,
-        process_control="stop_own_job_term",
-    )
+    # The stop shape travels inside the command's commitment list (#1104 round 1).
+    failed = ledger.run(_SERVER, ResultOutcome.FAILURE, exit_status=exit_status)
     ledger.claim()
     assert omitted_results(ledger) == ((failed,) if omitted else ())
 
@@ -611,35 +607,28 @@ def test_a_stream_correction_states_the_stop_exit_for_a_codex_call() -> None:
     """Codex: the hook result is unknown; the correction's exit decides the exemption."""
 
     ledger = ObservedLedger()
-    unknown = ledger.run(_SERVER, ResultOutcome.UNKNOWN, process_control="stop_own_job_term")
+    unknown = ledger.run(_SERVER, ResultOutcome.UNKNOWN)
     ledger.correct_outcome(unknown, ResultOutcome.FAILURE, exit_status=143)
     ledger.claim()
     assert omitted_results(ledger) == ()
 
 
-def test_the_process_suffix_keeps_every_older_suffix_readable() -> None:
-    from finishup.kernel.observed_failures import (
-        observed_action_description,
-        observed_action_process_control,
-        observed_action_runner_class,
-        observed_action_runtime_tokens,
-        observed_action_tool,
-    )
+def test_the_stop_shape_rides_in_the_commitment_list_not_the_description() -> None:
+    """#1104 round 1: no description suffix and no envelope key; an older reader sees nothing new."""
 
-    description = observed_action_description(
-        "Observed command via Codex hook",
-        "Bash",
-        "compound",
-        effective_user="root",
-        process_control="stop_own_job_term",
-    )
-    assert description == (
-        "Observed command via Codex hook (process stop_own_job_term) (tool Bash) "
-        "(runner compound) (user root)"
-    )
-    assert observed_action_process_control(description) == "stop_own_job_term"
-    assert observed_action_tool(description) == "Bash"
-    assert observed_action_runner_class(description) == "compound"
-    assert observed_action_runtime_tokens(description) == frozenset({"user root"})
-    plain = observed_action_description("Observed command via Codex hook", "Bash", "compound")
-    assert observed_action_process_control(plain) is None
+    from finishup.domain.events import ActionKind, ActionRecordedPayload
+    from finishup.domain.values import action_id
+    from finishup.kernel.observed_failures import observed_action_process_control
+
+    def action(command: str) -> ActionRecordedPayload:
+        return ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000001"),
+            ActionKind.COMMAND,
+            "Observed command via Codex hook (tool Bash) (runner compound)",
+            command=command_identity_for(command),
+        )
+
+    assert observed_action_process_control(action(_SERVER)) == "stop_own_job_term"
+    assert observed_action_process_control(action("server & sleep 1; kill $!; echo done")) is None
+    # A verifier stopped by its own kill keeps the ordinary duty: no marker is committed.
+    assert observed_action_process_control(action("pytest -q & sleep 1; kill $!; wait $!")) is None

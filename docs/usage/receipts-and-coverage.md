@@ -335,7 +335,8 @@ Two more things decide what the receipt will say, and status tells you before yo
   step is `work_open_findings`, not `disclose_limitations`.
 - **A command FinishUP saw fail.** When FinishUP observes a command fail, it records a finding
   ("Unresolved failed command observed") right away. Rerun the same command after the fix, alone or
-  inside a passing `&&` chain such as `cd /app && pytest -q`: when that run passes, the finding is
+  inside a passing `&&` chain such as `cd /app && pytest -q`, exactly as written (`FOO=1 pytest -q`,
+  or `pytest -q` behind `env`, `nohup` or `time`, is a different command): when that run passes, the finding is
   retired by itself (`verified_resolved`, basis `retired_by_passing_run`) and stays in the history.
   An edit does not retire it, a passing run of a different command does not, a run whose outcome
   FinishUP never learned does not, and a check cannot prove it absent. If the failure is expected or

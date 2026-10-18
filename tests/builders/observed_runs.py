@@ -419,7 +419,6 @@ class ObservedLedger:
         runner: str | None = None,
         write_scope: str | None = None,
         workspace_effect: str | None = None,
-        process_control: str | None = None,
     ) -> ResultId:
         """Record one tool call as the coordinator materializes it: action, then result.
 
@@ -465,7 +464,6 @@ class ObservedLedger:
                     write_outside_workspace=write_outside_workspace,
                     effective_user=effective_user,
                     write_scope=write_scope,
-                    process_control=process_control,
                 ),
                 command=recorded,
                 subject_state=subject_state,

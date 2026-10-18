@@ -253,7 +253,8 @@ a hidden evaluator or something you cannot obtain could settle), that finding is
 request, not work: one reasoned `acknowledged` (or a `finishup-verification-limit:<obligation id>`
 decision) discloses it, with no repair attempt required, and the receipt lists the disclosed limit
 instead of reading clean. A finding about a command FinishUP saw fail needs no answer once you
-rerun the same command and it passes (alone or inside a passing `&&` chain): the pass retires it.
+rerun the same command, exactly as written, and it passes (alone or inside a passing `&&` chain):
+the pass retires it.
 If the failure is expected or will stay, one `acknowledged` with the reason discloses it on the
 receipt. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
 cannot prove after a later check because of its own limits: say how you verified the repair in
@@ -308,11 +309,12 @@ finding stands. `to_do` is work you can still do (it includes `awaiting_ruling`,
 rejected with a reason that only a reviewer's ruling can settle; the next move for those is
 `check`); `unmet` are requirements you acknowledged as not done; `disclosed` are final items the
 receipt will disclose (a repair you verified yourself, a limit you stated, a bookkeeping finding
-you acknowledged); `to_disclose` are limits a reviewer asked you to state and that you have not
+you acknowledged, a failed command you acknowledged); `to_disclose` are limits a reviewer asked you to state and that you have not
 yet stated (answer once with `acknowledged`; it is not work). `receipt_blocking_finding_count`
 is `to_do` plus `unmet`: the findings that keep a receipt from concluding
 `no_unresolved_deterministic_findings` even after every response; only a later qualifying check
-of the repaired record shrinks `to_do`. Accordingly, `findings_unanswered` is answered;
+of the repaired record shrinks `to_do`, except for a command FinishUP saw fail, which a later
+passing run of the same command retires and no check can. Accordingly, `findings_unanswered` is answered;
 `receipt_findings_unresolved` is repaired and rechecked once, and should not trigger another
 response loop. After that recheck, read the finding's `resolved` value. If the issue re-fires,
 or it does not re-fire but remains `resolved=false` because the check did not qualify, stop

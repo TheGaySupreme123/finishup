@@ -90,8 +90,31 @@ def test_a_later_pass_retires_the_observed_failed_command_finding() -> None:
 def test_a_passing_and_chain_containing_the_failed_command_retires_it() -> None:
     ledger = ObservedLedger()
     finding = _finding_for(ledger, ledger.fail(_PYTEST))
-    passing = ledger.passes(f"cd /app && FOO=1 {_PYTEST}")
+    passing = ledger.passes(f"cd /app && {_PYTEST} > log.txt 2>&1")
     _assert_retired(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.parametrize(
+    "conditioned",
+    [
+        f"PYTEST_ADDOPTS=--collect-only {_PYTEST}",
+        f"cd /app && PYTEST_ADDOPTS=--co {_PYTEST}",
+        f"PYTEST_ADDOPTS='--deselect tests/test_x.py::t' {_PYTEST}",
+        f"env PYTEST_ADDOPTS=--lf {_PYTEST}",
+        f"nohup {_PYTEST}",
+        f"exec {_PYTEST}",
+        f"time {_PYTEST}",
+        f"{_PYTEST} < answers.txt",
+    ],
+)
+def test_a_pass_of_a_conditioned_segment_never_retires_it(conditioned: str) -> None:
+    """#1104 round 1: a segment listed after dropping a leading assignment, a wrapper or an input
+    redirection ran a different command than the one that failed, so its pass retires nothing."""
+
+    ledger = ObservedLedger()
+    finding = _finding_for(ledger, ledger.fail(_PYTEST))
+    ledger.passes(conditioned)
+    _assert_open(ledger, finding)
 
 
 def test_a_finding_materialized_after_the_pass_is_retired_at_birth() -> None:
@@ -296,6 +319,7 @@ _COMMANDS = (
     "pytest -q tests/test_other.py",
     f"cd /app && {_PYTEST}",
     f"cd /app; {_PYTEST}",
+    f"FOO=1 {_PYTEST}",
     "npm test",
     "cd web && npm test && npm run lint",
 )
@@ -422,3 +446,52 @@ def test_an_open_observed_failure_says_rerun_not_check() -> None:
     _summary, _markdown, text = _receipt_texts(ledger)
     assert "no later passing run of the same command was observed" in text
     assert "no later recorded check is available" not in text
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_incremental_fold_equals_recompute_all_with_codex_and_unlinked_findings(seed: int) -> None:
+    """The fold's narrowed failure branch (#1104 round 1) derives what ``recompute_all`` derives.
+
+    Codex-shaped calls (an ``unknown`` hook result, then a stream correction), findings recorded
+    before their correction, and lifecycle-anchored findings that never link all take part.
+    """
+
+    from dataclasses import replace as dc_replace
+
+    from finishup.kernel.finding_retirement import recompute_all
+
+    chooser = random.Random(seed)
+    ledger = ObservedLedger()
+    for step in range(18):
+        command = chooser.choice(_COMMANDS)
+        roll = chooser.random()
+        if roll < 0.3:
+            failed = ledger.fail(command, exit_status=chooser.choice((1, 2)))
+            if chooser.random() < 0.6:
+                _finding_for(ledger, failed, number=step + 1)
+        elif roll < 0.5:
+            hook = ledger.run(command, ResultOutcome.UNKNOWN)
+            if chooser.random() < 0.5:
+                ledger.advice_finding(ledger.events_of(hook), number=step + 1)
+            outcome = chooser.choice((ResultOutcome.FAILURE, ResultOutcome.SUCCESS))
+            ledger.correct_outcome(
+                hook, outcome, exit_status=0 if outcome is ResultOutcome.SUCCESS else 1
+            )
+        elif roll < 0.6:
+            ledger.claim(statement="Probing.")
+            ledger.advice_finding((ledger.prefix[-1].event_id,), number=step + 1)
+        elif roll < 0.9:
+            ledger.passes(command)
+        else:
+            ledger.edit()
+    state = _state(ledger)
+    observed = observed_event_ids_from_records(ledger.prefix)
+    folded = dict(state.findings)
+    cleared = {
+        key: dc_replace(
+            record, failed_run_result_id=None, retired_by_event_id=None, retired_frontier=None
+        )
+        for key, record in folded.items()
+    }
+    recompute_all(cleared, state.results, state.actions, observed)
+    assert cleared == folded, seed

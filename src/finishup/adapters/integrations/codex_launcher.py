@@ -22,6 +22,7 @@ from finishup.config.installation import (
     verify_instance_binding,
 )
 from finishup.config.paths import PathSafetyError, isolated_root, read_runtime_pin
+from finishup.domain.observation_selection import launcher_names_in
 from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 
 # Each console script and the distribution whose RECORD owns it. The deprecated ``yoetz`` alias
@@ -102,15 +103,14 @@ def own_launcher_paths(command: object) -> frozenset[str]:
 
     A read exemption for FinishUP's own CLI spelled by its absolute launcher (#1104) must rest on
     path equality to this runtime's RECORD-owned console script, never on a name match. The proof
-    reads the install record, so it runs only for a command text that names a path ending in
-    ``/finishup`` or ``/yoetz``; every other command gets the empty set at no cost.
+    reads the install record, so it runs only for a launcher name some path-shaped word of the
+    command ends with (``observation_selection.launcher_names_in``: ``/x/bin/finishup``, not
+    ``src/finishup/kernel``); every other command gets the empty set at no cost.
     """
 
-    if type(command) is not str or not any(f"/{name}" in command for name in _SCRIPT_DISTRIBUTIONS):
-        return frozenset()
     proven: set[str] = set()
-    for name in _SCRIPT_DISTRIBUTIONS:
-        if f"/{name}" not in command:
+    for name in sorted(launcher_names_in(command)):
+        if name not in _SCRIPT_DISTRIBUTIONS:
             continue
         launcher = installed_launcher(name)
         if launcher is not None:

@@ -14,7 +14,7 @@ from finishup.domain.observation import (
     ObservationGapCode,
     ObservationLifecycle,
 )
-from finishup.domain.process_control import PROCESS_CONTROLS, stopped_own_job
+from finishup.domain.process_control import process_control_from_commitments, stopped_own_job
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
     ObservedRun,
@@ -268,7 +268,6 @@ _FIELD_COMMAND_COMMITMENT: Final = "command_commitment"
 _FIELD_SEGMENT_COMMITMENTS: Final = "command_segment_commitments"
 _FIELD_COMMAND_COMPOSITION: Final = "command_composition"
 _FIELD_RUNNER_CLASS: Final = "runner_class"
-_FIELD_PROCESS_CONTROL: Final = "process_control"
 # The post-phase event kinds that report a completed tool call (Cursor's is mapped to the first).
 _POST_TOOL_EVENT_KINDS: Final = frozenset({"PostToolUse", "postToolUse"})
 # Read only as correlation keys.
@@ -326,19 +325,28 @@ def _command_certifies(envelope: ObservationEnvelope) -> frozenset[str]:
     )
 
 
+def _stop_shape(envelope: ObservationEnvelope) -> str | None:
+    """The own-background-job stop shape (#1104) this envelope's commitment list carries."""
+
+    return process_control_from_commitments(
+        _command_commitment(envelope),
+        envelope.structural_payload.get(_FIELD_SEGMENT_COMMITMENTS),
+    )
+
+
 def _stop_shapes(envelopes: Sequence[ObservationEnvelope]) -> Mapping[str, str]:
     """The own-background-job stop shape (#1104) each keyed command identity carries.
 
     The shape is a function of the command text alone, and the keyed commitment binds that text,
-    so a Codex session-stream copy that states the exit (but carries no shape) is judged by the
-    shape its hook copy recorded for the same command.
+    so a copy that states the exit but lists no commitments (a Codex session-stream copy of a
+    build without them) is judged by the shape another copy recorded for the same command.
     """
 
     shapes: dict[str, str] = {}
     for envelope in envelopes:
         identity = _command_commitment(envelope)
-        shape = envelope.structural_payload.get(_FIELD_PROCESS_CONTROL)
-        if identity is not None and type(shape) is str and shape in PROCESS_CONTROLS:
+        shape = _stop_shape(envelope)
+        if identity is not None and shape is not None:
             shapes[identity] = shape
     return shapes
 
@@ -355,7 +363,7 @@ def _failure_exempt(envelope: ObservationEnvelope, stop_shapes: Mapping[str, str
     payload = envelope.structural_payload
     if payload.get(_FIELD_RUNNER_CLASS) == "exploration":
         return True
-    shape = payload.get(_FIELD_PROCESS_CONTROL)
+    shape = _stop_shape(envelope)
     identity = _command_commitment(envelope)
     if shape is None and identity is not None:
         shape = stop_shapes.get(identity)

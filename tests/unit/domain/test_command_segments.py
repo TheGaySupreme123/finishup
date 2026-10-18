@@ -173,3 +173,44 @@ def test_redirections_and_short_leaders_are_commands(value: str) -> None:
 )
 def test_template_placeholders_stay_placeholders(value: str) -> None:
     assert requested_command_shape(value) == "placeholder"
+
+
+# --- certification markers (#1104 round 1) ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "certified"),
+    [
+        ("cd /app && pytest -q", {"cd /app", "pytest -q"}),
+        ("pytest -q > log.txt 2>&1", {"pytest -q"}),
+        ("bash -lc 'pytest -q'", {"pytest -q"}),
+        ("PYTEST_ADDOPTS=--co pytest -q", set[str]()),
+        ("cd /app && FOO=1 pytest -q", {"cd /app"}),
+        ("env FOO=1 pytest -q", set[str]()),
+        ("nohup pytest -q", set[str]()),
+        ("exec pytest -q", set[str]()),
+        ("time pytest -q", set[str]()),
+        ("python run.py < input.txt", set[str]()),
+        ("FOO=1 pytest -q && pytest -q", {"pytest -q"}),
+        # A masked composition certifies nothing, so it carries no marker.
+        ("cd /app; pytest -q", set[str]()),
+    ],
+)
+def test_only_segments_that_ran_exactly_as_listed_carry_a_marker(
+    command: str, certified: set[str]
+) -> None:
+    from finishup.domain.command_segments import (
+        command_segment_commitments,
+        segment_certification_commitment,
+    )
+    from finishup.domain.observation import observed_command_commitment
+
+    committed = command_segment_commitments(_KEY, command)
+    assert committed is not None
+    listed = set(committed[0])
+    marked = {
+        text
+        for text in ("cd /app", "pytest -q", "python run.py")
+        if segment_certification_commitment(observed_command_commitment(_KEY, text)) in listed
+    }
+    assert marked == certified
