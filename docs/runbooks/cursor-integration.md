@@ -2597,8 +2597,10 @@ An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a FinishUP CLI re
 re-arm the closing review; a command that changed the workspace does, and so does one whose effect
 FinishUP could not establish, which the Stop text says. A command that backgrounds or detaches a
 process (`cmd &`, `nohup`, `setsid`, `disown`, an `&` handed to `bash -c`, `eval` or `ssh`) is
-never established, because it may write after the call ends; a quoted `&` in an ordinary argument
-(`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) is not a background launch (#1089). Round 6: neither is a call whose exit leaves a process it started still running in the
+never established, because it may write after the call ends; a quoted `&` in an argument
+of a program that never runs its arguments or stdin as code (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`,
+`rg 'a&b'`) is not a background launch, while `sudo`/`doas`, shells, interpreters and other
+code-running programs keep the cautious reading (#1089). Round 6: neither is a call whose exit leaves a process it started still running in the
 project (a launcher whose new-session child keeps working, with no background word in its text):
 before comparing, the post-call hook reads the process table (`libproc` on macOS, `/proc` on Linux
 and WSL 2) for a process of the same user that started during the call, is no longer parented by
@@ -2628,7 +2630,8 @@ unverified)` instead, and `finishup observe status` counts every reading by its 
 (`workspace_effect:` line; JSON `workspace_effect_readings` with the last 64 readings and their call
 ids: `call_incomplete`, `background_launch`, `process_lingering`, `workspace_unsettled`, ...; n7
 RC1). A closing review that ended without a judgment is not asked for again
-(`semantic_review_no_judgment`; one new check or a disclosed finish). A repeated delivery of the same call that states another fact is kept as an
+(`semantic_review_no_judgment`; the check's own continuation, at most one new check, or a
+disclosed finish). A repeated delivery of the same call that states another fact is kept as an
 annotation under the call, and `changed` or `unavailable` outweighs `unchanged` (round 6). Real
 edits and review-mode switches still re-arm; receipt,
 work-close and lifecycle records do not. The behavior is the same on macOS, Linux and WSL 2;

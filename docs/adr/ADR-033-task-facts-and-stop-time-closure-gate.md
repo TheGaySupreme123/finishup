@@ -1385,18 +1385,24 @@ pytest` recorded a failing run as a success.
    therefore the call's completion fact for the workspace fingerprint
    (`cli/observe_hooks._codex_post_tool_ended`, `cli/workspace_effect_hook.HOST_CALL_ENDED_KEY`).
    It is a completion fact only: the outcome stays `unknown` with `host_outcome_unavailable`, and
-   the exit comes from the session-stream `CommandExecution` item, whose id is the hook's
-   `tool_use_id` (`core/src/tools/events.rs` `ctx.call_id`; a code-mode nested call uses its
-   `exec-<uuid>` dispatch id for both), so it joins the hook call as its outcome correction. The
+   the exit comes from a joined session-stream item that states it: a `CommandExecution` item,
+   whose id is the hook's `tool_use_id` (`core/src/tools/events.rs` `ctx.call_id`; a code-mode
+   nested call uses its `exec-<uuid>` dispatch id for both), joins the hook call as its outcome
+   correction. A rollout that carries the call only as `function_call` / `function_call_output`
+   rows, whose exit is Codex's text header, gives no exit here; reading that header from the
+   stream row (where Codex, not the command, wrote it) is the session-stream reader's change
+   (n7 W2), and until it lands such a failed read stays `unknown`, never a success. The
    response text is read only to withhold completion (Codex's own running-process header); command
    text that backgrounds or detaches, the lingering-process probe and the directory re-read still
    apply. Fixture OUT-004 (`fixtures/observations/codex-post-tool-outcomes-0.159.0.case.json`)
    records the shape as `derived_from_documented_host_shape`; a raw hook stdin capture is pending
    and replaces the derived variants when it lands.
 2. **No outcome is read from a Codex shell call's text.** On the Codex hook path a plain-string
-   shell `tool_response` is never parsed for an exit header or exec JSON; a host-structured result
-   object, `apply_patch`'s own header and an MCP result's `isError` are still read. OUT-001's
-   header and JSON-text hook variants now expect `unknown`.
+   shell `tool_response` is never parsed for an exit header or exec JSON, neither by the outcome
+   reader nor by the routine-read classifier (`classify_observation(..., host_post_is_success=False)`
+   skips a shell call's string result carriers), so output that is itself `{"success": true}`
+   proves nothing; a host-structured result object, `apply_patch`'s own header and an MCP result's
+   `isError` are still read. OUT-001's header and JSON-text hook variants now expect `unknown`.
 3. **A Codex post is not a success fact.** Claude Code's and Cursor's post event is their closed
    success signal; Codex fires its post for a non-zero exit too. The routine-read classifier
    (`classify_observation(..., host_post_is_success=False)`) therefore never proves a Codex read
@@ -1410,21 +1416,30 @@ pytest` recorded a failing run as a success.
    carries only the token: each post reading is counted by effect and reason in a bounded,
    owner-only, per-workspace tally (`readings.json`: all-time and current/previous clock hour
    counts, and the last 64 readings with the host call id when it is already a closed token),
-   reported by `observe status` as `workspace_effect_readings`. Per-call reasons never enter the
+   reported by `observe status` as `workspace_effect_readings`. A `store_unusable` reading is
+   counted only when the store directory still accepts the tally (best effort); one whose store
+   directory cannot be resolved or written goes uncounted. Per-call reasons never enter the
    hook diagnostic window. Putting the reason on the wire is deferred (a control-request change an
    older running service would refuse).
 5. **Shell-wrapped FinishUP CLI calls keep no lexical exemption.** With (1) and (3) a `finishup
    check` or `finishup status` run through the shell reads `unchanged` and is quiet like any other
    read; one during which the workspace changed stays material.
 6. **A closing review that ended without a judgment is not asked for again.** When the newest
-   closing-review attempt that still covers this state ended `unavailable` (outcome unknown, retry
-   budget, transport, ...) or `timeout`, nothing material followed it and no current closing review
-   succeeded, the closing review counts as current and readiness adds the standing code
+   closing-review attempt that still covers this state ended `unavailable` (any reason: outcome
+   unknown, retry budget, transport, rate limit, quota, or a credential or profile refused before
+   dispatch) or `timeout`, nothing material followed it and no current closing review succeeded,
+   the closing review counts as current and readiness adds the standing code
    `semantic_review_no_judgment` (a readiness token like `semantic_coordinator_failure`, not a
    coverage gap and not a wire field). Before, the walk skipped it and fell back to an older,
    staled review, so the Stop gate asked for "the closing review" while the check's own
    continuation (`semantic_no_judgment`, `semantic_timeout`, `semantic_transport_retry`) allowed
-   one new check under a new request id and then a disclosed local-only finish. Status,
+   one new check under a new request id and then a disclosed local-only finish. The sentence
+   (`NO_JUDGMENT_SENTENCE`) holds for every covered reason: it never says the review ran, defers
+   to the check's own continuation (at most one new check, none after a retry that also returned
+   no judgment, none while that continuation says to wait or fix configuration), and keeps the
+   required-route clause (report a required review as unmet). A newer current closing-review
+   attempt with another outcome (refused, invalid) decides instead: the walk stops at it and the
+   code is not set behind it. Status,
    closure-prepare, the receipt notes, the MCP summaries and the Stop gate opener now say the same
    (`protocol/readiness_text.closing_review_limit_note`). A material change after it asks again
    and clears the code; an older current review that succeeded still wins; an ordinary mid-task
@@ -1433,10 +1448,16 @@ pytest` recorded a failing run as a success.
    ended without a judgment re-projects as `ready_with_limitations`; issued receipts are immutable.
 
 Also: a command's quoted `&` in an ordinary argument (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) is no
-longer a background launch: shell grammar decides (`domain/command_segments.command_may_background`),
-an `&` handed to a shell or interpreter (`bash -c 'x &'`, `eval`, `ssh`, `env -S`, `find -exec`,
-`python -c`) still counts, and text the grammar cannot split keeps the conservative pattern
-(#1089 item 1). Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no snapshot (#1091
+longer a background launch (#1089 item 1). Shell grammar
+(`domain/command_segments.command_may_background`) may only clear the conservative pattern, never
+add a quieter answer elsewhere: it answers "no" only when every segment runs a program known never
+to run an argument or its stdin as code (`curl`, `wget`, `grep`, `rg`, `echo`, `printf`, `cat`,
+`jq`, `head`, `tail`, `wc`, `ls`, one plain `sed` `s` command without the `e`/`w` flag ...), and
+"yes" for a top-level `&`, an `&` in a here-document, a detaching word at a wrapper layer or a
+`sh -c` argument that backgrounds. Everything else (a privilege wrapper such as `sudo` or `doas`,
+whose daemon the same-user process probe cannot see, a shell or interpreter reading stdin or a
+here-document, `eval`, `ssh`, `awk`, `git`, `trap`, `find -exec`, any interpreter, a command or
+process substitution, unsplittable text) keeps the pattern. Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no snapshot (#1091
 N6). The hook's own launcher chain is judged with the same 50 ms clock slack as the candidates,
 so a launcher whose start the Linux 10 ms tick rounded down is not taken for the host (#1090
 PL-1). Residual: if a Codex build's rollout item did not join its hook call by id, the stream copy

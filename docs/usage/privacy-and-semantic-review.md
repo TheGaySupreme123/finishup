@@ -654,9 +654,10 @@ tokens.
   bookkeeping. Effects outside the project folder, such as a database or another directory, are
   not compared. `finishup observe status` shows how many commands were compared, how many could
   not be, and why (for example a command still running in the background), with the last 64 by
-  call. A closing review that ran but returned no judgment (its answer was lost, or it timed out)
-  is not asked for again: you may run one new check, or finish and the receipt says AI-powered
-  review did not return a judgment.
+  call. A closing review that returned no judgment (its answer was lost, it timed out, or the
+  provider was unavailable) is not asked for again. Follow that check's own advice, which allows
+  at most one new check; otherwise finish. FinishUP's closing notes say AI-powered review did not
+  return a judgment, and the receipt lists the review as not completed.
 
 ### Cancelled background review
 

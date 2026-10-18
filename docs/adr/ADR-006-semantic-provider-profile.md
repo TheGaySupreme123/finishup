@@ -1843,7 +1843,10 @@ claiming completion was never judged for completeness. Decisions:
   attempt after that change that was blocked by policy or privacy, not configured,
   classification-uncertain, or denied or expired at human approval satisfies it, because its own
   gaps disclose the limit and a recheck cannot remove it; a timeout or a failed or unavailable
-  provider is transient and leaves the closing review actionable. An unchanged newest check that
+  provider is transient and leaves the closing review actionable, except that when the newest
+  current closing-review attempt itself ended `unavailable` or `timeout` and nothing material
+  followed it, readiness stops asking and discloses the standing code `semantic_review_no_judgment`
+  (ADR-033 amendment of 2026-10-18, n7 RC1, #1105, item 6). An unchanged newest check that
   failed with `coordinator_failure` satisfies it too and is disclosed as the standing code
   `semantic_coordinator_failure`; a material change after that failure asks again. The Stop-time
   closure gate reads the same readiness answer. Check applicability is unchanged: a real edit still

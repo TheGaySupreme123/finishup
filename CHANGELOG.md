@@ -681,16 +681,21 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   review again. Codex sends a shell command's output and no exit status to the hook, so every
   command read as one whose effect could not be established. Codex sends that event only after the
   command has ended, so FinishUP now compares the project's files across it; the result stays
-  unknown until Codex's session record brings the real exit, and a failed read is never counted as
-  a success. A command can no longer forge a success by printing `Process exited with code 0`. A
-  quoted `&` in an argument (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) no longer counts as starting a
-  background process, and Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no
+  unknown until a Codex session-record item that states the exit joins it (a command item does
+  today; reading the exit line of a function-output row is separate work), and a failed read is
+  never counted as a success. A command can no longer forge a success by printing `Process exited with code 0` or
+  `{"success": true}`. A quoted `&` in an argument of a program that never runs its arguments as
+  code (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`, `rg 'a&b'`) no longer counts as starting a background
+  process; `sudo`, shells, interpreters and other programs that can run code keep the cautious
+  reading, and Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no
   snapshot. `finishup observe status` counts how many commands were compared and why the others
   could not be (`call_incomplete`, `background_launch`, `process_lingering`,
   `workspace_unsettled`, ...), keeping the last 64 by call. A closing review that ended without a
-  judgment (outcome unknown, timeout) is not asked for again: readiness names
-  `semantic_review_no_judgment`, and the Stop text, status, closure-prepare and receipt notes allow
-  one new check or a disclosed finish, matching the check's own advice (#1105).
+  judgment (outcome unknown, timeout, a provider or configuration that was unavailable) is not
+  asked for again: readiness names `semantic_review_no_judgment`, and the Stop text, status,
+  closure-prepare notes and MCP summaries point to the check's own advice (at most one new check,
+  none after a retry that also returned no judgment), otherwise a finish that reports a required
+  review as unmet (#1105).
 
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks

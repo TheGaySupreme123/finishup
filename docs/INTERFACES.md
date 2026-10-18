@@ -5794,7 +5794,9 @@ RC1, #1105) is the workspace's bounded fingerprint reading tally
 "dropped_sample_count"}`, where each count object is `{"unchanged", "changed", "unavailable",
 "unavailable_reasons": {<reason>: n}}` and `call` is the host tool-call id only when it already
 matches the envelope token pattern (else `null`); the text form is one `workspace_effect:` line of
-closed tokens and counts. A status read never creates the tally. `delivery_lag` is the outbox
+closed tokens and counts. A status read never creates the tally. A `store_unusable` reading is
+counted best effort: one whose fingerprint store directory cannot be resolved or written goes
+uncounted. `delivery_lag` is the outbox
 delivery measure, enqueue to the acknowledgement after the service accepted the row:
 `{"measured": "enqueue_to_accept", "count", "bucket_upper_bounds_ms", "bucket_counts", "p50_ms_at_most",
 "p95_ms_at_most", "mean_ms", "max_ms", "last_ms", "since"}` (only `measured`, `count` and the bounds
@@ -8054,10 +8056,12 @@ the existing ADR-045 matching and completed-result ordering, including a complet
 agent later retrieves through `write_stdin`. Masked shell compositions retain their unknown-part-outcome gap.
 An unchanged newest check that failed with
 `coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
-of asking for the same closing review. A closing review that still covers this state and ended
-`unavailable` or `timeout` (no judgment), with no current closing review that succeeded, is current
-too and adds the standing code `semantic_review_no_judgment` (n7 RC1, #1105): its continuation
-allows one new check, then a disclosed local-only finish
+of asking for the same closing review. When the newest closing-review attempt that still covers
+this state ended `unavailable` (any reason) or `timeout` (no judgment), with no current closing
+review that succeeded, it is current too and adds the standing code `semantic_review_no_judgment`
+(n7 RC1, #1105); a newer current closing-review attempt with another outcome decides instead. The
+sentence defers to that check's own continuation (at most one new check, none after a retry that
+also returned no judgment), otherwise a finish that reports a required review as unmet
 (`protocol/readiness_text.closing_review_limit_note`, alias `coordinator_failure_note`, gives the
 sentence every surface shows); an actionable
 `semantic_review_not_requested` takes its place unless the latest check so deferred the review),
@@ -10940,11 +10944,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `HOST_CALL_ENDED_KEY` (`host_call_ended`, set only on a host adapter's local copy of the facts
   when the post event is itself the completion fact: Codex `Bash`), never with `run_in_background`
   or when `command_may_outlive_call(payload)` finds the text may background or detach a process:
-  `domain/command_segments.command_may_background(text) -> bool | None` decides by shell grammar (a
-  top-level `&`, an `&` in a here-document body, a detaching word at any wrapper layer, a backgrounding
-  `sh -c` argument, an `&` in an argument of a program that hands it to a shell or interpreter;
-  a quoted `&` in an ordinary argument is not one, #1089), and text it cannot split falls back to
-  the conservative pattern), `owned_relative_paths(workspace, roots)` and
+  `domain/command_segments.command_may_background(text) -> bool | None` answers by shell grammar
+  first (`True`: a top-level `&`, an `&` in a here-document body, a detaching word at any wrapper
+  layer, a backgrounding `sh -c` argument; `False` only when every segment runs a program known
+  never to run an argument or stdin as code, so its quoted `&` is data, #1089; `None` otherwise,
+  including `sudo`/`doas`, shells or interpreters reading stdin, code-taking programs, command or
+  process substitution and unsplittable text), and `None` keeps the conservative pattern), `owned_relative_paths(workspace, roots)` and
   `workspace_fingerprint_pass(event, *, call_identity, workspace_locator, workspace_commitment,
   key_material, observation_root, complete, incomplete_reason, call_token, excluded, seconds,
   host_deadline)`, called by
