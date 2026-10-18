@@ -6,7 +6,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -265,7 +265,7 @@ def _decision(root: str, admitted: tuple[str, ...]) -> tuple[bool, bool]:
     effective = EffectivePrivacyPolicy(policy, 2, policy.policy_digest)
     enforcer = LocalPrivacyEnforcer()
     classified = enforcer.classify(candidate, effective)
-    coordinator = cast(PrivacyCoordinator, object.__new__(PrivacyCoordinator))
+    coordinator = object.__new__(PrivacyCoordinator)
     decision = getattr(coordinator, "_semantic_decision")(classified, effective, binding)
     minimized = enforcer.minimize_and_scan(classified, decision)
     return "task-input-01" in decision.approved_item_ids, marker in minimized.prepared_bytes
