@@ -2151,8 +2151,9 @@ of about 110k tokens.
 
 ### `other` follow-up requests answered from recorded rows (2026-10-18, issue #1102)
 
-**Decision (privacy/egress gate; the n7 workstream lead's binding decision Q1 for the RC6g fix,
-acknowledgement to be recorded on issue #1102 with a link to #1082; the owner may overturn it).**
+**Decision (privacy/egress gate; follow-up to #1082 for the n7 RC6g fix. The maintainer
+acknowledgement is recorded on issue #1102 and the tracker #1100. The owner confirmed this
+decision in session on 2026-10-18, also recorded on #1102).**
 By the n7 pilot, `other` was 54% of the items reviewers named, and FinishUP answered none of them,
 even when the item named a run whose rows FinishUP held. `other` joins `FOLLOW_UP_KINDS`, and it is
 answered inside the check only from what FinishUP already recorded for its targets:
