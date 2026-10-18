@@ -1399,10 +1399,11 @@ pytest` recorded a failing run as a success.
    and replaces the derived variants when it lands.
 2. **No outcome is read from a Codex shell call's text.** On the Codex hook path a plain-string
    shell `tool_response` is never parsed for an exit header or exec JSON, neither by the outcome
-   reader nor by the routine-read classifier (`classify_observation(..., host_post_is_success=False)`
-   skips a shell call's string result carriers), so output that is itself `{"success": true}`
-   proves nothing; a host-structured result object, `apply_patch`'s own header and an MCP result's
-   `isError` are still read. OUT-001's header and JSON-text hook variants now expect `unknown`.
+   reader nor by the routine-read classifier
+   (`classify_observation(..., host_post_is_success=False)` skips a shell call's string result
+   carriers), so output that is itself `{"success": true}` proves nothing; a host-structured result
+   object, `apply_patch`'s own header and an MCP result's `isError` are still read. OUT-001's header
+   and JSON-text hook variants now expect `unknown`.
 3. **A Codex post is not a success fact.** Claude Code's and Cursor's post event is their closed
    success signal; Codex fires its post for a non-zero exit too. The routine-read classifier
    (`classify_observation(..., host_post_is_success=False)`) therefore never proves a Codex read
@@ -1438,27 +1439,32 @@ pytest` recorded a failing run as a success.
    to the check's own continuation (at most one new check, none after a retry that also returned
    no judgment, none while that continuation says to wait or fix configuration), and keeps the
    required-route clause (report a required review as unmet). A newer current closing-review
-   attempt with another outcome (refused, invalid) decides instead: the walk stops at it and the
-   code is not set behind it. Status,
-   closure-prepare, the receipt notes, the MCP summaries and the Stop gate opener now say the same
-   (`protocol/readiness_text.closing_review_limit_note`). A material change after it asks again
-   and clears the code; an older current review that succeeded still wins; an ordinary mid-task
-   check without a judgment changes nothing. The receipt still discloses a required review as unmet
-   through its semantic facts. The rule is replay-pure: an older ledger whose newest final review
+   attempt with another outcome (refused, invalid) decides instead: the code is not set behind it
+   (an older current review that succeeded still wins). Status, the closure-prepare notes, the MCP
+   summaries and the Stop gate opener now say the same
+   (`protocol/readiness_text.closing_review_limit_note`). The receipt does not carry that
+   sentence: it discloses the gap through its existing semantic limitation wording and still
+   discloses a required review as unmet through its semantic facts. A material change after it
+   asks again and clears the code; an ordinary mid-task check without a judgment changes
+   nothing. The rule is replay-pure: an older ledger whose newest final review
    ended without a judgment re-projects as `ready_with_limitations`; issued receipts are immutable.
 
 Also: a command's quoted `&` in an ordinary argument (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) is no
 longer a background launch (#1089 item 1). Shell grammar
 (`domain/command_segments.command_may_background`) may only clear the conservative pattern, never
-add a quieter answer elsewhere: it answers "no" only when every segment runs a program known never
-to run an argument or its stdin as code (`curl`, `wget`, `grep`, `rg`, `echo`, `printf`, `cat`,
-`jq`, `head`, `tail`, `wc`, `ls`, one plain `sed` `s` command without the `e`/`w` flag ...), and
-"yes" for a top-level `&`, an `&` in a here-document, a detaching word at a wrapper layer or a
-`sh -c` argument that backgrounds. Everything else (a privilege wrapper such as `sudo` or `doas`,
-whose daemon the same-user process probe cannot see, a shell or interpreter reading stdin or a
-here-document, `eval`, `ssh`, `awk`, `git`, `trap`, `find -exec`, any interpreter, a command or
-process substitution, unsplittable text) keeps the pattern. Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no snapshot (#1091
-N6). The hook's own launcher chain is judged with the same 50 ms clock slack as the candidates,
-so a launcher whose start the Linux 10 ms tick rounded down is not taken for the host (#1090
-PL-1). Residual: if a Codex build's rollout item did not join its hook call by id, the stream copy
-would stay a second, fact-less, material action (no stamping across ids this round).
+add a quieter answer elsewhere: it answers "no" only when every segment runs, with no wrapper or
+assignment in front, a program FinishUP knows does not run an argument or its stdin as code in the
+form given (`curl`, `grep`, `rg` without `--pre`, `echo`, `printf`, `cat`, `jq`, `head`, `tail`,
+`wc`, `ls`, one plain `sed` `s` command without the `e`/`w` flag ...), and "yes" for a top-level
+`&`, an `&` in a here-document, a detaching word at a wrapper layer or a `sh -c` argument that
+backgrounds. Everything else keeps the pattern: a privilege wrapper such as `sudo` or `doas`,
+whose daemon the same-user process probe cannot see; a wrapper or assignment that changes what runs
+(`env -S`/`--split-string`, `LD_PRELOAD=`, `BASH_ENV=`, `PATH=`); ANSI-C quoting (`$'...'`), whose
+escaped quote the splitter would misread; `wget` (`-b`, `--use-askpass`); a shell or interpreter
+reading stdin or a here-document; `eval`, `ssh`, `awk`, `git`, `trap`, `find -exec`, any
+interpreter; a command or process substitution; unsplittable text. Cursor's `MCP:<tool>` spelling of
+FinishUP's own tools takes no snapshot (#1091 N6). The hook's own launcher chain is judged with the
+same 50 ms clock slack as the candidates, so a launcher whose start the Linux 10 ms tick rounded
+down is not taken for the host (#1090 PL-1). Residual: if a Codex build's rollout item did not join
+its hook call by id, the stream copy would stay a second, fact-less, material action (no stamping
+across ids this round).

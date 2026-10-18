@@ -1681,18 +1681,18 @@ leave the stream copy as a second, fact-less action that stays material (a docum
 
 Whether or not the ids join, the rollout item is a second copy of a hooked call: in 0.159 under
 the same id, and in an older or derived shape (and in the residual above) under a different id
-(`exec-<uuid>`), so it follows the same rule as a code-mode `exec` cell (#917). Once this session's tool hooks
-(`PreToolUse`/`PostToolUse`) have fired, the reader keeps a completed command, MCP or patch item in
-the local store and does not deliver it, unless the item is the only carrier of a hooked call's
-outcome. The reader pairs items with hook posts per call, in arrival order. An item whose id is an
-outcome-less hook call, for example a process still running when its hook fired, is that call's
-exit: ADR-022 decision 15 appends the correction to the hook's `unknown` result. A command item
-whose exit matches an unpaired stated hook post of the same command commitment is that post's copy
-and stays local. Otherwise, while an outcome-less hook call of the same commitment is unpaired,
-the item records that call's exit as its own result. That run is then two actions, a disclosed
-trade-off, and #909 judges the later one. Because pairing is counted per call, a later call's
-stated outcome never withholds an earlier same-command call's only exit. A rollout item can be
-read before its own hook post is stored, for example when another call's hook reconciles the
+(`exec-<uuid>`), so it follows the same rule as a code-mode `exec` cell (#917). Once this session's
+tool hooks (`PreToolUse`/`PostToolUse`) have fired, the reader keeps a completed command, MCP or
+patch item in the local store and does not deliver it, unless the item is the only carrier of a
+hooked call's outcome. The reader pairs items with hook posts per call, in arrival order. An item
+whose id is an outcome-less hook call, for example a process still running when its hook fired, is
+that call's exit: ADR-022 decision 15 appends the correction to the hook's `unknown` result. A
+command item whose exit matches an unpaired stated hook post of the same command commitment is that
+post's copy and stays local. Otherwise, while an outcome-less hook call of the same commitment is
+unpaired, the item records that call's exit as its own result. That run is then two actions, a
+disclosed trade-off, and #909 judges the later one. Because pairing is counted per call, a later
+call's stated outcome never withholds an earlier same-command call's only exit. A rollout item can
+be read before its own hook post is stored, for example when another call's hook reconciles the
 stream while the call is still finishing. Such an item stays local as pending until a later hook
 row decides it. A post with the item's own call id decides it directly: a stated post makes it
 that post's copy, and an outcome-less post makes it the call's only exit. A stated post of the
@@ -3521,67 +3521,66 @@ Closing-review currency follows what a command did to the workspace, never its t
 decision, PR #1080 round 5; ADR-033). The Codex `PreToolUse` and `PostToolUse` hooks (`finishup
 hooks observe`) fingerprint the workspace around every shell, `exec_command`, `write_stdin` and
 third-party MCP call, and the post envelope carries `workspace_effect`. Host decision (n7 RC1,
-#1105): Codex fires the unified-exec `Bash` `PostToolUse` only after the process has exited (no
-post while it runs; the `write_stdin` poll that sees the exit sends the original call's post under
-its id), so that post is the call's completion fact for the comparison, while its outcome stays
+#1105): Codex fires the unified-exec `Bash` `PostToolUse` only after the process has exited (no post
+while it runs; the `write_stdin` poll that sees the exit sends the original call's post under its
+id), so that post is the call's completion fact for the comparison, while its outcome stays
 `unknown` until the rollout item supplies the exit. Before this, every Codex shell call read
 `unavailable` and every later read re-armed the closing review. A Codex post is not a success fact
 either: a read-shaped call is recorded on its own, never folded into a routine-read summary on the
 post alone, so a failed `rg` keeps its exit 1 once a joined rollout item states it (a
 `CommandExecution` item; a `function_call_output` row needs the stream reader's header change, n7
-W2), and stays `unknown`, never a success, until then. FinishUP cannot establish the effect of a response
-that reads as Codex's own `Process running with session ID N` header (an older or future build),
-of a call whose pre-call pass did not run, and of every call observed only through
-the synchronous legacy `finishup hooks spool` ingress (Codex builds without async command hooks) or
-only through the session stream; those stay material. The session stream never folds a shell call
-into a routine-read summary. When the stream copy of a call is recorded before its hook post, the
-post's fact still reaches the call as one annotation row under its action, so a harmless read is
-not left material by arrival order; a later `changed` or `unavailable` for the same call always
-outweighs an earlier `unchanged` (round 6).
-An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a FinishUP CLI call such as
-`finishup check` or `finishup status`: no lexical own-call exemption, the comparison decides) does
-not re-arm the closing review; a command that changed the workspace does, and so does one whose effect
-FinishUP could not establish, which the Stop text says. A command that backgrounds or detaches a
-process (`cmd &`, `nohup`, `setsid`, `disown`, an `&` handed to `bash -c`, `eval` or `ssh`) is
-never established, because it may write after the call ends; a quoted `&` in an argument
-of a program that never runs its arguments or stdin as code (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`,
-`rg 'a&b'`) is not a background launch, while `sudo`/`doas`, shells, interpreters and other
-code-running programs keep the cautious reading (#1089). Round 6: neither is a call whose exit leaves a process it started still running in the
-project (a launcher whose new-session child keeps working, with no background word in its text):
-before comparing, the post-call hook reads the process table (`libproc` on macOS, `/proc` on Linux
-and WSL 2) for a process of the same user that started during the call, is no longer parented by
-the host, and has its working directory or a file open for writing in the project; one found, or a
-process table that cannot be read, makes the call unverified. A directory that gains or loses an
-entry while it is being compared does too. A pre-call snapshot that could not finish before the
-host stops waiting is never stored, and the 0.75 s bound covers the whole pass, hashing included.
-Verification runs (test, build, lint and
-typecheck runners, and the task's requested commands) and package installs stay material whatever
-the workspace shows. The workspace is everything under the project root, ignored files included;
-inside VCS metadata only the internal churn (objects, refs, reflogs, the index and lock files) is
-skipped, so `git status`, a commit or a branch stays unchanged while a `.git/config` or hook edit
-counts; `node_modules`, `.venv`/`venv`, `.tox`/`.nox` and tool caches are compared at their first
-level (files by content, subdirectories by identity); `__pycache__` bytecode is skipped but any
-other file there counts; FinishUP's saved receipts and state are skipped. A task that declares a
-delivery inside the project where the comparison does not reach it (a VCS store such as
-`.git/objects` or a skipped bookkeeping file such as `.git/HEAD`, below the first level of a
-dependency environment or tool cache, `__pycache__` bytecode, a saved receipt) gets no unchanged
-command; a declared `.git/config`, `.git/hooks/*` or `node_modules/x.js` is compared and does not.
-Effects outside the root (databases, `/tmp`, the network, a deliverable path outside the root,
-judged against the task's absolute `workspace_ref`) are out of scope, as before.
-`finishup observe status` names a degraded comparison once as a `workspace_fingerprint_<reason>`
-diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`, `store_unusable`,
-`process_table_unreadable`); a call
-without its pre-call snapshot or still running is recorded on its result as `(workspace
-unverified)` instead. `finishup observe status` also counts every reading by its closed reason
-(`workspace_effect:` line; JSON `workspace_effect_readings`, with the last 64 readings and their
-call ids): `call_incomplete` (no completion stated), `background_launch`, `process_lingering`,
-`workspace_unsettled`, `no_pre_snapshot` and the degraded reasons, so a call that stayed material
-can be attributed locally. A closing review that ended without a judgment (`outcome_unknown`,
-`timeout`, ...) is not asked for again: readiness names `semantic_review_no_judgment` and the
-Stop text points to that check's own continuation (at most one new check) or a disclosed finish
-that reports a required review as unmet (ADR-033 n7 amendment). Real edits and review-mode switches still re-arm; receipt,
-work-close and lifecycle records do not. The behavior is the same on macOS, Linux and WSL 2;
-native Windows is not claimed.
+W2), and stays `unknown`, never a success, until then. FinishUP cannot establish the effect of a
+response that reads as Codex's own `Process running with session ID N` header (an older or future
+build), of a call whose pre-call pass did not run, and of every call observed only through the
+synchronous legacy `finishup hooks spool` ingress (Codex builds without async command hooks) or only
+through the session stream; those stay material. The session stream never folds a shell call into a
+routine-read summary. When the stream copy of a call is recorded before its hook post, the post's
+fact still reaches the call as one annotation row under its action, so a harmless read is not left
+material by arrival order; a later `changed` or `unavailable` for the same call always outweighs an
+earlier `unchanged` (round 6). An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a
+FinishUP CLI call such as `finishup check` or `finishup status`: no lexical own-call exemption, the
+comparison decides) does not re-arm the closing review; a command that changed the workspace does,
+and so does one whose effect FinishUP could not establish, which the Stop text says. A command that
+backgrounds or detaches a process (`cmd &`, `nohup`, `setsid`, `disown`, an `&` handed to `bash -c`,
+`eval` or `ssh`) is never established, because it may write after the call ends; a quoted `&` in an
+argument of a program FinishUP knows does not run its arguments or stdin as code in the form given
+(`curl 'h?a=1&b=2'`, `sed 's/x/&/'`, `rg 'a&b'` without `--pre`) is not a background launch, while
+`sudo`/`doas`, `wget`, shells, interpreters, other code-running programs, a wrapper or assignment in
+front of the program (`env -S`, `LD_PRELOAD=`, `PATH=`) and ANSI-C quoting (`$'...'`) keep the
+cautious reading (#1089). Round 6: neither is a call whose exit leaves a process it started still
+running in the project (a launcher whose new-session child keeps working, with no background word in
+its text): before comparing, the post-call hook reads the process table (`libproc` on macOS, `/proc`
+on Linux and WSL 2) for a process of the same user that started during the call, is no longer
+parented by the host, and has its working directory or a file open for writing in the project; one
+found, or a process table that cannot be read, makes the call unverified. A directory that gains or
+loses an entry while it is being compared does too. A pre-call snapshot that could not finish before
+the host stops waiting is never stored, and the 0.75 s bound covers the whole pass, hashing
+included. Verification runs (test, build, lint and typecheck runners, and the task's requested
+commands) and package installs stay material whatever the workspace shows. The workspace is
+everything under the project root, ignored files included; inside VCS metadata only the internal
+churn (objects, refs, reflogs, the index and lock files) is skipped, so `git status`, a commit or a
+branch stays unchanged while a `.git/config` or hook edit counts; `node_modules`, `.venv`/`venv`,
+`.tox`/`.nox` and tool caches are compared at their first level (files by content, subdirectories by
+identity); `__pycache__` bytecode is skipped but any other file there counts; FinishUP's saved
+receipts and state are skipped. A task that declares a delivery inside the project where the
+comparison does not reach it (a VCS store such as `.git/objects` or a skipped bookkeeping file such
+as `.git/HEAD`, below the first level of a dependency environment or tool cache, `__pycache__`
+bytecode, a saved receipt) gets no unchanged command; a declared `.git/config`, `.git/hooks/*` or
+`node_modules/x.js` is compared and does not. Effects outside the root (databases, `/tmp`, the
+network, a deliverable path outside the root, judged against the task's absolute `workspace_ref`)
+are out of scope, as before. `finishup observe status` names a degraded comparison once as a
+`workspace_fingerprint_<reason>` diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`,
+`store_unusable`, `process_table_unreadable`); a call without its pre-call snapshot or still running
+is recorded on its result as `(workspace unverified)` instead. `finishup observe status` also counts
+every reading by its closed reason (`workspace_effect:` line; JSON `workspace_effect_readings`, with
+the last 64 readings and their call ids): `call_incomplete` (no completion stated),
+`background_launch`, `process_lingering`, `workspace_unsettled`, `no_pre_snapshot` and the degraded
+reasons, so a call that stayed material can be attributed locally. A closing review that ended
+without a judgment (`outcome_unknown`, `timeout`, ...) is not asked for again: readiness names
+`semantic_review_no_judgment` and the Stop text points to that check's own continuation (at most one
+new check) or a disclosed finish that reports a required review as unmet (ADR-033 n7 amendment).
+Real edits and review-mode switches still re-arm; receipt, work-close and lifecycle records do not.
+The behavior is the same on macOS, Linux and WSL 2; native Windows is not claimed.
 
 Call-keyed hook/stream overlap requires an agreeing committed action core and checks reused
 evidence against its original causal action/result association. An evidence-only collision cannot

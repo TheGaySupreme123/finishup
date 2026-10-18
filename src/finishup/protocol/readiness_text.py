@@ -180,7 +180,7 @@ def closing_review_limit_note(readiness: object) -> str | None:
     return None
 
 
-# The name every surface (CLI render, closure prepare and receipt, MCP summaries, the Stop gate)
+# The name every surface (CLI render, the closure-prepare notes, MCP summaries, the Stop gate)
 # already calls; it covers both closing-review limits.
 coordinator_failure_note = closing_review_limit_note
 

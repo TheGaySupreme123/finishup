@@ -683,19 +683,20 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   command has ended, so FinishUP now compares the project's files across it; the result stays
   unknown until a Codex session-record item that states the exit joins it (a command item does
   today; reading the exit line of a function-output row is separate work), and a failed read is
-  never counted as a success. A command can no longer forge a success by printing `Process exited with code 0` or
-  `{"success": true}`. A quoted `&` in an argument of a program that never runs its arguments as
-  code (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`, `rg 'a&b'`) no longer counts as starting a background
-  process; `sudo`, shells, interpreters and other programs that can run code keep the cautious
-  reading, and Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no
-  snapshot. `finishup observe status` counts how many commands were compared and why the others
-  could not be (`call_incomplete`, `background_launch`, `process_lingering`,
-  `workspace_unsettled`, ...), keeping the last 64 by call. A closing review that ended without a
-  judgment (outcome unknown, timeout, a provider or configuration that was unavailable) is not
-  asked for again: readiness names `semantic_review_no_judgment`, and the Stop text, status,
-  closure-prepare notes and MCP summaries point to the check's own advice (at most one new check,
-  none after a retry that also returned no judgment), otherwise a finish that reports a required
-  review as unmet (#1105).
+  never counted as a success. A command can no longer forge a success by printing
+  `Process exited with code 0` or `{"success": true}`. A quoted `&` in an argument of a program
+  FinishUP knows does not run its arguments as code in the form given (`curl 'h?a=1&b=2'`,
+  `sed 's/x/&/'`, `rg 'a&b'` without `--pre`) no longer counts as starting a background process;
+  `sudo`, `wget`, shells, interpreters, other programs that can run code, a wrapper or assignment in
+  front of the program (`env -S`, `LD_PRELOAD=`, `PATH=`) and ANSI-C quoting (`$'...'`) keep the
+  cautious reading, and Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no snapshot.
+  `finishup observe status` counts how many commands were compared and why the others could not be
+  (`call_incomplete`, `background_launch`, `process_lingering`, `workspace_unsettled`, ...), keeping
+  the last 64 by call. A closing review that ended without a judgment (outcome unknown, timeout, a
+  provider or configuration that was unavailable) is not asked for again: readiness names
+  `semantic_review_no_judgment`, and the Stop text, status, closure-prepare notes and MCP summaries
+  point to the check's own advice (at most one new check, none after a retry that also returned no
+  judgment), otherwise a finish that reports a required review as unmet (#1105).
 
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks

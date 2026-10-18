@@ -10885,7 +10885,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   name or a requested non-input directory exists). Observation advice 0.1.8 adds the
   advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
   `write_outside_workspace`.
-- **Workspace fingerprint (PR #1080 rounds 5-6).** `adapters/workspace_fingerprint.WorkspaceFingerprintStore(directory, key_material, *, lingering=lingering_process)`:
+- **Workspace fingerprint (PR #1080 rounds 5-6).**
+  `adapters/workspace_fingerprint.WorkspaceFingerprintStore(directory, key_material, *, lingering=lingering_process)`:
   `capture_before(root, call_identity, *, deadline, host_deadline=None, excluded) -> reason | None`
   and
   `effect_after(root, call_identity, *, deadline, call_complete, incomplete_reason="call_incomplete", excluded) -> WorkspaceEffectReading(effect, reason)`,
@@ -10946,10 +10947,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   or when `command_may_outlive_call(payload)` finds the text may background or detach a process:
   `domain/command_segments.command_may_background(text) -> bool | None` answers by shell grammar
   first (`True`: a top-level `&`, an `&` in a here-document body, a detaching word at any wrapper
-  layer, a backgrounding `sh -c` argument; `False` only when every segment runs a program known
-  never to run an argument or stdin as code, so its quoted `&` is data, #1089; `None` otherwise,
-  including `sudo`/`doas`, shells or interpreters reading stdin, code-taking programs, command or
-  process substitution and unsplittable text), and `None` keeps the conservative pattern), `owned_relative_paths(workspace, roots)` and
+  layer, a backgrounding `sh -c` argument; `False` only when every segment runs, with no wrapper
+  or assignment in front, a program known not to run an argument or stdin as code in the form
+  given (`rg` without `--pre`; never `wget`), so its quoted `&` is data, #1089; `None` otherwise,
+  including `sudo`/`doas`, `env -S`, an assignment such as `LD_PRELOAD=` or `PATH=`, ANSI-C
+  quoting (`$'...'`), shells or interpreters reading stdin, code-taking programs, command or
+  process substitution and unsplittable text), and `None` keeps the conservative pattern),
+  `owned_relative_paths(workspace, roots)` and
   `workspace_fingerprint_pass(event, *, call_identity, workspace_locator, workspace_commitment,
   key_material, observation_root, complete, incomplete_reason, call_token, excluded, seconds,
   host_deadline)`, called by
