@@ -1040,3 +1040,118 @@ def test_a_revoke_during_the_post_call_walk_does_not_recreate_the_store(tmp_path
         assert (reading.reason or reading.effect) == expected
         assert not store.note_reading(reading, "call_1")
         assert not directory.exists()
+
+
+# --- #1105 (PR #1113 review): the store asks for consent again under its lock ------------------
+
+
+class _Grant:
+    """A consent answer the test flips, as a revoke flips the stored consent."""
+
+    def __init__(self) -> None:
+        self.granted = True
+        self.asked = 0
+
+    def __call__(self) -> bool:
+        self.asked += 1
+        return self.granted
+
+
+@pytest.mark.parametrize("checked", [True, False], ids=["consent-rechecked", "rename-only"])
+def test_a_revoke_during_the_pre_call_walk_publishes_and_recreates_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool
+) -> None:
+    """A pre-call pass that read consent before a revoke neither re-creates the store nor leaves
+    a pending snapshot a later post pass (for an earlier call) could tally into."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant if checked else None)
+    assert store.capture_before(str(root), "call_a", deadline=time.monotonic() + 10) is None
+    real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
+
+    def revoke_during_walk(self: WorkspaceFingerprintStore, *args: Any, **kwargs: Any) -> Any:
+        grant.granted = False  # the revoked consent is saved first
+        fingerprint.remove_workspace_fingerprints(directory)
+        return real_walk(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", revoke_during_walk)
+    assert store.capture_before(str(root), "call_b", deadline=time.monotonic() + 10) is None
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", real_walk)
+    assert not directory.exists()
+    assert os.listdir(directory.parent) == []
+    reading = store.effect_after(
+        str(root), "call_a", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert not store.note_reading(reading, "call_a")
+    assert not directory.exists()
+    assert _tally(directory)["status"] == "absent"
+
+
+def test_a_pre_call_pass_after_a_revoke_creates_nothing(tmp_path: Path) -> None:
+    """The revoke landed between the hook's consent check and the pre-call half."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    grant.granted = False
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    assert grant.asked == 1
+    assert not directory.exists()
+    assert os.listdir(directory.parent) == []
+
+
+def test_the_tally_counts_a_first_reading_only_while_observation_is_granted(
+    tmp_path: Path,
+) -> None:
+    """With a consent re-check the tally may create the store, so a reading with no pre-call
+    snapshot (and no store yet) is still counted; after a revoke it is not."""
+
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    first = fingerprint.WorkspaceEffectReading("unavailable", "no_pre_snapshot")
+    assert store.note_reading(first, "call_1")
+    summary = _tally(directory)
+    assert summary["status"] == "retained"
+    assert dict(summary["all"]["unavailable_reasons"]) == {"no_pre_snapshot": 1}
+    fingerprint.remove_workspace_fingerprints(directory)
+    grant.granted = False
+    assert not store.note_reading(first, "call_2")
+    assert not directory.exists()
+    assert os.listdir(directory.parent) == []
+
+
+def test_a_withdrawn_grant_keeps_an_existing_store_but_records_nothing(tmp_path: Path) -> None:
+    """A pause also makes the re-check fail; it records nothing but does not delete the store
+    (only a revoke removes it)."""
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    grant = _Grant()
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    assert store.capture_before(str(root), "call_a", deadline=time.monotonic() + 10) is None
+    assert store.note_reading(fingerprint.WorkspaceEffectReading("unchanged"), "call_0")
+    grant.granted = False
+    assert store.capture_before(str(root), "call_b", deadline=time.monotonic() + 10) is None
+    assert sorted(path.name for path in (directory / "pending").iterdir()) == [
+        f"{store.call_key('call_a')}.bin"
+    ]
+    assert not store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call_1")
+    summary = _tally(directory)
+    assert (summary["all"]["unchanged"], summary["all"]["changed"]) == (1, 0)
+
+
+def test_a_consent_check_that_raises_is_not_a_grant(tmp_path: Path) -> None:
+    def broken() -> bool:
+        raise RuntimeError("store busy")
+
+    root = _workspace(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=broken)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    assert not store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call_1")
+    assert not directory.exists()

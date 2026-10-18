@@ -38,7 +38,7 @@ from __future__ import annotations
 import contextlib
 import os
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Final, Literal, cast
 
@@ -218,6 +218,7 @@ def workspace_fingerprint_pass(
     excluded: Iterable[str] = (),
     seconds: float = SNAPSHOT_SECONDS,
     host_deadline: float | None = None,
+    admitted: Callable[[], bool] | None = None,
 ) -> WorkspaceEffectReading | None:
     """Run one hook's half of the fingerprint. Never raises.
 
@@ -230,7 +231,10 @@ def workspace_fingerprint_pass(
     it is never published and the post reading becomes ``unavailable`` (``timeout``).
     ``incomplete_reason`` names why an incomplete call is incomplete. ``call_token`` is the host's
     tool-call id, kept beside the post reading in the bounded local tally only when it is already
-    a closed token.
+    a closed token. ``admitted`` re-asks whether observation is still granted for the workspace;
+    the store calls it under its lock before it creates or enters the store, publishes the
+    pre-call snapshot or writes the tally, so a pass that read consent before a revoke records
+    nothing after it.
     """
 
     store: WorkspaceFingerprintStore | None = None
@@ -239,7 +243,7 @@ def workspace_fingerprint_pass(
         if directory is None:
             # No store directory: nowhere to count this reading either.
             return WorkspaceEffectReading("unavailable", "store_unusable")
-        store = WorkspaceFingerprintStore(directory, key_material)
+        store = WorkspaceFingerprintStore(directory, key_material, admitted=admitted)
         deadline = time.monotonic() + max(0.0, seconds)
         if event == "PreToolUse":
             if call_identity is None:

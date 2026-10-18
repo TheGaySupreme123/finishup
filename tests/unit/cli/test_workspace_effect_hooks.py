@@ -12,7 +12,7 @@ import io
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -600,11 +600,89 @@ def test_a_post_pass_that_read_consent_before_a_revoke_recreates_nothing(tmp_pat
         observation_root=state / "observation",
         complete=True,
         call_token="call_late",
+        admitted=_still_granted(state, commitment),
     )
     assert reading is not None
     assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
     assert not directory.exists()
     assert list(directory.parent.iterdir()) == []
+
+
+def _still_granted(state: Path, commitment: str) -> Callable[[], bool]:
+    """The consent re-check the live hook hands the fingerprint store."""
+
+    def granted() -> bool:
+        consent = LocalObservationStore(_state=state).consent_for(commitment)
+        return consent is not None and consent.active
+
+    return granted
+
+
+def test_a_pre_pass_that_raced_a_revoke_leaves_nothing_for_a_later_post_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-call half checks consent outside the store lock too (review of PR #1113).
+
+    A revoke that lands during a real Codex pre hook's walk leaves no pending snapshot and no
+    store, and a post pass for an earlier call that also read consent before the revoke records
+    nothing: the store asks for consent again under its lock before it publishes or tallies.
+    """
+
+    from finishup.adapters.workspace_fingerprint import (
+        WorkspaceFingerprintStore,
+        reading_tally_summary,
+        workspace_fingerprint_dir,
+    )
+    from finishup.cli.workspace_effect_hook import workspace_fingerprint_pass
+    from finishup.domain.observation import ObservationRevokeCommand
+
+    workspace, state, commitment = _setup(tmp_path)
+    emit, pre, _post, _shape = _host("codex", workspace, state)
+    identities: list[str] = []
+    real_capture = WorkspaceFingerprintStore.capture_before
+
+    def recording_capture(
+        self: WorkspaceFingerprintStore, root: str, call_identity: str, **kwargs: Any
+    ) -> Any:
+        identities.append(call_identity)
+        return real_capture(self, root, call_identity, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "capture_before", recording_capture)
+    emit(pre, _codex(pre, "call_early", "rg -n reviewed deliverable.txt"))
+    directory = workspace_fingerprint_dir(state / "observation", commitment)
+    assert directory is not None and len(identities) == 1
+    early = WorkspaceFingerprintStore(directory, LocalObservationStore(_state=state).key_material())
+    assert (directory / "pending" / f"{early.call_key(identities[0])}.bin").is_file()
+    real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
+    revoked: list[bool] = []
+
+    def revoke_during_walk(self: WorkspaceFingerprintStore, *args: Any, **kwargs: Any) -> Any:
+        if not revoked:
+            revoked.append(True)
+            LocalObservationStore(_state=state).revoke(ObservationRevokeCommand(commitment))
+            assert not directory.exists()
+        return real_walk(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_walk", revoke_during_walk)
+    emit(pre, _codex(pre, "call_raced", "rg -n reviewed deliverable.txt"))
+    assert revoked
+    assert not directory.exists()
+    reading = workspace_fingerprint_pass(
+        "PostToolUse",
+        call_identity=identities[0],
+        workspace_locator=str(workspace),
+        workspace_commitment=commitment,
+        key_material=LocalObservationStore(_state=state).key_material(),
+        observation_root=state / "observation",
+        complete=True,
+        call_token="call_early",
+        admitted=_still_granted(state, commitment),
+    )
+    assert reading is not None
+    assert (reading.effect, reading.reason) == ("unavailable", "no_pre_snapshot")
+    assert not directory.exists()
+    assert list(directory.parent.iterdir()) == []
+    assert reading_tally_summary(directory)["status"] == "absent"
 
 
 def test_a_codex_0159_read_is_unchanged_and_its_outcome_stays_unknown(tmp_path: Path) -> None:

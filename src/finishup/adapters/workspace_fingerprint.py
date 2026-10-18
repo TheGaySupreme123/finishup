@@ -95,19 +95,23 @@ the workspace commitment: one pending snapshot per open call and one cache of th
 and every content digest is a BLAKE2b value keyed by the installation's observation key, and each
 file carries an HMAC so a damaged or foreign file reads as unavailable. Pending snapshots expire;
 revoking observation for the workspace removes its directory (``remove_workspace_fingerprints``).
-Only the pre-call half creates that directory: every post-call write (the digest cache, a standing
-marker, the tally) goes into a store that already exists, so a post-call pass that runs after a
-revoke records nothing and creates nothing.
+The hook checks consent once, outside any store lock, so a pass may race a revoke. Only two writes
+may create the directory, the pre-call snapshot and the tally, and both take the store lock and ask
+again (``admitted``) whether observation is still granted before they write; the pre-call snapshot
+is published into the store it entered, never into a re-created one. The other post-call writes
+(the digest cache, a standing marker) go by path into a store that already exists. Revocation
+saves the revoked consent, then takes the same lock and renames the directory away before removing
+it, so a pass that raced the revoke records nothing and creates nothing after it.
 
 **Reading tally** (n7 RC1). Beside the snapshots, ``readings.json`` counts every post-call reading
-by its closed effect and reason (for all time, and for the current and previous clock hour) and
+made while observation is granted (a pass without a resolvable or writable store excepted) by its
+closed effect and reason (for all time, and for the current and previous clock hour) and
 keeps the last ``READING_RING`` readings with their time and, when it is already a closed token,
 the host's tool-call id. It holds no path, digest or command text and never exceeds
 ``READING_FILE_BYTES``; a writer that cannot take its lock within ``_LOCK_WAIT_SECONDS`` drops the
-sample and counts the drop. The tally never creates the store directory, and a writer that takes
-its lock re-checks that the directory it opened is still the one at its path: revocation takes the
-same lock and renames the directory away before removing it, so a tally cannot land in a revoked
-or re-created tree. ``observe status`` reports it (``reading_tally_summary``), so a call
+sample and counts the drop. A writer that takes the lock checks that the lock file it holds is
+still the one at the store's path and that observation is still granted, so a tally cannot land in
+a revoked or re-created tree. ``observe status`` reports it (``reading_tally_summary``), so a call
 that stayed material can be attributed to its reason locally; nothing of it crosses the wire.
 """
 
@@ -123,7 +127,7 @@ import shutil
 import stat
 import struct
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, cast, get_args
@@ -323,6 +327,10 @@ def _past(deadline: float) -> bool:
     return time.monotonic() >= deadline
 
 
+def _left(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
 class _Hasher:
     """Bounded keyed content hashing shared by one snapshot.
 
@@ -402,6 +410,8 @@ class _Hasher:
 
 
 LingeringProbe = Callable[[int, str], "bool | None"]
+# Whether observation is still granted for the store's workspace (asked under the store lock).
+Admission = Callable[[], bool]
 
 
 class WorkspaceFingerprintStore:
@@ -411,9 +421,14 @@ class WorkspaceFingerprintStore:
     store never raises to its caller: every failure becomes an ``unavailable`` reading.
     ``lingering`` answers whether a process started since a window start still runs in the
     workspace (``process_lifetime.lingering_process``; replaced only by tests).
+    ``admitted`` answers whether observation is still granted for the workspace. The hook checks
+    consent once, outside any store lock; the store asks again under the store lock before a write
+    that may create the store (the pre-call snapshot, the tally), so a pass that raced a revoke
+    neither re-creates the store nor records into it. Without it the store is never created by the
+    tally, and the pre-call half creates it unchecked (its caller vouches for consent).
     """
 
-    __slots__ = ("_content_key", "_directory", "_lingering", "_mac_key", "_path_key")
+    __slots__ = ("_admitted", "_content_key", "_directory", "_lingering", "_mac_key", "_path_key")
 
     def __init__(
         self,
@@ -421,8 +436,10 @@ class WorkspaceFingerprintStore:
         key_material: bytes,
         *,
         lingering: LingeringProbe = lingering_process,
+        admitted: Admission | None = None,
     ) -> None:
         self._directory = directory
+        self._admitted = admitted
         base = hmac.new(key_material, b"finishup/workspace-fingerprint/v1", "sha256").digest()
         self._path_key = hmac.new(base, b"path", "sha256").digest()
         self._content_key = hmac.new(base, b"content", "sha256").digest()
@@ -454,7 +471,16 @@ class WorkspaceFingerprintStore:
 
         window = process_clock_ns() or 0
         try:
-            self._prepare()
+            # The store is created (or entered) only under its lock with observation still
+            # granted: a pass that read consent before a revoke records nothing after it.
+            with _store_access(
+                self._directory, create=True, admitted=self._admitted, wait=_left(deadline)
+            ) as access:
+                if access == "busy":
+                    raise _Unavailable("timeout", backoff=False)
+                if access == "withdrawn":
+                    return None
+                self._prepare()
             self._expire_pending(deadline)
             bounded = self._recently_bounded()
             if bounded is not None:
@@ -492,7 +518,17 @@ class WorkspaceFingerprintStore:
                 0 if host_deadline is None else max(1, int(host_deadline * 1_000_000_000))
             )
             pending = self._pending_path(call_identity)
-            self._store(pending, snapshot)
+            # Published under the store lock, into the store this pass entered, and only while
+            # observation is still granted: a revoke during the walk renamed the store away (or
+            # withdrew consent), and nothing is re-created or published after it.
+            with _store_access(
+                self._directory, create=False, admitted=self._admitted, wait=_left(deadline)
+            ) as access:
+                if access == "busy":
+                    raise _Unavailable("timeout", backoff=False)
+                if access == "withdrawn":
+                    return None
+                self._store(pending, snapshot)
             if _past(deadline):
                 # Persisting took the pass past its budget. The stored bytes are still a pre-call
                 # state (the capture finished in time), but the pass reports its overrun.
@@ -602,7 +638,7 @@ class WorkspaceFingerprintStore:
                     raise _Unavailable("timeout", backoff=False)
             if not _past(deadline):
                 with contextlib.suppress(OSError, PathSafetyError, ValueError):
-                    self._store(self._cache_path(), after, create=False)
+                    self._store(self._cache_path(), after)
             return WorkspaceEffectReading(WORKSPACE_CHANGED if changed else WORKSPACE_UNCHANGED)
         except _Unavailable as failure:
             with contextlib.suppress(OSError, PathSafetyError, ValueError):
@@ -628,7 +664,7 @@ class WorkspaceFingerprintStore:
         Returns whether the sample was recorded (``False`` when it was dropped).
         """
 
-        return _note_reading(self._directory, reading, call_token)
+        return _note_reading(self._directory, reading, call_token, self._admitted)
 
     def discard(self) -> None:
         """Remove this workspace's snapshots and tally (observation revoked). Never raises."""
@@ -858,11 +894,12 @@ class WorkspaceFingerprintStore:
             with contextlib.suppress(OSError):
                 path.unlink()
 
-    def _store(self, path: Path, snapshot: _Snapshot, *, create: bool = True) -> None:
-        """Persist *snapshot* at *path*; with ``create=False`` only into an existing store.
+    def _store(self, path: Path, snapshot: _Snapshot) -> None:
+        """Persist *snapshot* at *path*, only into a store that already exists.
 
-        The post-call half passes ``create=False``: observation may have been revoked (and the
-        store removed) since the pre-call half created it, and the cache must not re-create it.
+        Only ``_store_access`` creates the store. The post-call digest cache is written by path:
+        observation may have been revoked (and the store removed) since the pre-call half, and the
+        cache must not re-create it.
         """
 
         body = bytearray(
@@ -892,9 +929,7 @@ class WorkspaceFingerprintStore:
                 entry.digest or b"\x00" * 16,
             )
         body += hmac.new(self._mac_key, bytes(body), "sha256").digest()
-        if create:
-            ensure_owner_only_dir(path.parent)
-        elif not existing_owner_only_dir(path.parent):
+        if not existing_owner_only_dir(path.parent):
             raise OSError("store_absent")
         temporary = path.with_name(f".{path.name}.{os.urandom(6).hex()}.tmp")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
@@ -983,8 +1018,9 @@ _READING_DROPS: Final = ".readings.dropped"
 _MAX_DROP_BYTES: Final = 64 * 1024
 _LOCK_WAIT_SECONDS: Final = 0.1
 _LOCK_POLL_SECONDS: Final = 0.002
-# Revocation waits longer than a writer: a writer holds the lock for one small rewrite, and removal
-# goes ahead (by renaming the directory away) even when the wait runs out.
+# Revocation waits longer than a tally writer: a writer holds the lock for one small rewrite or one
+# pending-snapshot publish, and removal goes ahead (by renaming the directory away) even when the
+# wait runs out.
 _REVOKE_LOCK_WAIT_SECONDS: Final = 1.0
 _REVOKED_INFIX: Final = ".revoked."
 _REMOVE_PASSES: Final = 3
@@ -1230,7 +1266,12 @@ def _replace_tally(directory: Path, encoded: bytes) -> None:
         raise
 
 
-def _note_reading(directory: Path, reading: WorkspaceEffectReading, call_token: str | None) -> bool:
+def _note_reading(
+    directory: Path,
+    reading: WorkspaceEffectReading,
+    call_token: str | None,
+    admitted: Admission | None = None,
+) -> bool:
     key = _count_key(reading)
     if key is None:
         return False
@@ -1241,22 +1282,15 @@ def _note_reading(directory: Path, reading: WorkspaceEffectReading, call_token: 
     )
     now_ms = min(_MAX_EPOCH_MS, max(0, time.time_ns() // 1_000_000))
     try:
-        # The tally never creates the store: only the pre-call half does, under granted
-        # observation. No store (never granted here, or revoked since) means nothing is recorded.
-        if not existing_owner_only_dir(directory):
-            return False
-        opened = os.lstat(directory)
-        lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-        lock = os.open(directory / _READING_LOCK, lock_flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        try:
-            if not _acquire_lock(lock):
+        # The tally creates the store only when it can ask, under the store lock, whether
+        # observation is still granted: a reading after a revoke is never recorded.
+        with _store_access(
+            directory, create=admitted is not None, admitted=admitted, wait=_LOCK_WAIT_SECONDS
+        ) as access:
+            if access == "busy":
                 _count_drop(directory)
                 return False
-            # Revocation takes this lock and renames the directory away before removing it: a
-            # writer that waited across a revoke finds no directory, or a re-created one, at the
-            # path it opened, and records nothing.
-            current = os.lstat(directory)
-            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            if access == "withdrawn":
                 return False
             status, document = _read_tally(directory / _READING_NAME)
             if status == "unreadable":
@@ -1278,22 +1312,93 @@ def _note_reading(directory: Path, reading: WorkspaceEffectReading, call_token: 
                         )
                     )
             _replace_tally(directory, _folded_tally(document, key, reading, call, now_ms))
-        finally:
-            os.close(lock)
     except OSError, PathSafetyError, ValueError:
         return False
     return True
 
 
+_Access = Literal["write", "busy", "withdrawn"]
+
+
+def _open_lock(directory: Path) -> int:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    return os.open(directory / _READING_LOCK, flags, 0o600)
+
+
+def _holds_lock_of(directory: Path, lock: int) -> bool:
+    """Whether the lock file *lock* is still the one at *directory*'s path.
+
+    Revocation renames the store away under this lock, so a writer that waited across a revoke
+    finds no lock file, or another one, at the path. The comparison is by the lock file's own
+    identity: the descriptor held open here keeps that inode allocated, so a file at the path with
+    the same (device, inode) can only be this one, even if a re-created directory reused the old
+    directory's inode number.
+    """
+
+    try:
+        held = os.fstat(lock)
+        current = os.lstat(directory / _READING_LOCK)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+
+
+def _still_admitted(admitted: Admission) -> bool:
+    try:
+        return admitted() is True
+    except Exception:
+        # An unanswerable consent check is not a grant.
+        return False
+
+
+@contextlib.contextmanager
+def _store_access(
+    directory: Path, *, create: bool, admitted: Admission | None, wait: float
+) -> Generator[_Access]:
+    """Hold the store lock for one write into *directory* while observation is still granted.
+
+    Yields ``write`` while the caller may write (the lock is held until the block ends), ``busy``
+    when the lock was not taken within *wait*, and ``withdrawn`` when there is no store to write
+    into: none exists and *create* is false, revocation renamed it away while this writer waited,
+    or *admitted* says observation is no longer granted. A store this call created for a withdrawn
+    grant is removed again under the lock; an existing one is left to revocation (a pause keeps
+    it). Raises ``OSError`` or ``PathSafetyError`` for an unusable store.
+    """
+
+    existed = existing_owner_only_dir(directory)
+    if not existed:
+        if not create:
+            yield "withdrawn"
+            return
+        ensure_owner_only_dir(directory)
+    lock = _open_lock(directory)
+    try:
+        if not _acquire_lock(lock, wait):
+            yield "busy"
+            return
+        if not _holds_lock_of(directory, lock):
+            yield "withdrawn"
+            return
+        if admitted is not None and not _still_admitted(admitted):
+            if not existed:
+                _remove_renamed(directory)
+            yield "withdrawn"
+            return
+        yield "write"
+    finally:
+        os.close(lock)
+
+
 def remove_workspace_fingerprints(directory: Path) -> None:
     """Remove one workspace's fingerprint store: snapshots, cache and tally. Never raises.
 
-    Observation revoke calls this. It takes the tally lock first, so a tally update in progress
-    finishes before the store goes; then it renames the directory to a private sibling, so no later
-    write by path (a tally, the digest cache, a marker) can land in the tree being removed, and a
-    tally writer that waited on the lock finds its directory gone. The lock wait is bounded:
-    removal goes ahead without the lock rather than leave a revoked store behind. A sibling left by
-    an interrupted earlier removal of the same store is removed too.
+    Observation revoke calls this after it has saved the revoked consent. It takes the store lock
+    first, so a write under that lock (a pre-call snapshot, a tally update) finishes before the
+    store goes, and any later one re-checks consent and finds it revoked; then it renames the
+    directory to a private sibling, so no later write by path (the digest cache, a marker) can
+    land in the tree being removed, and a writer that waited on the lock finds its store gone. The
+    lock wait is bounded: removal goes ahead without the lock rather than leave a revoked store
+    behind. A sibling left by an interrupted earlier removal of the same store is removed too.
     """
 
     with contextlib.suppress(OSError):
@@ -1301,28 +1406,37 @@ def remove_workspace_fingerprints(directory: Path) -> None:
             doomed = directory
             lock: int | None = None
             with contextlib.suppress(OSError):
-                lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-                lock = os.open(
-                    directory / _READING_LOCK, lock_flags | getattr(os, "O_NOFOLLOW", 0), 0o600
-                )
+                lock = _open_lock(directory)
             try:
                 if lock is not None:
                     _acquire_lock(lock, _REVOKE_LOCK_WAIT_SECONDS)
-                renamed = directory.with_name(
-                    f".{directory.name}{_REVOKED_INFIX}{os.urandom(6).hex()}"
-                )
-                with contextlib.suppress(OSError):
-                    os.rename(directory, renamed)
-                    doomed = renamed
-                _remove_tree(doomed)
+                doomed = _renamed_away(directory)
             finally:
                 if lock is not None:
+                    # Once renamed, a writer that takes the lock finds another lock file (or
+                    # none) at the store's path: the removal itself need not hold it.
                     os.close(lock)
+            _remove_tree(doomed)
     with contextlib.suppress(OSError):
         prefix = f".{directory.name}{_REVOKED_INFIX}"
         for name in os.listdir(directory.parent):
             if name.startswith(prefix):
                 _remove_tree(directory.parent / name)
+
+
+def _renamed_away(directory: Path) -> Path:
+    """Rename *directory* to a private sibling and return it (*directory* if the rename failed)."""
+
+    renamed = directory.with_name(f".{directory.name}{_REVOKED_INFIX}{os.urandom(6).hex()}")
+    try:
+        os.rename(directory, renamed)
+    except OSError:
+        return directory
+    return renamed
+
+
+def _remove_renamed(directory: Path) -> None:
+    _remove_tree(_renamed_away(directory))
 
 
 def _remove_tree(path: Path) -> None:

@@ -4864,6 +4864,13 @@ def _workspace_fingerprint_hook_pass(
         incomplete_reason = host_call_incomplete_reason(
             cast(Mapping[str, DomainJsonValue], outcome_facts)
         )
+
+        def still_granted() -> bool:
+            # Asked again under the fingerprint store's lock: this pass checked consent before
+            # it began, and a revoke since then must leave nothing behind (#1105).
+            consent = store.consent_for(workspace_commitment)
+            return consent is not None and consent.active
+
         reading = workspace_fingerprint_pass(
             resolved_event,
             call_identity=None
@@ -4889,6 +4896,7 @@ def _workspace_fingerprint_hook_pass(
                 - _FINGERPRINT_HOST_MARGIN_SECONDS
                 - monotonic()
             ),
+            admitted=still_granted,
         )
     if resolved_event == "PostToolUse" and reading is None:
         reading = WorkspaceEffectReading("unavailable", "store_unusable")

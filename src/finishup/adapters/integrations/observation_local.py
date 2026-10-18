@@ -11758,8 +11758,10 @@ class LocalObservationStore:
             self._save(command.workspace_commitment, state)
             # Revoking observation also removes the workspace's before/after fingerprint
             # snapshots and reading tally (keyed path and content digests and closed tokens only;
-            # PR #1080, #1105). The removal takes the tally lock and renames the store away first,
-            # so a post-call hook that read consent before this revoke cannot write into it.
+            # PR #1080, #1105). It runs after the revoked consent is saved: the removal takes the
+            # fingerprint store's lock and renames the store away, and a hook pass that read consent
+            # before this revoke asks again under that lock, so it neither writes into the store
+            # nor re-creates it.
             from finishup.adapters.workspace_fingerprint import (
                 remove_workspace_fingerprints,
                 workspace_fingerprint_dir,
