@@ -1328,7 +1328,13 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   leaves the change the slots its reservation would use and two slots per decisive verification
   run (the latest run, or each run a follow-up asked for), so small inputs never take the room of
   the change and the run that decides it. An input that does not fit is skipped rather than
-  stopping smaller ones; it still backfills after every other excerpt.
+  stopping smaller ones; it still backfills after every other excerpt. *Amended 2026-10-18 (n7
+  RC6e, issue #1108; ADR-031 amendment of that date): the change now takes its reserved share of
+  the packet's own budget first, and the inputs then take at most an eighth of it, never the bytes
+  held back for the decisive verification output beyond the first input's own need; an input
+  larger than the room left arrives as its head and tail, disclosed as truncated, while at least
+  2 KiB of that room remains, and otherwise waits for the backfill. Shares and order change inside the same budget; no
+  category, selection or ceiling changes.*
 - **The oracle.** A file a recorded verification command names (a test, a fixture, a harness
   script) is a candidate task input. The same repository rule decides whether it is read: inside
   the repository, unchanged since the task started, not ignored, not credential-named. A test the
@@ -1409,9 +1415,13 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   account of a run, not FinishUP's capture of it: it judges the summary as that account against
   the code and any captured output, never as support alone, but does not list its
   verification-output request again only because the answer is a summary. FinishUP's own remedy
-  for that request asks for a `result_recorded` summary, so an agent that follows it does not
-  spend the round's second `insufficient_packet`. The #1079 published-answers behaviour is
-  otherwise unchanged.
+  for that request asks for a `result_recorded` summary, so an agent that follows it is not sent
+  back for a second `insufficient_packet` only because it followed that remedy (the reviewer is
+  advisory and may still list the item again for a real reason, such as a summary that contradicts
+  the code; issue #1094 round-3 note). The #1079 published-answers behaviour is otherwise
+  unchanged. Since the n7 amendment (issue #1108) the rule applies wherever a supplied answer
+  arrives, not only in an in-check follow-up, and observed output, the check-time change or a file
+  answering the same request outranks the summary as the witness.
 - **Extra room, bounded.** Decisive material gets room by rank and by reclaiming duplicate edit
   bytes, never by exceeding the recipe's excerpt total (at most 128 KiB), the channel's prepared
   ceiling (at most 256 KiB) or the follow-up share (half the excerpt total across all rounds). A

@@ -271,7 +271,10 @@ may be accepted, an empty-file or withdrawal fallback is never approved when a t
 existed. The packet carries recorded limitation decisions and acknowledgement states beside the
 obligations (`yoetz_already_disclosed`) and a disclosed limitation as a non-rulable
 `yoetz.settled-finding/1` row marked `limitation_already_disclosed`. Agent guidance: never empty or
-withdraw a working deliverable over a finding or an "empty file if unsolved" clause.
+withdraw a working deliverable over a finding or an "empty file if unsolved" clause. *Amended
+2026-10-18 (n7 RC7, issue #1108; see the amendment of that date below): the `not_assessable` rule
+now applies only when the packet holds no material that settles the requirement, and the
+disclosures moved from beside each obligation into one `agent-disclosures` row.*
 
 ### One dialogue per concern (RC-7)
 
@@ -695,3 +698,49 @@ issue was proved absent, nothing is owed and not to retry, and the one for
 
 Not changed here: #1043 (`agent_criterion_unmet` routing for agent-published probes) stays as
 decided; the formal-crypto case is not shown to be beyond the task's scope.
+
+## Amendment 2026-10-18 (issue #1108, n7 RC7): disclosures are the agent's assertion
+
+The tb4n3 RC-1 rule above (owner decision Q4) told the reviewer a disclosed hidden-evaluator limit
+is a `not_assessable` row, and put each disclosure beside its obligation as
+`yoetz_already_disclosed`. The n7 investigation found the reviewer read that as FinishUP's standing:
+"a disclosed caveat is not support" and "mark a disclosed limit not assessable" both stood, the
+reviewer followed the second, and 9 of 27 wrong verdicts leaned on a disclosure while the packet
+held the decisive fact. The maintainer's round goal (AI reviews judge from primary material) is the
+scoped request; this amends Q4 in placement and reading only.
+
+1. **One labelled row.** The disclosures leave the obligation rows. One item, `agent-disclosures`
+   (section `decision`, category `obligation_text`, the egress class they already rode in;
+   `source_kind` `obligation`), carries `{"schema": "yoetz.agent-disclosures/1", "kind":
+   "agent_disclosures", "standing": "agent_assertion", "disclosures": [...], "not_listed_count":
+   n}`. Each entry is `{"obligation_id", "acknowledged_not_done"?, "verification_limit"?,
+   "assumption"?, "already_disclosed": true}`, the same keys the obligation rows carried, sorted by
+   obligation id. The row is built after the 32-row obligation cap, so it names only obligations the
+   packet carries, and it is held to the 16 KiB per-item bound rather than the 4 KiB prose bound, so
+   every one of those 32 fits; an entry that still did not fit would be left out and counted, never
+   cut. Ids and closed tokens only, so no user-controlled text enters the row. It sorts first in its
+   section, so the 16-decision cap never drops it; a decision row it displaces from the 16 slots is
+   recorded as a `not_selected` omission, never dropped silently. It is emitted only when the
+   obligations section is carried and at least one disclosure exists, and then in the decision
+   section even when the selection leaves decisions out: the facts rode in the obligation rows
+   before, so leaving the row out with the decisions would drop them, and the instruction names
+   the row by its id. The settled-finding row
+   (`limitation_already_disclosed`) is unchanged.
+2. **One reading.** The instruction says the row is the agent's assertion: a disclosed caveat is
+   not support, a disclosed limit is judged like any claim against what the packet shows, and the
+   row only means the reviewer need not ask for that disclosure again. A hidden-evaluator
+   requirement is `not_assessable` when the packet holds no material that settles it; when the
+   code, an observed output or the task text settles it, the reviewer judges from that material
+   and challenges the requirement when that material shows it unmet, disclosed or not (ADR-006 n7
+   amendment). Nothing asks the agent for an artifact it cannot obtain.
+
+The reviewer still sees the disclosure of every obligation the packet carries, so the tb4n3 RC-1
+loop (being asked to disclose a limit again) stays closed. That holds under envelope bounding too
+(#1108 review R2): bounding drops catalog rows from the tail of the case order, where the
+`agent-disclosures` row sits after the claims and obligations, so `_drop_catalog_row` passes over
+that row while any obligation row remains and drops it only after the last obligation; every dropped
+row is counted in `selection_accounting.catalog_dropped_count`. The row is built before bounding, so
+once bounding has dropped obligation rows it can still name those obligations; that count discloses
+the drop (#1108 review R3). No event, projection or schema
+changes; packets built before and after differ in item placement only (plus the omission row for a
+displaced decision), and a review recovered across the upgrade ends `coordinator_failure` (ADR-006).

@@ -4856,6 +4856,19 @@ lenses are not the general expectations it forbids. `BLOCKER_REVIEW_INSTRUCTION`
 claim. `tests/fixtures/reviewer_accuracy/n6_cases.json` (`finishup.test.reviewer-accuracy-cases/1`)
 is the offline evaluation set; the provider-judgment contract is unchanged.
 
+**Observed witnesses and one reading of disclosure (n7, issue #1108; ADR-006 amendment of
+2026-10-18).** The second grounding rule names output FinishUP observed (an excerpt that begins
+`[FinishUP: observed`) as a witness, says the reviewer never abstains or asks for a check's source
+only because that source is outside the packet, and says a bare verdict line witnesses only that
+the check passed. The final-phase rule and `REVIEW_PHASE_QUESTIONS["final"]` make a
+hidden-evaluator requirement `not_assessable` only when the packet holds no material that settles
+it; a disclosure is never support and never stops the reviewer judging the packet. The "Reading the
+packet" section states the item order (`SEMANTIC_CASE_SECTION_ORDER`), explains the observed-output
+label, the `[FinishUP: approved check result` and `[FinishUP: import report` labels of records
+FinishUP wrote, and the `agent-disclosures` row, and carries the `excerpt-supplied-` rule beside
+the `prior_missing_for_assessment` sentence. `tests/fixtures/reviewer_accuracy/n7_cases.json` (same
+schema) adds four cases.
+
 **Routine frame and the agent's own criteria (issues #1042, #1043; ADR-040 amendment of
 2026-10-12).** A routine review judges incomplete work only: an obligation marked resolved or left
 unfinished, planned verification not run, a missing or emptied output, a done or ran claim the packet
@@ -9356,7 +9369,30 @@ bytes are unchanged. The owning schema generator and
 
 The provider review packet is `yoetz.review-packet-case/2`. Every `items[]` row carries
 `occurred_order` (the source's ledger ingestion order) and rows are listed in case order (section,
-then recording order), never by opaque item id. An excerpt may carry `latest_for` (`path`: the
+then recording order), never by opaque item id. The section order is
+`finishup.ports.semantic.SEMANTIC_CASE_SECTION_ORDER`, which `SemanticCase` enforces and the builder
+sorts by: `task_statement`, `excerpt`, `deterministic_summary`, `deterministic_detail`, `goal`,
+`obligation`, `claim`, `decision`, `prior_finding`, `timeline` (primary material before the agent's
+account, n7 RC7, issue #1108). Envelope bounding drops catalog rows from that order's tail, after
+the prior-finding rows it drops first, except that `_drop_catalog_row` keeps the `agent-disclosures`
+row while any obligation row remains (#1108 review R2). A hook-captured tool output's excerpt begins
+with `_OBSERVED_OUTPUT_LABEL`, `[FinishUP: observed output captured by a host hook (evidence
+<evd_>)`, then `; run of command action <act_>, host-reported outcome <outcome>[, exit status <n>]`
+only when that action and its result are hook-observed records whose keyed command identity is the
+one the capture was resolved under (a post-tool identity the hook keeps only for runs
+`command_runner_class` calls test, build, lint or typecheck, on every host; other runs get the bare
+label), then `; not an agent-published result]` and a newline; its part
+keys stay placed in the capture's own bytes. `_service_record_labels` yields the full label, then
+the bare label without the run clause; the excerpt takes the first that leaves more than two
+head-and-tail sides of room within the per-excerpt limit, and when neither does the excerpt is left
+out as a `not_selected` omission, with the `content_unselected` gap for a capture, so it never
+travels unlabelled. Agent text is fenced by `_neutralised_agent_text`: a line that begins, after
+characters a reader cannot see, with an opening bracket (categories Ps and Pi, `<`, or a listed
+bracket piece) and spells `FinishUP` or `Yoetz` as a reader sees it (`_label_skeleton`: any letter
+that does not fold to ASCII matches any letter; a whole ANSI escape sequence may lead the bracket)
+is prefixed `(not a FinishUP label) ` (`_LABEL_IMITATION_PREFIX`; it names no author, since task
+inputs and host-observed output are fenced too). `_head_tail_kept` fences the tail's cut edge again after every head-and-tail cut,
+recutting with room for that prefix. An excerpt may carry `latest_for` (`path`: the
 newest applied or unconfirmed captured edit of each changed path; `command`: the newest recorded
 output of a command identity) or `superseded_by` (the source refs of the newer edit or run). The
 marks describe recording order only; they never claim what the working tree now contains.
@@ -9403,11 +9439,27 @@ command identity; a hook run without one, `omitted:structural`, identifies nothi
 command ran again later and that newest run left no excerpt the packet can carry, every older output
 of it is marked `superseded_by` the newer result and ranked with superseded runs; two `artifact`
 evidence rows naming the same plain path are one output, and the older is marked `superseded_by` the
-newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045
-and #1082 amendments) are admitted first, ahead of the check-time change, within a quarter of the
-packet's excerpt budget and within `_first_task_input_slots` (the recipe's count less the change's
-reservation, at most one per part, and two slots per decisive verification run: the latest, or
-each run a follow-up asked for); one that does not fit is skipped and backfills last. `TaskInputFile.origin`
+newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045,
+#1082 and n7 amendments) are admitted after the check-time change's reservation
+(`_check_time_change_reservation(selection, first_part_bytes, budget)`: half the recipe's count and
+half this packet's excerpt budget, rounded up to the first part; when task inputs have first-offer
+slots that rounding is capped at the budget less the first input's need,
+`min(_MIN_TASK_INPUT_CLIP_BYTES, its size)`, when the eighth holds that need, never below the
+half), within an eighth of the packet's excerpt budget (`_TASK_INPUT_SHARE_DIVISOR`), never the
+bytes held for the decisive verification output beyond that need (the hold limits the inputs, never
+the change) (`_DECISIVE_RUN_HOLD_DIVISOR`: an eighth of the budget, at most one excerpt,
+held only when `_has_verification_output` finds a readable command result, command or test
+output, or hook-captured output, or a follow-up asks for a run), and within
+`_first_task_input_slots` (the recipe's count less the excerpts already admitted and two slots per
+decisive verification run: the latest, or each run a follow-up asked for). An input larger than the
+room left is clipped head and tail to it while the room is at least `_MIN_TASK_INPUT_CLIP_BYTES`
+(2 KiB) and listed as truncated; otherwise it is skipped and waits for the backfill. At the
+change's lower rank (`lower_rank_room`, before older hunks and general output),
+`regrow_cut_check_time_change` gives a first change part the reservation cut the room the reserved
+classes left (whole when it fits, so later parts may follow), and again after the recorded excerpts
+when no lower rank was offered; the change's remaining parts then backfill, inputs not yet carried backfill last, and `regrow_clipped_task_inputs` gives
+each input the first offer clipped the room still left (whole when it fits, its truncation then
+cleared). `TaskInputFile.origin`
 (`task`, `verification`, `outside_workspace`) and `TaskInputFile.summary` choose the label; both are
 optional stored keys written only when not the default. Candidates come from `review_input_paths`
 (statement words, `role: input` files, then named absolute directories) with the newest
@@ -9531,8 +9583,8 @@ at <path> (evidence <evd>); it was not sent and its content is not assessable fr
 (an observed image has no path: `[FinishUP: an image was observed (evidence <evd>); it was not sent
 and its content is not assessable from this packet]`). The path keeps only ASCII letters, digits,
 space and `._/+@~=,-` (others become `_`) and at most 160 characters. Agent-authored excerpt text
-never begins a line like a label: such a line is prefixed `(agent text) `, and the reviewer
-trusts a label only as an excerpt's first line naming that excerpt's own `source_ref`. The newest 16 (`MAX_BINARY_NOTICES` in
+never begins a line like a label: such a line is prefixed `(not a FinishUP label) `, and the
+reviewer trusts a label only as an excerpt's first line naming that excerpt's own `source_ref`. The newest 16 (`MAX_BINARY_NOTICES` in
 `application.semantic_case`) are reserved excerpt room. A row whose `reference` names such a file
 and which carries text (`command_output`, `test_result`, `other` or captured output) is labelled
 `[FinishUP: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`. Both
@@ -9986,7 +10038,15 @@ Names shared by the kernel, `respond`, `check`, status and the receipt:
   `ruling_since(state, id) -> int | None`, `standing_answer_frontier(state, id) -> int | None`.
 - Concern identity: `kernel.concern.concern_key(projection, refs) -> ConcernKey`, `same_concern`,
   `equal_concern`, `kinds_comparable`; new material: `application.review_concern.concern_material_after`
-  and `answer_bound`. Packet: `yoetz_already_disclosed` beside an obligation the agent disclosed and
+  and `answer_bound`. Packet: one `agent-disclosures` row (`AGENT_DISCLOSURES_ITEM_ID`; section
+  `decision`, first in it; category `obligation_text`; content `yoetz.agent-disclosures/1` with
+  `kind: agent_disclosures`, `standing: agent_assertion`, `disclosures` per obligation id with the
+  `acknowledged_not_done` / `verification_limit` / `assumption` / `already_disclosed` keys, and
+  `not_listed_count`) listing what the agent disclosed for each obligation the packet carries
+  (built after the 32-row obligation cap, within the 16 KiB per-item bound, so all 32 fit; a
+  decision row it displaces from the 16 decision slots is a `not_selected` omission) (n7 RC7, issue
+  #1108, ADR-040 amendment of 2026-10-18; it replaced `yoetz_already_disclosed` beside each
+  obligation), and
   `limitation_already_disclosed` / `limitation_disclosed_by` on a settled-finding row.
 
 #### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
@@ -10281,9 +10341,10 @@ plan. Names and contracts:
 - `TaskStatementSource`: `agent_transcribed` (every recorded statement), `host_captured_user_prompt`
   (reserved: no path records it and captured prompt text never enters a packet), and
   `task_title_only` (fallback).
-- Packet: section `task_statement` (ordinal before `goal`), one item `task-statement`, category
-  `task_description`, source kind `task`, content `yoetz.task-statement/1`
-  (`source`, `statement`, `statement_bytes`, `elided_bytes`). Content is at most
+- Packet: section `task_statement` (first in `SEMANTIC_CASE_SECTION_ORDER`), one item
+  `task-statement`, category `task_description`, source kind `task`, content
+  `yoetz.task-statement/1` (`source`, `statement`, `statement_bytes`, `elided_bytes`). Content is
+  at most
   `MAX_TASK_STATEMENT_ITEM_BYTES` (16 KiB) of canonical JSON: a longer statement keeps its head and
   tail, marks `[... N bytes elided ...]`, and adds `semantic_case_content_over_item_limit`.
   `ReviewPacket.task_statement_item_ids` (max 1) and outbound-case 1.2.0 carry it. Catalog and

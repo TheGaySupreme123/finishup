@@ -32,8 +32,10 @@ from builders.policy_cases import (
     record,
     res,
 )
+from finishup.application import semantic_case as semantic_case_module
 from finishup.application.missing_for_assessment import ReviewFollowUp, ReviewFollowUpItem
 from finishup.application.semantic_case import (
+    AGENT_DISCLOSURES_ITEM_ID,
     MAX_PRIOR_FINDINGS,
     build_semantic_case,
     semantic_case_to_prepared_payload,
@@ -59,9 +61,10 @@ from finishup.domain.findings import (
 )
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
-from finishup.domain.values import FindingId, ObligationId, timestamp_from_string
+from finishup.domain.values import EventId, FindingId, ObligationId, timestamp_from_string
 from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.projections import (
+    DecisionProjectionRecord,
     FindingProjectionRecord,
     ObligationProjectionRecord,
     ProjectionRecord,
@@ -765,7 +768,11 @@ def test_a_limitation_disclosed_by_a_decision_line_is_carried_without_an_answer(
     assert f"prior-finding-{fnd(7)}" not in built.packet.prior_finding_item_ids
 
 
-def test_an_obligation_the_agent_already_disclosed_says_so_beside_the_obligation() -> None:
+def test_disclosures_travel_in_one_agent_assertion_row() -> None:
+    """tb4n3 RC-1 put each disclosure beside its obligation; n7 RC7 (#1108): there it read as
+    FinishUP's standing and the reviewer deferred to it over the packet's own material. The
+    disclosures now travel in one row, labelled as the agent's assertion (ADR-040 amendment)."""
+
     case = _numba_case()
     acknowledged = obligation_record(
         ObligationPublishedPayload(
@@ -777,18 +784,84 @@ def test_an_obligation_the_agent_already_disclosed_says_so_beside_the_obligation
         ),
         3,
     )
+    plain = _build(case)
+    assert AGENT_DISCLOSURES_ITEM_ID not in {item.item_id for item in plain.items}
     built = _build(_with_limit_decision(case, extra_obligation=(obl(2), acknowledged)))
-    plain = _row(_build(case), f"obligation-{obl(1)}")
-    assert "yoetz_already_disclosed" not in plain
-    by_decision = cast(
-        Mapping[str, JsonValue], _row(built, f"obligation-{obl(1)}")["yoetz_already_disclosed"]
-    )
+    for item in built.items:
+        if item.section == "obligation":
+            assert "yoetz_already_disclosed" not in _row(built, item.item_id), item.item_id
+    assert built.packet.decision_item_ids[0] == AGENT_DISCLOSURES_ITEM_ID
+    item = next(item for item in built.items if item.item_id == AGENT_DISCLOSURES_ITEM_ID)
+    assert item.section == "decision"
+    assert item.category is DataCategory.OBLIGATION_TEXT
+    assert item.source_kind == "obligation"
+    assert set(item.linked_subject_refs) == {str(obl(1)), str(obl(2))}
+    row = _row(built, AGENT_DISCLOSURES_ITEM_ID)
+    assert row["schema"] == "yoetz.agent-disclosures/1"
+    assert row["kind"] == "agent_disclosures"
+    assert row["standing"] == "agent_assertion"
+    assert row["not_listed_count"] == 0
+    by_obligation = {
+        cast(str, entry["obligation_id"]): entry
+        for entry in cast(list[Mapping[str, JsonValue]], row["disclosures"])
+    }
+    assert list(by_obligation) == sorted(by_obligation, key=str.encode)
+    by_decision = by_obligation[str(obl(1))]
     assert by_decision["already_disclosed"] is True
     assert "verification_limit" in by_decision
-    by_status = cast(
-        Mapping[str, JsonValue], _row(built, f"obligation-{obl(2)}")["yoetz_already_disclosed"]
-    )
-    assert by_status == {"acknowledged_not_done": True, "already_disclosed": True}
+    assert by_obligation[str(obl(2))] == {
+        "obligation_id": str(obl(2)),
+        "acknowledged_not_done": True,
+        "already_disclosed": True,
+    }
+
+
+def test_envelope_bounding_keeps_the_disclosures_while_an_obligation_travels() -> None:
+    """#1108 review R2: bounding drops catalog rows from the tail, and the agent-disclosures row
+    sits in the decision section after the claims and obligations, so it dropped first and an
+    obligation could travel without its disclosure. It now stays while any obligation row does."""
+
+    def row(item_id: str, section: str) -> JsonValue:
+        return {"item_id": item_id, "section": section}
+
+    envelope: dict[str, JsonValue] = {
+        "item_catalog": [
+            row("obligation-1", "obligation"),
+            row("claim-1", "claim"),
+            row(AGENT_DISCLOSURES_ITEM_ID, "decision"),
+            row("decision-1", "decision"),
+            row("timeline-1", "timeline"),
+        ],
+        "review_packet": {"decision_item_ids": [AGENT_DISCLOSURES_ITEM_ID, "decision-1"]},
+    }
+    order: list[str] = []
+    while semantic_case_module._drop_catalog_row(envelope):  # pyright: ignore[reportPrivateUsage]
+        remaining = {
+            cast(str, cast(Mapping[str, JsonValue], item)["item_id"])
+            for item in cast(list[JsonValue], envelope["item_catalog"])
+        }
+        order.append(
+            next(
+                item_id
+                for item_id in (
+                    "timeline-1",
+                    "decision-1",
+                    "claim-1",
+                    "obligation-1",
+                    AGENT_DISCLOSURES_ITEM_ID,
+                )
+                if item_id not in remaining and item_id not in order
+            )
+        )
+        if "obligation-1" in remaining:
+            assert AGENT_DISCLOSURES_ITEM_ID in remaining
+    assert order == [
+        "timeline-1",
+        "decision-1",
+        "claim-1",
+        "obligation-1",
+        AGENT_DISCLOSURES_ITEM_ID,
+    ]
 
 
 def test_unanswered_local_finding_is_not_carried() -> None:
@@ -926,3 +999,71 @@ def test_over_the_limit_the_newest_open_findings_win_and_terminal_ones_never_com
     assert len(carried) == MAX_PRIOR_FINDINGS == 16
     assert str(fnd(newest)) not in carried
     assert carried == tuple(str(fnd(number)) for number in range(newest - 1, 2, -1))
+
+
+def _disclosed_obligations(count: int) -> DeterministicCase:
+    """``count`` obligations, each covered by its own finishup-verification-limit decision."""
+
+    case = _numba_case()
+    obligations = dict(case.projection.obligations)
+    decisions: dict[EventId, DecisionProjectionRecord] = {}
+    allowed = set(case.allowed_ids)
+    coverage = dict(case.coverage_by_ref)
+    for number in range(1, count + 1):
+        obligations[obl(number)] = obligation_record(
+            ObligationPublishedPayload(
+                obl(number), f"Obligation {number}", "criteria", ObligationStatus.OPEN
+            ),
+            2,
+        )
+        decisions[evt(40 + number)] = limit_decision(40 + number, obl(number))
+        for ref in (obl(number), evt(40 + number)):
+            allowed.add(ref)
+            coverage[ref] = BASE_COVERAGE
+    return replace(
+        case,
+        projection=replace(
+            case.projection,
+            obligations=MappingProxyType(obligations),
+            decisions=MappingProxyType(decisions),
+        ),
+        allowed_ids=frozenset(allowed),
+        coverage_by_ref=coverage,
+    )
+
+
+def test_every_carried_disclosure_reaches_the_reviewer_at_the_obligation_cap() -> None:
+    """#1108 review R1: the row was held to the 4 KiB prose bound, so past about 26 disclosed
+    obligations the rest were only counted, and it listed obligations the 32-row cap had dropped.
+    It now uses the per-item bound and names exactly the obligations the packet carries."""
+
+    built = _build(_disclosed_obligations(40))
+
+    carried = set(built.packet.obligation_item_ids)
+    assert len(carried) == 32
+    row = _row(built, AGENT_DISCLOSURES_ITEM_ID)
+    listed = {
+        f"obligation-{cast(str, entry['obligation_id'])}"
+        for entry in cast(list[Mapping[str, JsonValue]], row["disclosures"])
+    }
+    assert listed == carried
+    assert row["not_listed_count"] == 0
+    item = next(item for item in built.items if item.item_id == AGENT_DISCLOSURES_ITEM_ID)
+    assert item.content_bytes > 4_096
+
+
+def test_the_decision_the_disclosures_row_displaces_is_disclosed() -> None:
+    """#1108 review R1: the row takes one of the 16 decision slots, so with 16 decisions the last
+    one was dropped by the cap with nothing saying so. A capped decision is now an omission."""
+
+    built = _build(_disclosed_obligations(16))
+
+    assert built.packet.decision_item_ids[0] == AGENT_DISCLOSURES_ITEM_ID
+    assert len(built.packet.decision_item_ids) == 16
+    assert f"decision-{evt(56)}" not in built.packet.decision_item_ids
+    assert any(
+        row.subject_ref == str(evt(56))
+        and row.reason == "not_selected"
+        and row.category is DataCategory.DECISION_EXCERPT
+        for row in built.packet.omissions
+    )

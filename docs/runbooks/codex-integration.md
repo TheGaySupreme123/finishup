@@ -3180,17 +3180,33 @@ This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers ma
 
 ## Reviewer packets and admitted outside-workspace inputs (issue #1082)
 
-Decision for Codex: supported, service-side, identical on every host. The reviewer instruction,
-the packet ranking (task inputs first, the verification oracle, FinishUP's summaries of binary
-inputs, redundant captured edits yielding to the latest verification) and the digest-only alias
-are composed by the service from the ledger and the check-time read; Codex needs no host step and
-nothing new is captured from it. `admitted_input_roots` is a field of the current repository's
-privacy grant: `finishup privacy input-roots add <dir>` is a widening that applies only after the
-trusted-terminal decision, `remove` is an immediate tightening, and `status`, `finishup privacy
-show` and `/privacy` show it. Codex sessions, MCP tools and hooks have no write path to it; an
-agent learns from the review guidance that only the owner can admit a folder. No Codex
-capability gap. The consent-gated local copy of each outbound packet is not part of this change
-(#1085).
+Decision for Codex: supported, service-side, identical on every host. The reviewer instruction, the
+packet ranking (since #1108 the change's reserved share first, then task inputs within an eighth of
+the excerpt room, the verification oracle, FinishUP's summaries of binary inputs, redundant captured
+edits yielding to the latest verification) and the digest-only alias are composed by the service
+from the ledger and the check-time read; Codex needs no host step and nothing new is captured from
+it. `admitted_input_roots` is a field of the current repository's privacy grant: `finishup privacy
+input-roots add <dir>` is a widening that applies only after the trusted-terminal decision, `remove`
+is an immediate tightening, and `status`, `finishup privacy show` and `/privacy` show it. Codex
+sessions, MCP tools and hooks have no write path to it; an agent learns from the review guidance
+that only the owner can admit a folder. No Codex capability gap. The consent-gated local copy of
+each outbound packet is not part of this change (#1085).
+
+## Reviewer instructions and packet order (n7, issue #1108)
+
+Decision for Codex: supported, service-side, identical on every host. A tool output a Codex hook
+captured reaches the reviewer behind `[FinishUP: observed output captured by a host hook (evidence
+<evd_>)...]`, which the instruction treats as a witness; FinishUP's own records (an approved check's
+result, an import report) carry their own labels; the agent's disclosures travel in one
+`agent-disclosures` row marked as its assertion; and the packet lists the task, the change, task
+inputs and observed output before the agent's account. Nothing is captured from Codex beyond what
+its profile already captures, and no host step changes. The label's run clause (command action,
+host-reported outcome, exit status) appears only when the hook recorded both the action and its
+result with a keyed `omitted:hmac-sha256:` command identity equal to the capture's. A Codex
+post-tool fixture proves it end to end
+(`tests/unit/application/test_native_verification_follow_up.py`). Codex does not capture pre-tool
+input bytes; the identity comes from the post-tool command context it keeps for test, build, lint
+and typecheck runs. No Codex capability gap.
 
 ## Possible-credential filter opt-out (issue #982)
 

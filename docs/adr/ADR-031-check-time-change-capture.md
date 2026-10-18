@@ -185,7 +185,9 @@ content-returning read needed its own decision. This is that decision, for exact
    across the upgrade are affected.
 6. **A reserved share of the packet, first.** The change is admitted before every other excerpt, up
    to half of the recipe's excerpt count (at least one) and half of its excerpt bytes, rounded up to
-   the change's first part. A part is never larger than the recipe's per-excerpt or total excerpt
+   the change's first part. Since the n7 amendment below, the byte half is of this packet's own
+   excerpt budget (the planned budget when a ceiling narrowed it), and the change takes it ahead of
+   the task inputs too. A part is never larger than the recipe's per-excerpt or total excerpt
    budget, so a captured change always reaches the packet ahead of every other excerpt unless that
    budget is too small for a readable part (256 bytes of change plus its marker), which is disclosed
    as `check_time_change_unavailable`. Room it does not use stays with the other excerpts. A part
@@ -654,8 +656,76 @@ ADR-009 amendment of the same date holds the consent and egress terms.
    quarter of the packet's excerpt budget (the planned budget when the channel ceiling narrowed
    it) and within the slots left after the change's reservation (at most one per part) and two
    slots per decisive verification run (the latest, or each run a follow-up asked for); one that
-   does not fit is skipped, not a stop, and backfills after every other excerpt.
+   does not fit is skipped, not a stop, and backfills after every other excerpt. *Superseded in
+   order and share by the n7 amendment below: the change now takes its share first, and the inputs
+   an eighth after it.*
    Each origin has its own label (`named by a recorded verification command`, `outside the
    workspace beneath a root the owner admitted`) and a summary reads `[FinishUP summary of task
    input file ...]`. A captured edit of only files whose every section the admitted change parts
    carry is ranked as an older edit with `superseded_by: ["check-time-change"]`.
+
+## Amendment (2026-10-18, n7 RC6e, issue #1108): the change first, task inputs after it
+
+#1082 put the task inputs ahead of the change's reserved share. The n7 investigation found that the
+change under review was then cut more often (36% of reviews against 20%), in 51 reviews. The
+change is the work under review, so its reservation comes first again, and the inputs keep a
+floor instead of a lead:
+
+1. **The change's reservation** is half of the recipe's excerpt count (at least one) and half of
+   *this packet's* excerpt budget, rounded up to the first part. Before, the byte half came from the
+   recipe total even when a ceiling narrowed the packet, so under a narrow ceiling the change and
+   the inputs together could leave the decisive verification output no bytes (issue #1094 R2-N2).
+2. **Task inputs then take a floor**: at most an eighth of the packet's excerpt budget, and never
+   the bytes held back for the decisive verification output (an eighth of the budget, at most one
+   excerpt, held only when the case records a run whose output could decide the change: a
+   readable command result, command or test output, or a hook-captured output, or a follow-up
+   that asks for one). An input larger than the room left arrives as its head and tail cut to that
+   room, with the elision marked, while the room is at least 2 KiB; it is disclosed as truncated
+   (`caller_evidence` `partial`, `truncated_payload`). When inputs are offered, the rounding of
+   the change's share up to its first part never takes the room the first input needs (the whole
+   input, at most that 2 KiB floor) when the eighth can hold that need: the change keeps at least
+   its half, and its first part is cut to the room as a narrowed case already allows (#983). That
+   room is never held back for the run. The decisive hold limits the inputs only, never the
+   change, whether or not the task names an input (#1108 review R3). The floor is the
+   first input's: later inputs take what the eighth leaves and otherwise wait for the backfill.
+   Their slots are bounded as before: those the change's admitted parts and two per decisive run
+   leave; with none left, every input waits for the backfill.
+3. **The rest is unchanged, except that a cut first part and a cut input grow back.** The change's
+   remaining parts take the room the reserved excerpt classes leave, ahead of older hunks and
+   general output (#983). A first change part the first offer cut is offered, at that same rank and
+   before its later parts, the room the reserved classes left: whole when it fits, so the parts
+   after it may follow, else a longer cut (#1108 reviews R2 and R3). When no lower rank is offered
+   it is offered the room left ahead of the backfill instead. The change then backfills, and the inputs not yet carried
+   backfill last. An input the first offer cut is then offered the room the packet has left, so
+   one that fits whole arrives whole, as it did when it waited for the backfill. The task
+   statement is its own item, never an excerpt, so no excerpt budget can drop it.
+
+At the full Expanded budget a ~102 KB change with two 16 KB specifications is now carried whole with
+one specification beside it. Under a narrowed budget, the change keeps its half, and the recipe
+leaving the inputs a slot, the first specification travels at its first offer whole when it fits the
+eighth, or at least as its head and tail when the eighth holds 2 KiB (an excerpt budget of 16 KiB or
+more); otherwise it waits for the backfill and is listed as not carried when no room is left. A
+small input costs the change no more than its own bytes (rounded to whole diff lines), with or
+without a recorded run: a one-part change that arrived whole beside a few-hundred-byte
+specification before #1108 still does. Primary material also leads the item order now (ADR-006 n7 amendment), so
+envelope bounding drops the timeline and the agent's account before any change part.
+
+What this amendment does not remove, left as follow-ups for the workstream issue #1108:
+
+- **Narrowed budgets, on both paths.** Whenever a narrowed excerpt budget leaves the inputs' first
+  offer less than one whole change part, the inputs still cost the change one 16 KiB part, as
+  before #1108. That holds whether the service planner narrowed the selection or the case builder
+  planned below a prepared-byte ceiling, which the default privacy setup sets (256 KiB), so the
+  in-builder path is the ordinary one for a large packet. Measured with a ~105 KB change beside a
+  16 KB and a 9 KB input: at 72000 and 56000 bytes the change carries the same bytes as at the base
+  on both paths, with or without a decisive run, and at 96000 the same holds when a decisive run
+  exists; only at 96000 with no run does the change keep every part. The n7 packets ran in this
+  regime (excerpt room near 70 KB), so this amendment does not address RC6e's cut reviews at
+  those budgets; it gives the inputs more of the room the part granularity leaves. Cutting the
+  change's *last* part to the room (the design's C3b, open question Q5), rather than only its
+  first, is what would let the change use the bytes the input clip frees; it reworks the
+  shown-file accounting (#983).
+- **Planner room.** Fixed material (the agent's account, timeline rows and earlier-finding prose)
+  is measured before excerpts and narrows none of them, so primary material is still a minority
+  of a full packet. Rebalancing that room, with per-section byte measurements from a pilot dump,
+  touches the #905 dialogue guarantees and is its own decision.

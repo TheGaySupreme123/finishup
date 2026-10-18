@@ -81,6 +81,7 @@ __all__ = [
     "MAX_SEMANTIC_CASE_ITEMS",
     "MAX_SEMANTIC_ITEM_SUBJECT_REFS",
     "PRIOR_FINDING_VERDICT_KINDS",
+    "SEMANTIC_CASE_SECTION_ORDER",
     "PriorFindingVerdict",
     "PriorFindingVerdictKind",
     "ChangeObservation",
@@ -280,26 +281,29 @@ _SECTIONS: Final = frozenset(
         "excerpt",
     }
 )
+# The one order of a case's sections: items sort by it, the provider document lists them in it,
+# and envelope bounding drops catalog rows from its tail.
+SEMANTIC_CASE_SECTION_ORDER: Final = (
+    # The specification leads the case: the reviewer reads what the user asked for before the
+    # agent's own plan, and envelope bounding drops it last (issue #908).
+    "task_statement",
+    # Then the material the work is judged from (n7 RC7, #1108): the change, task inputs and
+    # observed output, and FinishUP's own findings, ahead of the agent's account of the work,
+    # which the reviewer tests rather than adopts.
+    "excerpt",
+    "deterministic_summary",
+    "deterministic_detail",
+    "goal",
+    "obligation",
+    "claim",
+    "decision",
+    # Ahead of the timeline: envelope bounding drops catalog rows from the tail, and the
+    # dialogue record must never be crowded out by hook rows (issue #905).
+    "prior_finding",
+    "timeline",
+)
 _SECTION_ORDINAL: Final = {
-    section: ordinal
-    for ordinal, section in enumerate(
-        (
-            # The specification leads the case: the reviewer reads what the user asked for
-            # before the agent's own plan, and envelope bounding drops it last (issue #908).
-            "task_statement",
-            "goal",
-            "obligation",
-            "claim",
-            "decision",
-            # Ahead of the timeline: envelope bounding drops catalog rows from the tail, and the
-            # dialogue record must never be crowded out by hook rows (issue #905).
-            "prior_finding",
-            "timeline",
-            "deterministic_summary",
-            "deterministic_detail",
-            "excerpt",
-        )
-    )
+    section: ordinal for ordinal, section in enumerate(SEMANTIC_CASE_SECTION_ORDER)
 }
 _SOURCE_KINDS: Final = frozenset(
     {

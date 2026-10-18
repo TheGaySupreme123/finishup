@@ -508,7 +508,9 @@ def test_parts_carried_are_counted_from_the_bounded_envelope(
     assert check_time_change_parts_carried(semantic) == admitted
     assert check_time_change_parts_carried(semantic, withheld_categories=("claim_text",)) == 7
 
-    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 8_000)
+    # Primary material leads the case (n7 RC7, #1108), so bounding drops the timeline and the
+    # agent's account before any change part: the cap is small enough to reach the parts.
+    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 6_000)
     carried = check_time_change_parts_carried(semantic)
     assert 0 < carried < admitted
     envelope = strict_json_parse(semantic_case_module.bounded_case_envelope(semantic))
@@ -517,6 +519,9 @@ def test_parts_carried_are_counted_from_the_bounded_envelope(
         cast(dict[str, object], row)["item_id"]
         for row in cast(list[object], envelope["item_catalog"])
     }
+    # Every non-excerpt row went before the first change part did.
+    sections = {item.item_id: item.section for item in semantic.items}
+    assert {sections[cast(str, item_id)] for item_id in catalog} == {"excerpt"}
     assert {f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" for index in range(1, carried + 1)} <= (
         catalog
     )
@@ -672,7 +677,8 @@ def test_shown_file_views_come_from_exactly_the_carried_envelope_bytes(
     )
     change = _change(text)
     semantic = _build(_case_with_material(), change=change)
-    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 8_000)
+    # The agent's rows and the timeline yield first (#1108), so this cap reaches the change parts.
+    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 6_000)
     carried = check_time_change_parts_carried(semantic)
     assert 0 < carried < len(_change_items(semantic))
     envelope = strict_json_parse(semantic_case_module.bounded_case_envelope(semantic))

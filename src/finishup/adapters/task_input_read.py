@@ -4,11 +4,12 @@ A task input is a file the task names that the reviewer needs beside the change:
 specification, a dataset, the source to port, a test the verification runs. This module turns the
 bytes the service read into one bounded ``TaskInputFile``:
 
-- text stays text, whole or as head and tail with the cut marked;
-- a binary file, an image or a large data file becomes FinishUP's own bounded summary
+- text stays text, whole or as head and tail with the cut marked, a large text data file (a CSV,
+  say) included (issue #1094 R2-N3);
+- a binary file or an image becomes FinishUP's own bounded summary
   (``finishup.adapters.input_summary``), never its bytes;
-- a file larger than the whole-read bound is summarized from its two ends, read without following
-  a link.
+- a file larger than the whole-read bound is read from its two ends without following a link:
+  text keeps its head and tail, and a binary file is summarized from its head.
 
 A recognized document or binary signature (an all-ASCII PDF has no NUL) is summarized like any
 binary, and no cut ever splits a credential the shared scanner recognizes: a head or tail cut moves

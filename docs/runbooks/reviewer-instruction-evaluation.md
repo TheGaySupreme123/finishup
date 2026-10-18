@@ -2,9 +2,9 @@
 
 Use this runbook when you change `SEMANTIC_REVIEW_INSTRUCTION`, a lens, the grounding rules or the
 review-phase questions. It checks the instruction against the reviewer misses the N6 D-lane audit
-investigated (issue #1082). The design and the reasons are in
+investigated (issue #1082) and the n7 misses (issue #1108). The design and the reasons are in
 [ADR-006](../adr/ADR-006-semantic-provider-profile.md), "The reviewer instruction as a procedure
-with named lenses".
+with named lenses" and "Observed witnesses, one reading of disclosure, primary material first".
 
 ## Run the offline check
 
@@ -12,8 +12,21 @@ The offline check makes no provider call and needs no service:
 
 ```text
 uv run pytest tests/unit/adapters/providers/test_reviewer_accuracy_directives.py \
+  tests/unit/adapters/providers/test_reviewer_accuracy_directives_n7.py \
   tests/unit/adapters/providers/test_reviewer_instruction.py \
   tests/unit/adapters/providers/test_task_statement_instruction.py -q
+```
+
+When the change also moves packet order, labels or excerpt room, add the packet tests:
+
+```text
+uv run pytest tests/unit/application/test_semantic_case.py \
+  tests/unit/application/test_semantic_case_packet_completeness.py \
+  tests/unit/application/test_semantic_case_check_change.py \
+  tests/unit/application/test_semantic_case_prior_findings.py \
+  tests/unit/application/test_review_packet_row_contract.py \
+  tests/unit/application/test_native_verification_follow_up.py \
+  tests/unit/application/test_review_follow_up.py -q
 ```
 
 It fails when:
@@ -25,8 +38,9 @@ It fails when:
   the evaluation set.
 
 A failure here is a decision, not a chore. When you reword a directive on purpose, update the
-case in `tests/fixtures/reviewer_accuracy/n6_cases.json` and say in the pull request why the new
-wording still targets that miss.
+case in `tests/fixtures/reviewer_accuracy/n6_cases.json` or `n7_cases.json` and say in the pull
+request why the new wording still targets that miss. The n7 test also checks that every N6
+directive still holds.
 
 ## The checklist
 
@@ -47,7 +61,17 @@ fixture pins. "Detectable" says whether the decisive material was in the packet 
 | production-planning | yes | adopted the agent's premise | blockers, missing content, own checks | A blocker classification is the agent's claim, not evidence that authority is missing; a visible problem outranks what is missing. |
 | roy-polymorph-cn | yes | adopted the agent's method | method, grounding, procedure | A result that holds only under the agent's assumption is not support; check what the agent asked to have checked. |
 
-The spec and claim texts in the fixture are synthetic paraphrases of each failure pattern, not task
+The n7 cases (`tests/fixtures/reviewer_accuracy/n7_cases.json`) had the decisive material in the
+packet each time; the reviewer abstained on it or deferred to the agent's account:
+
+| Case | Detectable | Miss | Lens or section | Directive (short form) |
+| --- | --- | --- | --- | --- |
+| observed-validator-outside-workspace | yes | abstained on observed output | grounding, own checks | Output FinishUP observed is a witness; never abstain or ask for a check's source only because it is outside the packet; a bare PASS line witnesses only that the check passed. |
+| supplied-after-request | yes | re-listed supplied material | reading the packet | Supplied material includes the observed re-runs of a requested command; observed output, the change or a file answering the request is the witness, never withheld because the agent's answer was a summary. |
+| disclosed-limit-with-decisive-fact | yes | deferred to a disclosure | review phase, blockers | `not_assessable` only when the packet holds no material that settles it; a disclosure is not support and never stops the reviewer judging the packet. |
+| task-supplied-input-and-service | yes | delivery risk on correct work | environment | A run-time file the task supplies, and network access the task provides, are not delivery risks (issue #1094 R2-N1). |
+
+The spec and claim texts in the fixtures are synthetic paraphrases of each failure pattern, not task
 text, and the investigations themselves are not part of the repository.
 
 ## Replay against a live reviewer (optional)
@@ -63,7 +87,10 @@ them, replay frozen packets through a provisioned test instance (ADR-028,
    record the conclusion, the challenges and the verified rows.
 4. Count a case as caught only when a challenge or a `not_supported` row names the miss. A
    `not_assessable` row on the hidden-verifier case is the expected outcome, not a catch.
-5. Compare against the N6 baseline: zero of the ten detectable misses were caught. Keep the run
-   count, the spread and the reviewer settings with the result.
+5. Compare against the N6 baseline: zero of the ten detectable misses were caught. For the n7
+   cases, count an abstention (`insufficient_packet`, or a `not_assessable` row asking for a check's
+   source) on the observed-validator case as a miss, and watch for the over-correction: a
+   `supported` row that rests only on an observed bare PASS line. Keep the run count, the spread and
+   the reviewer settings with the result.
 
 Dispose of the test instance afterwards.

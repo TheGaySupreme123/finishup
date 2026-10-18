@@ -357,11 +357,28 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   and whether numbers are plausible. A visible problem is reported even when other content is
   missing, and support is scoped to what the reviewer actually checked.
 - **Review packets carry what reviewers asked for** (#1082). Specification files the task names
-  travel ahead of the change; the test files a verification ran travel as its oracle; binary,
-  image and data inputs travel as FinishUP's own short description instead of being skipped; a
-  large data file sends its first and last lines; duplicate captured edits give their room to the
-  latest verification output; and an agent's digest of output FinishUP already captured now reaches
-  that output.
+  travel beside the change (after its own share since #1108); the test files a verification ran
+  travel as its oracle; binary, image and data inputs travel as FinishUP's own short description
+  instead of being skipped; a large data file sends its first and last lines; duplicate captured
+  edits give their room to the latest verification output; and an agent's digest of output FinishUP
+  already captured now reaches that output.
+- **The AI-powered reviewer is told to judge from the work, not the agent's account of it** (#1108).
+  The packet lists the task, the change, task inputs and observed output before the agent's plan,
+  claims and decisions. Output a host hook captured is labelled as FinishUP's observation, with the
+  run's outcome and exit status when the host recorded them, and the reviewer is told it witnesses a
+  check even when the check's own file is outside the workspace, and not to abstain only because
+  that file is absent. The reviewer is told a disclosed limitation is never support and does not
+  stop it judging what the packet shows; the agent's disclosures travel in one row marked as its own
+  assertion. A check result FinishUP ran and an import report are labelled as FinishUP's own records
+  too, and any other line that imitates such a label, after invisible characters, colour codes or
+  lookalike letters, is marked `(not a FinishUP label)`. The change under review takes its share of
+  the packet first and task inputs an eighth after it, a large input usually arriving at least as
+  its first and last lines and growing into whatever room is left, and a small input costs the
+  change no more than its own bytes, with or without a recorded run. At the full budget a large
+  change is cut less often; under a narrowed budget the inputs can still cost it one part, as
+  before. A run-time file or network service the task itself supplies is no longer raised as a
+  delivery risk. These are changes to what the reviewer is told and shown; their effect on verdicts
+  is not yet measured.
 - **Agents write each fact once.** A `publish_work` request may leave out its request id, its
   frontier, each event's id, time, own empty reference lists and repeated references, and a
   current-version claim's empty limitation and correction lists, and a no-obligations plan's empty

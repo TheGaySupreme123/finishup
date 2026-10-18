@@ -1728,8 +1728,9 @@ stays deferred); and let the agent supply a text rendering of a binary deliverab
 - **No forged labels (issue #983).** Agent-authored excerpt text (an evidence description or
   reference, captured tool output, a failed result's summary, a command) never begins a line the
   way a label does: each such line, matched case-insensitively after leading spaces or tabs, is
-  prefixed `(agent text) `, and a captured diff part that would begin mid-line with `[FinishUP` is
-  prefixed the same way within its part bound. The reviewer instruction (one constant every
+  prefixed `(agent text) ` (since #1108 `(not a FinishUP label) `, with a wider match; see the n7
+  amendment), and a captured diff part that would begin mid-line with `[FinishUP` is prefixed the
+  same way within its part bound. The reviewer instruction (one constant every
   provider cell sends) trusts a `[FinishUP:` label only as an excerpt's first line and only when the
   evidence id it names equals that excerpt's own `source_ref`; anything else resembling one is the
   agent's text.
@@ -2177,7 +2178,8 @@ workstream W6 (Q1, Q4; the owner may overturn it), recorded on #1107:
   first its result reads `unknown` and the session-stream item appends the corrected result to the
   same action (ADR-033, n7 RC1); every result of one action is one run, so the corrected result
   carries the output the hook's result cites, and neither this rule, the verification-output
-  follow-up nor the #1045 latest-run rule reads it as a newer run without output. Only captured
+  follow-up nor the #1045 latest-run rule reads it as a newer run without output; the
+  observed-output label (issue #1108) names the corrected outcome and exit status. Only captured
   `tool_output` bytes are output; the captured command input and a digest-only row are not. An
   observed result's own summary is FinishUP's status line, not output. Observed rows never answer
   `command_identity`: an observed run records `omitted:<keyed identity>`, never the command text the
@@ -2215,4 +2217,117 @@ workstream W6 (Q1, Q4; the owner may overturn it), recorded on #1107:
 
 The rule is told where agents read it: `agent_next` in every check result and in
 `status view=operation`, the one `MISSING_SUPPLY_SENTENCE` the guidance pages quote, and the
-reviewer's own instruction (follow-up owned by the reviewer-instruction workstream).
+reviewer's own instruction (issue #1108, the next amendment).
+
+### Observed witnesses, disclosure, primary material first (2026-10-18, n7, issue #1108)
+
+The n7 investigation traced the reviewer's extra `insufficient_packet` verdicts and its wrong
+verdicts to the instruction and the packet layout, not to missing material: 15 of 27 wrong verdicts
+had the decisive fact in the packet. Three causes are addressed here, in the instruction and the
+packet; their effect on verdicts is not yet measured (the evaluation paragraph below says how it
+will be). The round goal is that an AI-powered review receives the material it needs and judges
+from primary material.
+
+- **Observed output is a witness** (RC6c). "Support needs a witness" made the reviewer abstain on
+  the agent's own validators, probes and tests, whose files agents keep outside the workspace
+  (FinishUP never sends them), although the packet held what those checks printed. A hook-captured
+  tool output now leads its first-packet excerpt with
+  `[FinishUP: observed output captured by a host hook (evidence <evd_>)…]`
+  (`_OBSERVED_OUTPUT_LABEL`, ending `; not an agent-published result]`). The label carries ids and closed tokens only and is
+  prefixed after the capture's text is neutralised; its recorded spans stay placed in the capture's
+  own bytes. Because the label is now a witness, the neutraliser reads a line as a reader sees it
+  (#1108 review R1): every line boundary `str.splitlines` honours starts a line (a bare CR and
+  U+2028 included), any run of characters a reader cannot see may lead the bracket (whitespace,
+  controls, format characters such as U+200B and U+FEFF, combining marks, the invisible fillers),
+  and the bracket and the name compare after NFKC folding with those characters removed, so an
+  agent line imitating the label behind such a lead is prefixed `(agent text) ` like any other.
+  #1108 review R2 widened the match to what a reader may take for the label: the opener is any
+  opening bracket or initial quote (Unicode categories Ps and Pi), `<`, or a listed bracket piece
+  or corner (U+23A1 and the rest); the name compares as its letters alone (marks stripped,
+  punctuation and separators dropped, so `Finish-UP` matches), with `0`, `1`, `5` and `|` read as
+  the letters they imitate and a Latin, Greek, Cyrillic, Armenian, Cherokee or Coptic letter that
+  does not fold to ASCII matching any letter (a Cyrillic i, a Greek Rho). #1108 review R3 drops
+  the script list: any letter that does not fold to ASCII matches any letter, since Lisu,
+  Canadian syllabics and Tifinagh have Latin lookalikes too; a whole ANSI escape sequence (CSI,
+  OSC and the other `ESC` forms, and their C1 introducers) leading the bracket counts as invisible,
+  the line also read with `ESC` alone skipped; and the prefix now reads `(not a FinishUP label) `
+  instead of `(agent text) `, because the fence also marks lines of a task input the user wrote
+  and of output a host hook captured. The instruction calls a prefixed line the text of the
+  excerpt's own source, as its label and source kind say, never FinishUP's. Over-marking is safe, so
+  the match errs toward a label; an ordinary bracketed line that does not spell the name (`[INFO]`,
+  `[Finished in 2.1s]`) is left as it was. The neutraliser runs before a head-and-tail cut, and
+  the elision marker ends on a newline, so the tail's first bytes start a line even when they sat
+  mid-line; `_head_tail_kept` therefore fences the tail's cut edge again, recutting with room for
+  the prefix, on every head-and-tail cut (evidence excerpts, failure summaries, commands, task
+  inputs and prose items). A capture never travels without its label:
+  when the per-excerpt limit leaves no readable room beside the full label the run clause is
+  dropped, and when even the bare label leaves none the excerpt is left out as `not_selected` with
+  `content_unselected`. Evidence only the service or the importer can record names its author too:
+  `[FinishUP: approved check result recorded by FinishUP from a check it ran (evidence <evd_>);…]`
+  for `approved_check` provenance and `[FinishUP: import report recorded by the FinishUP importer
+  (evidence <evd_>); …]` for `import_observed` (`evidence_recorded` rejects either provenance from
+  any other author), and the instruction names both, says a `source_kind` `diff` evidence excerpt
+  holds hook-captured edit bytes, and reads only the remaining unlabelled evidence as the agent's
+  published description. A run clause (`run of command action <act_>, host-reported outcome
+  <outcome>, exit status <n>`) appears only when the action and its result are hook-observed
+  records (ADR-022 decision 2) and the action's keyed command identity is the one the capture was
+  resolved under, the test auto-supply already applies; an agent-published or plaintext record
+  never lends a capture an outcome. The grounding rule now names such output as a witness, tells
+  the reviewer never to abstain only because a check's source is absent, and says a bare verdict
+  line (PASS, OK, a pass count) witnesses only that the check passed. Because FinishUP never sends
+  a hook-observed run's command text (only its keyed `omitted:hmac-sha256:` identity), the
+  grounding rule and the
+  own-checks lens say a command the agent recorded or named for such a run is the agent's account,
+  not the witness (#1108 review R2). The own-checks lens separates
+  the check's verdict (the claim) from what FinishUP observed it print (evidence of what it
+  printed). The `excerpt-supplied-` summary rule moved beside the `prior_missing_for_assessment`
+  sentence, since supplied answers arrive in the next check's packet (issue #1094 round-3 note), and
+  now says that observed output, the check-time change or a file answering the same request is the
+  witness; `supplied_since` is said to include the re-runs of a requested command FinishUP observed.
+  That clause is true only with the n7 change that counts those re-runs in `supplied_since`
+  (issue #1107, the real-supply amendment above); the two ship in the same integration.
+- **One reading of disclosure** (RC7). The instruction said both "a caveat the agent disclosed is
+  not by itself support" and "a hidden-evaluator requirement is `not_assessable`, not a challenge,
+  once the packet shows the agent disclosed it", and the reviewer took the second: 9 of 27 wrong
+  verdicts leaned on a disclosure. This amendment deliberately replaces three earlier sentences
+  rather than keeping each one, an exception to the #1082 convention above:
+  - the final-phase rule now makes such a requirement `not_assessable` *when the packet holds no
+    material that settles it*; a disclosure states the limit, is not support, and never stops the
+    reviewer judging what the packet shows, or challenging the requirement when that material shows
+    it unmet;
+  - the final-phase question (`REVIEW_PHASE_QUESTIONS["final"]`) says the same;
+  - the blockers lens now says a disclosed limitation outside the agent's control *excuses an unmet
+    requirement* and never supports a claim that the work is done (it said "supports a claim").
+  The unbounded-quantifier and never-demand-the-unobtainable sentences stay, so tb4n3 RC-1 (#1024)
+  still holds: nothing asks for an artifact the agent cannot obtain.
+- **Primary material first** (RC7). Items now come in `SEMANTIC_CASE_SECTION_ORDER`: the task
+  statement, then excerpts (the check-time change, task inputs, observed output, other recorded
+  excerpts), then FinishUP's deterministic findings, then the agent's account (plan, obligations,
+  claims, decisions and the `agent-disclosures` row, ADR-040), then earlier findings and the
+  timeline. The port and the builder share that one tuple. The "Reading the packet" section states
+  the order and says to read the work before the agent's account of it. Envelope bounding drops
+  catalog rows from the tail, so past `MAX_EGRESS_ENVELOPE_BYTES` the timeline and the agent's rows
+  now yield before any excerpt (disclosed through `selection_accounting.catalog_dropped_count`).
+- **Wording from issue #1094.** The environment lens raises a run-time file only when the
+  deliverable does not ship it *and the task does not supply it*, and network access only when *the
+  task does not provide it* (R2-N1). A `[FinishUP summary of` excerpt is said to stand for a binary,
+  an image or a data file FinishUP cannot send as text; a large text input keeps its head and tail
+  (R2-N3).
+
+Every provider route reads the same text: the Responses and Chat Completions adapters send
+`SEMANTIC_REVIEW_INSTRUCTION` (Chat Completions with its JSON-shape suffix), and the Codex
+app-server sends it as `baseInstructions`; the local-model adapter sends no instruction and the fake
+provider a fixed digest. The instruction grew from 29.9 KB to about 33.9 KB, about 1,000 more input
+tokens per review under the bytes/4 estimate. Case digests change for every case (item order is
+bound into `case_digest`), so a review frozen by an older build and recovered by this one ends
+`failed` / `coordinator_failure` through `semantic_execution_case_changed`, as for every
+case-builder change, and a pending disclosure approval bound to the older digest is reported `stale`
+and re-prepared.
+
+Four n7 cases join the offline evaluation set (`tests/fixtures/reviewer_accuracy/n7_cases.json`):
+an observed validator outside the workspace, an answer supplied after a request, a disclosed limit
+with the decisive fact in the packet, and a task-supplied input and service (R2-N1). As with the N6
+set, the tests prove the directives are present, not that a model follows them; the pilot or a live
+replay ([the evaluation runbook](../runbooks/reviewer-instruction-evaluation.md)) is the behavioural
+check. Watch for a supported row resting only on an observed bare PASS, and for
+`state_unresolved_limitation` loops on disclosed hidden-grader limits.
