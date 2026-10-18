@@ -110,6 +110,7 @@ from finishup.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from finishup.protocol.recovery import REASON_REMEDIES
 
 __all__ = ["Application", "RespondInternalResult", "execute_respond"]
 
@@ -216,17 +217,15 @@ _RESPONSE_PAYLOAD_REFUSAL: Final = (
     "present, the request field. Nothing was recorded. Correct it and send the response again"
     " under a new request_id."
 )
-# The corrective rule for the reasons the response payload raises, in the message itself: Codex
-# reads the structured error body, Claude Code and Cursor its text summary, and both carry it.
+# The corrective rule for the reasons the response payload raises, in the message itself. Codex
+# reads the structured error body, which carries this message. Claude Code reads only the bounded
+# text summary, which never renders a message: it carries reason_code, field, the continuation
+# directive and, for ``response_fields_invalid``, the same rule as a ``REASON_REMEDIES`` remedy.
+# Cursor reads the canonical JSON copy of the body, so it sees the message too.
 _RESPONSE_PAYLOAD_HINTS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "duplicate_set_member": " List each evidence_refs id once.",
-        "response_fields_invalid": (
-            " acknowledged_not_done, provenance_disputed, rejected, reopened, self_verified and"
-            " waived need a reason; self_verified needs evidence_refs; only waived takes"
-            " waiver_scope (required) and waiver_expiry; duplicate_of needs a"
-            " duplicate_of_finding_id naming another finding."
-        ),
+        "response_fields_invalid": " " + REASON_REMEDIES["response_fields_invalid"],
         "set_member_not_ascii": " Each evidence_refs member is an evd_ or res_ id.",
         "unsorted_set_field": " List evidence_refs in ascending order.",
     }

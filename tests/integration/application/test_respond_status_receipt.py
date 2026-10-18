@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -183,6 +184,7 @@ from finishup.protocol.models import (
     StatusOperationPageModel,
     StatusRequest,
 )
+from finishup.protocol.recovery import REASON_REMEDIES
 from fixture_loader import load_fixture_json
 
 pytestmark = pytest.mark.anyio
@@ -9389,6 +9391,9 @@ async def test_a_payload_refusal_names_its_reason_and_field(
     # Codex reads the structured body, Claude Code the text: both carry the reason (W6/#579).
     bound = error.bind_correlation_id("err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     envelope = tool_error_envelope(bound, request_id=protocol_id("req_", 10550))
+    hint = respond_module._RESPONSE_PAYLOAD_HINTS.get(reason_code)  # pyright: ignore[reportPrivateUsage]
+    if hint is not None:
+        assert error.message.endswith(hint)
     for host in ("codex", "claude"):
         rendered = result_from_public_model(
             RespondResult.model_validate(envelope), host_profile=host
@@ -9402,6 +9407,14 @@ async def test_a_payload_refusal_names_its_reason_and_field(
         expected = f"{reason_code} at {pointer}" if pointer is not None else reason_code
         assert f"Reason: {expected}" in text
         assert "The finding names work outside this task." not in text
+        if reason_code == "response_fields_invalid":
+            # The text summary never renders the message, so the field rule rides as a remedy.
+            assert f"Remedy: {REASON_REMEDIES[reason_code]}" in text
+    # Cursor's text channel is the canonical JSON copy of the body, message included.
+    cursor = result_from_public_model(RespondResult.model_validate(envelope), host_profile="cursor")
+    cursor_body = json.loads(cast(Any, cursor.content[0]).text)
+    assert cursor_body["error"]["message"] == error.message
+    assert cursor_body["error"]["safe_details"] == details
 
 
 async def test_an_unsorted_set_refusal_carries_its_corrective_hint() -> None:
@@ -9443,3 +9456,39 @@ async def test_the_catch_all_keeps_its_message_and_names_the_reason(
     assert caught.value.code is PublicErrorCode.INVALID_REQUEST
     assert caught.value.message == "The response request is invalid."
     assert (caught.value.safe_details or {}).get("reason_code") == "stored_result_shape_invalid"
+
+
+async def test_the_receipt_catch_all_keeps_its_message_and_names_the_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.application.receipt as receipt_module
+
+    app, _runtime, _ = _build_app(seed_offset=108)
+    started, checked, _obligation = await _bootstrap_finding(app, seed=10800)
+
+    def broken(*_args: object, **_kwargs: object) -> object:
+        raise ProtocolValueError("stored_result_shape_invalid")
+
+    # Shaping the result runs after the append, so the catch-all keeps its plain message and
+    # names only the frozen reason token, never the exception text.
+    monkeypatch.setattr(receipt_module, "_internal_result", broken)
+    with pytest.raises(PublicOperationError) as caught:
+        await app.receipt(
+            ReceiptRequest.model_validate(
+                _receipt_wire(
+                    10850,
+                    task_id=started.task_id,
+                    session=started.session_id,
+                    writer=started.writer_id,
+                    frontier=checked.result_frontier,
+                )
+            )
+        )
+    assert caught.value.code is PublicErrorCode.INVALID_REQUEST
+    assert caught.value.retryable is False
+    assert caught.value.message == "The receipt request is invalid."
+    # The reason's own continuation is derived from the token, as for every other refusal.
+    assert dict(caught.value.safe_details or {}) == {
+        "continuation": "lineage_integrity_review",
+        "reason_code": "stored_result_shape_invalid",
+    }

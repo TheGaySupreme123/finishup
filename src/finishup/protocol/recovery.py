@@ -1126,6 +1126,15 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "so read status view=operation and view=compact, and never resend it under a new "
             "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
         ),
+        # n7 RC3b (#1103): the one respond field-rule reason, so a host that renders only the
+        # bounded text (Claude Code) gets the rule, not just the token. ``respond`` reuses this
+        # sentence in its refusal message, which a host reading the structured body sees.
+        "response_fields_invalid": (
+            "The answer breaks a field rule of its disposition: acknowledged_not_done, "
+            "provenance_disputed, rejected, reopened, self_verified and waived need a reason; "
+            "self_verified needs evidence_refs; only waived takes waiver_scope (required) and "
+            "waiver_expiry; duplicate_of needs a duplicate_of_finding_id naming another finding."
+        ),
         "response_projection_failed": (
             "The operation is recorded, but its response could not be shaped. Replay the same "
             "request_id once to load the stored result; if that replay also fails, stop "
