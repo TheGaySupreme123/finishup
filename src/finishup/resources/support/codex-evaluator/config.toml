@@ -34,3 +34,9 @@ standalone_web_search = false
 tool_suggest = false
 view_image = false
 workspace_dependencies = false
+
+[tools.experimental_request_user_input]
+enabled = false
+
+[tools.update_plan]
+enabled = false

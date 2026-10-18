@@ -159,6 +159,12 @@ standalone_web_search = false
 tool_suggest = false
 view_image = false
 workspace_dependencies = false
+
+[tools.experimental_request_user_input]
+enabled = false
+
+[tools.update_plan]
+enabled = false
 """
 
 _CONFIG_SHA256: Final = "sha256:" + hashlib.sha256(CODEX_EVALUATOR_CONFIG.encode()).hexdigest()
@@ -386,6 +392,8 @@ _LAUNCH_OVERRIDES: Final = (
     'model_provider="openai"',
     'otel.environment="none"',
     'sandbox_mode="read-only"',
+    "tools.experimental_request_user_input.enabled=false",
+    "tools.update_plan.enabled=false",
     'web_search="disabled"',
 )
 
@@ -1109,7 +1117,7 @@ async def _initialize(runtime: _CodexProcess, profile: CodexAppServerProfile) ->
                 "version": "0.1.0",
             },
             "capabilities": {
-                "experimentalApi": False,
+                "experimentalApi": True,
                 "mcpServerOpenaiFormElicitation": False,
                 "requestAttestation": False,
             },
@@ -1171,15 +1179,24 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
 
 
 def _thread_start_params(
-    runtime: _CodexProcess, profile: CodexAppServerProfile
+    runtime: _CodexProcess,
+    profile: CodexAppServerProfile,
+    instructions: str = SEMANTIC_REVIEW_INSTRUCTION,
 ) -> dict[str, object]:
-    """The one isolated, ephemeral, read-only thread request a review and its probe both send."""
+    """The one isolated, ephemeral, read-only thread request a review and its probe both send.
+
+    ``environments: []`` is the upstream experimental restriction that disables environment
+    access, so no environment-backed native tool (shell, patch, file) can be registered or read
+    before a refusal (#1118 unit 3, ADR-006). It is why ``initialize`` opts into the experimental
+    API; no dynamic tool, MCP server or other experimental field is sent.
+    """
 
     return {
         "approvalPolicy": "never",
         "approvalsReviewer": "user",
-        "baseInstructions": SEMANTIC_REVIEW_INSTRUCTION,
+        "baseInstructions": instructions,
         "cwd": str(runtime.workdir),
+        "environments": [],
         "ephemeral": True,
         "model": profile.model,
         "modelProvider": "openai",
@@ -2170,7 +2187,7 @@ class CodexAppServerEvaluator:
                         "version": "0.1.0",
                     },
                     "capabilities": {
-                        "experimentalApi": False,
+                        "experimentalApi": True,
                         "mcpServerOpenaiFormElicitation": False,
                         "requestAttestation": False,
                     },

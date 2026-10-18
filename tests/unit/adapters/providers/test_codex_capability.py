@@ -197,6 +197,9 @@ def _regress(definitions: dict[str, dict[str, object]], regression: str) -> None
         cast(list[object], definitions["ClientRequest"]["oneOf"]).pop(0)
     elif regression == "notifications_gone":
         definitions["ServerNotification"]["oneOf"] = []
+    elif regression == "empty_environments_unavailable":
+        # A schema generated without ``--experimental`` filters the field out (#1118 unit 3).
+        _properties(definitions, "ThreadStartParams").pop("environments")
     elif regression == "sandbox_field_gone":
         _properties(definitions, "ThreadStartResponse").pop("sandbox")
     elif regression == "ephemeral_not_boolean":
@@ -237,6 +240,7 @@ def _regress(definitions: dict[str, dict[str, object]], regression: str) -> None
         "notifications_gone",
         # A field the isolation proof reads is gone or no longer admits its shape.
         "sandbox_field_gone",
+        "empty_environments_unavailable",
         "ephemeral_not_boolean",
         "efforts_gone",
         # A value the evaluator sends is no longer accepted.

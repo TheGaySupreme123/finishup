@@ -410,7 +410,7 @@ async def test_a_release_at_or_above_the_floor_earns_a_deterministic_record(
         isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
     )
     ((argv),) = schema.calls
-    assert argv[1:4] == ("app-server", "generate-json-schema", "--out")
+    assert argv[1:5] == ("app-server", "generate-json-schema", "--experimental", "--out")
     (env,) = schema.environments
     assert set(env) == {"CODEX_HOME", "LANG", "LC_ALL", "PATH", "RUST_LOG"}
     (profile,) = probe.profiles

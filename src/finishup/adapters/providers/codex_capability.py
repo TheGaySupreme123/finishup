@@ -70,7 +70,10 @@ CODEX_EVALUATOR_RUNTIME_FLOOR: Final = "0.157.1"
 # Names the FinishUP-side contract: this floor, the reviewed subset, and the probe procedure. A
 # change to any of them is a new profile, which existing bindings meet as
 # ``codex_runtime_profile_outdated`` until ``repair`` re-runs the check.
-CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v2"
+# v3 (#1118 unit 3): ``initialize`` opts into the experimental API only to send
+# ``thread/start.environments: []``; the isolated config disables the plan and user-input
+# utilities; the schema is generated with ``--experimental`` so that field is checked.
+CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v3"
 CODEX_CAPABILITY_RECORD_NAME: Final = "capability.json"
 # Frozen legacy identifier (ADR-048): stored in capability.json records; protocol 0.1 keeps one
 # `yoetz.<name>/<n>` tag namespace.
@@ -518,6 +521,7 @@ _REVIEWED_SUBSET: Final[tuple[_Requirement, ...]] = (
             "approvalsReviewer": "string",
             "baseInstructions": "string",
             "cwd": "string",
+            "environments": "array",
             "ephemeral": "boolean",
             "model": "string",
             "modelProvider": "string",
@@ -608,6 +612,7 @@ _SENT_FIELDS: Final[Mapping[str, frozenset[str]]] = {
             "approvalsReviewer",
             "baseInstructions",
             "cwd",
+            "environments",
             "ephemeral",
             "model",
             "modelProvider",
@@ -1073,7 +1078,14 @@ def generate_app_server_schema(
         try:
             out.mkdir(mode=0o700)
             code, _output = (_run if runner is None else runner)(
-                (str(executable), "app-server", "generate-json-schema", "--out", str(out)),
+                (
+                    str(executable),
+                    "app-server",
+                    "generate-json-schema",
+                    "--experimental",
+                    "--out",
+                    str(out),
+                ),
                 scratch,
                 _scratch_environment(scratch / "home"),
             )
