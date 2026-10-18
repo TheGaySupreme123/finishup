@@ -2607,3 +2607,24 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Claude Code session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+### Verification recognition (n7 RC2, #1106)
+
+Host decisions for Claude Code:
+
+- **Patch-then-test commands.** Shared classifier: a `Bash` command that applies a heredoc patch
+  (`git apply <<EOF`, `patch -p1 <<EOF`) and then runs a test is a verification run even when
+  the patch body holds an odd quote, and the patch is a write of the files its diff headers name.
+  Supported.
+- **Stream-first calls and hook outcome corrections.** Not applicable: Claude Code has no second
+  (session-stream) copy of a call, so its hook copy is the only record and keeps its own identity
+  and outcome.
+- **Documentation edits.** `Write`, `Edit`, `MultiEdit` and `NotebookEdit` and `Bash` writes of only project documentation (README,
+  changelog, `docs/*.md`) are named `docs`: real work, never stale-making for an earlier
+  verification unless a declared output is documentation or a directory. Supported.
+- **Background verification.** Gap kept: A `Bash` call with `run_in_background` that the agent polls through `BashOutput` is recorded when it launches; its completion is not a verification (output text is never read). Run verification in the foreground, in one tool
+  call (the shipped guidance says so).
+- **Upgrade.** The control-request 2.9.0 `write_scope` enum gained `docs` in place; a new hook
+  and an older running service fail the handshake as `manifest_mismatch` before any frame, and
+  hook rows wait until the next MCP bridge start or `finishup service restart` supersedes the old
+  service.

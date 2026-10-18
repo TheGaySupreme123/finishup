@@ -2935,9 +2935,12 @@ and PostToolUse; the older `patch`/`input` carriers are still read. The post-too
 result prefix supplies the edit outcome and the structural `exit_status`. In code mode the outer
 `exec` cell has no hook payload, but each nested `tools.apply_patch("...")` call is dispatched
 through the tool registry and fires its own `apply_patch` hooks with the same shape, and each nested
-`tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` is
+`tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` that
+is the whole script (or `cd <dir> && apply_patch <<EOF`; Codex 0.159 `invocation.rs`) is
 intercepted by `exec_command` and fires only PreToolUse, so its patch is captured from that event
-with outcome `unknown`. Its pending attempt is pre-only (#1041): it does not wait for a post Codex
+with outcome `unknown`. With anything before or after it (the patch, then `pytest -q`), Codex runs
+the script in the shell through its `apply_patch` alias and fires PostToolUse as usual; the patch is
+captured from that post and the attempt is an ordinary one (#1106). Its pending attempt is pre-only (#1041): it does not wait for a post Codex
 never sends. A `FileChange` item the rollout writes in the same session closes it: the attempt
 whose call id the item names; an item naming another call the session's hooks reported (in direct
 mode a native `apply_patch` item carries its own call id) is that call's change and closes none;
@@ -3616,3 +3619,38 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Codex session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+### Verification recognition (n7 RC2, #1106)
+
+Host decisions for Codex; the shared classifier parts apply to Claude Code and Cursor too.
+
+- **Patch-then-test commands.** One apostrophe in a heredoc body no longer makes a patch followed
+  by a test `compound`: the test is a verification run and clears "edited after the last
+  verification". `git apply <<EOF` and `patch -p1 <<EOF` heredocs are writes of the files their
+  diff headers name, like `apply_patch <<EOF`. Supported.
+- **Stream-first calls.** With parallel calls, the rollout `function_call` row of a direct
+  `exec_command` (or legacy `shell`) call is often recorded before its own hook copy. That row now
+  carries the same keyed command identity, runner class and relative write scope as the hook, so a
+  planned verification it ran is observed either way. Hook-only facts (an absolute-path write
+  scope, `effective_user`, `install_target`) are not derivable from the rollout; for a call whose
+  stream copy is recorded first they are missing, never invented. Supported, with that limit.
+- **Exit codes of direct calls.** A Codex 0.159 `Bash` PostToolUse states no exit code. The
+  rollout's `function_call_output` for a direct shell call starts with Codex's own header, and its
+  `Process exited with code N` (or `Exit code: N`) line is the call's exit; the output after
+  `Output:` is never read. A process still running when the call returned states none until its
+  `item_completed` row (or a later poll) arrives. Supported.
+- **A hook outcome after a stream copy.** When the stream copy was recorded first without an
+  outcome and the hook post states one, the hook's outcome is recorded as one correction of the
+  call; a contradiction keeps the refusal (#1092 item 1). Supported.
+- **Documentation edits.** A write of only project documentation (README, changelog, `docs/*.md`)
+  is named `docs`: real work, never stale-making for an earlier verification unless a declared
+  output is documentation. Supported on edit tools, shell writes and the rollout `FileChange`.
+- **Background verification.** A job started with `&` or `nohup` and polled from a later call is
+  recorded when it starts; its log is never read, so its completion is not a verification. A
+  unified-exec run that yields and is polled to exit is recognized through its `item_completed`
+  `CommandExecution` row. Gap kept: run verification in the foreground, in one tool call (the
+  shipped guidance says so).
+- **Upgrade.** The control-request 2.9.0 `write_scope` enum gained `docs` in place. A new hook
+  and an older running service fail the handshake as `manifest_mismatch` before any frame, so no
+  frame is ever refused for `docs`; hook rows wait in the local outbox until the next MCP bridge
+  start or `finishup service restart` supersedes the old service, then drain.

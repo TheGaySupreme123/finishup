@@ -902,6 +902,43 @@ advice, so the advice never names one run twice. The shapes are
 pinned by the OUT-001 fixture, which is derived from recorded 0.157.1 rollouts; a raw hook stdin
 capture is still owed on #910.
 
+Amendment (2026-10-18, n7 RC2, issue #1106). Both Codex copies of one call mint the same action
+and result ids, so whichever commits first defines the action. Codex writes every `function_call`
+row of a turn before it runs them, and the first call's hook reconciles the rollout, so with
+parallel calls the other calls' stream rows commit before their own hooks fire; about a fifth of
+n7's shell calls were recorded that way, with no command identity or runner class, and planned
+verifications that ran were `planned_verification_not_observed`. A rollout `function_call` row of
+one of Codex's own shell tools (`exec_command` and the legacy `shell`, `shell_command`,
+`local_shell`, `bash`; never the code-mode `exec` cell, `write_stdin` or an MCP tool) now commits
+to the command its arguments name (`cmd`, `command`, `argv`, the hook's order) with the hook's
+normalization and key, and carries the same segment commitments, runner class and relative write
+scope (Codex 0.159 `exec_command.rs` sends the hook `tool_input: {"command": args.cmd}`, and the
+hook's `tool_use_id` is the row's `call_id`). Only the post copy carries the compound-outcome gap.
+Facts only the hook can know stay hook-only (absolute-path write scope, `effective_user`,
+`install_target`; `workspace_effect` is already reconciled). A command containing a secret the
+importer redacts commits to the redacted text: a missed match, never a false one.
+
+A Codex 0.159 `Bash` post states no exit, so for a direct `exec_command` call the rollout is the
+only place the exit is stated. The reader takes it from the header Codex itself writes before
+the output of `function_call_output` (`context.rs` `ExecCommandToolOutput::response_header`:
+`Chunk ID`, `Wall time`, `Process exited with code N` once the process exited, `Process running
+with session ID N` while it runs, `Original token count`, then `Output:`; or the classic `Exit
+code: N` header), matched only as that anchored, closed grammar and never searched for in the
+output, and keeps it only when pairing names a Codex shell call (the output row names no tool);
+`-1..255` only. A running process states no exit.
+
+When the stream copy committed first without an outcome, the hook copy stating one was refused
+as a disagreement and the outcome was lost (#1092 item 1). A Codex hook `PostToolUse` (or
+`PostToolUseFailure`) now takes decision 15's correction path like a stream completion: the
+committed `UNKNOWN` gets one correction result linked to the same action, and the duplicate check
+counts a ledger whose only outcome for the call is `UNKNOWN` as agreeing. A hook copy never records
+a disagreement: one that contradicts a stated outcome keeps the ledger's refusal and quarantine
+(fail closed, #560), a fact a prior correction already states is not stated twice, and a hook copy
+that just recorded its own result, or replays its own operation, reads no projection. Mapping
+versions are unchanged; calls already recorded identity-less stay so. The shapes are pinned by
+OUT-005 (`observations/codex-shell-call-identity-0.159.0.case.json`), derived from the Codex
+0.159.0 source; a raw hook stdin capture is pending.
+
 ## Amendment (2026-10-07, issue #994): the drain clock, content under a contended lease, and the Stop drain
 
 tb4n1 measured `drain_budget_exhausted` on 94% of Codex hooks, `content_capture_unavailable` in

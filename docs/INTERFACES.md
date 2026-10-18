@@ -1200,6 +1200,11 @@ command is rerun or the claim explicitly acknowledges it. An edit the harness se
 shell command (a heredoc written through `exec_command` or `Bash`) is a command, not an observed
 edit, and follows the same rule for failure supersession. For the stale-verification rule such a
 command counts as an edit when it visibly writes the workspace (`write_scope: workspace`, ADR-045).
+A write of only project documentation (`write_scope: docs`, ADR-042 amendment of 2026-10-18,
+#1106) counts as acting and as material, but never makes an earlier verification stale unless a
+declared output is documentation or a directory. A heredoc-fed `apply_patch`, `git apply` or
+`patch` writes the files its patch headers name (`domain/shell_writes.heredoc_patch_paths`), and
+a heredoc body's quotes never decide a command's runner class (ADR-045 amendment of 2026-10-18).
 
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
 `rejected`, or `waived`.
@@ -5858,7 +5863,14 @@ Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
   `Process exited with code N` function-output header, and an MCP result's `isError`; output text
   is never read as an outcome. A rollout `event_msg`/`item_completed` whose item is a
   `CommandExecution`, `McpToolCall` or `FileChange` is a completed tool call (event kind
-  `item_completed`) whose `status` and `exit_code` are its outcome. The Claude ordinary
+  `item_completed`) whose `status` and `exit_code` are its outcome. A rollout `function_call_output`
+  of a Codex shell call (pairing names `exec_command`, `shell`, `shell_command`, `local_shell` or
+  `bash`) takes its `exit_status` from the header Codex writes before the output (`Process exited
+  with code N`, or the classic `Exit code: N`), matched as an anchored closed grammar ending at
+  `Output:`; `Process running with session ID N` states none (#1106). A rollout `function_call`
+  of one of those tools carries the hook's `command_commitment`, `command_segment_commitments`,
+  `command_composition`, `runner_class` and relative `write_scope`, computed from its arguments
+  (`cmd`, `command`, `argv`) with the hook's normalization and key (OUT-005). The Claude ordinary
   `claude-code-hooks-ordinary-v2` mapping also treats Claude's documented `PostToolUse` event as
   an explicit host-tool success fact, without fabricating `exit_status: 0`; `PostToolUseFailure`
   and explicit failure, denial, interruption, invalid/unknown status, or conflicting facts retain
@@ -5921,7 +5933,13 @@ delivery (event ids derived from the host call: a paired pre/post, a Codex strea
 post-only post that names its call) none of whose reconstructable role sets is committed, but whose
 every event id the task ledger already holds, is a duplicate, never a content refusal: nothing is
 appended, the correction still applies, and an append refused as `EVENT_INVALID` is re-read the same
-way before it can quarantine (issue #1027, tb4n3 N3-7). A Codex stream completion is bound to its hook
+way before it can quarantine (issue #1027, tb4n3 N3-7). A Codex hook post (`PostToolUse` or
+`PostToolUseFailure`) whose call the stream copy committed first takes the same correction path
+(#1106, #1092 item 1): a ledger whose only outcome for the call is `UNKNOWN` agrees with it, and its
+stated outcome is appended as one correction; a hook copy that contradicts a stated outcome keeps
+the refusal (it never records a conflict correction), a fact a prior correction already states is
+not appended again, and a hook copy that just recorded or replays its own result reads no
+projection. A Codex stream completion is bound to its hook
 call's generation before its captured-content manifests are looked up, so a content-bearing hook post
 and its contentless stream copy resolve the same committed operation across a `compact`, `resume` or
 `clear` generation bump. Event ids derived from a source identity alone (unpaired evidence) can be
@@ -10810,8 +10828,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   class; two non-counting classes count as `workspace`; a directory destination is classified by
   where it is, not by a notes or receipt file name; the hook calls it alone, with no separate
   outside-workspace check);
-  `write_scope` admits `notes` (non-counting) and `workspace` (a shell command that writes the
-  workspace; counts as an edit with `outside_workspace`; `observed_failures.SHELL_EDIT_TOKENS`).
+  `write_scope` admits `notes` (non-counting), `workspace` (a shell command that writes the
+  workspace; counts as an edit with `outside_workspace`; `observed_failures.SHELL_EDIT_TOKENS`) and
+  `docs` (#1106: counts as an edit and as acting, never advances the latest edit;
+  `observed_failures.STALE_EXEMPT_WRITE_TOKENS`, `observed_write_stales_verification(description,
+  stale_exempt)`). `shell_writes.heredoc_patch_paths(command)` names the files a complete heredoc
+  fed to `apply_patch`, `git apply` or `patch` writes; `codex_intercepts_shell_apply_patch(command)`
+  is Codex's sole-statement interception rule.
   `missing_for_assessment.check_change_text_paths(capture)` lists the files the check-time change
   shows as text; `_TargetFiles.unsupported` decides by Git's NUL sniff first, then the suffix. The
   standing `declared_output_not_reviewable` (`DECLARED_OUTPUT_NOT_REVIEWABLE_GAP`) is raised when a
@@ -10833,10 +10856,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `work-integrity/0.2.0` generation.
 - **Runtime structural fields.** The observation envelope and control-request 2.9.0
   `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
-  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|workspace`; ADR-042:
+  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|docs|workspace`; ADR-042:
   `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
   FinishUP's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
-  writes the workspace),
+  writes the workspace; #1106: `docs` a write of only project documentation, stale-exempt but
+  counting),
   `effective_user` (`root|non_root`) and `workspace_effect` (`unchanged|changed|unavailable`,
   PR #1080 round 5: produced only by `cli/workspace_effect_hook.workspace_fingerprint_pass` on a
   live `PostToolUse`, never copied from a host payload; materialization appends it to the observed
@@ -10852,8 +10876,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   names a `FileChange` item's `write_scope` from its own paths (never `outside_workspace`). A FinishUP
   MCP tool (`mcp__finishup__*`, `mcp__plugin_finishup_*__*`) always materializes as action kind `other`.
   `domain/write_scope.py`: `classify_write_path(path, *, workspace, inside, owned_roots) ->
-  workspace|outside_workspace|scratch|yoetz_owned`, `edit_write_scope(classes) -> str | None`,
-  `scratch_overlap(path)`, `finishup_artifact_name(path)`;
+  workspace|outside_workspace|scratch|yoetz_owned|notes|docs`, `edit_write_scope(classes) -> str |
+  None`, `scratch_overlap(path)`, `finishup_artifact_name(path)`, `docs_artifact_name(path)`,
+  `STALE_EXEMPT_WRITE_SCOPES`; `kernel.task_facts.stale_exempt_write_tokens(projection)` drops the
+  `write docs` exemption when a declared non-input file has a documentation name or a declared
+  non-input directory exists;
   `kernel.task_facts.non_counting_edits_exempt(projection) -> frozenset[str]` names the exempt write
   tokens per class (deliverables win: no `write scratch` exemption when a requested non-input item
   is under or contains a fixed temp root; no `write yoetz_owned` exemption when one has a receipt

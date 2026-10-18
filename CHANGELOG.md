@@ -676,6 +676,20 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 ### Fixed
 
+- Real verifications count, so the Stop hook no longer asks for a test that already ran (#1106):
+  - A command that applies a patch and then runs the tests (`apply_patch`, `git apply` or
+    `patch -p1` with a heredoc, then `pytest`) counts as a verification even when the patch holds
+    an apostrophe, and a `git apply`/`patch` heredoc now counts as an edit of the files it names.
+    In Codex, such a command is no longer left as a pending attempt.
+  - In Codex, a shell call recorded first from the session log (common with parallel calls) is
+    recognized as the command it ran, with its exit code, so a planned verification is no longer
+    "never observed"; and when that copy has no outcome, the hook's outcome is recorded (#1092).
+  - Editing only documentation (a README, a changelog, `docs/*.md`) is still recorded as work but
+    no longer makes an earlier test stale, unless the task declares that file or a directory as an
+    output.
+  - A verification started in the background and polled from a later call is still recorded only
+    when it starts; FinishUP's guidance now asks agents to run verification in the foreground.
+
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a
