@@ -1016,15 +1016,16 @@ def requested_command_shape(value: str) -> str:
 
 # Words that start a process meant to outlive its launcher, at any wrapper layer of a segment.
 _DETACHING_WORDS: Final = frozenset({"nohup", "setsid", "disown", "daemonize", "start-stop-daemon"})
-# Programs that never hand an argument to a shell or an interpreter, nor read code from stdin: a
-# quoted ``&`` in their arguments is data. Everything else (a shell, ``eval``, ``sudo``, ``ssh``,
-# ``xargs``, ``find``, ``awk``, ``git``, ``trap``, any interpreter ...) stays undecided, so the
-# caller keeps its conservative pattern. ``sed`` is listed only for one plain ``s`` command (its
-# ``e`` flag and command run the pattern space through a shell); see ``_inert_sed``.
+# Programs that, in the forms accepted here, never hand an argument to a shell or an interpreter,
+# nor read code from stdin: a quoted ``&`` in their arguments is data. Everything else (a shell,
+# ``eval``, ``sudo``, ``ssh``, ``xargs``, ``find``, ``awk``, ``git``, ``trap``, ``wget`` with its
+# ``-b``/``--use-askpass``/``-e``, any interpreter ...) stays undecided, so the caller keeps its
+# conservative pattern. ``sed`` is listed only for one plain ``s`` command (its ``e`` flag and
+# command run the pattern space through a shell; see ``_inert_sed``) and ``rg`` only without a
+# ``--pre`` preprocessor, which runs a command for every file searched.
 _INERT_PROGRAMS: Final = frozenset(
     {
         "curl",
-        "wget",
         "grep",
         "egrep",
         "fgrep",
@@ -1104,6 +1105,9 @@ def _inert_program(words: Sequence[str]) -> bool:
     if head not in _INERT_PROGRAMS or words[0] != head:
         # A path (``./curl``) is the agent's own program, not the known one.
         return False
+    if head == "rg":
+        # ``--pre``/``--pre=`` (and ``--pre-glob``) run a preprocessor command for each file.
+        return not any(word.startswith("--pre") for word in words[1:])
     return head != "sed" or _inert_sed(words[1:])
 
 
@@ -1112,6 +1116,7 @@ def _segment_may_background(segment: str, depth: int) -> bool | None:
         # A command or process substitution runs its own commands inside this segment.
         return None
     layer = _split_words(segment)
+    wrapped = False
     for _ in range(_MAX_WRAPPER_ROUNDS + 1):
         if not layer:
             break
@@ -1119,12 +1124,20 @@ def _segment_may_background(segment: str, depth: int) -> bool | None:
             return True
         if not _strip_one_wrapper(layer):
             break
+        wrapped = True
     if not layer:
         return None
     inner = wrapped_shell_argument(layer)
     if inner is not None:
-        return None if depth >= _MAX_DEPTH else command_may_background(inner, _depth=depth + 1)
-    return False if _inert_program(layer) else None
+        verdict = None if depth >= _MAX_DEPTH else command_may_background(inner, _depth=depth + 1)
+    else:
+        verdict = False if _inert_program(layer) else None
+    if verdict is False and wrapped:
+        # A stripped layer can change what runs: ``env -S`` runs its operand as the command,
+        # ``LD_PRELOAD=``/``BASH_ENV=`` load code and ``PATH=.`` swaps the program. Only a
+        # backgrounding answer survives it; a quiet one goes back to the conservative pattern.
+        return None
+    return verdict
 
 
 def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
@@ -1134,11 +1147,14 @@ def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
     one), an ``&`` in a here-document body, a detaching word (``nohup``, ``setsid``, ``disown``,
     ``daemonize``, ``start-stop-daemon``) at any wrapper layer of a segment, or a ``sh -c``
     argument that backgrounds (read recursively). ``False`` only when none of these hold and every
-    segment runs a program known never to run its arguments or stdin as code (``curl``, ``grep``,
-    ``rg``, ``echo``, ``jq``, one plain ``sed`` substitution ...): a quoted ``&`` there
+    segment runs, with no wrapper or assignment in front, a program known never to run its
+    arguments or stdin as code in the form given (``curl``, ``grep``, ``rg`` without ``--pre``,
+    ``echo``, ``jq``, one plain ``sed`` substitution ...): a quoted ``&`` there
     (``curl 'h?a=1&b=2'``, ``sed 's/x/&/'``) backgrounds nothing. ``None`` otherwise, including
-    any command or process substitution, a privilege wrapper (``sudo``), a program that hands an
-    argument or its stdin to a shell or interpreter, and text that is not splittable: the caller
+    any command or process substitution, ANSI-C quoting (``$'...'``), a wrapper or assignment
+    (``env -S``, ``LD_PRELOAD=``, ``PATH=``) in front of such a program, a privilege wrapper
+    (``sudo``), a program that hands an argument or its stdin to a shell or interpreter, and
+    text that is not splittable: the caller
     keeps its conservative reading, so this answer is never quieter than that pattern except for
     a call made only of those known programs. The answer is about the text only; it never proves
     that no process outlives the call.
@@ -1153,7 +1169,9 @@ def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
         return True
     if any("&" in body for bodies in split.bodies.values() for body in bodies):
         return True
-    undecided = not split.segments
+    # ANSI-C quoting (``$'\''``) escapes a quote the splitter reads as closing one, so a real
+    # top-level ``&`` can look quoted: never a quiet answer for such text.
+    undecided = not split.segments or "$'" in text
     for segment in split.segments:
         verdict = _segment_may_background(segment, _depth)
         if verdict is True:

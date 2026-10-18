@@ -103,6 +103,24 @@ def test_text_that_backgrounds(text: str) -> None:
         "sed -f s.sed 'a&b'",
         # The agent's own program under a known name.
         "./curl 'a&b'",
+        # ANSI-C quoting: ``$'\''`` is an escaped quote, so the ``&`` after it is top level.
+        "echo $'\\'' & (sleep 2; echo late > deliverable.txt) & echo \\'",
+        # A wrapper or assignment that changes what runs in front of a known program.
+        "env -S 'sh -c \"sleep 2; echo late > deliverable.txt &\"' curl -s x",
+        "env --split-string='sh -c \"(sleep 2; touch f) &\"' cat f",
+        "env -S 'sh -c \"(sleep 5; echo x > deliverable.txt) & echo\"' true",
+        "env --split-string='sh -c \"x &\"' true",
+        "LD_PRELOAD=./bg.so curl 'h?a=1&b=2'",
+        "PATH=.:$PATH grep 'a&b' f",
+        "env -i PATH=. grep 'a&b'",
+        "BASH_ENV=./bg.sh bash -c 'curl \"h?a=1&b=2\"'",
+        # A known program in a form that starts or runs another process.
+        "wget -b -q 'https://example.com/a?x=1&y=2'",
+        "wget --background 'https://example.com/a?x=1&y=2' -O out.html",
+        "wget --use-askpass=./bg.sh 'h?a&b'",
+        "rg --pre=sh 'a&b' .",
+        "rg --pre ./bg.sh 'a&b' .",
+        "rg --pre setsid -e x .",
     ],
 )
 def test_text_the_grammar_leaves_to_the_conservative_reading(text: str) -> None:

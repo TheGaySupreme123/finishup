@@ -119,7 +119,8 @@ def fingerprinted_tool(tool_name: object, *, finishup_owned: bool) -> bool:
 # The conservative reading for text the shell grammar leaves undecided
 # (``command_segments.command_may_background``): a shell background operator (a lone ``&``, not
 # ``&&``, ``>&``, ``&>``, ``<&`` or ``|&``) or a detaching launcher anywhere. The grammar clears
-# it only for a call made solely of programs known never to run an argument or stdin as code. A
+# it only for a call made solely of programs known not to run an argument or stdin as code in the
+# form given, each with no wrapper or assignment in front and no ANSI-C quoting in the text. A
 # command that may leave a process writing after the post-call snapshot cannot be shown to have
 # left the workspace unchanged, and the lingering-process probe sees only this user's processes
 # (a ``sudo`` daemon is invisible to it).
@@ -143,9 +144,9 @@ def command_may_outlive_call(payload: Mapping[str, JsonValue]) -> bool:
     """Whether the command text may leave a process running past the host's post-call event.
 
     Shell grammar answers first (#1089): it says yes for a real background operator or detaching
-    launcher, and no only when every program in the text is known never to run its arguments or
-    stdin as code, so a quoted ``&`` there (``curl 'h?a=1&b=2'``) is data. Anything it leaves
-    undecided keeps the conservative pattern.
+    launcher, and no only when every program in the text, with no wrapper or assignment in front,
+    is known not to run its arguments or stdin as code in the form given, so a quoted ``&`` there
+    (``curl 'h?a=1&b=2'``) is data. Anything it leaves undecided keeps the conservative pattern.
     """
 
     tool_input = payload.get("tool_input")

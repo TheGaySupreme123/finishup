@@ -629,14 +629,27 @@ def test_a_quoted_ampersand_is_not_a_background_launch(
     assert envelope.structural_payload["workspace_effect"] == "unchanged"
 
 
-@pytest.mark.parametrize("command", ["bash -c 'npm run dev &'", 'eval "./server &"'])
+@pytest.mark.parametrize("host", ["codex", "claude"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -c 'npm run dev &'",
+        'eval "./server &"',
+        # The writer runs outside the workspace's cwd, beyond the lingering-process probe.
+        "echo $'\\'' & (cd / && sleep 3 && echo late >> deliverable.txt) & echo \\'",
+        "env -S 'sh -c \"(cd / && sleep 3 && echo late >> deliverable.txt) &\"' cat /dev/null",
+        "LD_PRELOAD=./bg.so curl 'h?a=1&b=2'",
+        "rg --pre=sh 'a&b' .",
+        "wget -b -q 'https://example.invalid/a?x=1&y=2'",
+    ],
+)
 def test_an_ampersand_handed_to_a_shell_is_still_a_background_launch(
-    tmp_path: Path, command: str
+    tmp_path: Path, host: str, command: str
 ) -> None:
     workspace, state, commitment = _setup(tmp_path)
-    emit, pre, post, _shape = _host("codex", workspace, state)
-    emit(pre, _codex(pre, "call_bg", command))
-    emit(post, _codex(post, "call_bg", command))
+    emit, pre, post, shape = _host(host, workspace, state)
+    emit(pre, shape(pre, "call_bg", command))
+    emit(post, shape(post, "call_bg", command))
     (envelope,) = _posts(state, commitment)
     assert envelope.structural_payload["workspace_effect"] == "unavailable"
     reasons = cast(dict[str, object], _readings(state, commitment)["all"])["unavailable_reasons"]
