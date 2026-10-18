@@ -74,6 +74,7 @@ def _clean_env(home: Path) -> dict[str, str]:
     env = {name: value for name, value in os.environ.items() if not name.startswith("FINISHUP_")}
     env["HOME"] = str(home)
     env["UV_CACHE_DIR"] = _real_cache_dir()
+    env["UV_PYTHON_DOWNLOADS"] = "never"
     return env
 
 
@@ -86,7 +87,7 @@ def _tool_install(dist_dir: Path, root: Path, home: Path) -> tuple[Path, dict[st
     assert len(wheels) == 1
 
     def _install(offline: bool) -> subprocess.CompletedProcess[bytes]:
-        args = ["uv", "tool", "install", "--python", "3.14.6"]
+        args = ["uv", "tool", "install", "--python", sys.executable]
         if offline:
             args.append("--offline")
         args += ["--find-links", str(dist_dir), str(wheels[0])]
