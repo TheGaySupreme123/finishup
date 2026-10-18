@@ -3616,3 +3616,39 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Codex session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+## Review results Codex actually shows, and supply that counts (W6, #1107)
+
+**Upstream facts (pinned to `rust-v0.159.0`).** Outside code mode Codex hands the model
+`serde_json::to_string(structuredContent)` and ignores `content` whenever structured content is
+present (`codex-rs/protocol/src/models.rs:2302-2331`). `McpToolOutput::response_payload`
+(`codex-rs/core/src/tools/context.rs:185-212`) prefixes `Wall time: N seconds\nOutput:\n` and cuts
+the middle of a long body with a 50/50 head and tail split
+(`codex-rs/utils/string/src/truncate.rs:38-69, 126-129`). A model slug missing from the bundled
+`models.json` (for example `gpt-6.1-sol` at this tag) falls back to `bytes(10_000)`
+(`codex-rs/models-manager/src/model_info.rs:127`), ×1.2 serialization allowance
+(`codex-rs/utils/output-truncation/src/lib.rs:16-18`): the model sees the first and last 6,000
+bytes. A bundled slug uses `tokens: 10000` (24,000 + 24,000 bytes). `serde_json` is built with
+`indexmap`, so the model sees FinishUP's field order. The event copy at
+`codex-rs/core/src/mcp_tool_call.rs:982-1025` is truncated separately for the UI and rollout only.
+
+**Host decision: supported.** Every check result leads with `agent_next` right after `verdict`
+(ADR-043 amendment): the next action and, for missing review input, each item, its targets, how to
+supply it and what counts, within 2,048 bytes, so it always lands inside the 6,000-byte head.
+`overall_next` and `missing_for_assessment` follow it, ahead of findings and every bulky field. A
+lost or cut result is recovered with `status view=operation` for the check's `request_id`: the page
+now carries `check_outcome` with the same verdict, `agent_next`, `overall_next` and missing items a
+same-id resend returns, so an agent never replays the check through the CLI to read them.
+
+**Supply on Codex.** A shell re-run of the target's exact command that the hook (or the
+session-stream copy, whichever commits it) observed after the request counts as supplying a
+targeted item (ADR-006 amendment). Both copies materialize the same rows, so matching is on the
+recorded run. The run's captured output must reach the reviewer before a repeat is dropped as
+already supplied; when the owner's policy sends no repository excerpt, `agent_next` tells the agent
+to publish one `result_recorded` of the target's action with the output in `summary`. A respond or
+a description never counts.
+
+**Verification:** `tests/unit/mcp/test_codex_structured_head.py` emulates the cut on the real bridge
+projection; `tests/integration/application/test_observed_rerun_supply.py` drives a Codex
+`PostToolUse` envelope through the production materialization; `tests/integration/application/test_status_operation_view.py`
+covers the recovery page.

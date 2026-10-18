@@ -131,6 +131,22 @@ check result and receipt in full. The reviewer receives the other findings; this
 omitted rather than trimmed, and coverage names it with `semantic_case_finding_refs_over_limit`.
 Resolving the underlying gaps narrows the finding and lets the next review carry it.
 
+## When the reviewer needs more
+
+A review that could not assess the work says what it needs instead of guessing. The check result
+leads with `agent_next`: the one next step, and for each item the reviewer asked for, which record
+it means and exactly how to supply it. It comes first in the result so that an agent whose host
+shows only the start of a long result still reads it; `status view=operation` for the same request
+id repeats it if the result was lost.
+
+Supply each item once, then check again. What counts is new material tied to the named record: a
+result of the same run or of the same exact command, evidence that names the record or its file
+path, or a correction of a named claim. Re-running the same command counts when FinishUP observed
+the run, but the reviewer must see its output before a repeated request is treated as answered; if
+your privacy setting does not send command output, publish the run's result with its output as
+the summary. A response or a description of the output does not count. If an item is a FinishUP
+limit rather than missing work, verify it yourself and state the limit in the receipt.
+
 ## Completion scope is declared, not inferred
 
 FinishUP reads completion scope only from the effective plan chain. It never invents obligations from

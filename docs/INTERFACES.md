@@ -2188,6 +2188,10 @@ Its methods are:
   holds one task runtime; this recovery read prefers the authenticated writer, otherwise returns a
   unique prior-writer match inside that task, and fails closed as absent on ambiguous cross-writer
   reuse).
+- `load_check_result(writer_id, operation_id) -> CheckCommitResult | None` (W6, #1107; read only:
+  the stored committed check of that exact key as a same-id replay returns it, `outcome="replayed"`,
+  before the replay-time checklist, `overall_next` and project advice are attached; `None` when the
+  key has no completed check result). No storage change.
 
 The check orchestration methods are authority-bearing port methods, not SQLite extensions.
 Once `freeze_case` returns a `FrozenCase` whose `lease` field carries the `OperationLease`, an
@@ -8851,6 +8855,23 @@ structured result carries the object unchanged. Hook envelopes carry the commitm
 `command_commitment` structural key, admitted by the unreleased control-request 2.9.0 wire with
 the `^hmac-sha256:[0-9a-f]{64}$` pattern (ADR-022, #909 section).
 
+### A finished check's outcome on its operation page (W6, #1107)
+
+`status view=operation` for a `complete` check adds an optional `check_outcome` object to the page
+(status result schema 1.4.0, extended in place; omitted, never null, for every other operation and
+state, and the model and schema refuse it there with `status_operation_page_invalid`). Fields, in
+order: `verdict`, `agent_next` (optional), `overall_next` (optional), `missing_for_assessment`,
+`semantic_status`, `semantic_reason`, `semantic_conclusion` (optional) and `result_frontier`, in
+the exact shapes check-result 1.5.0 gives them. They are rebuilt exactly as a same-id replay of the
+check rebuilds them (`LedgerPort.load_check_result`, then `application.check.replayed_check_view`
+and `check_internal_json`), so the page and a resend agree byte for byte; a check an older build
+recorded projects with its stored missing items (none on 1.2.0) and an `overall_next` derived at its
+result frontier. The page-level `outcome`, frontiers and events keep the non-publish completion rule.
+Best effort: any failure omits the object and records the bounded diagnostic
+`status_check_outcome_unavailable`; recovery never fails on it. The CLI (`Check outcome:` and
+`Next:` lines plus the missing rows), the terminal interface (through the same renderer) and the MCP
+text (`check outcome: <verdict>; next: <action>;` and the lead when room remains) render it.
+
 ### Structural semantic progress (#571 A2)
 
 `status view=operation` for a pending or complete check whose AI-powered review job recorded
@@ -9372,7 +9393,16 @@ that cites, a plan by the version superseding it, an obligation by new actions, 
 plans naming it. A record related to the target only through another path, run or claim therefore
 never answers it. Only an item with no target is matched by record family alone, and
 `supplied_since` lists refs on the same rule. Only agent-published material answers a request, never
-hook-captured tool output: authorship is the service-stamped envelope fact, carried on the frozen
+hook-captured tool output, with one exception (W6, #1107, ADR-006 amendment): for a targeted item,
+a hook-observed re-run of the target's own command after the request (identity compared as
+`_run_key` plus, with the installation key, the keyed identity a hook records for that exact text,
+so a plain-text run and a hook-observed run of one whole command are one command), its observed
+results and the captured output they cite answer it; an observed result's own status-line summary
+never answers `verification_output`, and a repeat is dropped as already supplied on observed
+material only when the sent packet carried it (rows citable, captured output among the excerpts).
+An evidence `reference`, trimmed, also matches the target row's own event id, and an `evt_` target
+naming exactly one row's event reads as that row; the requesting check's event id never matches.
+Authorship is the service-stamped envelope fact, carried on the frozen
 case as `observation_event_ids`, the observation-authored events recorded after the request, emitted
 only when non-empty so other cases keep their bytes; and a result answers `verification_output` only
 when it carries output (linked evidence or a summary). The next packet carries that published
@@ -10081,6 +10111,19 @@ Wire (the earlier checklist fields remain available in their original versions):
   coverage-limited receipt path explicit. A `structurally_unavailable_on_this_host` or
   `yoetz_limit_*` item remains a disclosed limitation the agent verifies itself; it does not become
   an impossible-to-do action, and it is never a blocker.
+- `agent_next` (check-result 1.5.0, optional, omitted rather than null; W6, #1107, ADR-043
+  amendment) is the bounded lead of every committed check success: one printable-ASCII line of 1
+  to 2,048 bytes (`^[ -~]+$`) composed by the service from closed sentences, closed tokens and
+  admitted subject ids (`act_`/`clm_`/`evd_`/`evt_`/`fnd_`/`obl_`/`res_`), never reviewer prose,
+  task text, paths or command text. It begins `Next: <overall_next.action> (<overall_next.status>).`;
+  for `supply_missing_input` it names each `agent_suppliable` item with its kind, targets and how to
+  supply it, what counts as supplied, and the FinishUP-limit count; for every other action it
+  carries the one shared per-action instruction (`domain.review_input_render.OVERALL_NEXT_INSTRUCTIONS`,
+  also the CLI's `Overall next` line) and its targets. It is absent exactly when `overall_next` is.
+  Field order on the MCP wire is `... verdict, agent_next, overall_next, missing_for_assessment,
+  findings, ...`: the continuation precedes every bulky field (Codex shows a model only the head and
+  tail of a large structured result), and a new bulky field goes after `missing_for_assessment`.
+  Canonical vectors: `fixtures/canonical/check-agent-next-1.5.0.case.json` (AGN-001).
 - Stable identity: a challenge whose kind matches a recorded AI-powered finding, whose subject
   set is exactly that finding's (the receipt's issue key), and none of whose subjects was recorded
   after that finding (the evidence fingerprint) is a restatement. A narrower or wider challenge is

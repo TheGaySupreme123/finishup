@@ -2607,3 +2607,17 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Claude Code session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+## Review result lead and supply that counts (W6, #1107)
+
+**Host decision: supported, same field.** Claude Code delivers `structuredContent` for successful
+tools, so every check result's `agent_next` (ADR-043 amendment) reaches the model beside the
+unchanged 4,096-byte text summary, whose missing-item sentences now name the linking field and what
+counts as supplied. Claude Code's MCP output limit is far above these sizes; the field order
+(`agent_next`, `overall_next`, `missing_for_assessment` before findings) costs nothing here.
+`isError` results are unchanged. `status view=operation` for a finished check returns
+`check_outcome`, and its text summary adds `check outcome: <verdict>; next: <action>;` and the lead
+when room remains. A Bash re-run of the target's exact command the PostToolUse hook observed after
+the request counts as supplying a targeted item (ADR-006 amendment); a respond or a description does
+not. Verified by `tests/unit/cli/test_status_operation_render.py` and the host-neutral tests named in
+the Codex runbook.
