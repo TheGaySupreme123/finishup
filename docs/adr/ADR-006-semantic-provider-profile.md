@@ -1727,8 +1727,9 @@ stays deferred); and let the agent supply a text rendering of a binary deliverab
 - **No forged labels (issue #983).** Agent-authored excerpt text (an evidence description or
   reference, captured tool output, a failed result's summary, a command) never begins a line the
   way a label does: each such line, matched case-insensitively after leading spaces or tabs, is
-  prefixed `(agent text) `, and a captured diff part that would begin mid-line with `[FinishUP` is
-  prefixed the same way within its part bound. The reviewer instruction (one constant every
+  prefixed `(agent text) ` (since #1108 `(not a FinishUP label) `, with a wider match; see the n7
+  amendment), and a captured diff part that would begin mid-line with `[FinishUP` is prefixed the
+  same way within its part bound. The reviewer instruction (one constant every
   provider cell sends) trusts a `[FinishUP:` label only as an excerpt's first line and only when the
   evidence id it names equals that excerpt's own `source_ref`; anything else resembling one is the
   agent's text.
