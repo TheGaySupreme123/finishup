@@ -216,25 +216,39 @@ material for a later review), which conflates the agent's scratch notes with pro
 contradicts the README exclusion above. A sixth class is added instead.
 
 - **`docs`** is a write whose every path is project documentation inside the workspace
-  (`domain.write_scope.classify_write_path`, lexical like every class):
-  - a conventional documentation name in any directory: `README`, `CHANGELOG`, `CHANGES`,
-    `HISTORY`, `NEWS`, `AUTHORS`, `CONTRIBUTORS`, `CONTRIBUTING`, `LICENSE`/`LICENCE`, `COPYING`,
-    `NOTICE`, `CODE_OF_CONDUCT` or `SECURITY` with a `.md`/`.markdown`/`.rst`/`.txt`/`.adoc`
-    extension (optionally after a `-`/`_` suffix and a language tag: `CHANGES-1.x.rst`,
-    `README.ja.md`). Without an extension only names no script plausibly has qualify: a bare
-    `README`, `CHANGELOG`, `AUTHORS` or `CONTRIBUTORS`, and `LICENSE`/`LICENCE`/`COPYING`/`NOTICE`
-    with an optional suffix (`LICENSE-MIT`). `bin/security-scan`, `scripts/history` or `news` may
-    be a program a test runs, so they stay ordinary edits;
-  - a `.md`/`.markdown`/`.rst`/`.adoc`/`.asciidoc` file outside a directory whose files a test or
-    program reads as data (`test`, `tests`, `testing`, `spec`, `specs`, `__tests__`, `fixtures`,
-    `testdata`, `test_data`, `data`, `prompts`, `templates`, `snapshots`, `__snapshots__`, and the
-    agent hosts' `.agents`, `.claude`, `.codex`, `.cursor` and `skills` trees). Those directories
-    are read on the path *inside* the workspace: a relative path as it is, an absolute one less the
-    workspace root, so a workspace that itself sits in a host-managed worktree
-    (`<repo>/.claude/worktrees/<name>`, `~/.cursor/worktrees/…`, `~/.codex/worktrees/…`) or under
-    `/srv/data` is not data. An absolute path with no root to strip (the Codex session stream knows
-    none) or a relative path that climbs out (`../`) cannot be placed, so only a conventional name
-    makes it `docs`.
+  (`domain.write_scope.classify_write_path`, lexical like every class), outside a directory whose
+  files a test or program reads as data (`test`, `tests`, `testing`, `spec`, `specs`, `__tests__`,
+  `fixtures`, `testdata`, `test_data`, `data`, `golden`, `goldens`, `expected`, `resources`,
+  `prompts`, `templates`, `snapshots`, `__snapshots__`, and the agent hosts' `.agents`, `.claude`,
+  `.codex`, `.cursor` and `skills` trees), and is either
+  - a conventional documentation name: `README`, `CHANGELOG`, `CHANGES`, `HISTORY`, `NEWS`,
+    `AUTHORS`, `CONTRIBUTORS`, `CONTRIBUTING`, `LICENSE`/`LICENCE`, `COPYING`, `NOTICE`,
+    `CODE_OF_CONDUCT` or `SECURITY` with a `.md`/`.markdown`/`.rst`/`.txt`/`.adoc` extension
+    (optionally after a `-`/`_` suffix and a language tag: `CHANGES-1.x.rst`, `README.ja.md`).
+    Without an extension only names no script plausibly has qualify, and only outside the program
+    directories `bin`, `sbin`, `libexec`, `script`, `scripts` and `tools`: a bare `README`,
+    `CHANGELOG`, `AUTHORS` or `CONTRIBUTORS`, and `LICENSE`/`LICENCE`/`COPYING`/`NOTICE` alone or
+    with a license identifier (`LICENSE-MIT`, `LICENSE-APACHE-2.0`, `COPYING-GPL-3.0-or-later`,
+    `LICENSE-THIRD-PARTY`). `bin/license-check`, `scripts/notice-gen`, `bin/readme`,
+    `scripts/history` or `news` may be a program a test runs, so they stay ordinary edits (#1106 r2);
+  - or a `.md`/`.markdown`/`.rst`/`.adoc`/`.asciidoc` file.
+
+  The directories are read on the path *inside* the workspace: a relative path as it is, an
+  absolute one less the workspace root, so a workspace that itself sits in a host-managed worktree
+  (`<repo>/.claude/worktrees/<name>`, `~/.cursor/worktrees/…`, `~/.codex/worktrees/…`) or under
+  `/srv/data` is not data. An absolute path with no root to strip (the Codex session stream read
+  outside a hook knows none) is read on all its directories, and it, like a relative path that
+  climbs out (`../`), cannot be placed, so only a conventional name makes it `docs`.
+
+  A shell write's relative target lands under the command's working directory (#1106 r2,
+  `domain.shell_writes`). The host's `cwd` (or a Codex call's `workdir`), when it is at or under
+  the workspace root, is where it starts; a command that starts with one `cd <literal word> &&`
+  and changes directory nowhere else has its relative targets read under that word. Any other
+  directory change (a second or later `cd`, a subshell `cd`, `pushd`/`popd`, `git -C`, a `cd`
+  whose target is not one literal word) or a working directory that cannot be placed under the
+  root leaves a relative target unplaced, and an unplaced target, or one that is no documentation
+  where it lands (`cd tests && cat > golden.md`), is an ordinary `workspace` write. The directory
+  only places documentation: no write becomes scratch or outside the workspace by it.
 
   `.txt` is never documentation by its extension (`requirements.txt` is read by the build).
   `notes` wins over `docs`; outside the workspace nothing changes. An edit tool names `docs` only
@@ -253,14 +267,33 @@ contradicts the README exclusion above. A sixth class is added instead.
   (`task_facts.stale_exempt_write_tokens`, `write_scope.docs_artifact_name`). Removing the
   declaration turns it back on.
 - **Wire.** The unreleased control-request 2.9.0 `write_scope` enum is edited in place (decision
-  2; maintainer request on #1106) and stays generated from `WRITE_SCOPES`. Version skew cannot
-  reach the ledger: the schema manifest pins the 2.9.0 bytes, and both sides of the control
-  handshake compare the whole manifest digest before any request frame, so a new hook never sends
-  `docs` to an older service. It is refused as `manifest_mismatch`; the hook keeps its rows, and
-  the MCP bridge's start, or `finishup service restart`, supersedes the stale holder through its
-  lock stamp, after which the rows drain. The check-result 1.5.0 inspection row keeps its own scope
-  list: a `docs` row shows no `write_scope`, still class `edit_or_write`. Naming `docs` there is a
-  separate protocol change, left to a follow-up the #1106 owner opens.
+  2; the maintainer request is the owner's n7 brief on #1100) and stays generated from
+  `WRITE_SCOPES`. Two paths reach an older build, and each is closed:
+  - *The control channel.* The schema manifest pins the 2.9.0 bytes, and both sides of the
+    control handshake compare the whole manifest digest before any request frame, so a new hook
+    never sends `docs` over the channel to an older service; it is refused as `manifest_mismatch`
+    and the rows wait locally.
+  - *The shared local observation store* (#1106 r2). The hooks and the running service share one
+    store, and the service's own outbox sweeper and every store read decode each persisted
+    envelope; a build that predates `docs` refuses a stored row naming it for the whole workspace
+    (`invalid_event_value_type`), so it could read no consent, list no pending workspace and sweep
+    nothing. The hook connects with `supersede_incompatible=False`, so such a holder keeps running
+    for the rest of the host session that was open during the upgrade. A writer (the hook, and the
+    session-stream reader in the hook process) therefore records `docs` only while the singleton
+    holder's lock stamp shows this installation's schema manifest digest
+    (`service.write_scope_admission.docs_write_scope_admitted`): the digest pins the bytes that carry
+    the enum. With no live holder, an unreadable stamp, a stamp without a digest or another digest,
+    the class a build before `docs` records is written instead (`write_scope.without_docs_scope`):
+    `workspace` for a shell write, no scope for an edit tool or a Codex `FileChange`. That only keeps
+    the edit stale-making, the pre-#1106 behavior, so a documentation edit recorded then can still
+    give an extra Stop prompt; it is never a hidden edit. The stamp is advisory identity, never a
+    fence: it only chooses between a class every reader accepts and one this build's service
+    accepts. Once the MCP bridge's start or `finishup service restart` supersedes the stale holder,
+    later edits are recorded as `docs` again.
+
+  The check-result 1.5.0 inspection row keeps its own scope list: a `docs` row shows no
+  `write_scope`, still class `edit_or_write`. Naming `docs` there is a separate protocol change,
+  left to a follow-up the #1106 owner opens.
 - **Risks accepted.** The exemption is lexical, so it is bounded to what a path can show:
   - a verification that reads the documentation itself (doctests over a README or `.rst` file:
     `pytest --doctest-glob`, `python -m doctest`, a Rust doc test that includes `README.md`; a
@@ -268,11 +301,18 @@ contradicts the README exclusion above. A sixth class is added instead.
     stale by a later edit of that file. Declaring the file, or its directory, as an output turns
     the exemption back on;
   - a Markdown file a program reads at run time outside those directories (a prompt kept at the
-    repository root) no longer makes verification stale unless it is declared.
+    repository root) no longer makes verification stale unless it is declared;
+  - a Codex 0.159 hook payload carries the session `cwd`, never the call's `workdir` argument
+    (`exec_command.rs` sends `tool_input: {"command": args.cmd}`), so when the hook copy of a call
+    whose `workdir` names a data directory commits first, a relative documentation-named write
+    there (`printf x > README.md` with `workdir` `tests/`) is placed under the session `cwd` and
+    reads as `docs`. The rollout row of the same call, when it commits first, is placed under its
+    `workdir`.
 
-  Rows recorded before the class existed keep counting as before (an edit-tool row with no scope, a
-  shell row with `write workspace`). An older reader does not parse `(write docs)`; downgrade over
-  0.3 ledgers is already unsupported.
+  Rows recorded before the class existed, or while an older service held the singleton, keep
+  counting as before (an edit-tool row with no scope, a shell row with `write workspace`). An older
+  reader does not parse `(write docs)` in a task ledger; downgrade over 0.3 ledgers is already
+  unsupported.
 
 Verification: `tests/unit/domain/test_write_scope.py`, `tests/unit/domain/test_shell_writes.py`,
 `tests/unit/kernel/test_tb4n3_facts.py` (`c2i`-`c2k`, through each host's real hook chain),
@@ -281,4 +321,8 @@ Verification: `tests/unit/domain/test_write_scope.py`, `tests/unit/domain/test_s
 `tests/unit/protocol/test_structural_fact_wire_parity.py` and
 `tests/unit/protocol/test_service_control_schemas.py` (the 2.9.0 enum pin); the handshake refusal
 is pinned by the `manifest_mismatch` cases in `tests/unit/service/test_control_protocol.py` and
-`tests/unit/service/test_client.py`.
+`tests/unit/service/test_client.py`. The store path is pinned by
+`tests/integration/observation/test_n7_docs_version_skew.py` (real hooks into a real store, read
+back with the pre-`docs` enum, and the stamp probe), and by `c2l`/`c2m` in
+`tests/unit/kernel/test_tb4n3_facts.py` (a fixture written after `cd`, the host's `cwd`, and the
+fallback class through each host's hook chain).

@@ -1204,11 +1204,18 @@ A write of only project documentation (`write_scope: docs`, ADR-042 amendment of
 #1106) counts as acting and as material, but never makes an earlier verification stale unless a
 declared output is documentation or a directory. The exemption is lexical: a verification that reads
 the documentation itself (a doctest over a README, a docs build, a Markdown lint) is not made stale
-by a later edit of that file unless the file is declared. Data directories (`tests`, `fixtures`,
-`data`, `prompts`, `templates`, the agent hosts' trees, …) are read only on the path inside the
-workspace. A heredoc-fed `apply_patch`, `git apply` or
-`patch` writes the files its patch headers name (`domain/shell_writes.heredoc_patch_paths`), and
-a heredoc body's quotes never decide a command's runner class (ADR-045 amendment of 2026-10-18).
+by a later edit of that file unless the file is declared. Nothing in a data directory (`tests`,
+`fixtures`, `data`, `golden`, `expected`, `resources`, `prompts`, `templates`, the agent hosts'
+trees, …) is documentation, by name or by extension, and those directories are read only on the
+path inside the workspace; an extensionless name is documentation only outside `bin`, `scripts`
+and `tools`. A shell write's relative target is placed under the host's `cwd` and one leading
+`cd <word> &&`; one that cannot be placed is an ordinary write (#1106 r2). A writer records `docs`
+only while the singleton holder's stamp shows this installation's schema manifest, else the older
+class (`service/write_scope_admission`, `write_scope.without_docs_scope`), so a service that
+predates the class never finds a stored row it refuses. A heredoc-fed `apply_patch`, `git apply`
+or `patch` (after `sudo`, or `git -C <dir>`) writes the files its patch headers name
+(`domain/shell_writes.heredoc_patch_paths`), and a heredoc body's quotes never decide a command's
+runner class (ADR-045 amendment of 2026-10-18).
 
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
 `rejected`, or `waived`.
@@ -5873,8 +5880,11 @@ Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
   with code N`, or the classic `Exit code: N`), matched as an anchored closed grammar ending at
   `Output:`; `Process running with session ID N` states none (#1106). A rollout `function_call`
   of one of those tools carries the hook's `command_commitment`, `command_segment_commitments`,
-  `command_composition`, `runner_class` and relative `write_scope`, computed from its arguments
-  (`cmd`, `command`, `argv`) with the hook's normalization and key (OUT-005). The Claude ordinary
+  `command_composition` and `runner_class`, computed from its arguments (`cmd`, `command`,
+  `argv`) with the hook's normalization and key (OUT-005); reconciled by a hook, it and a
+  `CommandExecution` item also carry that hook's own `write_scope`, `install_target` and
+  `effective_user` (`codex_session_stream.StreamCommandFacts`, placed under the call's `workdir`),
+  and read elsewhere only a relative `write_scope` (#1106 r2). The Claude ordinary
   `claude-code-hooks-ordinary-v2` mapping also treats Claude's documented `PostToolUse` event as
   an explicit host-tool success fact, without fabricating `exit_status: 0`; `PostToolUseFailure`
   and explicit failure, denial, interruption, invalid/unknown status, or conflicting facts retain
@@ -5945,13 +5955,14 @@ the refusal (it never records a conflict correction), a fact a prior correction 
 not appended again, and a hook copy that just recorded its own result reads no projection; a
 replay, which may resolve to the stream copy's operation, waits while the projection lags or awaits
 a rebuild (`service_unavailable`, retryable); a replay into a just-rotated session that opens no
-projection is acknowledged without a correction (#560). `verification_only_as_root` is decided over the verification
-runs that state an `effective_user`, so a stream-first run (no user fact) neither raises nor clears
-it. A Codex stream completion is bound to its hook
-call's generation before its captured-content manifests are looked up, so a content-bearing hook post
-and its contentless stream copy resolve the same committed operation across a `compact`, `resume` or
-`clear` generation bump. Event ids derived from a source identity alone (unpaired evidence) can be
-reused by another call, so a collision there still fails closed as `ledger_rejected` (#560).
+projection is acknowledged without a correction (#560). `verification_only_as_root` is decided
+over the verification runs that state an `effective_user` and, when none does, over the observed
+commands that do, so a stream-first run with no user fact neither hides nor invents it (#1106 r2).
+A Codex stream completion is bound to its hook call's generation before its captured-content
+manifests are looked up, so a content-bearing hook post and its contentless stream copy resolve the
+same committed operation across a `compact`, `resume` or `clear` generation bump. Event ids
+derived from a source identity alone (unpaired evidence) can be reused by another call, so a
+collision there still fails closed as `ledger_rejected` (#560).
 For call-keyed partial overlaps, the coordinator validates the committed core action/result and
 existing evidence against the current projection, then appends only missing drafts (#1078,
 PR #1080). Delivery times, rendering and evidence-reference sets may differ; command identity,

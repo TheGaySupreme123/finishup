@@ -358,7 +358,14 @@ Local checks also report facts about the task's own work: a planned verification
 obligation's requested command) that was not matched to an observed run, failed on its latest
 run, or last ran before your latest edit; an edit to the work after your last test, lint,
 typecheck or build run stops you once at Stop. Edits under a temporary directory outside your workspace and a
-FinishUP receipt you saved never count as edits for these facts. A run matches when it is the planned command or
+FinishUP receipt you saved never count as edits for these facts. Documentation-only edits (a README,
+a changelog, Markdown guides outside test, fixture, data, golden, resource, prompt or template
+folders) are recorded as work but never make an earlier verification stale, unless the task
+declares that file, or any output directory, as an output. A check that reads the documentation
+itself (a doctest over a README, a docs build, a Markdown lint) is not made stale by such an edit
+either, so declare the file when that check matters. While a service from an earlier build is
+still running after an upgrade, a documentation edit counts as an ordinary edit until that service
+is restarted. A run matches when it is the planned command or
 contains it as one part, such as `cd /app && pytest -q && git diff --check`, `pytest -q > log
 2>&1`, `time pytest -q`, or a line of a `bash <<'EOF'` script; when the run combined other
 commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested

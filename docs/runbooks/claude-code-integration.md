@@ -2619,11 +2619,15 @@ Host decisions for Claude Code:
 - **Stream-first calls and hook outcome corrections.** Not applicable: Claude Code has no second
   (session-stream) copy of a call, so its hook copy is the only record and keeps its own identity
   and outcome.
-- **Documentation edits.** `Write`, `Edit`, `MultiEdit`, `NotebookEdit` and `Bash` writes of only
-  project documentation (README, changelog, `docs/*.md`) are named `docs`: real work, never
-  stale-making for an earlier verification unless a declared output is documentation or a directory.
-  Data directories (`tests`, `fixtures`, `prompts`, …) are read inside the workspace only, so a
-  host-managed worktree (`<repo>/.claude/worktrees/<name>`) is not data. The exemption is lexical: a
+- **Documentation edits.** `Write`, `Edit`, `MultiEdit` and `Bash` writes of only project
+  documentation (README, changelog, `docs/*.md`; a notebook is never documentation) are named
+  `docs`: real work, never stale-making for an earlier verification unless a declared output is
+  documentation or a directory. Nothing in a data directory (`tests`, `fixtures`, `golden`,
+  `resources`, `prompts`, …) is documentation, and those directories are read inside the workspace
+  only, so a host-managed worktree (`<repo>/.claude/worktrees/<name>`) is not data. A `Bash`
+  write's relative target is placed under the hook payload's `cwd` (Claude Code's shell keeps a
+  `cd` from an earlier call, and `cwd` reports it) and one leading `cd <dir> &&`; a target that
+  cannot be placed, or a fixture written after `cd tests`, is an ordinary edit (#1106 r2). The exemption is lexical: a
   doctest, docs build or Markdown lint that reads the file is not made stale by a later edit of it
   unless the file is declared. A `docs` row's check inspection shows no `write_scope` (check-result
   1.5.0 keeps its list; follow-up is the #1106 owner's). Supported.
@@ -2634,4 +2638,8 @@ Host decisions for Claude Code:
 - **Upgrade.** The control-request 2.9.0 `write_scope` enum gained `docs` in place; a new hook
   and an older running service fail the handshake as `manifest_mismatch` before any frame, and
   hook rows wait until the next MCP bridge start or `finishup service restart` supersedes the old
-  service.
+  service. The hooks and the service also share one local observation store, which a service
+  that predates `docs` cannot read once it holds a `docs` row, so a hook records `docs` only while
+  the running service is stamped with this installation's schema manifest. Otherwise (no service
+  running, or an older one) the write is recorded as an ordinary edit, as before #1106: a
+  documentation edit then can still give one Stop prompt (#1106 r2).

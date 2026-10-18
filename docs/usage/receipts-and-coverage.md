@@ -168,7 +168,9 @@ Two findings stop a completion from reading clean until the agent answers them:
   session resumes does not count as a new request.
 - `claim_without_admissible_evidence` (observed-verification form) — the hooks saw the agent edit
   or run checks, but the completion claim cites no observed verification run after the last edit.
-  The agent reruns its verification and cites that observed run.
+  A documentation-only edit (a README, a changelog) is not the last edit here unless the task
+  declares that file or an output directory. The agent reruns its verification and cites that
+  observed run.
 
 Running the check again without changing the record returns the same finding. Neither finding
 means the work is wrong, and clearing them does not prove it right.

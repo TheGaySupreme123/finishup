@@ -3631,15 +3631,18 @@ Host decisions for Codex; the shared classifier parts apply to Claude Code and C
   diff headers name, like `apply_patch <<EOF`. Supported.
 - **Stream-first calls.** With parallel calls, the rollout `function_call` row of a direct
   `exec_command` (or legacy `shell`) call is often recorded before its own hook copy. That row now
-  carries the same keyed command identity, runner class and relative write scope as the hook, so a
-  planned verification it ran is observed either way. Hook-only facts (an absolute-path write
-  scope, `effective_user`, `install_target`) are not derivable from the rollout; for a call whose
-  stream copy is recorded first they are missing, never invented, and a missing fact never stands
-  for its opposite: `verification_only_as_root` is decided over the runs that state a user, so it
-  is raised or cleared the same way whichever copy came first. A completed `CommandExecution` item
-  records an argv (`["/bin/bash", "-lc", CMD]`); its heredoc patch writes are read through that one
-  shell layer. Supported, with that limit; the follow-up for the hook-only facts is the #1106
-  owner's.
+  carries the same keyed command identity and runner class as the hook, so a planned verification
+  it ran is observed either way. Reconciled by a hook (the usual path), it also carries that hook's
+  own write scope (an absolute-path write in the workspace included, placed under the call's
+  `workdir`), install target and effective user, since the reader runs in the hook process
+  (#1106 r2). Read outside a hook (`finishup observe`) only a relative write scope is claimed. A
+  missing user fact never stands for its opposite: `verification_only_as_root` is decided over the
+  verification runs that state a user and, when none does, over the commands that do. A completed
+  `CommandExecution` item records an argv (`["/bin/bash", "-lc", CMD]`); its writes and heredoc
+  patch paths are read from that script, however long. A call whose row was written but which
+  Codex never ran (an interrupted turn, a declined approval) still counts as a verification run
+  with an unknown outcome, as a declined `PreToolUse` already did (gap kept; follow-up is the
+  #1106 owner's). Supported.
 - **Exit codes of direct calls.** A Codex 0.159 `Bash` PostToolUse states no exit code. The
   rollout's `function_call_output` for a direct shell call starts with Codex's own header, and its
   `Process exited with code N` (or `Exit code: N`) line is the call's exit; the output after
@@ -3654,8 +3657,14 @@ Host decisions for Codex; the shared classifier parts apply to Claude Code and C
 - **Documentation edits.** A write of only project documentation (README, changelog, `docs/*.md`)
   is named `docs`: real work, never stale-making for an earlier verification unless a declared
   output is documentation or a directory. Supported on edit tools, shell writes and the rollout
-  `FileChange`. Data directories (`tests`, `fixtures`, `prompts`, …) are read inside the
-  workspace only, so a Codex app worktree under `~/.codex/worktrees/` is not data. The rollout
+  `FileChange`. Nothing in a data directory (`tests`, `fixtures`, `golden`, `resources`,
+  `prompts`, …) is documentation, and those directories are read inside the workspace only, so a
+  Codex app worktree under `~/.codex/worktrees/` is not data. A shell write's relative target is
+  placed under one leading `cd <dir> &&` and, for the rollout copy, the call's `workdir`; a
+  target that cannot be placed, or a fixture written after `cd tests`, is an ordinary edit. The
+  Codex hook payload carries the session `cwd`, not the call's `workdir`, so when the hook copy of
+  a call whose `workdir` is a data directory commits first, a relative README written there reads
+  as `docs` (gap kept, #1106 r2). The rollout
   knows no workspace root, so a stream-first `FileChange` with an absolute `docs/guide.md` path is
   an ordinary edit there (only a conventional name such as `README.md` is `docs`); the hook copy
   names it. The exemption is lexical: a doctest, docs build or Markdown lint that reads the file
@@ -3670,4 +3679,9 @@ Host decisions for Codex; the shared classifier parts apply to Claude Code and C
 - **Upgrade.** The control-request 2.9.0 `write_scope` enum gained `docs` in place. A new hook
   and an older running service fail the handshake as `manifest_mismatch` before any frame, so no
   frame is ever refused for `docs`; hook rows wait in the local outbox until the next MCP bridge
-  start or `finishup service restart` supersedes the old service, then drain.
+  start or `finishup service restart` supersedes the old service, then drain. The hooks and the
+  service also share that local store, which a service that predates `docs` cannot read once it
+  holds a `docs` row, so a hook (and the rollout reader it runs) records `docs` only while the
+  running service is stamped with this installation's schema manifest. Otherwise (no service
+  running, or an older one) the write is recorded as an ordinary edit, as before #1106: a
+  documentation edit then can still give one Stop prompt (#1106 r2).

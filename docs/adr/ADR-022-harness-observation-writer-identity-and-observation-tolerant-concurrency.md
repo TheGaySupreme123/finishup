@@ -914,13 +914,30 @@ to the command its arguments name (`cmd`, `command`, `argv`, the hook's order) w
 normalization and key, and carries the same segment commitments, runner class and relative write
 scope (Codex 0.159 `exec_command.rs` sends the hook `tool_input: {"command": args.cmd}`, and the
 hook's `tool_use_id` is the row's `call_id`). Only the post copy carries the compound-outcome gap.
-Facts only the hook can know stay hook-only (absolute-path write scope, `effective_user`,
-`install_target`; `workspace_effect` is already reconciled). A command containing a secret the
-importer redacts commits to the redacted text: a missed match, never a false one. A missing hook
-fact never stands for its opposite: `verification_only_as_root` is decided over the verification
-runs that state a user, so a stream-first run with no `effective_user` neither raises nor clears
-it (#1106 r1). A rollout `CommandExecution` item records an argv (`["/bin/bash", "-lc", CMD]`):
-its heredoc patch writes are read through that one host-shell layer.
+A command containing a secret the importer redacts commits to the redacted text: a missed match,
+never a false one. A rollout `CommandExecution` item records an argv (`["/bin/bash", "-lc",
+CMD]`): its writes and heredoc patch paths are read from that one host-shell layer's script
+itself, never from a joined copy cut at the token parsers' bound (#1106 r2).
+
+Round 2 (#1106 r2): the reconciling hook hands the reader its own runtime facts
+(`cli.observe_hooks._stream_command_facts`, `codex_session_stream.StreamCommandFacts`). The
+reader runs in the hook process, which runs as the shell it observes and knows the same workspace
+root, so a call whose rollout row defines the action carries the same `write_scope` (an
+absolute-path write in the workspace, an outside or scratch write, placed under the call's
+`workdir`), `install_target` and `effective_user` as its hook copy; `workspace_effect` was already
+reconciled (#1080). A reader outside a hook (`finishup observe`) passes none and keeps the
+relative-only write rule; there a relative documentation-named write under a stated `workdir` is
+read with no workspace root, so a documentation extension alone is never `docs`. A missing hook
+fact still never stands for its opposite: `verification_only_as_root` is decided over the
+verification runs that state a user and, when none does, over the observed commands that do (a
+hook process runs as the shell it observes), so a stream-first run with no `effective_user`
+neither hides nor invents the disclosure (#1106 r1, r2).
+
+A rollout `function_call` row gives the call a runner class from its arguments alone, so a parallel
+call whose row was written but which Codex never ran (an interrupted turn, a declined approval)
+is a verification position with an unknown outcome, as a declined hook `PreToolUse` already was;
+when the task did not plan that command, it ends `edited_after_last_verification` for earlier
+edits. That limit is kept (follow-up is the #1106 owner's).
 
 A Codex 0.159 `Bash` post states no exit, so for a direct `exec_command` call the rollout is the
 only place the exit is stated. The reader takes it from the header Codex itself writes before

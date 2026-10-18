@@ -682,12 +682,17 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
     an apostrophe, and a `git apply`/`patch` heredoc now counts as an edit of the files it names.
     In Codex, such a command is no longer left as a pending attempt.
   - In Codex, a shell call recorded first from the session log (common with parallel calls) is
-    recognized as the command it ran, with its exit code, so a planned verification is no longer
-    "never observed"; and when that copy has no outcome, the hook's outcome is recorded (#1092).
+    recognized as the command it ran, with its exit code, the files it wrote, any package install
+    location and the user it ran as, so a planned verification is no longer "never observed" and a
+    root-only verification is still disclosed; and when that copy has no outcome, the hook's
+    outcome is recorded (#1092).
   - Editing only documentation (a README, a changelog, `docs/*.md`) is still recorded as work but
     no longer makes an earlier test stale, unless the task declares that file or a directory as an
     output. Declare it when a check reads the file itself (a doctest over the README, a docs
-    build), so that check goes stale again after the edit.
+    build), so that check goes stale again after the edit. Documentation in test, fixture, data,
+    golden or template folders, a script named like a license or readme (`bin/license-check`), and
+    a file written after `cd tests` keep counting as ordinary edits. While a service from an
+    earlier build still runs after an upgrade, documentation edits count as ordinary edits too.
   - A verification started in the background and polled from a later call is still recorded only
     when it starts; FinishUP's guidance now asks agents to run verification in the foreground.
 
