@@ -60,9 +60,10 @@ from finishup.domain.findings import (
 )
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
-from finishup.domain.values import FindingId, ObligationId, timestamp_from_string
+from finishup.domain.values import EventId, FindingId, ObligationId, timestamp_from_string
 from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.projections import (
+    DecisionProjectionRecord,
     FindingProjectionRecord,
     ObligationProjectionRecord,
     ProjectionRecord,
@@ -949,3 +950,71 @@ def test_over_the_limit_the_newest_open_findings_win_and_terminal_ones_never_com
     assert len(carried) == MAX_PRIOR_FINDINGS == 16
     assert str(fnd(newest)) not in carried
     assert carried == tuple(str(fnd(number)) for number in range(newest - 1, 2, -1))
+
+
+def _disclosed_obligations(count: int) -> DeterministicCase:
+    """``count`` obligations, each covered by its own finishup-verification-limit decision."""
+
+    case = _numba_case()
+    obligations = dict(case.projection.obligations)
+    decisions: dict[EventId, DecisionProjectionRecord] = {}
+    allowed = set(case.allowed_ids)
+    coverage = dict(case.coverage_by_ref)
+    for number in range(1, count + 1):
+        obligations[obl(number)] = obligation_record(
+            ObligationPublishedPayload(
+                obl(number), f"Obligation {number}", "criteria", ObligationStatus.OPEN
+            ),
+            2,
+        )
+        decisions[evt(40 + number)] = limit_decision(40 + number, obl(number))
+        for ref in (obl(number), evt(40 + number)):
+            allowed.add(ref)
+            coverage[ref] = BASE_COVERAGE
+    return replace(
+        case,
+        projection=replace(
+            case.projection,
+            obligations=MappingProxyType(obligations),
+            decisions=MappingProxyType(decisions),
+        ),
+        allowed_ids=frozenset(allowed),
+        coverage_by_ref=coverage,
+    )
+
+
+def test_every_carried_disclosure_reaches_the_reviewer_at_the_obligation_cap() -> None:
+    """#1108 review R1: the row was held to the 4 KiB prose bound, so past about 26 disclosed
+    obligations the rest were only counted, and it listed obligations the 32-row cap had dropped.
+    It now uses the per-item bound and names exactly the obligations the packet carries."""
+
+    built = _build(_disclosed_obligations(40))
+
+    carried = set(built.packet.obligation_item_ids)
+    assert len(carried) == 32
+    row = _row(built, AGENT_DISCLOSURES_ITEM_ID)
+    listed = {
+        f"obligation-{cast(str, entry['obligation_id'])}"
+        for entry in cast(list[Mapping[str, JsonValue]], row["disclosures"])
+    }
+    assert listed == carried
+    assert row["not_listed_count"] == 0
+    item = next(item for item in built.items if item.item_id == AGENT_DISCLOSURES_ITEM_ID)
+    assert item.content_bytes > 4_096
+
+
+def test_the_decision_the_disclosures_row_displaces_is_disclosed() -> None:
+    """#1108 review R1: the row takes one of the 16 decision slots, so with 16 decisions the last
+    one was dropped by the cap with nothing saying so. A capped decision is now an omission."""
+
+    built = _build(_disclosed_obligations(16))
+
+    assert built.packet.decision_item_ids[0] == AGENT_DISCLOSURES_ITEM_ID
+    assert len(built.packet.decision_item_ids) == 16
+    assert f"decision-{evt(56)}" not in built.packet.decision_item_ids
+    assert any(
+        row.subject_ref == str(evt(56))
+        and row.reason == "not_selected"
+        and row.category is DataCategory.DECISION_EXCERPT
+        for row in built.packet.omissions
+    )

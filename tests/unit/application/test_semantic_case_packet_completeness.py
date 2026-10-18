@@ -319,7 +319,16 @@ def test_the_change_takes_its_share_before_task_inputs_and_inputs_keep_a_floor()
         }
         # The change's reserved share is half of this packet's budget, or its first part.
         assert sum(sizes[ref] for ref in before) <= max(budget // 2, sizes[before[0]]), budget
-        assert offer and sum(sizes[ref] for ref in offer) <= budget // 8, budget
+        assert offer, budget
+        offered = sum(sizes[ref] for ref in offer)
+        if offered > budget // 8:
+            # A cut input grows back only into the room the change's remaining parts left
+            # (#1108 review R1): not even one more part would fit beside it.
+            assert sum(sizes.values()) <= budget, budget
+            assert budget - (sum(sizes.values()) - offered) < 16_384 + offered, budget
+            assert "check_time_change_truncated" not in semantic.packet.coverage.known_gaps or (
+                budget - sum(sizes.values()) + offered - budget // 8 < 16_384
+            ), budget
         design = next(
             item for item in semantic.items if item.item_id == f"{TASK_INPUT_ITEM_PREFIX}01"
         )
@@ -345,7 +354,15 @@ def test_a_large_task_input_is_clipped_into_its_floor_not_dropped() -> None:
     )
 
     item = next(item for item in semantic.items if item.item_id == f"{TASK_INPUT_ITEM_PREFIX}01")
-    assert item.content_bytes <= 64_000 // 8
+    # The first offer cut it to the inputs' eighth; the backfill gave it only what the change's
+    # remaining parts left (#1108 review R1), so the change was never cut for it.
+    change_bytes = sum(
+        ref.content_bytes
+        for ref in semantic.packet.targeted_excerpts
+        if ref.excerpt_item_id.startswith("change-check-time-")
+    )
+    assert change_bytes >= 3 * 16_000
+    assert 64_000 // 8 <= item.content_bytes <= 64_000 - change_bytes
     assert item.content.startswith(b"[FinishUP task input file DESIGN.md (16000 bytes)")
     assert b"elided" in item.content
     # Head and tail: the label and the input's first rule, and its last bytes.
@@ -356,6 +373,68 @@ def test_a_large_task_input_is_clipped_into_its_floor_not_dropped() -> None:
     caller = cast(dict[str, JsonValue], manifest["caller_evidence"])
     assert caller["status"] == "partial"
     assert "truncated_payload" in cast(list[str], caller["omission_reasons"])
+
+
+def test_a_clipped_task_input_takes_the_room_the_packet_has_left() -> None:
+    """#1108 review R1: the first offer cut an input larger than the inputs' eighth, and the
+    backfill then skipped it, so a specification that fits whole in the packet's spare room still
+    arrived cut. The backfill now offers it the room left: with a small change it arrives whole."""
+
+    spec = b"DESIGN RULE 0000: buttons keep their VBA captions\n" * 400
+    expanded = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    for size, budget in ((16_000, 96_000), (12_000, 64_000), (6_000, 48_000)):
+        change = _change(inputs=(TaskInputFile("DESIGN.md", spec[:size], size),))
+        semantic = _build(
+            _statement_case(),
+            change=change,
+            profile=ReviewContextProfile.CUSTOM,
+            selection=replace(expanded, max_total_excerpt_bytes=budget),
+        )
+        item = next(
+            item for item in semantic.items if item.item_id == f"{TASK_INPUT_ITEM_PREFIX}01"
+        )
+        assert b"elided" not in item.content, (size, budget)
+        assert item.content.endswith(spec[:size]), (size, budget)
+        assert semantic.packet.input_manifest is not None
+        manifest = review_input_manifest_to_json(semantic.packet.input_manifest)
+        caller = cast(dict[str, JsonValue], manifest["caller_evidence"])
+        assert "truncated_payload" not in cast(list[str], caller["omission_reasons"]), (
+            size,
+            budget,
+        )
+        used = sum(ref.content_bytes for ref in semantic.packet.targeted_excerpts)
+        assert used <= budget, (size, budget)
+
+
+def test_the_first_task_input_keeps_its_floor_beside_a_large_first_part() -> None:
+    """#1108 review R1: under a narrow budget the change's reservation, rounded up to its first
+    part, plus the decisive run's hold left less than the 2 KiB clip floor, and the specification
+    was dropped. The rounding now never takes that floor: the change keeps at least its half, its
+    first part cut to the room, and the specification travels."""
+
+    diff = b"diff --git a/form.py b/form.py\n" + b"+value = 1\n" * 4_000
+    spec = b"DESIGN RULE: buttons keep their VBA captions\n" * 70
+    change = _change(diff, inputs=(TaskInputFile("DESIGN.md", spec, len(spec)),))
+    expanded = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    for budget in (16_384, 20_000, 24_000):
+        semantic = _build(
+            _statement_case(),
+            change=change,
+            profile=ReviewContextProfile.CUSTOM,
+            selection=replace(expanded, max_total_excerpt_bytes=budget),
+        )
+        sizes = {
+            ref.excerpt_item_id: ref.content_bytes for ref in semantic.packet.targeted_excerpts
+        }
+        change_bytes = sum(
+            size for ref, size in sizes.items() if ref.startswith("change-check-time-")
+        )
+        assert change_bytes >= budget // 2, budget
+        item = next(
+            item for item in semantic.items if item.item_id == f"{TASK_INPUT_ITEM_PREFIX}01"
+        )
+        assert item.content.endswith(spec), budget
+        assert sum(sizes.values()) <= budget, budget
 
 
 def test_the_change_reservation_follows_the_planned_budget() -> None:

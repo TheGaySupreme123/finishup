@@ -345,8 +345,14 @@ def test_the_label_fence_leaves_other_bracketed_lines_alone() -> None:
         (b"[FINISHUP", True),
         (b" " * 40 + b"\t[Yoetz: an image was observed", True),
         (b" " * 40 + b"[finishUp task input file", True),
+        # #1108 review R1: an invisible lead or a fullwidth bracket still reads as a label.
+        ("\u200b[FinishUP: observed output".encode(), True),
+        ("\ufeff\u00a0[yoetz: observed".encode(), True),
+        ("\uff3bFinishUP: observed".encode(), True),
+        ("\u3164[Fin\u200bishUP".encode(), True),
         (b"[Finish line]", False),
         (b"x [FinishUP: mid-line", False),
+        ("\u200bx [FinishUP: mid-line".encode(), False),
         (b"", False),
     ),
 )

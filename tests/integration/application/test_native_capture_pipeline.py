@@ -1318,11 +1318,35 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
         "task_statement_unavailable",
     )
     assert semantic.packet.coverage.check_types
-    excerpt = next(
-        item
-        for item in semantic.packet.targeted_excerpts
-        if item.content_digest == "sha256:" + hashlib.sha256(captured_bytes).hexdigest()
-    )
+    captured_ref = str(captured_evidence_refs[0][0])
+    observed_label = (
+        f"[FinishUP: observed output captured by a host hook (evidence {captured_ref})"
+    ).encode("ascii")
+    if content_kind is ObservationContentKind.TOOL_OUTPUT:
+        # n7 RC6c (#1108): a hook-captured tool output reaches the packet behind its observed
+        # label, which names the capture's own evidence id; the captured bytes follow unchanged.
+        # This is the host-level proof for each host's native post-tool hook.
+        excerpt_item = next(
+            item for item in semantic.items if item.item_id == f"excerpt-{captured_ref}"
+        )
+        assert excerpt_item.content.startswith(observed_label)
+        label_end = b"; not an agent-published result]\n"
+        assert (
+            excerpt_item.content[excerpt_item.content.index(label_end) + len(label_end) :]
+            == captured_bytes
+        )
+        excerpt = next(
+            item
+            for item in semantic.packet.targeted_excerpts
+            if item.excerpt_item_id == excerpt_item.item_id
+        )
+        assert excerpt.content_digest == excerpt_item.content_digest
+    else:
+        excerpt = next(
+            item
+            for item in semantic.packet.targeted_excerpts
+            if item.content_digest == "sha256:" + hashlib.sha256(captured_bytes).hexdigest()
+        )
     assert excerpt.content_visibility == "available"
     assert "unpaired_event" not in semantic.packet.coverage.known_gaps
     prepared = semantic_case_to_prepared_payload(
@@ -1331,6 +1355,10 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     )
     assert marker.decode("utf-8") in prepared.decode("utf-8")
     assert content_digest.encode("ascii") in prepared
+    # The label reaches the prepared provider payload too, and only for a captured tool output.
+    assert (observed_label.decode("ascii") in prepared.decode("utf-8")) is (
+        content_kind is ObservationContentKind.TOOL_OUTPUT
+    )
 
     reopened_db, reopened_ledger, reopened_runtime = _reopen_runtime(tmp_path, runtime)
     try:

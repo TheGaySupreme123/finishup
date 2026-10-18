@@ -15,6 +15,7 @@ import json
 import posixpath
 import re
 import shlex
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
@@ -2256,11 +2257,12 @@ def _agent_disclosures_item(
 ) -> SemanticCaseItem | None:
     """One row listing what the agent disclosed per obligation, as its assertion (#1108).
 
-    ``disclosures`` maps each obligation this packet carries to its case-bound ref (the
-    obligation, or its source event) and its ``_obligation_disclosures`` entry. The row holds ids
-    and closed tokens only, sorted by obligation id. Rows that do not fit one structural item are
-    left out and counted, never clipped mid-row, so a listed row is always whole and the reviewer
-    is told how many are not listed.
+    ``disclosures`` maps each obligation this packet carries (after the obligation cap) to its
+    case-bound ref (the obligation, or its source event) and its ``_obligation_disclosures``
+    entry. The row holds ids and closed tokens only, sorted by obligation id, within the per-item
+    bound: the 32 obligation rows a packet can carry always fit, so the reviewer sees every
+    carried disclosure. A row that would not fit is left out and counted, never clipped mid-row,
+    so a listed row is always whole and the reviewer is told how many are not listed.
     """
 
     ordered = sorted(disclosures, key=str.encode)
@@ -2282,11 +2284,13 @@ def _agent_disclosures_item(
 
     listed = list(rows)
     while len(listed) > 1 and len(canonical_encode(cast(JsonValue, body(listed)))) > (
-        MAX_REVIEW_TEXT_BYTES
+        MAX_SEMANTIC_ITEM_BYTES
     ):
         listed.pop()
-    text, fit = _bounded_json(body(listed))
-    if fit != "whole":
+    # Ids and closed tokens only: no prose to clip, so the structural row is sent as encoded
+    # within the per-item bound rather than the 4 KiB prose bound (#1108 review R1).
+    text = _structural_json(body(listed))
+    if len(listed) < len(rows):
         over_limit.add(AGENT_DISCLOSURES_ITEM_ID)
     return _content_item(
         item_id=AGENT_DISCLOSURES_ITEM_ID,
@@ -2300,6 +2304,7 @@ def _agent_disclosures_item(
         occurred_order=0,
         text=text,
         over_limit=over_limit,
+        limit=MAX_SEMANTIC_ITEM_BYTES,
     )
 
 
@@ -3493,14 +3498,26 @@ _OBSERVED_COMMAND_OUTPUT_MARKER: Final = (
 )
 # n7 RC6c (#1108): every hook-captured tool output names its own provenance in the first packet,
 # so the reviewer can treat it as a witness instead of as the agent's account. Fixed text, ledger
-# ids and closed tokens only; prefixed after the agent text is neutralised, so a capture cannot
-# forge it. The run clause rides only when the host itself recorded that run of that command.
+# ids and closed tokens only; prefixed after the agent text is neutralised (``_label_lead``), so
+# a line of the capture that imitates it, even behind an invisible lead or a bare CR, reads as the
+# agent's own. The run clause rides only when the host itself recorded that run of that command.
 _OBSERVED_OUTPUT_LABEL: Final = (
     "[FinishUP: observed output captured by a host hook (evidence {ref}){run}; "
     "not an agent-published result]\n"
 )
 _OBSERVED_RUN_CLAUSE: Final = (
     "; run of command action {action}, host-reported outcome {outcome}{exit}"
+)
+# Evidence only the service or the importer can record (``approved_check`` and
+# ``import_observed`` provenance) names its author the same way (#1108 review R1), so the reviewer
+# never reads FinishUP's own record as the agent's account.
+_APPROVED_CHECK_LABEL: Final = (
+    "[FinishUP: approved check result recorded by FinishUP from a check it ran (evidence {ref}); "
+    "not an agent-published result]\n"
+)
+_IMPORT_REPORT_LABEL: Final = (
+    "[FinishUP: import report recorded by the FinishUP importer (evidence {ref}); "
+    "not an agent-published result]\n"
 )
 _LEDGER_SUBJECT_PREFIXES: Final = ("evt_", "obl_", "clm_", "act_", "res_", "evd_", "fnd_")
 _BINARY_RENDERING_MARKER: Final = (
@@ -3514,30 +3531,67 @@ _MAX_MARKER_PATH_CHARS: Final = 160
 _MARKER_PATH_UNSAFE: Final = re.compile(r"[^A-Za-z0-9._/+@~=, -]")
 # Agent-authored excerpt text never starts a line the way a FinishUP label does (issue #983): such a
 # line is prefixed, so only FinishUP writes a line that begins ``[FinishUP``. The fence covers the
-# legacy ``[Yoetz`` label prefix too, in any ASCII case (ADR-048): a reviewer that read labels under
-# either name must not be handed a forged one.
+# legacy ``[Yoetz`` label prefix too, in any case (ADR-048): a reviewer that read labels under
+# either name must not be handed a forged one. #1108 review R1: the observed-output label is a
+# witness, so the fence reads a line as a reader sees it. Every line boundary ``str.splitlines``
+# honours starts a line (a bare CR, U+2028 and the rest, not only LF); characters a reader cannot
+# see may lead the bracket (whitespace, controls, format characters such as U+200B, U+FEFF and
+# U+2060, combining marks, and the invisible fillers); the bracket and the name compare after NFKC
+# folding (fullwidth forms) with those characters removed. Over-marking is safe: a marked line
+# reads ``(agent text) `` before the agent's own bytes.
 _AGENT_TEXT_PREFIX: Final = "(agent text) "
-_FORGED_LABEL_LINE: Final = re.compile(
-    rf"^([ \t]*)(?=\[(?i:{re.escape(PRODUCT_NAME)}|{re.escape(LEGACY_PRODUCT_NAME)}))",
-    re.MULTILINE | re.ASCII,
+_INVISIBLE_CATEGORIES: Final = frozenset(
+    {"Cc", "Cf", "Cn", "Co", "Cs", "Me", "Mn", "Zl", "Zp", "Zs"}
 )
-_LEADING_BLANKS: Final = re.compile(rb"[ \t]*")
-# A label prefix fits in this many bytes after a line's leading blanks.
-_LABEL_PROBE_BYTES: Final = 16
+_INVISIBLE_FILLERS: Final = frozenset("\u115f\u1160\u2800\u3164\uffa0")
+# Brackets a reader may take for the ``[`` that opens a label, after NFKC folding.
+_LABEL_OPENERS: Final = frozenset("[\u2045\u27e6\u27e8\u3014\u301a\u3010\u2772")
+_LABEL_NAMES: Final = (PRODUCT_NAME.casefold(), LEGACY_PRODUCT_NAME.casefold())
+# The name is read from at most this many characters after the bracket.
+_LABEL_PROBE_CHARS: Final = 64
+
+
+def _invisible(character: str) -> bool:
+    """Whether a reader cannot see ``character`` where a line begins."""
+
+    return (
+        character.isspace()
+        or character in _INVISIBLE_FILLERS
+        or unicodedata.category(character) in _INVISIBLE_CATEGORIES
+    )
+
+
+def _label_lead(line: str) -> int | None:
+    """Where the visible text of ``line`` begins, when it begins like a FinishUP or Yoetz label."""
+
+    at = 0
+    while at < len(line) and _invisible(line[at]):
+        at += 1
+    if at == len(line) or unicodedata.normalize("NFKC", line[at])[:1] not in _LABEL_OPENERS:
+        return None
+    probe = unicodedata.normalize("NFKC", line[at + 1 : at + 1 + _LABEL_PROBE_CHARS])
+    name = "".join(character for character in probe if not _invisible(character)).casefold()
+    return at if name.startswith(_LABEL_NAMES) else None
 
 
 def _neutralised_agent_text(text: str) -> str:
     """``text`` with every line that begins like a FinishUP label marked as the agent's own."""
 
-    return _FORGED_LABEL_LINE.sub(lambda match: match.group(1) + _AGENT_TEXT_PREFIX, text)
+    lines = text.splitlines(keepends=True)
+    marked = False
+    for index, line in enumerate(lines):
+        lead = _label_lead(line)
+        if lead is not None:
+            lines[index] = line[:lead] + _AGENT_TEXT_PREFIX + line[lead:]
+            marked = True
+    return "".join(lines) if marked else text
 
 
 def _begins_like_label(content: bytes) -> bool:
-    """Whether ``content`` starts, after any blanks, the way a FinishUP or Yoetz label does."""
+    """Whether ``content`` starts, after any invisible lead, the way a FinishUP or Yoetz label does."""
 
-    blanks = _LEADING_BLANKS.match(content)
-    probe = content[: (blanks.end() if blanks else 0) + _LABEL_PROBE_BYTES]
-    return _FORGED_LABEL_LINE.match(probe.decode("utf-8", errors="ignore")) is not None
+    lines = content[:MAX_SEMANTIC_ITEM_BYTES].decode("utf-8", errors="ignore").splitlines()
+    return bool(lines) and _label_lead(lines[0]) is not None
 
 
 def _marker_path(reference: str) -> str:
@@ -3613,6 +3667,42 @@ def _binary_file_label(
     if captured or (not file_itself and payload.description):
         return _BINARY_RENDERING_MARKER.format(path=path, ref=ref), False
     return _BINARY_NOTICE_MARKER.format(path=path, ref=ref), True
+
+
+def _service_record_labels(
+    ref: str,
+    captured_group: _CapturedGroup | None,
+    provenance: EvidenceDigestProvenance | None,
+    verification: _VerificationRun | None,
+    projection: ProjectionState,
+    observed_events: frozenset[str],
+    *,
+    excerpt_kind: _ExcerptKind,
+    binary: bool,
+) -> tuple[str, ...]:
+    """The labels an evidence excerpt FinishUP recorded may lead with, fullest first (#1108).
+
+    A hook-captured tool output names its capture and, when the host recorded it, its run; the
+    run-less label is its fallback. An approved check's result and an import report are records
+    the service and the importer write (``evidence_recorded`` rejects either provenance from any
+    other author), so they say so too. Agent-published evidence has none: an empty tuple.
+    """
+
+    if binary:
+        return ()
+    if captured_group is not None:
+        if excerpt_kind != "evidence":
+            return ()
+        full = _observed_output_label(
+            ref, captured_group, verification, projection, observed_events
+        )
+        bare = _OBSERVED_OUTPUT_LABEL.format(ref=ref, run="")
+        return (full,) if full == bare else (full, bare)
+    if provenance is EvidenceDigestProvenance.APPROVED_CHECK:
+        return (_APPROVED_CHECK_LABEL.format(ref=ref),)
+    if provenance is EvidenceDigestProvenance.IMPORT_OBSERVED:
+        return (_IMPORT_REPORT_LABEL.format(ref=ref),)
+    return ()
 
 
 def _observed_output_label(
@@ -3875,22 +3965,35 @@ def _evidence_candidates(
                 (excerpt_span_key(ref, low, high, len(encoded)),) for low, high in spans
             )
         else:
-            # A hook-captured tool output leads with its observed label (#1108), prefixed after the
-            # cut like the follow-up marker, so the spans below stay placed in the same bytes.
-            label = (
-                _observed_output_label(
-                    ref,
-                    captured_group,
-                    verification_by_evidence.get(ref),
-                    projection,
-                    observed_events,
-                )
-                if captured_group is not None and excerpt_kind == "evidence" and binary is None
-                else ""
+            # A hook-captured tool output leads with its observed label (#1108), and a record
+            # FinishUP itself wrote (an approved check's result, an import report) with its own,
+            # prefixed after the cut like the follow-up marker, so the spans below stay placed in
+            # the same bytes. Such an excerpt never travels without its label (#1108 review R1):
+            # the run clause is dropped first, and when even the bare label leaves no readable
+            # room the excerpt is left out and disclosed.
+            labels = _service_record_labels(
+                ref,
+                captured_group,
+                None if digest_provenance is None else digest_provenance.provenance,
+                verification_by_evidence.get(ref),
+                projection,
+                observed_events,
+                excerpt_kind=excerpt_kind,
+                binary=binary is not None,
             )
-            room = excerpt_limit - len(label.encode("ascii"))
-            if room <= 2 * _MIN_HEAD_TAIL_SIDE_BYTES:
-                label, room = "", excerpt_limit
+            label = ""
+            room = excerpt_limit
+            for option in labels:
+                if excerpt_limit - len(option.encode("ascii")) > 2 * _MIN_HEAD_TAIL_SIDE_BYTES:
+                    label, room = option, excerpt_limit - len(option.encode("ascii"))
+                    break
+            if labels and not label:
+                if captured_group is not None:
+                    gaps.add("content_unselected")
+                omissions.append(
+                    _omit(ref, DataCategory.EVIDENCE_EXCERPT, excerpt_kind, "not_selected")
+                )
+                continue
             # Long output keeps its head and its tail with the cut marked (issue #907).
             clipped = len(encoded) > room
             clip, kept = _head_tail_kept(encoded, room) if clipped else (text, ())
@@ -5819,8 +5922,9 @@ def _obligation_disclosures(
 
     An obligation acknowledged as not done, a ``finishup-verification-limit`` decision and a
     ``finishup-assumption`` decision are the agent's own disclosure of a limit. The reviewer reads
-    them beside the obligation they cover, marked already disclosed, so it asks for nothing more
-    than the disclosure (tb4n3 RC-1, owner decision Q4). Decision ids ride only when citable.
+    them in the ``agent-disclosures`` row, as the agent's assertion (ADR-040 n7 amendment,
+    #1108), so it asks for nothing more than the disclosure (tb4n3 RC-1, owner decision Q4).
+    Decision ids ride only when citable.
     """
 
     found: dict[str, dict[str, JsonValue]] = {}
@@ -6539,13 +6643,6 @@ def _build_semantic_case_once(
         if fit == "replaced":
             omissions.append(_omit(ref, DataCategory.DECISION_EXCERPT, "decision", "not_selected"))
 
-    # --- Agent disclosures (#1108): the agent's assertion, in one row ahead of every decision ---
-    disclosures_item = _agent_disclosures_item(carried_disclosures, over_limit)
-    if disclosures_item is not None:
-        items.append(disclosures_item)
-        # First in the section, so the decision cap never drops it.
-        decision_ids.insert(0, disclosures_item.item_id)
-
     # --- Frozen accepted-event history ---
     if "timeline" in sections and frozen_case.history_availability == "available":
         detailed_history = bool({"goal", "obligations", "claims", "decisions"} & sections)
@@ -6950,6 +7047,9 @@ def _build_semantic_case_once(
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_links: tuple[str, ...] = ()
     task_inputs_admitted: set[int] = set()
+    # The inputs the first offer cut to the room it had, by index: the backfill offers each one
+    # the room the packet has left (#1108 review R1).
+    task_inputs_clipped: set[int] = set()
     if check_time_change is not None and carries_task_inputs(selection):
         statement_links: set[str] = (
             {str(recorded_statement.source_event_id)} & allowed
@@ -6962,6 +7062,37 @@ def _build_semantic_case_once(
         if task_input_links:
             task_inputs = tuple(_task_input_text(item) for item in check_time_change.capture.inputs)
 
+    task_input_limit = min(selection.max_excerpt_bytes, MAX_SEMANTIC_ITEM_BYTES)
+
+    def task_input_item(index: int, item_limit: int) -> tuple[SemanticCaseItem, TargetedExcerptRef]:
+        """One task input as an excerpt within ``item_limit`` bytes, its cut disclosed."""
+
+        text, cut = task_inputs[index]
+        item = _content_item(
+            item_id=f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}",
+            section="excerpt",
+            category=DataCategory.REPOSITORY_EXCERPT,
+            source_kind="repository",
+            source_ref=_TASK_INPUT_SOURCE_REF,
+            linked_subject_refs=task_input_links,
+            occurred_order=0,
+            text=text,
+            limit=item_limit,
+        )
+        if cut or len(text.encode("utf-8")) > item_limit:
+            truncated_item_ids.add(item.item_id)
+        else:
+            truncated_item_ids.discard(item.item_id)
+        return item, TargetedExcerptRef(
+            excerpt_item_id=item.item_id,
+            source_kind="repository",
+            linked_subject_refs=task_input_links,
+            subject_state_relation=SubjectStateRelation.UNKNOWN,
+            content_visibility="available",
+            content_digest=item.content_digest,
+            content_bytes=item.content_bytes,
+        )
+
     def task_input_excerpts(
         slot_limit: int, byte_limit: int, clip_floor: int | None = None
     ) -> tuple[tuple[SemanticCaseItem, ...], tuple[TargetedExcerptRef, ...]]:
@@ -6971,53 +7102,56 @@ def _build_semantic_case_once(
         input the task names later still ranks first; the skipped one waits for the backfill.
         With ``clip_floor`` (the first offer, #1108), an input too large for the room left is
         instead admitted as its head and tail cut to that room, marked and disclosed as
-        truncated, while the room is at least ``clip_floor`` bytes.
+        truncated, while the room is at least ``clip_floor`` bytes; the backfill then offers it
+        the room the packet has left (``regrow_clipped_task_inputs``).
         """
 
         admitted_items: list[SemanticCaseItem] = []
         admitted_refs: list[TargetedExcerptRef] = []
         bytes_used = 0
-        limit = min(selection.max_excerpt_bytes, MAX_SEMANTIC_ITEM_BYTES)
-        for index, (text, cut) in enumerate(task_inputs):
+        for index, (text, _cut) in enumerate(task_inputs):
             if len(admitted_refs) >= slot_limit:
                 break
             if index in task_inputs_admitted:
                 continue
-            size = min(len(text.encode("utf-8")), limit)
-            item_limit = limit
+            size = min(len(text.encode("utf-8")), task_input_limit)
+            item_limit = task_input_limit
             if bytes_used + size > byte_limit:
                 room = byte_limit - bytes_used
                 if clip_floor is None or room < clip_floor:
                     continue
                 item_limit = room
-            item = _content_item(
-                item_id=f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}",
-                section="excerpt",
-                category=DataCategory.REPOSITORY_EXCERPT,
-                source_kind="repository",
-                source_ref=_TASK_INPUT_SOURCE_REF,
-                linked_subject_refs=task_input_links,
-                occurred_order=0,
-                text=text,
-                limit=item_limit,
-            )
-            if cut or len(text.encode("utf-8")) > item_limit:
-                truncated_item_ids.add(item.item_id)
+                task_inputs_clipped.add(index)
+            item, ref = task_input_item(index, item_limit)
             admitted_items.append(item)
-            admitted_refs.append(
-                TargetedExcerptRef(
-                    excerpt_item_id=item.item_id,
-                    source_kind="repository",
-                    linked_subject_refs=task_input_links,
-                    subject_state_relation=SubjectStateRelation.UNKNOWN,
-                    content_visibility="available",
-                    content_digest=item.content_digest,
-                    content_bytes=item.content_bytes,
-                )
-            )
+            admitted_refs.append(ref)
             bytes_used += item.content_bytes
             task_inputs_admitted.add(index)
         return tuple(admitted_items), tuple(admitted_refs)
+
+    def regrow_clipped_task_inputs() -> None:
+        """Give each input the first offer cut the room the packet has left, last (#1108 R1).
+
+        A specification that fits whole in the spare room arrives whole, as it did when it
+        waited for the backfill; one still too large keeps a larger head and tail.
+        """
+
+        nonlocal excerpt_bytes_used
+        for index in sorted(task_inputs_clipped):
+            item_id = f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}"
+            position = next(
+                (at for at, ref in enumerate(targeted) if ref.excerpt_item_id == item_id), None
+            )
+            if position is None:
+                continue
+            carried = targeted[position].content_bytes
+            room = min(task_input_limit, total_excerpt_budget - excerpt_bytes_used + carried)
+            if room <= carried:
+                continue
+            item, ref = task_input_item(index, room)
+            items[next(at for at, held in enumerate(items) if held.item_id == item_id)] = item
+            targeted[position] = ref
+            excerpt_bytes_used += item.content_bytes - carried
 
     def lower_rank_room(
         slot_limit: int, byte_limit: int
@@ -7120,28 +7254,40 @@ def _build_semantic_case_once(
         # n7 RC6e (#1108): the service-captured change under review takes its reserved share of
         # this packet's budget first; see ``_check_time_change_reservation`` for how the rest of
         # the budget is shared.
-        admit_check_time_change(
-            *_check_time_change_reservation(
-                selection,
-                len(check_change_parts[0].encode("utf-8")) if check_change_parts else 0,
-                total_excerpt_budget,
-            )
-        )
-        # The controlling inputs the task names (a specification, a dataset, a test the
-        # verification runs; issue #1082) then take a floor: an eighth of the budget, an input
-        # larger than the room arriving as its head and tail, so a large change cannot push the
-        # specification out entirely. They hold back room for the decisive verification output
-        # (issue #1094 R2-N2), and their slots are bounded too (PR #1086 review R1-06). What does
-        # not fit backfills after every other excerpt, as before.
         decisive_hold = min(
             selection.max_excerpt_bytes, total_excerpt_budget // _DECISIVE_RUN_HOLD_DIVISOR
         )
+        follow_up_count = 0 if follow_up is None else len(follow_up.items)
+        reserved_slots, reserved_bytes = _check_time_change_reservation(
+            selection,
+            len(check_change_parts[0].encode("utf-8")) if check_change_parts else 0,
+            total_excerpt_budget,
+        )
+        if task_inputs and _first_task_input_slots(
+            selection, min(reserved_slots, len(check_change_parts)), follow_up_count
+        ):
+            # The share is rounded up to the change's first part; under a narrowed budget that
+            # rounding never takes the first task input's clip floor or the decisive run's hold
+            # (#1108 review R1). The change keeps at least its half, its first part cut to the
+            # room as a narrowed case already allows.
+            reserved_bytes = max(
+                total_excerpt_budget // 2,
+                min(
+                    reserved_bytes,
+                    total_excerpt_budget - decisive_hold - _MIN_TASK_INPUT_CLIP_BYTES,
+                ),
+            )
+        admit_check_time_change(reserved_slots, reserved_bytes)
+        # The controlling inputs the task names (a specification, a dataset, a test the
+        # verification runs; issue #1082) then take an eighth of the budget, an input larger than
+        # the room left arriving as its head and tail while that room is at least the 2 KiB clip
+        # floor, so a large change no longer pushes the first specification out whenever the
+        # budget leaves that floor beside the change's half and the decisive run's hold. They
+        # hold back that room for the decisive verification output (issue #1094 R2-N2), and
+        # their slots are bounded too (PR #1086 review R1-06). What does not fit backfills after
+        # every other excerpt, as before, and a clipped input then takes the room left.
         input_items, input_refs = task_input_excerpts(
-            _first_task_input_slots(
-                selection,
-                len(targeted),
-                0 if follow_up is None else len(follow_up.items),
-            ),
+            _first_task_input_slots(selection, len(targeted), follow_up_count),
             max(
                 0,
                 min(
@@ -7216,6 +7362,9 @@ def _build_semantic_case_once(
         items.extend(input_items)
         targeted.extend(input_refs)
         excerpt_bytes_used += sum(ref.content_bytes for ref in input_refs)
+        # An input the first offer cut takes the room left last, so it is never cut more than the
+        # packet's budget requires.
+        regrow_clipped_task_inputs()
 
     if check_time_change is not None:
         if not check_change_admitted:
@@ -7268,6 +7417,33 @@ def _build_semantic_case_once(
     goal_ids = goal_ids[:4]
     obligation_ids = obligation_ids[:32]
     claim_ids = claim_ids[:32]
+    # Agent disclosures (#1108): the agent's assertion, in one row ahead of every decision. Built
+    # after the obligation cap, so it names only obligations this packet carries.
+    kept_obligation_ids = set(obligation_ids)
+    disclosures_item = _agent_disclosures_item(
+        {
+            ref: carried
+            for ref, carried in carried_disclosures.items()
+            if f"obligation-{ref}" in kept_obligation_ids
+        },
+        over_limit,
+    )
+    if disclosures_item is not None:
+        items.append(disclosures_item)
+        # First in the section, so the decision cap never drops it.
+        decision_ids.insert(0, disclosures_item.item_id)
+    # A decision row the cap drops is disclosed, never dropped silently (#1108 review R1): the
+    # disclosures row takes one of the 16 slots, and the row it displaces may be the decision it
+    # cites.
+    for item_id in decision_ids[16:]:
+        omissions.append(
+            _omit(
+                item_id.removeprefix("decision-"),
+                DataCategory.DECISION_EXCERPT,
+                "decision",
+                "not_selected",
+            )
+        )
     decision_ids = decision_ids[:16]
     timeline_ids = timeline_ids[: selection.max_timeline_items]
     if lineage_items:

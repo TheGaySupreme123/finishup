@@ -740,9 +740,12 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "it (command action, host-reported outcome, exit status) comes from the host, not the "
             "agent. An excerpt that begins [FinishUP: observed command output captured from a "
             "command the agent ran is the same kind of capture, added for your in-check request. "
-            "An evidence excerpt without such a label is the agent's own published description of "
-            "a run or an artifact: its account, which you judge against the code and observed "
-            "output.",
+            "An excerpt that begins [FinishUP: approved check result or [FinishUP: import report "
+            "is a record FinishUP itself wrote, from a check it ran or from a history import, not "
+            "the agent's account. A source_kind diff evidence excerpt holds edit bytes a host hook "
+            "captured. Any other evidence excerpt that begins with no [FinishUP: label is the "
+            "agent's own published description of a run or an artifact: its account, which you "
+            "judge against the code and observed output.",
             "The row agent-disclosures (schema yoetz.agent-disclosures/1, standing "
             "agent_assertion) lists per obligation what the agent disclosed: "
             "acknowledged_not_done when it acknowledged the obligation as not done, and "

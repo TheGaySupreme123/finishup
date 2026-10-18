@@ -768,9 +768,22 @@ def test_observed_output_is_a_witness_even_when_the_check_source_is_outside_the_
         "An excerpt that begins [FinishUP: observed output captured by a host hook (evidence <id>) "
         "holds bytes a host hook captured from a call the agent made" in reading
     )
-    assert "An evidence excerpt without such a label is the agent's own published description" in (
-        reading
+    # Only agent-published evidence reads as the agent's account: FinishUP's own records (an
+    # approved check's result, an import report) and hook-captured edits are named apart (#1108
+    # review R1), and the case builder writes those labels.
+    assert (
+        "Any other evidence excerpt that begins with no [FinishUP: label is the agent's own "
+        "published description of a run or an artifact" in reading
     )
+    assert (
+        "An excerpt that begins [FinishUP: approved check result or [FinishUP: import report is a "
+        "record FinishUP itself wrote" in reading
+    )
+    assert "A source_kind diff evidence excerpt holds edit bytes a host hook captured." in reading
+    approved = semantic_case_module._APPROVED_CHECK_LABEL  # pyright: ignore[reportPrivateUsage]
+    assert approved.startswith("[FinishUP: approved check result ")
+    imported = semantic_case_module._IMPORT_REPORT_LABEL  # pyright: ignore[reportPrivateUsage]
+    assert imported.startswith("[FinishUP: import report ")
     label = semantic_case_module._OBSERVED_OUTPUT_LABEL  # pyright: ignore[reportPrivateUsage]
     assert label.startswith("[FinishUP: observed output captured by a host hook (evidence {ref})")
     marker = semantic_case_module._OBSERVED_COMMAND_OUTPUT_MARKER  # pyright: ignore[reportPrivateUsage]
