@@ -402,6 +402,62 @@ def test_agent_next_names_every_item_and_how_to_supply_it() -> None:
         assert overall_next_instruction(action, "action_required") + "." in lead
 
 
+def test_untargeted_other_request_has_a_usable_closed_remedy_on_every_text_surface() -> None:
+    from builders.policy_cases import make_case
+    from finishup.application.missing_for_assessment import review_missing_for_assessment
+    from finishup.ports.semantic import MissingForAssessment, SemanticJudgment
+
+    judgment = SemanticJudgment(
+        "insufficient_packet",
+        (),
+        missing_for_assessment=(
+            MissingForAssessment("other", (), "Supply the schema of the input table."),
+        ),
+    )
+    review = review_missing_for_assessment(
+        make_case(), (), judgment, unsuppliable_kinds=frozenset()
+    )
+    assert len(review.items) == 1
+    assert review.items[0].availability == "agent_suppliable"
+    assert review.items[0].target_refs == ()
+    remedy = (
+        "Publish new evidence answering the request; if a target is named, "
+        "set its reference to that target id."
+    )
+    lead = render_agent_next(
+        {"action": "supply_missing_input", "status": "action_required", "target_refs": ()},
+        review.items,
+    )
+    for text in (
+        lead,
+        *render_missing_for_assessment_lines(review.items),
+        *render_missing_for_assessment_lines(review.items, include_refs=False),
+    ):
+        assert "Supply the schema" not in text
+    assert remedy in lead
+    for include_refs in (True, False):
+        assert remedy in " ".join(
+            render_missing_for_assessment_lines(review.items, include_refs=include_refs)
+        )
+    receipt_note = render_review_input_manifest_coverage_note(_manifest(), review.items)
+    assert receipt_note is not None and remedy in receipt_note
+    assert "Supply the schema" not in receipt_note
+    assert "Only new material counts; tie it to any named target." in (
+        render_missing_for_assessment_next(review.items)
+    )
+    # The same remedy keeps the reference binding for a targeted or mixed request.
+    targeted = {
+        "kind": "other",
+        "availability": "agent_suppliable",
+        "target_refs": [_agent_ref(1)],
+    }
+    mixed = render_agent_next(
+        {"action": "supply_missing_input", "status": "action_required"},
+        [*review.items, targeted],
+    )
+    assert remedy in mixed and _agent_ref(1) in mixed
+
+
 def test_agent_next_keeps_every_requested_kinds_direction_in_the_worst_case() -> None:
     """Directions are reserved before target lists expand (Greptile on PR #1114, RC6a)."""
 

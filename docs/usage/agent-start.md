@@ -154,8 +154,8 @@ Never forge OS presence or place credentials in ordinary arguments, environment,
 
 Guide these decisions in order:
 
-1. **Connect to Codex or not** — and which installation, when several are found. With no Codex,
-   integration is skipped and everything else still works.
+1. **Choose an agent host or decline integration** — select among discovered Codex, Claude Code
+   and Cursor installations. If none is found, skip integration.
 2. **Project trust** (full-screen interface only) — applies to the whole repository root shown,
    not just the current folder; the prompt wizard folds trust into the approval in 4.
 3. **Review mode** — how tasks use AI-powered review. FinishUP's local checks run on every task
@@ -211,9 +211,10 @@ makes a choice yours:
 Ask these in this order, one per message, in your own words but with these options and
 recommendations. Each answer decides the next step; stop after each and wait.
 
-1. **Codex.** "I found Codex at `<path>` (or: I found no Codex). Connect FinishUP to it? Yes /
-   No / (if several) which one." Recommend yes when one is found; with none, say integration is
-   skipped and everything else still works.
+1. **Agent host.** "I found these supported installations: `<host and path>` (Codex, Claude Code
+   or Cursor). Which one should FinishUP connect to, or would you prefer to decline integration?"
+   Offer only discovered installations. Recommend the user's current host when it is found;
+   with none, say integration is skipped.
 2. **Review mode.** "How should your tasks use AI-powered review? FinishUP's local checks run on
    every task either way. (a) FinishUP, recommended: tasks start local and I turn on AI-powered
    review for a task when it helps, within the privacy policy you approve. (b) FinishUP, local
@@ -389,8 +390,9 @@ the user prefers to stay local-only, respect it and stop recommending. Their wor
   instruction in the current conversation. Credential authorization passes the key once via
   `--provider-credential-stdin` — the single exception to the rules below.
 
-Do not use `finishup setup run --accept`: in your shell it applies the integration without asking
-anyone anything and registers the strict route. Only on the user's explicit request.
+Use `finishup setup run --accept` only on the user's explicit request: it approves applying the
+integration without another confirmation. Without a route override, noninteractive setup uses
+strict for a fresh connection and preserves an existing Codex route.
 
 ## Rules
 

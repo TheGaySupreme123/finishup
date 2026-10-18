@@ -641,18 +641,18 @@ A background Bash launch
 is recorded as partial until the host supplies completion evidence. These decisions do not add
 filesystem or batch observation.
 
-**Failure supersession (#909).** Because the ordinary profile already records `PostToolUseFailure`
-as a failure, a red -> green cycle used to leave an unclearable finding. Now a later `Bash` run of
-the same command (only the latest run is judged; a pass clears it), or a later successful
-`Edit`/`Write`/`MultiEdit` post-event, retires the earlier failure before a completion claim; the
-receipt names it once as history. A `PermissionRequest` for an edit tool is not an edit, and a
-file written by a `Bash` heredoc is a command, not an observed edit (for supersession; the
-stale-verification rule counts a `Bash` command that visibly writes the workspace as an edit,
-ADR-045). The hook computes an
-installation-keyed `command_commitment` from `tool_input.command` on `PreToolUse`, `PostToolUse`,
-and `PostToolUseFailure`, then discards the text. Decision: supported on the ordinary profile; the
+**Failure supersession (#909).** On the ordinary profile, only a later qualifying hook-observed
+run of the same keyed command identity supersedes a failed run's disclosure duty: a pass makes it
+history, while a later failure or partial result replaces it as the live limitation. A successful
+`Edit`/`Write`/`MultiEdit` does not supersede a failed command, and a failure with no command identity
+cannot use same-command supersession. A later passing planned verifier can instead retire the
+failed-command finding under the separate
+[failed-command finding rules](#failed-command-findings-issue-1104). That does not prove the failed
+command passed: its still-live result remains required in a completion claim's `limitation_refs`.
+The hook computes an installation-keyed `command_commitment` from `tool_input.command` on
+`PreToolUse`, `PostToolUse`, and `PostToolUseFailure`; only the keyed identity enters the structural
+record. Decision: supported on the ordinary profile; the
 default structural profile observes no generic `Bash` calls, so it records no command identity.
-A failure whose payload omits `tool_input` has no identity and relies on the edit rule.
 Native dogfood acceptance of this path on macOS, Linux and WSL 2 is not yet recorded
 (owner: #909).
 
@@ -2427,7 +2427,9 @@ on:
   `supersedes_claim_refs`, and a plan beside `no_obligations_reason` an empty `obligation_refs`.
   Each is the empty list: one request, digest and stored payload with the explicit `[]`, and not
   named in `server_filled`. It is judged like an explicit `[]`, so a completion claim that leaves a
-  live failed, partial or unknown result out is still refused (`limitation_refs_complete`).
+  required live failure or partial result out is still refused (`limitation_refs_complete`). An
+  unknown result can be disclosed in `limitation_refs` and is not required for admission, but
+  omitting a relevant one may produce a later `material_limitation_omitted` local finding.
   `supporting_refs`, a revision's `obligation_changes` and evidence `observed_at` stay required.
 - A `respond` answer may list its `evidence_refs` in any order: the request model sorts it before
   the schema check, so it is the same request as the sorted list. The service also drops a

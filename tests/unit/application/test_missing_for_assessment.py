@@ -474,6 +474,31 @@ def _diff(number: int, path: str) -> EvidenceRecordedPayload:
     )
 
 
+def test_new_evidence_without_a_target_answers_an_untargeted_other_request() -> None:
+    """The closed DOC-1 remedy needs no invented target id or target reference."""
+
+    case = _pending(
+        make_case(
+            evidence={
+                evd(40): evidence_record(_diff(40, "input-schema"), 40),
+                evd(60): evidence_record(_diff(60, "input-schema"), 60),
+            },
+            extra_refs=(evd(40), evd(60)),
+        ),
+        MissingForAssessmentItem("other", (), "agent_suppliable"),
+    )
+    pending = case.projection.pending_missing_for_assessment
+    assert pending is not None
+    assert supplied_since(
+        case.projection, pending, frozenset(str(ref) for ref in case.allowed_ids)
+    ) == ((str(evd(60)),),)
+    repeated = review_missing_for_assessment(
+        case, (), _repeat("other"), unsuppliable_kinds=frozenset()
+    )
+    assert repeated.items == ()
+    assert "semantic_missing_already_supplied" in repeated.gaps
+
+
 def test_a_diff_of_another_path_never_answers_a_request_for_this_path() -> None:
     """R940-01: current_diff_for_path for A stays named when only B's diff was recorded."""
 

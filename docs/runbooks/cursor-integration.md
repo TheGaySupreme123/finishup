@@ -2505,8 +2505,11 @@ resolver, so Cursor takes the same path as the other hosts. What a Cursor agent 
 - A `claim_recorded/1.1.0` draft may leave out an empty `limitation_refs` and
   `supersedes_claim_refs`, and a plan beside `no_obligations_reason` an empty `obligation_refs`.
   Each is the empty list: one request, digest and stored payload with the explicit `[]`, and not
-  named in `server_filled`. It is judged like an explicit `[]`, so a completion claim that leaves a
-  live failed, partial or unknown result out is still refused (`limitation_refs_complete`).
+  named in `server_filled`. An omitted set is judged exactly like an explicit `[]`.
+  A completion claim that omits a required `failure` or `partial` result from `limitation_refs`
+  is still refused by `limitation_refs_complete`, which names the missing result. An `unknown`
+  result may be disclosed in `limitation_refs`; omitting it does not trigger that admission refusal, but a later local check
+  can report `material_limitation_omitted`.
   `supporting_refs`, a revision's `obligation_changes` and evidence `observed_at` stay required.
 - A `respond` answer may list its `evidence_refs` in any order: the request model sorts it before
   the schema check, so it is the same request as the sorted list. The service also drops a

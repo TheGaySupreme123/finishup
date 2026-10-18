@@ -212,10 +212,12 @@ a material transition, not typing UUIDs, timestamps and mirrors.
      `obligation_changes` and a plan's `obligation_refs` without a reason carry the record's
      substance, so an omission there is likelier a forgotten value than an empty one. A sent value
      is never replaced. The default asserts nothing the domain does not still judge: an omitted set
-     is judged exactly like an explicit `[]`, so a completion claim that leaves a live failed,
-     partial or unknown result out of an omitted `limitation_refs` is refused by
-     `limitation_refs_complete` and names the result (a material claim is not held to that rule
-     either way). Like set order, the default is not named in
+     is judged exactly like an explicit `[]`. A completion claim that omits a required `failure`
+     or `partial` result from `limitation_refs` is still refused by `limitation_refs_complete`,
+     which names the missing result. An `unknown` result may be disclosed in `limitation_refs`; omitting it does
+     not trigger that admission refusal, but a later local check can report
+     `material_limitation_omitted`. Material claims are not held to this completion-only rule.
+     Like set order, the default is not named in
      `server_filled` (decision 8 records envelope provenance, and naming payload fields would
      version two result schemas), and an omitted set and an explicit `[]` are one request with one
      digest and one stored payload, so either form replays the other.

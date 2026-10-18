@@ -80,7 +80,7 @@ def test_agent_start_lists_the_questions_in_order_with_recommendations() -> None
 
     assert "#### The questions, ready to ask" in guide
     for heading in (
-        "1. **Codex.**",
+        "1. **Agent host.**",
         "2. **Review mode.**",
         "3. **The exact change.**",
         "4. **Secret storage**",
@@ -91,6 +91,17 @@ def test_agent_start_lists_the_questions_in_order_with_recommendations() -> None
         assert heading in guide, heading
     assert "No recommendation and no default" in guide
     assert "local only is a finished state, not a fallback" in guide
+
+    decisions = guide.split("Guide these decisions in order:", 1)[1].split(
+        "2. **Project trust**", 1
+    )[0]
+    questions = guide.split("#### The questions, ready to ask", 1)[1].split(
+        "2. **Review mode.**", 1
+    )[0]
+    for section in (decisions, questions):
+        for choice in ("Codex", "Claude Code", "Cursor", "decline integration"):
+            assert choice in section
+        assert "With no Codex" not in section
 
 
 def test_agent_start_host_notes_cover_every_first_party_host_and_the_generic_route() -> None:

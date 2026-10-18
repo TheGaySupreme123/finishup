@@ -458,9 +458,11 @@ publishing again.
 
 An omitted `limitation_refs` or `supersedes_claim_refs` on `claim_recorded/1.1.0`, and an omitted
 `obligation_refs` beside a plan's `no_obligations_reason`, is the empty set. Like set order, these
-are not listed in `server_filled`: an omitted set is judged exactly like an explicit `[]`, so a
-completion claim that leaves a live failed, partial or unknown result out of `limitation_refs` is
-still refused and names it. Every other required list (`supporting_refs`, a revision's
+are not listed in `server_filled`: an omitted set is judged exactly like an explicit `[]`.
+A completion claim that omits a required `failure` or `partial` result from `limitation_refs`
+is still refused by `limitation_refs_complete`, which names the missing result. An `unknown` result may be disclosed
+in `limitation_refs`; omitting it does not trigger that admission refusal, but a later local check
+can report `material_limitation_omitted`. Every other required list (`supporting_refs`, a revision's
 `obligation_changes`, a plan's `obligation_refs` without a reason) is still yours to send.
 
 Reference-set fields are also sorted and de-duplicated; text lists are kept exactly as sent.
