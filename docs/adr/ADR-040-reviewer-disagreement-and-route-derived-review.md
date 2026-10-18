@@ -731,6 +731,10 @@ scoped request; this amends Q4 in placement and reading only.
    amendment). Nothing asks the agent for an artifact it cannot obtain.
 
 The reviewer still sees the disclosure of every obligation the packet carries, so the tb4n3 RC-1
-loop (being asked to disclose a limit again) stays closed. No event, projection or schema changes;
-packets built before and after differ in item placement only (plus the omission row for a displaced
-decision), and a review recovered across the upgrade ends `coordinator_failure` (ADR-006).
+loop (being asked to disclose a limit again) stays closed. That holds under envelope bounding too
+(#1108 review R2): bounding drops catalog rows from the tail of the case order, where the
+`agent-disclosures` row sits after the claims and obligations, so `_drop_catalog_row` passes over
+that row while any obligation row remains and drops it only after the last obligation; every dropped
+row is counted in `selection_accounting.catalog_dropped_count`. No event, projection or schema
+changes; packets built before and after differ in item placement only (plus the omission row for a
+displaced decision), and a review recovered across the upgrade ends `coordinator_failure` (ADR-006).

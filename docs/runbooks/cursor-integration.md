@@ -2238,8 +2238,8 @@ host-reported outcome, exit status) appears only when the hook recorded both the
 result with a keyed `omitted:hmac-sha256:` command identity equal to the capture's. The run clause
 has no Cursor host-payload test yet: the native capture test proves the label for Cursor tool
 output, and a hook-recorded run with the keyed identity takes the same service path as on Codex, but
-that parity is unproven. The gap and its follow-up (a Cursor host-payload test of the run clause)
-are recorded on #1108.
+that parity is unproven. Open follow-up, owned by the workstream issue #1108: a Cursor host-payload
+test of the run clause.
 
 ## Possible-credential filter opt-out (issue #982)
 

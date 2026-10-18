@@ -2152,8 +2152,10 @@ of about 110k tokens.
 
 The n7 investigation traced the reviewer's extra `insufficient_packet` verdicts and its wrong
 verdicts to the instruction and the packet layout, not to missing material: 15 of 27 wrong verdicts
-had the decisive fact in the packet. Three causes are fixed here; the round goal is that an
-AI-powered review receives the material it needs and judges from primary material.
+had the decisive fact in the packet. Three causes are addressed here, in the instruction and the
+packet; their effect on verdicts is not yet measured (the evaluation paragraph below says how it
+will be). The round goal is that an AI-powered review receives the material it needs and judges
+from primary material.
 
 - **Observed output is a witness** (RC6c). "Support needs a witness" made the reviewer abstain on
   the agent's own validators, probes and tests, whose files agents keep outside the workspace
@@ -2168,7 +2170,18 @@ AI-powered review receives the material it needs and judges from primary materia
   controls, format characters such as U+200B and U+FEFF, combining marks, the invisible fillers),
   and the bracket and the name compare after NFKC folding with those characters removed, so an
   agent line imitating the label behind such a lead is prefixed `(agent text) ` like any other.
-  Look-alike letters from other scripts are not folded. A capture never travels without its label:
+  #1108 review R2 widened the match to what a reader may take for the label: the opener is any
+  opening bracket or initial quote (Unicode categories Ps and Pi), `<`, or a listed bracket piece
+  or corner (U+23A1 and the rest); the name compares as its letters alone (marks stripped,
+  punctuation and separators dropped, so `Finish-UP` matches), with `0`, `1`, `5` and `|` read as
+  the letters they imitate and a Latin, Greek, Cyrillic, Armenian, Cherokee or Coptic letter that
+  does not fold to ASCII matching any letter (a Cyrillic i, a Greek Rho). Over-marking is safe, so
+  the match errs toward a label; an ordinary bracketed line that does not spell the name (`[INFO]`,
+  `[Finished in 2.1s]`) is left as it was. The neutraliser runs before a head-and-tail cut, and
+  the elision marker ends on a newline, so the tail's first bytes start a line even when they sat
+  mid-line; `_head_tail_kept` therefore fences the tail's cut edge again, recutting with room for
+  the prefix, on every head-and-tail cut (evidence excerpts, failure summaries, commands, task
+  inputs and prose items). A capture never travels without its label:
   when the per-excerpt limit leaves no readable room beside the full label the run clause is
   dropped, and when even the bare label leaves none the excerpt is left out as `not_selected` with
   `content_unselected`. Evidence only the service or the importer can record names its author too:
@@ -2183,7 +2196,11 @@ AI-powered review receives the material it needs and judges from primary materia
   resolved under, the test auto-supply already applies; an agent-published or plaintext record
   never lends a capture an outcome. The grounding rule now names such output as a witness, tells
   the reviewer never to abstain only because a check's source is absent, and says a bare verdict
-  line (PASS, OK, a pass count) witnesses only that the check passed. The own-checks lens separates
+  line (PASS, OK, a pass count) witnesses only that the check passed. Because FinishUP never sends
+  a hook-observed run's command text (only its keyed `omitted:hmac-sha256:` identity), the
+  grounding rule and the
+  own-checks lens say a command the agent recorded or named for such a run is the agent's account,
+  not the witness (#1108 review R2). The own-checks lens separates
   the check's verdict (the claim) from what FinishUP observed it print (evidence of what it
   printed). The `excerpt-supplied-` summary rule moved beside the `prior_missing_for_assessment`
   sentence, since supplied answers arrive in the next check's packet (issue #1094 round-3 note), and
@@ -2222,7 +2239,7 @@ AI-powered review receives the material it needs and judges from primary materia
 Every provider route reads the same text: the Responses and Chat Completions adapters send
 `SEMANTIC_REVIEW_INSTRUCTION` (Chat Completions with its JSON-shape suffix), and the Codex
 app-server sends it as `baseInstructions`; the local-model adapter sends no instruction and the fake
-provider a fixed digest. The instruction grew from 29.9 KB to about 33.6 KB, about 930 more input
+provider a fixed digest. The instruction grew from 29.9 KB to about 33.9 KB, about 1,000 more input
 tokens per review under the bytes/4 estimate. Case digests change for every case (item order is
 bound into `case_digest`), so a review frozen by an older build and recovered by this one ends
 `failed` / `coordinator_failure` through `semantic_execution_case_changed`, as for every

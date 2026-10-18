@@ -9257,12 +9257,21 @@ then recording order), never by opaque item id. The section order is
 sorts by: `task_statement`, `excerpt`, `deterministic_summary`, `deterministic_detail`, `goal`,
 `obligation`, `claim`, `decision`, `prior_finding`, `timeline` (primary material before the agent's
 account, n7 RC7, issue #1108). Envelope bounding drops catalog rows from that order's tail, after
-the prior-finding rows it drops first. A hook-captured tool output's excerpt begins with
-`_OBSERVED_OUTPUT_LABEL`, `[FinishUP: observed output captured by a host hook (evidence <evd_>)`,
-then `; run of command action <act_>, host-reported outcome <outcome>[, exit status <n>]` only when
-that action and its result are hook-observed records whose keyed command identity is the one the
-capture was resolved under, then `; not an agent-published result]` and a newline; its part keys
-stay placed in the capture's own bytes. An excerpt may carry `latest_for` (`path`: the
+the prior-finding rows it drops first, except that `_drop_catalog_row` keeps the `agent-disclosures`
+row while any obligation row remains (#1108 review R2). A hook-captured tool output's excerpt begins
+with `_OBSERVED_OUTPUT_LABEL`, `[FinishUP: observed output captured by a host hook (evidence
+<evd_>)`, then `; run of command action <act_>, host-reported outcome <outcome>[, exit status <n>]`
+only when that action and its result are hook-observed records whose keyed command identity is the
+one the capture was resolved under, then `; not an agent-published result]` and a newline; its part
+keys stay placed in the capture's own bytes. `_service_record_labels` yields the full label, then
+the bare label without the run clause; the excerpt takes the first that leaves more than two
+head-and-tail sides of room within the per-excerpt limit, and when neither does the excerpt is left
+out as a `not_selected` omission, with the `content_unselected` gap for a capture, so it never
+travels unlabelled. Agent text is fenced by `_neutralised_agent_text`: a line that begins, after
+characters a reader cannot see, with an opening bracket (categories Ps and Pi, `<`, or a listed
+bracket piece) and spells `FinishUP` or `Yoetz` as a reader sees it (`_label_skeleton`) is prefixed
+`(agent text) `. `_head_tail_kept` fences the tail's cut edge again after every head-and-tail cut,
+recutting with room for that prefix. An excerpt may carry `latest_for` (`path`: the
 newest applied or unconfirmed captured edit of each changed path; `command`: the newest recorded
 output of a command identity) or `superseded_by` (the source refs of the newer edit or run). The
 marks describe recording order only; they never claim what the working tree now contains.
@@ -9312,13 +9321,22 @@ evidence rows naming the same plain path are one output, and the older is marked
 newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045,
 #1082 and n7 amendments) are admitted after the check-time change's reservation
 (`_check_time_change_reservation(selection, first_part_bytes, budget)`: half the recipe's count and
-half this packet's excerpt budget, rounded up to the first part), within an eighth of the packet's
-excerpt budget (`_TASK_INPUT_SHARE_DIVISOR`), never the bytes held for the decisive verification
-output (`_DECISIVE_RUN_HOLD_DIVISOR`: an eighth of the budget, at most one excerpt), and within
+half this packet's excerpt budget, rounded up to the first part; when task inputs have first-offer
+slots that rounding is capped at the budget less the decisive hold and the first input's need,
+`min(_MIN_TASK_INPUT_CLIP_BYTES, its size)`, never below the half), within an eighth of the
+packet's excerpt budget (`_TASK_INPUT_SHARE_DIVISOR`), never the bytes held for the decisive
+verification output (`_DECISIVE_RUN_HOLD_DIVISOR`: an eighth of the budget, at most one excerpt,
+held only when `_has_verification_output` finds a readable command result, command or test
+output, or hook-captured output, or a follow-up asks for a run), and within
 `_first_task_input_slots` (the recipe's count less the excerpts already admitted and two slots per
 decisive verification run: the latest, or each run a follow-up asked for). An input larger than the
 room left is clipped head and tail to it while the room is at least `_MIN_TASK_INPUT_CLIP_BYTES`
-(2 KiB) and listed as truncated; otherwise it is skipped and backfills last. `TaskInputFile.origin`
+(2 KiB) and listed as truncated; otherwise it is skipped and waits for the backfill. After the
+recorded excerpts, `regrow_cut_check_time_change` gives a first change part the reservation cut the
+room the packet has left (whole when it fits, so later parts may follow); the change's remaining
+parts then backfill, inputs not yet carried backfill last, and `regrow_clipped_task_inputs` gives
+each input the first offer clipped the room still left (whole when it fits, its truncation then
+cleared). `TaskInputFile.origin`
 (`task`, `verification`, `outside_workspace`) and `TaskInputFile.summary` choose the label; both are
 optional stored keys written only when not the default. Candidates come from `review_input_paths`
 (statement words, `role: input` files, then named absolute directories) with the newest

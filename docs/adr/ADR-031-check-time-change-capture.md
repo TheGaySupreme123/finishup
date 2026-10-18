@@ -677,37 +677,50 @@ floor instead of a lead:
    the inputs together could leave the decisive verification output no bytes (issue #1094 R2-N2).
 2. **Task inputs then take a floor**: at most an eighth of the packet's excerpt budget, and never
    the bytes held back for the decisive verification output (an eighth of the budget, at most one
-   excerpt). An input larger than the room left arrives as its head and tail cut to that room,
-   with the elision marked, while the room is at least 2 KiB; it is disclosed as truncated
+   excerpt, held only when the case records a run whose output could decide the change: a
+   readable command result, command or test output, or a hook-captured output, or a follow-up
+   that asks for one). An input larger than the room left arrives as its head and tail cut to that
+   room, with the elision marked, while the room is at least 2 KiB; it is disclosed as truncated
    (`caller_evidence` `partial`, `truncated_payload`). When inputs are offered, the rounding of
-   the change's share up to its first part never takes that 2 KiB floor or the decisive hold: the
-   change keeps at least its half, and its first part is cut to the room as a narrowed case
-   already allows (#983). The floor is the first input's: later inputs take what the eighth leaves
-   and otherwise wait for the backfill. Their slots are bounded as before: those the change's
-   admitted parts and two per decisive run leave; with none left, every input waits for the
-   backfill.
-3. **The rest is unchanged, except that a cut input grows back.** The change's remaining parts take
-   the room the reserved excerpt classes leave, ahead of older hunks and general output (#983); the
-   change then backfills, and the inputs not yet carried backfill last. An input the first offer
-   cut is then offered the room the packet has left, so one that fits whole arrives whole, as it
-   did when it waited for the backfill. The task statement is its own item, never an excerpt, so no
-   excerpt budget can drop it.
+   the change's share up to its first part never takes the room the first input needs (the whole
+   input, at most that 2 KiB floor) or the decisive hold: the change keeps at least its half, and
+   its first part is cut to the room as a narrowed case already allows (#983). The floor is the
+   first input's: later inputs take what the eighth leaves and otherwise wait for the backfill.
+   Their slots are bounded as before: those the change's admitted parts and two per decisive run
+   leave; with none left, every input waits for the backfill.
+3. **The rest is unchanged, except that a cut first part and a cut input grow back.** The change's
+   remaining parts take the room the reserved excerpt classes leave, ahead of older hunks and
+   general output (#983). A first change part the first offer cut is then offered the room the
+   packet has left, ahead of the backfill: whole when it fits, so the parts after it may follow,
+   else a longer cut (#1108 review R2). The change then backfills, and the inputs not yet carried
+   backfill last. An input the first offer cut is then offered the room the packet has left, so
+   one that fits whole arrives whole, as it did when it waited for the backfill. The task
+   statement is its own item, never an excerpt, so no excerpt budget can drop it.
 
 At the full Expanded budget a ~102 KB change with two 16 KB specifications is now carried whole with
-one specification beside it. Under a budget the service planner narrowed, the change keeps its half
-and the first specification at least its head and tail whenever that budget leaves 2 KiB beside the
-change's half and the decisive hold (an excerpt budget of about 5.3 KiB or more) and the recipe
-leaves the inputs a slot; below that the input is listed as not carried. Primary material also leads
-the item order now (ADR-006 n7 amendment), so envelope bounding drops the timeline and the agent's
-account before any change part.
+one specification beside it. Under a narrowed budget, the change keeps its half and the first
+specification at least its head and tail whenever that budget leaves 2 KiB beside the change's half
+and the decisive hold (an excerpt budget of about 5.3 KiB or more) and the recipe leaves the inputs
+a slot; below that the input is listed as not carried. A small input costs the change no more than
+its own bytes: a one-part change that arrived whole beside a few-hundred-byte specification before
+#1108 still does. Primary material also leads the item order now (ADR-006 n7 amendment), so
+envelope bounding drops the timeline and the agent's account before any change part.
 
-What this amendment does not remove, left as follow-ups that issue #1108 lists:
+What this amendment does not remove, left as follow-ups for the workstream issue #1108:
 
-- **The in-builder planned path.** When the case builder itself narrows the excerpt budget below
-  a prepared-byte ceiling, the inputs still cost the change one 16 KiB part at each narrowed
-  budget, as before #1108 (measured at 96000, 72000 and 56000 bytes: the same change bytes as at
-  the base). Cutting the change's *last* part to the room, rather than only its first, would let
-  the change use the bytes the input clip frees; it reworks the shown-file accounting (#983).
+- **Narrowed budgets, on both paths.** Whenever a narrowed excerpt budget leaves the inputs' first
+  offer less than one whole change part, the inputs still cost the change one 16 KiB part, as
+  before #1108. That holds whether the service planner narrowed the selection or the case builder
+  planned below a prepared-byte ceiling, which the default privacy setup sets (256 KiB), so the
+  in-builder path is the ordinary one for a large packet. Measured with a ~105 KB change beside a
+  16 KB and a 9 KB input: at 72000 and 56000 bytes the change carries the same bytes as at the base
+  on both paths, with or without a decisive run, and at 96000 the same holds when a decisive run
+  exists; only at 96000 with no run does the change keep every part. The n7 packets ran in this
+  regime (excerpt room near 70 KB), so this amendment does not address RC6e's cut reviews at
+  those budgets; it gives the inputs more of the room the part granularity leaves. Cutting the
+  change's *last* part to the room (the design's C3b, open question Q5), rather than only its
+  first, is what would let the change use the bytes the input clip frees; it reworks the
+  shown-file accounting (#983).
 - **Planner room.** Fixed material (the agent's account, timeline rows and earlier-finding prose)
   is measured before excerpts and narrows none of them, so primary material is still a minority
   of a full packet. Rebalancing that room, with per-section byte measurements from a pilot dump,
