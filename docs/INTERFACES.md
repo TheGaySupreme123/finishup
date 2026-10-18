@@ -5786,7 +5786,15 @@ endings as `{"call", "ended_at", "generation", "reason", "tool"}` where `call` i
 `{"envelope_ring": null | {"first_seen", "last_seen"}, "dedup_fence": ...}`: the local copies the
 bounded ring, state bound and dedup fence shed, which is never content loss and never
 `truncated_payload`. `held_rollout_items` is `{"count": n, "oldest_read_at": null | <time>}`: the
-Codex rollout tool items still held for their hook post (#910). `delivery_lag` is the outbox
+Codex rollout tool items still held for their hook post (#910). `workspace_effect_readings` (n7
+RC1, #1105) is the workspace's bounded fingerprint reading tally
+(`adapters/workspace_fingerprint.reading_tally_summary`): `{"status": "absent|unreadable|retained",
+"since", "all", "recent_window": "current_and_previous_clock_hour", "recent_counts",
+"ring_capacity": 64, "recent_readings": [{"at", "effect", "reason", "call"}],
+"dropped_sample_count"}`, where each count object is `{"unchanged", "changed", "unavailable",
+"unavailable_reasons": {<reason>: n}}` and `call` is the host tool-call id only when it already
+matches the envelope token pattern (else `null`); the text form is one `workspace_effect:` line of
+closed tokens and counts. A status read never creates the tally. `delivery_lag` is the outbox
 delivery measure, enqueue to the acknowledgement after the service accepted the row:
 `{"measured": "enqueue_to_accept", "count", "bucket_upper_bounds_ms", "bucket_counts", "p50_ms_at_most",
 "p95_ms_at_most", "mean_ms", "max_ms", "last_ms", "since"}` (only `measured`, `count` and the bounds
@@ -6251,6 +6259,11 @@ the recorded `hook_name` standing in for the host's `hook_event_name` echo; a st
 records no `hook_name` and still requires an explicit outcome fact. A second, stricter rule over
 the lossy structural copy accepted only a top-level `exit_status`/`success`/`result_status` fact,
 so it refused every Codex-shaped post the planner had already buffered as a success (issue #753).
+The native post-hook fallback is a host's closed success signal only for Claude Code and Cursor:
+Codex fires `PostToolUse` for a non-zero exit too, so a Codex hook passes
+`classify_observation(..., host_post_is_success=False)` and the admission builder's
+`envelope_outcome_state(..., host_post_is_success=False)` for a Codex hook envelope (n7 RC1,
+#1105); a Codex read is proven only by a closed outcome it states.
 
 Refusing to summarize one buffered lane is an accounting loss for that lane, never a stop. The
 flush admits that lane's members individually with the durable `routine_summary_invalid` coverage
@@ -8025,7 +8038,8 @@ result summary carries as ` (workspace unchanged|changed|unverified)` and
 unchanged command still counts when it is a verification run (a `test|build|lint|typecheck`
 runner, or a run of a command an effective obligation requests,
 `task_facts.requested_verification_run_events`) or a package install (`install` runtime token).
-A command without the fact (no pre-call snapshot, a call the host has not reported as ended, a
+A command without the fact (no pre-call snapshot, a call the host has not reported as ended (a
+Codex `Bash` `PostToolUse` is itself that call's completion fact, n7 RC1), a
 workspace beyond the walk bound, an unreadable directory, a legacy-spool or session-stream
 observation, a record from before the fact) is material; the Stop text names it as a command
 FinishUP could not establish left the workspace unchanged. Command text never decides: the
@@ -8040,7 +8054,12 @@ the existing ADR-045 matching and completed-result ordering, including a complet
 agent later retrieves through `write_stdin`. Masked shell compositions retain their unknown-part-outcome gap.
 An unchanged newest check that failed with
 `coordinator_failure` is current and adds the standing code `semantic_coordinator_failure` instead
-of asking for the same closing review; an actionable
+of asking for the same closing review. A closing review that still covers this state and ended
+`unavailable` or `timeout` (no judgment), with no current closing review that succeeded, is current
+too and adds the standing code `semantic_review_no_judgment` (n7 RC1, #1105): its continuation
+allows one new check, then a disclosed local-only finish
+(`protocol/readiness_text.closing_review_limit_note`, alias `coordinator_failure_note`, gives the
+sentence every surface shows); an actionable
 `semantic_review_not_requested` takes its place unless the latest check so deferred the review),
 then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.
@@ -10839,7 +10858,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   writes the workspace),
   `effective_user` (`root|non_root`) and `workspace_effect` (`unchanged|changed|unavailable`,
   PR #1080 round 5: produced only by `cli/workspace_effect_hook.workspace_fingerprint_pass` on a
-  live `PostToolUse`, never copied from a host payload; materialization appends it to the observed
+  live `PostToolUse`, never copied from a host payload; on Codex the `Bash` post is the call's
+  completion fact (`cli/observe_hooks._codex_post_tool_ended`, n7 RC1) while its outcome stays
+  unknown; materialization appends it to the observed
   result summary through `domain/workspace_effect.result_summary_with_workspace_effect`), the first
   three produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
   against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
@@ -10863,8 +10884,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Workspace fingerprint (PR #1080 rounds 5-6).** `adapters/workspace_fingerprint.WorkspaceFingerprintStore(directory, key_material, *, lingering=lingering_process)`:
   `capture_before(root, call_identity, *, deadline, host_deadline=None, excluded) -> reason | None`
   and
-  `effect_after(root, call_identity, *, deadline, call_complete, excluded) -> WorkspaceEffectReading(effect, reason)`,
-  `discard()`; `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
+  `effect_after(root, call_identity, *, deadline, call_complete, incomplete_reason="call_incomplete", excluded) -> WorkspaceEffectReading(effect, reason)`,
+  `note_reading(reading, call_token) -> bool` (n7 RC1: counts one post reading in `readings.json`,
+  format `finishup.workspace-effect-readings/1`, by `unchanged|changed|unavailable:<reason>` for
+  all time and the current and previous clock hour, plus a ring of the last `READING_RING` (64)
+  readings `{at_ms, effect, reason, call}`; at most `READING_FILE_BYTES` (16 KiB), staged and
+  renamed, a 0.1 s lock whose contention drops and counts the sample; no path, digest or command
+  text), `discard()`; `workspace_fingerprint_dir(observation_root, workspace_commitment)` is
   `<observation>/workspace-fingerprints/<commitment digest>/` (`pending/` per open call,
   `latest.bin` for digest reuse; owner-only; keyed BLAKE2b path and content digests plus a keyed
   MAC, never a path or byte of content; revoking observation removes it). Record format
@@ -10886,12 +10912,14 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   pass (cache load, cleanup, walk, hashing checked before every 256 KiB read, directory re-read,
   persistence), hashing at most `HASH_FILE_BYTES` (8 MiB) per file and `HASH_TOTAL_BYTES` (64 MiB)
   per snapshot. `capture_before` publishes nothing unless the capture finished before both the
-  deadline and `host_deadline`. `effect_after` returns `unavailable`/`call_incomplete` when
+  deadline and `host_deadline`. `effect_after` returns `unavailable`/`incomplete_reason` for a call
+  the host did not report as ended, `unavailable`/`process_lingering` when
   `lingering(window_ns, root)` is `True` (before the walk; `None` gives
-  `process_table_unreadable`) or a walked directory's
+  `process_table_unreadable`), `unavailable`/`workspace_unsettled` when a walked directory's
   modification time moved during the walk, and `unavailable`/`timeout` when the record's capture
   missed its host deadline or the pass overran. Reasons:
-  `no_pre_snapshot|call_incomplete|process_table_unreadable|too_large|timeout|unreadable|root_unusable|store_unusable`;
+  `no_pre_snapshot|call_incomplete|background_launch|process_lingering|workspace_unsettled|process_table_unreadable|too_large|timeout|unreadable|root_unusable|store_unusable`
+  (per-call reasons are counted in the tally, never in the hook diagnostic window);
   `WorkspaceEffectReading(effect, reason, fresh)`. The degraded reasons (`too_large`, `timeout`,
   `unreadable`, `root_unusable`, `store_unusable`, `process_table_unreadable`: a standing
   condition marked once per ten minutes) are recorded once, when `fresh`, as hook
@@ -10901,16 +10929,25 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `adapters/process_lifetime`: `process_clock_ns() -> int | None` (wall clock on macOS, boot clock
   on Linux, `None` elsewhere) and `lingering_process(window_ns, workspace_root) -> bool | None`
   (`True` when a same-user process started since `window_ns - PROCESS_CLOCK_SLACK_NS` (50 ms),
-  still running, not a descendant of the hook's chain up to its host, has its working directory or
+  still running, not a descendant of the hook's chain up to its host (a chain member started within
+  that same slack is a launcher, not the host, #1090 PL-1), has its working directory or
   a write-open file inside the root, or cannot be read; `None` when the process table cannot be
   read; never signals a process).
   `cli/workspace_effect_hook`: `fingerprinted_tool(tool_name, *, finishup_owned)` (shell/exec tools
   and every other tool except FinishUP's own, host-native reads, edits and a closed inert set),
-  `host_call_complete(payload)` (an integer `exit_status`, a boolean `success` or `denied: true`,
-  never with `run_in_background` or when `command_may_outlive_call(payload)` finds a background
-  `&`, `nohup`, `setsid`, `disown` or similar in the command text: conservative only), `owned_relative_paths(workspace, roots)` and
+  `host_call_incomplete_reason(payload) -> background_launch|call_incomplete|None` and
+  `host_call_complete(payload)` (an integer `exit_status`, a boolean `success`, `denied: true` or
+  `HOST_CALL_ENDED_KEY` (`host_call_ended`, set only on a host adapter's local copy of the facts
+  when the post event is itself the completion fact: Codex `Bash`), never with `run_in_background`
+  or when `command_may_outlive_call(payload)` finds the text may background or detach a process:
+  `domain/command_segments.command_may_background(text) -> bool | None` decides by shell grammar (a
+  top-level `&`, an `&` in a here-document body, a detaching word at any wrapper layer, a backgrounding
+  `sh -c` argument, an `&` in an argument of a program that hands it to a shell or interpreter;
+  a quoted `&` in an ordinary argument is not one, #1089), and text it cannot split falls back to
+  the conservative pattern), `owned_relative_paths(workspace, roots)` and
   `workspace_fingerprint_pass(event, *, call_identity, workspace_locator, workspace_commitment,
-  key_material, observation_root, complete, excluded, seconds, host_deadline)`, called by
+  key_material, observation_root, complete, incomplete_reason, call_token, excluded, seconds,
+  host_deadline)`, called by
   `handle_observe` before the observation store lock and only with an explicit locator (never on
   spool replay); `host_deadline` is the hook entry plus the host's hook window less
   `_FINGERPRINT_HOST_MARGIN_SECONDS`.

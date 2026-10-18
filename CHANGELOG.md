@@ -676,6 +676,22 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 ### Fixed
 
+- In Codex, a read-only command after the closing review (`rg`, `sed -n`, `cat`, `git status`,
+  `sha256sum`, or a FinishUP command such as `finishup check`) no longer asks for the closing
+  review again. Codex sends a shell command's output and no exit status to the hook, so every
+  command read as one whose effect could not be established. Codex sends that event only after the
+  command has ended, so FinishUP now compares the project's files across it; the result stays
+  unknown until Codex's session record brings the real exit, and a failed read is never counted as
+  a success. A command can no longer forge a success by printing `Process exited with code 0`. A
+  quoted `&` in an argument (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) no longer counts as starting a
+  background process, and Cursor's `MCP:<tool>` spelling of FinishUP's own tools takes no
+  snapshot. `finishup observe status` counts how many commands were compared and why the others
+  could not be (`call_incomplete`, `background_launch`, `process_lingering`,
+  `workspace_unsettled`, ...), keeping the last 64 by call. A closing review that ended without a
+  judgment (outcome unknown, timeout) is not asked for again: readiness names
+  `semantic_review_no_judgment`, and the Stop text, status, closure-prepare and receipt notes allow
+  one new check or a disclosed finish, matching the check's own advice (#1105).
+
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a

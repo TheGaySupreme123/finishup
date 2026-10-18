@@ -1641,22 +1641,25 @@ top-level field. For each tool family FinishUP reads only closed facts. It recor
 `outcome` and, when the host states one, its `exit_status` in the range `-1..255`:
 
 - **Shell and exec calls** (`Bash`, `exec_command`, `shell`, `local_shell`, including each nested
-  `tools.exec_command` in a code-mode `exec` cell): the `exit_code` of the exec result object,
-  sent as an object or as JSON text, or the `Exit code: N` / `Process exited with code N` line of
-  the function-output header. JSON text is read only when it carries one of Codex's exec-result
-  keys (`chunk_id`, `wall_time_seconds`, `original_token_count`) and a string `output`, so a
-  command's own JSON output is never taken for the host's result. The code-mode `exec` cell itself
-  is never read: its result is model-authored. A result sent as a JSON object with a fractional
-  number is refused whole by the strict hook parser (`float_forbidden`); the recorded shapes send
-  such results as text.
+  `tools.exec_command` in a code-mode `exec` cell): only the `exit_code` of a host-structured exec
+  result *object*. Codex hook stdin never carries a shell exit (n7 RC1, #1105; Codex rust-v0.120
+  through v0.159 source, fixture OUT-004): a `Bash` `tool_response` is a JSON string holding the
+  command's own (possibly truncated) output and nothing else. The `Exit code: N` and `Process
+  exited with code N` headers and the nested exec JSON are rollout function-output shapes; on hook
+  stdin they appear only when the command prints them (`printf 'Process exited with code 0\n'`
+  before a failing `pytest` would forge a success), so a shell call's text response is never read
+  as an outcome. The exit comes from the session-stream `CommandExecution` item, whose id is the
+  hook's `tool_use_id` (below). The code-mode `exec` cell itself is never read: its result is
+  model-authored. A result sent as a JSON object with a fractional number is refused whole by the
+  strict hook parser (`float_forbidden`).
 - **`apply_patch`**: the `Exit code: N` header.
 - **MCP tools**, including FinishUP's own: only the protocol-level `isError`. The result body is
   tool-domain data.
 
 Output text is never searched for words such as `FAILED`, and conflicting facts resolve
 failure-first. A result that states no fact stays `unknown` and carries `host_outcome_unavailable`
-for that record only. Examples are a unified-exec process still running (`Process running with
-session ID N`), an MCP result without `isError`, and a shape outside this list. The gap therefore
+for that record only. Examples are every Codex `Bash` post (its exit arrives with the rollout
+item), an MCP result without `isError`, and a shape outside this list. The gap therefore
 leaves a session's coverage only when every observed call had an outcome. Outcomes are structural
 facts: they are read whether or not content capture is granted, and no command or output text is
 kept.
@@ -1667,7 +1670,10 @@ completed tool call, and its `status` (`completed`, `failed`) and `exit_code` ar
 command item names no tool, so it is recorded as `command_execution` (a patch item as
 `file_change`). An `exit_code` of `null`, as on a declined command, states no outcome. When a
 hook call id equals the rollout item id, the stream fact appends a correction to an `unknown` hook
-result and never rewrites it (ADR-022 decision 15).
+result and never rewrites it (ADR-022 decision 15). In 0.159 the ids join: the item id is the
+dispatch `call_id` the hook's `tool_use_id` carries (`core/src/tools/events.rs`), and a code-mode
+nested call uses its `exec-<uuid>` dispatch id for both. A build whose item did not join would
+leave the stream copy as a second, fact-less action that stays material (a documented residual).
 
 The rollout item is normally a second copy of a hooked call under a different id (`exec-<uuid>`),
 so it follows the same rule as a code-mode `exec` cell (#917). Once this session's tool hooks
@@ -3509,20 +3515,29 @@ native Windows is not claimed.
 Closing-review currency follows what a command did to the workspace, never its text (owner
 decision, PR #1080 round 5; ADR-033). The Codex `PreToolUse` and `PostToolUse` hooks (`finishup
 hooks observe`) fingerprint the workspace around every shell, `exec_command`, `write_stdin` and
-third-party MCP call, and the post envelope carries `workspace_effect`. FinishUP cannot establish
-the effect of an `exec_command` that returned `Process running with session ID N` (its process may
-still write), of a call whose pre-call pass did not run, and of every call observed only through
+third-party MCP call, and the post envelope carries `workspace_effect`. Host decision (n7 RC1,
+#1105): Codex fires the unified-exec `Bash` `PostToolUse` only after the process has exited (no
+post while it runs; the `write_stdin` poll that sees the exit sends the original call's post under
+its id), so that post is the call's completion fact for the comparison, while its outcome stays
+`unknown` until the rollout item supplies the exit. Before this, every Codex shell call read
+`unavailable` and every later read re-armed the closing review. A Codex post is not a success fact
+either: a read-shaped call is recorded on its own, never folded into a routine-read summary on the
+post alone, so a failed `rg` keeps its exit 1. FinishUP cannot establish the effect of a response
+that reads as Codex's own `Process running with session ID N` header (an older or future build),
+of a call whose pre-call pass did not run, and of every call observed only through
 the synchronous legacy `finishup hooks spool` ingress (Codex builds without async command hooks) or
 only through the session stream; those stay material. The session stream never folds a shell call
 into a routine-read summary. When the stream copy of a call is recorded before its hook post, the
 post's fact still reaches the call as one annotation row under its action, so a harmless read is
 not left material by arrival order; a later `changed` or `unavailable` for the same call always
 outweighs an earlier `unchanged` (round 6).
-An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a FinishUP CLI read) does not
-re-arm the closing review; a command that changed the workspace does, and so does one whose effect
+An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a FinishUP CLI call such as
+`finishup check` or `finishup status`: no lexical own-call exemption, the comparison decides) does
+not re-arm the closing review; a command that changed the workspace does, and so does one whose effect
 FinishUP could not establish, which the Stop text says. A command that backgrounds or detaches a
-process (`cmd &`, `nohup`, `setsid`, `disown`) is never established, because it may write after the
-call ends. Round 6: neither is a call whose exit leaves a process it started still running in the
+process (`cmd &`, `nohup`, `setsid`, `disown`, an `&` handed to `bash -c`, `eval` or `ssh`) is
+never established, because it may write after the call ends; a quoted `&` in an ordinary argument
+(`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) is not a background launch (#1089). Round 6: neither is a call whose exit leaves a process it started still running in the
 project (a launcher whose new-session child keeps working, with no background word in its text):
 before comparing, the post-call hook reads the process table (`libproc` on macOS, `/proc` on Linux
 and WSL 2) for a process of the same user that started during the call, is no longer parented by
@@ -3548,7 +3563,13 @@ judged against the task's absolute `workspace_ref`) are out of scope, as before.
 diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`, `store_unusable`,
 `process_table_unreadable`); a call
 without its pre-call snapshot or still running is recorded on its result as `(workspace
-unverified)` instead. Real edits and review-mode switches still re-arm; receipt,
+unverified)` instead. `finishup observe status` also counts every reading by its closed reason
+(`workspace_effect:` line; JSON `workspace_effect_readings`, with the last 64 readings and their
+call ids): `call_incomplete` (no completion stated), `background_launch`, `process_lingering`,
+`workspace_unsettled`, `no_pre_snapshot` and the degraded reasons, so a call that stayed material
+can be attributed locally. A closing review that ended without a judgment (`outcome_unknown`,
+`timeout`, ...) is not asked for again: readiness names `semantic_review_no_judgment` and the
+Stop text allows one new check or a disclosed finish (ADR-033 n7 amendment). Real edits and review-mode switches still re-arm; receipt,
 work-close and lifecycle records do not. The behavior is the same on macOS, Linux and WSL 2;
 native Windows is not claimed.
 

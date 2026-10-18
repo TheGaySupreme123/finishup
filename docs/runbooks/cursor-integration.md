@@ -2586,15 +2586,19 @@ native Windows is not claimed.
 Closing-review currency follows what a command did to the workspace, never its text (owner
 decision, PR #1080 round 5; ADR-033). Under the ordinary observation profile, the Cursor
 `preToolUse` and `postToolUse` hooks fingerprint the workspace around every `Shell` call and every
-other tool except FinishUP's own, native reads, edits and planning or web tools, and the post
-envelope carries `workspace_effect`. A call without its `preToolUse` pass, or whose result states no
-outcome, stays material. The structural profile (`afterFileEdit`, `afterMCPExecution`) observes no
+other tool except FinishUP's own (in either spelling: the ordinary profile's generic `MCP:<tool>`
+for a FinishUP tool basename takes no snapshot either, #1091 N6), native reads, edits and planning
+or web tools, and the post envelope carries `workspace_effect`. A call without its `preToolUse`
+pass, or whose result states no outcome, stays material. Host decision (n7 RC1, #1105): no change
+to the completion rule; a `Shell` `postToolUse` without `exitCode` (#1091 N4) keeps its current
+reading until a payload capture shows what Cursor sends, so it is not absorbed here. The structural profile (`afterFileEdit`, `afterMCPExecution`) observes no
 shell calls.
 An unchanged command (`date -u`, `rg`, `sed -n`, `git status`, a FinishUP CLI read) does not
 re-arm the closing review; a command that changed the workspace does, and so does one whose effect
 FinishUP could not establish, which the Stop text says. A command that backgrounds or detaches a
-process (`cmd &`, `nohup`, `setsid`, `disown`) is never established, because it may write after the
-call ends. Round 6: neither is a call whose exit leaves a process it started still running in the
+process (`cmd &`, `nohup`, `setsid`, `disown`, an `&` handed to `bash -c`, `eval` or `ssh`) is
+never established, because it may write after the call ends; a quoted `&` in an ordinary argument
+(`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) is not a background launch (#1089). Round 6: neither is a call whose exit leaves a process it started still running in the
 project (a launcher whose new-session child keeps working, with no background word in its text):
 before comparing, the post-call hook reads the process table (`libproc` on macOS, `/proc` on Linux
 and WSL 2) for a process of the same user that started during the call, is no longer parented by
@@ -2620,7 +2624,11 @@ judged against the task's absolute `workspace_ref`) are out of scope, as before.
 diagnostic (`too_large`, `timeout`, `unreadable`, `root_unusable`, `store_unusable`,
 `process_table_unreadable`); a call
 without its pre-call snapshot or still running is recorded on its result as `(workspace
-unverified)` instead. A repeated delivery of the same call that states another fact is kept as an
+unverified)` instead, and `finishup observe status` counts every reading by its closed reason
+(`workspace_effect:` line; JSON `workspace_effect_readings` with the last 64 readings and their call
+ids: `call_incomplete`, `background_launch`, `process_lingering`, `workspace_unsettled`, ...; n7
+RC1). A closing review that ended without a judgment is not asked for again
+(`semantic_review_no_judgment`; one new check or a disclosed finish). A repeated delivery of the same call that states another fact is kept as an
 annotation under the call, and `changed` or `unavailable` outweighs `unchanged` (round 6). Real
 edits and review-mode switches still re-arm; receipt,
 work-close and lifecycle records do not. The behavior is the same on macOS, Linux and WSL 2;

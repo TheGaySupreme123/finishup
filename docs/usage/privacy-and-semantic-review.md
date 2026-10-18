@@ -652,7 +652,11 @@ tokens.
   nowhere. Inside version-control, package and cache folders it compares what matters (settings,
   hooks, and the files directly inside a package or cache folder) and skips their routine
   bookkeeping. Effects outside the project folder, such as a database or another directory, are
-  not compared.
+  not compared. `finishup observe status` shows how many commands were compared, how many could
+  not be, and why (for example a command still running in the background), with the last 64 by
+  call. A closing review that ran but returned no judgment (its answer was lost, or it timed out)
+  is not asked for again: you may run one new check, or finish and the receipt says AI-powered
+  review did not return a judgment.
 
 ### Cancelled background review
 
