@@ -227,10 +227,10 @@ publish the completion claim with its evidence; that claim is an assertion, not 
 Read [coverage and receipts](coverage-and-receipts.md) when a check needs more than the operating
 card: mode selection, finding disposition, pending decisions, and coverage-bounded wording. `respond` does not clear a
 finding: only a later qualifying check of the repaired record may resolve it. The one exception is a
-command FinishUP saw fail: a later passing run of the same command, or of a verification command
-your plan requests, retires it (no check can; one only a planned verification retired still goes
-in your completion claim's `limitation_refs`), and
-`acknowledged` on it discloses it instead of leaving it blocking. Recheck after material
+command FinishUP saw fail: a later passing run of the same command, or a test, build, lint or
+typecheck run of a command your plan already requested when it passed, retires it (no check can;
+one only a planned verification retired still goes in your completion claim's `limitation_refs`),
+and `acknowledged` on it discloses it instead of leaving it blocking. Recheck after material
 changes or new evidence, not unchanged state. Run the closing review (`check` with `final_review: true`) after the last material change. Request `receipt`, then publish `work_closed` when
 the work is complete (a receipt never closes work), and report what the receipt supports. The
 closure order is [Repair then finish](coverage-and-receipts.md#repair-then-finish).

@@ -689,13 +689,15 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 - A later passing run of a verification command the plan requests (an effective obligation's
   `command` item, matched by the keyed commitment or segment rule) also retires every earlier
   failed-command finding, even for another command, as the owner decided on 2026-10-18 (closure
-  basis `retired_by_planned_verification`, added in place to the same unreleased results). The plan
-  is read as it stands now, so dropping the command or waiving its obligation reopens what only it
-  retired. A planned segment counts only run as is, a planned command that masks its exit never
-  counts, an obligation acknowledged as not done plans nothing, and a pass begun before the failed
-  call finished retires nothing. The service registers the installation key before its startup
-  bundle upgrade, since the projection fold reads it. The status advice view drops a
-  failed-command item the ledger already retired (#1104).
+  basis `retired_by_planned_verification`, added in place to the same unreleased results). The
+  passing run must be a verifier (runner class test, build, lint or typecheck, so a planned `true`
+  or `ls` retires nothing) and the obligation must have been effective when it passed (a plan
+  published after the pass retires nothing). A later waiver or `acknowledged_not_done` reopens what
+  only it retired; a later plan revision does not. A planned segment counts only run as is, a
+  planned command that masks its exit never counts, an obligation acknowledged as not done plans
+  nothing, and a pass begun before the failed call finished retires nothing. The service
+  registers the installation key before its startup bundle upgrade, since the projection fold
+  reads it. The status advice view drops a failed-command item the ledger already retired (#1104).
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a

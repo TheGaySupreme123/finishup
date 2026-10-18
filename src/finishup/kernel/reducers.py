@@ -1364,9 +1364,11 @@ def _planned_verifications(
     obligations: Mapping[ObligationId, ObligationProjectionRecord],
     coverage_gaps: tuple[str, ...],
 ) -> finding_retirement.PlannedVerifications:
-    """The plan's planned verifications, computed only if a retirement asks for them."""
+    """The planned verifications effective at a pass point, computed only if a retirement asks."""
 
-    return lambda: planned_verification_commands(plans, obligations, coverage_gaps)
+    return lambda point: planned_verification_commands(
+        plans, obligations, coverage_gaps, effective_at=point
+    )
 
 
 def reduce_event(
@@ -1729,15 +1731,15 @@ def reduce_event(
         )
 
     if type(event) is UnknownEvent or event.schema.name in _PLAN_FAMILIES:
-        # #1104: a planned verification retires earlier observed failed commands, read against
-        # the current plan; a plan or obligation event (or an unreadable plan event) may change
-        # which commands are planned, so the retirements are re-derived when they did.
+        # #1104: a planned verification retires earlier observed failed commands, judged against
+        # the plan effective when it passed with each obligation's status and waiver as now; a
+        # plan or obligation event (or an unreadable plan event) may change those, so the
+        # retirements are re-derived.
         finding_retirement.on_plan_changed(
             findings,
             results,
             actions,
             replay_index.observed_event_ids,
-            _planned_verifications(state.plans, state.obligations, state.coverage_gaps),
             _planned_verifications(plans, obligations, coverage_gaps),
         )
 

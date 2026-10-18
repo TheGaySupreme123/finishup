@@ -31,12 +31,23 @@ from builders.codex_replay import (
     sweep_all,
 )
 from builders.observed_runs import ObservedLedger, omitted_results
-from finishup.domain.events import AcceptedEvent, EventPayload, ResultOutcome, ResultRecordedPayload
+from finishup.domain.events import (
+    AcceptedEvent,
+    ActionRecordedPayload,
+    EventPayload,
+    ResultOutcome,
+    ResultRecordedPayload,
+)
 from finishup.domain.values import EventId, FindingId
 from finishup.kernel.closure_class import finding_closure
 from finishup.kernel.finding_todo import FindingTodoState, finding_todo_state
+from finishup.kernel.observed_failures import observed_action_runner_class
 from finishup.kernel.reducers import replay as replay_ledger
-from finishup.kernel.task_facts import register_command_identity_key
+from finishup.kernel.task_facts import (
+    planned_verification_passed,
+    register_command_identity_key,
+    requested_planned_command,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -145,9 +156,13 @@ class _Recorded:
         *,
         name: str,
         planned: tuple[str, ...] = (),
+        plan_at: str = "start",
     ) -> None:
+        """``plan_at`` places the plan: ``start`` (before every row), ``before_correction``
+        (after the later call's hook rows, before its joined outcome) or ``end``."""
+
         self.ledger = ObservedLedger()
-        if planned:
+        if planned and plan_at == "start":
             self.ledger.plan(*planned)
         events: dict[EventId, EventId] = {}
         for row in red:
@@ -161,13 +176,17 @@ class _Recorded:
             named = [events[red[-1].event_id]]
         self.finding: FindingId = self.ledger.advice_finding(tuple(named))
         self.passing: dict[str, EventId] = {}
-        for row in later:
+        for index, row in enumerate(later):
+            if planned and plan_at == "before_correction" and index == len(later) - 1:
+                self.ledger.plan(*planned)
             appended = self.ledger.append(
                 row.schema, cast(EventPayload, row.payload), observed=True
             )
             payload = row.payload
             if type(payload) is ResultRecordedPayload:
                 self.passing[f"{payload.outcome.value}:{payload.exit_status}"] = appended
+        if planned and plan_at == "end":
+            self.ledger.plan(*planned)
 
     def basis(self) -> str | None:
         state = replay_ledger(self.ledger.prefix)
@@ -266,6 +285,66 @@ async def test_a_passing_planned_verification_joined_from_the_stream_retires_ano
         assert recorded.retired_by() == recorded.passing["success:0"]
         unplanned = _Recorded(red, later, name=name)
         assert unplanned.basis() == "open_unanswered"
+    finally:
+        register_command_identity_key(None)
+
+
+@pytest.mark.parametrize("plan_at", ["end", "before_correction"])
+async def test_a_plan_published_after_the_pass_retires_nothing(
+    replay: _Replay, plan_at: str
+) -> None:
+    """Owner decision 2026-10-18 (#1104): the obligation must be effective when the run passed.
+    On Codex 0.159 the run passed when its ``PostToolUse`` landed (no exit stated); its exit is
+    the stream correction joined later. A plan published after the correction, or between the
+    hook result and the correction, was not effective then and retires nothing."""
+
+    register_command_identity_key(replay.store.key_material())
+    try:
+        red, later = await _red_then(
+            replay,
+            lambda: _direct_run(replay, "call_red", 1, _RED_AT, command="npm ci"),
+            lambda: _direct_run(replay, "call_green", 0, _GREEN_AT),
+        )
+        assert [(item.outcome, item.exit_status) for item in _results(later)] == [
+            (ResultOutcome.UNKNOWN, None),
+            (ResultOutcome.SUCCESS, 0),
+        ]
+        recorded = _Recorded(red, later, name="call", planned=(_COMMAND,), plan_at=plan_at)
+        assert recorded.retired_by() is None
+        assert recorded.basis() == "open_unanswered"
+    finally:
+        register_command_identity_key(None)
+
+
+@pytest.mark.parametrize("planned", ["true", "ls -la"])
+async def test_a_planned_command_that_is_no_verifier_retires_nothing(
+    replay: _Replay, planned: str
+) -> None:
+    """Owner decision 2026-10-18 (#1104): the passing planned run must be a verifier (runner
+    class test, build, lint or typecheck). The hook records ``exploration`` for ``true`` and
+    ``ls``, so their joined passes clear no earlier failure."""
+
+    register_command_identity_key(replay.store.key_material())
+    try:
+        red, later = await _red_then(
+            replay,
+            lambda: _direct_run(replay, "call_red", 1, _RED_AT, command="npm ci"),
+            lambda: _direct_run(replay, "call_green", 0, _GREEN_AT, command=planned),
+        )
+        assert (ResultOutcome.SUCCESS, 0) in [(r.outcome, r.exit_status) for r in _results(later)]
+        (action,) = [
+            cast(ActionRecordedPayload, row.payload)
+            for row in later
+            if row.schema.name == "action_recorded"
+        ]
+        # Not vacuous: the run matches the planned command; only its runner class refuses it.
+        assert observed_action_runner_class(action.description) == "exploration"
+        command = requested_planned_command(planned)
+        assert command is not None
+        assert planned_verification_passed(action.command, (command,))
+        recorded = _Recorded(red, later, name="call", planned=(planned,))
+        assert recorded.retired_by() is None
+        assert recorded.basis() == "open_unanswered"
     finally:
         register_command_identity_key(None)
 

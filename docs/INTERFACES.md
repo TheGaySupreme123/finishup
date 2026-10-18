@@ -1228,19 +1228,27 @@ failed, results, actions, observed, planned=no_planned_verifications) -> Witness
 `on_finding_recorded`, `on_observed_result`, `on_plan_changed` and `recompute_all` (after a
 redaction). A witness is a later hook-observed success of another call whose action was recorded
 after the failed call's first hook-observed result (`_call_floors`), of the same command or, since
-the owner decision of 2026-10-18, of a **planned verification**, which retires every earlier
-observed failed command. The planned verifications are read from the current plan by
-`task_facts.planned_verification_commands(plans, obligations, coverage_gaps)` (effective
-obligations' requested `command` items, through `effective_obligation_ids`, skipping an
-`acknowledged_not_done` obligation; empty without the installation key) and matched by
+the owner decisions of 2026-10-18, of a **planned verification**, which retires every earlier
+observed failed command. A planned verification counts only when the passing run is a verifier
+(`observed_failures.observed_action_is_verifier(action)`: the recorded runner class is in
+`observation_selection.VERIFYING_RUNNER_CLASSES`, `test`, `build`, `lint`, `typecheck`) and the
+obligation naming it was effective at the run's pass point (the passing call's first hook-observed
+result, its `_call_floors` entry). The planned verifications at a point are read by
+`task_facts.planned_verification_commands(plans, obligations, coverage_gaps, *, effective_at=None)`
+(effective obligations' requested `command` items, through `effective_obligation_ids`, skipping an
+`acknowledged_not_done` obligation; empty without the installation key; with `effective_at`, the
+plan scope of the plan events recorded before that sequence and only obligations whose
+`introduced_frontier` precedes it, with status and waiver read as now) and matched by
 `task_facts.planned_verification_passed(command, planned)` (`planned_match` kind `exact` with a
 `success` outcome for the planned command, over the run's certified segments only, the
 same-command bare-segment rule; a masked planned command never counts). Every entry point takes
-the planned verifications as a lazy `PlannedVerifications` callable; the reducer re-derives the
-linked candidates in `on_plan_changed` after a plan, obligation or unknown event when the planned
-set changed, so the fact stays a pure function of the current projection and the key (the service
-registers the key before its startup bundle upgrade, so every projection it stores or compares is
-folded with it). The same command wins when one run is both.
+the planned verifications as a lazy
+`PlannedVerifications = Callable[[int], Sequence[PlannedCommand]]` of the pass point; the reducer
+re-derives the linked candidates in `on_plan_changed` after every plan, obligation or unknown
+event (a later `acknowledged_not_done` or waiver un-retires; a later plan or revision neither adds
+nor undoes a retirement), so the fact stays a pure function of the current projection and the key
+(the service registers the key before its startup bundle upgrade, so every projection it stores or
+compares is folded with it). The same command wins when one run is both.
 `finding_resolution.retired_failed_command_finding_ids(state)` names the retired, resolved
 observed failed-command findings; the status advice view drops their `failed_command_unresolved`
 items.
@@ -8177,7 +8185,8 @@ ledger prefix and never stored. Names:
   `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`,
   and since #1104 `retired_by_passing_run` (`resolved`: a later passing run of the same command
   retired an observed failed-command finding), `retired_by_planned_verification` (`resolved`: a
-  later passing run of a planned verification retired it, owner decision 2026-10-18) and
+  later passing verifier run of a planned verification whose obligation was effective when it
+  passed retired it, owner decisions 2026-10-18) and
   `failed_run_disclosed` (`settled_disclosed`,
   `insufficient_coverage`: `acknowledged` on such a finding); `is_bookkeeping_finding`).
 - `finishup.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only

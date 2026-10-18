@@ -31,19 +31,26 @@ it one, derived at replay from events the ledger already holds:
     supersession rule (``observed_failures.classify_observed_runs``) with one narrowing: the
     passing result must belong to another call, so a conflicting second outcome for the same call
     never retires it.
-  - **a planned verification** (owner decision 2026-10-18, the broad reading of "a later pass"):
-    a run that passed a command an effective obligation of the current plan requests (one the
-    agent did not acknowledge as not done), matched by the recorded ADR-033 rule
+  - **a planned verification** (owner decisions 2026-10-18, recorded on #1104): a run that is
+    a verifier (its recorded runner class is ``test``, ``build``, ``lint`` or ``typecheck``,
+    ``observed_failures.observed_action_is_verifier``) and passed a command an obligation
+    requests that was effective when the run passed, matched by the recorded ADR-033 rule
     (``task_facts.planned_verification_passed``: the keyed whole-command commitment, or the
     planned command as a certified segment of a passing ``single`` or ``and_chain`` run, under
     the same bare-segment rule as above; a planned command that masks its own outcome never
-    counts).
+    counts). "When the run passed" is the passing call's first hook-observed result (its pass
+    point, the call floor below), and the plan is the one effective just before it
+    (``task_facts.planned_verification_commands(effective_at=...)``): only plan events recorded
+    before the pass point, and only an obligation first published before it, count, so a plan
+    or obligation published or introduced by a revision after the pass retires nothing, and a
+    later revision that supersedes the obligation does not undo the retirement. The
+    obligation's status and waiver are read as the ledger records them now, as before: a later
+    ``acknowledged_not_done`` or waiver un-retires what only that match retired (the agent's own
+    statement that the obligation is not being done; a reverse state the replay re-derives).
     It retires every earlier observed failed command, related or not: a passing planned
     verification also clears an unrelated earlier failure (a failed install), a trade-off the
-    owner accepted. The plan is read as it stands now, as the planned-verification task facts
-    read it, so a plan revision that drops the command or waives its obligation un-retires what
-    only that match retired, and a plan that names the command later retires an earlier failure
-    a pass of it followed. Without the installation key no run is a planned verification.
+    owner accepted. A planned ``true`` or ``ls`` is no verifier and retires nothing. Without the
+    installation key no run is a planned verification.
 
   An ``unknown`` outcome never retires anything, an edit never does, and a run of another,
   unplanned command never does. When one run is both, it is recorded as the same command.
@@ -58,8 +65,8 @@ history.
 The reducer calls the incremental entry points (``on_finding_recorded``, ``on_observed_result``,
 ``on_plan_changed``) in ledger order. An observed failure costs one pass over the results (to name
 its call's events) plus a set test per unlinked candidate, and rescans the ledger only for a
-candidate that names that call; a success costs O(linked candidates); a change of the planned
-verifications re-derives every linked candidate; ``recompute_all`` re-derives the same facts from a
+candidate that names that call; a success costs O(linked candidates); a plan or obligation
+event re-derives every linked candidate; ``recompute_all`` re-derives the same facts from a
 whole projection after a redaction. All follow one definition (a pure function of the current
 projection and the installation key), so a full replay and an incremental fold agree.
 """
@@ -79,7 +86,11 @@ from finishup.domain.events import (
 )
 from finishup.domain.findings import Finding, FindingKind, FindingOrigin
 from finishup.domain.values import ActionId, EventId, FindingId, ResultId
-from finishup.kernel.observed_failures import command_identity, success_certified_identities
+from finishup.kernel.observed_failures import (
+    command_identity,
+    observed_action_is_verifier,
+    success_certified_identities,
+)
 from finishup.kernel.projections import FindingProjectionRecord, ProjectionRecord
 from finishup.kernel.task_facts import PlannedCommand, planned_verification_passed
 
@@ -97,16 +108,18 @@ __all__ = [
 
 type _Results = Mapping[ResultId, ProjectionRecord[ResultRecordedPayload]]
 type _Actions = Mapping[ActionId, ProjectionRecord[ActionRecordedPayload]]
-# The current plan's planned verifications, computed only when a retirement needs them.
-type PlannedVerifications = Callable[[], Sequence[PlannedCommand]]
+# The planned verifications effective just before a ledger sequence (a passing call's pass point),
+# computed only when a retirement needs them.
+type PlannedVerifications = Callable[[int], Sequence[PlannedCommand]]
 # A retirement: the passing run's source event, its frontier, and whether it retired the finding
 # as a planned verification (``False``: the same command passed).
 type Witness = tuple[EventId, int, bool]
 
 
-def no_planned_verifications() -> Sequence[PlannedCommand]:
+def no_planned_verifications(point: int) -> Sequence[PlannedCommand]:
     """The planned verifications of a projection with no plan (and the default)."""
 
+    del point
     return ()
 
 
@@ -274,14 +287,15 @@ def _failed_identity(
 
 
 def _memoized(planned: PlannedVerifications) -> PlannedVerifications:
-    """Compute the planned verifications at most once, and only if some candidate asks."""
+    """Compute the planned verifications at most once per point, and only if some candidate asks."""
 
-    computed: list[Sequence[PlannedCommand]] = []
+    computed: dict[int, Sequence[PlannedCommand]] = {}
 
-    def read() -> Sequence[PlannedCommand]:
-        if not computed:
-            computed.append(planned())
-        return computed[0]
+    def read(point: int) -> Sequence[PlannedCommand]:
+        known = computed.get(point)
+        if known is None:
+            known = computed[point] = planned(point)
+        return known
 
     return read
 
@@ -350,10 +364,14 @@ class _Passes:
     def _planned_verification(self, index: int) -> bool:
         known = self._planned_rows.get(index)
         if known is None:
-            planned = self._planned()
-            action = self._rows[index][1].payload
-            assert action is not None
-            known = bool(planned) and planned_verification_passed(action.command, planned)
+            record, action_record = self._rows[index]
+            action = action_record.payload
+            payload = record.payload
+            assert action is not None and payload is not None
+            known = observed_action_is_verifier(action) and planned_verification_passed(
+                action.command,
+                self._planned(self._floor(payload.action_id, record.source_frontier)),
+            )
             self._planned_rows[index] = known
         return known
 
@@ -545,16 +563,23 @@ def on_observed_result(
     action = _command_action_record(new, actions, observed)
     if action is None or action.payload is None:
         return
-    command = action.payload.command
+    passing = action.payload
+    passing_call = new.payload.action_id
+    command = passing.command
     planned_once = _memoized(planned)
     verdict: list[bool] = []
     floors: list[dict[ActionId, int]] = []
 
     def planned_pass() -> bool:
-        # The new run's planned-verification match, computed once for every candidate.
+        # The new run's planned-verification match against the plan effective at its pass point,
+        # computed once for every candidate.
         if not verdict:
-            current = planned_once()
-            verdict.append(bool(current) and planned_verification_passed(command, current))
+            verdict.append(
+                observed_action_is_verifier(passing)
+                and planned_verification_passed(
+                    command, planned_once(floor(passing_call, new.source_frontier))
+                )
+            )
         return verdict[0]
 
     def floor(call: ActionId, failed_frontier: int) -> int:
@@ -592,14 +617,15 @@ def on_plan_changed(
     results: _Results,
     actions: _Actions,
     observed: Set[EventId],
-    previous: PlannedVerifications,
     current: PlannedVerifications,
 ) -> None:
-    """Re-derive every linked candidate's retirement when the planned verifications changed.
+    """Re-derive every linked candidate's retirement after a plan or obligation event.
 
-    A plan or obligation event (or an unreadable plan event) can add or drop a planned command;
-    the retirement is a function of the current plan, so a pass that no longer matches one stops
-    retiring what only it retired, and a newly planned command's earlier pass starts to.
+    A pass is judged against the plan effective at its pass point, so a plan or obligation
+    published after it never makes it count. The obligation's status and waiver are read as the
+    ledger records them now, so a later ``acknowledged_not_done`` republication or waiver (or an
+    unreadable plan event) stops a pass that matched only that obligation from retiring what
+    only it retired, and a republication that reopens the obligation lets it retire again.
     Nothing is computed while no candidate has a failed run.
     """
 
@@ -608,10 +634,7 @@ def on_plan_changed(
         for record in findings.values()
     ):
         return
-    now = _memoized(current)
-    if tuple(previous()) == tuple(now()):
-        return
-    passes = _Passes(results, actions, observed, now)
+    passes = _Passes(results, actions, observed, current)
     for key, record in tuple(findings.items()):
         if not record.observed_failed_command or record.failed_run_result_id is None:
             continue

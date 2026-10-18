@@ -1791,6 +1791,13 @@ A failed shell call becomes an observation finding (`failed_command_unresolved`,
   input redirection passes nothing), a planned command that masks its own exit (`| tail`, `!`,
   `|| true`, `&`, `;`) never counts, and the passing call must have begun after the failed call
   finished. A failure it retires must still be named in a completion claim's `limitation_refs`.
+  The passing run must be a verifier (the runner class the hook or the stream records: `test`,
+  `build`, `lint` or `typecheck`; a planned `true` or `ls` retires nothing), and the obligation
+  must have been effective when the run passed, which on 0.159 is when its outcome-less
+  `PostToolUse` landed: a plan published after it, even before the joined exit, retires nothing
+  (`test_a_plan_published_after_the_pass_retires_nothing` and
+  `test_a_planned_command_that_is_no_verifier_retires_nothing` in the same file; owner decision
+  2026-10-18, #1104 comment 6252094173).
   Known gap (follow-up on #1104): the hook-side advice can still list the retired item until the
   observation evidence changes; `status view=advice`, the Stop gate, check and the receipt read
   the ledger and do not.

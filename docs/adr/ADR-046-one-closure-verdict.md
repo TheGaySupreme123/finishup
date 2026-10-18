@@ -82,8 +82,9 @@ row, so a surface can say why.
 resolution of an observation-authored failed-command finding by a later hook-observed passing run
 of the same command (never worded as "a check proved"); its source is the passing result's event.
 `retired_by_planned_verification` is the same resolution by a later passing run of a planned
-verification that is not the command that failed (owner decision 2026-10-18), named apart so no
-surface says the failed command itself passed.
+verification that is not the command that failed (owner decisions 2026-10-18: a verifier run, of a
+command an obligation effective when it passed requests; ADR-025), named apart so no surface says
+the failed command itself passed.
 `failed_run_disclosed` is `acknowledged` on such a finding: the failure is expected or stays,
 disclosed on the receipt as "disclosed failed command", never clean. `acknowledged_not_done` on it
 is bookkeeping (`acknowledged_not_done_bookkeeping`), because the requirement-level duty stays with

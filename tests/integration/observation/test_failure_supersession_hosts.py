@@ -213,10 +213,17 @@ def test_claude_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path:
 
 
 def _planned_retirement(
-    tmp_path: Path, build: Callable[[], ObservedLedger], red: ObservedLedger, planned: str
+    tmp_path: Path,
+    build: Callable[[], ObservedLedger],
+    red: ObservedLedger,
+    planned: str,
+    *,
+    plan_after: bool = False,
+    retires: bool = True,
 ) -> None:
-    """Replay the host's rows behind a plan requesting ``planned``, with the coordinator's finding
-    after the failed call, and assert the later pass retired it as the planned verification."""
+    """Replay the host's rows behind a plan requesting ``planned`` (after every row when
+    ``plan_after``), with the coordinator's finding after the failed call, and assert whether the
+    later pass retired it as the planned verification."""
 
     from finishup.domain.values import EventId
     from finishup.kernel.task_facts import register_command_identity_key
@@ -225,7 +232,8 @@ def _planned_retirement(
     register_command_identity_key(LocalObservationStore(_state=tmp_path / "state").key_material())
     try:
         ledger = ObservedLedger()
-        ledger.plan(planned)
+        if not plan_after:
+            ledger.plan(planned)
         appended = [
             ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
             for row in rows[: len(red.records)]
@@ -235,7 +243,13 @@ def _planned_retirement(
             ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
             for row in rows[len(red.records) :]
         ]
+        if plan_after:
+            ledger.plan(planned)
         state = replay(ledger.prefix)
+        if not retires:
+            assert state.findings[finding].retired_by_event_id is None
+            assert finding_todo_state(state, finding) is FindingTodoState.OPEN
+            return
         assert state.findings[finding].retired_by_event_id == passing[-1]
         assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
         closure = finding_closure(state, finding)
@@ -257,6 +271,39 @@ def test_claude_passing_planned_verification_retires_an_unrelated_failure(
     red = build()
     _claude_bash(emit, "toolu-tests", f"cd /app && {planned}", failed=False)
     _planned_retirement(tmp_path, build, red, planned)
+
+
+def test_claude_plan_published_after_the_pass_retires_nothing(tmp_path: Path) -> None:
+    """Owner decision 2026-10-18 (#1104): the obligation must be effective when the planned run
+    passed (its ``PostToolUse``); a plan published after it retires nothing."""
+
+    emit, build = _host(tmp_path, "claude")
+    planned = f"pytest -q tests/{_CANARY}.py"
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-tests", planned, failed=False)
+    _planned_retirement(tmp_path, build, red, planned, plan_after=True, retires=False)
+
+
+@pytest.mark.parametrize("planned", ["true", "ls -la"])
+def test_claude_planned_command_that_is_no_verifier_retires_nothing(
+    tmp_path: Path, planned: str
+) -> None:
+    """Owner decision 2026-10-18 (#1104): only a verifier (the hook's runner class test, build,
+    lint or typecheck) passing the planned command counts; the hook records ``true`` and ``ls``
+    as ``exploration``."""
+
+    emit, build = _host(tmp_path, "claude")
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-plan", planned, failed=False)
+    passing = [
+        action
+        for action in _results(build()).values()
+        if "(runner exploration)" in action.description
+    ]
+    assert len(passing) == 1
+    _planned_retirement(tmp_path, build, red, planned, retires=False)
 
 
 def test_cursor_passing_planned_verification_retires_an_unrelated_failure(

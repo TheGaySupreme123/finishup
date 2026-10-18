@@ -54,6 +54,7 @@ from finishup.domain.events import (
     ResultRecordedPayload,
     is_observation_authored,
 )
+from finishup.domain.observation_selection import VERIFYING_RUNNER_CLASSES
 from finishup.domain.process_control import process_control_from_commitments, stopped_own_job
 from finishup.domain.values import ActionId, EventId, ResultId, event_id
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
@@ -80,6 +81,7 @@ __all__ = [
     "observed_failure_states_from_records",
     "observed_action_description",
     "observed_action_is_exploratory",
+    "observed_action_is_verifier",
     "observed_action_process_control",
     "observed_failure_exempt",
     "observed_action_runner_class",
@@ -597,6 +599,20 @@ def observed_failure_exempt(
         result is not None
         and action.action_kind is ActionKind.COMMAND
         and stopped_own_job(observed_action_process_control(action), result.exit_status)
+    )
+
+
+def observed_action_is_verifier(action: ActionRecordedPayload) -> bool:
+    """Whether a service-derived command's recorded runner class is a verifier (#1104).
+
+    The class the hook boundary derived (``observation_selection.command_runner_class``) and
+    materialization appended to the description: ``test``, ``build``, ``lint`` or ``typecheck``.
+    A read, ``vcs``, ``other`` or unclassified command never is.
+    """
+
+    return (
+        action.action_kind is ActionKind.COMMAND
+        and observed_action_runner_class(action.description) in VERIFYING_RUNNER_CLASSES
     )
 
 

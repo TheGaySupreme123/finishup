@@ -676,7 +676,9 @@ def test_a_masked_planned_command_run_exactly_as_planned_never_retires(masked: s
 @pytest.mark.usefixtures("installation_key")
 def test_an_obligation_acknowledged_as_not_done_plans_no_verification() -> None:
     """The obligation set is the task facts' one: an acknowledged-not-done obligation's command
-    is no planned verification, and acknowledging it un-retires what only its pass retired."""
+    is no planned verification, and acknowledging it later un-retires what only its pass retired
+    (its status is read as the ledger records it now; owner decision 2026-10-18 keeps the
+    replay's existing reverse state)."""
 
     ledger = ObservedLedger()
     obligation = ledger.plan(_PLANNED)
@@ -781,14 +783,146 @@ def test_a_finding_materialized_after_the_planned_pass_is_retired_at_birth() -> 
 
 
 @pytest.mark.usefixtures("installation_key")
-def test_a_plan_naming_the_command_after_its_pass_retires_the_earlier_failure() -> None:
-    """The plan is read as it stands now, as the planned-verification task facts read it."""
+@pytest.mark.parametrize("earlier_plan", [False, True])
+def test_a_plan_published_after_the_pass_retires_nothing(earlier_plan: bool) -> None:
+    """Owner decision 2026-10-18 (#1104): the obligation naming the planned verification must be
+    effective when the run passed, in ledger order. A plan published after the pass, or a later
+    plan version that first introduces the obligation, retires nothing; a pass after it does."""
+
+    ledger = ObservedLedger()
+    if earlier_plan:
+        ledger.plan("npm test")
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(_PLANNED)
+    _assert_open(ledger, finding)
+    ledger.plan(_PLANNED, number=2)
+    _assert_open(ledger, finding)
+    later = ledger.passes(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, later))
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    "planned", ["true", "ls", "ls -la src", "echo ok", "git status", "cat setup.cfg"]
+)
+def test_a_planned_command_that_is_no_verifier_retires_nothing(planned: str) -> None:
+    """Owner decision 2026-10-18 (#1104): only a verifier (runner class test, build, lint or
+    typecheck) passing the planned command counts. A plan that requests ``true`` or ``ls``
+    cannot clear an earlier failure by running it."""
+
+    from finishup.domain.events import ActionRecordedPayload
+    from finishup.kernel.task_facts import planned_verification_passed
+
+    ledger = ObservedLedger()
+    ledger.plan(planned)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(planned)
+    action = ledger.records[-2].payload
+    assert type(action) is ActionRecordedPayload
+    state = _state(ledger)
+    # Not vacuous: the run passes the planned command; only its runner class refuses it.
+    assert planned_verification_passed(
+        action.command,
+        planned_verification_commands(state.plans, state.obligations, state.coverage_gaps),
+    )
+    _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    ("planned", "runner"),
+    [
+        (_PLANNED, "test"),
+        ("pytest -q tests/test_x.py", "test"),
+        ("npm run build", "build"),
+        ("ruff check .", "lint"),
+        ("pyright", "typecheck"),
+    ],
+)
+def test_a_planned_verifier_that_passes_retires(planned: str, runner: str) -> None:
+    from finishup.domain.events import ActionRecordedPayload
+    from finishup.kernel.observed_failures import observed_action_runner_class
+
+    ledger = ObservedLedger()
+    ledger.plan(planned)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(planned)
+    action = ledger.records[-2].payload
+    assert type(action) is ActionRecordedPayload
+    assert observed_action_runner_class(action.description) == runner
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_recorded_non_verifier_class_never_passes_a_planned_verification() -> None:
+    """The class is the one recorded at the host boundary: the same planned command recorded
+    with a non-verifier class (an older build, or a host that classed it ``other``) is no
+    verifier, and a later run recorded as ``test`` is."""
+
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.run(_PLANNED, ResultOutcome.SUCCESS, exit_status=0, runner="other")
+    _assert_open(ledger, finding)
+    passing = ledger.passes(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_plan_published_while_the_call_runs_counts_when_it_passes() -> None:
+    """Claude Code shape: the planned call's ``PreToolUse`` lands before the plan and its
+    passing ``PostToolUse`` after it. The obligation was effective when the run passed."""
 
     ledger = ObservedLedger()
     finding = _finding_for(ledger, ledger.fail(_INSTALL))
-    passing = ledger.passes(_PLANNED)
-    _assert_open(ledger, finding)
+    running = ledger.begin(_PLANNED)
     ledger.plan(_PLANNED)
+    passing = ledger.end(running, ResultOutcome.SUCCESS, exit_status=0)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_codex_a_plan_published_before_the_correction_but_after_the_call_ended_retires_nothing() -> (
+    None
+):
+    """Codex shape: the hook result (no exit) marks when the call finished; its passing exit is
+    the stream correction joined later. A plan published in between was not effective when the
+    run passed, so the correction retires nothing."""
+
+    ledger = ObservedLedger()
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    hook = ledger.run(_PLANNED, ResultOutcome.UNKNOWN)
+    ledger.plan(_PLANNED)
+    ledger.correct_outcome(hook, ResultOutcome.SUCCESS, exit_status=0)
+    _assert_open(ledger, finding)
+    rerun = ledger.run(_PLANNED, ResultOutcome.UNKNOWN)
+    corrected = ledger.correct_outcome(rerun, ResultOutcome.SUCCESS, exit_status=0)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, corrected))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_codex_a_plan_effective_before_the_call_ended_counts_for_its_correction() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    hook = ledger.run(_PLANNED, ResultOutcome.UNKNOWN)
+    _assert_open(ledger, finding)
+    corrected = ledger.correct_outcome(hook, ResultOutcome.SUCCESS, exit_status=0)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, corrected))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_later_plan_version_dropping_the_obligation_does_not_undo_the_retirement() -> None:
+    """The retirement was valid when made: a later plan that no longer names the obligation (a
+    new restatement of the scope) does not undo it. A waiver or an ``acknowledged_not_done``
+    answer, the agent's own statement that it is not being done, does (see below)."""
+
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+    ledger.plan("npm test", number=2)
     _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
 
 
@@ -912,6 +1046,8 @@ def test_incremental_fold_equals_recompute_all_with_plan_changes(seed: int) -> N
         state.results,
         state.actions,
         observed,
-        lambda: planned_verification_commands(state.plans, state.obligations, state.coverage_gaps),
+        lambda point: planned_verification_commands(
+            state.plans, state.obligations, state.coverage_gaps, effective_at=point
+        ),
     )
     assert cleared == folded, seed

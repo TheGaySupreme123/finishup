@@ -168,53 +168,68 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    are. Redacting the passing run, the failed run, its action or the finding drops the fact
    (unreadable proof is no proof); nothing is deleted.
 
-   **A passing planned verification also retires it (owner decision 2026-10-18, recorded on
-   #1104; final).** "A later pass" has the broad reading: every open observed failed-command
-   finding whose failed run precedes, in ledger order, a hook-observed success of another call
-   that passed a **planned verification** is retired too, whatever command failed. A planned
-   verification is a requested item of kind `command` (ADR-033) of an effective obligation the
-   agent has not acknowledged as not done (the obligation set the planned-verification task facts
-   read; an obligation with a recorded blocker still counts, since a blocker decision is not a
-   plan event and its command passing is still the planned verification passing), matched by the
-   recorded rule only (`task_facts.planned_verification_passed` over `planned_match` kind
-   `exact`): the installation-keyed whole-command commitment, or the planned command as a
-   segment of the run, with the outcome that rule establishes for the planned command, which is
-   a success only for a passing `single` run or `&&` chain. For retirement the segment must be
-   one the success certifies, under the same bare-segment rule as above: a passing
-   `PYTEST_ADDOPTS=--collect-only pytest -q`, `FOO=1 pytest -q`, `exec pytest -q` or
-   `pytest -q < answers.txt` ran a different command and passes no planned `pytest -q` (the
-   ADR-033 task facts keep their looser reading). A canonical, prefix or flag match, an agent
-   link and a masked composition (`;`, `|`, `||`, `&`) never count. A planned command whose own
-   composition is masked (`pytest -q | tail -5`, `! pytest -q`, `pytest -q || true`,
-   `pytest -q &`, `pytest -q; true`) never counts either, even run exactly as planned: its
+   **A passing planned verification also retires it (owner decisions 2026-10-18, recorded on #1104,
+   the second in comment 6252094173; final).** "A later pass" has the broad reading: every open
+   observed failed-command finding whose failed run precedes, in ledger order, a hook-observed
+   success of another call that passed a **planned verification** is retired too, whatever command
+   failed. Two conditions bound it. First, **the passing run is a verifier**: the runner class
+   FinishUP's existing classification derived for it at the host boundary
+   (`observation_selection.command_runner_class`, recorded in the observed action's description and
+   read by `observed_failures.observed_action_is_verifier`) is `test`, `build`, `lint` or
+   `typecheck`. A planned `true`, `ls`, `echo ok` or `git status` (`exploration` or `vcs`) passing
+   retires nothing, so a plan cannot name a no-op and clear failures by running it. Second, **the
+   obligation was effective when the run passed**, in ledger order. The pass point is the passing
+   call's first hook-observed result (as above, when FinishUP first knew the call had finished: its
+   `PostToolUse` on Claude Code and Cursor, the outcome-less hook result on Codex, whose exit lands
+   later as a stream correction), and the plan is the one effective just before it
+   (`task_facts.planned_verification_commands(..., effective_at=pass point)`): the plan scope is
+   read from the plan events recorded before that point, and the obligation must have been first
+   published (`introduced_frontier`) before it. An obligation published, or introduced by a plan
+   version or revision, after the pass does not count, including one published between a Codex
+   call's hook result and its joined exit; a plan published while the call ran and before it
+   finished does. A later plan version or revision that supersedes the obligation or no longer names
+   it does not undo a retirement that was valid when made. The obligation's status and waiver are
+   read as the ledger records them now, the existing replay behavior kept consistently: a later
+   `acknowledged_not_done` republication or a waiver is the agent's own statement that this
+   obligation is not being done, so it un-retires what only that match retired (a reverse state the
+   reducer re-derives after every plan, obligation or unreadable plan event), and a republication
+   that reopens it retires again; an unreadable plan event makes the scope unreadable, so its passes
+   retire nothing. A planned verification is thus a requested item of kind `command` (ADR-033) of an
+   obligation effective at the pass that the agent has not acknowledged as not done (an obligation
+   with a recorded blocker still counts, since a blocker decision is not a plan event and its
+   command passing is still the planned verification passing), matched by the recorded rule only
+   (`task_facts.planned_verification_passed` over `planned_match` kind `exact`): the
+   installation-keyed whole-command commitment, or the planned command as a segment of the run, with
+   the outcome that rule establishes for the planned command, which is a success only for a passing
+   `single` run or `&&` chain. For retirement the segment must be one the success certifies, under
+   the same bare-segment rule as above: a passing `PYTEST_ADDOPTS=--collect-only pytest -q`, `FOO=1
+   pytest -q`, `exec pytest -q` or `pytest -q < answers.txt` ran a different command and passes no
+   planned `pytest -q` (the ADR-033 task facts keep their looser reading). A canonical, prefix or
+   flag match, an agent link and a masked composition (`;`, `|`, `||`, `&`) never count. A planned
+   command whose own composition is masked (`pytest -q | tail -5`, `! pytest -q`, `pytest -q ||
+   true`, `pytest -q &`, `pytest -q; true`) never counts either, even run exactly as planned: its
    recorded exit is not the planned work's, so its success is not a known one. Neither does an
-   `unknown` outcome: on Codex 0.159, whose `PostToolUse` states no
-   exit, only the session stream's correction joined by call id (or a stream-first copy with its
-   own outcome) makes the planned run a known success. The owner accepted the trade-off that a
-   passing planned verification also clears an unrelated earlier failure (a failed install that
-   was never rerun). The plan is read as it stands now, the way the planned-verification task
-   facts read it: the reducer re-derives these retirements whenever a plan or obligation event
-   (or an unreadable plan event) changes the set of planned commands, so a plan revision that
-   drops the command or waives its obligation un-retires what only that match retired (a reverse
-   state), and a plan that names the command after its pass retires the earlier failure. The
-   match needs the installation key the service registers (ADR-033); a process without it
-   treats no run as a planned verification, which only ever retires less. This makes the
-   projection fold, and so the stored projection snapshot and `projection_digest`, depend on the
-   key as well as on the ledger: the service registers it before its startup bundle upgrade can
-   replay or rebuild any task projection, and every process that stores or compares a task
-   projection (only the service writes task ledgers) must hold it; a replay without the key
-   derives fewer retirements, never more. The fact is
-   `retired_by_planned_verification` beside `retired_by_event_id`, and every surface names the
-   kind: closure basis `retired_by_planned_verification` (status, check, lineage), the receipt's
-   history sentence ("retired by a later passing run of a planned verification, not of the
-   command that failed") and its per-finding resolution line. When one run is both the same
-   command and a planned verification it is recorded as the same command; the earliest
-   qualifying run decides. The claim-level duty is unchanged: a completion claim must still
-   name a failure in `limitation_refs` unless the same command passed later (the shared rule
-   above). A failure retired only by a planned verification therefore still has to be named
-   there, and the agent-facing text says so (the finding's resolution explanation, the shipped
-   guidance and the product docs), so a retired finding never reads as a failure the claim may
-   leave out.
+   `unknown` outcome: on Codex 0.159, whose `PostToolUse` states no exit, only the session stream's
+   correction joined by call id (or a stream-first copy with its own outcome) makes the planned run
+   a known success. The owner accepted the trade-off that a passing planned verification also clears
+   an unrelated earlier failure (a failed install that was never rerun), bounded by the two
+   conditions above. The match needs the installation key the service registers (ADR-033); a process
+   without it treats no run as a planned verification, which only ever retires less. This makes the
+   projection fold, and so the stored projection snapshot and `projection_digest`, depend on the key
+   as well as on the ledger: the service registers it before its startup bundle upgrade can replay
+   or rebuild any task projection, and every process that stores or compares a task projection (only
+   the service writes task ledgers) must hold it; a replay without the key derives fewer
+   retirements, never more. The fact is `retired_by_planned_verification` beside
+   `retired_by_event_id`, and every surface names the kind: closure basis
+   `retired_by_planned_verification` (status, check, lineage), the receipt's history sentence
+   ("retired by a later passing run of a planned verification, not of the command that failed") and
+   its per-finding resolution line. When one run is both the same command and a planned verification
+   it is recorded as the same command; the earliest qualifying run decides. The claim-level duty is
+   unchanged: a completion claim must still name a failure in `limitation_refs` unless the same
+   command passed later (the shared rule above). A failure retired only by a planned verification
+   therefore still has to be named there, and the agent-facing text says so (the finding's
+   resolution explanation, the shipped guidance and the product docs), so a retired finding never
+   reads as a failure the claim may leave out.
 
    The advice snapshot's `failed_command_unresolved` item follows the shared rule, so after a
    retirement by a planned verification its rule still sees no pass of the failed command. The
@@ -224,13 +239,6 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    gap, follow-up owned by #1104: the hook-side advice (the top item a hook prints, read from the
    stored snapshot without the ledger) can still list that item until the observation evidence
    changes; the Stop gate, status, check and the receipt read the ledger and do not block on it.
-
-   Open for the owner (#1104), as implemented until decided: any command of kind `command` the
-   agent's own plan requests counts, with no verifier runner class, and the plan is read as it
-   stands now, so a plan published after a pass also retires the failures before that pass. The
-   alternatives the round-1 review raised are to require a verifier runner class (test, build,
-   lint, typecheck) for the passing planned run, or to require the obligation to be effective
-   when the pass was recorded.
 
    No check resolves such a finding: no local rule re-reads the advice condition, so a check's
    silence proves nothing, and `resolution_blockers` names `observed_failure_not_rerun` for it

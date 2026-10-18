@@ -341,11 +341,16 @@ Two more things decide what the receipt will say, and status tells you before yo
   A later passing run of a verification command your plan asks for retires it as well, together
   with every other earlier failed-command finding, even for a command you never reran (basis
   `retired_by_planned_verification`; the receipt says the planned verification passed, not the
-  command that failed). The planned command counts only run as written (no added `FOO=1`, `env` or
-  `exec`, no input redirection), with an exit that is its own (a planned `pytest -q | tail -5` or
-  `pytest -q || true` never counts), and only when it began after the failure. If you later drop
-  that command from the plan, what only it retired opens again. An edit does not retire it, a passing run of an unplanned different command does not, a run whose outcome
-  FinishUP never learned does not, and a check cannot prove it absent. If the failure is expected or
+  command that failed). It counts only when FinishUP classes the run as a test, build, lint or
+  typecheck (a planned `true`, `ls` or `echo ok` retires nothing) and your plan already asked for
+  it when the run passed (a plan you publish after the pass retires nothing; run it again). The
+  planned command counts only run as written (no added `FOO=1`, `env` or `exec`, no input
+  redirection), with an exit that is its own (a planned `pytest -q | tail -5` or
+  `pytest -q || true` never counts), and only when it began after the failure. If you later waive
+  it or acknowledge it as not done, what only it retired opens again; a later plan that replaces
+  it does not reopen anything. An edit does not retire it, a passing run of an unplanned
+  different command does not, a run whose outcome FinishUP never learned does not, and a check
+  cannot prove it absent. If the failure is expected or
   will stay, answer `acknowledged` with the reason: the receipt lists it as a disclosed failed
   command and reads at best `insufficient_coverage`, and a later passing run still retires it. A
   failed read or inspection (including a chain of reads with banners and `cd`), a failed FinishUP

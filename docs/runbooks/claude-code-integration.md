@@ -1186,6 +1186,13 @@ A failed `Bash` call becomes an observation finding (`failed_command_unresolved`
   input redirection passes nothing), a planned command that masks its own exit (`| tail`, `!`,
   `|| true`, `&`, `;`) never counts, and the passing call must have begun after the failed call
   finished. A failure it retires must still be named in a completion claim's `limitation_refs`.
+  The passing run must be a verifier (the hook's runner class `test`, `build`, `lint` or
+  `typecheck`; a planned `true` or `ls` retires nothing), and the obligation must have been
+  effective when its `PostToolUse` landed: a plan published after the pass retires nothing, one
+  published while the call ran counts (`test_claude_plan_published_after_the_pass_retires_nothing`
+  and `test_claude_planned_command_that_is_no_verifier_retires_nothing` in
+  `tests/integration/observation/test_failure_supersession_hosts.py`; owner decision 2026-10-18,
+  #1104 comment 6252094173).
   Known gap (follow-up on #1104): the hook-side advice can still list the retired item until the
   observation evidence changes; `status view=advice`, the Stop gate, check and the receipt read
   the ledger and do not.

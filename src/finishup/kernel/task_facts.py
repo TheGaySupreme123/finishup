@@ -1494,6 +1494,8 @@ def planned_verification_commands(
     plans: Mapping[int, PlanProjectionRecord],
     obligations: Mapping[ObligationId, ObligationProjectionRecord],
     coverage_gaps: tuple[str, ...],
+    *,
+    effective_at: int | None = None,
 ) -> tuple[PlannedCommand, ...]:
     """The planned verifications of the effective plan, ready to match observed runs (#1104).
 
@@ -1504,17 +1506,36 @@ def planned_verification_commands(
     event, and its command passing is still the planned verification passing). Empty without the
     installation key: a process that cannot compute the identity never treats a run as the
     planned verification.
+
+    ``effective_at`` (owner decision 2026-10-18) reads the plan as it was effective just before
+    that ledger sequence: only the plan events recorded before it make up the scope, and only an
+    obligation first published (``introduced_frontier``) before it counts, so an obligation
+    published, or introduced by a plan revision, after that point requests nothing there. The
+    obligation's status and waiver are read as the ledger records them now (a later
+    ``acknowledged_not_done`` or waiver is the agent's own statement that it is not being done).
     """
 
     if not command_identity_key_registered():
         return ()
+    if effective_at is not None:
+        plans = {
+            version: record
+            for version, record in plans.items()
+            if record.source_frontier < effective_at
+        }
     generation = command_identity_key_generation()
     seen: set[str] = set()
     planned: list[PlannedCommand] = []
     for obligation in effective_obligation_ids(plans, obligations, coverage_gaps):
-        payload = obligations[obligation].payload
+        record = obligations[obligation]
+        payload = record.payload
         assert payload is not None
         if payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE:
+            continue
+        if (
+            effective_at is not None
+            and (record.introduced_frontier or record.source_frontier) >= effective_at
+        ):
             continue
         for item in payload.requested_items:
             if (

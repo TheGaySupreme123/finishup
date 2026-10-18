@@ -523,6 +523,8 @@ def _routine_shell_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineF
 # Flags that make a verifier report on itself instead of verifying anything.
 _INFORMATION_FLAGS: Final = frozenset({"--help", "-h", "--version", "-V"})
 _VERIFYING_CLASSES: Final = frozenset({"test", "lint", "typecheck", "build"})
+# The runner classes that make a command a verifier (#1104 owner decision 2026-10-18 reads it).
+VERIFYING_RUNNER_CLASSES: Final[frozenset[str]] = _VERIFYING_CLASSES
 
 
 def _runner_class_for_argv(
@@ -1420,6 +1422,7 @@ __all__ = [
     "ROUTINE_READ_TOOLS",
     "SHELL_TOOLS",
     "RunnerClass",
+    "VERIFYING_RUNNER_CLASSES",
     "classify_observation",
     "compound_verification_gap_required",
     "command_runner_class",

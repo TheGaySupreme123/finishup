@@ -464,9 +464,9 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     ``failed_run_result_id`` is the one hook-observed failed result it names, when exactly one is
     named; ``retired_by_event_id`` and ``retired_frontier`` name the earliest later hook-observed
     *passing* run of the same command identity (or a passing ``single``/``and_chain`` command whose
-    segments include it), or of a planned verification of the current plan, which retires the
-    finding; ``retired_by_planned_verification`` says it was the second kind (owner decision
-    2026-10-18). A retirement is a proof like a check's: redacting the passing run or the failed
+    segments include it), or of a planned verification (a verifier run of a command an
+    obligation effective when it passed requests), which retires the finding;
+    ``retired_by_planned_verification`` says it was the second kind (owner decisions 2026-10-18). A retirement is a proof like a check's: redacting the passing run or the failed
     run drops it, and nothing is deleted.
     ``duplicate_link_broken_by_check_event_ids`` (issue #996) names, in fold order, every later
     check that raised this finding's issue again (returned it, or the reviewer ruled it
