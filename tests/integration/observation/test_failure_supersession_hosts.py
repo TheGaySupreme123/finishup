@@ -306,6 +306,21 @@ def test_claude_planned_command_that_is_no_verifier_retires_nothing(
     _planned_retirement(tmp_path, build, red, planned, retires=False)
 
 
+@pytest.mark.parametrize("ran", ["true && pytest -q", "true && ruff check --exit-zero ."])
+def test_claude_planned_no_op_chained_to_an_unplanned_verifier_retires_nothing(
+    tmp_path: Path, ran: str
+) -> None:
+    """#1104: the planned command the run passed must itself be a verifier, not only the run.
+    The hook classes ``true && <verifier>`` by its verifier; a planned ``true`` still clears
+    nothing."""
+
+    emit, build = _host(tmp_path, "claude")
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-chain", ran, failed=False)
+    _planned_retirement(tmp_path, build, red, "true", retires=False)
+
+
 def test_cursor_passing_planned_verification_retires_an_unrelated_failure(
     tmp_path: Path,
 ) -> None:

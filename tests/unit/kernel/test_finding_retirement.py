@@ -820,12 +820,46 @@ def test_a_planned_command_that_is_no_verifier_retires_nothing(planned: str) -> 
     action = ledger.records[-2].payload
     assert type(action) is ActionRecordedPayload
     state = _state(ledger)
-    # Not vacuous: the run passes the planned command; only its runner class refuses it.
-    assert planned_verification_passed(
-        action.command,
-        planned_verification_commands(state.plans, state.obligations, state.coverage_gaps),
-    )
+    (item,) = planned_verification_commands(state.plans, state.obligations, state.coverage_gaps)
+    # Not vacuous: the run passes the planned command; only the verifier bounds refuse it.
+    assert not item.verifier
+    assert not planned_verification_passed(action.command, (item,))
+    assert planned_verification_passed(action.command, (dataclasses.replace(item, verifier=True),))
     _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    ("planned", "ran"),
+    [
+        ("true", "true && pytest -q"),
+        ("true", "true && ruff check --exit-zero ."),
+        ("ls", "ls && make -n"),
+        ("echo ok", "echo ok && make"),
+        ("ls", "ls && pytest -q"),
+    ],
+)
+def test_a_planned_no_op_chained_to_an_unplanned_verifier_retires_nothing(
+    planned: str, ran: str
+) -> None:
+    """#1104: the planned command the run passed must itself be a verifier. The compound run's
+    class is its strongest verifier's, so without that bound a planned ``true`` matched as a
+    segment of ``true && <verifier>`` would clear every earlier failure."""
+
+    ledger = ObservedLedger()
+    ledger.plan(planned)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(ran)
+    _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_planned_verifier_chained_after_a_no_op_still_retires() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(f"true && {_PLANNED}")
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
 
 
 @pytest.mark.usefixtures("installation_key")

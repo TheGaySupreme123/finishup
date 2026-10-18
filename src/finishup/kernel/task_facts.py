@@ -81,6 +81,7 @@ from finishup.domain.events import (
     is_observation_authored,
 )
 from finishup.domain.observation import normalize_observed_command, observed_command_commitment
+from finishup.domain.observation_selection import VERIFYING_RUNNER_CLASSES, command_runner_class
 from finishup.domain.task_fact_tokens import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS as AGENT_ACTIONABLE_TASK_FACT_GAPS,
 )
@@ -411,12 +412,16 @@ class PlannedCommand:
     ``whole``, ``segments`` and ``composition`` are ``requested_command_identities``;
     ``probes`` holds, for each simple command the planned text runs, its canonical probes
     (wrappers and ``python3`` normalised away, leading-argument prefixes and flag sets).
+    ``verifier`` is whether the planned text itself classifies as a verifier
+    (``observation_selection.command_runner_class`` in ``VERIFYING_RUNNER_CLASSES``); only such a
+    planned command can retire a failure (#1104).
     """
 
     whole: str
     segments: frozenset[str]
     composition: str | None
     probes: tuple[PlannedSegment, ...]
+    verifier: bool
 
 
 # How a planned command matched an observed run, strongest first. ``exact`` and ``normalized``
@@ -445,7 +450,8 @@ def requested_planned_command(value: str) -> PlannedCommand | None:
         probes = planned_segments(key, normalized) or ()
     except ValueError:
         probes = ()
-    return PlannedCommand(identities[0], identities[1], identities[2], probes)
+    verifier = command_runner_class({"command": value}) in VERIFYING_RUNNER_CLASSES
+    return PlannedCommand(identities[0], identities[1], identities[2], probes, verifier)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1567,6 +1573,11 @@ def planned_verification_passed(command: str | None, planned: Iterable[PlannedCo
     own composition masks its outcome (``X | tail``, ``! X``, ``X || true``, ``X &``, ``X; Y``)
     never counts either, even run exactly as planned: its recorded exit is not the planned
     work's. The task facts keep their looser ADR-033 reading.
+
+    The matched planned command must itself be a verifier (``PlannedCommand.verifier``): the
+    caller's check reads the whole run's class, which a compound takes from its strongest
+    verifier, so a planned ``true`` matched as a segment of ``true && pytest -q`` would otherwise
+    let a verifier the plan never asked for retire failures.
     """
 
     run = observed_run_from_command(command, outcome=ResultOutcome.SUCCESS)
@@ -1574,7 +1585,8 @@ def planned_verification_passed(command: str | None, planned: Iterable[PlannedCo
         return False
     run = replace(run, segments=success_certified_identities(command))
     return any(
-        item.composition != "masked"
+        item.verifier
+        and item.composition != "masked"
         and (match := planned_match(run, item)) is not None
         and match.kind == MATCH_EXACT
         and match.outcome is ResultOutcome.SUCCESS

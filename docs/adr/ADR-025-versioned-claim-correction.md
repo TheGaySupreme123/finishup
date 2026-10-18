@@ -177,7 +177,11 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    (`observation_selection.command_runner_class`, recorded in the observed action's description and
    read by `observed_failures.observed_action_is_verifier`) is `test`, `build`, `lint` or
    `typecheck`. A planned `true`, `ls`, `echo ok` or `git status` (`exploration` or `vcs`) passing
-   retires nothing, so a plan cannot name a no-op and clear failures by running it. Second, **the
+   retires nothing, so a plan cannot name a no-op and clear failures by running it. The planned
+   command the run passed must be a verifier by the same classification of its own text
+   (`task_facts.PlannedCommand.verifier`), not only the run: a compound run takes the class of its
+   strongest verifier, so a planned `true` matched as a segment of `true && pytest -q` retires
+   nothing either, while a planned `pytest -q` passed by `true && pytest -q` does. Second, **the
    obligation was effective when the run passed**, in ledger order. The pass point is the passing
    call's first hook-observed result (as above, when FinishUP first knew the call had finished: its
    `PostToolUse` on Claude Code and Cursor, the outcome-less hook result on Codex, whose exit lands

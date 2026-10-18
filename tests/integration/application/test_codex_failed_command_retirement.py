@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -340,9 +341,33 @@ async def test_a_planned_command_that_is_no_verifier_retires_nothing(
         # Not vacuous: the run matches the planned command; only its runner class refuses it.
         assert observed_action_runner_class(action.description) == "exploration"
         command = requested_planned_command(planned)
-        assert command is not None
-        assert planned_verification_passed(action.command, (command,))
+        assert command is not None and not command.verifier
+        assert not planned_verification_passed(action.command, (command,))
+        assert planned_verification_passed(action.command, (replace(command, verifier=True),))
         recorded = _Recorded(red, later, name="call", planned=(planned,))
+        assert recorded.retired_by() is None
+        assert recorded.basis() == "open_unanswered"
+    finally:
+        register_command_identity_key(None)
+
+
+@pytest.mark.parametrize("ran", ["true && pytest -q", "true && ruff check --exit-zero ."])
+async def test_a_planned_no_op_chained_to_an_unplanned_verifier_retires_nothing(
+    replay: _Replay, ran: str
+) -> None:
+    """#1104: the planned command the run passed must itself be a verifier. A planned ``true``
+    matched as a segment of ``true && <verifier>`` is no wildcard, though the compound run's
+    class is its verifier's."""
+
+    register_command_identity_key(replay.store.key_material())
+    try:
+        red, later = await _red_then(
+            replay,
+            lambda: _direct_run(replay, "call_red", 1, _RED_AT, command="npm ci"),
+            lambda: _direct_run(replay, "call_green", 0, _GREEN_AT, command=ran),
+        )
+        assert (ResultOutcome.SUCCESS, 0) in [(r.outcome, r.exit_status) for r in _results(later)]
+        recorded = _Recorded(red, later, name="call", planned=("true",))
         assert recorded.retired_by() is None
         assert recorded.basis() == "open_unanswered"
     finally:
