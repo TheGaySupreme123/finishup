@@ -488,3 +488,85 @@ def test_a_continuation_outside_a_pending_check_is_rejected(state: str, kind: st
                 "continuation": _continuation(),
             }
         )
+
+
+def _check_outcome() -> dict[str, Any]:
+    target = f"res_{uuid.uuid4()}"
+    return {
+        "verdict": "insufficient_coverage",
+        "agent_next": "Next: supply_missing_input (action_required). Supply each item below once.",
+        "overall_next": {
+            "action": "supply_missing_input",
+            "status": "action_required",
+            "target_refs": [target],
+        },
+        "missing_for_assessment": [
+            {
+                "kind": "verification_output",
+                "target_refs": [target],
+                "availability": "agent_suppliable",
+            }
+        ],
+        "semantic_status": "succeeded",
+        "semantic_reason": "semantic_completed",
+        "semantic_conclusion": "insufficient_packet",
+        "result_frontier": {"sequence": "7", "head_digest": f"sha256:{'2' * 64}"},
+    }
+
+
+def test_a_completed_check_page_carries_its_outcome() -> None:
+    """W6 (#1107): recovery after a lost or cut result repeats the verdict and the lead."""
+
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+            "check_outcome": _check_outcome(),
+        }
+    )
+    assert page.check_outcome is not None
+    assert page.check_outcome.missing_for_assessment[0].kind == "verification_output"
+    # The page-level frontier rule for a non-publish completion is unchanged.
+    assert page.result_frontier is None
+
+
+@pytest.mark.parametrize(
+    ("state", "kind", "found"),
+    (
+        ("pending", "check", True),
+        ("complete", "publish_work", True),
+        ("complete", "receipt", True),
+        ("quarantined", "check", True),
+        ("absent", None, False),
+    ),
+)
+def test_check_outcome_only_on_a_completed_check_page(
+    state: str, kind: str | None, found: bool
+) -> None:
+    with pytest.raises(ValidationError, match="status_operation_page_invalid"):
+        StatusOperationPageModel.model_validate(
+            {
+                "operation_request_id": _REQUEST,
+                "found": found,
+                "state": state,
+                **({} if kind is None else {"operation_kind": kind}),
+                "check_outcome": _check_outcome(),
+            }
+        )
+
+
+def test_check_outcome_rejects_text_outside_the_closed_lead() -> None:
+    for agent_next in ("", "line one\nline two", "café", "x" * 2049):
+        outcome = {**_check_outcome(), "agent_next": agent_next}
+        with pytest.raises(ValidationError):
+            StatusOperationPageModel.model_validate(
+                {
+                    "operation_request_id": _REQUEST,
+                    "found": True,
+                    "state": "complete",
+                    "operation_kind": "check",
+                    "check_outcome": outcome,
+                }
+            )

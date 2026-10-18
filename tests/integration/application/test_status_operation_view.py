@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,10 +31,12 @@ from builders.start_application import (
     start_request,
 )
 from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.application.check import check_internal_json
 from finishup.application.egress import PrivacyCoordinator
 from finishup.application.publish_work import Application as PublishApplication
 from finishup.application.publish_work import execute_publish_work
 from finishup.application.service import Application, ControlProjectionBinding, VerificationPolicy
+from finishup.application.start import StartInternalResult
 from finishup.application.status import Application as StatusApplication
 from finishup.application.status import execute_status
 from finishup.domain.events import RuntimeProfile
@@ -57,6 +59,7 @@ from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
 from finishup.ports.ledger import (
     AppendCommand,
+    CheckCommitResult,
     CheckPhase,
     CheckSuspensionKind,
     OperationKind,
@@ -1048,3 +1051,154 @@ async def test_status_view_operation_survives_a_stranded_semantic_wait_check() -
     assert page.found is True
     assert page.state == "pending"
     assert page.operation_kind == "check"
+
+
+# --- W6 (issue #1107): a finished check's outcome on its operation page ----------------------------
+
+
+async def _finished_check(base: int) -> tuple[Application, _WorkflowRuntime, object, str]:
+    """A real deterministic check over one open obligation; returns its request id too."""
+
+    app, runtime, _catalog = await _workflow_app()
+    started = await app.start(start_request(base, title="Operation view check outcome"))
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", base + 2)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(started.frontier),
+                "event_drafts": (
+                    {
+                        "event_id": protocol_id("evt_", base + 3),
+                        "schema": {"name": "obligation_published", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:00.000Z",
+                        "causal_parents": (),
+                        "payload": {
+                            "obligation_id": protocol_id("obl_", base + 1),
+                            "description": "Publish a result for the operation-view check.",
+                            "acceptance_criteria": "A result is recorded in the task ledger.",
+                            "evidence_expectation": "A linked immutable result record.",
+                            "requested_items": (
+                                {"item_kind": "change", "value": "operation-view-result"},
+                            ),
+                            "status": "open",
+                        },
+                        "artifact_refs": (),
+                        "evidence_refs": (),
+                    },
+                ),
+            }
+        )
+    )
+    check_req_id = protocol_id("req_", base + 4)
+    check = CheckRequest.model_validate(
+        {
+            **_request_base(check_req_id),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": _frontier(published.result_frontier),
+            "mode": "deterministic_only",
+            "max_findings": "3",
+        }
+    )
+    await app.check(check)
+    return app, runtime, (started, check), check_req_id
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in cast(Mapping[str, object], value).items()}
+    if isinstance(value, tuple | list):
+        return [_thaw(item) for item in cast(Sequence[object], value)]
+    return value
+
+
+async def test_status_view_operation_returns_the_finished_checks_outcome() -> None:
+    """Recovery after a lost or cut check result: the page repeats what a same-id resend says."""
+
+    app, _runtime, context, check_req_id = await _finished_check(1810)
+    started, check = cast(tuple[StartInternalResult, CheckRequest], context)
+    replay = await app.check(check)
+    assert type(replay) is CheckCommitResult and replay.outcome == "replayed"
+    replayed = check_internal_json(replay)
+    assert type(replayed.get("agent_next")) is str
+
+    status = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1901,
+        )
+    )
+    page = cast(StatusOperationPageModel, status.page)
+    outcome = page.check_outcome
+    assert outcome is not None
+    wire = cast(Mapping[str, object], outcome.model_dump(mode="json", exclude_none=True))
+    for name in ("verdict", "agent_next", "overall_next", "semantic_status", "semantic_reason"):
+        assert _thaw(wire.get(name)) == _thaw(replayed.get(name)), name
+    assert outcome.missing_for_assessment == ()
+    assert _thaw(wire["result_frontier"]) == _thaw(replayed["result_frontier"])
+    # The page-level frontiers and events stay what a non-publish completion carries.
+    assert page.result_frontier is None and page.accepted_events == ()
+    assert outcome.agent_next == replayed["agent_next"]
+
+
+async def test_status_view_operation_outcome_for_a_check_recorded_by_an_older_build() -> None:
+    """A stored check without missing items or a continuation still projects (derived now)."""
+
+    app, runtime, context, check_req_id = await _finished_check(1820)
+    started = cast(tuple[StartInternalResult, CheckRequest], context)[0]
+    ledger, _objects = runtime.resources[started.task_id]
+    key = (started.writer_id, check_req_id)
+    stored = ledger._state.check_results[key]  # pyright: ignore[reportPrivateUsage]
+    ledger._state.check_results[key] = replace(  # pyright: ignore[reportPrivateUsage]
+        stored, missing_for_assessment=(), overall_next=None, finding_checklist=None
+    )
+    status = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1902,
+        )
+    )
+    outcome = cast(StatusOperationPageModel, status.page).check_outcome
+    assert outcome is not None
+    assert outcome.missing_for_assessment == ()
+    assert outcome.overall_next is not None and outcome.agent_next is not None
+
+
+async def test_status_operation_outcome_failure_never_fails_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import finishup.observability.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    app, runtime, context, check_req_id = await _finished_check(1830)
+    started = cast(tuple[StartInternalResult, CheckRequest], context)[0]
+    ledger, _objects = runtime.resources[started.task_id]
+
+    async def broken(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("stored check unreadable")
+
+    ledger.load_check_result = broken  # type: ignore[method-assign]
+    status = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1903,
+        )
+    )
+    page = cast(StatusOperationPageModel, status.page)
+    assert page.found is True and page.state == "complete" and page.check_outcome is None
+    raw = diagnostics.diagnostic_log_path(root=tmp_path).read_text(encoding="ascii")
+    operations = [
+        cast(Mapping[str, object], json.loads(line))["operation"]
+        for line in raw.splitlines()
+        if line
+    ]
+    assert operations == ["status_check_outcome_unavailable"]
+    assert "stored check unreadable" not in raw

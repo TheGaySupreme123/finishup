@@ -127,8 +127,11 @@ _SUPPLY_LIMIT: Final = (
 )
 _OBSERVED_OUTPUT: Final = (
     "Verification follow-ups include observed test, build, lint, or typecheck output only when a "
-    "repository excerpt would be sent; it never counts as agent-supplied."
+    "repository excerpt would be sent."
 )
+# W6 (#1107, ADR-006 amendment): a re-run FinishUP observed counts as supplied; a respond or a
+# description does not.
+_OBSERVED_RERUN: Final = "re-run of the same command"
 
 
 @pytest.mark.parametrize(
@@ -142,6 +145,9 @@ def test_insufficient_packet_goes_to_the_receipt_not_a_deterministic_fallback(na
         assert _SUPPLY_LIMIT in text
     if name in {"agent-instructions.md", "receipt.md"}:
         assert _OBSERVED_OUTPUT in text
+        assert "never counts as agent-supplied" not in text
+    if name == "receipt.md":
+        assert _OBSERVED_RERUN in text
     # The workflow page keeps the explicit local-only ban; the other three share one sentence.
     assert any(
         phrase in text

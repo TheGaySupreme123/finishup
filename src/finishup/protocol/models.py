@@ -1020,6 +1020,9 @@ String1To4096 = Annotated[str, Field(min_length=1, max_length=4096)]
 String1To8192 = Annotated[str, Field(min_length=1, max_length=8192)]
 String0To1024 = Annotated[str, Field(max_length=1024)]
 String1To32768 = Annotated[str, Field(min_length=1, max_length=32768)]
+# W6 (ADR-043 amendment): the service-composed lead of a check result. One printable ASCII line
+# of closed sentences and admitted ids, at most 2,048 bytes, so it stays in Codex's head window.
+AgentNextTextWire = Annotated[str, Field(min_length=1, max_length=2048, pattern=r"^[ -~]+$")]
 TaskStatementWire = Annotated[str, Field(min_length=1, max_length=MAX_TASK_STATEMENT_BYTES)]
 CursorWire = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_-]+$")]
 SchemaNameWire = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
@@ -4333,6 +4336,7 @@ class CheckInspectionModel(_ClosedModel):
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
+            "agent_next",
             "observations_awaited",
             "children",
             "advisory_notes",
@@ -4365,6 +4369,12 @@ class CheckSuccessModel(_ClosedModel):
     verdict: Literal[
         "action_required", "incomplete_check", "insufficient_coverage", "no_issue_detected"
     ]
+    # W6 (ADR-043 amendment): the continuation precedes every bulky field, because the MCP wire
+    # keeps this declaration order and Codex shows a model only the head and tail of a large
+    # structured result. A new bulky field goes after ``missing_for_assessment``.
+    agent_next: AgentNextTextWire | None = None
+    overall_next: CheckOverallNextModel | None = None
+    missing_for_assessment: tuple[CheckMissingItemModel, ...] = ()
     findings: tuple[CheckProjectedFindingModel, ...]
     suppressed_count: CanonicalUInt64Wire
     policy_executions: tuple[CheckPolicyExecutionModel, ...]
@@ -4381,9 +4391,7 @@ class CheckSuccessModel(_ClosedModel):
     verified: tuple[CheckVerifiedItemModel, ...] = ()
     children: CheckChildrenPreviewModel | None = None
     advisory_notes: tuple[CheckAdvisoryNoteModel, ...] = ()
-    missing_for_assessment: tuple[CheckMissingItemModel, ...] = ()
     finding_checklist: CheckFindingChecklistModel | None = None
-    overall_next: CheckOverallNextModel | None = None
     semantic_withheld_items: tuple[SemanticWithheldItemModel, ...] = ()
     # PL2-1: item refs and line numbers of values the external reviewer did not see.
     semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] = ()
@@ -6286,11 +6294,43 @@ class StatusCheckAdmissionModel(_ClosedModel):
         return self
 
 
+class StatusCheckOutcomeModel(_ClosedModel):
+    """A finished check's outcome on its operation page (W6): what the result's lead said.
+
+    The same values a same-id replay of the check returns, so recovery after a lost or cut result
+    (Codex keeps only the head and tail of a large one) needs no resend. Structural only.
+    """
+
+    optional_non_null_fields = frozenset({"agent_next", "overall_next", "semantic_conclusion"})
+
+    verdict: Literal[
+        "action_required", "incomplete_check", "insufficient_coverage", "no_issue_detected"
+    ]
+    agent_next: AgentNextTextWire | None = None
+    overall_next: CheckOverallNextModel | None = None
+    missing_for_assessment: tuple[CheckMissingItemModel, ...] = ()
+    semantic_status: SemanticStatusWire
+    semantic_reason: SemanticReasonWire
+    semantic_conclusion: (
+        Literal["no_material_discrepancy", "challenges_returned", "insufficient_packet"] | None
+    ) = None
+    result_frontier: FrontierModel
+
+    @model_validator(mode="after")
+    def _validate_check_outcome(self) -> StatusCheckOutcomeModel:
+        _require_unique(
+            tuple((item.kind, item.target_refs) for item in self.missing_for_assessment),
+            limit=MAX_MISSING_FOR_ASSESSMENT,
+        )
+        return self
+
+
 class StatusOperationPageModel(_ClosedModel):
     """One request-id-keyed operation recovery page within the authenticated task."""
 
     optional_non_null_fields = frozenset(
         {
+            "check_outcome",
             "semantic_progress",
             "admission",
             "semantic_withheld_items",
@@ -6303,6 +6343,9 @@ class StatusOperationPageModel(_ClosedModel):
     found: bool
     state: Literal["absent", "pending", "complete", "quarantined"]
     operation_kind: Literal["start", "publish_work", "check", "respond", "receipt"] | None = None
+    # W6: a completed check's verdict and continuation, rebuilt exactly as a same-id replay
+    # returns them. Omitted for every other operation and when the stored check is unreadable.
+    check_outcome: StatusCheckOutcomeModel | None = None
     outcome: Literal["accepted", "replayed"] | None = None
     subject_frontier: FrontierModel | None = None
     result_frontier: FrontierModel | None = None
@@ -6331,6 +6374,10 @@ class StatusOperationPageModel(_ClosedModel):
     @model_validator(mode="after")
     def _validate_operation_page(self) -> StatusOperationPageModel:
         if self.admission is not None and (self.state != "absent" or self.found):
+            raise ValueError("status_operation_page_invalid")
+        if self.check_outcome is not None and not (
+            self.operation_kind == "check" and self.state == "complete"
+        ):
             raise ValueError("status_operation_page_invalid")
         if self.semantic_progress is not None and not (
             self.operation_kind == "check" and self.state in {"pending", "complete"}
@@ -7274,6 +7321,9 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         "/finding_checklist/next",
     )
     + (
+        # W6 (ADR-043 amendment): service-composed from closed sentences and admitted ids, like
+        # ``/continuation/instruction``; never reviewer prose, task text, paths or commands.
+        "/agent_next",
         "/overall_next/action",
         "/overall_next/acknowledged_incomplete_endpoint",
         "/overall_next/predicted_conclusion",
@@ -7931,6 +7981,29 @@ _STATUS_OPERATION_STRUCTURAL_POINTERS: Final = (
     )
     + _prefix_leaf_patterns("/page/subject_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns("/page/result_frontier", FRONTIER_LEAVES)
+    # W6: a finished check's outcome, the same structural leaves its check result carries.
+    + (
+        "/page/check_outcome/agent_next",
+        "/page/check_outcome/semantic_conclusion",
+        "/page/check_outcome/semantic_reason",
+        "/page/check_outcome/semantic_status",
+        "/page/check_outcome/verdict",
+    )
+    + _prefix_leaf_patterns(
+        "/page/check_outcome/overall_next",
+        (
+            "action",
+            "acknowledged_incomplete_endpoint",
+            "predicted_conclusion",
+            "status",
+            "target_refs/*",
+        ),
+    )
+    + _prefix_leaf_patterns(
+        "/page/check_outcome/missing_for_assessment/*",
+        ("availability", "kind", "target_refs/*"),
+    )
+    + _prefix_leaf_patterns("/page/check_outcome/result_frontier", FRONTIER_LEAVES)
 )
 
 _STATUS_VERSIONS_STRUCTURAL_POINTERS: Final = ("/page/next_cursor",) + _prefix_leaf_patterns(
@@ -8404,14 +8477,15 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1641
+        len(result) != 1657
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,
         # #1079 +2 admissible_verification, +1 closing_material_frontier,
         # #1084 +3 (publish server_filled), +3 (status operation server_filled),
-        # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source)
+        # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source),
+        # W6 +1 check (agent_next) / +15 status (operation check_outcome)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -2463,6 +2463,17 @@ class LedgerPort(Protocol):
         self, writer_id: str, operation_id: str
     ) -> OperationRecord | None: ...
 
+    async def load_check_result(
+        self, writer_id: str, operation_id: str
+    ) -> CheckCommitResult | None:
+        """Read one completed check's stored result exactly as a same-id replay rebuilds it (W6).
+
+        Read only: ``None`` when the exact key has no completed check result. The caller attaches
+        the replay-time context (checklist, ``overall_next``) the replay attaches.
+        """
+
+        ...
+
     async def lookup_check_admission(
         self, writer_id: str, operation_id: str
     ) -> CheckAdmissionRecord | None:

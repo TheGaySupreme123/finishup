@@ -13,13 +13,21 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Final, cast
 
+from finishup.domain.bounded_text import Part, compose_parts, list_variants
 from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
+from finishup.protocol.readiness_text import predicted_receipt_variants
 
 __all__ = [
     "FINISHUP_LIMIT_MISSING_TEXT",
+    "MAX_AGENT_NEXT_BYTES",
     "MISSING_SUPPLY_SENTENCE",
+    "OVERALL_NEXT_INSTRUCTIONS",
+    "SUPPLY_COUNTS_SENTENCE",
+    "SUPPLY_COUNTS_SHORT",
     "has_agent_suppliable_missing",
+    "overall_next_instruction",
     "publish_exactly",
+    "render_agent_next",
     "has_finishup_limit_missing",
     "render_missing_for_assessment_lines",
     "render_missing_for_assessment_next",
@@ -291,34 +299,48 @@ def has_agent_suppliable_missing(items: object) -> bool:
     return any(availability == "agent_suppliable" for _, availability, _ in _missing_rows(items))
 
 
+# What counts as supplying a named item (ADR-006 amendment, W6). Closed wording; the short form is
+# the clause every guidance page quotes inside ``MISSING_SUPPLY_SENTENCE``.
+SUPPLY_COUNTS_SENTENCE: Final = (
+    "Counts as supplied only when new and tied to the target: a result of the target's action or "
+    "of the same exact command (a re-run FinishUP observed counts), evidence whose reference is "
+    "the target id or its path, or a respond to a finding target. A description, or citing the "
+    "old record again, does not count."
+)
+SUPPLY_COUNTS_SHORT: Final = "Only new material tied to the target counts as supplied."
 # The same sentence as the operating card, the receipt topic and the coverage page (issue #1079).
 MISSING_SUPPLY_SENTENCE: Final = (
     "If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish "
     "exactly that item once, linked to its target, then `check` again. If it is already "
     "supplied, or it is a packet, type or authority limit, go to the receipt and state that "
-    "specific limit."
+    "specific limit. " + SUPPLY_COUNTS_SHORT
 )
-# One closed instruction per kind: what record answers it. No task content, no invented command.
+# One closed instruction per kind: what record answers it, naming the field that links it to the
+# target. No task content, no invented command.
 _PUBLISH_EXACTLY: Final = MappingProxyType(
     {
-        "command_identity": "Publish the action's exact command, linked to the target.",
+        "command_identity": (
+            "Publish one action_recorded whose command is the exact command text of the target "
+            "run; a re-run of that exact command FinishUP observes also counts."
+        ),
         "current_diff_for_path": (
-            "Publish evidence whose reference is that path, or one git diff result covering it, "
-            "linked to the target. Do not stage an untracked file."
+            "Publish evidence whose reference is that path, or one git diff result covering it. "
+            "Do not stage an untracked file."
         ),
-        "other": "Publish evidence whose reference is the named ref, linked to the target.",
+        "other": "Publish evidence whose reference is the target id.",
         "plan_or_claim_text": (
-            "Publish one plan_revised, or a claim_recorded correction that supersedes the named "
-            "claim, linked to the target."
+            "Publish one plan_revised, or a claim_recorded 1.1.0 whose supersedes_claim_refs "
+            "names the target claim."
         ),
-        "prior_finding_context": "Publish one respond for that finding, linked to the target.",
+        "prior_finding_context": "Publish one respond to that finding.",
         "task_statement": (
             "Publish one plan_revised 1.1.0 whose task_statement is the user's whole request, "
             "linked to the target."
         ),
         "verification_output": (
-            "Publish one result_recorded of that target whose summary is the command output, "
-            "with its evidence_refs, linked to the target."
+            "Publish one result_recorded whose action_id is the target's action and whose "
+            "summary is the command output, with its evidence_refs; a re-run of that exact "
+            "command that FinishUP observes and captures also counts."
         ),
     }
 )
@@ -412,3 +434,196 @@ def render_review_input_manifest_coverage_note(
     # Structural fields are already bounded; this defensive fallback keeps the existing receipt
     # section contract closed if a future admitted vocabulary grows.
     return text[:4090].encode("utf-8", errors="ignore").decode("utf-8", errors="ignore") + " […]"
+
+
+# The one per-action instruction table every surface reads (W6, ADR-043 amendment): the CLI's
+# ``Overall next`` line and the ``agent_next`` lead of every check result. Closed sentences only.
+OVERALL_NEXT_INSTRUCTIONS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "supply_missing_input": (
+            "If `missing_for_assessment` names an `agent_suppliable` item you can supply, "
+            "publish exactly that item once, linked to its target, then `check` again. If it "
+            "is already supplied, or it is a packet, type or authority limit, go to the receipt "
+            "and state that specific limit. Never change your work to fit the reviewer"
+        ),
+        "disclose_limitations": (
+            "Disclose the named limitation requests (respond acknowledged with the reason if the "
+            "requirement may be met but cannot be verified here; acknowledged_not_done only when "
+            "you know it is not met; no repair is needed)"
+        ),
+        "work_open_findings": "Repair or answer the named open findings",
+        "request_ruling": (
+            "Run check with final_review: true so the reviewer rules on the rejected findings"
+        ),
+        "review_recorded_work": (
+            "Review the recorded work for open obligations or undisclosed failures"
+        ),
+        "request_receipt": "Request the receipt",
+    }
+)
+# ``work_open_findings`` when a limitation request rides among the open findings (tb4n3 RC-1).
+_OPEN_FINDINGS_WITH_REQUESTS: Final = (
+    "Repair or answer the named open findings (a limitation request among them needs only a "
+    "response: acknowledged with the reason if it may be met but cannot be verified here, "
+    "acknowledged_not_done only when you know it is not met; an agent_criterion_unmet is your "
+    "own criterion: fix it, or narrow it with acknowledged and a reason)"
+)
+# ``request_receipt`` at ``ready_with_limitations``.
+_RECEIPT_WITH_LIMITATIONS: Final = "Disclose the limitation at the receipt endpoint"
+_OVERALL_NEXT_STATUSES: Final = frozenset({"action_required", "ready_with_limitations", "ready"})
+_SUBJECT_REF: Final = re.compile(
+    r"^(?:act|clm|evd|evt|fnd|obl|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}"
+    r"-[0-9a-f]{12}$",
+    re.ASCII,
+)
+# Codex keeps only the head and tail of a structured tool result (ADR-043 amendment); this bound
+# keeps the lead inside the smallest head window with room to spare.
+MAX_AGENT_NEXT_BYTES: Final = 2_048
+_AGENT_NEXT_SUPPLY_LEAD: Final = (
+    "Supply each agent_suppliable item below once, then check again; if one is already supplied "
+    "or is a packet, type or authority limit, state that limit in the receipt instead. Never "
+    "change your work to fit the reviewer."
+)
+_AGENT_NEXT_SUPPLY_LEAD_SHORT: Final = "Supply each item below once, then check again."
+_AGENT_NEXT_LIMIT: Final = (
+    "FinishUP limit (not your work, never a blocker): {n} item(s) the packet cannot show; "
+    "verify them yourself, record how, and never reshape the work to fit the reviewer."
+)
+_AGENT_NEXT_LIMIT_SHORT: Final = "FinishUP limit: {n} item(s); verify yourself, never reshape."
+_AGENT_NEXT_UNAVAILABLE: Final = (
+    "{n} item(s) this host cannot carry: state that limit in the receipt."
+)
+
+
+def overall_next_instruction(action: str, status: str, *, limitation_requests: bool = False) -> str:
+    """The instruction for one ``overall_next`` action, or empty for an unknown action."""
+
+    if type(action) is not str or action not in OVERALL_NEXT_INSTRUCTIONS:
+        return ""
+    if action == "work_open_findings" and limitation_requests:
+        return _OPEN_FINDINGS_WITH_REQUESTS
+    if action == "request_receipt" and status == "ready_with_limitations":
+        return _RECEIPT_WITH_LIMITATIONS
+    return OVERALL_NEXT_INSTRUCTIONS[action]
+
+
+def _field(value: object, name: str) -> object:
+    source = _mapping(value)
+    if source is not None:
+        return source.get(name)
+    try:
+        return cast(object, getattr(value, name, None))
+    except Exception:
+        return None
+
+
+def _subject_refs(value: object) -> tuple[str, ...]:
+    return tuple(ref for ref in _refs(value) if _SUBJECT_REF.fullmatch(ref) is not None)
+
+
+def _ref_list(refs: tuple[str, ...]) -> str:
+    return ",".join(refs) if refs else "(no packet ref)"
+
+
+def render_agent_next(
+    overall_next: object, missing: object = (), *, limitation_requests: bool = False
+) -> str:
+    """The bounded first instruction of a check result for every host (W6, ADR-043 amendment).
+
+    Closed tokens, fixed sentences and admitted subject ids only: never reviewer prose, task text,
+    paths or command text. One ASCII line of at most ``MAX_AGENT_NEXT_BYTES``. ``overall_next``
+    and ``missing`` may be JSON mappings or typed rows. Returns ``""`` when there is no
+    continuation (``overall_next`` absent or malformed) and never raises.
+    """
+
+    try:
+        return _render_agent_next(overall_next, missing, limitation_requests=limitation_requests)
+    except Exception:
+        return ""
+
+
+def _render_agent_next(overall_next: object, missing: object, *, limitation_requests: bool) -> str:
+    action = _field(overall_next, "action")
+    status = _field(overall_next, "status")
+    if (
+        type(action) is not str
+        or action not in OVERALL_NEXT_INSTRUCTIONS
+        or type(status) is not str
+        or status not in _OVERALL_NEXT_STATUSES
+    ):
+        return ""
+    targets = _subject_refs(_field(overall_next, "target_refs"))
+    parts: list[Part] = [Part((f"Next: {action} ({status}).",), required=True, priority=0)]
+    if action == "supply_missing_input":
+        rows = tuple(
+            (kind, availability, tuple(ref for ref in refs if _SUBJECT_REF.fullmatch(ref)))
+            for kind, availability, refs in _missing_rows(missing)
+        )
+        own = tuple(row for row in rows if row[1] == "agent_suppliable")
+        limits = sum(row[1].startswith("yoetz_limit_") for row in rows)
+        unavailable = sum(row[1] == "structurally_unavailable_on_this_host" for row in rows)
+        parts.append(
+            Part(
+                (_AGENT_NEXT_SUPPLY_LEAD, _AGENT_NEXT_SUPPLY_LEAD_SHORT), required=True, priority=4
+            )
+        )
+        # Every item is named first (its refs, else their count); each kind's instruction then
+        # takes the room that remains, once per kind, in item order.
+        instructed: set[str] = set()
+        for index, (kind, _availability, refs) in enumerate(own, start=1):
+            parts.append(
+                Part(
+                    (
+                        f"({index}) {kind} for {_ref_list(refs)}.",
+                        f"({index}) {kind} for {len(refs)} target(s).",
+                    ),
+                    required=True,
+                    priority=1,
+                )
+            )
+            if kind not in instructed:
+                instructed.add(kind)
+                parts.append(Part((f"How: {publish_exactly(kind)}",), priority=2))
+        if not own and targets:
+            parts.append(
+                Part(list_variants("Targets: ", targets, joiner=",", suffix="."), priority=1)
+            )
+        parts.append(Part((SUPPLY_COUNTS_SENTENCE, SUPPLY_COUNTS_SHORT), required=True, priority=2))
+        if limits:
+            parts.append(
+                Part(
+                    (_AGENT_NEXT_LIMIT.format(n=limits), _AGENT_NEXT_LIMIT_SHORT.format(n=limits)),
+                    priority=2,
+                )
+            )
+        if unavailable:
+            parts.append(Part((_AGENT_NEXT_UNAVAILABLE.format(n=unavailable),), priority=2))
+    else:
+        instruction = overall_next_instruction(
+            action, status, limitation_requests=limitation_requests
+        )
+        parts.append(Part((instruction + ".",), required=True, priority=0))
+        if targets:
+            parts.append(
+                Part(
+                    list_variants(
+                        "Targets: ", targets, joiner=",", more=" (+{n} more)", suffix="."
+                    ),
+                    priority=1,
+                )
+            )
+    predicted = _field(overall_next, "predicted_conclusion")
+    if type(predicted) is str:
+        parts.append(
+            Part(
+                predicted_receipt_variants(
+                    {"conclusion": predicted, "reasons": ()},
+                    state="action_required" if status == "action_required" else "ready",
+                ),
+                priority=5,
+            )
+        )
+    text = compose_parts(parts, MAX_AGENT_NEXT_BYTES).text
+    if "\n" in text or not text.isascii() or not text.isprintable():
+        return ""
+    return text

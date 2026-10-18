@@ -92,6 +92,7 @@ from finishup.domain.receipts import (
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
+from finishup.domain.review_input_render import render_agent_next
 from finishup.domain.task_statement import TASK_STATEMENT_GAPS, SpecificationPreflight
 from finishup.domain.values import (
     REPOSITORY_GRANT_CONTINUATION_KIND,
@@ -344,6 +345,7 @@ __all__ = [
     "execute_check_commit",
     "normalize_check_scope",
     "prior_finding_ids",
+    "replayed_check_view",
     "run_deterministic_policies",
     "semantic_coverage_gap_code",
     "validate_semantic_judgment",
@@ -807,6 +809,9 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             if result.overall_next is None
             else {"overall_next": _overall_next_json(result.overall_next)}
         ),
+        # W6 (ADR-043 amendment): the bounded lead every host reads first, derived here so the
+        # MCP result, CLI JSON, an import's check result and a status recovery read agree.
+        **({} if not (agent_next := _agent_next(result)) else {"agent_next": agent_next}),
         **(
             {}
             if result.review_input_manifest is None
@@ -825,6 +830,27 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             }
         ),
     }
+
+
+def _agent_next(result: CheckCommitResult) -> str:
+    """The ``agent_next`` lead of a committed check, or empty without a continuation.
+
+    Derived at serialization from the attached ``overall_next`` and the recorded missing items,
+    so older ``check_recorded`` rows project it too. A committed check never fails on it.
+    """
+
+    if result.overall_next is None:
+        return ""
+    checklist = result.finding_checklist
+    limitation_requests = checklist is not None and any(
+        item.closure_class == "agent_work" and item.closure_basis == "limitation_requested"
+        for item in checklist.items
+    )
+    return render_agent_next(
+        result.overall_next,
+        result.missing_for_assessment,
+        limitation_requests=limitation_requests,
+    )
 
 
 def _checklist_json(checklist: CheckFindingChecklist) -> JsonValue:
@@ -959,6 +985,21 @@ async def _lineage_at_frontier(
         tested_through_sequence=frontier.sequence,
         base_coverage=base_coverage,
     )
+
+
+async def replayed_check_view(
+    app: Application, runtime: TaskRuntime, result: CheckCommitResult
+) -> CheckCommitResult:
+    """A stored committed check as a same-id replay returns it (before project advice).
+
+    The ledger result is frozen; the child preview, fact lineage, finding checklist and
+    ``overall_next`` are rebuilt from the exact recorded prefix. ``status view=operation`` reads
+    a finished check's outcome through this too (W6), so the two always agree.
+    """
+
+    replayed = await _attach_replayed_lineage_preview(runtime, result)
+    replayed = await _attach_replayed_fact_lineage(runtime, replayed)
+    return await _attach_finding_checklist(app, runtime, replayed)
 
 
 async def _attach_replayed_lineage_preview(
@@ -5524,6 +5565,8 @@ async def _review_follow_up(
             workspace_root=result.case_workspace_root,
             binary_paths=result.case_binary_paths,
             text_paths=result.case_text_paths,
+            excerpt_refs=result.case_excerpt_refs,
+            excerpt_parts=result.case_excerpt_parts,
             **_packet_limits(result, deterministic),
         )
         follow_up = plan_review_follow_up(
@@ -5916,9 +5959,7 @@ async def execute_check_commit(
                 digest,
             )
         if isinstance(frozen_or_replay, CheckCommitResult):
-            replayed = await _attach_replayed_lineage_preview(runtime, frozen_or_replay)
-            replayed = await _attach_replayed_fact_lineage(runtime, replayed)
-            replayed = await _attach_finding_checklist(app, runtime, replayed)
+            replayed = await replayed_check_view(app, runtime, frozen_or_replay)
             # The ledger replay is frozen; only the additive project-advice projection is current.
             return await _attach_current_project_advisory_notes(app, runtime.task_id, replayed)
         frozen = frozen_or_replay
@@ -6322,6 +6363,8 @@ async def execute_check_commit(
                 workspace_root=semantic_result.case_workspace_root,
                 binary_paths=semantic_result.case_binary_paths,
                 text_paths=semantic_result.case_text_paths,
+                excerpt_refs=semantic_result.case_excerpt_refs,
+                excerpt_parts=semantic_result.case_excerpt_parts,
                 **_packet_limits(semantic_result, deterministic),
             )
             declared_gaps |= missing.gaps

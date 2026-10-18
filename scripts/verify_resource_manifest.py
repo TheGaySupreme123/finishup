@@ -198,6 +198,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/check-agent-next-1.5.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/check-inspection-1.4.0.case.json",
         "canonical_vector",
         "application/json",

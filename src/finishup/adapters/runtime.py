@@ -21,6 +21,7 @@ from finishup.ports.keys import BundleKeys, KeyStoreError, KeyStoreReason
 from finishup.ports.ledger import (
     CaseAvailabilityFacts,
     CheckAdmissionRecord,
+    CheckCommitResult,
     LedgerPort,
     LedgerRecord,
     OperationRecord,
@@ -367,6 +368,13 @@ class _ReadLedger:
         self, writer_id: str, operation_id: str
     ) -> OperationRecord | None:
         return await self._value.lookup_task_operation(writer_id, operation_id)
+
+    async def load_check_result(
+        self, writer_id: str, operation_id: str
+    ) -> CheckCommitResult | None:
+        """Read one completed check's stored result for its operation page (W6)."""
+
+        return await self._value.load_check_result(writer_id, operation_id)
 
     async def load_disclosure_wait(
         self, writer_id: str, operation_id: str
