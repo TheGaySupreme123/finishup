@@ -54,6 +54,9 @@ from finishup.ports.change_capture import (
 
 __all__ = [
     "MAX_TASK_INPUT_READ_BYTES",
+    "clear_cut",
+    "list_beneath",
+    "read_text_beneath",
     "read_ends_beneath",
     "read_outside_inputs",
     "OutsideSnapshotRead",
@@ -632,6 +635,92 @@ def _outside_files(
         for descriptor in descriptors.values():
             if descriptor is not None:
                 os.close(descriptor)
+
+
+def clear_cut(data: bytes, cut: int, keep: Literal["head", "tail"]) -> int:
+    """``cut`` moved clear of any credential the shared scanner recognizes (``_cut_clear``)."""
+
+    return _cut_clear(data, cut, keep)
+
+
+def _reviewer_open(
+    root: str, relative: str, excluded: tuple[str, ...]
+) -> tuple[int, bytes, _Trust]:
+    """The open root, the checked relative path and the trust, for one reviewer read (#1118).
+
+    The same trusted walk as the outside read: ``_beneath`` refuses hidden and credential-named
+    components, ``excluded`` directories are refused by path and by device and inode.
+    """
+
+    identities = _excluded_identities(excluded)
+    folded = tuple(posixpath.normpath(path).casefold() for path in excluded if path.startswith("/"))
+    full = posixpath.join(root, relative) if relative else root
+    located = _beneath(full, (root,))
+    escapes = relative.startswith("/") or ".." in relative.split("/")
+    if identities is None or located is None or escapes or _folded_inside(full, folded):
+        raise PermissionError("reviewer_read_refused")
+    owners = frozenset({0, os.geteuid() if hasattr(os, "geteuid") else os.getuid()})
+    trust = _Trust(owners, identities)
+    descriptor = _open_root(root, trust)
+    if descriptor is None:
+        raise PermissionError("reviewer_read_refused")
+    return descriptor, located[1], trust
+
+
+def read_text_beneath(
+    root: str,
+    relative: str,
+    *,
+    excluded: tuple[str, ...] = (),
+    limit: int = MAX_TASK_INPUT_READ_BYTES,
+) -> tuple[bytes, int] | None:
+    """Up to ``limit`` leading bytes and the size of one file beneath ``root``, or ``None``."""
+
+    try:
+        descriptor, path, trust = _reviewer_open(root, relative, excluded)
+    except PermissionError:
+        return None
+    try:
+        ends = _read_ends(descriptor, path, owners=trust.owners, head_limit=limit, trust=trust)
+    finally:
+        os.close(descriptor)
+    return None if ends is None else (ends[0], ends[2])
+
+
+def list_beneath(
+    root: str, relative: str, *, excluded: tuple[str, ...] = (), inspect: int = 128
+) -> tuple[tuple[str, bool], ...] | None:
+    """``(name, is_directory)`` of the visible entries of one directory beneath ``root``.
+
+    At most ``inspect`` names are examined, in name order. Hidden and credential-named entries,
+    links and entries of an untrusted kind are left out. ``None`` when the directory is refused.
+    """
+
+    try:
+        descriptor, path, trust = _reviewer_open(root, relative, excluded)
+    except PermissionError:
+        return None
+    opened = [descriptor]
+    try:
+        current = descriptor
+        for part in [part for part in path.split(b"/") if part]:
+            current = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
+            opened.append(current)
+            if not trust.directory(os.fstat(current)):
+                return None
+        entries: list[tuple[str, bool]] = []
+        for name in sorted(os.listdir(current))[:inspect]:
+            facts = os.stat(name, dir_fd=current, follow_symlinks=False)
+            if name.startswith(".") or credential_named_bytes(name.encode("utf-8", "replace")):
+                continue
+            if stat.S_ISREG(facts.st_mode) or trust.directory(facts):
+                entries.append((name, stat.S_ISDIR(facts.st_mode)))
+        return tuple(entries)
+    except OSError:
+        return None
+    finally:
+        for item in reversed(opened):
+            os.close(item)
 
 
 def _is_directory_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> bool:

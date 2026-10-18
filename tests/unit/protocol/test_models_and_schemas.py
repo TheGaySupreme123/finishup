@@ -1376,7 +1376,9 @@ def test_protocol_models_public_exports_are_closed() -> None:
         StatusProjectPageModel
         ReceiptChildOutcomeModel ReceiptChildrenModel
         ProviderChallengeModel ProviderJudgmentChallengesModel
-        ProviderJudgmentEnvelopeModel
+        ProviderJudgmentEnvelopeModel ReadFileListArgsModel ReadFileTextArgsModel
+        ReadLedgerArgsModel ReadPacketSectionArgsModel ReviewerActionModel
+        ReviewerFileActionModel ReviewerLedgerActionModel ReviewerPacketActionModel
         ProviderJudgmentInsufficientModel ProviderJudgmentModel ProviderMissingItemModel
         CheckMissingItemModel MAX_MISSING_FOR_ASSESSMENT MAX_MISSING_REASON_BYTES
         MAX_MISSING_TARGET_REFS MISSING_FOR_ASSESSMENT_KINDS MISSING_ITEM_AVAILABILITIES
@@ -3275,7 +3277,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 232  # n6 item 4: check-result and check-recorded 1.5.0
+    assert SCHEMA_MEMBER_COUNT == 233  # #1118 unit 2: reviewer-reply 1.0.0
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3360,8 +3362,8 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_103
-    )  # #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_130
+    )  # #1118 unit 2 +27 (reviewer-reply 1.0.0), #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
     # W6 #1107 +6 (status check_outcome and its overall_next/missing item defs),
     # +1 (review of PR #1088: reduced success server_filled),
     # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
@@ -3380,7 +3382,7 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
     event_versions = event_schema_versions(catalog)
     assert request_versions is catalog.request_result_versions
     assert event_versions is catalog.event_schema_versions
-    assert len(request_versions) == 54
+    assert len(request_versions) == 55  # #1118 unit 2: reviewer-reply
     assert len(event_versions) == 29
     assert tuple(request_versions) == tuple(sorted(request_versions, key=str.encode))
     assert tuple(event_versions) == tuple(sorted(event_versions, key=str.encode))
