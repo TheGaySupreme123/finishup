@@ -147,6 +147,27 @@ advisory: FinishUP records it, and it verifies nothing by itself."""
 _PACKET_ONLY: Final = (
     ("Review only the supplied packet.", "Review the supplied packet and what your reads return."),
     ("invent repository facts, fetch more context, overrule", "invent repository facts, overrule"),
+    # #1118 unit 4: no in-check follow-up packet exists on this path, and a linked supply no
+    # longer retires a request, so the two packet-control rules give way to one short rule.
+    (
+        "An item in a prior_missing_for_assessment timeline item lists in supplied_since the "
+        "material of that kind recorded since for its target_refs (any such material when it "
+        "names none): what the agent published, and each re-run of a requested command that "
+        "FinishUP observed; list it again only if you cite one of those refs and say why it is "
+        "still insufficient.",
+        "An item in a prior_missing_for_assessment timeline item is an earlier request; "
+        "supplied_since names what was recorded for it since. Read what you need first; list an "
+        "item again only with a reason that says what is still missing.",
+    ),
+    (
+        "When review_packet.provider_input_manifest has follow_up_round, this packet answers "
+        "the missing_for_assessment you returned earlier in this same check: each of its "
+        "missing_inputs rows is one item you asked for, and supplied_refs name the recorded "
+        "excerpts FinishUP added to this packet for it (status pending: it could add none). "
+        "Judge with them; list such an item again only if you cite those refs and say why they "
+        "are still insufficient.\n",
+        "",
+    ),
 )
 
 

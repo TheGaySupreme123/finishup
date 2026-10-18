@@ -568,20 +568,14 @@ command that differs from the one observed. Every provider — the Codex subscri
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing
 `semantic_required` for each check, not as a plan item.
 
-When the reviewer cannot assess the packet and names recorded content FinishUP already holds — the
-output of a recorded run, its exact command, or a captured edit the packet had no room for — FinishUP
-answers inside the same check: it sends the packet again with that content first and asks again, up
-to three times. Each follow-up packet follows the same policy, limits and never-send rules as the
-first and is its own disclosure with its own privacy receipt, and the content added this way takes
-at most half of the packet's excerpt room. FinishUP tracks what each packet carried part by part, so
-the parts of a long capture the first packet had no room for can still be added, and a part already
-sent is never sent again as if it were new. When the reviewer asks for the current diff of a file
-an earlier captured edit changed, FinishUP also sends that file's current section from the change it
-read for this check, never a fresh read of your repository. The check records the last answer; the
-check result and the receipt say which follow-up round it answered and what FinishUP added. A
-follow-up that fails ends
-the check the way a failed review does. Anything else the reviewer names (the task statement, plan
-or claim text, or material only the agent can record) still comes back to the agent as before.
+When the reviewer cannot assess the packet, FinishUP no longer resends the packet inside the check.
+Before it judges, the reviewer may choose up to three reads of its own: a part of the packet,
+recorded records of this task, or a task file in the workspace or in a folder you admitted. Each
+read is at most 8 KiB, all reads together at most 24 KiB, and each passes the same policy, limits
+and never-send rules as the packet. What it read is recorded. Use local-only review or withhold
+repository excerpts to stop file reads; remove an admitted folder to stop reads from it. Whatever
+the reviewer still needs comes back to the agent, with the reviewer's own reason in the review
+summary.
 
 AI-powered output is advisory, provenance-labeled, and fenced by fixed rules. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.

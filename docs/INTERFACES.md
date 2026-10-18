@@ -9793,7 +9793,10 @@ optional `missing_for_assessment` (check-result 1.3.0, unreleased, additive) and
 check text list each item and its availability; status, TUI and receipts carry the gap codes. The
 reviewer's reason stays in the encrypted durable semantic response object.
 
-In-check follow-up (issue #1047, ADR-006). While a review concludes `insufficient_packet` and names
+In-check follow-up (issue #1047, ADR-006). **Superseded by #1118 unit 4: checks no longer start
+follow-up rounds; the reviewer reads permitted evidence itself ("Reviewer loop"). What follows
+describes recorded follow-up jobs and manifests, which old ledgers keep and FinishUP still decodes
+and renders.** While a review concludes `insufficient_packet` and names
 a `current_diff_for_path`, `verification_output`, `command_identity` or (since issue #1102) `other`
 item that the fence kept as
 `agent_suppliable` or `yoetz_limit_packet_room` and whose targets FinishUP holds rows for

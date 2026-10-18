@@ -1933,6 +1933,10 @@ claiming completion was never judged for completeness. Decisions:
 
 ### In-check follow-up rounds (2026-10-12, issue #1047)
 
+**Superseded (#1118 unit 4):** the check no longer starts follow-up rounds; see "Residual
+requests, linked supply and required-review limits" below. Recorded follow-up jobs and manifests
+stay readable.
+
 **Decision (owner, 2026-10-12; privacy/egress gate acknowledged by the owner's request).** When a
 review concludes `insufficient_packet` and names content FinishUP itself holds, FinishUP answers the
 request inside the same `check` and asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times.
@@ -2449,6 +2453,13 @@ a request:
   stop applies to `semantic_required` checks too; such a check skips the redispatch, discloses
   `semantic_review_skipped_insufficient_packet` and reads `incomplete_check` (required review not
   satisfied), never success or a local fallback.
+- **No more in-check follow-up rounds.** `check._review_follow_up` (insufficient -> re-rank ->
+  rebuild the whole packet -> a new job, up to three rounds at half the excerpt budget) is deleted;
+  the reviewer loop's own reads replace it, and the loop instruction drops the `follow_up_round` and
+  cite-to-re-raise rules for one short rule (read first; re-raise only with a reason). The
+  evaluator and case builder still decode and render recorded follow-up jobs and manifests for old
+  ledgers; their composition path is retired once the loop is wired through the evaluator
+  (unit 3).
 - **Verification oracles follow `cd` (AIP-2).** Operands of a recorded verification command
   resolve against literal `cd`/`pushd` directories; an unresolvable change omits them and discloses
   `verification_input_directory_unresolved`. **Task-statement paths keep `./` (AIP-5)**: `./x` is the

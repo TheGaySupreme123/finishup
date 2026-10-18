@@ -227,8 +227,9 @@ async def test_a_round_stopped_after_one_retry_never_calls_the_reviewer() -> Non
     assert result.status is SemanticStatus.NOT_REQUESTED
 
 
-async def test_the_round_stop_reads_the_frozen_ledger_prefix_and_spares_required_checks() -> None:
-    """tb4n1 D3: the stop is decided from recorded checks; ``semantic_required`` always reviews."""
+async def test_the_round_stop_reads_the_frozen_ledger_prefix_and_binds_required_checks() -> None:
+    """tb4n1 D3: the stop is decided from recorded checks; since #1118 unit 4 (AIM-5) it binds
+    ``semantic_required`` too, and only a local-only check never asks."""
 
     from finishup.application.check import (
         _review_round_stopped_at,  # pyright: ignore[reportPrivateUsage]
@@ -247,7 +248,7 @@ async def test_the_round_stop_reads_the_frozen_ledger_prefix_and_spares_required
     frozen = SimpleNamespace(case=SimpleNamespace(frontier=SimpleNamespace(sequence=7)))
     for mode, expected in (
         ("semantic_if_configured", True),
-        ("semantic_required", False),
+        ("semantic_required", True),
         ("deterministic_only", False),
     ):
         request = SimpleNamespace(mode=mode, request_id="req_test")
@@ -257,4 +258,4 @@ async def test_the_round_stop_reads_the_frozen_ledger_prefix_and_spares_required
             )
             is expected
         )
-    assert seen == [7]
+    assert seen == [7, 7]

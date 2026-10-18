@@ -390,3 +390,49 @@ async def test_listing_snapshots_budgets_and_step_replay(tmp_path: Path) -> None
     assert store.reserve("sjb_1:read:1", "sha256:a") == b"{}"
     with pytest.raises(StepConflict):
         store.reserve("sjb_1:read:1", "sha256:b")
+
+
+# #1118 unit 4: delivery of what the reviewer read
+
+
+def test_the_loop_instruction_drops_the_packet_follow_up_rules() -> None:
+    assert "follow_up_round" not in REVIEWER_LOOP_INSTRUCTION
+    assert "list it again only if you cite" not in REVIEWER_LOOP_INSTRUCTION
+    assert "Read what you need first" in REVIEWER_LOOP_INSTRUCTION
+
+
+@pytest.mark.anyio
+async def test_a_real_loop_history_summarizes_by_alias_and_standing_never_path(
+    tmp_path: Path,
+) -> None:
+    from finishup.domain.reviewer_reads import (
+        render_reviewer_reads_lines,
+        summarize_reviewer_reads,
+    )
+
+    work = tmp_path / "work"
+    (work / "src").mkdir(parents=True)
+    (work / "src" / "private_name.py").write_text("VALUE = 1\n")
+    w1 = ReadRoot("w1", path=str(work.resolve()), subject_refs=(_CLM,))
+    loop, _broker, _model, _ = _setup(
+        _read(
+            "read_file",
+            root_id="w1",
+            path="src/private_name.py",
+            mode="text",
+            start_line=1,
+            line_count=5,
+        ),
+        _read("read_file", root_id="w1", path=".env", mode="text", start_line=1, line_count=5),
+        _FINAL,
+        roots=(w1,),
+    )
+    outcome = await loop.run()
+    summary = summarize_reviewer_reads((turn.role, turn.content) for turn in outcome.history)
+    assert summary is not None and summary["reads_used"] == 2
+    lines = render_reviewer_reads_lines(summary)
+    assert lines[0].startswith("Reviewer reads: 2 of 3,")
+    assert "read_file: ok" in lines[1] and "w1 (workspace_content, read_time)" in lines[1]
+    assert lines[2].startswith("- 2. read_file: denied forbidden_path")
+    rendered = json.dumps(summary) + "\n".join(lines)
+    assert "private_name" not in rendered and "VALUE" not in rendered and ".env" not in rendered
