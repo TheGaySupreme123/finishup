@@ -3638,7 +3638,11 @@ supply it and what counts, within 2,048 bytes, so it always lands inside the 6,0
 `overall_next` and `missing_for_assessment` follow it, ahead of findings and every bulky field. A
 lost or cut result is recovered with `status view=operation` for the check's `request_id`: the page
 now carries `check_outcome` with the same verdict, `agent_next`, `overall_next` and missing items a
-same-id resend returns, so an agent never replays the check through the CLI to read them.
+same-id resend returns, so an agent never replays the check through the CLI to read them. Gap:
+after a later material record (a same-task attach's `session_resumed`, or any further publish) the
+page, like a resend, omits `agent_next` and `overall_next`, because both are derived at the check's
+result frontier and the ledger no longer re-reads that prefix (ADR-046); the verdict and missing
+items still come back. Follow-up owned by #1107.
 
 **Supply on Codex.** The captured output of a shell re-run of the target's exact command that
 FinishUP observed after the request counts as supplying a targeted `verification_output` (or

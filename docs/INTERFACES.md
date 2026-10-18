@@ -8866,7 +8866,11 @@ the exact shapes check-result 1.5.0 gives them. They are rebuilt exactly as a sa
 check rebuilds them (`LedgerPort.load_check_result`, then `application.check.replayed_check_view`
 and `check_internal_json`), so the page and a resend agree byte for byte; a check an older build
 recorded projects with its stored missing items (none on 1.2.0) and an `overall_next` derived at its
-result frontier. The page-level `outcome`, frontiers and events keep the non-publish completion rule.
+result frontier. Like a replay's, `overall_next` and `agent_next` are derived at the check's result
+frontier and are omitted when the ledger no longer re-reads that prefix as a receipt basis (a later
+record other than an observation-authored one or `receipt_recorded`, such as the `session_resumed`
+a same-task attach appends; ADR-046); the verdict, missing items, review status and frontier are
+always carried. The page-level `outcome`, frontiers and events keep the non-publish completion rule.
 Best effort: any failure omits the object and records the bounded diagnostic
 `status_check_outcome_unavailable`; recovery never fails on it. The CLI (`Check outcome:` and
 `Next:` lines plus the missing rows), the terminal interface (through the same renderer) and the MCP
@@ -10127,7 +10131,8 @@ Wire (the earlier checklist fields remain available in their original versions):
   for `supply_missing_input` it names each `agent_suppliable` item with its kind, targets and how to
   supply it, what counts as supplied, and the FinishUP-limit count; for every other action it
   carries the one shared per-action instruction (`domain.review_input_render.OVERALL_NEXT_INSTRUCTIONS`,
-  also the CLI's `Overall next` line) and its targets. It is absent exactly when `overall_next` is.
+  also the CLI's `Overall next` line) and its targets. It is absent whenever `overall_next` is
+  absent, and omitted (never null) if composition fails.
   Field order on the MCP wire is `... verdict, agent_next, overall_next, missing_for_assessment,
   findings, ...`: the continuation precedes every bulky field (Codex shows a model only the head and
   tail of a large structured result), and a new bulky field goes after `missing_for_assessment`.

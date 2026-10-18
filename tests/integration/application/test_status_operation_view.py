@@ -1056,11 +1056,13 @@ async def test_status_view_operation_survives_a_stranded_semantic_wait_check() -
 # --- W6 (issue #1107): a finished check's outcome on its operation page ----------------------------
 
 
-async def _finished_check(base: int) -> tuple[Application, _WorkflowRuntime, object, str]:
+async def _finished_check(
+    base: int, *, refs: bool = False
+) -> tuple[Application, _WorkflowRuntime, object, str]:
     """A real deterministic check over one open obligation; returns its request id too."""
 
     app, runtime, _catalog = await _workflow_app()
-    started = await app.start(start_request(base, title="Operation view check outcome"))
+    started = await app.start(start_request(base, title="Operation view check outcome", refs=refs))
     published = await app.publish_work(
         PublishWorkRequest.model_validate(
             {
@@ -1143,6 +1145,44 @@ async def test_status_view_operation_returns_the_finished_checks_outcome() -> No
     # The page-level frontiers and events stay what a non-publish completion carries.
     assert page.result_frontier is None and page.accepted_events == ()
     assert outcome.agent_next == replayed["agent_next"]
+
+
+async def test_status_view_operation_outcome_survives_writer_rotation() -> None:
+    """After a same-task attach or compaction, the successor writer reads the prior writer's check."""
+
+    app, _runtime, context, check_req_id = await _finished_check(1840, refs=True)
+    started, check = cast(tuple[StartInternalResult, CheckRequest], context)
+    replay = await app.check(check)
+    assert type(replay) is CheckCommitResult and replay.outcome == "replayed"
+    replayed = check_internal_json(replay)
+
+    # ``start mode=create_or_attach`` on the same task mints the successor session and writer.
+    attached = await app.start(start_request(1850, title="Operation view check outcome", refs=True))
+    assert attached.outcome == "attached" and attached.task_id == started.task_id
+    assert attached.writer_id != started.writer_id
+    status = await app.status(
+        _status_operation_request(
+            session_id=attached.session_id,
+            writer_id=attached.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1904,
+        )
+    )
+    page = cast(StatusOperationPageModel, status.page)
+    assert page.found is True and page.state == "complete"
+    outcome = page.check_outcome
+    assert outcome is not None
+    wire = cast(Mapping[str, object], outcome.model_dump(mode="json", exclude_none=True))
+    for name in ("verdict", "semantic_status", "semantic_reason", "result_frontier"):
+        assert _thaw(wire.get(name)) == _thaw(replayed.get(name)), name
+    assert outcome.missing_for_assessment == () and "missing_for_assessment" not in replayed
+    # The continuation is derived at the check's result frontier, like a same-id replay's. The
+    # attach appended ``session_resumed``, so the ledger no longer re-reads that prefix as a
+    # receipt basis (ADR-046); the page then omits the lead and next action rather than derive
+    # them at a later frontier, and never states a different one.
+    assert type(replayed.get("agent_next")) is str
+    for name in ("agent_next", "overall_next"):
+        assert wire.get(name) is None or _thaw(wire[name]) == _thaw(replayed.get(name)), name
 
 
 async def test_status_view_operation_outcome_for_a_check_recorded_by_an_older_build() -> None:

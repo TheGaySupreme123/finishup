@@ -197,7 +197,9 @@ per-kind "publish exactly" instruction reached only the text channel, which Code
 - `status view=operation` returns a finished check's `check_outcome` (status-result 1.4.0, extended
   in place): the verdict, `agent_next`, `overall_next`, `missing_for_assessment`, the AI-powered
   review status, reason and conclusion and the result frontier, rebuilt exactly as a same-id replay
-  rebuilds them (`ledger.load_check_result`, then `check.replayed_check_view`). It is the recovery
+  rebuilds them (`ledger.load_check_result`, then `check.replayed_check_view`), so `agent_next` and
+  `overall_next` are omitted, like a replay's, once a later material record (such as an attach's
+  `session_resumed`) stops the ledger re-reading the check's prefix. It is the recovery
   read for a lost or cut check result; a failure omits it with the bounded diagnostic
   `status_check_outcome_unavailable` and never fails recovery.
 - A remedy that exists only on the text channel does not reach a Codex model; anything an agent
@@ -208,4 +210,5 @@ field; Cursor's canonical text copy sorts `agent_next` first or second. Up to 2 
 output per check result. A newer service with an older bridge would reject the new optional field
 (closed model); that skew is gated by the version-manifest and control-result digests, as for every
 earlier optional field. Canonical vectors: `fixtures/canonical/check-agent-next-1.5.0.case.json`
-(`scripts/generate_review_result_delivery_fixture.py`).
+(AGN-001) and `fixtures/canonical/status-check-outcome-1.4.0.case.json` (AGN-002, the status
+page's `check_outcome`), both from `scripts/generate_review_result_delivery_fixture.py`.

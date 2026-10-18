@@ -24,7 +24,9 @@ finishup status --input - --json          # read the request from stdin
 has an unknown outcome, never a known failure.** Reuse the same `request_id` to retry, or call
 `status view=operation` with that `request_id` as a state lookup without reconstructing the
 original body. A `complete` publish returns stored frontiers and accepted event ids; other states
-report only what is honest for that state (`pending`/`quarantined`/`absent`/non-publish). An
+report only what is honest for that state (`pending`/`quarantined`/`absent`/non-publish). A
+`complete` check's page also carries `check_outcome`: its verdict, `agent_next`, next action and
+missing items, the same a same-id resend returns, so a lost or cut check result needs no re-run. An
 `absent` check page may add an `admission` stage when FinishUP refused or is still admitting it.
 
 Field-level shapes live in [`docs/INTERFACES.md`](../INTERFACES.md); the JSON Schemas under
@@ -281,7 +283,11 @@ a check and cannot be cited as one. After any ambiguous write, prefer `view=oper
 within the authenticated task without requiring a byte-identical replay body. This survives a
 same-task attach that rotates the active session and writer, but never crosses into another task
 bundle. Stored outcome, frontiers, and accepted event ids are present only when the operation is a
-complete `publish_work`; other states omit them rather than invent detail.
+complete `publish_work`; other states omit them rather than invent detail. A complete check's page
+also carries `check_outcome`: its verdict, `agent_next`, next action and missing items, the same a
+same-id resend returns, so a lost or cut check result needs no re-run. Once later work is recorded
+(including a resumed session), the lead and next action may be left out; the verdict and missing
+items are always there.
 `view=obligations` includes each requested item and its exact unattempted subset, subject to the
 existing obligation-text projection policy, and its text states how to resolve an obligation:
 publish it again with every field as recorded, `status` `resolved`, and `resolution_evidence_refs`
