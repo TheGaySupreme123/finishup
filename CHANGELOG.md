@@ -678,10 +678,10 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 ### Fixed
 
 - Agents no longer have their tool calls refused for shapes the guidance told them to send (#1103).
-  A completion or correction claim that leaves out an empty `limitation_refs` or
-  `supersedes_claim_refs` is accepted as the empty list (a claim that leaves out a failed result it
-  must disclose is still refused and names it). A `respond` answer may list its `evidence_refs` in
-  any order or repeat one; it is the same request as the sorted list. A refused answer now names
+  A claim (`claim_recorded/1.1.0`) that leaves out an empty `limitation_refs` or
+  `supersedes_claim_refs` is accepted as the empty list and judged like one (a completion claim
+  that leaves out a failed result it must disclose is still refused and names it). A `respond`
+  answer may list its `evidence_refs` in any order; it is the same request as the sorted list. A refused answer now names
   the rule it broke and the field in its error, where it used to say only that the request was
   invalid. `read_guidance` reads `#publish-shapes` (and any other topic exactly one guidance page
   defines) when an agent attaches it to the wrong page, and the operating card writes that topic's

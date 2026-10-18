@@ -16,7 +16,7 @@ gets a fresh, named id: retry means sending it, and an in-memory guard refuses a
 id-less resend instead of guessing. The `replay_notice` field is retired. Golden vectors are added
 (CAN-022).
 **Amended 2026-10-18** (n7 RC3, [issue #1103](https://github.com/TheGaySupreme123/yoetz/issues/1103);
-design gate: protocol, requested by the maintainer's n7 brief and recorded on #1103): decision 7
+design gate: protocol, requested by the maintainer's n7 brief, whose goal #1103 states): decision 7
 also fills an allowlisted omitted empty payload set and canonicalizes `respond` `evidence_refs`, and
 a `respond` payload refusal names its reason. No schema, golden vector or result version changes.
 
@@ -211,9 +211,11 @@ a material transition, not typing UUIDs, timestamps and mirrors.
      Every other required list keeps its exact refusal: `supporting_refs`, a revision's
      `obligation_changes` and a plan's `obligation_refs` without a reason carry the record's
      substance, so an omission there is likelier a forgotten value than an empty one. A sent value
-     is never replaced. The default asserts nothing the domain does not still judge: a claim that
-     leaves a live failed or partial result out of an omitted `limitation_refs` is refused by
-     `limitation_refs_complete` and names the result. Like set order, the default is not named in
+     is never replaced. The default asserts nothing the domain does not still judge: an omitted set
+     is judged exactly like an explicit `[]`, so a completion claim that leaves a live failed,
+     partial or unknown result out of an omitted `limitation_refs` is refused by
+     `limitation_refs_complete` and names the result (a material claim is not held to that rule
+     either way). Like set order, the default is not named in
      `server_filled` (decision 8 records envelope provenance, and naming payload fields would
      version two result schemas), and an omitted set and an explicit `[]` are one request with one
      digest and one stored payload, so either form replays the other.
@@ -224,11 +226,14 @@ a material transition, not typing UUIDs, timestamps and mirrors.
      carries `reason_code`, the request `field` from a frozen pointer table, and
      `input_correction_new_identity` unless the reason maps its own continuation; its message names
      the corrective rule, so a host that reads only the structured body (Codex) gets it too. The
+     bounded text never renders a message, so `response_fields_invalid` also carries that rule as
+     a `REASON_REMEDIES` remedy for a host that reads only the text (Claude Code). The
      outer catch-alls of `respond` and `receipt` keep their messages and now carry `reason_code`.
 8. **Provenance is recorded, not inferred.**
-   - **What is recorded:** whenever anything was filled, every success, reduced success and
-     dry-run result carries `server_filled`. It lists `expected_frontier` when omitted and, for
-     each draft by batch index, the envelope fields.
+   - **What is recorded:** whenever an envelope field or the request frontier was filled, every
+     success, reduced success and dry-run result carries `server_filled`. It lists
+     `expected_frontier` when omitted and, for each draft by batch index, the envelope fields. An
+     omitted empty payload set (decision 7) is the empty set and is not listed.
    - **Where it is stored:** the publish operation's stored result keeps the same record. It holds
      field names only, never caller content. A replay and `status view=operation` return the
      committed operation's stored record, never one recomputed from the retry body (round-1

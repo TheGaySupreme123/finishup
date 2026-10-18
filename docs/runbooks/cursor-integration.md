@@ -2394,7 +2394,8 @@ models, the MCP bridge's `read_guidance` dispatch and error hints, the status te
 - A `read_guidance` anchor that names exactly one catalogued topic of its document (the heading's
   slug, an explicit anchor beside it, or words only that anchor contains) reads that topic; the
   result's `uri` is the catalogued one. An ambiguous or unknown anchor is still refused with the
-  document's anchors.
+  document's anchors, unless it is exactly the catalogued anchor of one other guidance document
+  (n7, #1103; see below).
 - A resolution without `resolution_evidence_refs` (omitted, empty or the wrong id kind) is refused
   with the sentence that says what the list holds; the recipe sentence rides the bounded status summary, which Cursor does not render (its text channel is the canonical JSON body), so a Cursor agent reads the same recipe in `request-templates.md#publish-work-plan-plus-obligation` and in that refusal.
 - A run linked to a requested command with a `command` action (the PL6-3 link) is a disclosed
@@ -2408,6 +2409,40 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Cursor transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+### Avoidable MCP rejections on Cursor (n7 RC3, #1103)
+
+Host decision: supported, no host-specific code. Every change lives in the shared publish and
+respond request models, the `respond` and `receipt` applications and the `read_guidance`
+resolver, so Cursor takes the same path as the other hosts. What a Cursor agent can rely on:
+
+- A `claim_recorded/1.1.0` draft may leave out an empty `limitation_refs` and
+  `supersedes_claim_refs`, and a plan beside `no_obligations_reason` an empty `obligation_refs`.
+  Each is the empty list: one request, digest and stored payload with the explicit `[]`, and not
+  named in `server_filled`. It is judged like an explicit `[]`, so a completion claim that leaves a
+  live failed, partial or unknown result out is still refused (`limitation_refs_complete`).
+  `supporting_refs`, a revision's `obligation_changes` and evidence `observed_at` stay required.
+- A `respond` answer may list its `evidence_refs` in any order: the request model sorts it before
+  the schema check, so it is the same request as the sorted list. The service also drops a
+  repeat, but the advertised schema keeps `uniqueItems`, so send each id once.
+- A refused `respond` payload is `INVALID_REQUEST` with `safe_details.reason_code`, a `field`
+  pointer from a frozen table and a continuation (`input_correction_new_identity` unless the
+  reason maps its own), and its message states the rule. On Cursor, the text channel is the
+  canonical JSON copy of the body, so the agent sees `safe_details` and the message, rule
+  included.
+- The `respond` and `receipt` catch-alls keep their messages and add `reason_code`.
+- A `read_guidance` anchor unknown on its page (or any anchor on a focused page) that is exactly
+  the catalogued anchor of one other guidance document reads that topic, and the result's `uri`
+  names it: `agent-instructions.md#publish-shapes` reads `request-templates.md#publish-shapes`. An
+  anchor two documents share, an alias and a word subset never cross documents.
+
+Verification: `tests/unit/protocol/test_publish_payload_empty_sets.py`,
+`tests/unit/protocol/test_respond_reference_sets.py`,
+`tests/integration/application/test_publish_server_filled.py`,
+`tests/integration/application/test_respond_status_receipt.py` (the payload refusal rendered for
+the Codex, Claude Code and Cursor profiles), `tests/unit/mcp/test_guidance_topics.py` and
+`tests/unit/mcp/test_tb4n4_call_traps.py`; the n7 exports were not replayed, and a live Cursor
+transcript on macOS, Linux and WSL 2 is not recorded for this change.
 
 ### Receipt privacy ceiling (N5)
 

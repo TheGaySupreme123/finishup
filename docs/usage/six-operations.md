@@ -74,11 +74,13 @@ reference lists (empty, or copied from the payload where they repeat it), and th
 it reads when it takes the request, so a change another participant makes meanwhile is refused. A
 current-version claim may also leave out an empty `limitation_refs` or `supersedes_claim_refs`,
 and a plan with a `no_obligations_reason` an empty `obligation_refs`: each is simply the empty
-list, and a claim that leaves out a failed result it must disclose is still refused and names it.
+list, judged like one: a completion claim that leaves out a failed result it must disclose is still
+refused and names it.
 Ids inside payloads and the time you observed evidence (`observed_at`) stay yours to send.
 Reference lists are put in canonical order for you; text lists are kept exactly as you wrote them.
-The result's `server_filled` names every event value FinishUP filled, and so does the operation
-record. Send a value when you need it, for example the frontier you last read when what you
+The result's `server_filled` names every event id, time, envelope list and frontier FinishUP
+filled, and so does the operation record; an omitted empty claim or plan list is simply the empty
+list and is not listed. Send a value when you need it, for example the frontier you last read when what you
 publish depends on it.
 
 A plan must make completion scope inspectable. Normally, list its obligation refs. If no
@@ -260,7 +262,7 @@ decision) discloses it, with no repair attempt required, and the receipt lists t
 instead of reading clean. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
 cannot prove after a later check because of its own limits: say how you verified the repair in
 `reason` and cite at least one recorded evidence or result id in `evidence_refs` (list them in any
-order; FinishUP sorts them and drops repeats). It is final, is
+order; FinishUP sorts them). It is final, is
 not your work any more, and keeps the receipt at best `insufficient_coverage`; FinishUP refuses it
 with `finding_not_rechecked` before a later check, or `finding_not_proof_limited` while that check
 still sees the issue. A finding that is already `verified_resolved`, `acknowledged_not_done`,

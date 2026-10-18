@@ -888,8 +888,8 @@ takes no response, and nothing is recorded for one.
 `acknowledged` on an AI-powered finding needs one concrete resolution attempt you recorded after
 the finding, cited in `evidence_refs`: the `evd_` or `res_` id of the repair, requested evidence or
 verification result (ids named only in `reason` do not count). A limitation request or an
-`answer_question` step needs none. List `evidence_refs` in any order: FinishUP sorts them and drops
-repeats.
+`answer_question` step needs none. List `evidence_refs` in any order, each id once: FinishUP sorts
+them.
 
 A reviewer finding whose `requested_next_step` is `state_unresolved_limitation` asks you to state a
 limit, not to do work, and your answer decides what it means. If the requirement may be met but

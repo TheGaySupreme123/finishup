@@ -271,9 +271,9 @@ def default_empty_payload_sets(drafts: object) -> object:
     """Fill an omitted empty reference set :data:`PAYLOAD_EMPTY_SET_DEFAULTS` names (n7 RC3a).
 
     Like set canonicalization this changes no assertion: the empty set is the field's only meaning
-    when absent (for a 1.1.0 claim, the ``claim_recorded/1.0.0`` meaning), and the domain's own
-    invariants still judge it (``limitation_refs_complete`` refuses a claim that leaves a live
-    non-success result out). It therefore enters neither ``server_filled`` nor the request
+    when absent (for a 1.1.0 claim, the ``claim_recorded/1.0.0`` meaning), and the domain judges
+    it exactly like an explicit ``[]`` (``limitation_refs_complete`` refuses a completion claim
+    that leaves a live non-success result out). It therefore enters neither ``server_filled`` nor the request
     identity as a marker: an omitted set and an explicit ``[]`` are one request (one digest)
     (ADR-050 decision 7). The same object is returned when nothing changes.
     """

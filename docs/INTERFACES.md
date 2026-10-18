@@ -318,7 +318,10 @@ pointer only from the frozen table (`/duplicate_of_finding_id`, `/evidence_refs`
 `/waiver_expiry`), and `continuation: input_correction_new_identity` unless the reason maps its own
 (`unsorted_set_field` keeps `sorted_set_required`); the message names the corrective rule for
 `duplicate_set_member`, `response_fields_invalid`, `set_member_not_ascii` and `unsorted_set_field`,
-so a host that reads only `structuredContent` sees it. The outer `respond` and `receipt`
+so a host that reads only `structuredContent` sees it. The bounded text summary never renders a
+message, so `response_fields_invalid` also carries its rule as a `REASON_REMEDIES` remedy, which
+the text renders as `Remedy:` (the other three are set reasons shared with other operations, and
+canonicalization and the id pattern leave them unreachable for a request the schema admits). The outer `respond` and `receipt`
 catch-alls keep their messages and add `reason_code`.
 
 Host-owned request identity (ADR-050 decision 2, revised by round 2 of the PR #1088 review).
@@ -644,7 +647,12 @@ The anchor names a topic when it is the topic's anchor once case, `_` and punctu
 slug way (`publish_work-decision`), an explicit `<a id>` target the document writes under that
 topic's heading (`publication-policy.md#attempt-accounting`), or words that all appear in that
 topic's anchor and in no other anchor of the document (`request-templates.md#decision`). Two or more
-candidates never resolve; `resources/read` keeps exact URIs. The guesses tb4n5 agents made are
+candidates never resolve; `resources/read` keeps exact URIs. When the named document (or a focused
+page, which catalogues no topics) yields no candidate at all, an anchor that folds to exactly the
+catalogued anchor of exactly one other guidance document reads that topic, and the result's `uri`
+names it (n7, issue #1103): `agent-instructions.md#publish-shapes` reads
+`request-templates.md#publish-shapes`. An anchor two documents share, an alias and a word subset
+never cross documents. The guesses tb4n5 agents made are
 explicit `<a id>` aliases (#1049): `request-templates.md#publish-work` and
 `#ordinary-publication` read `#publication-templates` (the list of every `publish_work` template's
 exact URI), `request-templates.md#plan-and-obligations` reads
@@ -652,7 +660,7 @@ exact URI), `request-templates.md#plan-and-obligations` reads
 `#obligations-evidence-and-claims`. Ordinary publish is the one topic
 `request-templates.md#publish-shapes` (plan, obligation, action, result, evidence, claim, revised
 plan, and decision). Any other anchor outside the catalog
-on a registered document is
+on a registered document, and on no other document, is
 rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
 document's registered anchors plus the whole-document retry; an unregistered document lists the
 registered document and focused-topic URIs. Only catalog constants appear; the caller's URI is
