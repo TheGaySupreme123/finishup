@@ -21,7 +21,7 @@ from builders.codex_replay import (
     session_start,
     sweep_all,
 )
-from finishup.domain.observation import ObservationStatusQuery
+from finishup.domain.observation import ObservationGapCode, ObservationStatusQuery
 from finishup.kernel.later_material import LaterMaterialClass, classify_later_material
 from finishup.kernel.observed_failures import observed_event_ids_from_records
 from finishup.kernel.reducers import replay as reduce_replay
@@ -202,3 +202,42 @@ def test_an_ordinary_pending_command_is_still_no_edit(replay: _Replay) -> None:
     observed = observed_event_ids_from_records(records)
     cooperative = cooperative_event_ids_from_records(records)
     assert material_edit_recorded(state, observed, cooperative) is False
+
+
+_PATCH_THEN_TEST = _PATCH + "\npytest -q"
+
+
+def test_a_patch_then_test_compound_is_an_ordinary_call_whose_post_pairs(replay: _Replay) -> None:
+    """n7 RC2 (#1106): Codex intercepts only a sole ``apply_patch`` statement (0.159
+    ``invocation.rs``); a patch followed by a test runs in the shell and fires its post. Marking
+    it pre-only let an unrelated code-mode change close its pending attempt, so its own post then
+    arrived without a pre."""
+
+    session_start(replay)
+    _shell_pre(replay, "call_patch_test", _PATCH_THEN_TEST)
+    replay.append(_file_change("exec-0e5dcfc8-other"))
+    # A parallel call's hook reads the rollout (and that change) before this call's post.
+    _shell_pre(replay, "call_parallel", "ls")
+    replay.hook(
+        "PostToolUse",
+        tool_name="Bash",
+        tool_use_id="call_parallel",
+        tool_input={"command": "ls"},
+        tool_response="Exit code: 0\nOutput:\nsrc\n",
+    )
+    replay.hook(
+        "PostToolUse",
+        tool_name="Bash",
+        tool_use_id="call_patch_test",
+        tool_input={"command": _PATCH_THEN_TEST},
+        tool_response="Exit code: 0\nOutput:\n1 passed\n",
+    )
+    posts = [
+        envelope
+        for envelope in replay.store.list_envelopes(replay.commitment)
+        if envelope.event_kind == "PostToolUse"
+        and envelope.structural_payload.get("tool_call_id") == "call_patch_test"
+    ]
+    assert len(posts) == 1
+    assert ObservationGapCode.UNPAIRED_EVENT.value not in posts[0].gap_codes
+    assert _EXPIRED not in _gaps_after_the_session_ends(replay)

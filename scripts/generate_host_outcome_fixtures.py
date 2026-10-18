@@ -14,6 +14,11 @@ is derived from the Codex rust-v0.159.0 hook source. The harness did not archive
 so every case records that a raw-stdin capture is still pending; a later capture replaces the
 derived variant instead of being reconciled with it silently. Variants marked
 ``constructed_control`` are negative controls, not host shapes.
+
+OUT-005 pins the two copies of one direct Codex 0.159 ``exec_command`` call (#1106): the hook
+payload and the rollout ``function_call``/``function_call_output`` pair, derived from the Codex
+0.159.0 source. Both copies must carry the same command identity, and the output's own header
+is the call's exit.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ _CODEX_PATH: Final = "observations/codex-post-tool-outcomes-0.157.1.case.json"
 _CODEX_0159_PATH: Final = "observations/codex-post-tool-outcomes-0.159.0.case.json"
 _CLAUDE_PATH: Final = "observations/claude-code-bash-outcomes.case.json"
 _CURSOR_PATH: Final = "observations/cursor-shell-outcomes.case.json"
+_CODEX_CALL_IDENTITY_PATH: Final = "observations/codex-shell-call-identity-0.159.0.case.json"
 
 _CODEX_SESSION: Final = "019f9c41-5e2b-7c10-9a43-000000000910"
 _CODEX_THREAD: Final = "019f9c41-5e2b-7c10-9a43-000000000911"
@@ -840,11 +846,168 @@ def _cursor_case() -> dict[str, Any]:
     }
 
 
+_CALL_IDENTITY_SESSION: Final = "019fa1c7-2b3d-7e40-8c55-000000001106"
+_CALL_IDENTITY_SOURCE: Final = (
+    "Codex rust-v0.159.0 source: codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs "
+    "pre_tool_use_payload (tool_name Bash, tool_input.command = arguments.cmd); "
+    "codex-rs/core/src/tools/registry.rs (tool_use_id = call_id); "
+    "codex-rs/core/src/tools/handlers/shell_spec.rs (exec_command arguments); "
+    "codex-rs/core/src/tools/context.rs ExecCommandToolOutput::response_header "
+    "(function_call_output header)"
+)
+_CALL_IDENTITY_PATCH: Final = (
+    "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/placeholder.py\n@@\n"
+    "-PLACEHOLDER_OLD\n+PLACEHOLDER_NEW  # don't\n*** End Patch\nEOF\npython -m pytest -q"
+)
+
+
+def _call_identity_variants() -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Direct (non-code-mode) ``exec_command`` calls: hook payload, rollout rows, and the facts.
+
+    Each call is one hook ``PostToolUse`` (its ``PreToolUse`` drops ``tool_response``) and the
+    rollout's ``function_call``/``function_call_output`` pair on the same ``call_id``. Both copies
+    must commit to the same command and runner class whichever is recorded first (n7 RC2), and
+    the output's Codex-written header is the call's only exit (the 0.159 hook states none).
+    """
+
+    calls: tuple[tuple[str, str, str, str, int | None, str | None], ...] = (
+        (
+            "direct_test_exit_0",
+            "call_1106_test",
+            "python -m pytest -q",
+            "Process exited with code 0",
+            0,
+            None,
+        ),
+        (
+            "direct_patch_then_test_exit_1",
+            "call_1106_patch_test",
+            _CALL_IDENTITY_PATCH,
+            "Process exited with code 1",
+            1,
+            "workspace",
+        ),
+        (
+            "direct_build_still_running",
+            "call_1106_running",
+            "make build",
+            "Process running with session ID 7",
+            None,
+            None,
+        ),
+    )
+    hook: dict[str, Any] = {}
+    lines: list[dict[str, Any]] = [
+        {
+            "payload": {
+                "cli_version": "0.159.0",
+                "cwd": "/app",
+                "history_mode": "paginated",
+                "id": _CALL_IDENTITY_SESSION,
+                "originator": "codex_exec",
+                "session_id": _CALL_IDENTITY_SESSION,
+            },
+            "timestamp": "2026-10-17T09:00:00.000Z",
+            "type": "session_meta",
+        }
+    ]
+    expected: dict[str, Any] = {}
+    for index, (variant, call_id, command, status_line, exit_code, scope) in enumerate(calls):
+        hook[variant] = {
+            "event": "PostToolUse",
+            "payload": {
+                "cwd": "/app",
+                "hook_event_name": "PostToolUse",
+                "model": "PLACEHOLDER_MODEL",
+                "permission_mode": "default",
+                "session_id": _CALL_IDENTITY_SESSION,
+                "tool_input": {"command": command},
+                "tool_name": "Bash",
+                # 0.159 hands a Bash post the process output only: no exit fact.
+                "tool_response": f"{_PLACEHOLDER_OUTPUT}\n",
+                "tool_use_id": call_id,
+                "turn_id": "turn-1106",
+            },
+            "provenance": _DOCUMENTED,
+        }
+        second = f"{index + 1:02d}"
+        lines.append(
+            {
+                "payload": {
+                    "arguments": json.dumps(
+                        {"cmd": command, "workdir": "/app", "yield_time_ms": 10000},
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    "call_id": call_id,
+                    "id": f"fc_1106{index:02d}",
+                    "name": "exec_command",
+                    "type": "function_call",
+                },
+                "timestamp": f"2026-10-17T09:00:{second}.000Z",
+                "type": "response_item",
+            }
+        )
+        lines.append(
+            {
+                "payload": {
+                    "call_id": call_id,
+                    "output": _unified_exec(f"1106{index:02d}", "0.5123", status_line, 3),
+                    "type": "function_call_output",
+                },
+                "timestamp": f"2026-10-17T09:00:{second}.500Z",
+                "type": "response_item",
+            }
+        )
+        expected[variant] = {
+            "exit_status": exit_code,
+            "identity_matches_hook": True,
+            "runner_class": "build" if variant == "direct_build_still_running" else "test",
+            "tool_call_id": call_id,
+            "write_scope": scope,
+        }
+    return hook, lines, expected
+
+
+def _call_identity_case() -> dict[str, Any]:
+    hook, lines, expected = _call_identity_variants()
+    return {
+        "controls": _controls(),
+        "expected": {"calls": expected},
+        "fixture_id": "OUT-005",
+        "fixture_schema": "yoetz.fixture-case/1.0.0",
+        "fixture_version": "1.0.0",
+        "input": {"hook": hook, "rollout": {"cli_version": "0.159.0", "lines": lines}},
+        "minimum_versions": {
+            "codex_cli": "0.159.0",
+            "codex_hook_mapping": "codex-obs-hook/1.0.0",
+            "codex_stream_mapping": "codex-obs-stream/1.4.0",
+            "fixture_contract": "1.0.0",
+            "protocol": "1.0",
+        },
+        "owns_requirements": ["ISSUE-1106/codex-stream-call-identity"],
+        "provenance": {
+            **_provenance(_DOCUMENTED, _CALL_IDENTITY_SOURCE),
+            "statement": (
+                "derived from the Codex 0.159.0 source for a direct exec_command call; raw hook "
+                "stdin capture pending"
+            ),
+        },
+        "purpose": (
+            "Pin that the rollout copy of a direct Codex exec_command call carries the command "
+            "identity, runner class and relative write scope its hook copy carries, so either "
+            "copy may define the recorded action; and that the exit code is read only from the "
+            "Codex-written function_call_output header (none while the process runs)."
+        ),
+    }
+
+
 _CASES: Final = (
     (_CODEX_PATH, "OUT-001", _codex_case),
     (_CODEX_0159_PATH, "OUT-004", _codex_0159_case),
     (_CLAUDE_PATH, "OUT-002", _claude_case),
     (_CURSOR_PATH, "OUT-003", _cursor_case),
+    (_CODEX_CALL_IDENTITY_PATH, "OUT-005", _call_identity_case),
 )
 
 
@@ -901,7 +1064,7 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     manifest_path.write_bytes(manifest_bytes)
-    print("wrote OUT-001..OUT-004 host outcome fixtures and manifest members")
+    print("wrote OUT-001..OUT-005 host outcome fixtures and manifest members")
     return 0
 
 

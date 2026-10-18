@@ -1651,9 +1651,9 @@ top-level field. For each tool family FinishUP reads only closed facts. It recor
   as an outcome, and neither is a string result read as JSON by the routine-read classifier (output
   that is itself `{"success": true}` proves nothing). The exit comes from a joined session-stream
   item that states it: a `CommandExecution` item, whose id is the hook's `tool_use_id` (below). A
-  call the rollout carries only as `function_call` / `function_call_output` rows gives no exit
-  until the stream reader reads Codex's own header on that row (n7 W2); until then the failed call
-  stays `unknown`, never a success. The code-mode `exec` cell itself is never read: its result is
+  call the rollout carries only as `function_call` / `function_call_output` rows takes its exit
+  from Codex's own header on that row, which the stream reader reads (n7 RC2, #1106); until that
+  row arrives the failed call stays `unknown`, never a success. The code-mode `exec` cell itself is never read: its result is
   model-authored. A result sent as a JSON object with a fractional number is refused whole by the
   strict hook parser (`float_forbidden`).
 - **`apply_patch`**: the `Exit code: N` header.
@@ -2946,10 +2946,14 @@ and PostToolUse; the older `patch`/`input` carriers are still read. The post-too
 result prefix supplies the edit outcome and the structural `exit_status`. In code mode the outer
 `exec` cell has no hook payload, but each nested `tools.apply_patch("...")` call is dispatched
 through the tool registry and fires its own `apply_patch` hooks with the same shape, and each nested
-`tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` is
+`tools.exec_command` fires `Bash` hooks with `tool_input.command`. A shell `apply_patch <<EOF` that
+is the whole script (or `cd <dir> && apply_patch <<EOF`; Codex 0.159 `invocation.rs`) is
 intercepted by `exec_command` and fires only PreToolUse, so its patch is captured from that event
-with outcome `unknown`. Its pending attempt is pre-only (#1041): it does not wait for a post Codex
-never sends. A `FileChange` item the rollout writes in the same session closes it: the attempt
+with outcome `unknown`. The intercepted call's pending attempt is pre-only (#1041): it does not
+wait for a post Codex never sends. (With anything before or after it, such as the patch and then
+`pytest -q`, Codex runs the script in the shell through its `apply_patch` alias and fires
+PostToolUse as usual; the patch is captured from that post and the attempt is an ordinary one,
+#1106.) A `FileChange` item the rollout writes in the same session closes it: the attempt
 whose call id the item names; an item naming another call the session's hooks reported (in direct
 mode a native `apply_patch` item carries its own call id) is that call's change and closes none;
 only an item whose id names no reported call (code mode's `exec-<uuid>`) closes the session's oldest
@@ -3605,8 +3609,8 @@ id), so that post is the call's completion fact for the comparison, while its ou
 `unavailable` and every later read re-armed the closing review. A Codex post is not a success fact
 either: a read-shaped call is recorded on its own, never folded into a routine-read summary on the
 post alone, so a failed `rg` keeps its exit 1 once a joined rollout item states it (a
-`CommandExecution` item; a `function_call_output` row needs the stream reader's header change, n7
-W2), and stays `unknown`, never a success, until then. FinishUP cannot establish the effect of a
+`CommandExecution` item, or the Codex-written header of a `function_call_output` row, #1106), and
+stays `unknown`, never a success, until then. FinishUP cannot establish the effect of a
 response that reads as Codex's own `Process running with session ID N` header (an older or future
 build), of a call whose pre-call pass did not run, and of every call observed only through the
 synchronous legacy `finishup hooks spool` ingress (Codex builds without async command hooks) or only
@@ -3725,6 +3729,81 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Codex session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+### Verification recognition (n7 RC2, #1106)
+
+Host decisions for Codex; the shared classifier parts apply to Claude Code and Cursor too.
+
+- **Patch-then-test commands.** One apostrophe in a heredoc body no longer makes a patch followed
+  by a test `compound`: the test is a verification run and clears "edited after the last
+  verification". `git apply <<EOF` and `patch -p1 <<EOF` heredocs are writes of the files their
+  diff headers name, like `apply_patch <<EOF`. Supported.
+- **Stream-first calls.** With parallel calls, the rollout `function_call` row of a direct
+  `exec_command` (or legacy `shell`) call is often recorded before its own hook copy. That row now
+  carries the same keyed command identity and runner class as the hook, so a planned verification
+  it ran is observed either way. Reconciled by a hook (the usual path), it also carries that hook's
+  own write scope (an absolute-path write in the workspace included, placed under the call's
+  `workdir`), install target and effective user, since the reader runs in the hook process
+  (#1106 r2). Read outside a hook (`finishup observe`) only a relative write scope is claimed. A
+  missing user fact never stands for its opposite: `verification_only_as_root` is decided over the
+  verification runs that state a user and, when none does, over the commands that do. A completed
+  `CommandExecution` item records an argv (`["/bin/bash", "-lc", CMD]`); its writes and heredoc
+  patch paths are read from that script, however long. A call whose row was written but which
+  Codex never ran (an interrupted turn, a declined approval) still counts as a verification run
+  with an unknown outcome, as a declined `PreToolUse` already did (gap kept; follow-up is the
+  #1106 owner's). Supported.
+- **Exit codes of direct calls.** A Codex 0.159 `Bash` PostToolUse states no exit code. The
+  rollout's `function_call_output` for a direct shell call starts with Codex's own header, and its
+  `Process exited with code N` (or `Exit code: N`) line is the call's exit; the output after
+  `Output:` is never read. A process still running when the call returned states none until its
+  `item_completed` row (or a later poll) arrives. Supported.
+- **A hook outcome after a stream copy.** When the stream copy was recorded first without an
+  outcome and the hook post states one, the hook's outcome is recorded as one correction of the
+  call; a contradiction keeps the refusal (#1092 item 1). While the outcome projection lags, the
+  hook delivery is refused as retryable and recorded on the retry. Supported; right after a
+  workflow reattach, before the new session records anything, a replayed hook post is acknowledged
+  without its correction (the outcome stays `unknown`).
+- **Documentation edits.** A write of only project documentation (README, changelog, `docs/*.md`) is
+  named `docs`: real work, never stale-making for an earlier verification unless a declared output
+  is documentation or a directory. Supported on edit tools, shell writes and the rollout
+  `FileChange`. Nothing in a data directory (`tests`, `fixtures`, `golden`, `resources`, `prompts`,
+  …) is documentation, and those directories are read inside the workspace only, so a Codex app
+  worktree under `~/.codex/worktrees/` is not data. A shell write's relative target is placed under
+  one leading `cd <dir> &&` (also inside a whole `bash -lc '…'` script) and, for the rollout copy,
+  the call's `workdir` or the completed `CommandExecution` item's own `cwd`; a heredoc body is data,
+  so a README whose text says `cd repo` stays documentation. A target that cannot be placed (any
+  other `cd`, `env -C`, a nested `sh -c` that changes directory), a fixture written after `cd
+  tests`, and a heredoc patch with any file it cannot read (`patch -d`, `git apply --directory`, a
+  pure rename, copy or mode change next to a README update, a binary file) are ordinary edits; `git
+  apply --stat --apply` applies, so it is a write. A rollout row with no `workdir` is placed under
+  the reconciling hook's session `cwd`, as its hook copy is, so a parallel README write in a session
+  started in `tests/` is an ordinary edit whichever copy came first; read by `finishup observe` (no
+  session `cwd`) it is an ordinary edit too (#1106 r4). The Codex hook payload carries the session
+  `cwd`, never the call's `workdir`, so when a relative write would be documentation the hook reads
+  its own call's `function_call` row from the rollout tail (the row is written before the call
+  runs): no `workdir` means the session `cwd`, an absolute one places the write. A row the hook
+  cannot find (not yet flushed, more than 1 MiB back) or a relative `workdir` leaves the write an
+  ordinary edit, which can give an extra Stop prompt but never hides one (#1106 r3). An absolute
+  path, the `apply_patch` tool and `FileChange` need no lookup. The rollout knows no workspace root,
+  so a stream-first `FileChange` with an absolute `docs/guide.md` path is an ordinary edit there
+  (only a conventional name such as `README.md` is `docs`); the hook copy names it. The exemption is
+  lexical: a doctest, docs build or Markdown lint that reads the file is not made stale by a later
+  edit of it unless the file is declared. A `docs` row's check inspection shows no `write_scope`
+  (check-result 1.5.0 keeps its list; follow-up is the #1106 owner's).
+- **Background verification.** A job started with `&` or `nohup` and polled from a later call is
+  recorded when it starts; its log is never read, so its completion is not a verification. A
+  unified-exec run that yields and is polled to exit is recognized through its `item_completed`
+  `CommandExecution` row. Gap kept: run verification in the foreground, in one tool call (the
+  shipped guidance says so).
+- **Upgrade.** The control-request 2.9.0 `write_scope` enum gained `docs` in place. A new hook
+  and an older running service fail the handshake as `manifest_mismatch` before any frame, so no
+  frame is ever refused for `docs`; hook rows wait in the local outbox until the next MCP bridge
+  start or `finishup service restart` supersedes the old service, then drain. The hooks and the
+  service also share that local store, which a service that predates `docs` cannot read once it
+  holds a `docs` row, so a hook (and the rollout reader it runs) records `docs` only while the
+  running service is stamped with this installation's schema manifest. Otherwise (no service
+  running, or an older one) the write is recorded as an ordinary edit, as before #1106: a
+  documentation edit then can still give one Stop prompt (#1106 r2).
 
 ## Review results Codex actually shows, and supply that counts (W6, #1107)
 

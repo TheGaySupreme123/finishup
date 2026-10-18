@@ -311,3 +311,64 @@ equivalence stays disclosed and the receipt is never clean on it. An assertion t
 `command` action (an `edit` copying the value) or a resolution result alone still reads a mismatch.
 `kernel.command_attempts` is the one rule; status, closure preparation, check gaps and the receipt
 read it unchanged.
+
+## Amendment (2026-10-18, n7 RC2, issue #1106): heredoc bodies never decide a command's class
+
+`domain.observation_selection.command_runner_class` split the whole command text with `shlex`
+before segmenting it, so one odd quote inside a heredoc body (a patch line `+x = 2  # don't`, a
+docstring, prose) made the text unsplittable and classed a patch-then-test command `compound`.
+`compound` is no verification run, so the test never cleared `edited_after_last_verification`.
+When the whole-text split fails, the quote-aware segmenter (`command_segments.command_structure`,
+which treats a non-shell heredoc body as data) now decides, as it already did for every balanced
+compound. An unterminated quote, substitution or heredoc still classes `compound`, and a heredoc
+command is never `exploration`. Segment matching and the planned side are unchanged.
+
+A heredoc-fed patch is a write (`domain.shell_writes.heredoc_patch_paths`): `apply_patch`/
+`applypatch` by its `*** Add|Update|Delete File:`/`*** Move to:` headers (as since #1046), and `git
+apply` and `patch` by each unified-diff file header pair (`---` directly followed by `+++`; both
+paths but `/dev/null`, so a rename with content changes names its old path too) less the leading
+components their `-p` strip removes (`git apply` strips one; a bare `patch` drops one leading
+`a/`/`b/`). An invocation that writes nothing (`git apply --check|--stat|--numstat|--summary|
+--build-fake-ancestor` with no `--apply` or `--reject` among its options, in any position, `git
+apply --cached`, `patch --dry-run|-C|--check`) names nothing; every `git apply` option is read
+before that is decided, and `--no-<option>` undoes its option (#1106 r4). One that applies a patch
+the reader cannot place is still a write, an unplaced one that counts as an ordinary `workspace`
+edit (#1106 r3, `shell_writes.heredoc_patch_writes`): it reads its patch from a file (an operand,
+`-i`), moves or filters what it writes (`-d`, `-o`, `--directory`, `--include`, `--exclude`), uses
+an option the reader does not know (an abbreviation such as `--app` included), or has a file
+section it cannot read: a quoted path, a strip deeper than the path, a binary section (`GIT binary
+patch`, `Binary files ... differ`), or a `diff --git` section with no `---`/`+++` pair (a pure
+rename, copy or mode change, an empty file's creation or deletion), whatever the other sections
+name (#1106 r4). Codex intercepts a shell `apply_patch` only as the
+whole script (`apply_patch <<EOF`, or `cd <dir> && apply_patch <<EOF`; Codex 0.159
+`apply-patch/src/invocation.rs`), so only that form is a pre-only attempt
+(`shell_writes.codex_intercepts_shell_apply_patch`); a patch followed by a test runs in the shell
+and its post pairs as usual.
+
+Kept limits, documented rather than fixed:
+
+- One command that writes and verifies is one run at one ledger position, so its verification
+  covers its own writes. `pytest -q && sed -i …` (verify, then write) is not reported; fixing it
+  needs per-segment write order, and a lexical writer rule would demote `pytest | tee /tmp/log`.
+  The segmenter fallback above does not widen this limit: when the whole-text split fails and a
+  simple command after the last verifying one writes (a redirect, a `sed -i`/`cp`/`tee` target, or
+  a `apply_patch`/`patch`/`git apply` invocation: `pytest -q && git apply <<'EOF' …it's… EOF`),
+  the run stays `compound`, as that shape always was. Commands are compared in first-seen order,
+  so a repeated test after the write (`pytest; git apply <<EOF …; pytest`) also stays `compound`:
+  a missed verification, never a hidden edit.
+- A job started in the background (`&`, `nohup`) and polled from a later tool call is recorded
+  when it starts, with a masked composition; its completion is visible only in its log, which
+  FinishUP never reads (output text is never an outcome). A `wait` in a later call is another
+  shell. Recognizing it honestly is not possible, so guidance asks for each verification in the
+  foreground, in one tool call. A Codex unified-exec run that yields and is polled to exit is
+  recognized through its `item_completed` `CommandExecution` row (ADR-022, #910).
+
+Verification: `tests/unit/domain/test_observation_selection.py`,
+`tests/unit/domain/test_shell_writes.py`, `tests/unit/cli/test_runtime_facts.py`,
+`tests/unit/kernel/test_tb4n3_facts.py::test_c2h_patch_then_test_with_an_apostrophe_clears_edited_after`
+(and `::test_c2h_a_patch_after_the_test_in_one_odd_quote_command_still_stales`),
+`tests/unit/cli/test_n7_shell_call_identity.py` (a rollout `CommandExecution` argv names its
+heredoc patch through its one host-shell layer) and
+`tests/integration/observation/test_codex_pre_only_apply_patch.py`. The heredoc readers are linear
+in the text (`test_heredoc_patch_readers_are_linear`); unlike the token parsers they are not cut at
+`MAX_SHELL_WRITE_CHARS`, since a patch past that bound is still a write.

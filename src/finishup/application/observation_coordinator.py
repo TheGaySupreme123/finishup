@@ -193,6 +193,7 @@ from finishup.ports.host_lineage import (
     HostLineageRegistryError,
     HostLineageRegistryPort,
     HostLineageRegistryReason,
+    source_mask_for,
 )
 from finishup.ports.ids import IdPort
 from finishup.ports.ledger import (
@@ -4185,12 +4186,13 @@ class ObservationCoordinator:
 
         Event ids say it is the same call, not that it says the same thing. A Codex stream copy may
         differ from the committed result: the outcome correction then enriches an UNKNOWN or
-        records the disagreement as a ``dedup_conflict`` correction, so nothing is lost. Any other
-        source has no correction to carry a difference, so a copy stating an explicit outcome
-        counts as a duplicate only when the ledger states exactly that outcome and exit status for
-        the call (the original result and any correction linked to its action); anything else, or
-        a projection that cannot confirm it, keeps the ledger's own refusal and its quarantine
-        (fail closed, #560).
+        records the disagreement as a ``dedup_conflict`` correction, so nothing is lost. A Codex
+        hook copy whose call the stream copy recorded first with no stated outcome also agrees:
+        its outcome correction then fills that UNKNOWN (#1092 item 1). Otherwise a copy stating an
+        explicit outcome counts as a duplicate only when the ledger states exactly that outcome
+        and exit status for the call (the original result and any correction linked to its
+        action); anything else, or a projection that cannot confirm it, keeps the ledger's own
+        refusal and its quarantine (fail closed, #560).
         """
 
         if envelope.source is ObservationSource.CODEX_SESSION_STREAM:
@@ -4227,6 +4229,10 @@ class ObservationCoordinator:
                 and record.payload.action_id == committed.payload.action_id
                 and record.payload.outcome is not ResultOutcome.UNKNOWN
             }
+            if not recorded and envelope.source is ObservationSource.CODEX_HOOK:
+                # Only UNKNOWN is recorded for the call: nothing disagrees, and the hook's stated
+                # outcome reaches the call through its correction.
+                continue
             if recorded != {(payload.outcome, payload.exit_status)}:
                 return False
         return True
@@ -4247,13 +4253,16 @@ class ObservationCoordinator:
         legacy_writer_id: str | None,
         legacy_writer_routes: tuple[tuple[str, str], ...],
     ) -> None:
-        """Apply a stream completion's explicit outcome to the call's recorded UNKNOWN one.
+        """Apply a Codex copy's explicit outcome to the call's recorded UNKNOWN one.
 
         Reconcile the completion's core result after both full and partial replay. New evidence
         can append while that core result remains the hook's UNKNOWN outcome. A fresh core
         already carries the stated outcome and needs no correction. Historical rows are never
         rewritten: the correction is a
         second, source-independent result linked to the same action, so retries are idempotent.
+        A Codex hook post corrects only an UNKNOWN that nothing contradicts (the stream copy
+        committed first, #1092 item 1); it never records a disagreement, which keeps the
+        ledger's own refusal. A fact a prior correction already states is not stated twice.
         """
 
         correction = materialize_observation_outcome_correction(
@@ -4262,6 +4271,30 @@ class ObservationCoordinator:
         )
         if correction.skip_reason is not None or not correction.drafts:
             return
+        hook_copy = envelope.source is not ObservationSource.CODEX_SESSION_STREAM
+        if hook_copy and resolved_mapping_version != MATERIALIZATION_MAPPING_VERSION:
+            # A hook copy replaying a legacy-mapping operation recorded its own result there:
+            # it has no other copy's UNKNOWN to fill.
+            return
+        if hook_copy and append_result is not None and append_result.outcome == "accepted":
+            # This delivery just recorded its own result: there is no other copy's UNKNOWN to
+            # fill, and no projection read. (A replay may resolve to the stream copy's operation,
+            # whose UNKNOWN result this hook copy may still fill.)
+            accepted = {str(item.event_id) for item in append_result.accepted}
+            if any(
+                type(item.draft.payload) is ResultRecordedPayload
+                and str(item.draft.event_id) in accepted
+                for item in batch.drafts
+            ):
+                return
+        if hook_copy and append_result is None and not already_committed:
+            # No append result names what was committed (a completed operation whose stored
+            # result cannot be decoded, or the structural-only override seam of an older
+            # in-process coordinator): nothing shows that another copy's UNKNOWN is there to
+            # fill, so the hook copy keeps its pre-#1092 behaviour and reads no projection.
+            return
+        # A replay (outcome "replayed") may resolve to the stream copy's operation, whose UNKNOWN
+        # this hook copy may still fill: it waits on a lagging projection like a stream copy does.
         # A partial replay can append new evidence while its core result was committed by
         # the hook. Inspect that result even after an append, so UNKNOWN still gets the
         # stream's explicit outcome (and a disagreement still gets its conflict correction).
@@ -4269,6 +4302,20 @@ class ObservationCoordinator:
             runtime.session_id,
             ProjectionView.CANDIDATE_FINDINGS,
         )
+        if (
+            projection is None
+            and hook_copy
+            and not already_committed
+            and append_result is not None
+            and append_result.outcome == "replayed"
+        ):
+            # A workflow reattach rotates the routed session, and a session that has recorded
+            # nothing yet opens no projection, so a hook copy replaying the operation an earlier
+            # session committed (#560) cannot read the call here. It acknowledges rather than hold
+            # the drain on a projection this session may not open until its next write. A
+            # projection that exists but lags may still show the stream copy's UNKNOWN this hook
+            # copy fills, so that case waits below (#1106 r1).
+            return
         if (
             projection is None
             or type(projection.state) is not ProjectionState
@@ -4290,7 +4337,7 @@ class ObservationCoordinator:
                 None,
             )
             if type(core_result) is not ResultRecordedPayload:
-                if already_committed:
+                if already_committed or hook_copy:
                     # A duplicate whose batch carries no result of its own has no recorded
                     # outcome to enrich; it must not hold the drain on a retry.
                     return
@@ -4301,6 +4348,8 @@ class ObservationCoordinator:
                 )
             core_result_id = core_result.result_id
             existing_result = projection.state.results.get(core_result_id)
+            if hook_copy and (existing_result is None or existing_result.payload is None):
+                return
         else:
             # A replayed legacy-mapping operation committed
             # its graph under pre-upgrade record identities
@@ -4364,6 +4413,15 @@ class ObservationCoordinator:
         should_correct = (
             existing_payload.outcome is ResultOutcome.UNKNOWN or existing_fact != incoming_fact
         )
+        if envelope.source is not ObservationSource.CODEX_SESSION_STREAM and (
+            existing_payload.outcome is not ResultOutcome.UNKNOWN or conflict
+        ):
+            should_correct = False
+        if not conflict and any(
+            (item.outcome, item.exit_status) == incoming_fact for item in prior_corrections
+        ):
+            # The other Codex copy already corrected the call to this exact fact.
+            should_correct = False
         if should_correct:
             if resolved_mapping_version != MATERIALIZATION_MAPPING_VERSION:
                 # Bind the correction to the exact committed
@@ -4412,7 +4470,7 @@ class ObservationCoordinator:
                     ),
                     materialization_digest=correction_digest,
                     operation_id=correction_operation_id,
-                    source_mask=2,
+                    source_mask=source_mask_for(envelope.source),
                     mapping_version=correction_mapping_version,
                     materialized_at=timestamp_from_datetime(self.clock.now_utc()),
                 )

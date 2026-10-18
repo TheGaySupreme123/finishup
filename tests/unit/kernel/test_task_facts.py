@@ -414,6 +414,51 @@ def test_verification_only_as_root() -> None:
     assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(ledger)
 
 
+@pytest.mark.parametrize("stream_first", [True, False])
+def test_verification_only_as_root_ignores_runs_that_state_no_user(stream_first: bool) -> None:
+    """#1106 r1: a Codex call recorded first from its session stream states no user.
+
+    Whichever copy of a call arrived first, a root run plus a run with no user token is still
+    "only as root"; a run that states ``non_root`` clears it, and runs with no user say nothing.
+    """
+
+    ledger = ObservedLedger()
+    if stream_first:
+        ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0)
+    ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0, effective_user="root")
+    if not stream_first:
+        ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0)
+    assert VERIFICATION_ONLY_AS_ROOT_GAP in _codes(ledger)
+    ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0, effective_user="non_root")
+    assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(ledger)
+    silent = ObservedLedger()
+    silent.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0)
+    assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(silent)
+
+
+@pytest.mark.parametrize("user", ["root", "non_root"])
+def test_verification_only_as_root_falls_back_to_the_commands_user(user: str) -> None:
+    """#1106 r2: when no verification run states a user (every one was recorded first from a
+    Codex session stream by a reader without the hook's facts), the user the observed commands
+    state decides: the hook process runs as the shell it observes."""
+
+    ledger = ObservedLedger()
+    ledger.run("ls src", ResultOutcome.SUCCESS, exit_status=0, effective_user=user)
+    ledger.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0)
+    assert (VERIFICATION_ONLY_AS_ROOT_GAP in _codes(ledger)) is (user == "root")
+    # A command stated non-root anywhere clears it; a verification run's own user still wins.
+    ledger.run("git status", ResultOutcome.SUCCESS, exit_status=0, effective_user="non_root")
+    assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(ledger)
+    stated = ObservedLedger()
+    stated.run("ls src", ResultOutcome.SUCCESS, exit_status=0, effective_user="non_root")
+    stated.run("pytest -q", ResultOutcome.SUCCESS, exit_status=0, effective_user="root")
+    assert VERIFICATION_ONLY_AS_ROOT_GAP in _codes(stated)
+    # No verification at all: nothing to disclose.
+    exploring = ObservedLedger()
+    exploring.run("ls src", ResultOutcome.SUCCESS, exit_status=0, effective_user="root")
+    assert VERIFICATION_ONLY_AS_ROOT_GAP not in _codes(exploring)
+
+
 def test_description_suffixes_round_trip_with_tool_and_runner() -> None:
     description = observed_action_description(
         "Observed command via Codex hook",

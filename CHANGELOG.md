@@ -739,9 +739,9 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   review again. Codex sends a shell command's output and no exit status to the hook, so every
   command read as one whose effect could not be established. Codex sends that event only after the
   command has ended, so FinishUP now compares the project's files across it; the result stays
-  unknown until a Codex session-record item that states the exit joins it (a command item does
-  today; reading the exit line of a function-output row is separate work), and a failed read is
-  never counted as a success. A command can no longer forge a success by printing
+  unknown until a Codex session-record item that states the exit joins it (a command item, or the
+  exit line Codex writes at the head of a function-output row, #1106), and a failed read is never
+  counted as a success. A command can no longer forge a success by printing
   `Process exited with code 0` or `{"success": true}`. A quoted `&` in an argument of a program
   FinishUP knows does not run its arguments as code in the form given (`curl 'h?a=1&b=2'`,
   `sed 's/x/&/'`, `rg 'a&b'` without `--pre`) no longer counts as starting a background process;
@@ -769,6 +769,29 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   output, whichever Codex copy recorded the run), the same command spelled as text or as the hook
   recorded it, and evidence naming the record by its event id or with stray whitespace. A
   description still never counts, and a respond counts only for a finding (#1107).
+
+- Real verifications count, so the Stop hook no longer asks for a test that already ran (#1106):
+  - A command that applies a patch and then runs the tests (`apply_patch`, `git apply` or
+    `patch -p1` with a heredoc, then `pytest`) counts as a verification even when the patch holds
+    an apostrophe, and a `git apply`/`patch` heredoc now counts as an edit of the files it names.
+    In Codex, such a command is no longer left as a pending attempt.
+  - In Codex, a shell call recorded first from the session log (common with parallel calls) is
+    recognized as the command it ran, with its exit code, the files it wrote, any package install
+    location and the user it ran as, so a planned verification is no longer "never observed" and a
+    root-only verification is still disclosed; and when that copy has no outcome, the hook's
+    outcome is recorded (#1092).
+  - Editing only documentation (a README, a changelog, `docs/*.md`) is still recorded as work but
+    no longer makes an earlier test stale, unless the task declares that file or a directory as an
+    output. Declare it when a check reads the file itself (a doctest over the README, a docs
+    build), so that check goes stale again after the edit. Documentation in test, fixture, data,
+    golden or template folders, a script named like a license or readme (`bin/license-check`), and
+    a file written after `cd tests` (also inside a `bash -c '…'` script or behind `env -C`), or
+    by a patch whose file paths FinishUP cannot read, keep counting as ordinary edits. While
+    FinishUP's service is not running, or one from an earlier build still runs after an upgrade,
+    documentation edits count as ordinary edits too, as does a Codex shell command that writes a
+    documentation file by a relative path when FinishUP cannot find which folder it ran in.
+  - A verification started in the background and polled from a later call is still recorded only
+    when it starts; FinishUP's guidance now asks agents to run verification in the foreground.
 
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks

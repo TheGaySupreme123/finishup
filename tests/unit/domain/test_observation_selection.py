@@ -232,3 +232,68 @@ def test_a_codex_post_event_is_not_a_success_fact() -> None:
     assert stated.proven_routine_success is True
     # Claude Code and Cursor keep their post event as the closed success signal.
     assert classify_observation(echoed, "PostToolUse").proven_routine_success is True
+
+
+# --- n7 RC2(a): a heredoc body's quotes never decide the class (#1106) -------------------------
+
+_ODD_BODIES = {
+    "apply_patch": (
+        "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: a.py\n@@\n-x = 1\n"
+        "+x = 2  # don't\n*** End Patch\nPATCH"
+    ),
+    "git_apply": "cd /app && git apply <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+    "patch_p1": "cd /app && patch -p1 <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+    "cat_write": "cat > /app/x.py <<'EOF'\nprint('ok')  # it's\nEOF",
+    "python_stdin": "python3 - <<'PY'\n# it's a script\nPY",
+}
+
+
+@pytest.mark.parametrize("verify", ["pytest -q", "python -m pytest -q tests/"])
+@pytest.mark.parametrize("body", list(_ODD_BODIES.values()), ids=list(_ODD_BODIES))
+def test_heredoc_body_quote_does_not_hide_compound_verification(body: str, verify: str) -> None:
+    """n7 RC2(a): one apostrophe in a heredoc body made the whole text unsplittable, so a
+    patch-then-test command was ``compound`` and its test never counted as a verification."""
+
+    assert command_runner_class({"command": f"{body}\n{verify}"}) == "test"
+    assert command_runner_class({"tool_input": {"cmd": f"{body}\n{verify} 2>&1 | tail"}}) == "test"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo 'oops && pytest -q",
+        'pytest -q && echo "unterminated',
+        "apply_patch <<'PATCH'\n*** Update File: a.py\n+# don't\npytest -q",
+        "cat <<'EOF'\nit's\nEOF",
+        "cat <<'EOF'\nit's\nEOF\nls",
+    ],
+)
+def test_unterminated_quote_or_heredoc_stays_compound(command: str) -> None:
+    """The segmenter still refuses what the shell itself could not run as written, and a
+    heredoc command is never ``exploration`` (its body may be a write's content)."""
+
+    assert command_runner_class({"command": command}) == "compound"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q && git apply <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+        "pytest -q\npatch -p1 <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+        "pytest -q && apply_patch <<'P'\n*** Begin Patch\n*** Update File: a.py\n+# don't\n"
+        "*** End Patch\nP",
+        "pytest -q && cat > a.py <<EOF\n# don't\nEOF",
+        "pytest -q && sed -i s/a/b/ a.py\ncat <<EOF\nit's\nEOF",
+        # #1106 r2: ``sudo patch`` and ``git -C <dir> apply`` are the patch tools too.
+        "pytest -q && sudo patch -p1 <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+        "pytest -q && git -C /app apply <<'EOF'\n--- a/a.py\n+++ b/a.py\n@@\n-it's\n+ok\nEOF",
+    ],
+)
+def test_a_write_after_the_test_in_an_odd_quote_command_stays_compound(command: str) -> None:
+    """#1106 r1: a verification that ran before its own command's later write must not cover it.
+
+    One command is one ledger position, so classing ``pytest -q && git apply <<EOF`` a test would
+    hide the patch it applies afterwards; the odd-quote shape stays ``compound``, as it was.
+    """
+
+    assert command_runner_class({"command": command}) == "compound"

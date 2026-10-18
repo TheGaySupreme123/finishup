@@ -1478,9 +1478,9 @@ pytest` recorded a failing run as a success.
    whose id is the hook's `tool_use_id` (`core/src/tools/events.rs` `ctx.call_id`; a code-mode
    nested call uses its `exec-<uuid>` dispatch id for both), joins the hook call as its outcome
    correction. A rollout that carries the call only as `function_call` / `function_call_output`
-   rows, whose exit is Codex's text header, gives no exit here; reading that header from the
-   stream row (where Codex, not the command, wrote it) is the session-stream reader's change
-   (n7 W2), and until it lands such a failed read stays `unknown`, never a success. The
+   rows states its exit in Codex's text header; the session-stream reader reads that header from
+   the stream row, where Codex, not the command, wrote it (n7 RC2, #1106), and until that row
+   arrives such a failed read stays `unknown`, never a success. The
    response text is read only to withhold completion (Codex's own running-process header); command
    text that backgrounds or detaches, the lingering-process probe and the directory re-read still
    apply. Fixture OUT-004 (`fixtures/observations/codex-post-tool-outcomes-0.159.0.case.json`)

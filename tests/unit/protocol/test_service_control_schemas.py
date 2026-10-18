@@ -1417,9 +1417,10 @@ def _assert_v29_request_adds_only_command_commitment(
         "type": "string",
     }
     # ADR-042 (tb4n2 R4): an edit whose every path is scratch or FinishUP-owned is named so; ADR-045
-    # adds the agent's notes and a shell command that writes the workspace (#1039).
+    # adds the agent's notes and a shell command that writes the workspace (#1039); n7 RC2 adds
+    # project documentation in place, since 2.9.0 is unreleased (#1106).
     assert v29_fields["write_scope"] == {
-        "enum": ["notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"],
+        "enum": ["docs", "notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"],
         "type": "string",
     }
     assert v29_fields["effective_user"] == {"enum": ["non_root", "root"], "type": "string"}

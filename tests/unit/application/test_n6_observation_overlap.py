@@ -516,8 +516,9 @@ async def test_a_hook_outcome_agrees_with_a_stream_copy_that_stated_none(
     """A committed copy without an outcome takes a later copy's explicit one (PR #1080 round 7).
 
     The stream copy stated no outcome (``prior_exit=None``): a content-bearing hook copy that
-    states one agrees and its new evidence is recorded, as on 0.3. A stream copy that stated a
-    different explicit outcome still makes the hook copy's contradiction a refusal.
+    states one agrees and its new evidence is recorded, as on 0.3, and since #1106 (#1092 item 1)
+    its outcome is recorded too, as one correction of the stream's ``unknown``. A stream copy that
+    stated a different explicit outcome still makes the hook copy's contradiction a refusal.
     """
 
     from finishup.domain.values import JsonObject
@@ -560,7 +561,15 @@ async def test_a_hook_outcome_agrees_with_a_stream_copy_that_stated_none(
     else:
         assert result.disposition is ObservationIngestDisposition.ACCEPTED, result.reason
         assert len(_schema_rows(cell, "evidence_recorded")) == 1
-    assert len(_schema_rows(cell, "result_recorded")) == 1
+    outcomes = [
+        (row.payload.outcome.value, row.payload.exit_status)
+        for row in _schema_rows(cell, "result_recorded")
+        if type(row.payload) is ResultRecordedPayload
+    ]
+    if prior_exit is None:
+        assert outcomes == [("unknown", None), ("success", 0)]
+    else:
+        assert outcomes == [("success" if prior_exit == 0 else "failure", prior_exit)]
 
 
 @pytest.mark.anyio

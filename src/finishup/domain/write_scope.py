@@ -1,6 +1,6 @@
 """Which observed writes change the work under test (tb4n2 R4, issue #1018, ADR-042).
 
-An observed edit is one of five classes:
+An observed edit is one of six classes:
 
 * ``deliverable`` — a file an obligation declares as its output (decided in the kernel from the
   declared delivered set, never here);
@@ -15,7 +15,16 @@ An observed edit is one of five classes:
 * ``notes`` — the agent's own working notes inside the workspace (``NOTES.md``, ``todo.txt``):
   conventional names that are not source, tests or data (ADR-045). A declared output with such a
   name is a deliverable and keeps counting; a ``.log`` file is never named by its extension, since
-  a workspace may itself sit under a temporary root and a log may be the deliverable.
+  a workspace may itself sit under a temporary root and a log may be the deliverable;
+* ``docs`` — project documentation inside the workspace (``README.md``, ``CHANGELOG``,
+  ``docs/guide.md``): conventional documentation names and documentation extensions (``.md``,
+  ``.rst``, ``.adoc``) outside test, fixture, data, golden, resource, prompt and template
+  directories, an extensionless name also outside program directories (``bin``, ``scripts``)
+  (n7 RC2, ADR-042 amendment). A shell write's relative target is documentation only where the
+  command's working directory is known (``domain.shell_writes``). It is real work: it counts as acting and as material
+  for a later review, but it never makes an earlier verification of the code stale. A declared
+  output with such a name, or any declared output directory, keeps it stale-making. ``.txt`` is
+  never documentation by its extension (``requirements.txt`` is read by the build).
 
 A shell command that writes files (``> f``, ``tee f``, ``sed -i f``, ``cp a f``) is classified by
 the same rules; a command whose every write is in the workspace carries the scope ``workspace``
@@ -38,28 +47,34 @@ from typing import Final, Literal
 
 __all__ = [
     "NON_COUNTING_WRITE_SCOPES",
+    "STALE_EXEMPT_WRITE_SCOPES",
     "WRITE_SCOPES",
     "WriteClass",
     "classify_write_path",
+    "docs_artifact_name",
     "edit_write_scope",
     "notes_artifact_name",
     "scratch_overlap",
     "finishup_artifact_name",
     "finishup_tree_overlap",
     "scratch_path",
+    "without_docs_scope",
 ]
 
 # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a recorded hook fact and wire enum value.
-WriteClass = Literal["workspace", "outside_workspace", "scratch", "yoetz_owned", "notes"]
+WriteClass = Literal["workspace", "outside_workspace", "scratch", "yoetz_owned", "notes", "docs"]
 # The hook's closed ``write_scope`` structural fact: absent for an edit-tool call that stays in
 # the workspace, otherwise the class every named path shares (``outside_workspace`` wins).
 # ``workspace`` appears only on a shell command whose attributable writes are in the workspace
 # (ADR-045); an edit tool never reports it.
 WRITE_SCOPES: Final = frozenset(
-    {"outside_workspace", "scratch", "yoetz_owned", "notes", "workspace"}
+    {"outside_workspace", "scratch", "yoetz_owned", "notes", "docs", "workspace"}
 )
 # Write scopes that never make an earlier verification stale and never count as acting.
 NON_COUNTING_WRITE_SCOPES: Final = frozenset({"scratch", "yoetz_owned", "notes"})
+# Write scopes that count as acting and as material, but never make an earlier verification of
+# the code stale: project documentation (n7 RC2).
+STALE_EXEMPT_WRITE_SCOPES: Final = frozenset({"docs"})
 
 # Scratch roots every supported OS reserves for temporary files (issue E6, tb4n1: 28 of 33
 # attempts flagged only `/tmp` logs). `/dev/` stays wholly exempt below for device targets.
@@ -88,6 +103,66 @@ _NOTES_NAME: Final = re.compile(
     r"^(?:notes?|todo|todos|scratch|scratchpad|worklog|work[-_]log|progress|journal)"
     r"(?:[-_.][a-z0-9]+)*\.(?:md|markdown|txt|text)$",
     re.IGNORECASE,
+)
+# Conventional project documentation names. With a documentation extension a name may carry a
+# ``-``/``_`` suffix and a language tag (``README.ja.md``, ``CHANGES-1.x.rst``).
+_DOCS_NAME: Final = re.compile(
+    r"^(?:readme|changelog|changes|history|news|authors|contributors|contributing|licen[cs]e"
+    r"|copying|notice|code[-_]of[-_]conduct|security)"
+    r"(?:[-_][a-z0-9]+)*(?:\.[a-z]{2}(?:[-_][a-z]{2})?)?\.(?:md|markdown|rst|txt|adoc)$",
+    re.IGNORECASE,
+)
+# Without an extension only names no script plausibly has qualify: the bare ``README``,
+# ``CHANGELOG``, ``AUTHORS`` and ``CONTRIBUTORS``, and ``LICENSE``/``LICENCE``/``COPYING``/
+# ``NOTICE`` alone or with a license identifier (``LICENSE-MIT``, ``LICENSE-APACHE-2.0``,
+# ``COPYING-GPL-3.0-or-later``). ``bin/license-check``, ``scripts/notice-gen``, ``news`` or
+# ``scripts/history`` may be a program a test runs, and ``history.py`` is not documentation.
+_DOCS_BARE_NAME: Final = re.compile(
+    r"^(?:readme|changelog|authors|contributors"
+    r"|(?:licen[cs]e|copying|notice)(?:[-_](?:"
+    r"(?:mit|isc|zlib|cc0|unlicense|wtfpl|bsl|boost|psf|python|apache|bsd|[al]?gpl|mpl|epl"
+    r"|cddl|eupl|ofl|artistic|cc[-_]by(?:[-_](?:sa|nc|nd))*)"
+    r"(?:[-_]?v?[0-9]+(?:\.[0-9]+)*)?(?:[-_](?:clause|only|or[-_]later|plus))*"
+    r"|third[-_]?party))?"
+    r")$",
+    re.IGNORECASE,
+)
+# Directories that hold programs: an extensionless conventional name there (``bin/readme``,
+# ``scripts/authors``) may be a script a test runs, so only a documentation extension is read.
+_PROGRAM_SEGMENTS: Final = frozenset({"bin", "sbin", "libexec", "script", "scripts", "tools"})
+# Documentation extensions; never ``.txt`` (``requirements.txt`` is read by the build).
+_DOCS_EXTENSION: Final = re.compile(r"\.(?:md|markdown|rst|adoc|asciidoc)$", re.IGNORECASE)
+# Directories whose files a test or a program reads as data: documentation there, by name or by
+# extension, is an input of the work (a fixture, a golden or expected output, a prompt, a
+# template, a snapshot, a packaged resource, an agent host's skill or rule file), so it keeps
+# counting. Only the directories inside the workspace are read when its root is known: a
+# workspace that itself sits under ``.claude/worktrees`` or ``/srv/data`` is not data.
+_DOCS_DATA_SEGMENTS: Final = frozenset(
+    {
+        ".agents",
+        ".claude",
+        ".codex",
+        ".cursor",
+        "skills",
+        "test",
+        "tests",
+        "testing",
+        "spec",
+        "specs",
+        "__tests__",
+        "fixtures",
+        "testdata",
+        "test_data",
+        "data",
+        "golden",
+        "goldens",
+        "expected",
+        "resources",
+        "prompts",
+        "templates",
+        "snapshots",
+        "__snapshots__",
+    }
 )
 # Packaged FinishUP trees a host installation writes into a repository (generated, never the work).
 # The legacy ``yoetz`` trees an earlier install wrote stay owned until removed (ADR-048).
@@ -192,6 +267,63 @@ def _notes_name(normalized: str) -> bool:
     return _NOTES_NAME.match(posixpath.basename(normalized)) is not None
 
 
+def docs_artifact_name(path: str) -> bool:
+    """Whether a declared path could name project documentation (pure).
+
+    A declared output with a documentation name or extension, in any directory, turns the
+    ``docs`` exemption off (``task_facts.stale_exempt_write_tokens``). The answer is deliberately
+    wider than ``classify_write_path``'s: no workspace root is known here, and a wider answer only
+    keeps more edits stale-making.
+    """
+
+    if type(path) is not str or not path:
+        return False
+    name = posixpath.basename(_normalize(path))
+    return (
+        _DOCS_NAME.match(name) is not None
+        or _DOCS_BARE_NAME.match(name) is not None
+        or _DOCS_EXTENSION.search(name) is not None
+    )
+
+
+def _docs_path(normalized: str, workspace: str | None) -> bool:
+    """Whether an in-workspace path is project documentation.
+
+    A conventional name or a documentation extension is documentation only outside the data
+    directories, and an extensionless name only outside the program directories too. The
+    directories are read on the path *inside* the workspace: a relative path as it is, an
+    absolute one less the workspace root. An absolute path with no root to strip (the Codex
+    session stream knows none) is read on all its directories, so a workspace under a data
+    directory only loses the exemption; and such a path, or a relative one that climbs out
+    (``../``), cannot be placed, so a documentation extension alone does not make it ``docs``.
+    """
+
+    name = posixpath.basename(normalized)
+    named = _DOCS_NAME.match(name) is not None
+    bare = not named and _DOCS_BARE_NAME.match(name) is not None
+    if not (named or bare) and _DOCS_EXTENSION.search(name) is None:
+        return False
+    placed = True
+    relative = normalized
+    if normalized.startswith("/"):
+        root = (
+            _normalize(workspace) if type(workspace) is str and workspace.startswith("/") else None
+        )
+        if root is not None and root != "/" and normalized != root and _under(normalized, root):
+            relative = normalized[len(root.rstrip("/")) + 1 :]
+        else:
+            placed = False
+            relative = normalized.lstrip("/")
+    directories = [part.casefold() for part in relative.split("/")[:-1]]
+    if ".." in directories:
+        placed = False
+    if any(part in _DOCS_DATA_SEGMENTS for part in directories):
+        return False
+    if bare and any(part in _PROGRAM_SEGMENTS for part in directories):
+        return False
+    return named or bare or placed
+
+
 def scratch_overlap(path: str) -> bool:
     """Whether a declared absolute path lies under, or contains, a fixed temporary root (pure)."""
 
@@ -239,8 +371,11 @@ def classify_write_path(
         # Inside the workspace (or unknown: no workspace root to compare with) a write counts,
         # except the agent's own conventional notes and logs (``notes``; the kernel lets a
         # declared output with such a name override the class). A workspace may itself sit under
-        # a temporary root, so location alone never exempts.
-        return "notes" if _notes_name(normalized) else "workspace"
+        # a temporary root, so location alone never exempts. Project documentation (``docs``)
+        # counts too, but never makes a verification of the code stale; notes win over docs.
+        if _notes_name(normalized):
+            return "notes"
+        return "docs" if _docs_path(normalized, workspace) else "workspace"
     if scratch_path(normalized, workspace, environment=False):
         return "scratch"
     if scratch_path(normalized, workspace):
@@ -271,3 +406,18 @@ def edit_write_scope(classes: Iterable[WriteClass]) -> str | None:
         # round 3).
         return None
     return next(iter(seen))
+
+
+def without_docs_scope(scope: str | None, *, shell: bool) -> str | None:
+    """*scope* as a build without the ``docs`` class records it (n7 RC2, #1106 r2).
+
+    The running service and every hook share one local observation store, and a build that
+    predates ``docs`` refuses a stored row naming it, for the whole workspace. Where the service
+    may be such a build, a documentation write is recorded as it was before the class existed:
+    a shell command's as ``workspace``, an edit tool's (or a ``FileChange``'s) with no scope.
+    Both count as ordinary edits, so the fallback only ever keeps an edit stale-making.
+    """
+
+    if scope != "docs":
+        return scope
+    return "workspace" if shell else None

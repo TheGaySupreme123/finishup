@@ -54,8 +54,10 @@ __all__ = [
     "COMMAND_IDENTITY_PREFIX",
     "NON_COUNTING_WRITE_TOKENS",
     "SHELL_EDIT_TOKENS",
+    "STALE_EXEMPT_WRITE_TOKENS",
     "observed_shell_write_counts",
     "observed_edit_counts",
+    "observed_write_stales_verification",
     "ObservedFailureState",
     "ObservedRun",
     "ObservedRunFacts",
@@ -109,7 +111,8 @@ INSTALL_TARGET_CLASSES: Final = frozenset(
 # Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
 _RUNTIME_SUFFIX_RE: Final = re.compile(
     r" \((install (?:yoetz_runtime|workspace_env|private_env|system|unresolved)"
-    r"|write (?:outside_workspace|scratch|yoetz_owned|notes|workspace)|user (?:root|non_root))\)\Z",
+    r"|write (?:outside_workspace|scratch|yoetz_owned|notes|docs|workspace)"
+    r"|user (?:root|non_root))\)\Z",
     re.ASCII,
 )
 # Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
@@ -120,6 +123,7 @@ RUNTIME_SUFFIX_TOKENS: Final = frozenset(
         "write scratch",
         "write yoetz_owned",
         "write notes",
+        "write docs",
         "write workspace",
         "user root",
         "user non_root",
@@ -130,9 +134,15 @@ RUNTIME_SUFFIX_TOKENS: Final = frozenset(
 # or the agent's own notes and logs (ADR-045).
 # Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
 NON_COUNTING_WRITE_TOKENS: Final = frozenset({"write scratch", "write yoetz_owned", "write notes"})
-# A command's runtime tokens that make it an edit: it wrote files in the workspace, or a real
-# one outside it (ADR-045). A command with no such token wrote nothing the hook could attribute.
-SHELL_EDIT_TOKENS: Final = frozenset({"write workspace", "write outside_workspace"})
+# A command's runtime tokens that make it an edit: it wrote files in the workspace (project
+# documentation included), or a real one outside it (ADR-045). A command with no such token
+# wrote nothing the hook could attribute.
+SHELL_EDIT_TOKENS: Final = frozenset({"write workspace", "write outside_workspace", "write docs"})
+# Edit runtime tokens that name a counting write which never makes an earlier verification of the
+# code stale: every path was project documentation (n7 RC2, ADR-042 amendment). Such an edit is
+# acting and material for a later review; ``task_facts.stale_exempt_write_tokens`` lifts the
+# exemption when a declared output is documentation.
+STALE_EXEMPT_WRITE_TOKENS: Final = frozenset({"write docs"})
 
 
 class ObservedFailureState(str, Enum):  # noqa: UP042 - stable closed token
@@ -396,7 +406,7 @@ def observed_action_description(
     if write_outside_workspace is True or write_scope == "outside_workspace":
         result = f"{result} (write outside_workspace)"
     # Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
-    elif write_scope in {"scratch", "yoetz_owned", "notes", "workspace"}:
+    elif write_scope in {"scratch", "yoetz_owned", "notes", "docs", "workspace"}:
         result = f"{result} (write {write_scope})"
     if effective_user in {"root", "non_root"}:
         result = f"{result} (user {effective_user})"
@@ -435,6 +445,20 @@ def observed_edit_counts(
     """
 
     return not (observed_action_runtime_tokens(description) & exempt)
+
+
+def observed_write_stales_verification(
+    description: str, stale_exempt: frozenset[str] = STALE_EXEMPT_WRITE_TOKENS
+) -> bool:
+    """Whether a counting observed write makes an earlier verification stale (n7 RC2).
+
+    ``False`` only for a write whose every path was project documentation (``write docs``): it
+    is still acting and material for a later review, but a README or a guide does not change
+    what a test, build or check verified. ``stale_exempt`` narrows the exemption
+    (``task_facts.stale_exempt_write_tokens``: a declared documentation output wins).
+    """
+
+    return not (observed_action_runtime_tokens(description) & stale_exempt)
 
 
 def observed_shell_write_counts(

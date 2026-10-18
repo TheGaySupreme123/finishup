@@ -2706,6 +2706,50 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 MCP unit suites exercise the shared path. A live Claude Code session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
 
+### Verification recognition (n7 RC2, #1106)
+
+Host decisions for Claude Code:
+
+- **Patch-then-test commands.** Shared classifier: a `Bash` command that applies a heredoc patch
+  (`git apply <<EOF`, `patch -p1 <<EOF`) and then runs a test is a verification run even when
+  the patch body holds an odd quote, and the patch is a write of the files its diff headers name.
+  Supported.
+- **Stream-first calls and hook outcome corrections.** Not applicable: Claude Code has no second
+  (session-stream) copy of a call, so its hook copy is the only record and keeps its own identity
+  and outcome.
+- **Documentation edits.** `Write`, `Edit`, `MultiEdit` and `Bash` writes of only project
+  documentation (README, changelog, `docs/*.md`; a notebook is never documentation) are named
+  `docs`: real work, never stale-making for an earlier verification unless a declared output is
+  documentation or a directory. Nothing in a data directory (`tests`, `fixtures`, `golden`,
+  `resources`, `prompts`, …) is documentation, and those directories are read inside the workspace
+  only, so a host-managed worktree (`<repo>/.claude/worktrees/<name>`) is not data. A `Bash`
+  write's relative target is placed under the hook payload's `cwd` and one leading `cd <dir> &&`
+  (also inside a whole `bash -lc '…'` script); a heredoc body is data, so a README whose text says
+  `cd repo` stays documentation. A target that cannot be placed (any other `cd`, `env -C`, a nested
+  `sh -c` that changes directory), a fixture written after `cd tests`, and a heredoc patch with
+  any file it cannot read (`patch -d`, `git apply --directory`, a pure rename, copy or mode change
+  next to a README update, a binary file) are ordinary edits; `git apply --stat --apply` applies,
+  so it is a write (#1106 r2, r3, r4). `Write`, `Edit` and `MultiEdit` name absolute paths and
+  need no working directory. Unverified: Claude Code's shell keeps a `cd` from an earlier call,
+  but no captured payload shows `cwd` following it (the recorded fixtures all state the project
+  root). If it does not, a relative README written by a later call while the shell sits in
+  `tests/` reads as `docs` (gap kept; follow-up is the #1106 owner's). The exemption is lexical:
+  a doctest, docs build or Markdown lint that reads the file is not made stale by a later edit of
+  it unless the file is declared. A `docs` row's check inspection shows no `write_scope`
+  (check-result 1.5.0 keeps its list; follow-up is the #1106 owner's). Supported.
+- **Background verification.** Gap kept: A `Bash` call with `run_in_background` that the agent polls
+  through `BashOutput` is recorded when it launches; its completion is not a verification (output
+  text is never read). Run verification in the foreground, in one tool call (the shipped guidance
+  says so).
+- **Upgrade.** The control-request 2.9.0 `write_scope` enum gained `docs` in place; a new hook
+  and an older running service fail the handshake as `manifest_mismatch` before any frame, and
+  hook rows wait until the next MCP bridge start or `finishup service restart` supersedes the old
+  service. The hooks and the service also share one local observation store, which a service
+  that predates `docs` cannot read once it holds a `docs` row, so a hook records `docs` only while
+  the running service is stamped with this installation's schema manifest. Otherwise (no service
+  running, or an older one) the write is recorded as an ordinary edit, as before #1106: a
+  documentation edit then can still give one Stop prompt (#1106 r2).
+
 ## Review result lead and supply that counts (W6, #1107)
 
 **Host decision: supported, same field.** Claude Code delivers `structuredContent` for successful

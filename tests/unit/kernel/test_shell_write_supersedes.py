@@ -64,7 +64,9 @@ def _classes(ledger: ObservedLedger) -> set[LaterMaterialClass]:
 @pytest.mark.parametrize(
     "outcome", (ResultOutcome.SUCCESS, ResultOutcome.FAILURE, ResultOutcome.UNKNOWN)
 )
-@pytest.mark.parametrize("scope", ("workspace", "outside_workspace"))
+# n7 RC2 (#1106): a write of only project documentation leaves verification current but is
+# still material work after a check.
+@pytest.mark.parametrize("scope", ("workspace", "outside_workspace", "docs"))
 def test_a_shell_write_supersedes_the_check_whatever_its_outcome(
     scope: str, outcome: ResultOutcome
 ) -> None:
@@ -159,7 +161,9 @@ def _concern_index(ledger: ObservedLedger) -> Any:
     )
 
 
-@pytest.mark.parametrize(("scope", "material"), (("workspace", True), (None, False)))
+@pytest.mark.parametrize(
+    ("scope", "material"), (("workspace", True), ("docs", True), (None, False))
+)
 def test_a_shell_write_defeats_a_concern_fold(scope: str | None, material: bool) -> None:
     ledger = _after_check()
     _shell(ledger, scope, ResultOutcome.SUCCESS)

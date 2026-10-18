@@ -283,6 +283,24 @@ def test_a_shell_apply_patch_heredoc_writes_the_files_its_patch_names(tmp_path: 
     assert _facts("apply_patch", {"command": patch("*** Update File: src/a.py")}, tmp_path) == {}
 
 
+def test_git_apply_and_patch_heredocs_are_workspace_writes(tmp_path: Path) -> None:
+    """n7 RC2(a): ``git apply <<EOF`` and ``patch -p1 <<EOF`` write the files their unified-diff
+    headers name; a form that writes nothing, or that the reader cannot place, names nothing."""
+
+    def scope(command: str) -> JsonValue:
+        return _facts("Bash", {"command": command}, tmp_path).get("write_scope")
+
+    def diff(path: str, prefix: str) -> str:
+        return f"{prefix} <<'EOF'\n--- a/{path}\n+++ b/{path}\n@@\n-it's\n+ok\nEOF\npytest -q"
+
+    for prefix in ("git apply", "cd src && git apply -p1", "patch -p1", "patch -N -p1"):
+        assert scope(diff("src/x.py", prefix)) == "workspace", prefix
+    for prefix in ("git apply --check", "git apply --cached", "patch --dry-run -p1"):
+        assert scope(diff("src/x.py", prefix)) is None, prefix
+    assert scope("patch -p0 <<'EOF'\n--- /tmp/a.py\n+++ /tmp/a.py\n@@\n-a\n+b\nEOF") is None
+    assert scope("git apply <<'EOF'\n--- a/src/x.py\n+++ b/src/x.py\n@@\n-a\n+b\n") is None
+
+
 def test_shell_redirect_scope(tmp_path: Path) -> None:
     assert (
         _facts("Bash", {"command": "echo x > /opt/elsewhere/y"}, tmp_path)["write_scope"]

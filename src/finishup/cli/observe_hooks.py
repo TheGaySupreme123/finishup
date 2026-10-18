@@ -167,6 +167,7 @@ from finishup.domain.observation_selection import (
     is_routine_read_candidate,
     without_routine_read,
 )
+from finishup.domain.shell_writes import codex_intercepts_shell_apply_patch
 from finishup.domain.values import (
     JsonObject,
     Timestamp,
@@ -1337,6 +1338,71 @@ def _task_lane_for_result(
     return None
 
 
+def _reconcile_codex_stream(
+    store: LocalObservationStore,
+    payload: Mapping[str, JsonValue],
+    *,
+    resolved_event: str,
+    lane: _ObservationLane,
+    workspace_commitment: str,
+    session_commitment: str,
+    codex_session_id: str,
+    workspace_locator: str | None,
+) -> None:
+    """Reconcile the Codex session stream this hook's lane reads, with the hook's own facts.
+
+    A validated child lane reconciles that child's own rollout (#841); every other Codex lane
+    keeps the host-session stream. The reader takes this process's command facts
+    (``_stream_command_facts``), so a call its stream row defines carries them (#1106 r2).
+    """
+
+    from finishup.adapters.integrations.codex_session_stream import (
+        CodexSessionStreamLocator,
+        reconcile_session_stream,
+        reconcile_session_stream_path,
+        resolve_codex_home,
+        should_trigger_stream_reconcile,
+    )
+
+    hook_path = payload.get("session_file") or payload.get("transcript_path")
+    hook_path_token = hook_path if type(hook_path) is str else None
+    session_source = payload.get("source")
+    if not should_trigger_stream_reconcile(
+        resolved_event,
+        last_reconcile_mono=store.last_stream_reconcile_mono(workspace_commitment),
+        session_source=session_source if type(session_source) is str else None,
+    ):
+        return
+    locator = CodexSessionStreamLocator(resolve_codex_home())
+    session_cwd = payload.get("cwd")
+    command_facts = _stream_command_facts(
+        workspace_locator, session_cwd if type(session_cwd) is str and session_cwd else None
+    )
+    if not lane.is_child:
+        reconcile_session_stream(
+            store,
+            workspace_commitment=workspace_commitment,
+            session_commitment=session_commitment,
+            codex_session_id=codex_session_id,
+            locator=locator,
+            hook_provided_path=hook_path_token,
+            command_facts=command_facts,
+        )
+        return
+    child_rollout = _child_lane_rollout(
+        payload, lane=lane, locator=locator, hook_provided_path=hook_path_token
+    )
+    if child_rollout is not None:
+        reconcile_session_stream_path(
+            store,
+            workspace_commitment=workspace_commitment,
+            session_commitment=session_commitment,
+            codex_session_id=codex_session_id,
+            path=child_rollout,
+            command_facts=command_facts,
+        )
+
+
 def _child_lane_rollout(
     payload: Mapping[str, JsonValue],
     *,
@@ -1706,6 +1772,114 @@ def _absolute_path_key(value: str) -> tuple[str, bool] | None:
     return None
 
 
+def _hook_runtime_facts(
+    facts_payload: Mapping[str, JsonValue],
+    payload: Mapping[str, JsonValue],
+    *,
+    tool_name: str | None,
+    workspace_locator: str | None,
+    codex_session_id: str | None,
+) -> dict[str, JsonValue]:
+    """The closed runtime facts of one hook call (``runtime_structural_facts``, #977).
+
+    A Codex hook payload (``codex_session_id`` set) names the session ``cwd``, never the call's
+    ``workdir`` argument, so a relative shell target cannot be placed and is never documentation
+    (#1106 r3). Only when placing it under the session ``cwd`` would make it documentation does
+    the hook read its own call's ``function_call`` row from the validated rollout
+    (``codex_session_stream.codex_call_workdir``): a call with no ``workdir`` runs in the session
+    ``cwd``, a stated one places the write under it, and a row it cannot find keeps the write an
+    ordinary edit.
+    """
+
+    def inside(value: str) -> bool:
+        return workspace_relative_edit_path(value, workspace_locator) is not None
+
+    def read(*, unknown: bool = False, workdir: str | None = None) -> dict[str, JsonValue]:
+        return runtime_structural_facts(
+            facts_payload,
+            tool_name=tool_name,
+            workspace_locator=workspace_locator,
+            inside=inside,
+            working_directory=workdir,
+            call_directory_unknown=unknown,
+        )
+
+    if codex_session_id is None:
+        return read()
+    facts = read(unknown=True)
+    if facts.get("write_scope") != "workspace":
+        return facts
+    placed = read()
+    if placed.get("write_scope") == "workspace":
+        return facts
+    workdir = _codex_hook_call_workdir(payload, codex_session_id)
+    if workdir is None:
+        return facts
+    stated, directory = workdir
+    if not stated:
+        return placed
+    # A stated ``workdir`` that is no absolute path is passed as ``.``, which is never placed.
+    return read(workdir=directory if directory is not None else ".")
+
+
+def _codex_hook_call_workdir(
+    payload: Mapping[str, JsonValue], codex_session_id: str
+) -> tuple[bool, str | None] | None:
+    from finishup.adapters.integrations.codex_session_stream import (
+        CodexSessionStreamLocator,
+        codex_call_workdir,
+        resolve_codex_home,
+    )
+
+    hook_path = payload.get("session_file") or payload.get("transcript_path")
+    try:
+        path = CodexSessionStreamLocator(resolve_codex_home()).resolve(
+            session_id=codex_session_id,
+            hook_provided_path=hook_path if type(hook_path) is str else None,
+        )
+    except Exception:
+        return None
+    if path is None:
+        return None
+    return codex_call_workdir(path, payload.get("tool_use_id"))
+
+
+def _stream_command_facts(
+    workspace_locator: str | None,
+    session_directory: str | None,
+) -> Callable[[str, str | None], Mapping[str, object]] | None:
+    """The hook's own runtime facts for a command its session stream names (n7 RC2, #1106 r2).
+
+    Codex writes every ``function_call`` row of a turn before it runs them, so with parallel calls
+    a call's stream row often commits before its own hook fires and defines the action. This
+    process runs as the hook copy would and knows the same workspace root, so the stream copy
+    carries the same ``write_scope`` (an absolute-path write included, placed under the call's
+    ``workdir``), ``install_target`` and ``effective_user`` as the hook copy. Without a workspace
+    root the reader keeps its own relative-only rule.
+
+    A call that states no ``workdir`` runs in the session ``cwd``, which the hook copy reads from
+    its own payload; ``session_directory`` is that ``cwd`` (the reconciling hook's), so a relative
+    write is placed where the hook copy places it whichever copy commits first. Without it the
+    write is unplaced, an ordinary edit, never documentation (#1106 r4).
+    """
+
+    if workspace_locator is None:
+        return None
+    root = workspace_locator
+
+    def facts(script: str, workdir: str | None) -> Mapping[str, object]:
+        return runtime_structural_facts(
+            {"tool_input": {"command": script}},
+            tool_name="Bash",
+            workspace_locator=root,
+            inside=lambda value: workspace_relative_edit_path(value, root) is not None,
+            working_directory=workdir if workdir is not None else session_directory,
+            call_directory_unknown=workdir is None and session_directory is None,
+        )
+
+    return facts
+
+
 def workspace_relative_edit_path(value: str, workspace_locator: str | None) -> str | None:
     """Return a workspace-relative POSIX path for review content, or ``None``.
 
@@ -1928,7 +2102,9 @@ def _intercepted_shell_apply_patch(
     """A Codex shell ``apply_patch <<EOF`` pre-event: the only hook Codex fires for it (#1041).
 
     Codex intercepts the shell call and applies the patch itself, so no post-tool event follows;
-    the pending attempt is pre-only and the session stream's ``FileChange`` item closes it.
+    the pending attempt is pre-only and the session stream's ``FileChange`` item closes it. Codex
+    intercepts only a script that is that one statement: a patch followed by a test runs in the
+    shell and fires its post-tool event, so its attempt is an ordinary one (n7 RC2).
     """
 
     if event_name != "PreToolUse" or source is not ObservationSource.CODEX_HOOK:
@@ -1937,11 +2113,7 @@ def _intercepted_shell_apply_patch(
         return False
     arguments = payload.get("tool_input")
     command = arguments.get("command") if isinstance(arguments, Mapping) else None
-    return (
-        type(command) is str
-        and "<<" in command
-        and any(_SHELL_APPLY_PATCH.search(prefix) for prefix, _, _ in _shell_heredocs(command))
-    )
+    return type(command) is str and codex_intercepts_shell_apply_patch(command)
 
 
 def _cursor_served_finishup_read(
@@ -2007,8 +2179,9 @@ def _shell_edit_contents(
 ) -> list[tuple[ObservationContentKind, str, JsonValue]]:
     """Recognize shell-mediated edits whose new bytes are visible in the command itself.
 
-    Covered: ``apply_patch <<EOF`` (Codex intercepts it, so only its pre-tool event exists),
-    ``git apply <<EOF`` and whole-file writes through ``cat > path <<EOF`` or
+    Covered: ``apply_patch <<EOF`` (Codex intercepts it as a sole statement, so only its
+    pre-tool event exists; with anything around it, it runs in the shell and is read from the
+    post-tool event), ``git apply <<EOF`` and whole-file writes through ``cat > path <<EOF`` or
     ``tee path <<EOF``. A write outside the workspace (for example a ``/tmp`` scratch file) is
     not code under review and is skipped. Edits made by scripts (``sed -i``, ``python``,
     ``git apply file.patch``) carry no reviewable bytes in the command and stay uncaptured.
@@ -2016,15 +2189,18 @@ def _shell_edit_contents(
 
     patches: list[str] = []
     writes: list[JsonValue] = []
+    intercepted = source is ObservationSource.CODEX_HOOK and codex_intercepts_shell_apply_patch(
+        command
+    )
     for prefix, suffix, body in _shell_heredocs(command):
-        if _SHELL_APPLY_PATCH.search(prefix):
-            # Codex intercepts a shell apply_patch and emits no post-tool event for it.
-            if event_name == "PreToolUse" and source is ObservationSource.CODEX_HOOK:
+        if _SHELL_APPLY_PATCH.search(prefix) and intercepted:
+            # Codex intercepts a sole shell apply_patch and emits no post-tool event for it.
+            if event_name == "PreToolUse":
                 patches.append(body)
             continue
         if event_name != "PostToolUse":
             continue
-        if _SHELL_GIT_APPLY.search(prefix):
+        if _SHELL_APPLY_PATCH.search(prefix) or _SHELL_GIT_APPLY.search(prefix):
             patches.append(body)
             continue
         if _SHELL_WRITER.search(prefix) is None:
@@ -5647,12 +5823,13 @@ def handle_observe(
                 # Read from the host's own tool input in this process; only tokens persist.
                 with contextlib.suppress(Exception):
                     tool_token = envelope.structural_payload.get("tool_name")
-                    runtime_facts = runtime_structural_facts(
+                    runtime_facts = _hook_runtime_facts(
                         _content_payload if _content_payload is not None else payload,
+                        payload,
                         tool_name=tool_token if type(tool_token) is str else None,
                         workspace_locator=workspace_locator,
-                        inside=lambda value: (
-                            workspace_relative_edit_path(value, workspace_locator) is not None
+                        codex_session_id=(
+                            codex_session_id if source is ObservationSource.CODEX_HOOK else None
                         ),
                     )
                     if runtime_facts:
@@ -5975,47 +6152,16 @@ def handle_observe(
             # Codex lane keeps the host-session stream.
             if source is ObservationSource.CODEX_HOOK:
                 with contextlib.suppress(Exception):
-                    from finishup.adapters.integrations.codex_session_stream import (
-                        CodexSessionStreamLocator,
-                        reconcile_session_stream,
-                        reconcile_session_stream_path,
-                        resolve_codex_home,
-                        should_trigger_stream_reconcile,
+                    _reconcile_codex_stream(
+                        store,
+                        payload,
+                        resolved_event=resolved_event,
+                        lane=lane,
+                        workspace_commitment=workspace_commitment,
+                        session_commitment=session_commitment,
+                        codex_session_id=codex_session_id,
+                        workspace_locator=workspace_locator,
                     )
-
-                    hook_path = payload.get("session_file") or payload.get("transcript_path")
-                    hook_path_token = hook_path if type(hook_path) is str else None
-                    session_source = payload.get("source")
-                    if should_trigger_stream_reconcile(
-                        resolved_event,
-                        last_reconcile_mono=store.last_stream_reconcile_mono(workspace_commitment),
-                        session_source=session_source if type(session_source) is str else None,
-                    ):
-                        locator = CodexSessionStreamLocator(resolve_codex_home())
-                        if not lane.is_child:
-                            reconcile_session_stream(
-                                store,
-                                workspace_commitment=workspace_commitment,
-                                session_commitment=session_commitment,
-                                codex_session_id=codex_session_id,
-                                locator=locator,
-                                hook_provided_path=hook_path_token,
-                            )
-                        else:
-                            child_rollout = _child_lane_rollout(
-                                payload,
-                                lane=lane,
-                                locator=locator,
-                                hook_provided_path=hook_path_token,
-                            )
-                            if child_rollout is not None:
-                                reconcile_session_stream_path(
-                                    store,
-                                    workspace_commitment=workspace_commitment,
-                                    session_commitment=session_commitment,
-                                    codex_session_id=codex_session_id,
-                                    path=child_rollout,
-                                )
         session_end_uncommitted = False
         capture_committed = True
         if _pass_timing is not None:

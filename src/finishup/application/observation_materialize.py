@@ -1672,6 +1672,24 @@ def materialize_observation_envelope(
     return MaterializedObservationBatch(tuple(drafts), coverage, channel, gaps, None)
 
 
+def _outcome_correction_source(
+    envelope: ObservationEnvelope, structural: Mapping[str, JsonValue]
+) -> bool:
+    """Whether a delivery is a Codex copy of a finished call that may correct its outcome.
+
+    Only Codex records one call twice (its hook and its session stream share one logical lane),
+    so only a Codex copy can find its call already recorded by the other with an UNKNOWN
+    outcome. Every other hook source has no second copy and keeps its single result.
+    """
+
+    if envelope.source is ObservationSource.CODEX_SESSION_STREAM:
+        return stream_event_is_completed_tool(envelope.event_kind, structural)
+    return envelope.source is ObservationSource.CODEX_HOOK and envelope.event_kind in {
+        "PostToolUse",
+        "PostToolUseFailure",
+    }
+
+
 def materialize_observation_outcome_correction(
     envelope: ObservationEnvelope,
     *,
@@ -1680,11 +1698,13 @@ def materialize_observation_outcome_correction(
     target_action_id: str | None = None,
     target_action_event_id: str | None = None,
 ) -> MaterializedObservationBatch:
-    """Append an explicit stream outcome that enriches an earlier UNKNOWN hook result.
+    """Append an explicit Codex outcome that enriches an earlier UNKNOWN result of the call.
 
     Historical action/result rows stay immutable. The correction is a second,
     source-independent result linked to the same canonical action, so retries are
-    idempotent and explicit host failure/success facts remain visible. A replayed
+    idempotent and explicit host failure/success facts remain visible. Either Codex
+    copy of a call may state the outcome the other left UNKNOWN: a stream completion,
+    or a hook post whose call the stream copy recorded first (#1092 item 1). A replayed
     legacy-mapping operation committed its graph under pre-upgrade record
     identities; ``target_action_id`` (with an optional committed action event as
     causal parent) binds the correction to that exact committed action instead of
@@ -1699,8 +1719,7 @@ def materialize_observation_outcome_correction(
     channel = PublicationChannel.HOOK_OBSERVED
     gaps = tuple(envelope.gap_codes)
     if (
-        envelope.source is not ObservationSource.CODEX_SESSION_STREAM
-        or not stream_event_is_completed_tool(envelope.event_kind, structural)
+        not _outcome_correction_source(envelope, structural)
         or correlation is None
         or ObservationGapCode.UNPAIRED_EVENT.value in gaps
     ):
