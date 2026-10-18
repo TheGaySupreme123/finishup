@@ -1099,9 +1099,9 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
     escapes keeps its spaces; otherwise only plain literal paths count, at most 16 in all. A
     quoted span only the disk can tell apart (``"/app/test data"``) comes whole ahead of its own
     words, and the read keeps those words only when the whole value names nothing there
-    (``drop_space_cut_words``). The statement is read in process only to find these words; nothing here is stored or logged, and
-    the adapter reads a candidate only when it lies inside the repository, is unchanged by the
-    task, is not ignored and is not credential-named.
+    (``drop_space_cut_words``). The statement is read in process only to find these words;
+    nothing here is stored or logged, and the adapter reads a candidate only when it lies inside
+    the repository, is unchanged by the task, is not ignored and is not credential-named.
     """
 
     candidates: list[str] = []
@@ -1283,9 +1283,9 @@ def outside_inputs_not_admitted(
     * on disk, ``probe`` (``lstat``: metadata only, never following a final link, never opening
       content) finds a regular file or a directory there whose modification and change times
       both predate ``task_started_at``; a top-level path only as a directory, since no root the
-      owner may admit covers a file like ``/spec.md``. A route (``GET /api/v1/users``) names nothing on disk,
-      and a file the agent wrote during the task (``/root/model.pt``) is its output, not an
-      input. Without a task-start time nothing counts.
+      owner may admit covers a file like ``/spec.md``. A route (``GET /api/v1/users``) names
+      nothing on disk, and a file the agent wrote during the task (``/root/model.pt``) is its
+      output, not an input. Without a task-start time nothing counts.
 
     A closed yes or no, decided once when the check-time read runs and frozen into its object:
     no path is returned or kept.

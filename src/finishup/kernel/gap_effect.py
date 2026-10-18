@@ -421,8 +421,8 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         codes=("semantic_process_state_filtered",),
     ),
     # Issue #1102 (RC6f): the task names an input outside the workspace that no root the owner
-    # admitted covers. A new code, disclosed from the start: the reviewer judged without it, and only
-    # the owner's trusted-terminal ceremony admits a root, so it is never agent work, never a
+    # admitted covers. A new code, disclosed from the start: the reviewer judged without it, and
+    # only the owner's trusted-terminal ceremony admits a root, so it is never agent work, never a
     # Stop-gate item and never bounds the conclusion beyond what the review itself reports.
     _Family(
         rule="G4c",
