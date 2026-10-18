@@ -1016,39 +1016,102 @@ def requested_command_shape(value: str) -> str:
 
 # Words that start a process meant to outlive its launcher, at any wrapper layer of a segment.
 _DETACHING_WORDS: Final = frozenset({"nohup", "setsid", "disown", "daemonize", "start-stop-daemon"})
-# Programs that hand one of their arguments to a shell or an interpreter as code (and any
-# ``python*``): an ``&`` inside such an argument may background a process although it is quoted.
-_CODE_ARGUMENT_RUNNERS: Final = frozenset(
+# Programs that never hand an argument to a shell or an interpreter, nor read code from stdin: a
+# quoted ``&`` in their arguments is data. Everything else (a shell, ``eval``, ``sudo``, ``ssh``,
+# ``xargs``, ``find``, ``awk``, ``git``, ``trap``, any interpreter ...) stays undecided, so the
+# caller keeps its conservative pattern. ``sed`` is listed only for one plain ``s`` command (its
+# ``e`` flag and command run the pattern space through a shell); see ``_inert_sed``.
+_INERT_PROGRAMS: Final = frozenset(
     {
-        "eval",
-        "ssh",
-        "xargs",
-        "parallel",
-        "script",
-        "watch",
-        "su",
-        "sudo",
-        "doas",
-        "find",
-        "env",
-        "node",
-        "perl",
-        "ruby",
-        "php",
-        "osascript",
-        "tmux",
-        "screen",
-        *_SHELLS,
+        "curl",
+        "wget",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "echo",
+        "printf",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "ls",
+        "jq",
+        "cd",
+        "pwd",
+        "true",
+        "false",
+        "sed",
     }
+)
+# One ``s`` command: ``s<d>pattern<d>replacement<d>`` plus flags that run nothing (``e`` runs the
+# result through a shell and ``w`` writes a file, so neither is inert).
+_SED_FLAGS: Final = frozenset("gpiImM0123456789")
+_SED_SCRIPT_OPTIONS: Final = frozenset({"-e", "--expression"})
+_SED_PLAIN_OPTIONS: Final = frozenset(
+    {"-n", "-E", "-r", "-s", "-u", "-z", "--quiet", "--silent", "--regexp-extended"}
 )
 
 
+def _plain_sed_substitution(script: str) -> bool:
+    if len(script) < 4 or script[0] != "s" or script[1] in "\\\n" or script[1].isalnum():
+        return False
+    delimiter = script[1]
+    parts = 0
+    index = 2
+    while index < len(script) and parts < 2:
+        char = script[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\n":
+            return False
+        if char == delimiter:
+            parts += 1
+        index += 1
+    return parts == 2 and all(flag in _SED_FLAGS for flag in script[index:])
+
+
+def _inert_sed(arguments: Sequence[str]) -> bool:
+    """One plain ``s`` command (no ``e``/``w`` flag, no script file) and files with no ``&``."""
+
+    scripts: list[str] = []
+    operands: list[str] = []
+    rest = list(arguments)
+    while rest:
+        word = rest.pop(0)
+        if word in _SED_SCRIPT_OPTIONS:
+            if not rest:
+                return False
+            scripts.append(rest.pop(0))
+        elif word in _SED_PLAIN_OPTIONS or word == "-i" or word.startswith("--in-place"):
+            continue
+        elif word.startswith("-") and word != "-":
+            return False  # ``-f script``, ``-i.bak`` spellings and anything unknown
+        else:
+            operands.append(word)
+    if not scripts and operands:
+        scripts.append(operands.pop(0))
+    return (
+        len(scripts) == 1
+        and _plain_sed_substitution(scripts[0])
+        and not any("&" in operand for operand in operands)
+    )
+
+
+def _inert_program(words: Sequence[str]) -> bool:
+    head = _basename(words[0])
+    if head not in _INERT_PROGRAMS or words[0] != head:
+        # A path (``./curl``) is the agent's own program, not the known one.
+        return False
+    return head != "sed" or _inert_sed(words[1:])
+
+
 def _segment_may_background(segment: str, depth: int) -> bool | None:
-    if "$(" in segment or "`" in segment:
-        # A command substitution runs its own commands inside this segment: undecided here.
+    if any(token in segment for token in ("$(", "`", "<(", ">(")):
+        # A command or process substitution runs its own commands inside this segment.
         return None
-    words = _split_words(segment)
-    layer = list(words)
+    layer = _split_words(segment)
     for _ in range(_MAX_WRAPPER_ROUNDS + 1):
         if not layer:
             break
@@ -1056,32 +1119,29 @@ def _segment_may_background(segment: str, depth: int) -> bool | None:
             return True
         if not _strip_one_wrapper(layer):
             break
-    inner = wrapped_shell_argument(layer) if layer else None
+    if not layer:
+        return None
+    inner = wrapped_shell_argument(layer)
     if inner is not None:
         return None if depth >= _MAX_DEPTH else command_may_background(inner, _depth=depth + 1)
-    if any(
-        _basename(word) in _CODE_ARGUMENT_RUNNERS or _basename(word).startswith("python")
-        for word in words
-    ):
-        # ``eval "x &"``, ``ssh host 'x &'``, ``env -S 'x &'``, ``find . -exec sh -c 'x &' \;``,
-        # ``python -c``: the quoted ``&`` reaches a shell or interpreter.
-        return any("&" in word for word in words[1:])
-    return False
+    return False if _inert_program(layer) else None
 
 
 def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
     """Whether the shell text can leave a process running past its call, by shell grammar.
 
     ``True`` for a top-level ``&`` separator (``&&``, ``>&``, ``&>`` and a quoted ``&`` are not
-    one), any ``&`` in a segment with a command or process substitution, or in a here-document
-    body, a detaching word (``nohup``, ``setsid``, ``disown``, ``daemonize``,
-    ``start-stop-daemon``) at any wrapper layer of a segment, a ``sh -c`` argument that
-    backgrounds (read recursively), and an ``&`` in any argument of a program that hands an
-    argument to a shell or interpreter (``eval``, ``ssh``, ``xargs``, ``env -S``, ``find -exec``,
-    ``python -c`` and the like). ``False`` when none of these hold: a quoted ``&`` in an
-    ordinary argument (``curl 'h?a=1&b=2'``, ``sed 's/x/&/'``) does not background anything.
-    ``None`` when the text is not splittable, so the caller keeps its conservative reading.
-    The answer is about the text only; it never proves that no process outlives the call.
+    one), an ``&`` in a here-document body, a detaching word (``nohup``, ``setsid``, ``disown``,
+    ``daemonize``, ``start-stop-daemon``) at any wrapper layer of a segment, or a ``sh -c``
+    argument that backgrounds (read recursively). ``False`` only when none of these hold and every
+    segment runs a program known never to run its arguments or stdin as code (``curl``, ``grep``,
+    ``rg``, ``echo``, ``jq``, one plain ``sed`` substitution ...): a quoted ``&`` there
+    (``curl 'h?a=1&b=2'``, ``sed 's/x/&/'``) backgrounds nothing. ``None`` otherwise, including
+    any command or process substitution, a privilege wrapper (``sudo``), a program that hands an
+    argument or its stdin to a shell or interpreter, and text that is not splittable: the caller
+    keeps its conservative reading, so this answer is never quieter than that pattern except for
+    a call made only of those known programs. The answer is about the text only; it never proves
+    that no process outlives the call.
     """
 
     if type(text) is not str or len(text) > _MAX_TEXT_CHARS:
@@ -1093,7 +1153,7 @@ def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
         return True
     if any("&" in body for bodies in split.bodies.values() for body in bodies):
         return True
-    undecided = False
+    undecided = not split.segments
     for segment in split.segments:
         verdict = _segment_may_background(segment, _depth)
         if verdict is True:

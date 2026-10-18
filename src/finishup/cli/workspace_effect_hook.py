@@ -116,11 +116,13 @@ def fingerprinted_tool(tool_name: object, *, finishup_owned: bool) -> bool:
     return not (lowered in _EDIT_TOOLS or "edit" in lowered or "patch" in lowered)
 
 
-# The fallback for text the shell grammar cannot split (``command_segments.command_may_background``
-# reads everything else): a shell background operator (a lone ``&``, not ``&&``, ``>&``, ``&>``,
-# ``<&`` or ``|&``) or a detaching launcher anywhere. The text can only make a call *less* trusted
-# here: a command that may leave a process writing after the post-call snapshot cannot be shown to
-# have left the workspace unchanged.
+# The conservative reading for text the shell grammar leaves undecided
+# (``command_segments.command_may_background``): a shell background operator (a lone ``&``, not
+# ``&&``, ``>&``, ``&>``, ``<&`` or ``|&``) or a detaching launcher anywhere. The grammar clears
+# it only for a call made solely of programs known never to run an argument or stdin as code. A
+# command that may leave a process writing after the post-call snapshot cannot be shown to have
+# left the workspace unchanged, and the lingering-process probe sees only this user's processes
+# (a ``sudo`` daemon is invisible to it).
 _BACKGROUND_OPERATOR: Final = re.compile(r"(?<![&|<>])&(?![&>])")
 _DETACHING_WORD: Final = re.compile(
     r"(?:^|[\s;|&(`])(?:nohup|setsid|disown|daemonize|start-stop-daemon)(?=$|[\s;|&)`])"
@@ -140,8 +142,10 @@ def _command_text(tool_input: Mapping[str, JsonValue]) -> str | None:
 def command_may_outlive_call(payload: Mapping[str, JsonValue]) -> bool:
     """Whether the command text may leave a process running past the host's post-call event.
 
-    Shell grammar decides (a quoted ``&`` in an ordinary argument is not a background operator,
-    #1089); text it cannot split falls back to the conservative pattern.
+    Shell grammar answers first (#1089): it says yes for a real background operator or detaching
+    launcher, and no only when every program in the text is known never to run its arguments or
+    stdin as code, so a quoted ``&`` there (``curl 'h?a=1&b=2'``) is data. Anything it leaves
+    undecided keeps the conservative pattern.
     """
 
     tool_input = payload.get("tool_input")
