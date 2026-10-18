@@ -10,10 +10,14 @@ deliverable" text of ``declared_output_emptied`` was never shown to the agent th
 solver.
 
 The two repros moved here from the verification scratch are
-``test_c5_acceptance_reread_is_asked_without_another_gate_token`` (family C) and
+``test_c5_retired_an_announced_acceptance_entry_is_never_asked`` (family C) and
 ``test_b2_stop_gate_continues_a_readiness_that_says_nothing_further_to_do`` (family B). Both
 failed on 26e9cecf. They now state the contract in terms of the list status announces:
-``closure_readiness.rechecks``.
+``closure_readiness.rechecks``. Since ADR-033 owner decision D1 (n7: 49 of 57 Stops were the
+acceptance re-read, 43 of them answered by re-attesting "met", none catching a failed obligation)
+the acceptance re-read is not a Stop item at all: family C's contract is now that an ``acceptance``
+entry an earlier service announces is never asked, and acceptance invites remembered by an earlier
+build keep exempting the acknowledgement that answered them.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from typing import Any
 import pytest
 
 from builders.gate_readiness import (
+    ACCEPTANCE_RECHECK_ITEM,
     acceptance_key,
     acceptance_recheck,
     ack_recheck,
@@ -34,7 +39,6 @@ from builders.gate_readiness import (
 )
 from finishup.cli import closure_gate as gate_module
 from finishup.cli.closure_gate import (
-    ACCEPTANCE_RECHECK_ITEM,
     ACKNOWLEDGEMENT_RECHECK_ITEM,
     PREMISE_RECHECK_ITEM,
     closure_gate_from_readiness,
@@ -72,11 +76,9 @@ def _gate(
 # --- moved repros -----------------------------------------------------------------------------
 
 
-def test_c5_acceptance_reread_is_asked_without_another_gate_token() -> None:
-    """FN on 26e9cecf: everything resolved, no Stop-gate token -> no gate at all, so the A-12
-    acceptance re-read was never asked. In cargo D it was delivered only because the false
-    ``declared_output_emptied`` token fired the gate. Status announces the re-read now, so the
-    gate asks it with no other token present."""
+def test_c5_retired_an_announced_acceptance_entry_is_never_asked() -> None:
+    """Family C after D1: everything resolved, no Stop-gate token, and an ``acceptance`` entry
+    from an earlier 0.3 service. The gate drops the entry: no Stop, nothing remembered."""
 
     announced = readiness(
         "ready_with_limitations",
@@ -85,29 +87,26 @@ def test_c5_acceptance_reread_is_asked_without_another_gate_token() -> None:
         acknowledged_obligation_count="0",
         receipt_blocking_finding_count="0",
     )
-    gate = _gate(announced)
-    assert gate is not None
-    assert "acceptance_criteria" in gate.text
-    assert gate.items == (ACCEPTANCE_RECHECK_ITEM,)
-    # The key carries the frontier of the invite so an acknowledgement answering it is recognised.
-    assert gate.blocker_keys == (f"{acceptance_recheck().key}@442",)
-    # The same state with nothing announced is not gated: the re-read is a readiness item.
+    for active in (False, True):
+        assert _gate(announced, active=active) is None
     silent = readiness("ready_with_limitations", (), rechecks=())
     assert _gate(silent) is None
 
 
-def test_c5b_the_acceptance_reread_also_rides_beside_a_real_token() -> None:
-    """Control: the re-read is asked in the same gate as an unrelated token such as the closing
-    review, so one Stop delivers both."""
+def test_c5b_an_acceptance_entry_adds_nothing_beside_a_real_token() -> None:
+    """Control: beside an unrelated token such as the closing review, the gate names only that
+    token; the older service's acceptance entry neither rides along nor is remembered."""
 
     announced = readiness(
         "action_required", ("closing_review_required",), rechecks=(acceptance_recheck(),)
     )
     gate = _gate(announced)
     assert gate is not None
-    assert gate.items == ("closing_review_required", ACCEPTANCE_RECHECK_ITEM)
-    assert "acceptance_criteria" in gate.text
+    assert gate.items == ("closing_review_required",)
+    assert "acceptance_criteria" not in gate.text
     assert "`final_review: true`" in gate.text
+    assert gate.blocker_keys == ()
+    assert gate == _gate(readiness("action_required", ("closing_review_required",), rechecks=()))
 
 
 def test_b2_stop_gate_continues_a_readiness_that_says_nothing_further_to_do() -> None:
@@ -144,16 +143,14 @@ def test_b2_stop_gate_continues_a_readiness_that_says_nothing_further_to_do() ->
 # --- invite-then-challenge --------------------------------------------------------------------
 
 
-def test_an_acknowledgement_after_the_acceptance_invite_is_not_challenged() -> None:
+def test_legacy_invite_memory_still_exempts_the_acknowledgement_that_answered_it() -> None:
     """cargo D: the acceptance sentence told the agent to republish an unmet obligation as
-    ``acknowledged_not_done``; the next gate then re-asked that very acknowledgement."""
+    ``acknowledged_not_done``; the next gate then re-asked that very acknowledgement. A build
+    before D1 remembered the invite as ``accept:<h8>@<frontier>``; that memory still exempts a
+    later acknowledgement, so a session spanning the upgrade is not newly challenged."""
 
     invite = acceptance_recheck()
-    first = _gate(readiness("ready_with_limitations", (), rechecks=(invite,)), sequence="400")
-    assert first is not None
-    (invite_key,) = first.blocker_keys
-    assert invite_key == f"{invite.key}@400"
-    memory = frozenset({invite_key})
+    memory = frozenset({f"{invite.key}@400"})
     answered = readiness(
         "ready_with_limitations", (), rechecks=(invite, ack_recheck(_OBL, since=410))
     )
@@ -164,7 +161,10 @@ def test_an_acknowledgement_after_the_acceptance_invite_is_not_challenged() -> N
     again = _gate(older, sequence="415", reasked=memory)
     assert again is not None
     assert again.items == (ACKNOWLEDGEMENT_RECHECK_ITEM,)
-    # With no invite delivered, every acknowledgement is asked, whenever it was published.
+    # No ``accept:`` key is written any more.
+    assert again.blocker_keys == (f"ack:{_OBL}",)
+    # With no invite in memory, every announced acknowledgement is asked, whenever it was
+    # published (the service itself leaves an honest downgrade out of the list since D1).
     no_invite = readiness("ready_with_limitations", (), rechecks=(ack_recheck(_OBL, since=410),))
     assert _gate(no_invite, sequence="415") is not None
 
@@ -181,34 +181,7 @@ def test_the_earliest_invite_decides_which_acknowledgement_answered_it() -> None
 # --- once per key -----------------------------------------------------------------------------
 
 
-def test_the_acceptance_reread_is_asked_once_per_resolved_set() -> None:
-    invite = acceptance_recheck()
-    gate = _gate(readiness("ready_with_limitations", (), rechecks=(invite,)), sequence="10")
-    assert gate is not None
-    memory = frozenset(gate.blocker_keys)
-    for sequence in ("11", "99"):
-        assert (
-            _gate(
-                readiness("ready_with_limitations", (), rechecks=(invite,)),
-                sequence=sequence,
-                reasked=memory,
-            )
-            is None
-        )
-    # A different resolved set is a new re-read.
-    changed = acceptance_recheck((obligation_id(200), obligation_id(201), obligation_id(202)))
-    assert changed.key != invite.key
-    assert (
-        _gate(
-            readiness("ready_with_limitations", (), rechecks=(changed,)),
-            sequence="99",
-            reasked=memory,
-        )
-        is not None
-    )
-
-
-def test_the_acceptance_reread_is_not_offered_beside_open_obligations_and_stays_unasked() -> None:
+def test_an_acceptance_entry_adds_nothing_beside_open_obligations() -> None:
     announced = readiness(
         "action_required", ("obligations_open",), rechecks=(acceptance_recheck(),)
     )
@@ -216,16 +189,7 @@ def test_the_acceptance_reread_is_not_offered_beside_open_obligations_and_stays_
     assert gate is not None
     assert gate.items == ("obligations_open",)
     assert "acceptance_criteria" not in gate.text
-    assert gate.blocker_keys == ()  # not remembered: asked at a later Stop
-
-
-def test_the_acceptance_sentence_has_a_verification_limit_branch_that_is_not_a_retreat() -> None:
-    text = gate_module._ACCEPTANCE_TEXT  # pyright: ignore[reportPrivateUsage]
-    assert "acknowledged_not_done" in text
-    assert "`finishup-verification-limit:<obligation id>`" in text
-    assert "outside this environment" in text
-    # The branch is for what cannot be verified here; "I could not find it" does not qualify.
-    assert "you did the work" in text
+    assert gate.blocker_keys == ()
 
 
 # --- rejected finding awaiting a ruling (ks S) ------------------------------------------------
@@ -259,7 +223,7 @@ def test_awaiting_ruling_sends_the_agent_to_the_closing_review_and_never_to_ackn
     assert "republish" not in gate.text
 
 
-def test_the_acceptance_invitation_never_rides_beside_a_rejected_finding() -> None:
+def test_an_acceptance_entry_never_rides_beside_a_rejected_finding() -> None:
     announced = _awaiting(rechecks=(acceptance_recheck(),))
     gate = _gate(announced)
     assert gate is not None
@@ -431,7 +395,7 @@ def test_the_active_stop_still_ignores_every_ordinary_item() -> None:
     assert "open obligation" not in gate.text
 
 
-def test_the_acceptance_invitation_never_rides_beside_a_withdrawn_deliverable() -> None:
+def test_an_acceptance_entry_never_rides_beside_a_withdrawn_deliverable() -> None:
     gate = _gate(_emptied(rechecks=(acceptance_recheck(),)))
     assert gate is not None
     assert "acceptance_criteria" not in gate.text
@@ -533,13 +497,15 @@ def test_closure_prepare_names_the_rechecks_the_gate_will_ask() -> None:
     note = recheck_note(announced)
     assert note is not None
     assert note.startswith("At Stop you will be asked once to re-read: ")
-    assert "the acceptance criteria of your resolved obligations" in note
+    # D1: an older service's acceptance entry is not announced, because the gate never asks it.
+    assert "acceptance" not in note
     assert "obligations you recorded as not done" in note
     assert note.count("obligations you recorded as not done") == 1
     # What the note names is exactly what the gate asks.
     gate = _gate(announced)
     assert gate is not None
-    assert gate.items == (ACKNOWLEDGEMENT_RECHECK_ITEM, ACCEPTANCE_RECHECK_ITEM)
+    assert gate.items == (ACKNOWLEDGEMENT_RECHECK_ITEM,)
+    assert recheck_note(readiness("ready", (), rechecks=(acceptance_recheck(),))) is None
     assert recheck_note(readiness("ready", (), rechecks=())) is None
     assert recheck_note(readiness("ready", (), rechecks=None)) is None
 
@@ -577,38 +543,29 @@ def test_the_awaiting_ruling_text_names_the_finding_and_the_frontier_of_the_reje
 # --- Codex review round 1 (W2-C) ----------------------------------------------------------------
 
 
-def test_the_acceptance_invitation_is_withheld_on_an_active_stop_beside_unvoiced_items() -> None:
-    """An active Stop computes no ordinary items, but a rejected finding awaiting a ruling, open
-    obligations or a withdrawn deliverable that is present still keep the invitation to
-    acknowledge unasked (and unremembered): Codex round 1, finding 1."""
+def test_an_acceptance_entry_never_continues_an_active_stop() -> None:
+    """Codex round 1, finding 1, after D1: whatever else is present, an ``acceptance`` entry
+    alone never continues an active Stop."""
 
-    for token in (_AWAITING, "obligations_open"):
+    for token in (_AWAITING, "obligations_open", "closing_review_required"):
         announced = readiness("action_required", (token,), rechecks=(acceptance_recheck(),))
         assert _gate(announced, active=True) is None, token
-    # A withdrawn deliverable already voiced still excludes it.
+    # A withdrawn deliverable is voiced once on its own key; the entry adds nothing.
     voiced = _emptied(rechecks=(acceptance_recheck(),))
     first = _gate(voiced, active=True)
     assert first is not None
     assert first.items == (DECLARED_OUTPUT_EMPTIED_GAP,)
     assert _gate(voiced, active=True, reasked=frozenset(first.blocker_keys)) is None
-    # With none of them present the same invitation is asked.
-    clear = readiness(
-        "action_required", ("closing_review_required",), rechecks=(acceptance_recheck(),)
-    )
-    gate = _gate(clear, active=True)
-    assert gate is not None
-    assert gate.items == (ACCEPTANCE_RECHECK_ITEM,)
 
 
-def test_the_earliest_acceptance_invite_survives_the_memory_bound(tmp_path: Any) -> None:
-    """Codex round 1, finding 3: the invite's frontier is the only memory of which acknowledgement
-    answered it; 64 later keys must not evict it."""
+def test_the_earliest_legacy_acceptance_invite_survives_the_memory_bound(tmp_path: Any) -> None:
+    """Codex round 1, finding 3: the invite's frontier (memory written before D1) is the only
+    memory of which acknowledgement answered it; 64 later keys must not evict it."""
 
     invite = acceptance_recheck()
-    first = _gate(readiness("ready_with_limitations", (), rechecks=(invite,)), sequence="400")
-    assert first is not None
+    legacy = f"{invite.key}@400"
     assert gate_module.record_closure_gate_delivered(
-        "ses_a", first.identity, blocker_keys=first.blocker_keys, _state=tmp_path
+        "ses_a", f"400:{_DIGEST}", blocker_keys=(legacy,), _state=tmp_path
     )
     noise = tuple(f"obl_{index:04d}:consent" for index in range(80))
     assert gate_module.record_closure_gate_delivered(
@@ -616,7 +573,7 @@ def test_the_earliest_acceptance_invite_survives_the_memory_bound(tmp_path: Any)
     )
     memory = gate_module.closure_gate_reasked_blockers("ses_a", _state=tmp_path)
     assert len(memory) <= 64
-    assert first.blocker_keys[0] in memory
+    assert legacy in memory
     answered = readiness(
         "ready_with_limitations", (), rechecks=(invite, ack_recheck(_OBL, since=410))
     )
@@ -649,7 +606,7 @@ def test_the_gate_ends_with_the_predicted_receipt_conclusion_and_drops_it_first(
     announced = readiness(
         "ready_with_limitations",
         (),
-        rechecks=(acceptance_recheck(),),
+        rechecks=(ack_recheck(_OBL),),
         predicted_receipt=_PREDICTION,
     )
     gate = _gate(announced)
@@ -658,7 +615,7 @@ def test_the_gate_ends_with_the_predicted_receipt_conclusion_and_drops_it_first(
         "The receipt will read insufficient_coverage: 2 acknowledged obligation(s), 1 disclosed"
         " finding(s)."
     )
-    assert "acceptance_criteria" in gate.text
+    assert "Acknowledgement re-check (asked once)" in gate.text
     # Work remaining reads as a counterfactual, never as a promise.
     work = readiness(
         "action_required",
@@ -672,13 +629,14 @@ def test_the_gate_ends_with_the_predicted_receipt_conclusion_and_drops_it_first(
     assert _gate(readiness("ready_with_limitations", (), predicted_receipt=_PREDICTION)) is None
     assert (
         "will read"
-        not in _gate(readiness("ready_with_limitations", (), rechecks=(acceptance_recheck(),))).text
+        not in _gate(readiness("ready_with_limitations", (), rechecks=(ack_recheck(_OBL),))).text
     )  # type: ignore[union-attr]
 
 
 def test_the_prediction_is_the_first_sentence_dropped_under_the_host_bound() -> None:
     """With every token and re-check the 2,000-character bound is full: the prediction yields
-    before the acceptance sentence, the premise ask or any re-check does."""
+    before the premise ask or any re-check does (an older service's acceptance entry adds
+    nothing)."""
 
     crowded = readiness(
         "action_required",

@@ -5363,7 +5363,11 @@ class StatusObligationCountsModel(_ClosedModel):
 
 
 class StatusRecheckModel(_ClosedModel):
-    """A once-per-frontier re-read the Stop gate may ask for (RC-8); delivery memory is the gate's."""
+    """A once-per-frontier re-read the Stop gate may ask for (RC-8); delivery memory is the gate's.
+
+    ``acceptance`` is emitted only by an earlier 0.3 build and never asked since ADR-033 D1; the
+    kind stays so such a result still validates.
+    """
 
     kind: Literal["acceptance", "acknowledgement", "blocker", "premise"]
     key: RecheckKeyWire
@@ -5428,10 +5432,9 @@ class StatusAdmissibleVerificationModel(_ClosedModel):
 
     Service-minted ids only. An id is here only when it is an observed verification (hook-captured
     or observation-captured evidence, or a result of an observed command) linked to that
-    obligation. The Stop gate accepts a
-    ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line only when the cited id
-    is in this list for that obligation. An agent-asserted id is absent. Absence never means a
-    well-formed id is linked.
+    obligation. An agent-asserted id is absent. Absence never means a well-formed id is linked.
+    No longer emitted since ADR-033 D1 (its only reader was the retired final-message
+    attestation); kept so a result from an earlier 0.3 build still validates.
     """
 
     obligation_id: ObligationIdWire
@@ -5441,6 +5444,40 @@ class StatusAdmissibleVerificationModel(_ClosedModel):
     def _validate_admissible_refs(self) -> StatusAdmissibleVerificationModel:
         if self.refs != tuple(sorted(set(self.refs), key=str.encode)):
             raise ValueError("admissible_verification_refs_invalid")
+        return self
+
+
+AcceptanceRiskReasonWire = Literal[
+    "requested_item_never_attempted",
+    "evidence_not_linked_to_declared_items",
+    "evidence_self_asserted_only",
+]
+# The canonical order of ``kernel.acceptance_risk.ACCEPTANCE_RISK_REASONS`` (a test pins them).
+_ACCEPTANCE_RISK_REASON_ORDER: Final[tuple[str, ...]] = (
+    "requested_item_never_attempted",
+    "evidence_not_linked_to_declared_items",
+    "evidence_self_asserted_only",
+)
+
+
+class StatusAcceptanceRiskModel(_ClosedModel):
+    """A resolved obligation whose acceptance provenance FinishUP could not establish (D1).
+
+    ADR-033 (owner decision D1): the obligation is flagged (``kernel.acceptance_risk``) and has
+    neither an admissible observed verification link nor a recorded verification limit, so the
+    receipt records ``unresolved_verification_limitation`` for it. An obligation id and closed
+    reason tokens only, in their canonical order. It is never a Stop item.
+    """
+
+    obligation_id: ObligationIdWire
+    reasons: Annotated[tuple[AcceptanceRiskReasonWire, ...], Field(min_length=1, max_length=3)]
+
+    @model_validator(mode="after")
+    def _validate_acceptance_risk(self) -> StatusAcceptanceRiskModel:
+        if self.reasons != tuple(
+            reason for reason in _ACCEPTANCE_RISK_REASON_ORDER if reason in self.reasons
+        ):
+            raise ValueError("acceptance_risk_reasons_invalid")
         return self
 
 
@@ -5531,16 +5568,22 @@ class StatusClosureReadinessModel(_ClosedModel):
         default=None, max_length=16
     )
     # #1079: evd_ or res_ ids that are a recorded link for a flagged obligation. Optional on the
-    # unreleased 1.4.0 wire: omitted when none were computed, and from an earlier 0.3 build.
+    # unreleased 1.4.0 wire. Not emitted since ADR-033 D1; an earlier 0.3 build may send it.
     # Absence never means a cited id is linked.
     admissible_verification: tuple[StatusAdmissibleVerificationModel, ...] | None = Field(
         default=None, max_length=8
     )
     # Newest material closing-review input's ingestion sequence, or ``"0"`` when this build
-    # computed none. Optional on the unreleased 1.4.0 wire: an earlier build omits it, and the
-    # Stop gate then keeps its older once-per-obligation-set memory. ``"0"`` is distinct from
-    # omission.
+    # computed none. Optional on the unreleased 1.4.0 wire: an earlier build omits it. ``"0"`` is
+    # distinct from omission.
     closing_material_frontier: CanonicalUInt64Wire | None = None
+    # ADR-033 (owner decision D1): the resolved obligations whose acceptance provenance FinishUP
+    # could not establish, the receipt's ``unresolved_verification_limitation`` set, sorted by id
+    # (at most 64, the plan's obligation bound). Optional on the unreleased 1.4.0 wire: omitted
+    # when none, and from an earlier 0.3 build. Never a Stop item.
+    acceptance_risk: tuple[StatusAcceptanceRiskModel, ...] | None = Field(
+        default=None, max_length=64
+    )
 
     optional_non_null_fields = frozenset(
         {
@@ -5564,6 +5607,7 @@ class StatusClosureReadinessModel(_ClosedModel):
             "limitation_refs_required_count",
             "admissible_verification",
             "closing_material_frontier",
+            "acceptance_risk",
         }
     )
 
@@ -5589,6 +5633,18 @@ class StatusClosureReadinessModel(_ClosedModel):
             _require_unique(admissible_ids, limit=8)
             if admissible_ids != tuple(sorted(admissible_ids, key=str.encode)):
                 raise ValueError("closure_readiness_admissible_verification_invalid")
+        if self.acceptance_risk is not None:
+            risk_ids = tuple(item.obligation_id for item in self.acceptance_risk)
+            _require_unique(risk_ids, limit=64)
+            if risk_ids != tuple(sorted(risk_ids, key=str.encode)):
+                raise ValueError("closure_readiness_acceptance_risk_invalid")
+            # One verdict on the wire (ADR-046): a named coverage limit is a standing limitation.
+            if (
+                risk_ids
+                and self.standing_limitations is not None
+                and "unresolved_verification_limitation" not in self.standing_limitations
+            ):
+                raise ValueError("closure_readiness_acceptance_risk_unbounded")
         _validate_fact_lineage_models(self.fact_lineage)
         self._validate_checklist()
         # Absent counts mean the compact singleton could not be read (an unreadable task title
@@ -7597,6 +7653,9 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "admissible_verification/*/refs/*",
             # Ingestion sequence of the newest material closing-review input, or "0".
             "closing_material_frontier",
+            # ADR-033 (D1): service-minted obligation ids and closed reason tokens only.
+            "acceptance_risk/*/obligation_id",
+            "acceptance_risk/*/reasons/*",
             "undeclared_references/*/obligation_id",
             "undeclared_references/*/item_index",
             "undeclared_references/*/total",
@@ -8421,14 +8480,15 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1641
+        len(result) != 1643
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,
         # #1079 +2 admissible_verification, +1 closing_material_frontier,
         # #1084 +3 (publish server_filled), +3 (status operation server_filled),
-        # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source)
+        # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source),
+        # W5/D1 +2 (closure_readiness.acceptance_risk)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

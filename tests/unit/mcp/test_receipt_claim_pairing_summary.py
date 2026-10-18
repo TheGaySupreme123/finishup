@@ -57,3 +57,30 @@ def test_a_receipt_without_the_pairing_header_does_not_invent_a_line() -> None:
     )
     assert CLAIM_VERIFICATION_HEADER not in text
     assert _OBLIGATION not in text
+
+
+@pytest.mark.parametrize("flagged", [9, 64])
+def test_pairing_lines_bounded_at_9_and_64(flagged: int) -> None:
+    """#1093 item 1: a plan may flag up to 64 obligations; the summary keeps eight pairing lines,
+    counts the rest, names at most eight unresolved ids and stays inside the summary bound."""
+
+    obligations = [f"obl_00000000-0000-4000-8000-{index:012x}" for index in range(1, flagged + 1)]
+    lines = [
+        f"{obligation} evidence_self_asserted_only no_verification_limit"
+        for obligation in obligations
+    ]
+    body = f"The receipt retains 0 claim references. {CLAIM_VERIFICATION_HEADER} " + " ".join(lines)
+    text = summary_for_receipt(_envelope(gaps=("unresolved_verification_limitation",), body=body))
+    assert len(text.encode("ascii")) <= summaries.MAX_SUMMARY_BYTES
+    assert CLAIM_VERIFICATION_HEADER in text
+    assert sum(line in text for line in lines) == 8
+    assert all(line in text for line in lines[:8])
+    assert f"+{flagged - 8} more flagged obligations (see the receipt evidence section)." in text
+    hidden = flagged - 8
+    assert (
+        "Acceptance provenance not established for "
+        + ", ".join(obligations[:8])
+        + f" and {hidden} more: no admissible observed verification link or recorded verification"
+        " limit; the receipt records this as a coverage limit."
+    ) in text
+    assert "invitation" not in text

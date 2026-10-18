@@ -5584,6 +5584,35 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             # exists. Optional on the unreleased 1.4.0 wire; omitted by an earlier build.
             # "0" is computed and distinct from omission.
             "closing_material_frontier": {"$ref": "#/$defs/canonical_uint"},
+            # W5/D1 (ADR-033): resolved obligations whose acceptance provenance FinishUP could
+            # not establish (the receipt's coverage limit). Ids and closed reason tokens only.
+            # Optional on the unreleased 1.4.0 wire; omitted when none. Never a Stop item.
+            "acceptance_risk": {
+                "items": {
+                    "additionalProperties": False,
+                    "properties": {
+                        "obligation_id": {"$ref": "#/$defs/obligation_id"},
+                        "reasons": {
+                            "items": {
+                                "enum": [
+                                    "requested_item_never_attempted",
+                                    "evidence_not_linked_to_declared_items",
+                                    "evidence_self_asserted_only",
+                                ],
+                                "type": "string",
+                            },
+                            "maxItems": 3,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": True,
+                        },
+                    },
+                    "required": ["obligation_id", "reasons"],
+                    "type": "object",
+                },
+                "maxItems": 64,
+                "type": "array",
+            },
             # F3: the result ids a whole-task completion claim recorded now must name in
             # `limitation_refs` (the reducer's own rule), sorted and bounded, plus the full count.
             # Ids only. Optional on the unreleased 1.4.0 wire; present together.

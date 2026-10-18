@@ -462,9 +462,10 @@ command input stays in encrypted local capture objects under existing consent,
 redaction and retention limits, and is used only as local eligibility context.
 Capture-redacted output and secret hits in decoded native JSON strings drop the whole item.
 
-Unanswered acceptance invitations (issue #1079, F2) do not establish coverage.
-Delivery memory bounds Stop prompting only. Risky resolved obligations without an
-admissible observed verification link or recorded verification-limit decision retain
-the derived `unresolved_verification_limitation` check/readiness gap. The receipt and
-MCP summary explicitly name the affected obligations and the unresolved verification
-limitation. The receipt remains coverage-bounded after Stop is allowed.
+Acceptance provenance is a receipt coverage note, never a Stop item (issue #1101).
+A flagged resolved obligation without an admissible observed verification link or a
+recorded verification-limit decision keeps the derived
+`unresolved_verification_limitation` check/readiness gap, which caps the conclusion
+at `insufficient_coverage`. The receipt names the affected obligations; the MCP
+receipt summary names at most eight, then a count. The receipt stays
+coverage-bounded.

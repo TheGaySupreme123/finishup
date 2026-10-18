@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Final, Literal, cast
 
 __all__ = [
+    "ACCEPTANCE_RISK_REASON_TOKENS",
     "CODEX_CHECK_CELL_PRAGMA",
     "CODEX_CHECK_YIELD_TIME_MS",
     "OBLIGATION_RESOLVE_RECIPE_VARIANTS",
@@ -26,8 +27,9 @@ __all__ = [
     "COORDINATOR_FAILURE_SENTENCE",
     "COORDINATOR_FAILURE_TOKEN",
     "check_cause_sentence",
+    "acceptance_risk_note",
+    "acceptance_risk_rows",
     "closure_counts_variants",
-    "admissible_verification_sentence",
     "coordinator_failure_note",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
@@ -83,68 +85,98 @@ COORDINATOR_FAILURE_SENTENCE: Final = (
 _OBLIGATION_ID: Final = re.compile(
     r"obl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
-_VERIFICATION_ID: Final = re.compile(
-    r"(?:evd_|res_)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+# ADR-033 (owner decision D1): the closed reason tokens of ``kernel.acceptance_risk``, in their
+# canonical order, and the receipt's coverage-limit code they bound on. Repeated here so this
+# module stays free of kernel imports; a test pins the two together.
+ACCEPTANCE_RISK_REASON_TOKENS: Final = (
+    "requested_item_never_attempted",
+    "evidence_not_linked_to_declared_items",
+    "evidence_self_asserted_only",
+)
+_UNRESOLVED_VERIFICATION_CODE: Final = "unresolved_verification_limitation"
+_MAX_NAMED_RISK: Final = 8
+# The sentence an earlier 0.3 service (no ``acceptance_risk`` field) still gets once, without ids,
+# when its standing list names the code. Byte-identical to ``domain.receipts``'s fixed sentence
+# (a test pins it; importing it here would load pydantic on the hook path).
+_ACCEPTANCE_RISK_FALLBACK: Final = (
+    "Acceptance provenance not established: a resolved requirement FinishUP flags has no "
+    "admissible observed verification link or recorded verification limit; the receipt records "
+    "this as a coverage limit."
+)
+_ACCEPTANCE_RISK_TAIL: Final = (
+    " to an observed verification run or a recorded verification limit. This alone never blocks"
+    " stopping and no action is needed for met work; the receipt records this as a coverage limit."
+    " If an output does not meet its acceptance_criteria, republish that obligation"
+    " acknowledged_not_done with the reason."
 )
 
 
-def admissible_verification_sentence(readiness: object) -> str:
-    """One sentence naming admissible observed ids, or empty when none are listed.
+def acceptance_risk_rows(readiness: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """``(obligation id, reasons)`` from ``closure_readiness.acceptance_risk``, validated.
 
-    Only obligation ids and ``evd_`` / ``res_`` ids are copied. A missing list, or a row that
-    is not those ids, adds nothing.
+    Only rows whose id is an obligation id and whose reasons are the closed tokens are copied.
+    A missing list, or a malformed row, adds nothing.
     """
 
-    raw = _field(readiness, "admissible_verification")
+    raw = _field(readiness, "acceptance_risk")
     if not isinstance(raw, (tuple, list)):
-        raw = ()
-    pieces: list[str] = []
-    linked: set[str] = set()
+        return ()
+    rows: list[tuple[str, tuple[str, ...]]] = []
+    seen: set[str] = set()
     for item in cast("tuple[object, ...] | list[object]", raw):
         obligation = _field(item, "obligation_id")
-        refs = _field(item, "refs")
-        if type(obligation) is not str or _OBLIGATION_ID.fullmatch(obligation) is None:
+        reasons_raw = _field(item, "reasons")
+        if (
+            type(obligation) is not str
+            or _OBLIGATION_ID.fullmatch(obligation) is None
+            or obligation in seen
+            or not isinstance(reasons_raw, (tuple, list))
+        ):
             continue
-        if not isinstance(refs, (tuple, list)):
+        given = tuple(cast("tuple[object, ...] | list[object]", reasons_raw))
+        reasons = tuple(token for token in ACCEPTANCE_RISK_REASON_TOKENS if token in given)
+        if not reasons or len(reasons) != len(given):
             continue
-        shown = [
-            ref
-            for ref in tuple(cast("tuple[object, ...] | list[object]", refs))[:8]
-            if type(ref) is str and _VERIFICATION_ID.fullmatch(ref) is not None
-        ]
-        if shown:
-            linked.add(obligation)
-            if len(pieces) < 8:
-                pieces.append(f"{obligation} linked {','.join(shown)}")
-    unresolved: list[str] = []
-    rechecks = _field(readiness, "rechecks")
-    if isinstance(rechecks, (tuple, list)):
-        for entry in cast("tuple[object, ...] | list[object]", rechecks):
-            if (
-                _field(entry, "kind") != "acceptance"
-                or _field(entry, "rule") != _ACCEPTANCE_RISK_RULE
-            ):
-                continue
-            subjects = _field(entry, "subjects")
-            if isinstance(subjects, (tuple, list)):
-                unresolved.extend(
-                    ref
-                    for ref in cast("tuple[object, ...] | list[object]", subjects)
-                    if type(ref) is str and _OBLIGATION_ID.fullmatch(ref) and ref not in linked
-                )
-    sentences = ["Admissible verification: " + "; ".join(pieces) + "."] if pieces else []
-    if unresolved:
-        named = sorted(set(unresolved))
-        names = ", ".join(named[:8])
-        if len(named) > 8:
-            names += f" and {len(named) - 8} more"
-        sentences.append(
-            "Unresolved verification limitation for "
-            + names
-            + ": no admissible observed verification link or recorded verification limit; "
-            "an unanswered acceptance invitation does not establish coverage."
+        seen.add(obligation)
+        rows.append((obligation, reasons))
+    return tuple(rows)
+
+
+def acceptance_risk_note(readiness: object, *, short: bool = False) -> str:
+    """The one closure-guidance sentence for acceptance-provenance risk, or ``""`` (ADR-033 D1).
+
+    Built from ``closure_readiness.acceptance_risk`` (obligation ids and closed reason tokens),
+    host-independent, stateless: every status, check and ``closure_prepare`` read says it once.
+    It is never a Stop item and never an agent-actionable token. At most eight ids are named
+    ("and N more"). ``short`` is the bounded MCP form. An earlier 0.3 service sends no field: when
+    its standing list names ``unresolved_verification_limitation`` the fixed receipt sentence is
+    returned instead, once and without ids.
+    """
+
+    rows = acceptance_risk_rows(readiness)
+    if not rows:
+        standing = _field(readiness, "standing_limitations")
+        if _field(readiness, "acceptance_risk") is None and (
+            isinstance(standing, (tuple, list))
+            and _UNRESOLVED_VERIFICATION_CODE in cast("tuple[object, ...] | list[object]", standing)
+        ):
+            return _ACCEPTANCE_RISK_FALLBACK
+        return ""
+    if short:
+        return (
+            f"Acceptance provenance: {len(rows)} obligation(s) recorded as a receipt coverage limit"
+            " (closure_readiness.acceptance_risk); not a Stop item."
         )
-    return " ".join(sentences)
+    named = "; ".join(
+        f"{obligation} ({', '.join(reasons)})" for obligation, reasons in rows[:_MAX_NAMED_RISK]
+    )
+    hidden = len(rows) - _MAX_NAMED_RISK
+    if hidden > 0:
+        named += f"; and {hidden} more"
+    return (
+        "Acceptance provenance (a receipt coverage limit, not a Stop item): FinishUP could not tie"
+        f" the resolution of {named}{_ACCEPTANCE_RISK_TAIL}"
+    )
 
 
 def coordinator_failure_note(readiness: object) -> str | None:
@@ -413,43 +445,13 @@ def reason_phrases(reasons: object) -> tuple[str, ...]:
 # Announced re-reads and awaiting-ruling findings (tb4n3 RC-8, ADR-046)
 # ---------------------------------------------------------------------------------------------
 
+# ADR-033 (owner decision D1): acceptance-provenance risk is not a re-check. An ``acceptance``
+# entry an earlier 0.3 service still sends is not in this table, so no surface announces it.
 _RECHECK_PHRASES: Final[Mapping[str, str]] = {
-    "acceptance": "the acceptance criteria of your resolved obligations",
     "acknowledgement": "obligations you recorded as not done",
     "blocker": "a blocker you recorded",
     "premise": "findings you acknowledged that the review says the task requires",
 }
-# tb4n5 (#1050): an acceptance re-read limited to the resolved obligations the ledger flags, and
-# the per-obligation line that answers it before the Stop.
-_ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
-_ACCEPTANCE_RISK_PHRASE: Final = (
-    "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; a line"
-    " `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or"
-    " `finishup-verification-limit:<obligation id>` in your final answer answers it; saying every"
-    " criterion is met does not)"
-)
-# Cursor's Stop hook receives no final message, so it never names the acceptance line. The note
-# tells the agent to record the limit or the observed id. Saying the criteria are met does not
-# answer the re-read. The re-read returns only after the work, its verification, or the review
-# mode changes.
-_ACCEPTANCE_RISK_PHRASE_CURSOR: Final = (
-    "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; Cursor"
-    " passes FinishUP no final answer, so publish a decision"
-    " `finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a"
-    " record; this re-read is asked again only after the work, its verification, or the review mode"
-    " changes, and saying every criterion is met does not"
-    " answer it)"
-)
-# A surface that does not know its host (the CLI, the TUI, a generic MCP profile) names which
-# hosts read the line, so an agent on Cursor is never told a final-answer line answers the re-read.
-_ACCEPTANCE_RISK_PHRASE_ANY_HOST: Final = (
-    "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; on"
-    " Codex and Claude Code a line `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` or"
-    " `finishup-verification-limit:<obligation id>` in your final answer answers it; Cursor passes"
-    " no final answer, so there publish a decision `finishup-verification-limit:<obligation id>`"
-    " or link the observed evd_ or res_ id in a record; saying every criterion is met does not"
-    " answer it)"
-)
 _MAX_NAMED_RULING_FINDINGS: Final = 3
 
 
@@ -459,41 +461,24 @@ def recheck_note(readiness: object, *, host: str | None = None) -> str | None:
     ``closure_readiness.rechecks`` is the list status, ``closure_prepare`` and the Stop gate all
     read, so a surface that says "nothing further" never precedes a gate for an item it did not
     name. ``readiness`` is the wire mapping or the typed model. ``None`` when the readiness
-    announces none (or an older service sent no list).
+    announces none (or an older service sent no list, or only an ``acceptance`` entry, which the
+    gate no longer asks since D1).
 
-    ``host`` decides how a flagged acceptance re-read is answered: ``None``, ``codex`` or
-    ``claude`` (the hosts whose Stop passes the final message) name the linked
-    ``finishup-acceptance:<obligation id>:met:<evd_ or res_ id>`` line or a verification-limit
-    line; ``cursor`` (no final message at Stop) never names ``finishup-acceptance`` and instead
-    names a recorded limit or an evidence link; ``generic`` (a surface that does not know its
-    host) names both. Saying every criterion is met does not answer the flagged re-read.
+    ``host`` is accepted and ignored: since D1 no re-check is answered differently per host.
     """
 
+    del host
     raw = _field(readiness, "rechecks")
     if not isinstance(raw, (tuple, list)):
         return None
     kinds: list[str] = []
-    flagged = False
     for entry in tuple(cast("tuple[object, ...] | list[object]", raw)):
         kind = _field(entry, "kind")
         if type(kind) is str and kind in _RECHECK_PHRASES and kind not in kinds:
             kinds.append(kind)
-            flagged = flagged or (
-                kind == "acceptance" and _field(entry, "rule") == _ACCEPTANCE_RISK_RULE
-            )
     if not kinds:
         return None
-    risk_phrase = (
-        _ACCEPTANCE_RISK_PHRASE_CURSOR
-        if host == "cursor"
-        else _ACCEPTANCE_RISK_PHRASE_ANY_HOST
-        if host == "generic"
-        else _ACCEPTANCE_RISK_PHRASE
-    )
-    named = "; ".join(
-        risk_phrase if kind == "acceptance" and flagged else _RECHECK_PHRASES[kind]
-        for kind in kinds
-    )
+    named = "; ".join(_RECHECK_PHRASES[kind] for kind in kinds)
     return (
         "At Stop you will be asked once to re-read: "
         f"{named}. closure_readiness.rechecks lists each with its key."

@@ -339,6 +339,17 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 ### Changed
 
+- **Acceptance provenance is a receipt coverage note, not a Stop question** (#1101, ADR-033). The
+  Stop hook no longer asks your agent to re-read the acceptance criteria of a resolved obligation
+  FinishUP flags (a requested item never attempted, or evidence that is unlinked or only the
+  agent's own assertion), on Codex, Claude Code or Cursor. Status names those obligations once
+  (`closure_readiness.acceptance_risk`), and the receipt records them as the coverage limit
+  `unresolved_verification_limitation` ("Acceptance provenance not established"), so the
+  conclusion is at best `insufficient_coverage`. Status, the check and the receipt now agree on that
+  set past eight flagged obligations. The `finishup-acceptance:` final-answer line is retired and
+  ignored, and Stop hooks no longer read the agent's final message. An honest downgrade to
+  `acknowledged_not_done` of an obligation the agent had resolved is not questioned again at Stop.
+  The agent-tool receipt summary keeps eight claim-pairing lines and counts the rest (#1093).
 - **The AI-powered reviewer checks the agent's premises, not just its arithmetic** (#1082). Its
   instruction is now a short procedure with named checks: the task's own definitions, boundaries
   and thresholds, whether the agent's own validators measure what the task defines, the method a

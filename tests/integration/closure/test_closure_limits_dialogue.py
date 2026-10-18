@@ -23,7 +23,6 @@ import pytest
 
 from builders.start_application import protocol_id
 from finishup.cli.closure_gate import (
-    ACCEPTANCE_RECHECK_ITEM,
     PREMISE_RECHECK_ITEM,
     closure_gate_from_readiness,
 )
@@ -243,9 +242,10 @@ async def test_the_agents_answer_decides_what_a_limitation_request_means_on_ever
     gate = closure_gate_from_readiness(
         readiness, frontier_sequence="9", frontier_digest="d", observation_pending=False
     )
-    # G2: a limitation request is never a premise challenge, so the Stop gate never re-asks one;
-    # the only re-check left is the announced acceptance re-read of the resolved obligation.
-    assert gate is not None and gate.items == (ACCEPTANCE_RECHECK_ITEM,)
+    # G2: a limitation request is never a premise challenge, so the Stop gate never re-asks one.
+    # The resolved obligation's acceptance provenance is a receipt coverage limit, never a Stop
+    # item (ADR-033 D1), so nothing is left to ask.
+    assert gate is None
     if basis == "limitation_disclosed":
         # Disclosed, not "acknowledged, not done": it is not listed as an undone requirement.
         assert disclosed == [finding.finding_id] and not undone

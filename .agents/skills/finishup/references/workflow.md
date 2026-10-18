@@ -241,24 +241,14 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   `closure_readiness.check_cause` names the record behind `check_not_applicable` (for example an
   observed edit made after the check) or behind the standing `check_current_as_of_earlier_frontier`.
 - `ready_with_limitations`: nothing further to do. (`closure_readiness.rechecks` lists what a Stop
-  will still ask you once: the acceptance criteria of the resolved obligations FinishUP flags (a
-  requested item never attempted, evidence not linked to a declared item, or only self-asserted
-  evidence), an obligation you acknowledged as not done, a recorded blocker, a premise dispute. A
-  Stop asks nothing that list does not name. Once you have read a flagged obligation's
-  `acceptance_criteria` against your output, answer it with
-  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id
-  that is already an observed verification for that obligation (hook-captured or
-  observation-captured evidence, or a result of an observed command), or with
-  `finishup-verification-limit:<obligation id>`, in your final answer on Codex and Claude Code.
-  A completion claim that names no obligation does not make those ids a link for an obligation.
-  A well-formed id that is not that observed link, including one you only asserted, does not
-  answer it. Saying every criterion is met does
-  not answer it. Cursor passes FinishUP no
-  final answer, so there publish a decision `finishup-verification-limit:<obligation id>` or
-  link the observed evd_ or res_ id in a record; the re-read is asked again only after the work,
-  its verification, or the review mode changes. If it
-  is not met, republish it
-  `acknowledged_not_done` instead.) Every remaining condition is a
+  will still ask you once: an obligation you acknowledged as not done, a recorded blocker, a
+  premise dispute. A Stop asks nothing that list does not name. `closure_readiness.acceptance_risk`
+  lists resolved obligations FinishUP flags (a requested item never attempted, evidence not linked
+  to a declared item, or only self-asserted evidence) with no observed verification link or
+  recorded verification limit. That is never a Stop question: status names them once, the
+  receipt records a coverage limit, and met work needs no action. If an output does not meet its
+  `acceptance_criteria`, republish that obligation
+  `acknowledged_not_done` with the reason.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
   you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
   or an obligation you recorded as not done). Request
@@ -324,16 +314,12 @@ confirmation step that re-check gives you, then stop. A Stop also asks you once 
 marked `acknowledged_not_done` that the review says the task itself requires
 (`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
 finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
-A Stop asks once to read each resolved obligation FinishUP flags against your final output.
-On Codex and Claude Code, answer a flagged obligation with
-`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
-is already an observed verification for that obligation (hook-captured or observation-captured
-evidence, or a result of an observed command), or with `finishup-verification-limit:<obligation id>`.
-A well-formed id that is not that observed link, including one you only asserted, does not answer it. Saying every criterion is met does
-not answer it. Cursor passes FinishUP no final answer: publish a decision
-`finishup-verification-limit:<obligation id>` or link the observed evd_ or res_ id in a record.
-If the output does not meet them, republish that obligation `acknowledged_not_done` with the
-reason. An acknowledgement you publish in answer to that question is not challenged again.
+FinishUP never asks at Stop whether a resolved obligation meets its acceptance criteria: an
+obligation it flags (a requested item never attempted, or evidence that is unlinked or only your
+own assertion) is named once in status and recorded on the receipt as a coverage limit. If the
+output does not meet its criteria, republish that obligation `acknowledged_not_done` with the
+reason; an acknowledgement that directly follows your own `resolved` publication of the same
+obligation is not challenged again. A `finishup-acceptance:` line in your final answer is not read.
 If a script ran the planned command for you (for example `python run_tests.py` calling the
 planned `pytest` command internally), link that run: publish an `action_recorded` with
 `action_kind` `command`, the planned item's exact `value` in `attempted_items`, and the observed

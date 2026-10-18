@@ -8021,9 +8021,11 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null).
 `closure_readiness.admissible_verification` is also optional on that unreleased 1.4.0 result
-(absent when no flagged obligation has an observed verification link; absence never means a cited
-id is linked). `closure_readiness.closing_material_frontier` is optional on the same wire
+(emitted by an earlier 0.3 build only; this build no longer emits it, ADR-033 owner decision D1).
+`closure_readiness.closing_material_frontier` is optional on the same wire
 (omitted by an earlier build; `"0"` means no material delta has been recorded).
+`closure_readiness.acceptance_risk` is optional on the same wire (omitted when no flagged
+resolution is a receipt coverage limit; see the closure-verdict section).
 Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
 `gap_classification_version` (`"8"` since `deliverable_references_undeclared_file` became an
@@ -8185,47 +8187,60 @@ the basis could not be read):
   `obligation_counts {open, acknowledged, disclosed}`;
   `awaiting_ruling_findings [{finding_id, since_frontier}]` (<= 8, by id; exactly the findings
   counted in `finding_counts.awaiting_ruling`, up to the bound); `rechecks [{kind
-  (acceptance|acknowledgement|blocker|premise), key (accept:<h8>|ack:<obl>|blocker:<obl>:<kind>|premise:<n>),
-  subjects[<=8], rule, since_frontier}]`. Since tb4n5 (#1050, ADR-033 amendment of 2026-10-13)
-  the `acceptance` entry names only the resolved obligations the ledger flags (rule
-  `resolved_obligations_acceptance_risk`, key over that set; no entry when none is flagged):
+  (acknowledgement|blocker|premise), key (ack:<obl>|blocker:<obl>:<kind>|premise:<n>),
+  subjects[<=8], rule, since_frontier}]`. The `acceptance` kind and its `accept:<h8>` key stay in
+  the model and the schema so a result from an earlier 0.3 build validates, but this build never
+  emits one (ADR-033 amendment of 2026-10-18, owner decision D1): acceptance-provenance risk is a
+  receipt coverage limit, never a Stop item. The flags are
   `finishup.kernel.acceptance_risk.acceptance_risk(projection, records, resolved) -> ((obligation,
   reasons), ...)` with the closed reasons `requested_item_never_attempted`,
   `evidence_not_linked_to_declared_items` and `evidence_self_asserted_only`, carried per request as
-  `ClosureReadinessFacts.acceptance_risk_obligation_ids` (`None` on a hand-built fact set keeps
-  every resolved obligation and the rule `resolved_obligations_acceptance_reread`). The alignment it
+  `ClosureReadinessFacts.acceptance_risk_obligation_ids`. The alignment it
   reads is `finishup.kernel.evidence_alignment` (`declared_items`, `results_by_evidence`,
   `source_actions`, `evidence_sources`, `alignment_of`), shared with the inspection's
   `evidence_alignment`; the inventories are indexed once per call, each cited reference's
   source actions are resolved once per call (`source_cache`) and deduplicated by action id, and an
-  identical call is answered from a one-entry memo (Stop's status deadline is 4,000 ms). The status
-  directive's re-check note names the flagged set and, since #1079, the linked
-  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` line or a
-  `finishup-verification-limit:<obligation id>` line that answers it. The linked id counts only
-  when `admissible_verification` (optional on the unreleased status-result 1.4.0) on this object
-  names it for that obligation (an observed verification row — hook-captured or
-  observation-captured evidence, or a result of an observed command — linked to the obligation,
-  its requested target, or a claim that lists that obligation, at or before the frontier; a claim
-  with empty `obligation_refs` lends nothing; an agent-asserted id is unattested). A bare `:met`
-  and a generic all-met claim do not. A missing or foreign id is unattested. An obligation
-  with a recorded `verification_limit` disclosure leaves the acceptance recheck; the receipt
-  still lists it. `closing_material_frontier` (canonical uint, optional on this unreleased wire,
-  emitted including `"0"` when computed) is the newest `closing_review_delta` ingestion sequence
-  at or before the projection frontier. The Stop gate remembers an acceptance re-read against it.
-  Omission (an earlier build) keeps the older once-per-obligation-set memory; `"0"` means none.
-  `kernel.claim_verification.claim_verification_lines` renders that pairing in the receipt evidence
+  identical call is answered from a one-entry memo (Stop's status deadline is 4,000 ms).
+  `acceptance_risk [{obligation_id, reasons[1..3]}]` (optional on the unreleased status-result
+  1.4.0; sorted by id, at most 64, omitted when empty; reasons in that canonical order) is the
+  receipt's coverage-limit set: `kernel.claim_verification.unresolved_acceptance_risk(projection,
+  records, *, flagged=None)`, each flagged resolved obligation with neither an admissible observed
+  verification link (`verification_link.admissible_verification_refs(..., limit=None)`: an observed
+  verification row — hook-captured or observation-captured evidence, or a result of an observed
+  command — linked to the obligation, its requested target, or a claim that lists that obligation,
+  at or before the frontier; a claim with empty `obligation_refs` lends nothing; an agent-asserted
+  id is not admissible) nor a recorded `verification_limit` disclosure. It is
+  `ClosureReadinessFacts.unresolved_acceptance_risk`, walked without a cap, and status's standing
+  `unresolved_verification_limitation` is derived from it, so status, the check's deterministic case
+  and the receipt read one set (a hand-built fact set with `None` keeps the older linked/limited
+  rule). A non-empty list requires that standing code on the same readiness.
+  `admissible_verification` stays defined (optional) but is no longer emitted.
+  `ClosureReadinessFacts.downgraded_obligation_ids` (sorted; replay-derived) lists acknowledged
+  obligations whose effective `obligation_published` is `acknowledged_not_done` and whose
+  immediately preceding version by ingestion sequence is `resolved`; the verdict's
+  `acknowledgement` re-check skips them. `closing_material_frontier` (canonical uint, optional on
+  this unreleased wire, emitted including `"0"` when computed) is the newest `closing_review_delta`
+  ingestion sequence at or before the projection frontier; `"0"` means none.
+  `kernel.claim_verification.claim_verification_lines` renders the pairing in the receipt evidence
   section (JSON, markdown and text): one header and one line per flagged obligation,
   `<obligation id> <comma-joined reasons> verification_limit|verification_limit linked <ids>|linked <ids>|no_verification_limit`.
-  `<ids>` are the admissible observed `evd_` or `res_` ids. A final-message
-  line does not create the ledger link that line reports. `recheck_note(readiness, *, host=None)`
-  is host-aware (#1050 follow-up, #1079): `None`, `codex` and `claude` name the linked line;
-  `cursor` (no final message at Stop) never names `finishup-acceptance` and names a recorded limit
-  or an evidence link instead; `generic` (the CLI and TUI, which do not know the agent's host)
-  names which hosts read the line. `prepare_closure(..., host="generic")`
-  passes it; the MCP bridge passes its host profile, and also to
-  `render_safe_compact_summary_detailed(envelope, *, host=None)`, whose status and
-  `closure_prepare` summaries read it through a render-scoped context (a direct builder call keeps
-  the line). `receipt_blocking_finding_count` keeps its wire name and means
+  `<ids>` are the admissible observed `evd_` or `res_` ids. The limitations section adds "Acceptance
+  provenance not established for <ids>: no admissible observed verification link or recorded
+  verification limit; the receipt records this as a coverage limit." The MCP receipt summary keeps
+  the header, the first eight pairing lines, "+K more flagged obligations (see the receipt evidence
+  section)." and at most eight unresolved ids ("and N more"). `recheck_note(readiness, *, host=None)`
+  accepts `host` and ignores it: no re-check is answered differently per host, and an `acceptance`
+  entry is never announced. `acceptance_risk_note(readiness, *, short=False) -> str` is the one
+  closure-guidance sentence ("Acceptance provenance (a receipt coverage limit, not a Stop item):
+  FinishUP could not tie the resolution of <id> (<reasons>); ... to an observed verification run
+  or a recorded verification limit. This alone never blocks stopping ..."), at most eight ids,
+  `""` when none; `short` is the bounded MCP form ("...; not a Stop item."); with no
+  `acceptance_risk` field and the standing code present (an earlier 0.3 service) it returns the
+  fixed receipt sentence once, without ids.
+  `acceptance_risk_rows` returns the validated rows. `prepare_closure(..., host="generic")`
+  appends the same note to `notes`; the MCP bridge still passes its host profile to it and to
+  `render_safe_compact_summary_detailed(envelope, *, host=None)`, which no longer changes any
+  text. `receipt_blocking_finding_count` keeps its wire name and means
   `finding_counts.to_do + finding_counts.unmet`.
 - `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
   `view=obligations` rows: `closure_class`, `closure_basis`.
@@ -8245,8 +8260,9 @@ unchanged; `predicted_receipt_variants` appends "The receipt will read X: <reaso
 remains: "A receipt requested now would read X: ..."); `closure_counts_variants` prints "Findings to
 do: N (awaiting ruling: K); unmet (acknowledged requirements): M; disclosed: L; to disclose: J.";
 `recheck_note` ("At Stop you will be asked once to re-read: ...") and `awaiting_ruling_variants`
-name the announced re-reads and the findings that wait for a ruling. The MCP status text, the CLI,
-the terminal panel and `closure_prepare` print them; no human surface prints "receipt-blocking".
+name the announced re-reads and the findings that wait for a ruling; `acceptance_risk_note` names
+the acceptance-provenance coverage limit once. The MCP status text, the CLI, the terminal panel and
+`closure_prepare` print them; no human surface prints "receipt-blocking".
 
 No plan yields `no_plan_published`. A readable effective plan with declared count zero and no reason
 yields `no_obligations_declared`; the same count with a typed reason clears that blocker while the
@@ -10987,86 +11003,46 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the gate text; a path is never remembered. tb4n5: when a name was withheld it adds why and the
   agent's own listing command, `git status --porcelain --untracked-files=all`).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
-  observation_pending=, reasked_blockers=, active_stop=, final_message=, host=, code_mode=) ->
+  observation_pending=, reasked_blockers=, active_stop=, code_mode=) ->
   ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks
   `closure_readiness.rechecks` announces** (tb4n3 RC-8,
-  ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
-  subjects, rule, since_frontier}` with the keys `accept:<h8 of the sorted announced (flagged)
-  resolved obligation ids>`,
+  ADR-033 amendment): `Recheck {kind: acknowledgement | blocker | premise, key,
+  subjects, rule, since_frontier}` with the keys
   `ack:<obligation id>`, `blocker:<obligation id>:<kind>`, `premise:<acknowledged count>`. Status,
   `closure_prepare`, the CLI and the TUI show the same list; the gate never asks one status did
   not announce, and a readiness without the list (a service older than the gate) announces none.
+  An `acceptance` entry an earlier 0.3 service still announces is dropped like any kind outside
+  the gate's key shapes: acceptance-provenance risk is never a Stop item (ADR-033 amendment of
+  2026-10-18, owner decision D1), and the gate takes no final message and no host.
   Items added: `BLOCKER_RECHECK_ITEM` (`blocker_recheck`), `ACKNOWLEDGEMENT_RECHECK_ITEM`,
-  `PREMISE_RECHECK_ITEM`, `ACCEPTANCE_RECHECK_ITEM` (`acceptance_recheck`). Delivery memory stays
-  client-side: `blocker_keys` holds the keys the gate asked (the historical field name): a blocker
-  as `<obligation id>:<kind>`, `ack:<obligation id>`, `premise:<n>`,
-  `accept:<h8>@<invite frontier>@m<closing_material_frontier>` when status names that field
-  (otherwise `accept:<h8>@<invite frontier>`), and `emptied:<h8 of the declaring obligation items>`.
-  The acceptance re-read matches the `@m` suffix: the same flagged set is not asked again while
-  that material frontier is unchanged, including when the ledger frontier moves on bookkeeping,
-  and is asked again when `closing_material_frontier` advances. A stored key without `@m` does not
-  match a known material frontier, so the next Stop after the field appears asks once. Status
-  that omits the field keeps the prefix match. The earliest invite frontier is the decimal before
-  `@m`. An `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
-  received answers that invite and is not asked (no invite-then-challenge). The acceptance sentence
-  is never composed beside open obligations, a rejected finding awaiting a ruling, a withdrawn
-  deliverable or an undeclared dependency (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
+  `PREMISE_RECHECK_ITEM`; the retired `acceptance_recheck` item is no longer produced. Delivery
+  memory stays client-side: `blocker_keys` holds the keys the gate asked (the historical field
+  name): a blocker as `<obligation id>:<kind>`, `ack:<obligation id>`, `premise:<n>`, and
+  `emptied:<h8 of the declaring obligation items>`. Memory an earlier build wrote for its
+  acceptance re-read (`accept:<h8>@<invite frontier>[@m<material frontier>]`) is still read and
+  retained within the bound but never written: an `acknowledgement` whose `since_frontier` is
+  later than the earliest such invite this session received is not asked, so a session that spans
+  the upgrade is not newly challenged. The verdict itself no longer announces an `acknowledgement`
+  for an honest downgrade (`ClosureReadinessFacts.downgraded_obligation_ids`). `finding_counts` (`to_do`, `awaiting_ruling`,
   `self_verify_eligible`) decides the finding count and whether `self_verified` is offered;
   `awaiting_ruling_findings` and `fact_lineage` give the ids and rules the text names, and
   `predicted_receipt` supplies the lowest-priority tail sentence (`predicted_receipt_variants`).
   When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
   carries one informational note; that code alone never fires the gate.
-  `closure_gate_from_readiness(..., final_message=)` (tb4n5 #1050, ADR-033 amendment of
-  2026-10-13; it replaced `acceptance_uncovered=`): the acceptance re-read names the obligations
-  readiness announced (the ledger-flagged resolved set when the recheck's `rule` is
-  `resolved_obligations_acceptance_risk`, with the flag sentence), except those the final message
-  attests; `attested_acceptance(final_message, *, linked=False) -> frozenset[obligation id]` reads
-  every exact `finishup-acceptance:<obligation id>:met` when `linked` is false (the legacy
-  unflagged rule; any other outcome, `:not_met` included, is no attestation). When `linked` is
-  true (rule `resolved_obligations_acceptance_risk`, #1079) only
-  `finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` whose id is in
-  `admissible` for that obligation, or `finishup-verification-limit:<obligation id>`, counts
-  (legacy `yoetz-` spellings too). `admissible` is
-  `closure_readiness.admissible_verification`; a missing argument or a missing row does not
-  treat a well-formed id as linked. The list holds only an observed verification (hook-captured
-  or observation-captured evidence, or a result of an observed command) linked to that
-  obligation, its requested target, or a claim that lists that obligation. A claim with empty
-  `obligation_refs` lends nothing. An agent-asserted id is unattested. A bare `:met` and
-  prose that every criterion is met do not.
-  The read is the first 65,536 characters. A cited id that is not admissible adds one sentence,
-  `` `<id>` is not linked to obligation `<obligation id>`. ``, up to three, and copies no other
-  message text. `unattested_acceptance(recheck, final_message, *, admissible=None, host=None) ->
-  tuple[obligation id, ...] | None` passes `linked` from the recheck rule. It is `None` (every
-  announced obligation is asked) without a message or when the announced subjects do not hash to
-  the recheck's `accept:<h8>` key (more than eight, or an older list), else the announced
-  obligations not attested; `()` means the re-read is not asked. On `cursor`, with no final
-  message, a nonempty admissible set for an obligation is the record link that answers the
-  flagged rule. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where a legacy
-  unflagged re-read rides alone it still ends with the sentence that a pure confirmation needs no
-  new record, check or receipt. The flagged rule does not: saying every criterion is met does not
-  answer it. The receipt evidence section states whether the ledger has the pairing
-  (`claim_verification_lines`); the final-message line does not write that link.
-  Both decision functions take `host=` and `code_mode=` (tb4n5 P6, #1079). `host` is the hook host
-  the Stop came from. The required close instruction asks for the `check` with the cell's deadline
+  Both decision functions take `code_mode=` (tb4n5 P6, #1079). The required close instruction asks for the `check` with the cell's deadline
   pragma, `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the
   bridge's `check` deadline), only when code mode was positively observed: `code_mode` is true
   (the hook saw a recorded `exec` cell for this session via
   `LocalObservationStore.session_observed_code_mode`) or `check_cause.tool` is `exec`. Otherwise
-  the neutral sentence is used, including when `host` is `codex` (plain `exec_command` /
+  the neutral sentence is used, including on Codex (plain `exec_command` /
   `write_stdin` are not cells). There is no MCP `clientInfo` signal for this capability. Claude
-  Code and Cursor do not record code-mode cells, so they keep the neutral sentence. On `cursor` the
-  acceptance re-read never names the `finishup-acceptance` line (Cursor's `stop` carries no final
-  message): it says a met criterion stays resolved and is confirmed in the final answer, and that
-  the re-read is not asked again for the set until the work, its verification, or the review mode
-  changes (#1050 follow-up, ADR-033); Codex and Claude Code keep the line.
+  Code and Cursor do not record code-mode cells, so they keep the neutral sentence.
   `readiness_text.check_cause_sentence` repeats the same pragma when the cause's `tool` is `exec`
   (the observed code-mode cell tool, not the host brand), in both its full and short forms.
-  `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;
-  the tb4n4 `obligations` page read is gone) and raises `ClosureGateUnavailable` when it cannot,
-  and calls `on_acceptance_covered` when the message attests every announced obligation of an
-  unasked acceptance re-read. The Codex Stop
-  body's and the Claude Code Stop payload's `last_assistant_message` reach it in process only
-  (`handle_observe(..., _stop_final_message=)` for Claude Code); Cursor's `stop` carries none.
+  `read_closure_gate(...)` reads compact status (one read; the tb4n4 `obligations` page read is
+  gone) and raises `ClosureGateUnavailable` when it cannot. No Stop handler reads the host's
+  final message (`last_assistant_message` on Codex and Claude Code; Cursor's `stop` has none) since
+  D1; a `finishup-acceptance:` line in it is ignored.
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
   owner-only `observation/closure-gate.json` once-per-frontier memory, and
   `closure_gate_reasked_blockers(session_id)` reads the per-session asked keys in
@@ -11079,9 +11055,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `MAX_GATE_BLOCKS_PER_TURN` (2); `record_closure_gate_delivered(..., active_stop=)` counts.
   `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
   reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
-  `closure_gate_acceptance_rechecked` (the extra Stop turn the acceptance re-read costs),
-  `closure_gate_acceptance_covered` (the final message attested every announced obligation, so
-  the re-read was not asked; #1050),
+  `closure_gate_acceptance_rechecked` and `closure_gate_acceptance_covered` (no longer written
+  since D1; kept readable so an older diagnostics file parses),
   `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
   `closure_gate_repeat_suppressed`, `closure_gate_turn_end_after_continue` (an already-continued
   Stop that emitted nothing: the normal end of a continued turn; this is the former
@@ -11232,9 +11207,9 @@ identities, closed outcome metadata, object/evidence references, digests and byt
 counts; post-tool command input remains encrypted local capture material and is never
 included in the provider excerpt.
 
-Unanswered acceptance invitations (issue #1079, F2) do not establish coverage.
-Delivery memory bounds Stop prompting only. Risky resolved obligations without an
-admissible observed verification link or recorded verification-limit decision retain
-the derived `unresolved_verification_limitation` check/readiness gap. The receipt and
-MCP summary explicitly name the affected obligations and the unresolved verification
-limitation. The receipt remains coverage-bounded after Stop is allowed.
+Acceptance provenance (issue #1079 F2, ADR-033 owner decision D1) is a coverage limit, never a
+Stop item. Risky resolved obligations without an admissible observed verification link or
+recorded verification-limit decision retain the derived `unresolved_verification_limitation`
+check/readiness gap (`closure_readiness.acceptance_risk` names them). The receipt and MCP summary
+explicitly name the affected obligations ("Acceptance provenance not established for ..."). The
+receipt remains coverage-bounded; Stop is never blocked on it.

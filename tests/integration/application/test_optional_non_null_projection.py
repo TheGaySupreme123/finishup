@@ -385,6 +385,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "admissible_verification",
                 # Omitted by an earlier build. "0" is a computed empty material frontier.
                 "closing_material_frontier",
+                # ADR-033 D1: absent unless a flagged resolution is a receipt coverage limit.
+                "acceptance_risk",
             }
         ),
     ),
@@ -1340,6 +1342,9 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     # #1079: no recorded verification link omits the list; null is refused too.
     with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
         StatusClosureReadinessModel.model_validate({**dumped, "admissible_verification": None})
+    # ADR-033 D1: no acceptance-provenance coverage limit omits the list; null is refused too.
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusClosureReadinessModel.model_validate({**dumped, "acceptance_risk": None})
 
 
 def test_fact_lineage_omits_every_unset_field() -> None:
@@ -1917,6 +1922,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "admissible_verification",
         # Omitted by an earlier build. A computed frontier, including 0, is present.
         "closing_material_frontier",
+        # ADR-033 D1: absent unless a flagged resolution is a receipt coverage limit.
+        "acceptance_risk",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (

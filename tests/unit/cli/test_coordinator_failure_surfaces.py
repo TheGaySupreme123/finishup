@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
-from builders.gate_readiness import acceptance_recheck, readiness
+from builders.gate_readiness import ack_recheck, readiness
 from finishup.cli.closure_gate import closure_gate_from_readiness
 from finishup.cli.render import render_human_check
 from finishup.domain.receipts import COORDINATOR_FAILURE_LIMITATION
@@ -36,12 +34,13 @@ def test_cli_check_text_uses_the_coordinator_failure_sentence() -> None:
     assert "AI-powered review: failed (coordinator_failure)" not in text
 
 
-@pytest.mark.parametrize("host", ["codex", "claude", "cursor"])
-def test_stop_text_names_an_unchanged_coordinator_failure_on_every_host(host: str) -> None:
+def test_stop_text_names_an_unchanged_coordinator_failure_on_every_host() -> None:
+    # The gate text is host-independent since ADR-033 D1 (only the retired acceptance re-read
+    # differed per host); every host's Stop handler reads this one decision.
     announced = readiness(
         "ready_with_limitations",
         (),
-        rechecks=(acceptance_recheck(),),
+        rechecks=(ack_recheck(),),
         acknowledged_obligation_count="0",
         receipt_blocking_finding_count="0",
         standing_limitations=("semantic_coordinator_failure",),
@@ -51,7 +50,6 @@ def test_stop_text_names_an_unchanged_coordinator_failure_on_every_host(host: st
         frontier_sequence="442",
         frontier_digest=_DIGEST,
         observation_pending=False,
-        host=host,
     )
     assert gate is not None
     assert COORDINATOR_FAILURE_SENTENCE in gate.text
@@ -65,14 +63,13 @@ def test_stop_text_names_an_unchanged_coordinator_failure_on_every_host(host: st
         frontier_sequence="442",
         frontier_digest=_DIGEST,
         observation_pending=False,
-        host=host,
     )
     assert fired is not None
     assert COORDINATOR_FAILURE_SENTENCE in fired.text
     quiet = readiness(
         "ready_with_limitations",
         (),
-        rechecks=(acceptance_recheck(),),
+        rechecks=(ack_recheck(),),
         acknowledged_obligation_count="0",
         receipt_blocking_finding_count="0",
     )
@@ -81,7 +78,6 @@ def test_stop_text_names_an_unchanged_coordinator_failure_on_every_host(host: st
         frontier_sequence="442",
         frontier_digest=_DIGEST,
         observation_pending=False,
-        host=host,
     )
     assert without is not None
     assert COORDINATOR_FAILURE_SENTENCE not in without.text

@@ -143,8 +143,9 @@ def closing_material_frontier(
 ) -> int:
     """The newest material closing-review input at or before the projection frontier.
 
-    Zero when this prefix has no such record. The Stop gate remembers an acceptance re-read
-    against this sequence, so bookkeeping at a later ledger frontier does not ask it again.
+    Zero when this prefix has no such record. Status reports it (ADR-049 reads it). Until ADR-033
+    D1 the Stop gate also remembered its acceptance re-read against this sequence; it no longer
+    asks one.
     """
 
     if type(projection) is not ProjectionState or type(records) is not tuple:

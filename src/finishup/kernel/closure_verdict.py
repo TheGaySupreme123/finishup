@@ -4,7 +4,9 @@ Status, the check's next step, the Stop gate, ``closure_prepare``, the MCP, CLI 
 renderings and the receipt do not decide whether an item still bounds closure. They print this
 verdict. It holds the classes of every finding and obligation, the gaps judged once, the
 readiness split (who owes the next move), the counters, the receipt conclusion the state would
-carry and the once-per-frontier re-reads the Stop gate may ask for.
+carry and the once-per-frontier re-checks the Stop gate may ask for (acknowledgement, blocker and
+premise). Acceptance-provenance risk is not among them (ADR-033, owner decision D1): status names
+it once and the receipt records it as a coverage limit.
 
 The pieces it composes are pure and replay-derived: nothing here is stored, and a ledger replays
 to the same verdict after a restart, a reattach or an upgrade.
@@ -12,7 +14,6 @@ to the same verdict after a restart, a reattach or an upgrade.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -34,7 +35,6 @@ from finishup.kernel.receipt_prediction import (
 )
 
 __all__ = [
-    "ACCEPTANCE_RISK_RULE",
     "MAX_RECHECK_SUBJECTS",
     "ClosureVerdict",
     "Recheck",
@@ -43,8 +43,6 @@ __all__ = [
 ]
 
 MAX_RECHECK_SUBJECTS: Final = 8
-# tb4n5 (#1050): the rule token of an acceptance re-read limited to the ledger-flagged obligations.
-ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,67 +57,31 @@ class ClosureVerdict:
     rechecks: tuple[Recheck, ...]
 
 
-def _digest8(values: Iterable[str]) -> str:
-    return hashlib.sha256("\n".join(values).encode("ascii")).hexdigest()[:8]
-
-
 def rechecks_from_closures(
     obligations: Iterable[ObligationClosure],
     facts: ClosureReadinessFacts | None,
     *,
     acknowledged_count: int,
 ) -> tuple[Recheck, ...]:
-    """The stateless once-per-frontier re-read candidates (RC-8); delivery memory stays in the gate.
+    """The stateless once-per-frontier re-check candidates (RC-8); delivery memory stays in the gate.
 
-    * ``acceptance`` (A-12): at least one resolved obligation the ledger flags as risky to call
-      met (``facts.acceptance_risk_obligation_ids``, tb4n5 #1050); the key names that set, so a
-      changed set asks again and an unchanged one does not. A fact set without the risk list (a
-      hand-built one that predates the rule) names every resolved obligation, as before. An
-      obligation with a recorded ``verification_limit`` disclosure is left out (#1079): that
-      statement is already on the ledger, and the receipt still names it.
     * ``acknowledgement``: an obligation acknowledged as not done that is not disclosed as
-      verifiable only outside this environment. ``since_frontier`` is when it was acknowledged,
-      so an acknowledgement recorded after an acceptance re-read was delivered is not asked again.
+      verifiable only outside this environment. ``since_frontier`` is when it was acknowledged.
+      An honest downgrade (``facts.downgraded_obligation_ids``: the acknowledgement directly
+      followed a ``resolved`` publication, ADR-033 D1) is not challenged: status invites exactly
+      that downgrade for an output that does not meet its criteria.
     * ``blocker``: a recorded blocker the agent claimed and has not confirmed.
     * ``premise``: an acknowledged finding the reviewer still disputes (D7a).
+
+    No ``acceptance`` re-check is emitted (ADR-033, owner decision D1). The wire kind stays
+    defined so a status from an earlier 0.3 build still validates; the gate drops it.
     """
 
     rows = tuple(obligations)
     out: list[Recheck] = []
-    risky_ids = None if facts is None else facts.acceptance_risk_obligation_ids
-    risky = None if risky_ids is None else frozenset(risky_ids)
-    # A recorded verification limit is the statement the flagged rule asks for (#1079). It leaves
-    # the acceptance re-read, including the legacy unflagged rule. The receipt still lists it.
-    limited = {
-        obligation
-        for obligation, kind, _decision in (() if facts is None else facts.disclosed_obligations)
-        if kind == "verification_limit"
-    }
-    asked = [
-        item
-        for item in rows
-        if item.basis == "resolved"
-        and (risky is None or item.obligation_id in risky)
-        and item.obligation_id not in limited
-    ]
-    resolved = sorted((str(item.obligation_id) for item in asked), key=str.encode)
-    if resolved:
-        newest = max(item.since_frontier or 0 for item in asked)
-        out.append(
-            Recheck(
-                "acceptance",
-                f"accept:{_digest8(resolved)}",
-                tuple(resolved[:MAX_RECHECK_SUBJECTS]),
-                (
-                    "resolved_obligations_acceptance_reread"
-                    if risky is None
-                    else ACCEPTANCE_RISK_RULE
-                ),
-                newest,
-            )
-        )
+    downgraded = frozenset(() if facts is None else facts.downgraded_obligation_ids)
     for item in sorted(rows, key=lambda row: str(row.obligation_id).encode()):
-        if item.basis == "acknowledged_not_done":
+        if item.basis == "acknowledged_not_done" and item.obligation_id not in downgraded:
             out.append(
                 Recheck(
                     "acknowledgement",

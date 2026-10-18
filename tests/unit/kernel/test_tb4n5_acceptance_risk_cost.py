@@ -16,6 +16,7 @@ from typing import Final
 
 import pytest
 
+from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from builders.policy_cases import (
     HEAD_DIGEST,
     act,
@@ -29,22 +30,27 @@ from builders.policy_cases import (
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    EventSchema,
     EvidenceImmutability,
     EvidenceKind,
     EvidenceRecordedPayload,
     ObligationPublishedPayload,
     ObligationStatus,
+    PlanPublishedPayload,
     RequestedItem,
     RequestedItemKind,
     RequestedItemRole,
     ResultOutcome,
     ResultRecordedPayload,
 )
-from finishup.domain.values import timestamp_from_string
+from finishup.domain.values import ObligationId, ResultId, timestamp_from_string
 from finishup.kernel import acceptance_risk as risk_module
 from finishup.kernel import evidence_alignment
 from finishup.kernel.acceptance_risk import acceptance_risk
+from finishup.kernel.closure_readiness import closure_readiness_facts
 from finishup.kernel.projections import ProjectionState, empty_projection_state
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import register_command_identity_key
 
 _OBLIGATIONS: Final = 200
 _REFS_PER_OBLIGATION: Final = 8
@@ -194,3 +200,60 @@ def test_shared_evidence_behind_many_actions_is_resolved_once_per_read(
     # Each shared reference is resolved once for the whole read, not once per obligation.
     assert resolutions == _REFS_PER_OBLIGATION
     assert elapsed < _BUDGET_SECONDS, elapsed
+
+
+_PLAN_OBLIGATIONS: Final = 64
+
+
+def test_status_unresolved_walk_stays_bounded() -> None:
+    """ADR-033 D1: status reads the receipt's uncapped coverage-limit set on every read.
+
+    A plan's 64 flagged resolved obligations, each citing its own observed run (so none is a
+    coverage limit), are walked by ``closure_readiness_facts`` well inside the Stop deadline.
+    """
+
+    schema = EventSchema("obligation_published", "1.1.0")
+    register_command_identity_key(INSTALLATION_KEY)
+    try:
+        ledger = ObservedLedger()
+        identifiers = tuple(obl(20_000 + index) for index in range(_PLAN_OBLIGATIONS))
+        items = {
+            identifier: RequestedItem(
+                RequestedItemKind.FILE, f"out/missing-{index}.txt", RequestedItemRole.OUTPUT
+            )
+            for index, identifier in enumerate(identifiers)
+        }
+
+        def published(
+            identifier: ObligationId, status: ObligationStatus, refs: tuple[ResultId, ...] = ()
+        ) -> ObligationPublishedPayload:
+            return ObligationPublishedPayload(
+                obligation_id=identifier,
+                description="Deliver one output",
+                evidence_expectation="A recorded run",
+                status=status,
+                requested_items=(items[identifier],),
+                resolution_evidence_refs=refs,
+            )
+
+        for identifier in identifiers:
+            ledger.append(schema, published(identifier, ObligationStatus.OPEN), observed=False)
+        ledger.append(
+            EventSchema("plan_published", "1.0.0"),
+            PlanPublishedPayload(1, "Plan", identifiers),
+            observed=False,
+        )
+        for index, identifier in enumerate(identifiers):
+            run = ledger.passes(f"pytest -q tests/test_part_{index}.py")
+            ledger.append(
+                schema, published(identifier, ObligationStatus.RESOLVED, (run,)), observed=False
+            )
+        state = replay(ledger.prefix)
+        started = time.perf_counter()
+        facts = closure_readiness_facts(state, ledger.prefix)
+        elapsed = time.perf_counter() - started
+        assert len(facts.acceptance_risk_obligation_ids or ()) == _PLAN_OBLIGATIONS
+        assert facts.unresolved_acceptance_risk == ()
+        assert elapsed < _BUDGET_SECONDS, elapsed
+    finally:
+        register_command_identity_key(None)

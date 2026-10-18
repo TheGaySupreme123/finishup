@@ -346,20 +346,16 @@ findings you recorded as not done). Request the receipt; another check of unchan
 nothing. The receipt still lists every limitation, and its conclusion follows the prediction: a
 local-only check with limitations is still `insufficient_coverage`, and an acknowledged
 requirement keeps the conclusion at `unresolved_findings_remain`. `rechecks` lists the questions
-a Stop will ask you once to re-read (the acceptance criteria of the resolved obligations FinishUP
-flags because a requested item was never attempted or their evidence is unlinked or only your own
-assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
-them. When a flagged obligation's criteria are met, answer with
-`finishup-acceptance:<obligation id>:met:<evd_ or res_ id>` naming an evidence or result id that
-is already an observed verification for that obligation (hook-captured or observation-captured
-evidence, or a result of an observed command), or with `finishup-verification-limit:<obligation id>`,
-in your final answer in Codex and Claude Code. A completion claim that names no obligation does not
-make those ids a link for an obligation. A well-formed id that is not that observed link,
-including one you only asserted, does not
-answer it. Saying every criterion is met does not answer it. Cursor does not pass your final answer to
-FinishUP, so there publish a decision `finishup-verification-limit:<obligation id>` or link the
-observed evidence or result id in a record. The re-read is asked again only after the work, its
-verification, or the review mode changes.
+a Stop will ask you once to re-read (obligations you recorded as not done, a blocker you recorded,
+findings you acknowledged that the review says the task requires); the status text announces
+them. `acceptance_risk` lists resolved obligations whose acceptance FinishUP could not tie to an
+observed verification run or a recorded verification limit, because a requested item was never
+attempted or their evidence is unlinked or only your own assertion. The status text names them
+once. This is never a Stop question: it never blocks a Stop on its own, met work needs no action,
+and the receipt records it as a coverage limit (the conclusion is at best `insufficient_coverage`).
+If an output does not meet its acceptance criteria, republish that obligation
+`acknowledged_not_done` with the reason; that honest downgrade is not questioned again at Stop. A
+`finishup-acceptance:` line in your final answer is not read.
 `ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 

@@ -1,9 +1,12 @@
 """Pair a risky resolved obligation with a verification limit on the receipt (#1079).
 
-The Stop gate can be answered by a final-message line. That line does not create a ledger link.
-This rendering says what the ledger itself has: the acceptance-risk reasons, and whether a
-``verification_limit`` disclosure is recorded. It does not judge whether the claim is true, and
-it does not reject a claim at publish time. A generic all-met claim is not that pairing.
+Acceptance-provenance risk is never a Stop item (ADR-033, owner decision D1): status names it once
+and the receipt records it as a coverage limit. This module is the single source of that limit's
+set (``unresolved_acceptance_risk``), which status, the check and the receipt all read. The
+rendering says what the ledger itself has: the acceptance-risk reasons, and whether a
+``verification_limit`` disclosure or an admissible observed link is recorded. It does not judge
+whether the claim is true, and it does not reject a claim at publish time. A generic all-met claim
+is not that pairing.
 
 A projection hole must not stop the receipt. The pairing for an unreadable obligation is omitted
 and a plain limitation sentence names that obligation id, or says the pairing could not be read.
@@ -26,6 +29,7 @@ __all__ = [
     "CLAIM_VERIFICATION_UNREADABLE",
     "claim_verification_lines",
     "claim_verification_report",
+    "unresolved_acceptance_risk",
     "unresolved_verification_obligations",
     "UNRESOLVED_VERIFICATION_GAP",
 ]
@@ -38,34 +42,53 @@ CLAIM_VERIFICATION_UNREADABLE: str = "The claim-verification pairing could not b
 _MAX_NAMED_HOLES: int = 8
 
 
-def unresolved_verification_obligations(
-    projection: ProjectionState, records: tuple[LedgerRecord, ...]
-) -> tuple[ObligationId, ...]:
-    """Risky resolved obligations with neither admissible verification nor a recorded limit.
+def unresolved_acceptance_risk(
+    projection: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    *,
+    flagged: tuple[tuple[ObligationId, tuple[str, ...]], ...] | None = None,
+) -> tuple[tuple[ObligationId, tuple[str, ...]], ...]:
+    """``(obligation, reasons)`` for each flagged resolved obligation the receipt bounds on.
 
-    Invitation delivery is deliberately irrelevant. This is recomputed from the ledger,
-    so a bounded Stop can proceed without turning an unanswered invitation into coverage.
+    A flagged obligation (``kernel.acceptance_risk``) with neither an admissible observed
+    verification link nor a recorded ``verification_limit`` disclosure, in id order. ``flagged``
+    is the caller's already-computed ``acceptance_risk`` pairs for this same projection and
+    prefix; ``None`` computes them from the closure classes. Every flagged obligation is walked
+    (no cap), so status, the check and the receipt read one set (ADR-046).
     """
+
     if not records:
         return ()
-    closures = obligation_closures(projection, records=records)
-    resolved = (item.obligation_id for item in closures.values() if item.basis == "resolved")
-    flagged = acceptance_risk(projection, records, resolved)
+    if flagged is None:
+        closures = obligation_closures(projection, records=records)
+        resolved = (item.obligation_id for item in closures.values() if item.basis == "resolved")
+        flagged = acceptance_risk(projection, records, resolved)
+    if not flagged:
+        return ()
     limited = {
         item.obligation_id
         for item in disclosure_declarations(projection)
         if item.kind == "verification_limit"
     }
-    linked = dict(
-        admissible_verification_refs(
-            projection, records, (obligation for obligation, _ in flagged), limit=None
-        )
-    )
+    candidates = tuple(obligation for obligation, _ in flagged if obligation not in limited)
+    linked = dict(admissible_verification_refs(projection, records, candidates, limit=None))
     return tuple(
-        obligation
-        for obligation, _ in flagged
+        (obligation, reasons)
+        for obligation, reasons in flagged
         if obligation not in limited and not linked.get(obligation)
     )
+
+
+def unresolved_verification_obligations(
+    projection: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> tuple[ObligationId, ...]:
+    """Risky resolved obligations with neither admissible verification nor a recorded limit.
+
+    The ids of ``unresolved_acceptance_risk``. Recomputed from the ledger, never from what a
+    surface showed or what a final message said.
+    """
+
+    return tuple(obligation for obligation, _ in unresolved_acceptance_risk(projection, records))
 
 
 def claim_verification_lines(
@@ -106,9 +129,9 @@ def claim_verification_report(
         if unresolved:
             named = ", ".join(str(ref) for ref in unresolved)
             sentence = (
-                f"Unresolved verification limitation for {named}: no admissible observed "
-                "verification link or recorded verification limit; an unanswered acceptance "
-                "invitation does not establish coverage."
+                f"Acceptance provenance not established for {named}: no admissible observed "
+                "verification link or recorded verification limit; the receipt records this as "
+                "a coverage limit."
             )
             limitation = " ".join(part for part in (limitation, sentence) if part)
         return _pairing_lines(projection, records), limitation

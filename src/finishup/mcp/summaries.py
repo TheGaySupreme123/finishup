@@ -56,7 +56,7 @@ from finishup.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.readiness_text import (
     READINESS_STATES,
-    admissible_verification_sentence,
+    acceptance_risk_note,
     awaiting_ruling_variants,
     check_cause_sentence,
     closure_counts_variants,
@@ -133,6 +133,9 @@ _GAP_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
 # F3: the status summary names at most this many required limitation ids, then "+N more"; the
 # structured closure_readiness lists up to 64.
 _MAX_SUMMARY_LIMITATION_IDS: Final = 3
+# #1093 item 1: the receipt summary keeps this many claim-verification pairing lines, then counts
+# the rest; the receipt itself carries every one.
+_MAX_SUMMARY_PAIRING_LINES: Final = 8
 _RESULT_REF: Final = re.compile(
     r"^res_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
 )
@@ -203,10 +206,9 @@ class SummaryRender:
 _FAILURE_SINK: ContextVar[list[tuple[str, BaseException]] | None] = ContextVar(
     "finishup_summary_failure_sink", default=None
 )
-# The bridge's host profile for the render in progress (#1050 follow-up). It only decides how the
-# re-check note says a flagged acceptance re-read is answered (``recheck_note``): ``cursor`` never
-# names the ``finishup-acceptance`` line its Stop cannot deliver, ``generic`` names which hosts read
-# it, and ``codex``/``claude`` (or a direct builder call, which leaves it unset) keep the line.
+# The bridge's host profile for the render in progress (#1050 follow-up). Since ADR-033 D1 no
+# rendering depends on it (the acceptance re-read, whose answer differed per host, was removed);
+# the server still sets it and ``recheck_note`` accepts and ignores it.
 _SUMMARY_HOST: ContextVar[str | None] = ContextVar("finishup_summary_host", default=None)
 
 
@@ -2405,13 +2407,13 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     failure = coordinator_failure_note(readiness)
     if failure is not None:
         parts.append(Part((failure,), priority=_P_BOILERPLATE))
-    admissible = admissible_verification_sentence(readiness)
-    if admissible:
-        # Keep the limitation explicit even when the id pairing cannot fit the summary.
+    # ADR-033 (D1): acceptance-provenance risk, once, as a receipt coverage limit. Required (the
+    # #1079 rule: the limitation stays explicit); the short form counts instead of naming.
+    provenance = acceptance_risk_note(readiness)
+    if provenance:
+        short = acceptance_risk_note(readiness, short=True)
         parts.append(
-            Part((admissible, UNRESOLVED_VERIFICATION_LIMITATION), required=True, priority=_P_STATE)
-            if "Unresolved verification limitation" in admissible
-            else Part((admissible,), priority=_P_STATE)
+            Part(tuple(dict.fromkeys((provenance, short))), required=True, priority=_P_STATE)
         )
     counts = closure_counts_variants(
         readiness.get("finding_counts"), readiness.get("obligation_counts")
@@ -2567,20 +2569,27 @@ def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]
     if header_at < 0:
         return []
     tail = body[header_at + len(CLAIM_VERIFICATION_HEADER) :]
+    lines = [match.group(0) for match in _PAIRING_LINE.finditer(tail)]
     parts = [_req(CLAIM_VERIFICATION_HEADER)]
-    parts.extend(_req(match.group(0)) for match in _PAIRING_LINE.finditer(tail))
-    unresolved = [
-        match.group(0).split(" ", 1)[0]
-        for match in _PAIRING_LINE.finditer(tail)
-        if match.group(0).endswith("no_verification_limit")
-    ]
+    # #1093 item 1: a plan may flag up to 64 obligations. The first lines are required, the rest
+    # are counted, and the full receipt (structured document and page) still carries every line.
+    parts.extend(_req(line) for line in lines[:_MAX_SUMMARY_PAIRING_LINES])
+    hidden = len(lines) - _MAX_SUMMARY_PAIRING_LINES
+    if hidden > 0:
+        parts.append(
+            _req(f"+{hidden} more flagged obligations (see the receipt evidence section).")
+        )
+    unresolved = [line.split(" ", 1)[0] for line in lines if line.endswith("no_verification_limit")]
     if unresolved:
+        named = ", ".join(unresolved[:_MAX_SUMMARY_PAIRING_LINES])
+        if len(unresolved) > _MAX_SUMMARY_PAIRING_LINES:
+            named += f" and {len(unresolved) - _MAX_SUMMARY_PAIRING_LINES} more"
         parts.append(
             Part(
                 (
-                    "Unresolved verification limitation for "
-                    + ", ".join(unresolved)
-                    + ": no admissible observed verification link or recorded verification limit.",
+                    f"Acceptance provenance not established for {named}: no admissible observed"
+                    " verification link or recorded verification limit; the receipt records this"
+                    " as a coverage limit.",
                     UNRESOLVED_VERIFICATION_LIMITATION,
                 ),
                 required=True,
@@ -3215,7 +3224,7 @@ def render_safe_compact_summary_detailed(
     core is replaced by ``_minimal_summary``. Both are returned in ``failures`` so the bridge can
     record which builder and clause broke (tb4n3 RC-2: a committed operation must not become an
     ``INTERNAL_ERROR`` because its text could not be built). ``host`` is the bridge's host
-    profile; it only selects the re-check note's acceptance wording (``recheck_note``).
+    profile; since ADR-033 D1 no rendering depends on it (``recheck_note`` ignores it).
     """
 
     failures: list[tuple[str, BaseException]] = []

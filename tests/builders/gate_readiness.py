@@ -2,8 +2,10 @@
 
 The gate reads ``closure_readiness`` by attribute, so tests hand it ``SimpleNamespace`` objects
 shaped like the status wire. A re-check is built here once, with the content key the service
-mints (``accept:<h8 of sorted resolved ids>``, ``ack:<obligation>``,
-``blocker:<obligation>:<kind>``, ``premise:<n>``), so no test restates the key grammar.
+mints (``ack:<obligation>``, ``blocker:<obligation>:<kind>``, ``premise:<n>``), so no test
+restates the key grammar. ``acceptance_recheck`` is the entry an earlier 0.3 service still
+announces (``accept:<h8 of sorted resolved ids>``); since ADR-033 owner decision D1 the gate drops
+it, and tests use it to prove that.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from types import SimpleNamespace
 from typing import Any
 
 OBLIGATION = "obl_97700000-0000-4000-8000-{index:012d}"
+# The closed gate item the retired acceptance re-read added (before D1); never produced now.
+ACCEPTANCE_RECHECK_ITEM = "acceptance_recheck"
 
 
 def obligation_id(index: int) -> str:
@@ -50,6 +54,8 @@ def acceptance_key(resolved: Sequence[str]) -> str:
 def acceptance_recheck(
     resolved: Sequence[str] = (obligation_id(200), obligation_id(201)), *, since: int = 1
 ) -> Any:
+    """The ``acceptance`` entry an earlier 0.3 service announces; never asked since D1."""
+
     return recheck("acceptance", acceptance_key(resolved), subjects=tuple(resolved), since=since)
 
 
