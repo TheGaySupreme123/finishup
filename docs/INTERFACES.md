@@ -373,7 +373,8 @@ advertised and catalog input schemas drop it from `required`).
 
 Provenance: every success, reduced success and dry-run result carries `server_filled` (`request`:
 `expected_frontier` when omitted; `drafts`: groups of filled envelope `fields` with the batch
-`indexes` they apply to) exactly when something was filled, and the publish operation's stored
+`indexes` they apply to) exactly when an envelope field or the request frontier was filled (an
+omitted empty payload set is the empty set and is not listed), and the publish operation's stored
 result keeps the same field names (structural only, no caller content). A replay and `status
 view=operation` return the committed operation's stored record, never one recomputed from the retry
 body. `status view=history` items (`status-result` 1.4.0 history row) and the frozen check history

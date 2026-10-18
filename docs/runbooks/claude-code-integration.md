@@ -2349,6 +2349,9 @@ on:
   `set_member_not_ascii`) are shared with other operations and carry no remedy; canonicalization and
   the id pattern leave them unreachable for a request the schema admits.
 - The `respond` and `receipt` catch-alls keep their messages and add `reason_code`.
+- The `respond` refusal details and the catch-all `reason_code` come from the service, so they
+  appear once it restarts (`finishup service restart`). This change leaves the schema manifest
+  unchanged, so an upgrade does not supersede a still-running older 0.3 service on its own.
 - A `read_guidance` anchor unknown on its page (or any anchor on a focused page) that is exactly
   the catalogued anchor of one other guidance document reads that topic, and the result's `uri`
   names it: `agent-instructions.md#publish-shapes` reads `request-templates.md#publish-shapes`. An
@@ -2598,7 +2601,8 @@ so Claude Code takes the same path as every other host. What a Claude Code agent
   per call and names it in every result and error (the CLI prints it on stderr before sending);
   nothing is persisted. The service mints event ids from the task, writer, request id, position and preview
   role, records its own clock, copies the payload mirrors, and guards an omitted frontier with the
-  one it reads on admission. The result's `server_filled` names every filled value, and
+  one it reads on admission. The result's `server_filled` names every filled envelope value and
+  the frontier (an omitted empty claim or plan list is the empty list and is not listed), and
   `status view=operation` shows the committed operation's record. Reference-set fields are sorted
   and de-duplicated; text lists are kept as sent. A request that sends every value behaves exactly
   as before.

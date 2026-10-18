@@ -310,7 +310,11 @@ a material transition, not typing UUIDs, timestamps and mirrors.
   normalization runs in the shared request model, so a new bridge sends an older 0.3 service the
   explicit `[]` and sorted refs it already accepts; an older bridge keeps refusing the omitted
   form locally until its host restarts it. No recorded operation can hold the pre-normalization
-  shape (both forms were refused before any append), so no stored digest changes.
+  shape (both forms were refused before any append), so no stored digest changes. The respond
+  payload refusal details and the catch-all `reason_code` come from the service, so they appear
+  once the service is restarted (`finishup service restart`); an older 0.3 service with the same
+  schema manifest is not superseded automatically. The `read_guidance` cross-document step and the
+  bridge-side rendering work against it.
 - **Downgrade.** An older 0.3 build that replays a sparse operation would refuse its stored
   result's extra key. Downgrade below this unreleased contract is not supported.
 - **Concurrency.** An omitted frontier refuses a cooperative write that lands while the batch is in
