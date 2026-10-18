@@ -36,6 +36,7 @@ from finishup.domain.values import EventId, FindingId
 from finishup.kernel.closure_class import finding_closure
 from finishup.kernel.finding_todo import FindingTodoState, finding_todo_state
 from finishup.kernel.reducers import replay as replay_ledger
+from finishup.kernel.task_facts import register_command_identity_key
 
 pytestmark = pytest.mark.anyio
 
@@ -67,10 +68,12 @@ def _code_mode_post_response(call: str) -> str:
     )
 
 
-def _direct_run(cell: _Replay, call: str, exit_code: int | None, timestamp: str) -> None:
+def _direct_run(
+    cell: _Replay, call: str, exit_code: int | None, timestamp: str, command: str = _COMMAND
+) -> None:
     """A direct shell call: its hook pair and, when it exits, the rollout's item for it."""
 
-    tool_input = {"command": _COMMAND}
+    tool_input = {"command": command}
     cell.hook("PreToolUse", tool_name="Bash", tool_use_id=call, tool_input=tool_input)
     cell.hook(
         "PostToolUse",
@@ -80,7 +83,7 @@ def _direct_run(cell: _Replay, call: str, exit_code: int | None, timestamp: str)
         tool_response=_direct_post_response(call),
     )
     if exit_code is not None:
-        cell.append(command_execution(call, _COMMAND, exit_code, timestamp))
+        cell.append(command_execution(call, command, exit_code, timestamp))
 
 
 def _code_mode_run(cell: _Replay, n: int, exit_code: int, timestamp: str) -> None:
@@ -135,8 +138,17 @@ def _results(rows: list[AcceptedEvent]) -> list[ResultRecordedPayload]:
 class _Recorded:
     """The task ledger's observed rows with the coordinator's finding after the failed call."""
 
-    def __init__(self, red: list[AcceptedEvent], later: list[AcceptedEvent], *, name: str) -> None:
+    def __init__(
+        self,
+        red: list[AcceptedEvent],
+        later: list[AcceptedEvent],
+        *,
+        name: str,
+        planned: tuple[str, ...] = (),
+    ) -> None:
         self.ledger = ObservedLedger()
+        if planned:
+            self.ledger.plan(*planned)
         events: dict[EventId, EventId] = {}
         for row in red:
             events[row.event_id] = self.ledger.append(
@@ -228,6 +240,53 @@ async def test_stream_first_copy_retires_the_finding(replay: _Replay) -> None:
     recorded = _Recorded(red, later, name="call")
     assert recorded.basis() == "retired_by_passing_run"
     assert recorded.retired_by() == recorded.passing["success:0"]
+
+
+@pytest.mark.parametrize("name", ["call", "correction"])
+async def test_a_passing_planned_verification_joined_from_the_stream_retires_another_failure(
+    replay: _Replay, name: str
+) -> None:
+    """Owner decision 2026-10-18: a failed ``npm ci`` is retired by the plan's verification
+    ``npm run test-type`` passing later. Codex 0.159 states neither exit in ``PostToolUse``; both
+    reach the ledger through the session stream's correction joined by call id."""
+
+    register_command_identity_key(replay.store.key_material())
+    try:
+        red, later = await _red_then(
+            replay,
+            lambda: _direct_run(replay, "call_red", 1, _RED_AT, command="npm ci"),
+            lambda: _direct_run(replay, "call_green", 0, _GREEN_AT),
+        )
+        assert [(item.outcome, item.exit_status) for item in _results(later)] == [
+            (ResultOutcome.UNKNOWN, None),
+            (ResultOutcome.SUCCESS, 0),
+        ]
+        recorded = _Recorded(red, later, name=name, planned=(_COMMAND,))
+        assert recorded.basis() == "retired_by_planned_verification"
+        assert recorded.retired_by() == recorded.passing["success:0"]
+        unplanned = _Recorded(red, later, name=name)
+        assert unplanned.basis() == "open_unanswered"
+    finally:
+        register_command_identity_key(None)
+
+
+async def test_an_unknown_planned_verification_never_retires_another_failure(
+    replay: _Replay,
+) -> None:
+    """The planned verification's exit never reached FinishUP: its pass is unknown, not a pass."""
+
+    register_command_identity_key(replay.store.key_material())
+    try:
+        red, later = await _red_then(
+            replay,
+            lambda: _direct_run(replay, "call_red", 1, _RED_AT, command="npm ci"),
+            lambda: _direct_run(replay, "call_green", None, _GREEN_AT),
+        )
+        recorded = _Recorded(red, later, name="call", planned=(_COMMAND,))
+        assert recorded.retired_by() is None
+        assert recorded.basis() == "open_unanswered"
+    finally:
+        register_command_identity_key(None)
 
 
 async def test_an_unknown_outcome_never_retires_the_finding(replay: _Replay) -> None:

@@ -170,7 +170,8 @@ __all__ = [
 
 # #1104: an observed failed-command finding (``kernel.finding_retirement``) is never proved absent
 # by a check. No local rule re-reads the advice condition that raised it, so a check's silence
-# proves nothing; only a later passing run of the same command retires it.
+# proves nothing; only a later passing run of the same command, or of a planned verification,
+# retires it.
 OBSERVED_FAILURE_NOT_RERUN: Final = "observed_failure_not_rerun"
 
 IssueKey = tuple[object, ...]
@@ -1794,11 +1795,19 @@ def _observed_failed_command_explanation(
     """What settles an observed failed-command finding (#1104); ``None`` for a generic answer.
 
     No check ever proves it absent (``OBSERVED_FAILURE_NOT_RERUN``); a later passing run of the
-    same command retires it (``kernel.finding_retirement``), and ``acknowledged`` discloses it.
+    same command or of a planned verification retires it (``kernel.finding_retirement``), and
+    ``acknowledged`` discloses it.
     Fixed sentences only: the one id named is the passing run's event.
     """
 
     if record.retired_by_event_id is not None and finding_is_resolved(state, finding_id):
+        if record.retired_by_planned_verification:
+            return (
+                f"Retired by a later passing run of a planned verification (event "
+                f"{record.retired_by_event_id}), not of the command that failed; retained as "
+                "history. A passing planned verification retires every earlier observed command "
+                "failure, so the receipt says which kind of pass retired it."
+            )
         return (
             f"Retired by a later passing run of the same command (event "
             f"{record.retired_by_event_id}); retained as history. A check never proves an "
@@ -1808,14 +1817,15 @@ def _observed_failed_command_explanation(
         return (
             "Disclosed failed command: the agent acknowledged that this observed command failure "
             "is expected or stays. It does not block, the receipt discloses it and cannot read "
-            "clean, and a later passing run of the same command still retires it."
+            "clean, and a later passing run of the same command or of a planned verification still "
+            "retires it."
         )
     if disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE:
         return (
             "Acknowledged, not done: the agent recorded with a reason that it will not repair "
             "this observed command failure. It is settled as bookkeeping and does not block; "
             "the receipt discloses it and cannot read clean, and a later passing run of the same "
-            "command still retires it."
+            "command or of a planned verification still retires it."
         )
     if disposition is not None and disposition is not ResponseDisposition.REOPENED:
         return None
@@ -1827,10 +1837,11 @@ def _observed_failed_command_explanation(
             "acknowledged_not_done only if you will not fix it."
         )
     return (
-        "Unresolved: no later passing run of the same command was observed. Rerun the same "
-        "command after the fix, alone or inside a passing && chain: the pass retires this by "
-        "itself, and an edit or a check does not. If the failure is expected or will stay, "
-        "respond acknowledged with the reason (disclosed on the receipt)."
+        "Unresolved: no later passing run of the same command or of a planned verification was "
+        "observed. Rerun the same command after the fix, alone or inside a passing && chain, or "
+        "run a verification command your plan requests: a pass retires this by itself, and an "
+        "edit or a check does not. If the failure is expected or will stay, respond acknowledged with the "
+        "reason (disclosed on the receipt)."
     )
 
 
@@ -2594,8 +2605,8 @@ def finding_is_resolved(state: ProjectionState, finding_id: FindingId) -> bool:
     """The one shared answer every surface reads for ``resolved``.
 
     True only when a later qualifying check proved the issue absent, or a later hook-observed
-    passing run of the same command retired an observed failed-command finding
-    (``kernel.finding_retirement``, #1104), *and* the finding's latest response, if any, is
+    passing run of the same command or of a planned verification retired an observed
+    failed-command finding (``kernel.finding_retirement``, #1104), *and* the finding's latest response, if any, is
     readable and is not ``provenance_disputed``. The released ``status-result`` wire pins
     ``provenance_disputed`` rows to ``resolved=false``; that pin is honoured here,
     conservatively, rather than letting the receipt and status disagree.

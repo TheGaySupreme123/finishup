@@ -49,6 +49,7 @@ Requested-output facts need a check-time workspace read and live in ``requested_
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import posixpath
@@ -189,7 +190,11 @@ from finishup.kernel.observed_failures import (
     observed_shell_write_counts,
 )
 from finishup.kernel.plan_scope import current_plan_scope
-from finishup.kernel.projections import ProjectionState
+from finishup.kernel.projections import (
+    ObligationProjectionRecord,
+    PlanProjectionRecord,
+    ProjectionState,
+)
 from finishup.protocol.coverage import Coverage, PublicationChannel
 
 __all__ = [
@@ -259,11 +264,14 @@ __all__ = [
     "command_identity_key_registered",
     "declared_output_items",
     "deliverable_path_identity",
+    "effective_obligation_ids",
     "effective_obligations",
     "material_edit_recorded",
     "open_effective_obligations",
     "register_command_identity_key",
     "planned_match",
+    "planned_verification_commands",
+    "planned_verification_passed",
     "requested_command_identities",
     "requested_command_identity",
     "requested_planned_command",
@@ -754,13 +762,25 @@ def disclosure_declarations(projection: ProjectionState) -> tuple[DisclosureDecl
 def effective_obligations(projection: ProjectionState) -> tuple[ObligationId, ...]:
     """Effective, readable, unwaived obligations of the current plan chain."""
 
-    scope = current_plan_scope(projection.plans, projection.coverage_gaps)
+    return effective_obligation_ids(
+        projection.plans, projection.obligations, projection.coverage_gaps
+    )
+
+
+def effective_obligation_ids(
+    plans: Mapping[int, PlanProjectionRecord],
+    obligations: Mapping[ObligationId, ObligationProjectionRecord],
+    coverage_gaps: tuple[str, ...],
+) -> tuple[ObligationId, ...]:
+    """``effective_obligations`` over the collections the reducer folds (#1104)."""
+
+    scope = current_plan_scope(plans, coverage_gaps)
     if scope.effective_obligation_refs is None:
         return ()
     return tuple(
         obligation
         for obligation in scope.effective_obligation_refs
-        if (record := projection.obligations.get(obligation)) is not None
+        if (record := obligations.get(obligation)) is not None
         and record.payload is not None
         and record.plan_change is not ObligationChangeKind.WAIVED
     )
@@ -1444,20 +1464,83 @@ def passing_verification_observed(
     )
 
 
-def observed_run_from_command(command: str | None) -> _ObservedRun | None:
+def observed_run_from_command(
+    command: str | None, *, outcome: ResultOutcome = ResultOutcome.UNKNOWN
+) -> _ObservedRun | None:
     """A minimal observed run read off an action's ``command`` field, or ``None`` (unkeyed).
 
     Only the identity and segment commitments are known from a bare command field; the outcome
-    is unknown. ``command_attempts`` uses it to ask whether an observed action the agent linked
-    to a planned command is a run of that command, with no position or outcome claimed.
+    is unknown unless the caller read it off the run's own result. ``command_attempts`` uses it
+    to ask whether an observed action the agent linked to a planned command is a run of that
+    command, with no position or outcome claimed.
     """
 
     identity = command_identity(command)
     if identity is None:
         return None
     segments, composition = _segment_fields(command)
-    return _ObservedRun(
-        0, ResultOutcome.UNKNOWN, identity, None, frozenset(), segments, composition
+    return _ObservedRun(0, outcome, identity, None, frozenset(), segments, composition)
+
+
+@functools.lru_cache(maxsize=512)
+def _cached_planned_command(value: str, generation: int) -> PlannedCommand | None:
+    # ``generation`` is part of the cache key only: a re-registered key never reuses a row.
+    del generation
+    return requested_planned_command(value)
+
+
+def planned_verification_commands(
+    plans: Mapping[int, PlanProjectionRecord],
+    obligations: Mapping[ObligationId, ObligationProjectionRecord],
+    coverage_gaps: tuple[str, ...],
+) -> tuple[PlannedCommand, ...]:
+    """The planned verifications of the effective plan, ready to match observed runs (#1104).
+
+    Every effective obligation's requested item of kind ``command`` that names an observable
+    command, in plan order, each once. Empty without the installation key: a process that cannot
+    compute the identity never treats a run as the planned verification.
+    """
+
+    if not command_identity_key_registered():
+        return ()
+    generation = command_identity_key_generation()
+    seen: set[str] = set()
+    planned: list[PlannedCommand] = []
+    for obligation in effective_obligation_ids(plans, obligations, coverage_gaps):
+        payload = obligations[obligation].payload
+        assert payload is not None
+        for item in payload.requested_items:
+            if (
+                item.item_kind is not RequestedItemKind.COMMAND
+                or item.value in seen
+                or requested_command_shape(item.value) != "command"
+            ):
+                continue
+            seen.add(item.value)
+            command = _cached_planned_command(item.value, generation)
+            if command is not None:
+                planned.append(command)
+    return tuple(planned)
+
+
+def planned_verification_passed(command: str | None, planned: Iterable[PlannedCommand]) -> bool:
+    """Whether a passing run of the observed ``command`` passed a planned verification (#1104).
+
+    Only the recorded rule counts (``planned_match`` kind ``exact``: the ADR-033 keyed command
+    commitment, or the planned command as a segment of the run), and the outcome it establishes
+    for the planned command must be a success: a ``single`` run or a successful ``&&`` chain. A
+    canonical, prefix or flag match, an agent link, a masked composition and a masked planned
+    command never count. The caller supplies a run whose own recorded outcome is a success.
+    """
+
+    run = observed_run_from_command(command, outcome=ResultOutcome.SUCCESS)
+    if run is None:
+        return False
+    return any(
+        (match := planned_match(run, item)) is not None
+        and match.kind == MATCH_EXACT
+        and match.outcome is ResultOutcome.SUCCESS
+        for item in planned
     )
 
 

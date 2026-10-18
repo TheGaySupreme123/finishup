@@ -1296,8 +1296,14 @@ def test_failed_command_detail_text_is_fixed_and_bounded() -> None:
     )
 
     detail = _RULE_DETAILS["failed_command_unresolved"]
-    assert "Rerunning it" in detail
+    assert "A passing rerun of it" in detail
+    assert "a verification your plan requests" in detail
     assert "an edit does not" in detail
     assert "acknowledged" in detail
     assert "completed edit followed" not in detail
-    assert len(detail.encode()) <= 512
+    from finishup.domain.observation import (
+        _ADVICE_TEXT_RE,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # The advice item's own bound: 240 characters of the closed advice alphabet.
+    assert _ADVICE_TEXT_RE.fullmatch(detail) is not None

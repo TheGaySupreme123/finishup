@@ -10,14 +10,15 @@ closure classifier and to-do predicates then decide what every surface reads.
 from __future__ import annotations
 
 import random
+from collections.abc import Iterator
 
 import pytest
 
-from builders.observed_runs import ObservedLedger, observed_receipt
+from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, observed_receipt
 from finishup.domain.events import ResultOutcome
 from finishup.domain.findings import ResponseDisposition
 from finishup.domain.receipts import ReceiptSectionKey, render_receipt_human
-from finishup.domain.values import EventId, FindingId, ResultId
+from finishup.domain.values import EventId, FindingId, ObligationId, ResultId
 from finishup.kernel.closure_class import FindingClosureClass, ReceiptEffect, finding_closure
 from finishup.kernel.finding_retirement import is_observed_failed_command_finding
 from finishup.kernel.finding_todo import (
@@ -36,6 +37,10 @@ from finishup.kernel.projections import (
     projection_snapshot,
 )
 from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
+    planned_verification_commands,
+    register_command_identity_key,
+)
 
 _PYTEST = "pytest -q tests/test_x.py"
 
@@ -444,7 +449,9 @@ def test_an_open_observed_failure_says_rerun_not_check() -> None:
     ledger = ObservedLedger()
     _finding_for(ledger, ledger.fail(_PYTEST))
     _summary, _markdown, text = _receipt_texts(ledger)
-    assert "no later passing run of the same command was observed" in text
+    assert (
+        "no later passing run of the same command or of a planned verification was observed" in text
+    )
     assert "no later recorded check is available" not in text
 
 
@@ -489,9 +496,304 @@ def test_incremental_fold_equals_recompute_all_with_codex_and_unlinked_findings(
     folded = dict(state.findings)
     cleared = {
         key: dc_replace(
-            record, failed_run_result_id=None, retired_by_event_id=None, retired_frontier=None
+            record,
+            failed_run_result_id=None,
+            retired_by_event_id=None,
+            retired_frontier=None,
+            retired_by_planned_verification=False,
         )
         for key, record in folded.items()
     }
     recompute_all(cleared, state.results, state.actions, observed)
+    assert cleared == folded, seed
+
+
+# --- a passing planned verification (owner decision 2026-10-18, the broad reading) -------------
+
+_INSTALL = "pip install -e ."
+_PLANNED = "pytest -q"
+
+
+@pytest.fixture
+def installation_key() -> Iterator[None]:
+    register_command_identity_key(INSTALLATION_KEY)
+    yield
+    register_command_identity_key(None)
+
+
+def _assert_retired_by_plan(ledger: ObservedLedger, finding: FindingId, passing: EventId) -> None:
+    state = _state(ledger)
+    record = state.findings[finding]
+    assert record.payload is not None, "the finding stays in history"
+    assert record.retired_by_event_id == passing
+    assert record.retired_by_planned_verification
+    assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
+    assert not finding_blocks_receipt(state, finding)
+    closure = finding_closure(state, finding)
+    assert closure is not None
+    assert closure.basis == "retired_by_planned_verification"
+    assert closure.closure_class is FindingClosureClass.RESOLVED
+    assert closure.source_event_ids == (passing,)
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize("plan_first", [True, False])
+def test_a_passing_planned_verification_retires_an_unrelated_earlier_failure(
+    plan_first: bool,
+) -> None:
+    """The owner's accepted trade-off: a passing planned verification also clears a failed
+    install it never reran. The plan may be published before or after the failure."""
+
+    ledger = ObservedLedger()
+    if plan_first:
+        ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    if not plan_first:
+        ledger.plan(_PLANNED)
+    _assert_open(ledger, finding)
+    passing = ledger.passes(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    "later",
+    [
+        f"cd /app && {_PLANNED}",
+        f"{_PLANNED} > log.txt 2>&1",
+        f"FOO=1 {_PLANNED}",
+    ],
+)
+def test_a_planned_verification_inside_a_passing_chain_or_with_prefixes_retires_it(
+    later: str,
+) -> None:
+    """The ADR-033 segment rule: the planned command as a segment of a passing ``single`` run
+    or ``&&`` chain is the planned verification passing."""
+
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(later)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize(
+    "later",
+    [
+        "unknown_outcome",
+        "failure",
+        "masked_chain",
+        "pipe",
+        "canonical_spelling",
+        "unplanned_command",
+        "cooperative_success",
+        "edit",
+    ],
+)
+def test_what_is_not_a_passing_planned_verification(later: str) -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    if later == "unknown_outcome":
+        ledger.run(_PLANNED, ResultOutcome.UNKNOWN)
+    elif later == "failure":
+        ledger.fail(_PLANNED)
+    elif later == "masked_chain":
+        ledger.passes(f"{_PLANNED}; true")
+    elif later == "pipe":
+        ledger.passes(f"{_PLANNED} | tail -5")
+    elif later == "canonical_spelling":
+        # ``normalized``, ``prefix`` and ``flags`` matches are task facts, never a retirement.
+        ledger.passes(f"python3 -m {_PLANNED}")
+    elif later == "unplanned_command":
+        ledger.passes("pytest -q tests/test_other.py")
+    elif later == "cooperative_success":
+        ledger.run(_PLANNED, ResultOutcome.SUCCESS, exit_status=0, observed=False)
+    else:
+        ledger.edit()
+    _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_planned_pass_before_the_failure_never_retires_it() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    ledger.passes(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    _assert_open(ledger, finding)
+
+
+def test_without_the_installation_key_no_run_is_a_planned_verification() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(_PLANNED)
+    _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_the_same_command_passing_is_named_as_such_even_when_it_is_planned() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_PLANNED))
+    passing = ledger.passes(_PLANNED)
+    _assert_retired(ledger, finding, _result_event(ledger, passing))
+    assert not _state(ledger).findings[finding].retired_by_planned_verification
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_the_earliest_pass_decides_the_kind() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    planned = ledger.passes(_PLANNED)
+    ledger.passes(_INSTALL)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, planned))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_finding_materialized_after_the_planned_pass_is_retired_at_birth() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    failed = ledger.fail(_INSTALL)
+    passing = ledger.passes(_PLANNED)
+    finding = _finding_for(ledger, failed)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_plan_naming_the_command_after_its_pass_retires_the_earlier_failure() -> None:
+    """The plan is read as it stands now, as the planned-verification task facts read it."""
+
+    ledger = ObservedLedger()
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(_PLANNED)
+    _assert_open(ledger, finding)
+    ledger.plan(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_waiving_the_planned_obligation_un_retires_what_only_it_retired() -> None:
+    """Reverse state: once the plan no longer requests the command, its pass retires nothing,
+    and a later pass of the failed command itself still does."""
+
+    ledger = ObservedLedger()
+    obligation = ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    passing = ledger.passes(_PLANNED)
+    _assert_retired_by_plan(ledger, finding, _result_event(ledger, passing))
+    ledger.waive(obligation)
+    _assert_open(ledger, finding)
+    rerun = ledger.passes(_INSTALL)
+    _assert_retired(ledger, finding, _result_event(ledger, rerun))
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_redacting_the_planned_pass_or_the_obligation_reopens_it() -> None:
+    for target in ("pass", "obligation"):
+        ledger = ObservedLedger()
+        ledger.plan(_PLANNED)
+        obligation_event = ledger.prefix[-2].event_id
+        finding = _finding_for(ledger, ledger.fail(_INSTALL))
+        passing = _result_event(ledger, ledger.passes(_PLANNED))
+        _assert_retired_by_plan(ledger, finding, passing)
+        ledger.redact(passing if target == "pass" else obligation_event)
+        _assert_open(ledger, finding)
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_planned_retirement_round_trips_the_snapshot() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    finding = _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(_PLANNED)
+    state = _state(ledger)
+    snapshot = projection_snapshot(state)
+    assert "retired_by_planned_verification" in repr(snapshot)
+    restored = projection_from_snapshot(snapshot)
+    assert restored.findings[finding] == state.findings[finding]
+    assert projection_snapshot(restored) == snapshot
+
+
+@pytest.mark.usefixtures("installation_key")
+def test_a_planned_retirement_is_named_apart_on_the_receipt() -> None:
+    ledger = ObservedLedger()
+    ledger.plan(_PLANNED)
+    _finding_for(ledger, ledger.fail(_INSTALL))
+    ledger.passes(_PLANNED)
+    sentence = (
+        "One earlier failed-command finding was retired by a later passing run of a planned "
+        "verification, not of the command that failed, and remains visible as history."
+    )
+    summary, markdown, text = _receipt_texts(ledger)
+    for rendered in (summary, markdown, text):
+        assert sentence in rendered
+        assert "retired by a later passing run of the same command" not in rendered
+        assert "resolved by a later qualifying check" not in rendered
+    for rendered in (markdown, text):
+        assert "Retired by a later passing run of a planned verification" in rendered
+
+
+_PLANNED_COMMANDS = (
+    _PLANNED,
+    _INSTALL,
+    f"cd /app && {_PLANNED}",
+    f"{_PLANNED}; true",
+    "npm test",
+    "cd web && npm test && npm run lint",
+)
+
+
+@pytest.mark.usefixtures("installation_key")
+@pytest.mark.parametrize("seed", range(16))
+def test_incremental_fold_equals_recompute_all_with_plan_changes(seed: int) -> None:
+    """Plans published and waived between failures and passes: the fold (``on_plan_changed``
+    included) derives exactly what ``recompute_all`` derives from the final projection."""
+
+    from dataclasses import replace as dc_replace
+
+    from finishup.kernel.finding_retirement import recompute_all
+
+    chooser = random.Random(seed)
+    ledger = ObservedLedger()
+    obligations: list[ObligationId] = []
+    for step in range(20):
+        command = chooser.choice(_PLANNED_COMMANDS)
+        roll = chooser.random()
+        if roll < 0.3:
+            failed = ledger.fail(command)
+            if chooser.random() < 0.7:
+                _finding_for(ledger, failed, number=step + 1)
+        elif roll < 0.4:
+            obligations.append(
+                ledger.plan(chooser.choice(("pytest -q", "npm test")), number=step + 1)
+            )
+        elif roll < 0.45 and obligations:
+            ledger.waive(obligations.pop(0))
+        elif roll < 0.9:
+            ledger.passes(command)
+        else:
+            ledger.run(command, ResultOutcome.UNKNOWN)
+    state = _state(ledger)
+    observed = observed_event_ids_from_records(ledger.prefix)
+    folded = dict(state.findings)
+    cleared = {
+        key: dc_replace(
+            record,
+            failed_run_result_id=None,
+            retired_by_event_id=None,
+            retired_frontier=None,
+            retired_by_planned_verification=False,
+        )
+        for key, record in folded.items()
+    }
+    recompute_all(
+        cleared,
+        state.results,
+        state.actions,
+        observed,
+        lambda: planned_verification_commands(state.plans, state.obligations, state.coverage_gaps),
+    )
     assert cleared == folded, seed

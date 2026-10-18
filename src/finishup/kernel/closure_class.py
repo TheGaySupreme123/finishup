@@ -162,6 +162,9 @@ FINDING_BASES: Final[Mapping[str, tuple[FindingClosureClass, ReceiptEffect]]] = 
         # #1104: a later hook-observed passing run of the same command retired an observed
         # failed-command finding; never worded as "a check proved".
         "retired_by_passing_run": (_F.RESOLVED, _NONE),
+        # #1104 (owner decision 2026-10-18): a later passing planned verification retired it,
+        # whatever command failed; named apart from a rerun of the same command.
+        "retired_by_planned_verification": (_F.RESOLVED, _NONE),
         # #1104: the agent acknowledged an observed failed command. Disclosed, never clean.
         "failed_run_disclosed": (_F.SETTLED_DISCLOSED, _INSUFFICIENT),
     }
@@ -459,7 +462,11 @@ def finding_closure(
             return _make(
                 state,
                 finding,
-                "retired_by_passing_run",
+                (
+                    "retired_by_planned_verification"
+                    if record.retired_by_planned_verification
+                    else "retired_by_passing_run"
+                ),
                 ("none",),
                 since=response_frontier,
                 sources=(record.retired_by_event_id,),

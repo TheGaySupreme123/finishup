@@ -100,7 +100,10 @@ from finishup.kernel.projections import (
     empty_projection_state,
     is_observation_limitation,
 )
-from finishup.kernel.task_facts import disclosure_line_obligations
+from finishup.kernel.task_facts import (
+    disclosure_line_obligations,
+    planned_verification_commands,
+)
 from finishup.protocol.canonical import canonical_digest
 from finishup.protocol.coverage import LedgerFreshness
 
@@ -1352,6 +1355,20 @@ def _freshness(
     return LedgerFreshness.CURRENT
 
 
+# Families whose fold can change the effective plan's requested commands (#1104).
+_PLAN_FAMILIES: Final = frozenset({"plan_published", "plan_revised", "obligation_published"})
+
+
+def _planned_verifications(
+    plans: Mapping[int, PlanProjectionRecord],
+    obligations: Mapping[ObligationId, ObligationProjectionRecord],
+    coverage_gaps: tuple[str, ...],
+) -> finding_retirement.PlannedVerifications:
+    """The plan's planned verifications, computed only if a retirement asks for them."""
+
+    return lambda: planned_verification_commands(plans, obligations, coverage_gaps)
+
+
 def reduce_event(
     state: ProjectionState,
     event: LedgerRecord,
@@ -1464,7 +1481,12 @@ def reduce_event(
                 # #1104: a hook-observed pass retires the observed failed-command findings whose
                 # failed run it reruns; a failure may be the failed run a finding already names.
                 finding_retirement.on_observed_result(
-                    findings, key, results, actions, replay_index.observed_event_ids
+                    findings,
+                    key,
+                    results,
+                    actions,
+                    replay_index.observed_event_ids,
+                    _planned_verifications(plans, obligations, state.coverage_gaps),
                 )
         elif family == "evidence_recorded":
             key = _locator_id(accepted, evidence_id)
@@ -1496,6 +1518,7 @@ def reduce_event(
                 actions,
                 replay_index.observed_event_ids,
                 replay_index.observation_finding_event_ids,
+                _planned_verifications(plans, obligations, state.coverage_gaps),
             )
         elif family == "response_recorded":
             key = _locator_id(accepted, finding_id)
@@ -1642,7 +1665,11 @@ def reduce_event(
                 pending_missing = None
             reopen_findings_resolved_by(findings, frozenset(ordered_event_targets))
             finding_retirement.recompute_all(
-                findings, results, actions, replay_index.observed_event_ids
+                findings,
+                results,
+                actions,
+                replay_index.observed_event_ids,
+                _planned_verifications(plans, obligations, tuple(sorted(gaps, key=_ascii_key))),
             )
             for target_event in ordered_event_targets:
                 gaps.add(f"redacted_event:{target_event}")
@@ -1699,6 +1726,19 @@ def reduce_event(
             findings,
             responses,
             coordination_dispositions,
+        )
+
+    if type(event) is UnknownEvent or event.schema.name in _PLAN_FAMILIES:
+        # #1104: a planned verification retires earlier observed failed commands, read against
+        # the current plan; a plan or obligation event (or an unreadable plan event) may change
+        # which commands are planned, so the retirements are re-derived when they did.
+        finding_retirement.on_plan_changed(
+            findings,
+            results,
+            actions,
+            replay_index.observed_event_ids,
+            _planned_verifications(state.plans, state.obligations, state.coverage_gaps),
+            _planned_verifications(plans, obligations, coverage_gaps),
         )
 
     frontier = event.ledger.ingestion_sequence

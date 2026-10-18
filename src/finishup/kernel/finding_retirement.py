@@ -19,31 +19,49 @@ it one, derived at replay from events the ledger already holds:
   a rerun cannot retire it and only an answer settles it.
 * A **later pass** retires it: a hook-observed result recorded after the failed run, with outcome
   ``success`` (a host-stated exit 0 or ``success: true``, or a stream correction stating one), of a
-  *different* call, whose observed ``command`` action has the failed run's keyed identity or
-  certifies it as one of its exact segments (``observed_failures.success_certified_identities``:
-  a segment of a passing ``single`` or ``and_chain`` command that ran exactly as listed, so a
-  leading assignment or ``env``/``nohup``/``exec``/``time`` wrapper certifies nothing). The rule is the shared supersession rule
-  (``observed_failures.classify_observed_runs``) with one narrowing: the passing result must belong
-  to another call, so a conflicting second outcome for the same call never retires it. An
-  ``unknown`` outcome never retires anything, an edit never does, and a run of another command
-  never does.
+  *different* call, whose observed ``command`` action is one of:
 
-The fact is stored on the finding record (``retired_by_event_id``, ``retired_frontier``) and every
-surface reads it through ``finding_resolution.finding_is_resolved``; the closure basis is
-``retired_by_passing_run``. Redacting the passing run, the failed run, its action or the finding
-drops the fact (unreadable proof is no proof). Nothing is deleted: the finding stays in history.
+  - **the same command**: it has the failed run's keyed identity or certifies it as one of its
+    exact segments (``observed_failures.success_certified_identities``: a segment of a passing
+    ``single`` or ``and_chain`` command that ran exactly as listed, so a leading assignment or
+    ``env``/``nohup``/``exec``/``time`` wrapper certifies nothing). This is the shared
+    supersession rule (``observed_failures.classify_observed_runs``) with one narrowing: the
+    passing result must belong to another call, so a conflicting second outcome for the same call
+    never retires it.
+  - **a planned verification** (owner decision 2026-10-18, the broad reading of "a later pass"):
+    a run that passed a command an effective obligation of the current plan requests, matched by
+    the recorded ADR-033 rule (``task_facts.planned_verification_passed``: the keyed whole-command
+    commitment, or the planned command as a segment of a passing ``single`` or ``and_chain`` run).
+    It retires every earlier observed failed command, related or not: a passing planned
+    verification also clears an unrelated earlier failure (a failed install), a trade-off the
+    owner accepted. The plan is read as it stands now, as the planned-verification task facts
+    read it, so a plan revision that drops the command or waives its obligation un-retires what
+    only that match retired, and a plan that names the command later retires an earlier failure
+    a pass of it followed. Without the installation key no run is a planned verification.
 
-The reducer calls the incremental entry points (``on_finding_recorded``, ``on_observed_result``)
-in ledger order. An observed failure costs one pass over the results (to name its call's events)
-plus a set test per unlinked candidate, and rescans the ledger only for a candidate that names that
-call; a success costs O(linked candidates); ``recompute_all`` re-derives
-the same facts from a whole projection after a redaction. Both follow one definition, so a full
-replay and an incremental fold agree.
+  An ``unknown`` outcome never retires anything, an edit never does, and a run of another,
+  unplanned command never does. When one run is both, it is recorded as the same command.
+
+The fact is stored on the finding record (``retired_by_event_id``, ``retired_frontier``, and
+``retired_by_planned_verification`` for the second kind) and every surface reads it through
+``finding_resolution.finding_is_resolved``; the closure basis is ``retired_by_passing_run`` or
+``retired_by_planned_verification``. Redacting the passing run, the failed run, its action or the
+finding drops the fact (unreadable proof is no proof). Nothing is deleted: the finding stays in
+history.
+
+The reducer calls the incremental entry points (``on_finding_recorded``, ``on_observed_result``,
+``on_plan_changed``) in ledger order. An observed failure costs one pass over the results (to name
+its call's events) plus a set test per unlinked candidate, and rescans the ledger only for a
+candidate that names that call; a success costs O(linked candidates); a change of the planned
+verifications re-derives every linked candidate; ``recompute_all`` re-derives the same facts from a
+whole projection after a redaction. All follow one definition (a pure function of the current
+projection and the installation key), so a full replay and an incremental fold agree.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Set
+from bisect import bisect_right
+from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import replace
 from typing import Final
 
@@ -57,19 +75,34 @@ from finishup.domain.findings import Finding, FindingKind, FindingOrigin
 from finishup.domain.values import ActionId, EventId, FindingId, ResultId
 from finishup.kernel.observed_failures import command_identity, success_certified_identities
 from finishup.kernel.projections import FindingProjectionRecord, ProjectionRecord
+from finishup.kernel.task_facts import PlannedCommand, planned_verification_passed
 
 __all__ = [
     "failed_run_of",
     "is_observed_failed_command_finding",
     "is_observed_failed_command_shape",
+    "no_planned_verifications",
     "on_finding_recorded",
     "on_observed_result",
+    "on_plan_changed",
     "recompute_all",
     "retirement_witness",
 ]
 
 type _Results = Mapping[ResultId, ProjectionRecord[ResultRecordedPayload]]
 type _Actions = Mapping[ActionId, ProjectionRecord[ActionRecordedPayload]]
+# The current plan's planned verifications, computed only when a retirement needs them.
+type PlannedVerifications = Callable[[], Sequence[PlannedCommand]]
+# A retirement: the passing run's source event, its frontier, and whether it retired the finding
+# as a planned verification (``False``: the same command passed).
+type Witness = tuple[EventId, int, bool]
+
+
+def no_planned_verifications() -> Sequence[PlannedCommand]:
+    """The planned verifications of a projection with no plan (and the default)."""
+
+    return ()
+
 
 _FAILED_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
 _POLICY_ID: Final = "work-integrity"
@@ -182,23 +215,119 @@ def _command_action(
     return action.payload
 
 
-def _failed_identity(
-    failed: ResultId, results: _Results, actions: _Actions, observed: Set[EventId]
-) -> str | None:
+def _failed_record(
+    failed: ResultId, results: _Results
+) -> ProjectionRecord[ResultRecordedPayload] | None:
     record = results.get(failed)
     if record is None or record.payload is None or record.payload.outcome not in _FAILED_OUTCOMES:
         return None
-    action = _command_action(record, actions, observed)
+    return record
+
+
+def _failed_identity(
+    failed: ProjectionRecord[ResultRecordedPayload], actions: _Actions, observed: Set[EventId]
+) -> str | None:
+    """The failed run's keyed identity; ``None`` when no same-command pass can name it.
+
+    A failed run without one (``omitted:structural``, an unkeyed or identity-less call) can still
+    be retired by a passing planned verification, which never compares it with anything.
+    """
+
+    action = _command_action(failed, actions, observed)
     return None if action is None else command_identity(action.command)
 
 
-def _certifies(
+def _memoized(planned: PlannedVerifications) -> PlannedVerifications:
+    """Compute the planned verifications at most once, and only if some candidate asks."""
+
+    computed: list[Sequence[PlannedCommand]] = []
+
+    def read() -> Sequence[PlannedCommand]:
+        if not computed:
+            computed.append(planned())
+        return computed[0]
+
+    return read
+
+
+class _Passes:
+    """The hook-observed passing command runs of one projection, in ledger order.
+
+    Built once per derivation. A row's identity, certified segments and planned-verification match
+    are read lazily and kept, so re-deriving many candidates parses each run at most once, and a
+    candidate scans only the runs recorded after its failed run, up to the first that retires it.
+    """
+
+    __slots__ = ("_frontiers", "_identities", "_planned", "_planned_rows", "_rows")
+
+    def __init__(
+        self,
+        results: _Results,
+        actions: _Actions,
+        observed: Set[EventId],
+        planned: PlannedVerifications,
+    ) -> None:
+        rows: list[tuple[ProjectionRecord[ResultRecordedPayload], ActionRecordedPayload]] = []
+        for record in results.values():
+            payload = record.payload
+            if payload is None or payload.outcome is not ResultOutcome.SUCCESS:
+                continue
+            action = _command_action(record, actions, observed)
+            if action is not None:
+                rows.append((record, action))
+        rows.sort(key=lambda row: row[0].source_frontier)
+        self._rows = rows
+        self._frontiers = [row[0].source_frontier for row in rows]
+        self._planned = _memoized(planned)
+        self._identities: dict[int, tuple[str | None, frozenset[str]]] = {}
+        self._planned_rows: dict[int, bool] = {}
+
+    def _same_command(self, index: int, identity: str) -> bool:
+        known = self._identities.get(index)
+        if known is None:
+            command = self._rows[index][1].command
+            known = (command_identity(command), success_certified_identities(command))
+            self._identities[index] = known
+        return known[0] == identity or identity in known[1]
+
+    def _planned_verification(self, index: int) -> bool:
+        known = self._planned_rows.get(index)
+        if known is None:
+            planned = self._planned()
+            known = bool(planned) and planned_verification_passed(
+                self._rows[index][1].command, planned
+            )
+            self._planned_rows[index] = known
+        return known
+
+    def witness(
+        self, failed: ProjectionRecord[ResultRecordedPayload], identity: str | None
+    ) -> Witness | None:
+        failed_payload = failed.payload
+        assert failed_payload is not None
+        for index in range(bisect_right(self._frontiers, failed.source_frontier), len(self._rows)):
+            record, _action = self._rows[index]
+            payload = record.payload
+            assert payload is not None
+            if payload.action_id == failed_payload.action_id:
+                continue
+            if identity is not None and self._same_command(index, identity):
+                return (record.source_event_id, record.source_frontier, False)
+            if self._planned_verification(index):
+                return (record.source_event_id, record.source_frontier, True)
+        return None
+
+
+def _retires(
     candidate: ProjectionRecord[ResultRecordedPayload],
+    action: ActionRecordedPayload,
     failed: ProjectionRecord[ResultRecordedPayload],
-    identity: str,
-    actions: _Actions,
-    observed: Set[EventId],
-) -> bool:
+    identity: str | None,
+    planned_pass: Callable[[], bool],
+) -> bool | None:
+    """Whether the passing *candidate* retires *failed*: ``None`` when it does not, else whether it
+    does so as a planned verification (``False``: the same command passed)."""
+
     payload = candidate.payload
     failed_payload = failed.payload
     if (
@@ -208,31 +337,30 @@ def _certifies(
         or candidate.source_frontier <= failed.source_frontier
         or payload.action_id == failed_payload.action_id
     ):
+        return None
+    if identity is not None and (
+        command_identity(action.command) == identity
+        or identity in success_certified_identities(action.command)
+    ):
         return False
-    action = _command_action(candidate, actions, observed)
-    if action is None:
-        return False
-    return command_identity(action.command) == identity or identity in success_certified_identities(
-        action.command
-    )
+    return True if planned_pass() else None
 
 
 def retirement_witness(
-    failed: ResultId, results: _Results, actions: _Actions, observed: Set[EventId]
-) -> tuple[EventId, int] | None:
-    """The source event and frontier of the earliest later pass that retires ``failed``."""
+    failed: ResultId,
+    results: _Results,
+    actions: _Actions,
+    observed: Set[EventId],
+    planned: PlannedVerifications = no_planned_verifications,
+) -> Witness | None:
+    """The source event, frontier and kind of the earliest later pass that retires ``failed``."""
 
-    identity = _failed_identity(failed, results, actions, observed)
-    failed_record = results.get(failed)
-    if identity is None or failed_record is None:
+    record = _failed_record(failed, results)
+    if record is None:
         return None
-    best: ProjectionRecord[ResultRecordedPayload] | None = None
-    for record in results.values():
-        if (best is None or record.source_frontier < best.source_frontier) and _certifies(
-            record, failed_record, identity, actions, observed
-        ):
-            best = record
-    return None if best is None else (best.source_event_id, best.source_frontier)
+    return _Passes(results, actions, observed, planned).witness(
+        record, _failed_identity(record, actions, observed)
+    )
 
 
 def _with_failed_run(
@@ -241,13 +369,20 @@ def _with_failed_run(
     results: _Results,
     actions: _Actions,
     observed: Set[EventId],
+    passes: _Passes,
 ) -> FindingProjectionRecord:
-    witness = None if failed is None else retirement_witness(failed, results, actions, observed)
+    failed_record = None if failed is None else _failed_record(failed, results)
+    witness = (
+        None
+        if failed_record is None
+        else passes.witness(failed_record, _failed_identity(failed_record, actions, observed))
+    )
     return replace(
         record,
         failed_run_result_id=failed,
         retired_by_event_id=None if witness is None else witness[0],
         retired_frontier=None if witness is None else witness[1],
+        retired_by_planned_verification=witness is not None and witness[2],
     )
 
 
@@ -258,6 +393,7 @@ def on_finding_recorded(
     actions: _Actions,
     observed: Set[EventId],
     observation_findings: Set[EventId],
+    planned: PlannedVerifications = no_planned_verifications,
 ) -> None:
     """Stamp a just-folded finding record and derive its failed run and retirement."""
 
@@ -271,7 +407,8 @@ def on_finding_recorded(
         return
     stamped = replace(record, observed_failed_command=True)
     failed = failed_run_of(payload, results, actions, observed, through=record.source_frontier)
-    findings[key] = _with_failed_run(stamped, failed, results, actions, observed)
+    passes = _Passes(results, actions, observed, planned)
+    findings[key] = _with_failed_run(stamped, failed, results, actions, observed, passes)
 
 
 def _call_event_ids(action_key: ActionId, results: _Results, actions: _Actions) -> frozenset[str]:
@@ -294,12 +431,14 @@ def on_observed_result(
     results: _Results,
     actions: _Actions,
     observed: Set[EventId],
+    planned: PlannedVerifications = no_planned_verifications,
 ) -> None:
     """Fold one just-recorded hook-observed result into every open candidate.
 
     A failure may be the failed run of a finding recorded before it (the Codex outcome
     correction can land after the finding names the call); a success may retire a finding whose
-    failed run it reruns. Anything else changes nothing.
+    failed run it reruns, or every open one whose failed run it follows when it passed a planned
+    verification. Anything else changes nothing.
     """
 
     new = results.get(result_key)
@@ -312,6 +451,7 @@ def on_observed_result(
         # costs a set test instead of a scan of the whole ledger (a lifecycle-anchored finding
         # stays unlinked for good).
         call_events = _call_event_ids(new.payload.action_id, results, actions)
+        passes: _Passes | None = None
         for key, record in tuple(findings.items()):
             payload = record.payload
             if (
@@ -323,26 +463,81 @@ def on_observed_result(
                 continue
             failed = failed_run_of(payload, results, actions, observed, through=new.source_frontier)
             if failed is not None:
-                findings[key] = _with_failed_run(record, failed, results, actions, observed)
+                if passes is None:
+                    passes = _Passes(results, actions, observed, planned)
+                findings[key] = _with_failed_run(record, failed, results, actions, observed, passes)
         return
     if outcome is not ResultOutcome.SUCCESS:
         return
+    action = _command_action(new, actions, observed)
+    if action is None:
+        return
+    planned_once = _memoized(planned)
+    verdict: list[bool] = []
+
+    def planned_pass() -> bool:
+        # The new run's planned-verification match, computed once for every candidate.
+        if not verdict:
+            current = planned_once()
+            verdict.append(bool(current) and planned_verification_passed(action.command, current))
+        return verdict[0]
+
     for key, record in tuple(findings.items()):
         failed = record.failed_run_result_id
         if record.payload is None or failed is None or record.retired_by_event_id is not None:
             continue
-        identity = _failed_identity(failed, results, actions, observed)
-        failed_record = results.get(failed)
-        if (
-            identity is not None
-            and failed_record is not None
-            and _certifies(new, failed_record, identity, actions, observed)
-        ):
+        failed_record = _failed_record(failed, results)
+        if failed_record is None:
+            continue
+        kind = _retires(
+            new,
+            action,
+            failed_record,
+            _failed_identity(failed_record, actions, observed),
+            planned_pass,
+        )
+        if kind is not None:
             findings[key] = replace(
                 record,
                 retired_by_event_id=new.source_event_id,
                 retired_frontier=new.source_frontier,
+                retired_by_planned_verification=kind,
             )
+
+
+def on_plan_changed(
+    findings: dict[FindingId, FindingProjectionRecord],
+    results: _Results,
+    actions: _Actions,
+    observed: Set[EventId],
+    previous: PlannedVerifications,
+    current: PlannedVerifications,
+) -> None:
+    """Re-derive every linked candidate's retirement when the planned verifications changed.
+
+    A plan or obligation event (or an unreadable plan event) can add or drop a planned command;
+    the retirement is a function of the current plan, so a pass that no longer matches one stops
+    retiring what only it retired, and a newly planned command's earlier pass starts to.
+    Nothing is computed while no candidate has a failed run.
+    """
+
+    if not any(
+        record.observed_failed_command and record.failed_run_result_id is not None
+        for record in findings.values()
+    ):
+        return
+    now = _memoized(current)
+    if tuple(previous()) == tuple(now()):
+        return
+    passes = _Passes(results, actions, observed, now)
+    for key, record in tuple(findings.items()):
+        if not record.observed_failed_command or record.failed_run_result_id is None:
+            continue
+        updated = _with_failed_run(
+            record, record.failed_run_result_id, results, actions, observed, passes
+        )
+        if updated != record:
+            findings[key] = updated
 
 
 def _derived_failed_run(
@@ -377,13 +572,15 @@ def recompute_all(
     results: _Results,
     actions: _Actions,
     observed: Set[EventId],
+    planned: PlannedVerifications = no_planned_verifications,
 ) -> None:
     """Re-derive every candidate's failed run and retirement after a redaction.
 
-    An unreadable finding, failed run, action or passing run clears what depended on it, exactly
-    as a full replay of the readable records would derive it.
+    An unreadable finding, failed run, action, passing run or plan clears what depended on it,
+    exactly as a full replay of the readable records would derive it.
     """
 
+    passes = _Passes(results, actions, observed, planned)
     for key, record in tuple(findings.items()):
         if not record.observed_failed_command:
             continue
@@ -394,9 +591,10 @@ def recompute_all(
                     failed_run_result_id=None,
                     retired_by_event_id=None,
                     retired_frontier=None,
+                    retired_by_planned_verification=False,
                 )
             continue
         failed = _derived_failed_run(record, results, actions, observed)
-        updated = _with_failed_run(record, failed, results, actions, observed)
+        updated = _with_failed_run(record, failed, results, actions, observed, passes)
         if updated != record:
             findings[key] = updated

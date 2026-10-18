@@ -1304,7 +1304,11 @@ def _flag_closure(
         return None
     if state.resolved:
         basis = (
-            "retired_by_passing_run"
+            (
+                "retired_by_planned_verification"
+                if record.retired_by_planned_verification
+                else "retired_by_passing_run"
+            )
             if record.resolved_by_check_event_id is None and record.retired_by_event_id is not None
             else "absence_proved"
         )
@@ -1480,18 +1484,22 @@ def _count_phrase(count: int, singular: str, plural: str) -> str:
     return f"{count} {plural}"
 
 
-def _resolved_history_sentence(resolved_count: int, retired_count: int = 0) -> str:
+def _resolved_history_sentence(
+    resolved_count: int, retired_count: int = 0, planned_count: int = 0
+) -> str:
     """Name resolved historical findings apart from current ones and from coverage gaps.
 
     A resolved finding is not erased and is not a limitation: it fired, the record was repaired,
     and a later qualifying check found the same issue absent. Saying so beside the current count
     is what lets a reader tell "was fixed" from "still open" without a per-finding flag, which the
     frozen receipt document does not carry. ``retired_count`` of them were observed failed-command
-    findings a later passing run of the same command retired (#1104); they are named on their own
-    so the receipt never says a check proved what only a rerun did.
+    findings a later passing run of the same command retired (#1104), and ``planned_count`` of
+    them a later passing planned verification retired (owner decision 2026-10-18); each kind is
+    named on its own so the receipt never says a check proved what only a rerun did, nor that the
+    failed command itself passed when only the planned verification did.
     """
 
-    checked = resolved_count - retired_count
+    checked = resolved_count - retired_count - planned_count
     sentence = ""
     if checked > 0:
         phrase = _count_phrase(checked, "earlier finding was", "earlier findings were")
@@ -1510,7 +1518,34 @@ def _resolved_history_sentence(resolved_count: int, retired_count: int = 0) -> s
             f" {phrase[:1].upper() + phrase[1:]} retired by a later passing run of the same "
             "command and " + ("remain" if retired_count > 1 else "remains") + " visible as history."
         )
+    if planned_count > 0:
+        phrase = _count_phrase(
+            planned_count,
+            "earlier failed-command finding was",
+            "earlier failed-command findings were",
+        )
+        sentence += (
+            f" {phrase[:1].upper() + phrase[1:]} retired by a later passing run of a planned "
+            "verification, not of the command that failed, and "
+            + ("remain" if planned_count > 1 else "remains")
+            + " visible as history."
+        )
     return sentence
+
+
+def _retired_count(
+    projection: ProjectionState, finding_ids: tuple[FindingId, ...], *, planned: bool
+) -> int:
+    """How many of *finding_ids* a later passing run retired (#1104), of one kind."""
+
+    return sum(
+        1
+        for item in finding_ids
+        if (record := projection.findings.get(item)) is not None
+        and record.resolved_by_check_event_id is None
+        and record.retired_by_event_id is not None
+        and record.retired_by_planned_verification is planned
+    )
 
 
 _OBSERVED_HISTORY_LISTED: Final = 10
@@ -2123,6 +2158,7 @@ def _sections(
     tested_subject_sequence: str | None = None,
     resolved_finding_ids: tuple[FindingId, ...] = (),
     retired_finding_count: int = 0,
+    planned_retired_finding_count: int = 0,
     semantic_endpoint_sentence: str = "",
     semantic_usage_sentence: str = "",
     task_statement_source_sentence: str = "",
@@ -2157,7 +2193,9 @@ def _sections(
     gap_texts = check_change_gap_texts or {}
     bodies: dict[ReceiptSectionKey, str] = {}
     items: dict[ReceiptSectionKey, tuple[str, ...]] = {}
-    resolved_sentence = _resolved_history_sentence(len(resolved_finding_ids), retired_finding_count)
+    resolved_sentence = _resolved_history_sentence(
+        len(resolved_finding_ids), retired_finding_count, planned_retired_finding_count
+    )
 
     if closure_summary is not None:
         # ADR-046: one set of counters, the reasons behind the label, and the latest check's own
@@ -2846,12 +2884,11 @@ def build_receipt(
             else str(context.projection.latest_tested_state.subject_frontier.sequence)
         ),
         resolved_finding_ids=resolved_finding_ids,
-        retired_finding_count=sum(
-            1
-            for item in resolved_finding_ids
-            if (record := context.projection.findings.get(item)) is not None
-            and record.resolved_by_check_event_id is None
-            and record.retired_by_event_id is not None
+        retired_finding_count=_retired_count(
+            context.projection, resolved_finding_ids, planned=False
+        ),
+        planned_retired_finding_count=_retired_count(
+            context.projection, resolved_finding_ids, planned=True
         ),
         semantic_endpoint_sentence=_semantic_endpoint_sentence(context.applicable_check),
         review_not_required=route_did_not_require_review(context.applicable_check),

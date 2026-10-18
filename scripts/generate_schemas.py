@@ -5684,6 +5684,7 @@ _FINDING_CLOSURE_BASES: Final = (
     "rejection_accepted",
     "reopened",
     "retired_by_passing_run",
+    "retired_by_planned_verification",
     "self_verified",
 )
 _OBLIGATION_CLOSURE_BASES: Final = (

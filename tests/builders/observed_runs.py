@@ -33,12 +33,20 @@ from finishup.domain.events import (
     EvidenceRecordedPayload,
     LedgerChain,
     LedgerRecord,
+    ObligationChange,
+    ObligationChangeKind,
+    ObligationPublishedPayload,
+    ObligationStatus,
     PayloadRef,
+    PlanPublishedPayload,
+    PlanRevisedPayload,
     ProjectionLocator,
     RedactionMethod,
     RedactionReasonCategory,
     RedactionRecordedPayload,
     RedactionState,
+    RequestedItem,
+    RequestedItemKind,
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
@@ -69,6 +77,7 @@ from finishup.domain.values import (
     EventId,
     FindingId,
     Frontier,
+    ObligationId,
     ResultId,
     SubjectStateRef,
     action_id,
@@ -78,6 +87,7 @@ from finishup.domain.values import (
     evidence_id,
     finding_id,
     object_id,
+    obligation_id,
     receipt_id,
     request_id,
     result_id,
@@ -136,6 +146,7 @@ _ACTION = EventSchema("action_recorded", "1.0.0")
 _RESULT = EventSchema("result_recorded", "1.0.0")
 _CLAIM_V1 = EventSchema("claim_recorded", "1.0.0")
 _CLAIM_V1_1 = EventSchema("claim_recorded", "1.1.0")
+_OBLIGATION = EventSchema("obligation_published", "1.1.0")
 _PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 OMISSION_KINDS = frozenset(
     {FindingKind.FAILED_WORK_OMITTED, FindingKind.MATERIAL_LIMITATION_OMITTED}
@@ -181,6 +192,7 @@ class ObservedLedger:
 
     records: list[LedgerRecord] = field(default_factory=lambda: [])
     runs: int = 0
+    _plan_version: int = 0
 
     def _append(
         self,
@@ -622,6 +634,54 @@ class ObservedLedger:
             schema = _CLAIM_V1
         self._append(schema, payload, observed=False)
         return identifier
+
+    def plan(self, *commands: str, number: int = 1) -> ObligationId:
+        """Publish one obligation requesting ``commands`` (kind ``command``) and a plan naming it.
+
+        The planned verification a passing run can match (#1104); the first plan is version 1.
+        """
+
+        identifier = obligation_id(f"obl_00000000-0000-4000-8000-{number:012d}")
+        self._append(
+            _OBLIGATION,
+            ObligationPublishedPayload(
+                obligation_id=identifier,
+                description="Make the regression suite pass.",
+                evidence_expectation="A recorded passing run.",
+                status=ObligationStatus.OPEN,
+                requested_items=tuple(
+                    RequestedItem(RequestedItemKind.COMMAND, command) for command in commands
+                ),
+            ),
+            observed=False,
+        )
+        self._plan_version += 1
+        self._append(
+            EventSchema("plan_published", "1.0.0"),
+            PlanPublishedPayload(self._plan_version, "Plan", (identifier,)),
+            observed=False,
+        )
+        return identifier
+
+    def waive(self, obligation: ObligationId) -> EventId:
+        """Revise the current plan to waive *obligation* (its requested commands stop counting)."""
+
+        self._plan_version += 1
+        return self._append(
+            EventSchema("plan_revised", "1.0.0"),
+            PlanRevisedPayload(
+                plan_version=self._plan_version,
+                supersedes_plan_version=self._plan_version - 1,
+                reason="The suite is out of scope.",
+                summary="Waive it.",
+                obligation_changes=(
+                    ObligationChange(
+                        obligation, ObligationChangeKind.WAIVED, "Out of scope for this task."
+                    ),
+                ),
+            ),
+            observed=False,
+        )
 
     @property
     def prefix(self) -> tuple[LedgerRecord, ...]:

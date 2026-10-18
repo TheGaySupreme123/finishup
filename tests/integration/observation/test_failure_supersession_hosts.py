@@ -212,6 +212,66 @@ def test_claude_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path:
     assert omitted_results(red_latest) == (red_result,)
 
 
+def _planned_retirement(
+    tmp_path: Path, build: Callable[[], ObservedLedger], red: ObservedLedger, planned: str
+) -> None:
+    """Replay the host's rows behind a plan requesting ``planned``, with the coordinator's finding
+    after the failed call, and assert the later pass retired it as the planned verification."""
+
+    from finishup.domain.values import EventId
+    from finishup.kernel.task_facts import register_command_identity_key
+
+    rows = build().records
+    register_command_identity_key(LocalObservationStore(_state=tmp_path / "state").key_material())
+    try:
+        ledger = ObservedLedger()
+        ledger.plan(planned)
+        appended = [
+            ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
+            for row in rows[: len(red.records)]
+        ]
+        finding = ledger.advice_finding(tuple(appended))
+        passing: list[EventId] = [
+            ledger.append(row.schema, cast(EventPayload, row.payload), observed=True)
+            for row in rows[len(red.records) :]
+        ]
+        state = replay(ledger.prefix)
+        assert state.findings[finding].retired_by_event_id == passing[-1]
+        assert finding_todo_state(state, finding) is FindingTodoState.VERIFIED_RESOLVED
+        closure = finding_closure(state, finding)
+        assert closure is not None and closure.basis == "retired_by_planned_verification"
+    finally:
+        register_command_identity_key(None)
+
+
+def test_claude_passing_planned_verification_retires_an_unrelated_failure(
+    tmp_path: Path,
+) -> None:
+    """Owner decision 2026-10-18 (#1104): Claude Code states the exits in ``PostToolUseFailure``
+    and ``PostToolUse``; a failed ``pip install`` is retired by the plan's verification passing
+    later, and the finding names that kind of pass."""
+
+    emit, build = _host(tmp_path, "claude")
+    planned = f"pytest -q tests/{_CANARY}.py"
+    _claude_bash(emit, "toolu-install", "pip install -e .", failed=True)
+    red = build()
+    _claude_bash(emit, "toolu-tests", f"cd /app && {planned}", failed=False)
+    _planned_retirement(tmp_path, build, red, planned)
+
+
+def test_cursor_passing_planned_verification_retires_an_unrelated_failure(
+    tmp_path: Path,
+) -> None:
+    """The same decision on Cursor, whose ``postToolUse`` states ``exitCode``."""
+
+    emit, build = _host(tmp_path, "cursor")
+    planned = f"npm test -- {_CANARY}"
+    _cursor_shell(emit, "cursor-install", "npm ci", exit_code=1)
+    red = build()
+    _cursor_shell(emit, "cursor-tests", planned, exit_code=0)
+    _planned_retirement(tmp_path, build, red, planned)
+
+
 def test_claude_failure_then_observed_edit_stays_outstanding(tmp_path: Path) -> None:
     emit, build = _host(tmp_path, "claude")
     _claude_bash(emit, "toolu-red", f"npm test -- {_CANARY}", failed=True)

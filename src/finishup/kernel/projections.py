@@ -464,8 +464,10 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     ``failed_run_result_id`` is the one hook-observed failed result it names, when exactly one is
     named; ``retired_by_event_id`` and ``retired_frontier`` name the earliest later hook-observed
     *passing* run of the same command identity (or a passing ``single``/``and_chain`` command whose
-    segments include it), which retires the finding. A retirement is a proof like a check's:
-    redacting the passing run or the failed run drops it, and nothing is deleted.
+    segments include it), or of a planned verification of the current plan, which retires the
+    finding; ``retired_by_planned_verification`` says it was the second kind (owner decision
+    2026-10-18). A retirement is a proof like a check's: redacting the passing run or the failed
+    run drops it, and nothing is deleted.
     ``duplicate_link_broken_by_check_event_ids`` (issue #996) names, in fold order, every later
     check that raised this finding's issue again (returned it, or the reviewer ruled it
     ``still_present`` or ``answered_not_fixed``) while its latest response was ``duplicate_of``.
@@ -495,6 +497,7 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     failed_run_result_id: ResultId | None = None
     retired_by_event_id: EventId | None = None
     retired_frontier: int | None = None
+    retired_by_planned_verification: bool = False
 
     @property
     def proof_event_id(self) -> EventId | None:
@@ -518,6 +521,10 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
             except ValueError as exc:
                 raise _invalid() from exc
         if (self.retired_by_event_id is None) is not (self.retired_frontier is None):
+            raise _invalid()
+        if type(self.retired_by_planned_verification) is not bool or (
+            self.retired_by_planned_verification and self.retired_by_event_id is None
+        ):
             raise _invalid()
         if self.retired_by_event_id is not None:
             if self.failed_run_result_id is None:
@@ -1442,6 +1449,8 @@ def _record_snapshot(record: _ProjectionRecordLike) -> dict[str, JsonValue]:
             result["retired_by_event_id"] = record.retired_by_event_id
         if record.retired_frontier is not None:
             result["retired_frontier"] = record.retired_frontier
+        if record.retired_by_planned_verification:
+            result["retired_by_planned_verification"] = True
         # Issue #996: emitted only when a check broke a ``duplicate_of`` link.
         if record.duplicate_link_broken_by_check_event_ids:
             result["duplicate_link_broken_by_check_event_ids"] = list(
@@ -1752,6 +1761,7 @@ def _record_from_snapshot(
                 "failed_run_result_id",
                 "retired_by_event_id",
                 "retired_frontier",
+                "retired_by_planned_verification",
             }
         )
     else:
@@ -1889,8 +1899,9 @@ def _record_from_snapshot(
                 frontier_raw = source[frontier_name]
                 if type(frontier_raw) is not int or frontier_raw < 1:
                     raise _invalid()
-        if "observed_failed_command" in source and source["observed_failed_command"] is not True:
-            raise _invalid()
+        for flag in ("observed_failed_command", "retired_by_planned_verification"):
+            if flag in source and source[flag] is not True:
+                raise _invalid()
         for name in ("failed_run_result_id", "retired_by_event_id"):
             if name in source and type(source[name]) is not str:
                 raise _invalid()
@@ -1949,6 +1960,7 @@ def _record_from_snapshot(
             failed_run_result_id=cast(ResultId | None, source.get("failed_run_result_id")),
             retired_by_event_id=cast(EventId | None, source.get("retired_by_event_id")),
             retired_frontier=cast(int | None, source.get("retired_frontier")),
+            retired_by_planned_verification="retired_by_planned_verification" in source,
         )
     return ProjectionRecord(
         payload=payload,
