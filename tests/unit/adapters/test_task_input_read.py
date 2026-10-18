@@ -237,6 +237,33 @@ def test_the_head_word_of_a_quoted_spaced_path_never_lists_a_folder(shared: Path
     assert [item.path for item in inputs] == [f"{root}/legacy app/main.c"]
 
 
+def test_a_quoted_spaced_folder_beneath_a_root_never_lists_the_folder_its_head_names(
+    shared: Path,
+) -> None:
+    """Issue #1102 review surfaces-r3-1: ``"/shared/legacy app"`` (no trailing ``/``) may be a
+    folder or prose. It is offered ahead of its words, and when it is there ``/shared/legacy``
+    is never listed; when it is not, the folder the first word names still is."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    root = os.fspath(shared)
+    (shared / "legacy").mkdir()
+    (shared / "legacy" / "unrelated_notes.txt").write_text("UNRELATED_MARKER\n", "utf-8")
+    statement = f'The legacy sources are in "{root}/legacy app"; port them.'
+    candidates = task_input_paths(make_case().projection, statement)
+
+    assert candidates == (f"{root}/legacy app", f"{root}/legacy")
+    assert [item.path for item in read_outside_inputs((root,), candidates, limit=4)] == [
+        f"{root}/legacy/unrelated_notes.txt"
+    ]
+    (shared / "legacy app").mkdir()
+    (shared / "legacy app" / "main.c").write_text("int main(void) { return 0; }\n", "utf-8")
+    assert [item.path for item in read_outside_inputs((root,), candidates, limit=4)] == [
+        f"{root}/legacy app/main.c"
+    ]
+
+
 def test_links_and_unsafe_roots_admit_nothing(shared: Path, tmp_path: Path) -> None:
     root = os.fspath(shared)
     target = tmp_path / "target.md"

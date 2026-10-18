@@ -673,21 +673,31 @@ issue #1045 proof, or FinishUP's own text naming such files.
 1. **Statement words.** A quoted (`` ` ``, `"`, or `'` not inside a word, so `don't` opens no span)
    or backslash-escaped path keeps its single spaces (`"/app/My Docs/spec.md"`,
    `/app/My\ Docs/spec.md`), at most eight of them, with no other whitespace, glob, `~`, `$`,
-   backtick or URL; a span with an option-like word (`pytest -q tests/test_a.py`) or a word that
-   is or starts with a shell operator or redirection (`&&`, `|`, `;`, `<`, `>`, `2>`) is a command,
-   never one path. A span is prose, never one path, when an earlier word names a whole file or
-   ends in `/` (`the parser in /app/parser/ fails`), when a joining word (`and`, `or`, `then`, `to`
-   and the like) sits between two words holding `/` (`src/dedup and src/util`), or when its last
-   component holds a space and is no file name with a lettered extension (`/app/config is
-   read-only`). A rejected span splits into its words exactly as unquoted text does, so
-   `` `cd /app/vllm && pytest` `` still names `/app/vllm` (#1102 review). Prose ahead of the path
-   and a relative path's last word still count after it, so a quoted command (`cat docs/spec.md`)
-   never loses the file it names; the words the spaces
-   cut from the path's head and middle, and every word of an absolute spaced path, never count, so
-   `/app/data` of `'/app/data files/input.csv'` never expands an unrelated folder. Unquoted text
-   splits exactly as before. A `role: input` file with a
-   space, a `role: input` directory, and a spaced operand of a recorded verification command are
-   candidates too. A requested output keeps the plain-path rule (#977).
+   backtick or URL. A span is never one path when it is a command or a list: a word is option-like
+   (`pytest -q tests/test_a.py`) or is or starts with a shell operator or redirection (`&&`, `|`,
+   `;`, `<`, `>`, `2>`); a second absolute path follows the first (`ls /app/data /app/models`); a
+   first word without `/` precedes two words holding `/` (`diff src/dedup src/util`); or an
+   earlier word names a whole file or ends in `/` (`the parser in /app/parser/ fails`). Such a span
+   splits into its words exactly as unquoted text does, so `` `cd /app/vllm && pytest` `` still
+   names `/app/vllm` and every operand of a quoted command survives (#1102 review). A span only the
+   disk can tell apart comes whole and is followed by every word it holds: a joining word (`and`,
+   `or`, `to` and the like) sits between two words holding `/` (`src/dedup and src/util`,
+   `/app/Terms and Conditions/terms.pdf`), a later word starts with the first word's first
+   component (`docs/Makefile docs/Dockerfile`), or the last component holds a space and is no file
+   name with a lettered extension (`/app/test data`, `/app/config is read-only`). Every read (the
+   repository read, the outside reader, and item 5's decision) looks once at the metadata of each
+   candidate holding a space, only where it may look at all, and when one names a file or
+   directory there it drops the candidates that are its space-cut words
+   (`change_capture.drop_space_cut_words`): `/app/test` is never read for `/app/test data`, and
+   `/app/config` is still read for the prose. For a span accepted as one path, prose ahead of it
+   still counts, and so does the last word of a relative span whose earlier words hold no `/`, when
+   it names a file or a folder with a directory part, so a quoted command (`cat docs/spec.md`)
+   never loses the file it names. No other word the spaces cut counts: `/app/data` of
+   `'/app/data files/input.csv'`, `data/` of `'src/test data/'` and `Notes.md` of
+   `'docs/My Notes.md'` never expand an unrelated file or folder. Unquoted text splits exactly as
+   before. A `role: input` file with a space, a `role: input` directory, and a spaced operand of a
+   recorded verification command are candidates too. A requested output keeps the plain-path rule
+   (#977).
 2. **Directories.** A statement word ending in `/` (relative or absolute), or an absolute path of
    one component (the workspace `/app`), is a directory candidate, offered after every named file.
    A no-slash `/app/vllm` keeps its statement place; the read decides by what the path is.
@@ -726,15 +736,17 @@ issue #1045 proof, or FinishUP's own text naming such files.
    candidate the task itself names (never one only a verification command named) is absolute,
    outside the root this read used, beneath no admitted root, not a declared output, not in a
    system tree (`/usr`, `/bin`, `/lib*`, `/sbin`, `/snap`, `/nix`, or a tree no root may be
-   admitted beneath), not in a scratch, log, cache or package-state tree (`/tmp`, `/var/tmp`,
-   `/var/folders`, `/var/log`, `/var/cache`, `/var/lib`), not through a `bin` or installed-package
-   directory, not hidden or credential-named, and not a top-level tree of homes, installed software
-   or system state (`/home`, `/root`, `/Users`, `/opt`, `/mnt`, `/srv`, `/var`, `/private`,
-   `/Volumes`, `/Applications`, `/Library`, `/System`); a top-level folder named whole (`/data`,
-   `/legacy`) counts, since it may be admitted as a root (`check_change.outside_input_candidates`),
-   the read `lstat`s it (metadata only; a final link never counts,
-   no content is opened). It counts only when a regular file or directory is there whose
-   modification and change times both predate the task-start base's recording: a route
+   admitted beneath), not in a scratch, log, cache, output or package-state tree (`/tmp`,
+   `/var/tmp`, `/var/folders`, `/var/log`, `/var/cache`, `/var/lib`, `/output`, `/outputs`,
+   `/logs`, `/results`), not through a `bin` or installed-package directory, not hidden or
+   credential-named, and not a top-level tree of homes, mounts, installed software or system state
+   (`/home`, `/root`, `/Users`, `/opt`, `/mnt`, `/media`, `/srv`, `/var`, `/private`, `/Volumes`,
+   `/Applications`, `/Library`, `/System`) (`check_change.outside_input_candidates`), the read
+   `lstat`s it (metadata only; a final link never counts, no content is opened). It counts only when
+   a regular file or directory is there whose modification and change times both predate the
+   task-start base's recording; a top-level path (`/data`, `/legacy`) counts only as a directory,
+   since only a folder there may be admitted as a root and no root covers a file like `/spec.md`; a
+   word the spaces cut from a spaced candidate found there never counts (item 1). A route
    (`GET /api/v1/users`) names nothing on disk, and a file the agent wrote during the task is its
    output. Without a `task_start` base nothing counts. The check then records the closed coverage
    code `task_input_outside_not_admitted`. The read decides once, against the connection's root it

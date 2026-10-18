@@ -2391,6 +2391,87 @@ def test_the_head_word_of_a_quoted_spaced_path_is_never_a_task_named_directory(
     ]
 
 
+@pytest.mark.parametrize(
+    ("statement", "folder", "unrelated"),
+    [
+        # Review surfaces-r3-1: a quoted spaced folder without a trailing ``/``.
+        ("Summarise the CSVs in '{repository}/test data' and write report.md", "test data", "test"),
+        ("The cases are in 'src/test data' here.", "src/test data", "src/test"),
+        # Review goal-r3-1, correctness-r3-2: the last word of a relative spaced folder.
+        ("Use the cases in 'src/test data/' to verify.", "src/test data", "data"),
+        (
+            'Make the failing cases in "src/integration tests/" pass.',
+            "src/integration tests",
+            "tests",
+        ),
+        # Review correctness-r3-4: a joining word inside a folder name.
+        ("Read '{repository}/Files to Review/'.", "Files to Review", "Files"),
+    ],
+)
+def test_a_spaced_folder_the_task_names_never_lists_a_folder_its_words_name(
+    tmp_path: Path, statement: str, folder: str, unrelated: str
+) -> None:
+    """Issue #1102: when the spaced folder is there, a folder one of its words names (``test/``
+    for ``test data``, ``data/`` for ``src/test data/``) is never listed as one the task names."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    repository = _repository(tmp_path)
+    (repository / folder).mkdir(parents=True)
+    (repository / folder / "case1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (repository / unrelated).mkdir(parents=True, exist_ok=True)
+    (repository / unrelated / "unrelated_private.csv").write_text("NO\n", encoding="utf-8")
+    _git(repository, "add", "--", ".")
+    _commit(repository, "data")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    candidates = task_input_paths(
+        make_case().projection, statement.format(repository=os.fspath(repository))
+    )
+    capture = adapter.capture(os.fspath(repository), base, input_paths=candidates)
+
+    assert [(item.path, item.origin) for item in capture.inputs] == [
+        (f"{folder}/", "task"),
+        (f"{folder}/case1.csv", "task_directory"),
+    ]
+
+
+def test_a_quoted_prose_span_still_reads_the_folder_it_names_when_no_spaced_one_is_there(
+    tmp_path: Path,
+) -> None:
+    """Review surfaces-r3-1: ``"<repo>/config is read-only"`` names no spaced folder, so the
+    folder its first word names is still read; two quoted operands both are (goal-r3-2)."""
+
+    from builders.policy_cases import make_case
+    from finishup.application.check_change import task_input_paths
+
+    repository = _repository(tmp_path)
+    for name in ("config", "data", "models"):
+        (repository / name).mkdir()
+        (repository / name / f"{name}.txt").write_text(f"{name.upper()}\n", encoding="utf-8")
+    _git(repository, "add", "--", ".")
+    _commit(repository, "folders")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    prose = task_input_paths(make_case().projection, f'Note: "{repository}/config is read-only"')
+    command = task_input_paths(
+        make_case().projection, f"Run `ls {repository}/data {repository}/models` first."
+    )
+    by_prose = adapter.capture(os.fspath(repository), base, input_paths=prose)
+    by_command = adapter.capture(os.fspath(repository), base, input_paths=command)
+
+    assert [item.path for item in by_prose.inputs] == ["config/", "config/config.txt"]
+    assert [item.path for item in by_command.inputs] == [
+        "data/",
+        "data/data.txt",
+        "models/",
+        "models/models.txt",
+    ]
+
+
 def test_a_directory_named_without_a_slash_or_with_spaces_is_expanded_too(
     tmp_path: Path,
 ) -> None:

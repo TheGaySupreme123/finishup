@@ -63,6 +63,7 @@ from finishup.ports.change_capture import (
     TaskInputFile,
     decode_check_change,
     decode_task_change_base,
+    drop_space_cut_words,
     encode_check_change,
     encode_task_change_base,
 )
@@ -846,7 +847,9 @@ _MAX_PATH_SPACES: Final = 8
 # A quoted shell command (``cd /app/vllm && pytest``, ``cat a | grep b``, ``make > out.txt``) is
 # never one path: a word that is or starts with a shell operator or redirection marks it.
 _SPACED_COMMAND_WORD: Final = re.compile(r"\A(?:[&|;<>]|[0-9]+[<>])")
-# Prose joining two paths (``"src/dedup and src/util"``) is never one path either.
+# A word like these between two parts holding ``/`` may join two paths (``"src/dedup and
+# src/util"``) or sit inside one folder name (``"/app/Terms and Conditions/terms.pdf"``): only the
+# disk can tell, so the read decides (``_spaced_candidate``).
 _SPACED_JOINING_WORDS: Final = frozenset(
     {"and", "or", "then", "to", "into", "from", "with", "vs", "versus", "plus"}
 )
@@ -875,18 +878,23 @@ def _names_a_file(word: str) -> bool:
     return match is not None and any(char.isalpha() for char in match.group("extension"))
 
 
-def _spaced_path(value: str) -> str | None:
-    """One literal read-only path holding single spaces, or ``None`` (issue #1102, RC6d).
+def _spaced_candidate(value: str) -> tuple[str, bool] | None:
+    """One literal read-only path holding single spaces, and whether it is one for certain.
 
-    The value must have a directory part or end in ``/``, or end in a file name with a lettered
-    extension; hold one to eight single spaces and no other whitespace, glob, brace, home or
-    variable expansion, backtick or URL; and be at most 1024 characters. Prose ahead of an
-    absolute path (``see /app/My Docs/spec.md``) is dropped. A span whose earlier words already
-    name a whole file (``docs/a.md and docs/b.md``) or a folder (``/app/parser/ fails``), joins
-    two paths with a word like ``and``, or whose spaced last component is no file name
-    (``/app/config is read-only``) is prose, never one path; a span with an option-like word
-    (``pytest -q tests/test_a.py``) or a shell operator (``cd /app/vllm && pytest``) is a
-    command, never one path. A rejected span keeps every word it holds (``_statement_words``).
+    Issue #1102 (RC6d). The value must have a directory part or end in ``/``, or end in a file
+    name with a lettered extension; hold one to eight single spaces and no other whitespace, glob,
+    brace, home or variable expansion, backtick or URL; and be at most 1024 characters. Prose
+    ahead of an absolute path (``see /app/My Docs/spec.md``) is dropped. ``None`` for a span that
+    is surely no one path: two absolute paths (``ls /app/data /app/models``), a command word ahead
+    of two paths (``diff src/dedup src/util``), earlier words that already name a whole file
+    (``docs/a.md and docs/b.md``) or a folder (``/app/parser/ fails``), an option-like word
+    (``pytest -q tests/test_a.py``) or a shell operator (``cd /app/vllm && pytest``). ``False``
+    when only the disk can tell: a word like ``and`` joins two parts holding ``/``
+    (``/app/Terms and Conditions/terms.pdf``, ``src/dedup and src/util``), a later word starts
+    with the first one's first component (``docs/Makefile docs/Dockerfile``), or the spaced last
+    component is no file name and no ``/`` follows it (``/app/test data``, ``/app/config is
+    read-only``). Such a span is offered ahead of its own words, and the read keeps those words
+    only when the whole value names nothing there (``drop_space_cut_words``).
     """
 
     value = value.strip(_STATEMENT_WORD_EDGE)
@@ -895,6 +903,7 @@ def _spaced_path(value: str) -> str | None:
     words = value.split(" ")
     if (
         " " not in value
+        or " /" in value
         or value != value.strip(" ")
         or value.count(" ") > _MAX_PATH_SPACES
         or len(value) > 1_024
@@ -902,24 +911,31 @@ def _spaced_path(value: str) -> str | None:
         or any(_names_a_file(word) or word.endswith("/") for word in words[:-1])
         or any(word.startswith("-") for word in words[1:])
         or any(_SPACED_COMMAND_WORD.match(word) is not None for word in words)
-        or any(
-            word.casefold() in _SPACED_JOINING_WORDS and "/" in before and "/" in after
-            for before, word, after in zip(words, words[1:], words[2:], strict=False)
-        )
+        or ("/" not in words[0] and sum("/" in word for word in words[1:]) > 1)
     ):
         return None
     name = value.rstrip("/").rsplit("/", 1)[-1]
     if not name or name.startswith("-"):
         return None
+    head = words[0].split("/", 1)[0]
+    certain = not any(
+        word.casefold() in _SPACED_JOINING_WORDS and "/" in before and "/" in after
+        for before, word, after in zip(words, words[1:], words[2:], strict=False)
+    ) and not (
+        # A later word that starts where the first one does (``docs/Makefile docs/Dockerfile``)
+        # may be a second path.
+        head and "/" in words[0] and any(word.split("/", 1)[0] == head for word in words[1:])
+    )
     # The last component may hold a space only as a file name with a lettered extension, or
-    # when a ``/`` follows it: ``/app/config is read-only`` is prose, ``/app/My Docs/`` a folder.
+    # when a ``/`` follows it: ``/app/My Docs/`` is a folder, ``/app/test data`` may be one.
     last = value.rsplit("/", 1)[-1]
-    if " " not in last:
-        return value
-    match = _SPACED_FILE_NAME.fullmatch(last)
-    if match is None or not any(char.isalpha() for char in match.group("extension")):
-        return None
-    return value
+    if " " in last:
+        match = _SPACED_FILE_NAME.fullmatch(last)
+        if match is None or not any(char.isalpha() for char in match.group("extension")):
+            if "/" not in value:
+                return None
+            certain = False
+    return value, certain
 
 
 def _statement_words(text: str) -> list[str]:
@@ -932,24 +948,34 @@ def _statement_words(text: str) -> list[str]:
             words.append(word.replace("\\ ", " "))
             continue
         content = match.group("tick") or match.group("double") or match.group("single") or ""
-        spaced = _spaced_path(content)
+        spaced = _spaced_candidate(content)
         if spaced is None:
             words.extend(_STATEMENT_WORD.findall(content))
             continue
-        # Ahead of the words around it. Prose before the path still counts, and so does a
-        # relative path's last word: a quoted command (``cat docs/spec.md``) can pass for a
-        # spaced path, and the file it names must not be lost. The words the spaces cut from the
-        # path's head and middle never count, nor any of an absolute path's: ``/shared/legacy``
-        # of ``"/shared/legacy app/main.c"`` is no folder the task names (#1102 review).
-        words.append(spaced)
-        start = content.find(spaced)
-        end = start + len(spaced)
-        tail = not spaced.startswith("/")
-        words.extend(
-            fragment.group(0)
-            for fragment in _STATEMENT_WORD.finditer(content)
-            if fragment.start() < start or (tail and fragment.end() >= end)
-        )
+        value, certain = spaced
+        words.append(value)
+        if not certain:
+            # Only the disk can tell a folder from prose: every word still counts after the
+            # whole value, and the read drops them when the whole value names something.
+            words.extend(_STATEMENT_WORD.findall(content))
+            continue
+        # Prose before the path still counts. So does the last word of a relative path whose
+        # earlier words hold no ``/``, when it names a file or a folder with a directory part: a
+        # quoted command (``cat docs/spec.md``) can pass for a spaced path, and the file it names
+        # must not be lost. No other word the spaces cut counts: ``/shared/legacy`` of
+        # ``"/shared/legacy app/main.c"``, ``data/`` of ``"src/test data/"`` and ``Notes.md`` of
+        # ``"docs/My Notes.md"`` are no path the task names (#1102 review).
+        start = content.find(value)
+        end = start + len(value)
+        tail = not value.startswith("/") and not any("/" in part for part in value.split(" ")[:-1])
+        for fragment in _STATEMENT_WORD.finditer(content):
+            text_value = fragment.group(0)
+            if fragment.start() < start:
+                words.append(text_value)
+            elif tail and fragment.end() >= end:
+                kept = text_value.strip(_STATEMENT_WORD_EDGE)
+                if _names_a_file(kept) or (kept.endswith("/") and "/" in kept.rstrip("/")):
+                    words.append(text_value)
     return words
 
 
@@ -960,7 +986,10 @@ def _input_path(value: str) -> bool:
     whitespace is prose and is never reported absent (#977).
     """
 
-    return _plain_path(value) or _spaced_path(value) == value
+    if _plain_path(value):
+        return True
+    spaced = _spaced_candidate(value)
+    return spaced is not None and spaced[0] == value
 
 
 def _statement_directory(value: str) -> bool:
@@ -1067,8 +1096,10 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
     The files the task statement names (a spec, the source to port, a rulebook, ``DESIGN.md``) in
     the order it names them, then the ``role: input`` requested files of effective obligations,
     then the directories either names (issues #1082, #1102). A path the statement quotes or
-    escapes keeps its spaces; otherwise only plain literal paths count, at most 16 in all. The
-    statement is read in process only to find these words; nothing here is stored or logged, and
+    escapes keeps its spaces; otherwise only plain literal paths count, at most 16 in all. A
+    quoted span only the disk can tell apart (``"/app/test data"``) comes whole ahead of its own
+    words, and the read keeps those words only when the whole value names nothing there
+    (``drop_space_cut_words``). The statement is read in process only to find these words; nothing here is stored or logged, and
     the adapter reads a candidate only when it lies inside the repository, is unchanged by the
     task, is not ignored and is not credential-named.
     """
@@ -1077,7 +1108,8 @@ def task_input_paths(projection: ProjectionState, statement: str | None) -> tupl
     directories: list[str] = []
     if type(statement) is str:
         for word in _statement_words(statement):
-            value = _spaced_path(word) if " " in word else _statement_file_word(word)
+            spaced = _spaced_candidate(word) if " " in word else None
+            value = spaced[0] if spaced is not None else _statement_file_word(word)
             if value is not None and not value.endswith("/") and _input_path(value):
                 candidates.append(value)
                 continue
@@ -1127,12 +1159,17 @@ _SYSTEM_TREES: Final = (
     "/usr",
     "/var/run",
 )
-# Scratch, log, cache and package-state trees: a task names them as places to write ("write the
-# answer to /tmp/answer.txt", "log to /var/log/app.log"), not as material to read.
+# Scratch, log, cache, package-state and output trees: a task names them as places to write
+# ("write the answer to /tmp/answer.txt", "log to /var/log/app.log", "results go in /output/"),
+# not as material to read.
 _OUTPUT_TREES: Final = (
+    "/logs",
+    "/output",
+    "/outputs",
     "/private/tmp",
     "/private/var/folders",
     "/private/var/tmp",
+    "/results",
     "/tmp",
     "/var/cache",
     "/var/folders",
@@ -1150,6 +1187,7 @@ _TOP_LEVEL_CONTAINERS: Final = frozenset(
         "/Users",
         "/Volumes",
         "/home",
+        "/media",
         "/mnt",
         "/opt",
         "/private",
@@ -1240,9 +1278,12 @@ def outside_inputs_not_admitted(
       hidden or credential-named, at or beneath a path the owner may admit, and at or beneath
       none of ``admitted_roots``; a top-level folder (``/data``) counts, a tree of homes,
       installed software or system state (``/home``, ``/opt``, ``/var``) does not;
+    * a word the spaces cut from a spaced candidate that ``probe`` finds there
+      (``/shared/legacy`` of ``/shared/legacy app``) never counts (``drop_space_cut_words``);
     * on disk, ``probe`` (``lstat``: metadata only, never following a final link, never opening
       content) finds a regular file or a directory there whose modification and change times
-      both predate ``task_started_at``. A route (``GET /api/v1/users``) names nothing on disk,
+      both predate ``task_started_at``; a top-level path only as a directory, since no root the
+      owner may admit covers a file like ``/spec.md``. A route (``GET /api/v1/users``) names nothing on disk,
       and a file the agent wrote during the task (``/root/model.pt``) is its output, not an
       input. Without a task-start time nothing counts.
 
@@ -1252,12 +1293,26 @@ def outside_inputs_not_admitted(
 
     if task_started_at is None:
         return False
-    metadata = _lstat_or_none if probe is None else probe
-    for path in outside_input_candidates(candidates, oracle, workspace, admitted_roots, outputs):
+    lookup = _lstat_or_none if probe is None else probe
+    found: dict[str, os.stat_result | None] = {}
+
+    def metadata(path: str) -> os.stat_result | None:
+        if path not in found:
+            found[path] = lookup(path)
+        return found[path]
+
+    def names_something(path: str) -> bool:
+        status = metadata(path)
+        return status is not None and (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
+
+    lexical = outside_input_candidates(candidates, oracle, workspace, admitted_roots, outputs)
+    for path in drop_space_cut_words(lexical, names_something):
         status = metadata(path)
         if (
             status is None
             or not (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
+            # A top-level path counts only as a folder: no root can cover ``/spec.md``.
+            or (path.count("/") == 1 and not stat.S_ISDIR(status.st_mode))
             or max(status.st_mtime, status.st_ctime) >= task_started_at
         ):
             continue

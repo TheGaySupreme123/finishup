@@ -15,7 +15,7 @@ gateway apply to it exactly as to every other case item.
 from __future__ import annotations
 
 import re
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -47,6 +47,7 @@ __all__ = [
     "current_check_workspace_source",
     "decode_check_change",
     "decode_task_change_base",
+    "drop_space_cut_words",
     "encode_check_change",
     "encode_task_change_base",
     "metadata_path_representable",
@@ -292,6 +293,29 @@ type TaskInputOrigin = Literal["task", "verification", "outside_workspace", "tas
 TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset(
     {"task", "verification", "outside_workspace", "task_directory"}
 )
+
+
+def drop_space_cut_words(
+    values: Sequence[str], names_something: Callable[[str], bool]
+) -> tuple[str, ...]:
+    """``values`` without the words the spaces cut from a spaced value that names something.
+
+    Issue #1102 (RC6d): a quoted span only the disk can tell apart (``"/app/test data"`` is a
+    folder or prose, ``"/app/Terms and Conditions/terms.pdf"`` one path or two) is offered as a
+    candidate ahead of its own words. A read asks ``names_something`` (a metadata look at that
+    one value, inside what the read may look at) for each value holding a space; when it says
+    yes, a value that is one of that value's space-cut words (``/app/test``) is no path the task
+    named and is dropped, so an unrelated folder is never read under the task's name. A spaced
+    value is never dropped. Order is kept.
+    """
+
+    cut: set[str] = set()
+    for value in values:
+        if " " in value and names_something(value):
+            cut.update(word.rstrip("/") for word in value.split(" ") if word.rstrip("/"))
+    if not cut:
+        return tuple(values)
+    return tuple(value for value in values if " " in value or value.rstrip("/") not in cut)
 
 
 def _listing_path(value: str) -> bool:
@@ -546,6 +570,8 @@ class ChangeCapturePort(Protocol):
         the repository, unchanged, not ignored and not credential-named are read, into ``inputs``.
         A candidate may name a directory inside the repository (issue #1102): its unchanged files
         are listed and the ones most related to the change read, within the same input bound.
+        A candidate holding a space that names something there keeps the words its spaces cut
+        out of the read (``drop_space_cut_words``).
         """
         ...
 

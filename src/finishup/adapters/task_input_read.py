@@ -47,6 +47,7 @@ from finishup.ports.change_capture import (
     MAX_TASK_INPUT_TEXT_BYTES,
     TaskInputFile,
     TaskInputOrigin,
+    drop_space_cut_words,
 )
 
 __all__ = [
@@ -467,23 +468,36 @@ def read_outside_inputs(
     descriptors: dict[str, int | None] = {}
     inputs: list[TaskInputFile] = []
     seen: set[str] = set()
+
+    def located_open(value: str) -> tuple[str, bytes, int] | None:
+        if _folded_inside(value, folded):
+            return None
+        located = _beneath(value, usable)
+        if located is None:
+            return None
+        root, relative = located
+        if root not in descriptors:
+            descriptors[root] = None if _folded_inside(root, folded) else _open_root(root, trust)
+        descriptor = descriptors[root]
+        return None if descriptor is None else (root, relative, descriptor)
+
+    def names_something(value: str) -> bool:
+        opened = located_open(value)
+        if opened is None or not opened[1]:
+            return False
+        entry = _entry_beneath(opened[2], opened[1], trust)
+        return entry is not None and (stat.S_ISREG(entry.st_mode) or trust.directory(entry))
+
     try:
-        for value in values[:_MAX_OUTSIDE_CANDIDATES]:
+        # Issue #1102: a spaced value that names something beneath a root keeps its own words
+        # out (``drop_space_cut_words``): ``/shared/legacy`` is never read for ``legacy app``.
+        for value in drop_space_cut_words(values[:_MAX_OUTSIDE_CANDIDATES], names_something):
             if len(inputs) >= limit or time.monotonic() > deadline:
                 break
-            if _folded_inside(value, folded):
+            opened = located_open(value)
+            if opened is None:
                 continue
-            located = _beneath(value, usable)
-            if located is None:
-                continue
-            root, relative = located
-            if root not in descriptors:
-                descriptors[root] = (
-                    None if _folded_inside(root, folded) else _open_root(root, trust)
-                )
-            descriptor = descriptors[root]
-            if descriptor is None:
-                continue
+            root, relative, descriptor = opened
             # Issue #1102 (RC6d): a directory named without its trailing ``/`` ("the legacy app
             # in /shared/legacy_app") is listed like one named with it.
             files = (
@@ -525,16 +539,23 @@ def read_outside_inputs(
 
 
 def _is_directory_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> bool:
-    """Whether ``path`` beneath the open root is a trusted directory, reached without a link.
+    """Whether ``path`` beneath the open root is a trusted directory, reached without a link."""
+
+    entry = _entry_beneath(root_descriptor, path, trust)
+    return entry is not None and trust.directory(entry)
+
+
+def _entry_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> os.stat_result | None:
+    """The metadata of ``path`` beneath the open root, reached without a link; never content.
 
     Each parent component is opened from the root descriptor without following a link and must
-    pass ``trust``; the last is examined without following a link, so a link to a directory is
-    never one. ``False`` on any error; what was opened is closed.
+    pass ``trust``; the last is examined without following a link, so a link is never what it
+    points to. ``None`` on any error; what was opened is closed.
     """
 
     parts = path.split(b"/")
     if not path or any(part in {b"", b".", b".."} for part in parts):
-        return False
+        return None
     opened: list[int] = []
     current = root_descriptor
     try:
@@ -542,10 +563,10 @@ def _is_directory_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> b
             current = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
             opened.append(current)
             if not trust.directory(os.fstat(current)):
-                return False
-        return trust.directory(os.stat(parts[-1], dir_fd=current, follow_symlinks=False))
+                return None
+        return os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
     except OSError:
-        return False
+        return None
     finally:
         for descriptor in reversed(opened):
             os.close(descriptor)

@@ -2167,9 +2167,9 @@ answered inside the check only from what FinishUP already recorded for its targe
 Every gate the other kinds pass applies unchanged: the fence's `agent_suppliable` or
 `yoetz_limit_packet_room` classification, a verification-class command only for observed output,
 the environment-dump, credential-path, outside-path and refused-path rules, the secret scan, the
-repository-excerpt gate, Private sending nothing, the byte budget and the three-round limit. A target
-with no recorded row (an obligation, a claim, a plan or the statement alone) plans no round, so
-`other` about anything else stays the agent's to supply. The reviewer's own reason text never
+repository-excerpt gate, Private sending nothing, the byte budget and the three-round limit. A
+target with no recorded row (an obligation, a claim, a plan or the statement alone) plans no round,
+so `other` about anything else stays the agent's to supply. The reviewer's own reason text never
 chooses content; it is untrusted advisory output and is never recorded. No wire shape changes:
 `review_input_missing.kind` already admitted `other`, and the manifest prints `other=supplied` like
 any kind. A build before this one rejects a follow-up job case holding an `other` item (downgrade

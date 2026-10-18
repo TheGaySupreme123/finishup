@@ -1439,9 +1439,18 @@ admit a root. ADR-031's amendment of the same date holds the read; ADR-006's hol
   reached without a link) and leaves as a `repository_excerpt` labelled as chosen by FinishUP. A
   channel that withholds `repository_excerpt`, and every recipe that does not carry task inputs,
   sends none of it.
-- **A quoted or escaped path with spaces** is one candidate; the same rules then decide it.
+- **A quoted or escaped path with spaces** is one candidate; the same rules then decide it. When
+  only the disk can tell a spaced folder from prose (`"/app/test data"`, `"/app/config is
+  read-only"`), the whole value comes first and its words follow; the read looks at the whole
+  value's metadata where it may read at all (inside the repository, or beneath an admitted root)
+  and drops those words when it names something, so a folder one of its words names is never read
+  under the task's name.
 - **An outside directory named without its trailing `/`** is listed like one named with it, still
-  only beneath an admitted root and only when the task itself names it.
+  only beneath an admitted root and only when the task itself names it. Known limit: a file read
+  from such a listing keeps the `outside_workspace` label ("named by the task, outside the
+  workspace beneath a root the owner admitted") although only its folder was named, as a file
+  listed beneath a folder named with its `/` already did under issue #1082; the label still names
+  the admitted root that bounds it.
 - **An unadmitted outside input is named, never admitted.** FinishUP adds no unattended or
   non-interactive way to admit a root, and no pre-admission for a harness: admission stays the
   owner's `finishup privacy input-roots add <dir>` ceremony on a trusted terminal. When the task

@@ -79,6 +79,7 @@ from finishup.ports.change_capture import (
     TaskChangeBase,
     TaskInputFile,
     UntrackedBaselineFile,
+    drop_space_cut_words,
     metadata_path_representable,
 )
 from finishup.ports.subject_state import LocalWorkspaceHandle
@@ -2092,7 +2093,9 @@ class GitChangeCaptureAdapter:
         in the room left, the members sharing the most identifiers with the change
         (``_directory_inputs``). Named files keep priority; directory material only backfills.
         ``moved`` are the old paths of renames the change shows as ``R`` sections of their new
-        paths: the task touched them too, so they are never read or listed as unchanged.
+        paths: the task touched them too, so they are never read or listed as unchanged. A
+        value holding a space that names a file or directory here keeps the words its spaces cut
+        out of the read (``drop_space_cut_words``): ``test/`` is never listed for ``test data``.
         """
 
         if type(values) is not tuple or not values:
@@ -2103,7 +2106,21 @@ class GitChangeCaptureAdapter:
         seen: set[bytes] = set()
         directories: list[bytes] = []
         root_named = False
-        for value in values[:_MAX_REQUESTED_PATH_PROBES]:
+
+        def names_something(value: str) -> bool:
+            relative = _requested_relative_path(pinned.root, value)
+            if relative is None or relative == _ROOT_RELATIVE:
+                return False
+            identity = _path_identity(pinned.descriptor, relative)
+            return (
+                identity is not None
+                and identity != _BLOCKED
+                and (stat.S_ISDIR(identity[0]) or stat.S_ISREG(identity[0]))
+            )
+
+        # Issue #1102: a spaced value that names something here keeps its own words out.
+        probed = drop_space_cut_words(values[:_MAX_REQUESTED_PATH_PROBES], names_something)
+        for value in probed:
             if len(inputs) >= MAX_TASK_INPUT_FILES or _expired(deadline):
                 break
             relative = _requested_relative_path(pinned.root, value)

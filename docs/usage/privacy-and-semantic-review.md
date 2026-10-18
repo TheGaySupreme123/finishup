@@ -218,18 +218,20 @@ and the status command above show what is admitted.
 
 When the task names a file or folder outside your workspace that you have not admitted, and
 FinishUP can tell it is an input, the check and the receipt say so with
-`task_input_outside_not_admitted`: the reviewer judged the work without it. FinishUP can tell
-only when the file or folder was already there when the task started (so a task FinishUP did not
-see start never gets this note) and it is not in a system, scratch, log, cache or package folder
-(`/usr`, `/tmp`, `/var/log`, a `bin` folder), a hidden or credential-named path, or a top-level
-folder of homes or installed software (`/home`, `/opt`). A web route the task names
-(`/api/users`) or a file your agent writes during the task never counts. A missing note does not
-prove the reviewer read every outside file the task named. The note never
-names the path, never stops your agent or asks it to change the work, and never lowers the
-receipt's conclusion; your agent tells you which folder the task named. Only you can let review read it,
-with `finishup privacy input-roots add <folder>` on this terminal. Copying the file into the
-workspace does not help: a file that appears during the task is your agent's work, not a task
-input.
+`task_input_outside_not_admitted`: the reviewer judged the work without it. FinishUP can tell only
+when the file or folder was already there when the task started (so a task FinishUP did not see
+start never gets this note) and it is not in a system, scratch, log, cache, output or package
+folder (`/usr`, `/tmp`, `/var/log`, `/output`, a `bin` folder), a hidden or credential-named path,
+a top-level folder of homes, mounts or installed software (`/home`, `/media`, `/opt`), or a file
+directly at the top of the disk (`/spec.md`), which no folder you can admit covers. A web route the
+task names (`/api/users`) or a file your agent writes during the task never counts. A missing note
+does not prove the reviewer read every outside file the task named.
+
+The note never names the path, never stops your agent or asks it to change the work, and never
+lowers the receipt's conclusion; your agent tells you which folder the task named. Only you can let
+review read it, with `finishup privacy input-roots add <folder>` on this terminal. Copying the file
+into the workspace does not help: a file that appears during the task is your agent's work, not a
+task input.
 
 ## Commands
 
@@ -413,15 +415,18 @@ the task started, is not ignored by Git and is not named like a credential. A fi
 travels only when the task's starting commit was kept, Git compares it normally (a file marked
 skip-worktree or assume-unchanged never travels) and its content still matches that commit
 exactly. A path written in quotes or with escaped spaces (`"/app/My Docs/spec.md"`) is read as one
-path. When the task names a folder in your repository (`src/dedup/`, `/app/vllm`, or the whole
-workspace such as `/app`), the reviewer gets FinishUP's own list of the files in it that have not
-changed since the task started, and, in whatever room the files the task names leave, the files in
-that folder that share the most names with the change, each checked the same way and labelled as
-chosen by FinishUP rather than named by the task. Files your agent changed are in the change and
-are not listed; hidden, ignored and credential-named files never are. A test or fixture file a
-recorded verification command ran is offered the same way, so the
-reviewer can read the assertions behind a passing run; a test your agent wrote or changed is
-already in the change. Task inputs travel ahead of the change, within a quarter of the room for
+path. When the quotes could hold either one folder or a sentence (`"/app/test data"`, `"/app/config
+is read-only"`), FinishUP looks for the whole quoted path first; only when nothing is there does it
+read what the separate words name. When the task names a folder in your repository (`src/dedup/`,
+`/app/vllm`, or the whole workspace such as `/app`), the reviewer gets FinishUP's own list of the
+files in it that have not changed since the task started, and, in whatever room the files the task
+names leave, the files in it most likely related to the change (sharing names with it, or beside
+the changed files), each checked the same way and labelled as chosen by FinishUP rather than named
+by the task. Files your agent changed are in the change and are not listed; hidden, ignored and
+credential-named files never are. A test or fixture file a recorded verification command ran is
+offered the same way, so the reviewer can read the assertions behind a passing run; a test your
+agent wrote or changed is already in the change. Task inputs travel ahead of the change, within a
+quarter of the room for
 excerpts and never in the places the change and the latest test run need. A binary, image or data
 input (a PDF included) is never sent: FinishUP sends its own short description instead (format, size, image dimensions, an estimated page count, a spreadsheet's sheet names and
 first rows, an archive's file names, an array's shape), labelled as FinishUP's description; a value

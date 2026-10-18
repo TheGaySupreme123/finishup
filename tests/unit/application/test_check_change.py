@@ -279,10 +279,59 @@ def test_a_quoted_or_escaped_path_with_spaces_is_one_candidate() -> None:
     assert task_input_paths(
         projection, 'The issue says "the parser in /app/parser/ fails on empty input".'
     ) == ("/app/parser/",)
-    assert task_input_paths(projection, 'Note: "/app/config is read-only"') == ("/app/config",)
+    # Only the disk can tell a spaced folder from prose or one path from two (review
+    # surfaces-r3-1, correctness-r3-4): the whole value comes first and every word still counts;
+    # the read drops those words when the whole value names something (``drop_space_cut_words``).
+    assert task_input_paths(projection, 'Note: "/app/config is read-only"') == (
+        "/app/config is read-only",
+        "/app/config",
+    )
+    assert task_input_paths(projection, "Summarise the CSVs in '/app/test data' now.") == (
+        "/app/test data",
+        "/app/test",
+    )
     assert task_input_paths(projection, 'Look at "src/dedup and src/util" for context.') == (
+        "src/dedup and src/util",
         "src/dedup",
         "src/util",
+    )
+    assert task_input_paths(projection, 'Read "/app/Terms and Conditions/terms.pdf".') == (
+        "/app/Terms and Conditions/terms.pdf",
+        "/app/Terms",
+        "Conditions/terms.pdf",
+    )
+    assert task_input_paths(projection, "See `docs/Makefile docs/Dockerfile` first.") == (
+        "docs/Makefile docs/Dockerfile",
+        "docs/Makefile",
+        "docs/Dockerfile",
+    )
+    # A quoted command naming two paths keeps both operands (review goal-r3-2).
+    assert task_input_paths(projection, "Run `ls /app/data /app/models` first.") == (
+        "/app/data",
+        "/app/models",
+    )
+    assert task_input_paths(projection, "Read `cat /app/Dockerfile /app/Makefile` first.") == (
+        "/app/Dockerfile",
+        "/app/Makefile",
+    )
+    assert task_input_paths(projection, "Compare `diff src/dedup src/util` output.") == (
+        "src/dedup",
+        "src/util",
+    )
+    # The last word of a relative spaced folder is never a folder the task names (review
+    # goal-r3-1, correctness-r3-2), nor that of a path whose earlier words hold ``/``.
+    assert task_input_paths(projection, "Use the cases in 'src/test data/' to verify.") == (
+        "src/test data/",
+    )
+    assert task_input_paths(projection, 'Fix "src/integration tests/" and "input files/".') == (
+        "src/integration tests/",
+        "input files/",
+    )
+    assert task_input_paths(projection, "Open 'docs/My Notes.md'.") == ("docs/My Notes.md",)
+    # A quoted command's folder operand with a directory part still counts.
+    assert task_input_paths(projection, "Run `ls src/data/` first.") == (
+        "ls src/data/",
+        "src/data/",
     )
     assert task_input_paths(projection, "Run `cd /shared/legacy_app && make` first.") == (
         "/shared/legacy_app",
@@ -420,6 +469,13 @@ _ON_DISK: Final = {
     "/opt": ("dir", _STARTED - 60),
     "/home": ("dir", _STARTED - 60),
     "/var/folders/x1/T/in.csv": ("file", _STARTED - 60),
+    "/spec.md": ("file", _STARTED - 60),
+    "/output": ("dir", _STARTED - 60),
+    "/logs": ("dir", _STARTED - 60),
+    "/results": ("dir", _STARTED - 60),
+    "/media": ("dir", _STARTED - 60),
+    "/shared/new data": ("dir", _STARTED + 5),
+    "/shared/new": ("dir", _STARTED - 60),
 }
 
 
@@ -456,6 +512,13 @@ _ON_DISK: Final = {
         (("/data",), ("/data",), (), False),
         (("/home", "/opt", "/"), (), (), False),
         (("/var/folders/x1/T/in.csv", "/private/var/folders/x1/T/in.csv"), (), (), False),
+        # No root the owner may admit covers a top-level file (review correctness-r3-1), and a
+        # top-level output tree or mount container is no input (review goal-r3-4).
+        (("/spec.md",), (), (), False),
+        (("/output/", "/logs", "/results", "/media"), (), (), False),
+        # The word the spaces cut from a spaced folder that is there never counts.
+        (("/shared/new data", "/shared/new"), (), (), False),
+        (("/shared/new",), (), (), True),
         (("spec.md", "src/dedup/"), (), (), False),
     ],
 )

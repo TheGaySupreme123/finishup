@@ -2137,11 +2137,13 @@ capability gap. The consent-gated local copy of each outbound packet is not part
 
 Issue #1102 (same decision for Claude Code, service-side, no host step and no new host payload): a
 directory the task names inside the repository reaches the reviewer as FinishUP's listing of its
-unchanged files plus the members sharing the most names with the change; a quoted or escaped path
-with spaces is one candidate; an admitted outside directory named without a trailing `/` is listed;
-an `other` follow-up request is answered only from rows FinishUP recorded for the run or edit it
-names. When the task names a file or folder outside the workspace that no admitted root covers, the
-check records `task_input_outside_not_admitted`, whose fixed sentence names the owner's step
+unchanged files plus the members most likely related to the change (sharing names with it, or beside
+the changed files); a quoted or escaped path with spaces is one candidate, and when only the disk
+can tell a spaced folder from prose the whole path is looked for before its words; an admitted
+outside directory named without a trailing `/` is listed; an `other` follow-up request is answered
+only from rows FinishUP recorded for the run or edit it names. When the task names a file or folder
+outside the workspace that no admitted root covers, the check records
+`task_input_outside_not_admitted`, whose fixed sentence names the owner's step
 (`finishup privacy input-roots add <folder>` on a trusted terminal); it is a disclosure only, never
 a Stop-gate item or a continuation on Claude Code. Claude Code still has no write path to admitted roots,
 and FinishUP adds no unattended one: a non-interactive harness can admit roots only through an

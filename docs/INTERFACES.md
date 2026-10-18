@@ -1741,11 +1741,12 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   what the reviewer knew of the user's request (issue #908; see "Task statement" below).
 - `task_input_outside_not_admitted` — the recipe carries task inputs and the task itself names an
   absolute file or folder outside the workspace that no `admitted_input_roots` entry covers (not a
-  declared output, not in a system, scratch, log, cache, package-state, `bin` or installed-package
-  tree, not hidden or credential-named, not a top-level tree of homes, installed software or
-  system state such as `/home`, `/opt` or `/var`; a top-level folder such as `/data` counts;
+  declared output, not in a system, scratch, log, cache, output, package-state, `bin` or
+  installed-package tree, not hidden or credential-named, not a top-level tree of homes, mounts,
+  installed software or system state such as `/home`, `/media`, `/opt` or `/var`;
   `check_change.outside_input_candidates`) and that an `lstat` finds as a regular file or
-  directory predating the task-start base (no `task_start` base, no note), so the reviewer judged without it (issue #1102, ADR-031 and
+  directory predating the task-start base (a top-level path such as `/data` only as a directory;
+  no `task_start` base, no note), so the reviewer judged without it (issue #1102, ADR-031 and
   ADR-009 amendments; `check_change.outside_inputs_not_admitted`). The check-time read decides it
   against its own root and freezes it into the check-change object as
   `CheckChangeCapture.outside_inputs_not_admitted` (stored key written only when true), which the
@@ -9462,8 +9463,8 @@ also name hook-captured output of the newest run of each command those targets n
 (`observed_command_output_refs`), and a `current_diff_for_path` or `other` item
 (`SECTION_FOLLOW_UP_KINDS`) the current check-time change sections of a named edit's paths. An
 `other` item is answered only from those recorded sources; one naming only an obligation, claim,
-plan or the statement plans no round, and the reviewer's reason never chooses content. Selection admits
-those bytes only when the recipe would already send a repository excerpt, as category
+plan or the statement plans no round, and the reviewer's reason never chooses content. Selection
+admits those bytes only when the recipe would already send a repository excerpt, as category
 `repository_excerpt` and source kind `command`, labelled observed rather than agent-published, and
 only inside the existing excerpt budget. The command must already class as test, build, lint, or
 typecheck. An environment dump, a credential-named path, a path outside the workspace, or a path
@@ -9603,9 +9604,10 @@ the ledger), and since issue #1102 `semantic_task_input_candidates`, `semantic_t
 `task_input_outside_not_admitted`, counted before any `lstat` against the connection's root the
 read uses, else the session's workspace; 0 when neither is known) and
 `semantic_task_inputs_outside_not_admitted` (0 or 1); a candidate count beside a 0 flag means
-FinishUP saw such a path but could not count it. Resolved parts have passed capture authentication; selected excerpts are in the built
-packet. These counts precede privacy minimization and do not prove provider delivery or code
-correctness. The record contains no content, paths, or content hashes.
+FinishUP saw such a path but could not count it. Resolved parts have passed capture
+authentication; selected excerpts are in the built packet. These counts precede privacy
+minimization and do not prove provider delivery or code correctness. The record contains no
+content, paths, or content hashes.
 
 ### Review dialogue record (issue #905)
 
