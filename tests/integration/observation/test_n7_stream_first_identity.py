@@ -219,14 +219,19 @@ async def test_root_only_verification_does_not_depend_on_which_copy_came_first(
     assert (VERIFICATION_ONLY_AS_ROOT_GAP in codes) is (euid == 0), codes
 
 
-def _command_row(call_id: str, index: int, command: str) -> dict[str, object]:
+_NO_WORKDIR = object()
+
+
+def _command_row(
+    call_id: str, index: int, command: str, *, workdir: object = "/app"
+) -> dict[str, object]:
+    arguments: dict[str, object] = {"cmd": command, "yield_time_ms": 10000}
+    if workdir is not _NO_WORKDIR:
+        arguments["workdir"] = workdir
     return rollout_row(
         "response_item",
         {
-            "arguments": json.dumps(
-                {"cmd": command, "workdir": "/app", "yield_time_ms": 10000},
-                separators=(",", ":"),
-            ),
+            "arguments": json.dumps(arguments, separators=(",", ":")),
             "call_id": call_id,
             "id": f"fc_n7{index}",
             "name": "exec_command",
@@ -236,34 +241,47 @@ def _command_row(call_id: str, index: int, command: str) -> dict[str, object]:
     )
 
 
-def _command_hook(replay: Replay, event: str, call_id: str, command: str) -> None:
+def _command_hook(
+    replay: Replay, event: str, call_id: str, command: str, *, cwd: str | None = None
+) -> None:
     fields: dict[str, object] = {
         "tool_name": "Bash",
         "tool_use_id": call_id,
         "tool_input": {"command": command},
     }
+    if cwd is not None:
+        fields["cwd"] = cwd
     if event == "PostToolUse":
         fields["tool_response"] = "ok\n"
     replay.hook(event, **fields)
 
 
 async def _parallel_codes(
-    replay: Replay, calls: tuple[tuple[str, str], ...], *, stream_first: bool, prior: str | None
+    replay: Replay,
+    calls: tuple[tuple[str, str], ...],
+    *,
+    stream_first: bool,
+    prior: str | None,
+    workdir: object = "/app",
+    cwd: str | None = None,
 ) -> tuple[tuple[str, ...], list[str]]:
     """Run parallel Codex calls in either order; the task facts and the shell action texts.
 
     ``prior`` is a verification the ledger already holds, after an edit, before these calls.
+    ``workdir`` is each call row's argument (``_NO_WORKDIR`` omits it); ``cwd`` is the session
+    ``cwd`` every hook payload names (default: the workspace root).
     """
 
     session_start(replay, cli_version="0.159.0")
     rows = [
-        _command_row(call_id, index, command) for index, (call_id, command) in enumerate(calls, 1)
+        _command_row(call_id, index, command, workdir=workdir)
+        for index, (call_id, command) in enumerate(calls, 1)
     ]
     if stream_first:
         # Every call row is on disk before the first hook fires: its reconcile delivers them.
         replay.append(*rows)
     for call_id, command in calls:
-        _command_hook(replay, "PreToolUse", call_id, command)
+        _command_hook(replay, "PreToolUse", call_id, command, cwd=cwd)
     if not stream_first:
         replay.append(*rows)
     replay.append(
@@ -273,7 +291,7 @@ async def _parallel_codes(
         )
     )
     for call_id, command in reversed(calls):
-        _command_hook(replay, "PostToolUse", call_id, command)
+        _command_hook(replay, "PostToolUse", call_id, command, cwd=cwd)
     replay.hook("Stop", stop_hook_active=False)
     recorder = await sweep_all(replay)
     assert recorder.refused == []
@@ -377,3 +395,36 @@ async def test_a_stream_defined_call_carries_the_hooks_write_and_install_facts(
         prior="pytest -q",
     )
     assert code in codes, codes
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stream_first", [True, False])
+@pytest.mark.parametrize(
+    ("session_dir", "scope"),
+    [pytest.param("tests", "workspace", id="tests_session"), pytest.param("", "docs", id="root")],
+)
+async def test_a_call_with_no_workdir_is_placed_in_the_session_cwd_in_either_order(
+    replay: Replay, stream_first: bool, session_dir: str, scope: str
+) -> None:
+    """#1106 r4 (correctness-r4-1): a Codex call that states no ``workdir`` runs in the session
+    ``cwd``. In a session started in ``tests/``, ``printf x > README.md`` writes test data, so
+    the earlier test goes stale whether the call's stream row or its hook copy came first; at the
+    root it is documentation when the row is on disk (a hook that cannot find its row yet keeps
+    the write an ordinary edit, the conservative answer)."""
+
+    cwd = replay.workspace / session_dir if session_dir else replay.workspace
+    cwd.mkdir(exist_ok=True)
+    codes, descriptions = await _parallel_codes(
+        replay,
+        (("call_n7_ls", "ls src"), ("call_n7_readme", "printf x > README.md")),
+        stream_first=stream_first,
+        prior="pytest -q",
+        workdir=_NO_WORKDIR,
+        cwd=str(cwd),
+    )
+    if not stream_first:
+        scope = "workspace"  # the hook fired before its row was written: unplaced
+    written = [text for text in descriptions if "(write " in text]
+    assert len(written) == 1, descriptions
+    assert f"(write {scope})" in written[0], written
+    assert (EDITED_AFTER_LAST_VERIFICATION_GAP in codes) is (scope == "workspace"), codes

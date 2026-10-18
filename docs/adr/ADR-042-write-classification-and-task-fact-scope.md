@@ -327,9 +327,23 @@ contradicts the README exclusion above. A sixth class is added instead.
   a relative or non-string one, or a row the hook cannot find (not yet flushed, beyond the tail),
   leaves the target unplaced, an ordinary edit that can give an extra Stop prompt but never hides
   one. The rollout copy is placed under the call's `workdir` or the completed `CommandExecution`
-  item's own `cwd`. An absolute documentation path is unaffected, as are the Codex `apply_patch`
-  tool and `FileChange`, which are no shell writes. Before r3 the hook copy read every relative
-  target under the session `cwd`, so a README written into a `tests/` `workdir` read as `docs`.
+  item's own `cwd`; a call that states neither runs in the session `cwd`, so a rollout copy that a
+  hook reconciles is placed under that hook's own payload `cwd`, exactly where the call's hook copy
+  places it, and one read outside a hook (no session `cwd` known) leaves the target unplaced
+  (#1106 r4). Before r4 the rollout copy read such a target under the workspace root, so in a
+  session started in `tests/` a parallel `printf x > README.md` read as `docs` when its row
+  arrived before its hook. An absolute documentation path is unaffected, as are the Codex
+  `apply_patch` tool and `FileChange`, which are no shell writes. Before r3 the hook copy read
+  every relative target under the session `cwd`, so a README written into a `tests/` `workdir`
+  read as `docs`.
+
+  A heredoc-fed `git apply` or `patch` is documentation only when every file section of its patch
+  is a readable `---`/`+++` pair of documentation paths (ADR-045 amendment of 2026-10-18): a
+  section with no pair (a pure rename, copy, mode change, an empty file's creation or deletion) or
+  a binary section makes it an ordinary edit, and a pair names both its paths, so a rename from a
+  source file into `docs/` is one too. A `git apply` that reports (`--check`, `--stat`,
+  `--numstat`, `--summary`) writes nothing unless `--apply` or `--reject` turns applying back on;
+  an option the reader does not know (an abbreviation included) counts as applying (#1106 r4).
 
   Rows recorded before the class existed, or while an older service held the singleton, keep
   counting as before (an edit-tool row with no scope, a shell row with `write workspace`). An older

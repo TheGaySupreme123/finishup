@@ -5884,8 +5884,10 @@ Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
   `command_composition` and `runner_class`, computed from its arguments (`cmd`, `command`,
   `argv`) with the hook's normalization and key (OUT-005); reconciled by a hook, it and a
   `CommandExecution` item also carry that hook's own `write_scope`, `install_target` and
-  `effective_user` (`codex_session_stream.StreamCommandFacts`, placed under the call's `workdir`),
-  and read elsewhere only a relative `write_scope` (#1106 r2). The Claude ordinary
+  `effective_user` (`codex_session_stream.StreamCommandFacts`, placed under the call's `workdir`,
+  or with none under the reconciling hook's payload `cwd`, `observe_hooks._stream_command_facts(
+  workspace_locator, session_directory)`), and read elsewhere only a relative `write_scope` placed
+  under a stated absolute directory, unplaced otherwise (#1106 r2, r4). The Claude ordinary
   `claude-code-hooks-ordinary-v2` mapping also treats Claude's documented `PostToolUse` event as
   an explicit host-tool success fact, without fabricating `exit_status: 0`; `PostToolUseFailure`
   and explicit failure, denial, interruption, invalid/unknown status, or conflicting facts retain
@@ -10855,7 +10857,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   stale_exempt)`). `shell_writes.heredoc_patch_paths(command)` names the files a complete heredoc
   fed to `apply_patch`, `git apply` or `patch` writes; `heredoc_patch_writes(command) ->
   HeredocPatchWrites(paths, unplaced)` adds whether an applying patch writes files it cannot place
-  (`shell_write_scope(..., unplaced_writes=)` then counts it as `workspace`, #1106 r3);
+  (`shell_write_scope(..., unplaced_writes=)` then counts it as `workspace`, #1106 r3; any file
+  section with no readable `---`/`+++` pair, or a binary one, makes it unplaced, and `git apply`
+  report options write nothing only without `--apply`/`--reject`, #1106 r4);
   `command_working_directory(command) -> (directory, unplaced)` reads the leading `cd` with the
   write lexer (heredoc bodies are data; a whole `bash -lc SCRIPT` is read as its script);
   `runtime_structural_facts(..., call_directory_unknown=)` leaves a relative shell target

@@ -330,9 +330,9 @@ _DIFF = "--- a/src/x.py\n+++ b/src/x.py\n@@\n-it's\n+ok\n"
         ),
         (f"cd /app && git apply <<'EOF'\n{_DIFF}EOF\npytest -q", ("src/x.py",)),
         (f"git apply -p1 --3way - <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
-        (f"git apply -p0 <<'EOF'\n{_DIFF}EOF", ("b/src/x.py",)),
+        (f"git apply -p0 <<'EOF'\n{_DIFF}EOF", ("b/src/x.py", "a/src/x.py")),
         (f"patch -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
-        (f"patch -p 0 -N <<'EOF'\n{_DIFF}EOF", ("b/src/x.py",)),
+        (f"patch -p 0 -N <<'EOF'\n{_DIFF}EOF", ("b/src/x.py", "a/src/x.py")),
         (f"patch <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
         ("git apply <<'EOF'\n--- a/README.md\n+++ /dev/null\n@@\n-x\nEOF", ("README.md",)),
         ("git apply <<'EOF'\n--- /dev/null\n+++ b/new.py\n@@\n+x\nEOF", ("new.py",)),
@@ -814,6 +814,130 @@ def test_an_applying_patch_it_cannot_place_is_an_ordinary_write(command: str) ->
     ],
 )
 def test_a_check_only_or_absent_patch_writes_nothing(command: str) -> None:
+    assert shell_writes.heredoc_patch_writes(command) == shell_writes.HeredocPatchWrites((), False)
+
+
+def _outside(_path: str) -> bool:
+    return False
+
+
+_DOCS_SECTION = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@\n-a\n+b\n"
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "diff --git a/src/a.py b/src/b.py\nsimilarity index 100%\nrename from src/a.py\n"
+        "rename to src/b.py\n",
+        "diff --git a/src/a.py b/src/c.py\nsimilarity index 100%\ncopy from src/a.py\n"
+        "copy to src/c.py\n",
+        "diff --git a/src/empty.py b/src/empty.py\ndeleted file mode 100644\n"
+        "index e69de29..0000000\n",
+        "diff --git a/scripts/run.sh b/scripts/run.sh\nold mode 100644\nnew mode 100755\n",
+        "diff --git a/src/logo.png b/src/logo.png\nindex 1111111..2222222 100644\n"
+        "GIT binary patch\nliteral 4\nLcmZ?wbYK7g0RRC2\n\nliteral 0\nHcmV?d00001\n",
+        "diff --git a/src/logo.png b/src/logo.png\nindex 1111111..2222222 100644\n"
+        "Binary files a/src/logo.png and b/src/logo.png differ\n",
+    ],
+    ids=["rename", "copy", "empty-delete", "mode-only", "git-binary", "binary-files"],
+)
+@pytest.mark.parametrize("docs_first", [True, False], ids=["docs-first", "docs-last"])
+@pytest.mark.parametrize("tool", ["git apply", "patch -p1"])
+def test_a_docs_patch_with_a_section_it_cannot_read_is_an_ordinary_write(
+    section: str, docs_first: bool, tool: str
+) -> None:
+    """correctness-r4-2: a patch that updates README.md and also renames, copies, deletes an
+    empty file, changes a mode or carries a binary section writes a file the reader cannot read
+    from a ``---``/``+++`` pair; every section is read, so the patch is no documentation edit."""
+
+    body = _DOCS_SECTION + section if docs_first else section + _DOCS_SECTION
+    command = f"{tool} <<'EOF'\n{body}EOF"
+    writes = shell_writes.heredoc_patch_writes(command)
+    assert writes.paths == ("README.md",)
+    assert writes.unplaced
+    for workspace, inside, relative_only in (("/app", _inside, False), (None, _outside, True)):
+        scope = shell_write_scope(
+            command,
+            workspace=workspace,
+            inside=inside,
+            relative_only=relative_only,
+            also_written=writes.paths,
+            unplaced_writes=writes.unplaced,
+        )
+        assert scope == "workspace"
+    # The docs section alone is still documentation.
+    alone = shell_writes.heredoc_patch_writes(f"{tool} <<'EOF'\n{_DOCS_SECTION}EOF")
+    assert alone == shell_writes.HeredocPatchWrites(("README.md",), False)
+
+
+def test_a_rename_with_content_names_both_its_paths() -> None:
+    """A rename that also changes content removes its old path: the source file is written."""
+
+    command = (
+        "git apply <<'EOF'\ndiff --git a/src/x.py b/docs/x.md\nsimilarity index 90%\n"
+        "rename from src/x.py\nrename to docs/x.md\n--- a/src/x.py\n+++ b/docs/x.md\n@@\n-a\n+b\n"
+        "EOF"
+    )
+    writes = shell_writes.heredoc_patch_writes(command)
+    assert writes == shell_writes.HeredocPatchWrites(("docs/x.md", "src/x.py"), False)
+    assert (
+        shell_write_scope(command, workspace="/app", inside=_inside, also_written=writes.paths)
+        == "workspace"
+    )
+
+
+@pytest.mark.parametrize(
+    ("flags", "unplaced"),
+    [
+        ("--stat --apply", False),
+        ("--apply --stat", False),
+        ("--check --apply", False),
+        ("--numstat --apply", False),
+        ("--summary --apply", False),
+        ("--stat --numstat --summary --apply", False),
+        ("--stat --reject", False),
+        ("--check --no-check", False),
+        ("--stat --no-stat", False),
+        ("--build-fake-ancestor=fake.idx --apply", False),
+        ("--cached --no-cached", False),
+        # An abbreviation the reader does not know may be ``--apply``.
+        ("--stat --app", True),
+    ],
+)
+def test_a_report_flag_that_still_applies_is_a_write(flags: str, unplaced: bool) -> None:
+    """correctness-r4-3: ``--stat``/``--check``/``--numstat``/``--summary`` turn applying off, but
+    ``--apply`` turns it back on: ``git apply --stat --apply`` prints the diffstat and applies."""
+
+    command = f"git apply {flags} <<'EOF'\n{_DOCS_SECTION}EOF"
+    writes = shell_writes.heredoc_patch_writes(command)
+    expected = () if unplaced else ("README.md",)
+    assert writes == shell_writes.HeredocPatchWrites(expected, unplaced)
+    scope = shell_write_scope(
+        command,
+        workspace="/app",
+        inside=_inside,
+        also_written=writes.paths,
+        unplaced_writes=writes.unplaced,
+    )
+    assert scope == ("workspace" if unplaced else "docs")
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        "--stat",
+        "--check --numstat",
+        "--stat --summary",
+        "--apply --no-apply --stat",
+        "--reject --no-reject --check",
+        "--build-fake-ancestor fake.idx",
+        "--build-fake-ancestor=fake.idx",
+        "--cached --apply",
+        "--directory=src --check",
+    ],
+)
+def test_a_report_only_git_apply_writes_nothing(flags: str) -> None:
+    command = f"git apply {flags} <<'EOF'\n{_DOCS_SECTION}EOF"
     assert shell_writes.heredoc_patch_writes(command) == shell_writes.HeredocPatchWrites((), False)
 
 

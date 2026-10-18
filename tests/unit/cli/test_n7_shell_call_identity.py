@@ -29,6 +29,7 @@ from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
 )
 from finishup.cli.observe_hooks import command_identity_fields_for_payload, handle_observe
+from finishup.cli.runtime_facts import runtime_structural_facts
 from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
@@ -423,13 +424,80 @@ def test_a_command_execution_places_a_relative_write_under_its_own_cwd(
 
     record = _command_execution("printf 'x\\n' > README.md", cwd)
     structural, _gaps = structural_from_stream_record(
-        record, key_material=_KEY, command_facts=_stream_command_facts("/repo")
+        record, key_material=_KEY, command_facts=_stream_command_facts("/repo", "/repo")
     )
     assert structural.get("write_scope") == scope
     # Read outside a hook, only a relative write under a stated directory is claimed.
     outside, _gaps = structural_from_stream_record(record, key_material=_KEY)
     if cwd in {"file:///repo/tests", "/repo/tests"}:
         assert outside.get("write_scope") == "workspace"
+
+
+@pytest.mark.parametrize(
+    ("session_cwd", "scope"),
+    [
+        ("/repo", "docs"),
+        ("/repo/docs", "docs"),
+        ("/repo/tests", "workspace"),
+        ("/elsewhere", "workspace"),
+        (None, "workspace"),
+    ],
+)
+def test_a_stream_call_with_no_workdir_runs_in_the_hooks_session_cwd(
+    session_cwd: str | None, scope: str
+) -> None:
+    """correctness-r4-1: a Codex call that states no ``workdir`` runs in the session ``cwd``.
+
+    The hook copy places ``printf x > README.md`` under that ``cwd`` (a ``tests/`` session makes
+    it test data), so the stream copy the same hook reconciles must too, or the action's class
+    would depend on which copy arrived first. With no session ``cwd`` known, the write is
+    unplaced: an ordinary edit, never documentation.
+    """
+
+    from finishup.cli.observe_hooks import (
+        _stream_command_facts,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    command = "printf x > README.md"
+    hook = {"cwd": session_cwd} if session_cwd is not None else {}
+    for record in (
+        _command_execution(command, None),
+        CodexParsedRecord(
+            1,
+            0,
+            200,
+            "response_item",
+            "function_call",
+            JsonObject(
+                {
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "c-r4",
+                        "arguments": json.dumps({"cmd": command}),
+                    },
+                    "type": "response_item",
+                }
+            ),
+        ),
+    ):
+        facts = _stream_command_facts("/repo", session_cwd)
+        structural, _gaps = structural_from_stream_record(
+            record, key_material=_KEY, command_facts=facts
+        )
+        assert structural.get("write_scope") == scope, record.item_type
+        # The hook copy of the same call (payload ``cwd``) carries the same class.
+        hook_facts = runtime_structural_facts(
+            {**hook, "tool_input": {"command": command}},
+            tool_name="Bash",
+            workspace_locator="/repo",
+            inside=lambda value: value.startswith("/repo/"),
+            call_directory_unknown=session_cwd is None,
+        )
+        assert hook_facts.get("write_scope") == scope
+        # Read outside a hook, the session ``cwd`` is unknown: never documentation.
+        outside, _gaps = structural_from_stream_record(record, key_material=_KEY)
+        assert outside.get("write_scope") == "workspace", record.item_type
 
 
 def _row(call_id: str, name: str, arguments: object) -> bytes:

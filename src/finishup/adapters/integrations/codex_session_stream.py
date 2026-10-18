@@ -1384,9 +1384,11 @@ def _command_facts(
     only the hook's post event does.
 
     In the hook process (``command_facts``), the write scope, install target and effective user
-    are the hook's own, placed under the call's ``workdir``, so whichever copy of a call commits
-    first carries them (#1106 r2). Without it only a relative write is claimed, and a relative
-    documentation target under a stated ``workdir`` is placed under it with no workspace root.
+    are the hook's own, placed under the call's ``workdir`` (no ``workdir``: the session ``cwd``
+    the reconciling hook names), so whichever copy of a call commits first carries them (#1106
+    r2, r4). Without it only a relative write is claimed, and a relative documentation target is
+    placed only under a stated absolute ``workdir``, with no workspace root; with none stated it
+    is unplaced, an ordinary write.
     """
 
     if key_material is not None:
@@ -1426,7 +1428,10 @@ def _command_facts(
     elif "write_scope" not in fields:
         # ADR-045: the stream knows no workspace root, so it claims only a relative write
         # (a working directory makes it certain); an absolute path is left to the hook. A
-        # heredoc-fed patch writes the files its headers name, as the hook reads them.
+        # heredoc-fed patch writes the files its headers name, as the hook reads them. A call
+        # that states no directory runs in the session ``cwd``, which this reader does not
+        # know, so its relative target is unplaced: an ordinary write, as its hook copy would
+        # read it from a ``tests/`` session (#1106 r4).
         patch_writes = heredoc_patch_writes(script)
         scope = shell_write_scope(
             script,
@@ -1435,7 +1440,7 @@ def _command_facts(
             relative_only=True,
             also_written=patch_writes.paths,
             unplaced_writes=patch_writes.unplaced,
-            relocated=stated and (directory is None or not directory.startswith("/")),
+            relocated=not stated or directory is None or not directory.startswith("/"),
             working_directory=directory
             if directory is not None and directory.startswith("/")
             else None,

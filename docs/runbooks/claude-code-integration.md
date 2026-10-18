@@ -2628,16 +2628,17 @@ Host decisions for Claude Code:
   write's relative target is placed under the hook payload's `cwd` and one leading `cd <dir> &&`
   (also inside a whole `bash -lc '…'` script); a heredoc body is data, so a README whose text says
   `cd repo` stays documentation. A target that cannot be placed (any other `cd`, `env -C`, a nested
-  `sh -c` that changes directory), a fixture written after `cd tests`, and a heredoc patch whose
-  paths cannot be read (`patch -d`, `git apply --directory`, a pure rename) are ordinary edits
-  (#1106 r2, r3). `Write`, `Edit` and `MultiEdit` name absolute paths and need no working
-  directory. Unverified: Claude Code's shell keeps a `cd` from an earlier call, but no captured
-  payload shows `cwd` following it (the recorded fixtures all state the project root). If it does
-  not, a relative README written by a later call while the shell sits in `tests/` reads as `docs`
-  (gap kept; follow-up is the #1106 owner's). The exemption is lexical: a doctest, docs build or
-  Markdown lint that reads the file is not made stale by a later edit of it unless the file is
-  declared. A `docs` row's check inspection shows no `write_scope` (check-result 1.5.0 keeps its
-  list; follow-up is the #1106 owner's). Supported.
+  `sh -c` that changes directory), a fixture written after `cd tests`, and a heredoc patch with
+  any file it cannot read (`patch -d`, `git apply --directory`, a pure rename, copy or mode change
+  next to a README update, a binary file) are ordinary edits; `git apply --stat --apply` applies,
+  so it is a write (#1106 r2, r3, r4). `Write`, `Edit` and `MultiEdit` name absolute paths and
+  need no working directory. Unverified: Claude Code's shell keeps a `cd` from an earlier call,
+  but no captured payload shows `cwd` following it (the recorded fixtures all state the project
+  root). If it does not, a relative README written by a later call while the shell sits in
+  `tests/` reads as `docs` (gap kept; follow-up is the #1106 owner's). The exemption is lexical:
+  a doctest, docs build or Markdown lint that reads the file is not made stale by a later edit of
+  it unless the file is declared. A `docs` row's check inspection shows no `write_scope`
+  (check-result 1.5.0 keeps its list; follow-up is the #1106 owner's). Supported.
 - **Background verification.** Gap kept: A `Bash` call with `run_in_background` that the agent polls
   through `BashOutput` is recorded when it launches; its completion is not a verification (output
   text is never read). Run verification in the foreground, in one tool call (the shipped guidance

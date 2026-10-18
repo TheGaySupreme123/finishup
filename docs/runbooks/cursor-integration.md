@@ -2717,8 +2717,10 @@ Host decisions for Cursor:
   payload's `cwd` when it states one and one leading `cd <dir> &&` (also inside a whole
   `bash -lc '…'` script); a heredoc body is data, so a README whose text says `cd repo` stays
   documentation. A target that cannot be placed (any other `cd`, `env -C`, a nested `sh -c` that
-  changes directory), a fixture written after `cd tests`, and a heredoc patch whose paths cannot be
-  read (`patch -d`, `git apply --directory`, a pure rename) are ordinary edits (#1106 r2, r3).
+  changes directory), a fixture written after `cd tests`, and a heredoc patch with any file it
+  cannot read (`patch -d`, `git apply --directory`, a pure rename, copy or mode change next to a
+  README update, a binary file) are ordinary edits; `git apply --stat --apply` applies, so it is a
+  write (#1106 r2, r3, r4).
   Unverified: no captured Cursor payload shows whether `cwd` follows a `cd` made by an earlier
   `Shell` call; if it does not, a relative README written by a later call from inside `tests/`
   reads as `docs` (gap kept; follow-up is the #1106 owner's). The exemption is lexical: a doctest,

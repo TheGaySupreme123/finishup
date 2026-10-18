@@ -1294,10 +1294,14 @@ _MAX_PATCH_COMMAND_CHARS: Final = 4_096
 # Unified-diff file headers; a path is the text up to a tab (a timestamp may follow).
 _DIFF_NEW_PATH: Final = re.compile(r"\+\+\+ ([^\t\n]+)")
 _DIFF_OLD_PATH: Final = re.compile(r"--- ([^\t\n]+)")
-# ``git apply`` options that leave the working tree alone ...
-_GIT_APPLY_NO_WORKTREE: Final = frozenset(
-    {"--check", "--stat", "--numstat", "--summary", "--cached", "--build-fake-ancestor"}
+# ``git apply`` options that turn applying off ...
+_GIT_APPLY_REPORT: Final = frozenset(
+    {"--check", "--stat", "--numstat", "--summary", "--build-fake-ancestor"}
 )
+# ... unless one of these turns applying back on (``_git_apply_strip``) ...
+_GIT_APPLY_REAPPLY: Final = frozenset({"--apply", "--reject"})
+# ... and the ones that move or filter what an applying ``git apply`` writes.
+_GIT_APPLY_PLACING_FLAG: Final = re.compile(r"^--(?:directory|include|exclude)=")
 # ... and the ones that take no separate value and do not move what it writes.
 _GIT_APPLY_FLAGS: Final = frozenset(
     {
@@ -1356,6 +1360,8 @@ _STRIP_FLAG: Final = re.compile(r"^(?:-p|--strip=)([0-9]{1,2})$", re.ASCII)
 _STRIP_DIFF_PREFIX: Final = -1
 # ``_diff_patch_strip``: a patch tool that applies a patch whose paths the reader cannot place.
 _UNPLACED_PATCH: Final = -2
+# Lines that open a binary file section of a diff: a write whose content the reader cannot read.
+_BINARY_PATCH_MARKERS: Final = ("GIT binary patch", "Binary files ")
 
 
 class _Heredoc(NamedTuple):
@@ -1439,15 +1445,17 @@ def heredoc_patch_writes(command: str) -> HeredocPatchWrites:
     The command's own tokens show no write for these, so the patch headers are the write. Three
     forms, each only from a complete heredoc: ``apply_patch``/``applypatch`` (its ``*** Add|
     Update|Delete File:`` and ``*** Move to:`` headers), and ``git apply`` and ``patch`` (each
-    unified-diff ``+++`` header, or its ``---`` when ``+++`` is ``/dev/null``, less the leading
+    unified-diff ``---``/``+++`` header pair, both its paths but ``/dev/null``, less the leading
     components the ``-p`` strip removes: ``git apply`` defaults to one, a bare ``patch`` drops one
-    leading ``a/``/``b/``). An invocation that writes nothing (``git apply --check``/``--cached``,
-    ``patch --dry-run``) names nothing. One that applies a patch the reader cannot place (it reads
-    its patch from a file, an operand or ``-i``; moves what it writes, ``-d``, ``-o``,
-    ``--directory``; uses an option the reader does not know; or names a header it cannot read, a
-    quoted path, a strip deeper than the path, or none at all, as a pure rename has) is still a
-    write: ``unplaced``, an ordinary edit. A whole command ``bash -lc '...'`` (a joined native
-    argv) is read through that one shell layer.
+    leading ``a/``/``b/``). An invocation that writes nothing (``git apply --check``/``--stat``/
+    ``--cached``, unless ``--apply`` turns applying back on; ``patch --dry-run``) names nothing.
+    One that applies a patch the reader cannot place (it reads its patch from a file, an operand or
+    ``-i``; moves what it writes, ``-d``, ``-o``, ``--directory``; uses an option the reader does
+    not know; or has a file section it cannot read: a quoted path, a strip deeper than the path, a
+    binary patch, or a ``diff --git`` section with no ``---``/``+++`` pair, as a pure rename, copy
+    or mode change has) is still a write: ``unplaced``, an ordinary edit, whatever else it names.
+    A whole command ``bash -lc '...'`` (a joined native argv) is read through that one shell
+    layer.
 
     Every step is linear in the text (a hook payload is at most 1 MiB). Unlike the token parsers,
     the heredoc reader is not cut at ``MAX_SHELL_WRITE_CHARS``: a patch longer than that is still
@@ -1517,13 +1525,13 @@ def _diff_patch_strip(prefix: str) -> int | None:
         return None
     name = words[0].rsplit("/", 1)[-1]
     if name == "git" and words[1:2] == ["apply"]:
-        flags, no_write, known, strip = words[2:], _GIT_APPLY_NO_WORKTREE, _GIT_APPLY_FLAGS, 1
-    elif name in {"patch", "gpatch"}:
-        flags, no_write, known, strip = words[1:], _PATCH_NO_WRITE, _PATCH_FLAGS, None
-    else:
+        return _git_apply_strip(words[2:])
+    if name not in {"patch", "gpatch"}:
         return None
-    if any(flag in no_write for flag in flags):
+    flags = words[1:]
+    if any(flag in _PATCH_NO_WRITE for flag in flags):
         return None
+    strip: int | None = None
     index = 0
     while index < len(flags):
         flag = flags[index]
@@ -1534,9 +1542,62 @@ def _diff_patch_strip(prefix: str) -> int | None:
         elif flag == "-p" and index < len(flags) and flags[index].isdecimal():
             strip = int(flags[index][:2])
             index += 1
-        elif flag not in known and _VALUE_FLAG.match(flag) is None:
+        elif flag not in _PATCH_FLAGS and _VALUE_FLAG.match(flag) is None:
             return _UNPLACED_PATCH
     return _STRIP_DIFF_PREFIX if strip is None else strip
+
+
+def _git_apply_strip(flags: Sequence[str]) -> int | None:
+    """``_diff_patch_strip`` for the options of one ``git apply``: ``None`` when it writes nothing.
+
+    Every option is read before deciding (#1106 r4). ``--check``, ``--stat``, ``--numstat``,
+    ``--summary`` and ``--build-fake-ancestor`` turn applying off, but ``--apply`` turns it back
+    on in any position (``git apply --stat --apply`` prints the diffstat and applies), and
+    ``--reject`` is read as applying too (the conservative answer); ``--no-<option>`` undoes each,
+    the last spelling winning. ``--cached`` applies to the index only, never the work tree. An
+    option the reader does not know (an abbreviation such as ``--app`` included) may apply the
+    patch, so it is an unplaced write; ``--directory``, ``--include`` and ``--exclude`` move or
+    filter what is written, so an applying patch with one is unplaced too.
+    """
+
+    strip = 1
+    report: set[str] = set()
+    reapply: set[str] = set()
+    cached = unplaced = unknown = False
+    index = 0
+    while index < len(flags):
+        flag = flags[index]
+        index += 1
+        negated = "--" + flag[5:] if flag.startswith("--no-") else None
+        strip_match = _STRIP_FLAG.match(flag)
+        if strip_match is not None:
+            strip = int(strip_match.group(1))
+        elif flag == "-p" and index < len(flags) and flags[index].isdecimal():
+            strip = int(flags[index][:2])
+            index += 1
+        elif flag in _GIT_APPLY_REPORT:
+            report.add(flag)
+            if flag == "--build-fake-ancestor" and index < len(flags):
+                index += 1  # its file operand
+        elif flag.startswith("--build-fake-ancestor="):
+            report.add("--build-fake-ancestor")
+        elif flag in _GIT_APPLY_REAPPLY:
+            reapply.add(flag)
+        elif flag in {"--cached", "--no-cached"}:
+            cached = flag == "--cached"
+        elif negated is not None and negated in _GIT_APPLY_REPORT:
+            report.discard(negated)
+        elif negated is not None and negated in _GIT_APPLY_REAPPLY:
+            reapply.discard(negated)
+        elif _GIT_APPLY_PLACING_FLAG.match(flag) is not None:
+            unplaced = True
+        elif flag not in _GIT_APPLY_FLAGS and _VALUE_FLAG.match(flag) is None:
+            unknown = True
+    if unknown:
+        return _UNPLACED_PATCH
+    if cached or (report and not reapply):
+        return None
+    return _UNPLACED_PATCH if unplaced else strip
 
 
 # ``sudo`` options that take no value, and the ones that take one (``-u root``).
@@ -1581,30 +1642,52 @@ def patch_command_words(words: Sequence[str]) -> list[str]:
 
 
 def _diff_paths(body: str, strip: int) -> tuple[list[str], bool]:
-    """``(paths, unread)``: the paths a diff's file headers name, and whether one could not be read."""
+    """``(paths, unread)``: the paths a diff's file headers name, and whether one could not be read.
+
+    Every file section is read, not only those with a ``---``/``+++`` pair (#1106 r4): a ``diff
+    --git`` section that shows no such pair (a pure rename, copy, mode change, or an empty file's
+    creation or deletion) and a binary patch (``GIT binary patch``, ``Binary files ... differ``)
+    each write a file the reader cannot place, so the patch is ``unread``. A pair names both its
+    paths: a rename with content changes writes its old path (removed) as well as its new one.
+    """
 
     # A file header is a ``---`` line directly followed by a ``+++`` line: pairing them line by
-    # line keeps a removed ``-- comment`` or an added ``++ x`` body line from posing as one.
+    # line keeps a removed ``-- comment`` or an added ``++ x`` body line from posing as one. A
+    # hunk line always starts with `` ``, ``+``, ``-`` or ``\``, so a line that starts with
+    # ``diff --git `` or a binary marker is a section header, never hunk content.
     lines = body.split("\n")
     paths: list[str] = []
     unread = False
-    for old_line, new_line in zip(lines, lines[1:], strict=False):
-        old = _DIFF_OLD_PATH.match(old_line)
-        new = _DIFF_NEW_PATH.match(new_line)
+    section_unpaired = False  # a ``diff --git`` section that has shown no ``---``/``+++`` pair
+    for index, line in enumerate(lines):
+        if line.startswith("diff --git "):
+            unread = unread or section_unpaired
+            section_unpaired = True
+            continue
+        if line.startswith(_BINARY_PATCH_MARKERS):
+            unread = True
+            continue
+        old = _DIFF_OLD_PATH.match(line)
+        new = _DIFF_NEW_PATH.match(lines[index + 1]) if index + 1 < len(lines) else None
         if old is None or new is None:
             continue
-        header = new.group(1).strip()
-        if header == "/dev/null":
-            header = old.group(1).strip()  # a deletion names its old path
-        if not header or header == "/dev/null" or header.startswith('"'):
+        section_unpaired = False
+        headers = [
+            header
+            for header in dict.fromkeys((new.group(1).strip(), old.group(1).strip()))
+            if header != "/dev/null"
+        ]
+        if not headers:
             unread = True
-            continue
-        path = _strip_components(header, strip)
-        if path:
-            paths.append(path)
-        else:
-            unread = True
-    return paths, unread
+        for header in headers:
+            path = (
+                None if not header or header.startswith('"') else _strip_components(header, strip)
+            )
+            if path:
+                paths.append(path)
+            else:
+                unread = True
+    return list(dict.fromkeys(paths)), unread or section_unpaired
 
 
 def _strip_components(path: str, strip: int) -> str | None:

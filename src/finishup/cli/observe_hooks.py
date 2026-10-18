@@ -1375,7 +1375,10 @@ def _reconcile_codex_stream(
     ):
         return
     locator = CodexSessionStreamLocator(resolve_codex_home())
-    command_facts = _stream_command_facts(workspace_locator)
+    session_cwd = payload.get("cwd")
+    command_facts = _stream_command_facts(
+        workspace_locator, session_cwd if type(session_cwd) is str and session_cwd else None
+    )
     if not lane.is_child:
         reconcile_session_stream(
             store,
@@ -1844,6 +1847,7 @@ def _codex_hook_call_workdir(
 
 def _stream_command_facts(
     workspace_locator: str | None,
+    session_directory: str | None,
 ) -> Callable[[str, str | None], Mapping[str, object]] | None:
     """The hook's own runtime facts for a command its session stream names (n7 RC2, #1106 r2).
 
@@ -1853,6 +1857,11 @@ def _stream_command_facts(
     carries the same ``write_scope`` (an absolute-path write included, placed under the call's
     ``workdir``), ``install_target`` and ``effective_user`` as the hook copy. Without a workspace
     root the reader keeps its own relative-only rule.
+
+    A call that states no ``workdir`` runs in the session ``cwd``, which the hook copy reads from
+    its own payload; ``session_directory`` is that ``cwd`` (the reconciling hook's), so a relative
+    write is placed where the hook copy places it whichever copy commits first. Without it the
+    write is unplaced, an ordinary edit, never documentation (#1106 r4).
     """
 
     if workspace_locator is None:
@@ -1865,7 +1874,8 @@ def _stream_command_facts(
             tool_name="Bash",
             workspace_locator=root,
             inside=lambda value: workspace_relative_edit_path(value, root) is not None,
-            working_directory=workdir,
+            working_directory=workdir if workdir is not None else session_directory,
+            call_directory_unknown=workdir is None and session_directory is None,
         )
 
     return facts

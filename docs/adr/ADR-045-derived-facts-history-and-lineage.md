@@ -324,15 +324,21 @@ command is never `exploration`. Segment matching and the planned side are unchan
 
 A heredoc-fed patch is a write (`domain.shell_writes.heredoc_patch_paths`): `apply_patch`/
 `applypatch` by its `*** Add|Update|Delete File:`/`*** Move to:` headers (as since #1046), and `git
-apply` and `patch` by each unified-diff file header (`---` directly followed by `+++`; a deletion
-names its old path) less the leading components their `-p` strip removes (`git apply` strips one; a
-bare `patch` drops one leading `a/`/`b/`). An invocation that writes nothing (`git apply
---check|--stat|--numstat|--summary|--cached`, `patch --dry-run|-C|--check`) names nothing. One that
-applies a patch the reader cannot place is still a write, an unplaced one that counts as an ordinary
-`workspace` edit (#1106 r3, `shell_writes.heredoc_patch_writes`): it reads its patch from a file (an
-operand, `-i`), moves what it writes (`-d`, `-o`, `--directory`), uses an option the reader does not
-know, or names a header it cannot read (a quoted path, a strip deeper than the path, or no
-`---`/`+++` pair at all, as a pure rename has). Codex intercepts a shell `apply_patch` only as the
+apply` and `patch` by each unified-diff file header pair (`---` directly followed by `+++`; both
+paths but `/dev/null`, so a rename with content changes names its old path too) less the leading
+components their `-p` strip removes (`git apply` strips one; a bare `patch` drops one leading
+`a/`/`b/`). An invocation that writes nothing (`git apply --check|--stat|--numstat|--summary|
+--build-fake-ancestor` with no `--apply` or `--reject` among its options, in any position, `git
+apply --cached`, `patch --dry-run|-C|--check`) names nothing; every `git apply` option is read
+before that is decided, and `--no-<option>` undoes its option (#1106 r4). One that applies a patch
+the reader cannot place is still a write, an unplaced one that counts as an ordinary `workspace`
+edit (#1106 r3, `shell_writes.heredoc_patch_writes`): it reads its patch from a file (an operand,
+`-i`), moves or filters what it writes (`-d`, `-o`, `--directory`, `--include`, `--exclude`), uses
+an option the reader does not know (an abbreviation such as `--app` included), or has a file
+section it cannot read: a quoted path, a strip deeper than the path, a binary section (`GIT binary
+patch`, `Binary files ... differ`), or a `diff --git` section with no `---`/`+++` pair (a pure
+rename, copy or mode change, an empty file's creation or deletion), whatever the other sections
+name (#1106 r4). Codex intercepts a shell `apply_patch` only as the
 whole script (`apply_patch <<EOF`, or `cd <dir> && apply_patch <<EOF`; Codex 0.159
 `apply-patch/src/invocation.rs`), so only that form is a pre-only attempt
 (`shell_writes.codex_intercepts_shell_apply_patch`); a patch followed by a test runs in the shell
