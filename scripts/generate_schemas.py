@@ -1987,6 +1987,20 @@ def _provider_judgment_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue
     return ordered
 
 
+def _reviewer_reply_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """The reviewer loop reply (#1118): three read actions or the provider judgment."""
+
+    from finishup.adapters.providers.reviewer_reply import reviewer_reply_schema
+
+    ordered: dict[str, JsonValue] = {
+        "$id": SCHEMA_NAMESPACE + entry.relative_path,
+        "$schema": _DRAFT_2020_12,
+    }
+    ordered.update(reviewer_reply_schema(reads_allowed=True))
+    ordered["title"] = entry.schema_name
+    return ordered
+
+
 def _add_semantic_finding_kinds(document: dict[str, JsonValue]) -> None:
     """Add the semantic review kinds to a new finding-family schema only."""
 
@@ -11030,6 +11044,19 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
             ).ProviderJudgmentEnvelopeModel
         ),
     ),
+    # The reviewer loop's one reply per turn: a read action or the final judgment (#1118).
+    _RegistryEntry(
+        "findings/reviewer-reply-1.0.0.schema.json",
+        "reviewer-reply",
+        "1.0.0",
+        "request_result",
+        "provider-judgment",
+        lambda: (
+            __import__(
+                "finishup.protocol.models", fromlist=["ReviewerActionModel"]
+            ).ReviewerActionModel
+        ),
+    ),
     _RegistryEntry(
         "operations/check-request-1.0.0.schema.json",
         "check-request",
@@ -12119,6 +12146,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "events/finding-recorded-1.4.0.schema.json",
         "findings/provider-judgment-1.1.0.schema.json",
         "findings/provider-judgment-1.2.0.schema.json",
+        "findings/reviewer-reply-1.0.0.schema.json",
         "consent/status-7.0.0.schema.json",
         "consent/review-result-7.0.0.schema.json",
         "consent/prepare-result-7.0.0.schema.json",
@@ -12429,6 +12457,8 @@ def build_schema_documents(
             normalized = _provider_judgment_v1_1_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.2.0.schema.json":
             normalized = _provider_judgment_v1_2_schema(entry)
+        elif entry.relative_path == "findings/reviewer-reply-1.0.0.schema.json":
+            normalized = _reviewer_reply_schema(entry)
         elif entry.relative_path == "events/check-recorded-1.2.0.schema.json":
             normalized = _simple_versioned_schema(
                 entry,
