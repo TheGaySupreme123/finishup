@@ -138,6 +138,14 @@ def test_text_that_backgrounds(text: str) -> None:
         "cat <<EOF\n${x:-$(setsid -f w)}\nEOF",
         # The quiet answer never clears a detaching word, wherever the splitter put it.
         "grep -n 'x nohup y' f",
+        # Final review: a quote in a comment (after a line continuation the ``#`` starts one for
+        # bash) or in a here-document body is one bash ignores but the quote scan reads, so a real
+        # top-level ``&`` can look quoted to both readers. Any ``#`` or ``<<`` keeps the pattern.
+        "echo x \\\n#'\n(sleep 3; touch f) & #'",
+        "curl -s x \\\n#'\n(sleep 3; touch f) & #'",
+        "cat <<EOF\n'\nEOF\necho x \\\n#'\"\n(sleep 3; touch f) & #'\"\"",
+        "curl 'h?a=1&b=2' # fetch",
+        "cat <<'EOF'\nit's\nEOF\necho 'a&b'",
     ],
 )
 def test_text_the_grammar_leaves_to_the_conservative_reading(text: str) -> None:
@@ -195,5 +203,6 @@ def test_a_quiet_answer_never_hides_what_the_pattern_sees_outside_quotes(text: s
     if command_may_background(text) is False:
         assert not pattern_may_background(_unquoted(text))
         assert "nohup" not in text and "setsid" not in text
+        assert "#" not in text and "<<" not in text
     else:
         assert _outlives(text) is True

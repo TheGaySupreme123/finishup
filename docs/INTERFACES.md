@@ -10955,8 +10955,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   quoting (`$'...'`), shells or interpreters reading stdin, code-taking programs, command or
   process substitution (also in an unquoted here-document body), `printf -v` and unsplittable
   text; a `False` also needs `pattern_may_background` to see no detaching word anywhere and no
-  `&` outside a quoted or escaped span, so the grammar can only clear a quoted `&`), and `None`
-  keeps the conservative pattern `pattern_may_background(text)`),
+  `&` outside a quoted or escaped span, and the text to hold no `#` or `<<`, whose comment or
+  here-document body can hold a quote bash ignores, so the grammar can only clear a quoted `&`),
+  and `None` keeps the conservative pattern `pattern_may_background(text)`),
   `owned_relative_paths(workspace, roots)` and
   `workspace_fingerprint_pass(event, *, call_identity, workspace_locator, workspace_commitment,
   key_material, observation_root, complete, incomplete_reason, call_token, excluded, seconds,

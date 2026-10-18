@@ -674,7 +674,10 @@ def test_an_ampersand_handed_to_a_shell_is_still_a_background_launch(
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])
-@pytest.mark.parametrize("case", ["escaped_blank_hash", "quoted_delimiter", "heredoc_substitution"])
+@pytest.mark.parametrize(
+    "case",
+    ["escaped_blank_hash", "quoted_delimiter", "heredoc_substitution", "continued_comment_quote"],
+)
 def test_text_the_splitter_misreads_keeps_a_real_late_writer_unavailable(
     tmp_path: Path, host: str, case: str
 ) -> None:
@@ -691,7 +694,7 @@ def test_text_the_splitter_misreads_keeps_a_real_late_writer_unavailable(
     import time
 
     if shutil.which("bash") is None or (
-        case != "escaped_blank_hash" and not shutil.which("setsid")
+        case in {"quoted_delimiter", "heredoc_substitution"} and not shutil.which("setsid")
     ):
         pytest.skip("needs bash and setsid")
     workspace, state, commitment = _setup(tmp_path)
@@ -706,6 +709,10 @@ def test_text_the_splitter_misreads_keeps_a_real_late_writer_unavailable(
         "escaped_blank_hash": f"echo a\\ #b & ({writer}) >/dev/null 2>/dev/null & echo",
         "quoted_delimiter": f'cat <<E"O"F\nEOF\n{detached}\nE"O"F',
         "heredoc_substitution": f"cat <<EOF\n$({detached})\nEOF",
+        # Final review: after a line continuation the ``#`` starts a comment for bash, so its
+        # quote is ignored, while the splitter and the quote scan both read a quote that hides the
+        # top-level ``&``.
+        "continued_comment_quote": f"echo x \\\n#'\n({writer}) >/dev/null 2>/dev/null & #'",
     }[case]
     emit, pre, post, shape = _host(host, workspace, state)
     emit(pre, shape(pre, f"{host}-late", command))

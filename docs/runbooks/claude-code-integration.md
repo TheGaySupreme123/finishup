@@ -2511,7 +2511,8 @@ because it may write after the call ends; a quoted `&` in an argument of a progr
 does not run its arguments or stdin as code in the form given (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`,
 `rg 'a&b'` without `--pre`) is not a background launch, while `sudo`/`doas`, `wget`, shells,
 interpreters, other code-running programs, a wrapper or assignment in front of the program
-(`env -S`, `LD_PRELOAD=`, `PATH=`) and ANSI-C quoting (`$'...'`) keep the cautious reading (#1089).
+(`env -S`, `LD_PRELOAD=`, `PATH=`), ANSI-C quoting (`$'...'`) and any `#` or `<<` in the text (a
+quote in a comment or here-document body is one bash ignores) keep the cautious reading (#1089).
 Round 6: neither is a call whose exit leaves a process it started still running in the project (a
 launcher whose new-session child keeps working, with no background word in its text): before
 comparing, the post-call hook reads the process table (`libproc` on macOS, `/proc` on Linux and WSL

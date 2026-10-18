@@ -1053,12 +1053,16 @@ def _pattern_cleared_only_quoted_ampersands(text: str) -> bool:
     The grammar's quiet answer is bounded by this, so it can never be quieter than the pattern
     except for such an ``&`` (#1089 item 1): a detaching word anywhere, or an ``&`` the quote
     scan leaves visible, keeps the pattern's answer whatever the splitter made of the text.
-    Blanking only turns characters into spaces, so it never hides an ``&`` the pattern matched
-    outside a quoted span.
+    The quote scan knows only quotes and backslashes, but bash ignores a quote character in a
+    comment or a here-document body, and such a quote can make the scan blank a real top-level
+    ``&`` the splitter also misread (``echo x \\<newline>#'<newline>w & #'``). Text with a ``#``
+    or a ``<<`` anywhere therefore keeps the pattern too.
     """
 
     return (
-        _DETACHING_WORD.search(text) is None
+        "#" not in text
+        and "<<" not in text
+        and _DETACHING_WORD.search(text) is None
         and _BACKGROUND_OPERATOR.search(_unquoted(text)) is None
     )
 
@@ -1207,10 +1211,11 @@ def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
     text that is not splittable, and an unquoted here-document body with a ``$`` or a backtick
     (command substitution). The quiet answer is also bounded by construction: it is ``None``
     whenever the conservative pattern (``pattern_may_background``) sees a detaching word anywhere
-    or an ``&`` outside a quoted or escaped span, so where the splitter misreads the text the
-    caller keeps its pattern. This answer is therefore never quieter than that pattern except for
-    a quoted ``&`` in a call made only of those known programs. The answer is about the text only;
-    it never proves that no process outlives the call.
+    or an ``&`` outside a quoted or escaped span, or the text holds a ``#`` or a ``<<`` (a comment
+    or a here-document body can hold a quote bash ignores), so where the splitter misreads the
+    text the caller keeps its pattern. This answer is therefore never quieter than that pattern
+    except for a quoted ``&`` in a call made only of those known programs. The answer is about the
+    text only; it never proves that no process outlives the call.
     """
 
     if type(text) is not str or len(text) > _MAX_TEXT_CHARS:

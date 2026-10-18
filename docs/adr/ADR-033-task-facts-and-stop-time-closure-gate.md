@@ -1467,12 +1467,14 @@ reading stdin or a here-document; `eval`, `ssh`, `awk`, `git`, `trap`, `find -ex
 interpreter; a command or process substitution, including one in an unquoted here-document
 body; `printf -v`; unsplittable text. The bound holds by construction, not by that list: a
 "no" also requires that the pattern itself sees no detaching word anywhere in the raw text and
-no `&` outside a quoted or escaped span, so where the splitter misreads text that bash parses
-differently (an escaped blank before `#`, a partly quoted here-document delimiter) the pattern's
-answer stands. The splitter now also starts a comment only after an unescaped blank,
-quote-removes the whole here-document delimiter word and reads `\>&` as a separator. Cursor's `MCP:<tool>` spelling of
-FinishUP's own tools takes no snapshot (#1091 N6). The hook's own launcher chain is judged with the
-same 50 ms clock slack as the candidates, so a launcher whose start the Linux 10 ms tick rounded
-down is not taken for the host (#1090 PL-1). Residual: if a Codex build's rollout item did not join
-its hook call by id, the stream copy would stay a second, fact-less, material action (no stamping
-across ids this round).
+no `&` outside a quoted or escaped span, and that the text holds no `#` or `<<` at all, because
+the quote scan behind that check would read a quote in a comment or here-document body that bash
+ignores. So where the splitter misreads text that bash parses differently (an escaped blank or a
+line continuation before `#`, a partly quoted here-document delimiter) the pattern's answer
+stands. The splitter now also starts a comment only after an unescaped blank, quote-removes the
+whole here-document delimiter word and reads `\>&` as a separator. Cursor's `MCP:<tool>` spelling
+of FinishUP's own tools takes no snapshot (#1091 N6). The hook's own launcher chain is judged with
+the same 50 ms clock slack as the candidates, so a launcher whose start the Linux 10 ms tick
+rounded down is not taken for the host (#1090 PL-1). Residual: if a Codex build's rollout item did
+not join its hook call by id, the stream copy would stay a second, fact-less, material action (no
+stamping across ids this round).
