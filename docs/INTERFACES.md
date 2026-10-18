@@ -9409,7 +9409,8 @@ cites, or the late capture the observation writer linked to its action event whe
 session-stream copy committed first) answer it; an observed result's own status-line summary is
 never output, observed rows never answer `command_identity` (they hold no command text), and a
 repeat is dropped as already supplied on observed material only when the sent packet carried its
-output (citable and among the excerpts). A captured-output target linked to its run's action event
+output whole (citable, and one excerpt or parts covering it; output clipped to a first part keeps
+the item and its in-check follow-up). A captured-output target linked to its run's action event
 names that run as a cited capture does, and of the four `supplied_since` refs per item the
 agent-published rows take the slots first, newest first, before observed rows fill the rest.
 An evidence `reference`, trimmed, also matches the target row's own event id, and an `evt_` target

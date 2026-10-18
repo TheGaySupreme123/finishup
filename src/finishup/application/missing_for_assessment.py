@@ -26,6 +26,7 @@ import re
 import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Final, Protocol, cast
 
 from finishup.domain.events import (
@@ -58,7 +59,11 @@ from finishup.domain.values import EventId
 from finishup.kernel.delivered_set import item_role
 from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.projections import PendingMissingForAssessment, ProjectionState
-from finishup.kernel.task_facts import effective_obligations, requested_command_identity
+from finishup.kernel.task_facts import (
+    command_identity_key_generation,
+    effective_obligations,
+    requested_command_identity,
+)
 from finishup.ports.change_capture import CheckChangeCapture
 from finishup.ports.semantic import SemanticJudgment
 from finishup.protocol.models import (
@@ -1605,10 +1610,25 @@ def _run_identities(payload: ActionRecordedPayload | None) -> frozenset[_RunKey]
         return frozenset()
     keys = {key}
     if key[0] == "command" and payload is not None and payload.command is not None:
-        keyed = requested_command_identity(payload.command)
+        keyed = _keyed_identity(payload.command, command_identity_key_generation())
         if keyed is not None:
             keys.add(("digest", keyed))
     return frozenset(keys)
+
+
+@lru_cache(maxsize=4096)
+def _keyed_identity(command: str, generation: int) -> str | None:
+    """``requested_command_identity`` memoized per command text and installation-key generation.
+
+    One supply judgement builds ``_Links`` several times over every recorded action, and each
+    round of an insufficient-packet review repeats it; the keyed identity (shell parsing plus an
+    HMAC) is pure in the text and the key, so it is computed once per text. ``generation`` only
+    keys the memo: a re-registered (or cleared) key never reuses an identity derived with the
+    old one, as the tb4n5 per-read memos do.
+    """
+
+    del generation
+    return requested_command_identity(command)
 
 
 def command_run_key(payload: ActionRecordedPayload | None) -> tuple[str, str] | None:
@@ -1977,12 +1997,19 @@ def review_missing_for_assessment(
 def _carried_excerpts(
     excerpt_refs: frozenset[str] | None, excerpt_parts: frozenset[str] | None
 ) -> frozenset[str]:
-    """The refs a sent packet's excerpts held, whole or in part (a marked observed span too)."""
+    """The refs a sent packet's excerpts held whole: as one excerpt, or as parts covering it.
+
+    A source the packet showed only in part (long output clipped for packet room) is not
+    carried: it still has parts an in-check follow-up adds (tb4n5), so a repeated request for it
+    is never dropped as already supplied (ADR-006). The parts of a source, or of its marked
+    observed span (#1079), count when together they cover the whole text.
+    """
 
     carried = set(excerpt_refs or ())
-    for key in excerpt_parts or ():
+    parts = tuple(excerpt_parts or ())
+    for key in parts:
         span = _span(key)
-        if span is not None:
+        if span is not None and excerpt_span_whole(key, parts):
             carried.add(span[0].removeprefix(OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX))
     return frozenset(carried)
 
@@ -1992,7 +2019,7 @@ def _unseen_observed(
 ) -> frozenset[str]:
     """Observed refs a packet did not carry, for an output request.
 
-    Captured output is carried only when it was citable and an excerpt held its bytes. A run or
+    Captured output is carried only when it was citable and the excerpts held all its bytes. A run or
     result row is carried only when it was citable and some captured output its result cites
     was carried, because the output is what was asked for.
     """

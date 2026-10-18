@@ -2186,10 +2186,11 @@ workstream W6 (Q1, Q4; the owner may overturn it), recorded on #1107:
   gate already allowed it (ADR-009). No new category is sent.
 - **Never drop a repeat for material the reviewer could not see.** A repeat is dropped as
   `semantic_missing_already_supplied` on observed material only when the packet carried its
-  output: the captured output among the citable refs and among the excerpts the sent packet held
-  (whole or a part, including the marked observed span). When the packet did not carry it
-  (Private, the repository-excerpt gate, packet room, or an unknown sent set) the item stays the
-  agent's under the existing non-convergence rule. The check result's `agent_next` (ADR-043
+  output whole: the captured output among the citable refs and held whole by the sent packet's
+  excerpts (one excerpt, or parts that together cover the source or its marked observed span).
+  When the packet did not carry it whole (Private, the repository-excerpt gate, packet room that
+  clipped it to its first part, or an unknown sent set) the item stays the agent's under the
+  existing non-convergence rule, and the in-check follow-up still adds the parts not yet sent. The check result's `agent_next` (ADR-043
   amendment of the same date) is composed from the stored check alone, so it cannot know whether a
   later re-run's output will be sent: its `verification_output` instruction always says to publish
   the result with the output as its summary, even after a re-run, and its supply rule says a

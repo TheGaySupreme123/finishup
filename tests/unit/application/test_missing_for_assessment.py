@@ -27,10 +27,13 @@ from builders.policy_cases import (
     res,
 )
 from builders.privacy_policies import local_only_policy, minimal_external_policy
+from finishup.application import missing_for_assessment as missing_module
 from finishup.application.missing_for_assessment import (
     agent_supplied_answer_refs,
     check_change_binary_paths,
     check_change_text_paths,
+    excerpt_span_key,
+    plan_review_follow_up,
     review_missing_for_assessment,
     supplied_since,
     unsuppliable_missing_kinds,
@@ -2056,6 +2059,84 @@ def test_a_repeat_is_not_dropped_for_observed_material_the_packet_did_not_carry(
         case, excerpt_refs=frozenset({str(evd(72))}), uncitable=frozenset({str(evd(72))})
     )
     assert kinds == ["verification_output"]
+
+
+def test_supply_judgement_computes_each_commands_keyed_identity_once(
+    w6_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One review builds the links several times; the keyed identity is memoized per text."""
+
+    calls: list[str] = []
+
+    def counted(command: str) -> str | None:
+        calls.append(command)
+        return requested_command_identity(command)
+
+    monkeypatch.setattr(missing_module, "requested_command_identity", counted)
+    missing_module._keyed_identity.cache_clear()  # pyright: ignore[reportPrivateUsage]
+    commands = [f"uv run pytest tests/test_{number}.py -q" for number in range(15)]
+    rerun = _w6_observed_rerun(w6_key)
+    case = _w6_case(
+        actions={
+            **rerun.actions,
+            **{act(51 + i): record(_run(51 + i, text), 51 + i) for i, text in enumerate(commands)},
+        },
+        results=rerun.results,
+        evidence=rerun.evidence,
+        observed=(70, 71, 72),
+    )
+    _w6_supplied(case)
+    _w6_repeat_review(case, excerpt_refs=frozenset({str(evd(72))}))
+    _w6_repeat_review(case, excerpt_refs=frozenset({str(evd(72))}))
+    assert sorted(calls) == sorted({_W6_COMMAND, *commands})
+    # A new installation key never reuses an identity derived with the old one.
+    register_command_identity_key(_W6_KEY)
+    calls.clear()
+    _w6_supplied(case)
+    assert sorted(calls) == sorted({_W6_COMMAND, *commands})
+
+
+def test_a_repeat_for_observed_output_shown_only_in_part_keeps_the_item_and_its_follow_up(
+    w6_key: str,
+) -> None:
+    """Long output clipped for packet room still has parts to add, so the repeat is not dropped."""
+
+    case = _w6_rerun_case(_w6_observed_rerun(w6_key))
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    output = str(evd(72))
+    marked = f"observed-command-output:{output}"
+    for parts in (
+        frozenset({excerpt_span_key(output, 0, 100, 5000)}),
+        frozenset(
+            {excerpt_span_key(marked, 0, 100, 5000), excerpt_span_key(marked, 200, 5000, 5000)}
+        ),
+    ):
+        review = review_missing_for_assessment(
+            case,
+            (),
+            _repeat("verification_output", str(res(2))),
+            unsuppliable_kinds=frozenset(),
+            citable_refs=allowed,
+            excerpt_refs=frozenset(),
+            excerpt_parts=parts,
+        )
+        assert [item.kind for item in review.items] == ["verification_output"]
+        assert "semantic_missing_already_supplied" not in review.gaps
+        follow_up = plan_review_follow_up(
+            case.projection,
+            allowed,
+            review.items,
+            previous=None,
+            shown_refs=frozenset(),
+            shown_parts=parts,
+        )
+        assert follow_up is not None
+    # Parts that together cover the whole output carry it, like one whole excerpt.
+    whole = frozenset(
+        {excerpt_span_key(marked, 0, 2500, 5000), excerpt_span_key(marked, 2500, 5000, 5000)}
+    )
+    kinds, gaps = _w6_repeat_review(case, excerpt_refs=frozenset(), excerpt_parts=whole)
+    assert kinds == [] and "semantic_missing_already_supplied" in gaps
 
 
 def test_observed_rows_never_answer_command_identity(w6_key: str) -> None:

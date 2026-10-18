@@ -3653,8 +3653,9 @@ linked to the run's action event, and no result cites it. Supply matching reads 
 same run's output. Only captured `tool_output` counts; the captured command input does not. Codex
 shell calls are observed on the default hook registration, but output bytes are captured only under
 the workspace's content-capture consent, so without it a re-run records no output and supplies
-nothing. The output must also reach the reviewer before a repeat is dropped as already supplied,
-which Private or a selection without repository excerpts never allows. An observed run never
+nothing. The output must also reach the reviewer whole before a repeat is dropped as already
+supplied, which Private or a selection without repository excerpts never allows; long output the
+packet clipped keeps the item, and the in-check follow-up adds the rest. An observed run never
 answers `command_identity`: it records only `omitted:<keyed identity>`. `agent_next` therefore
 always says to publish one `result_recorded` of the target's action with the output in `summary`,
 even after a re-run, and says a re-run counts only once its output reaches the reviewer. A respond
