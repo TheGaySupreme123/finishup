@@ -676,6 +676,16 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 ### Fixed
 
+- A failed-command finding is retired by a later passing run of the same command, alone or as a
+  segment of a passing `&&` chain (closure basis `retired_by_passing_run`, added in place to the
+  unreleased status-result 1.4.0 and check-result 1.4.0/1.5.0), and no check can resolve it
+  (`observed_failure_not_rerun`). `acknowledged` on it settles it as a disclosed failed command
+  (`failed_run_disclosed`, never clean) instead of a no-op, and `acknowledged_not_done` as
+  bookkeeping. Read-only chains (`&&`, `;`, `||`, `|`, banners, `cd`, a here-document fed to a read),
+  FinishUP's own read verbs and installed launcher, and a command that stops its own background job
+  with exactly that stop's exit (`process_control`, added in place to the unreleased
+  control-request 2.9.0) carry no failed-work duty. An unknown outcome never retires anything; on
+  Codex the pass's exit comes from the session stream (#1104).
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a

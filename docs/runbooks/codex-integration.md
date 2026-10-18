@@ -1756,6 +1756,48 @@ accepts both the structured and the header forms. Source tests do not establish 
 acceptance on macOS, Linux or Windows through WSL 2. Dogfood confirmation per platform is owed on
 the same issue.
 
+## Failed-command findings (issue #1104)
+
+A failed shell call becomes an observation finding (`failed_command_unresolved`, kind
+`failed_work_omitted`) seconds after FinishUP records the failure. Decisions for Codex:
+
+- **Retire on pass: supported.** A later passing run of the same command, alone or as a segment
+  of a passing `&&` chain (`cd /app && pytest -q`), retires the finding (`verified_resolved`,
+  closure basis `retired_by_passing_run`). FinishUP reads the outcome it finally records for the
+  passing call. On Codex 0.159 the `PostToolUse` of a shell call states no exit, so that outcome
+  is the session stream's: an outcome correction joined to the hook's call, or the stream copy
+  when it committed first. A rerun whose exit never reaches FinishUP stays `unknown` and retires
+  nothing. That is the main pilot risk: count `retired_by_passing_run` against open failed-command
+  findings. Pinned by `tests/integration/application/test_codex_failed_command_retirement.py`
+  (direct `exec_command` and code-mode `exec` cell shapes, with the exit removed from the recorded
+  0.157.1 shapes; a raw 0.159 hook stdin capture is still owed on #1104). Advice itself raises a
+  Codex failure only from envelopes that carry the exit under a command tool name; stream-side
+  command identity for `function_call` rows is #1092/W2's work.
+- **No check resolves it** (`observed_failure_not_rerun`). An edit never retires it either.
+- **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
+  clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
+- **Read-only chains: supported.** `cd`, `echo`/`printf` banners, `&&`/`;`/`||`/`|` chains of
+  reads, `sed -n`, `nl`, `jq` and a here-document fed to `cat` are exploration, so a failed read
+  raises nothing. The read Codex agents make of the skill path is one of them (below).
+- **FinishUP's own CLI: supported** through its installed launcher path (proven from the install
+  record, never by name), `observe status`, `service status`, and `| jq`.
+- **Stopping its own background job: supported in one command.** `server & ...; kill $!;
+  wait $!` exiting `143` (or `130`/`137` for `-INT`/`-KILL`) carries no duty. The hook records the
+  shape (`process_control`) without an exit, and the stream's exit decides it; any other exit keeps
+  the duty. Deferred: a `write_stdin` interrupt of a running session and a separate `kill PID`
+  call (no recorded payload), owned by #1104.
+- **Doubled skill path: not fixed here.** Codex lists the skill under
+  `<codex-home>/plugins/cache/finishup/finishup/<version>/skills/finishup/SKILL.md` because the
+  marketplace and the plugin are both named `finishup`. Agents that collapse the doubled segment
+  read a path that does not exist. That read is now exploration and raises no finding. Renaming
+  the marketplace is a host-registration migration, filed as a packaging follow-up.
+- **Version skew.** `process_control` was added in place to the unreleased control-request
+  2.9.0, which changes the schema manifest digest. A hook whose manifest differs from the running
+  service's is refused at the handshake (`service_incompatible`) before any frame is sent, so no
+  frame carrying the field reaches a service that would refuse it (the refusal is pinned by
+  `tests/unit/service/test_control_protocol.py`). `finishup service restart`, or the next `start`,
+  supersedes the older holder.
+
 ## Smart observation selection (issue #687)
 
 The Codex native hook path applies the shared deterministic observation selector before optional

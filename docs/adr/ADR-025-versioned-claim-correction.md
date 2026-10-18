@@ -103,13 +103,68 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    edit never retires the failed verification. The command identity is the installation-keyed
    `hmac-sha256:` commitment the hook computes and materialization stores as
    `omitted:<commitment>`; rows without one (`omitted:structural`, every pre-#909 ledger) remain
-   live until explicitly acknowledged. Only service-stamped observations take part on either
+   live until a completion claim names them in `limitation_refs`. Only service-stamped
+   observations take part on either
    side: a cooperative failure keeps the exact duty above, and a cooperative success or edit
    never retires an observed failure. A retired result
    stays authorable in `limitation_refs`, and the receipt counts it once as history.
    `limitation_refs_complete`, `failed_work_omitted`, research-evidence limitations, and observation
    advice all read this one predicate, so admission and the packs cannot disagree. Loosening the
    required set cannot reject any history that the stricter rule accepted.
+
+   **Segment certification and retire-on-pass (#1104, owner decision D2, 2026-10-18).** A later
+   *success* also certifies each of its exact segment commitments (ADR-045) when its composition
+   is `single` or `and_chain`: every simple command of a passing `cd /app && FOO=1 pytest -q`
+   exited zero, so it supersedes a failed `pytest -q`. A `masked` composition (`;`, `||`, `|`,
+   `&`, a shell here-document) certifies no segment, and a failed chain is superseded only by its
+   own whole identity, so the direction that would drop a condition never applies. Canonical,
+   prefix and flag commitments are domain-separated and never equal a command identity. A
+   failure never uses its segments. Edits still never retire anything (#909), and neither does a
+   passing run of a different command, including the planned verification after an edit: it
+   proves the planned check passes, not that the command that failed now works.
+
+   The observation coordinator materializes the advice copy of a live failure as a
+   `finding_recorded` (rule `failed_command_unresolved`, kind `failed_work_omitted`). An
+   **observed failed-command finding** is an observation-authored, deterministic, work-integrity
+   `failed_work_omitted` finding that names no claim (`clm_`) in `subject_refs` (the pack's own
+   finding always names its claim, so the two never mix). Its **failed run** is the one
+   service-stamped hook-observed failed or partial result the finding names, directly or through
+   the call it names (its action event or any of its result events: on Codex that is the hook's
+   `unknown` result, and the failure is the session stream's outcome correction for the same
+   action). No unique failed run means no rerun can retire it. The replay fold
+   (`kernel/finding_retirement.py`, called by the reducer in ledger order) records on the
+   finding record the earliest later hook-observed **success of another call** whose command
+   identity is the failed run's or certifies it as a segment (`retired_by_event_id`,
+   `retired_frontier`). It reads the outcome the ledger finally records for each call: a
+   hook-stated exit, a Codex stream correction joined to the call, or a stream-first copy that
+   committed with its own outcome. **An `unknown` outcome never retires anything**: a Codex call
+   whose exit never reached FinishUP stays open. `finding_is_resolved` reads the fact, so status,
+   check, receipts, the Stop gate and lineage show `verified_resolved` with closure basis
+   `retired_by_passing_run` naming the passing result's event. Ledgers written by older builds
+   are retired at replay from facts they already hold; rows without a command identity never
+   are. Redacting the passing run, the failed run, its action or the finding drops the fact
+   (unreadable proof is no proof); nothing is deleted.
+
+   No check resolves such a finding: no local rule re-reads the advice condition, so a check's
+   silence proves nothing, and `resolution_blockers` names `observed_failure_not_rerun` for it
+   (a FinishUP limit, so `self_verified` remains open to an agent that verified the repair
+   another way). `acknowledged` on it records that the failure is expected or stays: basis
+   `failed_run_disclosed`, settled and disclosed, never clean (conclusion at best
+   `insufficient_coverage`), no reason required by `respond` (the guidance asks for one).
+   `acknowledged_not_done` settles it as bookkeeping (`acknowledged_not_done_bookkeeping`). A
+   later pass still retires it after either answer. The requirement-level duty stays with the
+   work-integrity pack: a completion claim must still name a live observed failure in
+   `limitation_refs`, or the pack raises its own claim-level `failed_work_omitted`.
+
+   Two failures carry no failed-work duty, read by one predicate
+   (`observed_failures.observed_failure_exempt`) in every failure-accounting reader and by the
+   advice rule: a proven read or exploration (`runner_class == "exploration"`, widened by #1104 to
+   chains of reads, banners and `cd`, and to FinishUP's own read verbs and proven launcher), and a
+   command that stopped the background job it launched itself (`process_control`, a closed shape
+   fact the hook derives from the command text, `domain/process_control.py`) whose recorded exit
+   is exactly `128 + signal`. The exit is read from the result being judged, so a Codex stream
+   correction decides it like a hook-stated exit; Claude Code's `PostToolUseFailure` states no
+   exit, so the stop exemption never applies there.
 
 4. **Replay owns the revision invariants.** Missing, unreadable, already-superseded, wrong-kind, or
    disjoint targets; irrelevant or success limitations; non-success support; and incomplete

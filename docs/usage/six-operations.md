@@ -252,7 +252,10 @@ issue absent resolves the finding. When the reviewer asks you to state a limit (
 a hidden evaluator or something you cannot obtain could settle), that finding is a limitation
 request, not work: one reasoned `acknowledged` (or a `finishup-verification-limit:<obligation id>`
 decision) discloses it, with no repair attempt required, and the receipt lists the disclosed limit
-instead of reading clean. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
+instead of reading clean. A finding about a command FinishUP saw fail needs no answer once you
+rerun the same command and it passes (alone or inside a passing `&&` chain): the pass retires it.
+If the failure is expected or will stay, one `acknowledged` with the reason discloses it on the
+receipt. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
 cannot prove after a later check because of its own limits: say how you verified the repair in
 `reason` and cite at least one recorded evidence or result id in `evidence_refs`. It is final, is
 not your work any more, and keeps the receipt at best `insufficient_coverage`; FinishUP refuses it

@@ -1201,6 +1201,36 @@ shell command (a heredoc written through `exec_command` or `Bash`) is a command,
 edit, and follows the same rule for failure supersession. For the stale-verification rule such a
 command counts as an edit when it visibly writes the workspace (`write_scope: workspace`, ADR-045).
 
+**Segment certification, retire-on-pass and failure exemptions (#1104, ADR-025 amendment).**
+`ObservedRun` gains `certifies: frozenset[str]` (bounded keyed commitments, validated): the extra
+identities a *success* of the run proves passed. `success_certified_identities(command)` (ledger
+side, from the action's `command` field) and `certified_identities(segments, composition)`
+(envelope side) return the exact segment commitments of a `single` or `and_chain` command, else
+the empty set; a failure never uses them. `superseding_witnesses(runs)` maps each `superseded`
+failure ref to the earliest later success that proves it. `observed_failure_exempt(action,
+result=None)` is the one failure-exemption predicate the work-integrity and research-evidence
+packs, `claim_limitations`, `check_totals` and check's live-failure accounting read:
+`observed_action_is_exploratory(action)`, or a command whose description carries
+` (process <token>)` (`observed_action_process_control`; written before the tool suffix, so older
+readers keep parsing tool, runner and runtime suffixes) and whose result's `exit_status` is exactly
+that stop's `128 + signal` (`domain.process_control.stopped_own_job`). `kernel/finding_retirement.py`
+owns the observed failed-command finding (`is_observed_failed_command_shape(finding)`: deterministic,
+`work-integrity`, `failed_work_omitted`, no `clm_` subject ref; `is_observed_failed_command_finding(
+record)` adds observation authorship stamped at replay), `failed_run_of(...)`, `retirement_witness(
+failed, results, actions, observed) -> (event_id, frontier) | None`, and the reducer entry points
+`on_finding_recorded`, `on_observed_result` and `recompute_all` (after a redaction).
+`FindingProjectionRecord` gains `observed_failed_command`, `failed_run_result_id`,
+`retired_by_event_id` and `retired_frontier` (set together with the event id), each emitted into
+the projection snapshot only when set, so tasks without such a finding keep their exact snapshot
+bytes; `proof_event_id` is the proving check, else the passing run. `finding_is_resolved` accepts
+either proof; for the `acknowledged_not_done`/`self_verified` reverse edge the later proof frontier
+decides. A retirement reads the outcome the ledger finally records for the passing call (a
+hook-stated exit, a joined Codex stream correction, or a stream-first copy); an `unknown` outcome
+never retires. `resolution_blockers` names `OBSERVED_FAILURE_NOT_RERUN`
+(`observed_failure_not_rerun`) for every observed failed-command shape, so no check can prove it
+absent; `self_verification` treats it as a FinishUP limit. `closure_class.is_bookkeeping_finding(state,
+finding_id)` is `BOOKKEEPING_KINDS` or an observed failed-command finding.
+
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
 `rejected`, or `waived`.
 Waiver-only fields are forbidden on other dispositions. `finding_frontier` is always the full
@@ -8118,7 +8148,10 @@ ledger prefix and never stored. Names:
   `self_verified`, `disputed_after_rebuttal`, `rejection_accepted`, `limitation_disclosed`,
   `limitation_acknowledged_not_done` (`settled_unmet`: a limitation request the agent answered
   `acknowledged_not_done`, owner decision 2026-10-12),
-  `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`).
+  `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`,
+  and since #1104 `retired_by_passing_run` (`resolved`: a later passing run of the same command
+  retired an observed failed-command finding) and `failed_run_disclosed` (`settled_disclosed`,
+  `insufficient_coverage`: `acknowledged` on such a finding); `is_bookkeeping_finding`).
 - `finishup.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
   tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
   `gap_effect`, `judge_gaps`. `GAP_CLASSIFICATION` is a view of it; `GAP_CLASSIFICATION_VERSION`
@@ -10827,7 +10860,22 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   executable resolution and closed non-writing arguments, independent of canonical verification
   matching. Since PR #1080 round 5 the exploration class of a shell command keeps failed exploratory
   reads out of failure accounting and advice only; it exempts nothing from closing-review or check
-  currency, which follow the `workspace_effect` fact below. `RecordedPolicyVersionWire`,
+  currency, which follow the `workspace_effect` fact below. Since #1104 a composition without a
+  verifier is `exploration` when `_compound_is_read_only` holds: `command_separators(raw)` (new in
+  `domain/command_segments`, quote-aware, every depth) has no `&`; no `$(`, backtick, `<(` or `>(`
+  appears anywhere; no part writes a file or nests a shell; and every part's original words
+  (`segment_words_without_redirections`, assignments and executable spelling kept) classify
+  `exploration`. `_CHAIN_NEUTRAL_COMMANDS` (`cd`, `echo`, `printf`, `true`, `:`, `nl`, `stat`,
+  `which`, `uname`, `whoami`, `id`, `printenv`, `du`, `realpath`, `readlink`, `basename`,
+  `dirname`) and `jq` without `-e`/`--exit-status` join the exploration programs; `test`, `[`,
+  `diff` and `cmp` report a comparison by exit status and stay `other`. FinishUP's read verbs gain
+  `observe status` (`--workspace`, `--json`) and `service status` (`--json`).
+  `command_runner_class(payload, *, own_launchers=frozenset())` and
+  `native_command_runner_class(value, *, own_launchers=...)` accept the absolute paths of this
+  runtime's installed console scripts, which the hook proves lazily
+  (`adapters/integrations/codex_launcher.own_launcher_paths(command)`, RECORD-owned, no PATH probe)
+  only for a command naming `/finishup` or `/yoetz`; an agent-owned `./finishup` or
+  `/app/bin/finishup` stays `other`. `RecordedPolicyVersionWire`,
   `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
   `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
   `work-integrity/0.2.0` generation.
@@ -10837,7 +10885,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
   FinishUP's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
   writes the workspace),
-  `effective_user` (`root|non_root`) and `workspace_effect` (`unchanged|changed|unavailable`,
+  `effective_user` (`root|non_root`), `process_control` (`stop_own_job_term|stop_own_job_int|
+  stop_own_job_kill`, #1104: produced only by the hook from the command text through
+  `domain/process_control.own_job_stop_signal`, never copied from a host payload, and never for a
+  command whose runner class is a verifier; the enum is generated from `PROCESS_CONTROLS`) and
+  `workspace_effect` (`unchanged|changed|unavailable`,
   PR #1080 round 5: produced only by `cli/workspace_effect_hook.workspace_fingerprint_pass` on a
   live `PostToolUse`, never copied from a host payload; materialization appends it to the observed
   result summary through `domain/workspace_effect.result_summary_with_workspace_effect`), the first

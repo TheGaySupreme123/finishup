@@ -211,7 +211,8 @@ No disposition resolves a finding. Agents can record `acknowledged`, `acknowledg
 `self_verified`, `provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human. Each records what was decided
 and what evidence was attached; none clears the finding for receipt purposes. A readable response
 does clear the status surface's `unanswered_finding_count`, while the actionable finding remains in
-`receipt_blocking_finding_count` (except `self_verified`, below).
+`receipt_blocking_finding_count` (except `self_verified`, below, and `acknowledged` on a command
+FinishUP saw fail, which is disclosed instead).
 
 Observation-authored, non-actionable findings (such as "Observation coverage is incomplete or
 stale") are disclosed coverage limitations: they never count in `unanswered_finding_count` and need
@@ -332,6 +333,18 @@ Two more things decide what the receipt will say, and status tells you before yo
   a disclosed limitation and reads at best `insufficient_coverage`; it never blocks. Only your answer
   narrows it; a `finishup-verification-limit` decision does not. While it is open, the check's next
   step is `work_open_findings`, not `disclose_limitations`.
+- **A command FinishUP saw fail.** When FinishUP observes a command fail, it records a finding
+  ("Unresolved failed command observed") right away. Rerun the same command after the fix, alone or
+  inside a passing `&&` chain such as `cd /app && pytest -q`: when that run passes, the finding is
+  retired by itself (`verified_resolved`, basis `retired_by_passing_run`) and stays in the history.
+  An edit does not retire it, a passing run of a different command does not, a run whose outcome
+  FinishUP never learned does not, and a check cannot prove it absent. If the failure is expected or
+  will stay, answer `acknowledged` with the reason: the receipt lists it as a disclosed failed
+  command and reads at best `insufficient_coverage`, and a later passing run still retires it. A
+  failed read or inspection (including a chain of reads with banners and `cd`), a failed FinishUP
+  status read, and a command that stopped the background job it started itself with exactly the
+  exit that stop produces do not raise one at all. Your completion claim must still name any
+  failure that stays in `limitation_refs`.
 
 While the work is in progress, the reviewer judges incomplete work only (something marked done that
 is not, verification you planned and did not run, a missing or emptied output, a claim the record

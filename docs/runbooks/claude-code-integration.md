@@ -1158,6 +1158,26 @@ call's result `evidence_refs`, with the description `Observed image tool result 
 can cite the evidence id as its own inspection of the output. This holds at every body size up to
 the 8 MiB skim cap.
 
+### Failed-command findings (issue #1104)
+
+A failed `Bash` call becomes an observation finding (`failed_command_unresolved`, kind
+`failed_work_omitted`) seconds after it is recorded. Decisions for Claude Code:
+
+- **Retire on pass: supported.** `PostToolUse` states success and `PostToolUseFailure` states
+  failure (`fixtures/observations/claude-code-bash-outcomes.case.json`), so a later passing run of
+  the same command, alone or as a segment of a passing `&&` chain, retires the finding (closure
+  basis `retired_by_passing_run`). An edit never retires it, and no check resolves it
+  (`observed_failure_not_rerun`).
+- **`acknowledged`** settles it as a disclosed failed command (`failed_run_disclosed`, never
+  clean); `acknowledged_not_done` settles it as bookkeeping. A later pass still retires it.
+- **Read-only chains and FinishUP's own CLI: supported**, as on every host (`cd`, banners,
+  chains of reads, a here-document fed to `cat`, `| jq`, the installed launcher path).
+- **Stopping its own background job: not exempt on Claude Code.** The exemption needs the exact
+  exit `128 + signal`, and `PostToolUseFailure` states no exit status (only error text, which
+  FinishUP never parses). Such a failure keeps the ordinary duty: rerun the probe without the
+  kill, or acknowledge it. `KillShell` and `BashOutput` are not read (payload unverified).
+- **Doubled skill path:** not applicable (a Codex cache layout).
+
 ### Smart observation selection (issue #687)
 
 Claude's shared hook ingress applies the selector only to the generic tool stream exposed by the
