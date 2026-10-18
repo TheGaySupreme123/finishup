@@ -1592,7 +1592,8 @@ id; or a correction of a named claim citing material tied to its support, or any
 the claim cited nothing FinishUP can relate; paths and commands compare normalized but exact, an
 absolute path only inside the session's workspace root, an artifact a command wrote only through
 that command's runs, and nothing is tied through shared obligations or other newer records; only an
-untargeted item matches by record family; hook-captured tool output never counts as supplied, and a
+untargeted item matches by record family; hook-captured tool output never counts as supplied
+(superseded for a re-run of a target's command, see the 2026-10-18 amendment), and a
 result supplies verification output only when it carries output), classifies each item as
 `agent_suppliable` or `structurally_unavailable_on_this_host`, records the structural items as the
 optional `missing_for_assessment` field of the unreleased `check_recorded` 1.3.0 (extended in place,
@@ -2100,7 +2101,8 @@ admission:
 
 ### Hook-captured verification output in a follow-up packet (2026-10-15, issue #1079)
 
-Hook-captured tool output never counts as supplied, and `supplied_since` still skips it. Separately,
+Hook-captured tool output never counts as supplied, and `supplied_since` still skips it (superseded
+for a re-run of a target's own command by the 2026-10-18 amendment below). Separately,
 when the reviewer asks for verification output, the follow-up packet may include the newest
 hook-captured output of a command that request names, under ADR-009: the repository-excerpt gate,
 the existing excerpt limits, Private sends nothing, labelled observed rather than agent-published.
@@ -2147,3 +2149,49 @@ a model follows them; [the evaluation runbook](../runbooks/reviewer-instruction-
 the procedure for a live replay. The instruction grew from 22.5 KB to about 29.8 KB, about 1.8k
 more input tokens per review under the bytes/4 estimate, against a median native review footprint
 of about 110k tokens.
+
+### Real supply counts: observed re-runs, one command in either spelling (2026-10-18, issue #1107)
+
+The supply rule recorded under #907/#1079 excluded what agents actually do. In the n7 trials 114 of
+165 requested items were still pending at the next review: a shell re-run on Codex is recorded by
+the hook, not published, and it never counted; a plain-text re-run of a hook-observed target never
+matched, because `("command", text)` and `("digest", hmac)` never compare equal; evidence naming the
+target's own event id, or the id with whitespace around it, never matched. Lead decision for
+workstream W6 (Q1, Q4; the owner may overturn it), recorded on #1107:
+
+- **One command, either spelling.** For supply judgement a run's identity is its `_run_key` and,
+  for command text when the installation key is registered, the keyed identity a hook records for
+  exactly that text (`kernel.task_facts.requested_command_identity`). Whole commands only:
+  `cd x && pytest` is not `pytest`. Without the key the two spellings are not the same run. The
+  #1045 packet latest-run rule (`command_run_key`) is unchanged.
+- **A re-run FinishUP observed counts for a targeted item.** A hook-observed command run recorded
+  after the request whose identity meets the target's, its observed results, and the captured output
+  (evidence holding captured bytes) those results cite, answer that target. It does not matter
+  whether the hook or Codex's session-stream copy committed the rows: both materialize the same
+  records. An observed result's own summary is FinishUP's status line, not output: it answers
+  `command_identity` but never `verification_output`. Observed rows never answer an untargeted item,
+  and never supply a path (observed `git diff` text is not recorded; observed edits stay excluded).
+  These rows are named in `supplied_since` and rank as supplied in the next packet, but an observed
+  result's summary is never offered as agent-published output and captured output stays a candidate
+  only where the repository-excerpt gate already allowed it (ADR-009). No new category is sent.
+- **Never drop a repeat for material the reviewer could not see.** A repeat is dropped as
+  `semantic_missing_already_supplied` on observed material only when the packet carried it: the run
+  and result rows among the citable refs and, for `verification_output`, the captured output among
+  the excerpts the sent packet held (whole or a part, including the marked observed span). When the
+  packet did not carry it (Private, the repository-excerpt gate, packet room, or an unknown sent
+  set) the item stays the agent's under the existing non-convergence rule, and the check result's
+  `agent_next` (ADR-043 amendment of the same date) says to publish the result summary. Agent-
+  published material keeps the earlier rule.
+- **The same record under another id.** An `evt_` target that is exactly one row's own event id
+  reads as that row; evidence whose `reference`, trimmed, is the target id or the target row's own
+  event id counts. Prose that merely mentions an id never counts. The requesting check's own event id
+  names the request, not a target, and never counts (Q4).
+- **Unchanged:** a respond's reason or a description never counts; a respond counts only for a
+  finding target. The reviewer still decides whether the material answers; `supplied_since` is
+  context, not a verdict. In-check follow-up rows (including `other` items, if a later amendment lets
+  FinishUP answer them) count exactly like the other follow-up kinds: the counting is kind-generic
+  through the per-kind record families.
+
+The rule is told where agents read it: `agent_next` in every check result and in
+`status view=operation`, the one `MISSING_SUPPLY_SENTENCE` the guidance pages quote, and the
+reviewer's own instruction (follow-up owned by the reviewer-instruction workstream).

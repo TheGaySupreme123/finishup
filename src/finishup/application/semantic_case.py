@@ -4682,7 +4682,7 @@ def _select_targeted_excerpts(
     # Agent-published output that answers a pending missing item (issue #1079). Failure rows
     # are already candidates. A success or partial summary is the same evidence-excerpt
     # category the selection already allows, never a new category and never hook capture
-    # (those refs are not in ``supplied_refs``).
+    # (the caller leaves hook-observed results out of ``supplied_refs``, W6).
     summary_kind = (
         "evidence"
         if "evidence" in selection.excerpt_kinds
@@ -6634,16 +6634,24 @@ def _build_semantic_case_once(
     missing_answers: tuple[tuple[str, ...], ...] = ()
     pending_missing = projection.pending_missing_for_assessment
     answered_since: tuple[tuple[str, ...], ...] = ()
+    observed_events = frozenset(str(item) for item in frozen_case.observation_event_ids)
     if pending_missing is not None:
         answered_since = supplied_since(
             projection,
             pending_missing,
             frozenset(allowed),
-            frozenset(str(item) for item in frozen_case.observation_event_ids),
+            observed_events,
             _edit_paths_by_ref(captured_groups),
             workspace_root,
         )
-    supplied_answer_refs = frozenset(ref for group in answered_since for ref in group)
+    # W6 (ADR-006 amendment): a re-run FinishUP observed may answer a pending item and ranks as
+    # supplied, but its service-authored result summary is never offered as agent-published
+    # output; its captured output stays a candidate only where it already was one.
+    supplied_answer_refs = frozenset(ref for group in answered_since for ref in group) - frozenset(
+        str(ref)
+        for ref, row in projection.results.items()
+        if str(row.source_event_id) in observed_events
+    )
     if pending_missing is not None and "timeline" in sections and selection.max_timeline_items:
         answered = answered_since
         missing_answers = answered

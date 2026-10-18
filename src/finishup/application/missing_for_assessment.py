@@ -9,7 +9,9 @@ everything else is ``agent_suppliable``. Only ``agent_suppliable`` is ever agent
 an item re-requested after it was supplied is dropped unless the reviewer cites that new material.
 "Supplied" is judged per named target: only new material directly tied to that target counts
 (its run, exact command, file path, or a correction of it), so a record that relates only to
-another path, run or claim never answers it.
+another path, run or claim never answers it. A re-run of the target's exact command that FinishUP
+observed after the request counts for a targeted item too (W6, ADR-006 amendment), but a repeat
+is never dropped as supplied for observed material the packet did not carry.
 
 Reads the frozen projection and review selection. Its only filesystem access is resolving the
 workspace root the caller supplies (an ``isdir`` check, then ``os.path.realpath``, once per
@@ -54,7 +56,7 @@ from finishup.domain.values import EventId
 from finishup.kernel.delivered_set import item_role
 from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.projections import PendingMissingForAssessment, ProjectionState
-from finishup.kernel.task_facts import effective_obligations
+from finishup.kernel.task_facts import effective_obligations, requested_command_identity
 from finishup.ports.change_capture import CheckChangeCapture
 from finishup.ports.semantic import SemanticJudgment
 from finishup.protocol.models import (
@@ -901,7 +903,19 @@ def _answers_by_target(
     """
 
     after = pending.source_frontier
+    links = _Links.of(
+        projection,
+        after,
+        observation_event_ids,
+        captured_edit_paths or {},
+        workspace_root,
+        request_event_id=str(pending.source_check_event_id),
+    )
+    observed_material = links.observed_material()
     recorded: dict[str, list[tuple[int, str]]] = {family: [] for family in _FAMILY_NAMES}
+    # W6: hook-observed rows of a re-run of a target's exact command, for targeted items only. A
+    # stray observed command never answers an untargeted request.
+    recorded_observed: dict[str, list[tuple[int, str]]] = {family: [] for family in _FAMILY_NAMES}
     for family, rows in (
         ("actions", projection.actions),
         ("results", projection.results),
@@ -910,22 +924,29 @@ def _answers_by_target(
     ):
         for ref, row in rows.items():
             if row.source_frontier > after and row.payload is not None and not row.redacted:
+                target = recorded
                 if str(row.source_event_id) in observation_event_ids or _hook_observed(row.payload):
                     # Hook capture records every tool call; it is never the agent answering a
-                    # named request, so it must not turn a still-missing item into "supplied".
-                    continue
-                recorded[family].append((row.source_frontier, str(ref)))
-                if type(row.payload) is ResultRecordedPayload and _carries_output(row.payload):
-                    recorded["output_results"].append((row.source_frontier, str(ref)))
+                    # named request by itself, so it must not turn a still-missing item into
+                    # "supplied". Only a re-run of a target's own command answers (``_Links``).
+                    if str(ref) not in observed_material:
+                        continue
+                    target = recorded_observed
+                target[family].append((row.source_frontier, str(ref)))
+                if type(row.payload) is ResultRecordedPayload and (
+                    # An observed result's summary is FinishUP's own status line, not output:
+                    # only the captured bytes it cites are.
+                    bool(links.observed_output.get(str(ref)))
+                    if target is recorded_observed
+                    else _carries_output(row.payload)
+                ):
+                    target["output_results"].append((row.source_frontier, str(ref)))
     for row in projection.plans.values():
         if row.source_frontier > after and row.payload is not None and not row.redacted:
             recorded["plans"].append((row.source_frontier, str(row.source_event_id)))
     for row in projection.responses.values():
         if row.source_frontier > after and row.payload is not None and not row.redacted:
             recorded["responses"].append((row.source_frontier, str(row.source_event_id)))
-    links = _Links.of(
-        projection, after, observation_event_ids, captured_edit_paths or {}, workspace_root
-    )
     answers: list[dict[str | None, tuple[tuple[int, str], ...]]] = []
     for item in pending.items:
         candidates = tuple(
@@ -937,6 +958,12 @@ def _answers_by_target(
         if not item.target_refs:
             answers.append({None: candidates})
             continue
+        candidates += tuple(
+            entry
+            for family in _ANSWERING_FAMILIES[item.kind]
+            for entry in recorded_observed[family]
+            if entry[1] in allowed
+        )
         answers.append(
             {
                 target: tuple(entry for entry in candidates if entry[1] in bound)
@@ -991,8 +1018,18 @@ class _Links:
     one of its paths. A target's paths are its evidence ``reference`` when that is a file path,
     the paths a hook-captured edit records (supplied by the caller from the authenticated
     capture), and the paths of a ``git diff`` command behind it. Paths compare normalized but
-    exact (see ``_normal_path``). A claim is answered by material tied to what it cites; a
-    correction (``claim_recorded`` 1.1.0 superseding it, or any claim disputing it) answers it,
+    exact (see ``_normal_path``).
+
+    W6 (ADR-006 amendment): a run's identity is its text and, with the installation key, the
+    keyed identity a hook records for exactly that text (``_run_identities``), so an
+    agent-published run and a hook-observed re-run of the same whole command are one command. A
+    hook-observed re-run of a target's command after the request, its observed results and the
+    captured output they cite, answer the target too (never paths: observed ``git diff`` text is
+    not recorded and observed edits stay excluded). An evidence ``reference`` matches the target
+    id or the target row's own event id, with surrounding whitespace ignored; an ``evt_`` target
+    that names exactly one row's event is read as that row. The requesting check's own event id
+    names the request, not a target, so it never matches. A claim is answered by material tied to
+    what it cites; a correction (``claim_recorded`` 1.1.0 superseding it, or any claim disputing it) answers it,
     with the new material it cites when that is tied to the claim's support or the claim cited
     nothing FinishUP can relate. A finding is answered by a response to it and what that cites, a
     plan by the version that supersedes it, and an obligation by new actions, results, claims and
@@ -1010,6 +1047,14 @@ class _Links:
     new_responses: Mapping[str, ResponseRecordedPayload]
     new_plans: Mapping[str, PlanPublishedPayload | PlanRevisedPayload]
     actions_by_key: Mapping[_RunKey, frozenset[str]]
+    # Hook-observed command runs recorded after the request, with their identities; their
+    # observed results; and the hook-captured evidence those results cite.
+    observed_runs: Mapping[str, frozenset[_RunKey]]
+    observed_results: Mapping[str, ResultRecordedPayload]
+    observed_output: Mapping[str, frozenset[str]]
+    # Each action, result, evidence, claim and obligation row's own event id.
+    row_events: Mapping[str, str]
+    request_event_id: str | None
 
     @classmethod
     def of(
@@ -1019,21 +1064,66 @@ class _Links:
         observation_event_ids: frozenset[str],
         captured_edit_paths: Mapping[str, frozenset[str]],
         workspace_root: str | None,
+        *,
+        request_event_id: str | None = None,
     ) -> _Links:
+        def observed(row: _Row) -> bool:
+            return str(row.source_event_id) in observation_event_ids or _hook_observed(row.payload)
+
+        def readable(row: _Row) -> bool:
+            return row.source_frontier > after and row.payload is not None and not row.redacted
+
         def newer(row: _Row) -> bool:
-            return (
-                row.source_frontier > after
-                and row.payload is not None
-                and not row.redacted
-                and str(row.source_event_id) not in observation_event_ids
-                and not _hook_observed(row.payload)
-            )
+            return readable(row) and not observed(row)
 
         by_key: dict[_RunKey, set[str]] = {}
         for ref, row in projection.actions.items():
-            key = _run_key(row.payload)
-            if key is not None:
+            for key in _run_identities(row.payload):
                 by_key.setdefault(key, set()).add(str(ref))
+        observed_runs: dict[str, frozenset[_RunKey]] = {}
+        for ref, row in projection.actions.items():
+            payload = row.payload
+            if (
+                readable(row)
+                and observed(row)
+                and payload is not None
+                and payload.action_kind is ActionKind.COMMAND
+                and (identities := _run_identities(payload))
+            ):
+                observed_runs[str(ref)] = identities
+        observed_results = {
+            str(ref): row.payload
+            for ref, row in projection.results.items()
+            if readable(row)
+            and observed(row)
+            and row.payload is not None
+            and str(row.payload.action_id) in observed_runs
+        }
+        # Only evidence holding captured bytes is output; a digest-only observed row is not.
+        captured_output = {
+            str(ref)
+            for ref, row in projection.evidence.items()
+            if readable(row)
+            and observed(row)
+            and row.payload is not None
+            and row.payload.captured_object_id is not None
+        }
+        observed_output = {
+            ref: frozenset(
+                str(item) for item in result.evidence_refs if str(item) in captured_output
+            )
+            for ref, result in observed_results.items()
+        }
+        row_events: dict[str, str] = {}
+        for rows in (
+            projection.actions,
+            projection.results,
+            projection.evidence,
+            projection.claims,
+            projection.obligations,
+        ):
+            for ref, row in rows.items():
+                row_events[str(ref)] = str(row.source_event_id)
         roots = _workspace_roots(workspace_root)
         captured = {
             ref: frozenset(
@@ -1080,13 +1170,50 @@ class _Links:
                 if newer(row) and row.payload is not None
             },
             actions_by_key={key: frozenset(refs) for key, refs in by_key.items()},
+            observed_runs=observed_runs,
+            observed_results=observed_results,
+            observed_output=observed_output,
+            row_events=row_events,
+            request_event_id=request_event_id,
         )
+
+    def observed_material(self) -> frozenset[str]:
+        """Every observed row that can answer a target: observed runs, results, their output."""
+
+        return frozenset(
+            {
+                *self.observed_runs,
+                *self.observed_results,
+                *(ref for refs in self.observed_output.values() for ref in refs),
+            }
+        )
+
+    def canonical(self, target: str) -> str:
+        """The row id an ``evt_`` target names when it is exactly one row's own event id."""
+
+        if not target.startswith("evt_") or target == self.request_event_id:
+            return target
+        rows = [ref for ref, event in self.row_events.items() if event == target]
+        return rows[0] if len(rows) == 1 else target
+
+    def aliases(self, target: str) -> frozenset[str]:
+        """The ids that name ``target``'s record: its id and its own event id."""
+
+        names = {target}
+        event = self.row_events.get(target)
+        if event is not None:
+            names.add(event)
+        return frozenset(names - {self.request_event_id})
 
     def answers(self, target: str) -> frozenset[str]:
         """The new material directly tied to ``target``."""
 
+        target = self.canonical(target)
+        names = self.aliases(target)
         found: set[str] = {
-            ref for ref, evidence in self.new_evidence.items() if evidence.reference == target
+            ref
+            for ref, evidence in self.new_evidence.items()
+            if evidence.reference is not None and evidence.reference.strip() in names
         }
         projection = self.projection
         claim = next((row for ref, row in projection.claims.items() if str(ref) == target), None)
@@ -1154,12 +1281,11 @@ class _Links:
 
     def _action_subject(self, ref: str) -> _Subject:
         payload = self._action(ref)
-        key = _run_key(payload)
         scope = None if payload is None else _diff_scope(payload.command, self.roots)
         paths: frozenset[_Path] = frozenset(
             (path, True) for path in (scope or ()) if path != _WHOLE_TREE
         )
-        return _Subject(frozenset({ref}), frozenset() if key is None else frozenset({key}), paths)
+        return _Subject(frozenset({ref}), _run_identities(payload), paths)
 
     def subject(self, target: str) -> _Subject:
         """The runs and paths an action, result or evidence target names (older rows only)."""
@@ -1255,6 +1381,13 @@ class _Links:
                 found |= cited
             elif cited & by_path:
                 found.add(ref)
+        # W6: a re-run of the same exact command FinishUP observed, with what it observed.
+        observed = {ref for ref, keys in self.observed_runs.items() if keys & subject.keys}
+        found |= observed
+        for ref, result in self.observed_results.items():
+            if str(result.action_id) in observed:
+                found.add(ref)
+                found |= self.observed_output.get(ref, frozenset())
         return found
 
     def _claim_answers(
@@ -1354,6 +1487,26 @@ def _run_key(payload: ActionRecordedPayload | None) -> _RunKey | None:
         digest = command.removeprefix("omitted:").split(" ", 1)[0]
         return None if digest in {"", "structural"} else ("digest", digest)
     return ("command", command) if command else None
+
+
+def _run_identities(payload: ActionRecordedPayload | None) -> frozenset[_RunKey]:
+    """``_run_key`` plus, for command text, the keyed identity a hook records for exactly it.
+
+    Supply judgement only: an agent-published run and a hook-observed re-run of the same exact
+    command are one command. Whole commands only (``cd x && pytest`` is not ``pytest``). Without
+    the installation key only ``_run_key`` applies, so a process that cannot compute the identity
+    never claims two runs are the same.
+    """
+
+    key = _run_key(payload)
+    if key is None:
+        return frozenset()
+    keys = {key}
+    if key[0] == "command" and payload is not None and payload.command is not None:
+        keyed = requested_command_identity(payload.command)
+        if keyed is not None:
+            keys.add(("digest", keyed))
+    return frozenset(keys)
 
 
 def command_run_key(payload: ActionRecordedPayload | None) -> tuple[str, str] | None:
@@ -1545,6 +1698,8 @@ def review_missing_for_assessment(
     change_clipped: bool = False,
     binary_paths: frozenset[str] = frozenset(),
     text_paths: frozenset[str] = frozenset(),
+    excerpt_refs: frozenset[str] | None = None,
+    excerpt_parts: frozenset[str] | None = None,
 ) -> MissingItemsReview:
     """Fence what the reviewer named to the packet it was shown and classify who can supply it.
 
@@ -1557,7 +1712,12 @@ def review_missing_for_assessment(
     is dropped unless the reviewer cites that newer material
     (``semantic_missing_already_supplied``), so the same request cannot loop; only new material
     directly tied to a target answers it (see ``_Links``; ``captured_edit_paths`` as in
-    ``supplied_since``). Every kept item is recorded with FinishUP's own availability class.
+    ``supplied_since``). A hook-observed re-run answers only when this packet carried it (W6,
+    ADR-006 amendment): its run and result rows among the citable refs, and for
+    ``verification_output`` the captured output its result cites among the excerpts the sent
+    packet held (``excerpt_refs`` whole, or any of its ``excerpt_parts``; ``None``: unknown, so
+    nothing observed was carried). Every kept item is recorded with FinishUP's own availability
+    class.
 
     Content the packet cannot show is FinishUP's own limit, never agent work (tb4n1 D1, #983): a
     target whose recorded file is an image or other binary format, by suffix or because the
@@ -1592,6 +1752,33 @@ def review_missing_for_assessment(
     )
     redacted = _redacted_refs(projection)
     shown = allowed if citable_refs is None else allowed & citable_refs
+    if pending is not None:
+        # W6: never drop a repeat as already supplied for observed material the reviewer could
+        # not see; the item then stays the agent's under the rules below.
+        unseen, unseen_output = _unseen_observed(
+            _Links.of(
+                projection,
+                pending.source_frontier,
+                observed,
+                captured_edit_paths or {},
+                workspace_root,
+                request_event_id=str(pending.source_check_event_id),
+            ),
+            shown,
+            _carried_excerpts(excerpt_refs, excerpt_parts),
+        )
+        answered = tuple(
+            {
+                target: tuple(
+                    entry
+                    for entry in entries
+                    if entry[1]
+                    not in (unseen_output if prior.kind == "verification_output" else unseen)
+                )
+                for target, entries in per_target.items()
+            }
+            for prior, per_target in zip(pending.items, answered, strict=True)
+        )
     paths_of = _TargetFiles(
         _Links.of(projection, _ALL_ROWS, observed, captured_edit_paths or {}, workspace_root),
         captured_edit_paths or {},
@@ -1662,6 +1849,41 @@ def review_missing_for_assessment(
             else SEMANTIC_MISSING_FINISHUP_LIMIT_GAP
         )
     return MissingItemsReview(items, frozenset(gaps))
+
+
+def _carried_excerpts(
+    excerpt_refs: frozenset[str] | None, excerpt_parts: frozenset[str] | None
+) -> frozenset[str]:
+    """The refs a sent packet's excerpts held, whole or in part (a marked observed span too)."""
+
+    carried = set(excerpt_refs or ())
+    for key in excerpt_parts or ():
+        span = _span(key)
+        if span is not None:
+            carried.add(span[0].removeprefix(OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX))
+    return frozenset(carried)
+
+
+def _unseen_observed(
+    links: _Links, shown: frozenset[str], carried: frozenset[str]
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Observed refs a packet did not carry: for any kind, and for ``verification_output``.
+
+    A run or result row is carried when it was citable; captured output only when an excerpt
+    held its bytes. For ``verification_output`` an observed result also needs some captured
+    output it cites carried, because the output is what was asked for.
+    """
+
+    output = frozenset(ref for refs in links.observed_output.values() for ref in refs)
+    unseen = {ref for ref in links.observed_material() if ref not in shown}
+    unseen.update(ref for ref in output if ref not in carried)
+    unseen_output = set(unseen)
+    unseen_output.update(
+        ref
+        for ref, cited in links.observed_output.items()
+        if not any(item in carried and item in shown for item in cited)
+    )
+    return frozenset(unseen), frozenset(unseen_output)
 
 
 # Read every recorded row as "older" when only a target's files are wanted, never its answers.
