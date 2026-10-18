@@ -258,6 +258,10 @@ error answer, and this one is not a coverage gap). `local_retention` says when F
 local copies of already-delivered records to stay within its bounds; nothing you or a check relies
 on was cut, so this is never reported as truncation. `delivery_lag` shows how long recorded
 activity waited between being queued on your machine and being accepted by the service.
+`workspace_effect_readings` counts how many commands had the project's files compared before and
+after them and found them unchanged or changed, how many could not be compared and why (for
+example `call_incomplete` when the host did not say the command ended, or `background_launch`),
+and lists the last 64 with their call ids. It stays on this computer.
 
 A single hook event is also bounded. FinishUP fully reads a host body of at most 1 MiB; very large
 content inside it is kept only up to the capture budget and marked truncated. Images, audio, and

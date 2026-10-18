@@ -401,6 +401,12 @@ class ClosureReadinessFacts:
     # Readiness names that as ``semantic_coordinator_failure`` and does not ask for the same
     # closing review again. A hand-built fact set defaults to false.
     coordinator_failure_unchanged: bool = False
+    # n7 RC1 (#1105): the newest closing-review attempt that still covers this state ended
+    # without a judgment (``unavailable`` or ``timeout``, any reason), nothing material followed
+    # it, and no current closing review succeeded. Readiness names that as
+    # ``semantic_review_no_judgment`` and does not ask for the closing review again: the check's
+    # own continuation says what may follow. A hand-built fact set defaults to false.
+    closing_review_no_judgment: bool = False
     # #1079: recorded ``evd_`` / ``res_`` ids that are admissible verification for a flagged
     # obligation (an observed verification row linked to that obligation, its target, or the
     # task, at or before this frontier). An agent-asserted id is omitted. Since D1 the derivation
@@ -438,6 +444,7 @@ class ClosureReadinessFacts:
             or type(self.semantic_review_used) is not bool
             or type(self.semantic_review_deferred) is not bool
             or type(self.coordinator_failure_unchanged) is not bool
+            or type(self.closing_review_no_judgment) is not bool
             or (self.check_cause is not None and type(self.check_cause) is not CheckCause)
             or (
                 self.finding_closures is not None
@@ -729,12 +736,19 @@ def _closing_review_current_check(payload: CheckRecordedPayload, state: Projecti
     return phase is None and completion_claim_present(state)
 
 
+# Statuses of a closing review that returned no judgment (n7 RC1, #1105), whatever the reason:
+# its own continuation (``semantic_no_judgment``, ``semantic_timeout``,
+# ``semantic_transport_retry``, ``semantic_capacity_exceeded``, or none for a configuration
+# outcome refused before dispatch) says what may follow, never "the same closing review again".
+_NO_JUDGMENT_STATUSES: Final = frozenset({SemanticStatus.UNAVAILABLE, SemanticStatus.TIMEOUT})
+
+
 def _closing_review_facts(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
     limitations: frozenset[FindingId],
-) -> tuple[bool, bool, bool, bool]:
-    """``(current, used, deferred, coordinator_failure_unchanged)`` (#976, #1079).
+) -> tuple[bool, bool, bool, bool, bool]:
+    """``(current, used, deferred, coordinator_failure_unchanged, no_judgment)`` (#976, #1079).
 
     A check is the closing review when its recorded review input manifest names the final
     phase. A check recorded before the manifest carried the phase was final exactly when an
@@ -752,6 +766,16 @@ def _closing_review_facts(
     nothing material followed it, and no earlier closing review still covers this state. That
     failure is a FinishUP limit, not another identical ``final_review`` request. A material
     change after it asks again and clears the flag.
+
+    The fifth value (n7 RC1, #1105) is true when the newest closing-review attempt that still
+    covers this state ended without a judgment (``unavailable`` or ``timeout``) and no current
+    closing review succeeded. The walk no longer falls back past it to an older, staled review:
+    asking for "the closing review" again would contradict the check's own continuation. A newer
+    current closing-review attempt with another outcome (refused, invalid ...) decides instead,
+    so the flag stays false behind it; a newer local-only check (``not_requested``) asked for no
+    review and changes nothing; an older current review that succeeded still wins. A
+    material change after it asks again and clears the flag; an ordinary mid-task check without a
+    judgment changes nothing.
     """
 
     del limitations
@@ -759,6 +783,8 @@ def _closing_review_facts(
     used = semantic_review_used(records)
     deferred = bool(checks) and _review_deferred(checks[-1])
     newest_coordinator_failure = False
+    no_judgment = False
+    newer_closing_attempt = False
     first = True
     effects = workspace_effects(records, state)
     for record in reversed(records):
@@ -769,7 +795,7 @@ def _closing_review_facts(
         is_newest = first
         first = False
         if is_newest and stale:
-            return False, used, deferred, False
+            return False, used, deferred, False, False
         if stale:
             continue
         if is_newest and _coordinator_failure(payload):
@@ -777,16 +803,28 @@ def _closing_review_facts(
             continue
         status = payload.semantic_status
         if status in _UNDELIVERABLE_SEMANTIC_STATUSES or _review_mode_undeliverable(payload):
-            return True, used, deferred, False
+            return True, used, deferred, False, False
         if _review_round_stopped(payload):
-            return review_round_stopped(records), used, deferred, False
-        if status is not SemanticStatus.SUCCEEDED:
+            return review_round_stopped(records), used, deferred, False, False
+        if not _closing_review_current_check(payload, state):
             continue
-        if _closing_review_current_check(payload, state):
-            return True, used, deferred, False
+        if status is SemanticStatus.SUCCEEDED:
+            return True, used, deferred, False, False
+        if status is SemanticStatus.NOT_REQUESTED:
+            # A local-only check (``deterministic_mode``, ``no_material_semantic_case``) asked for
+            # no AI-powered review, so it is no newer attempt: following the no-judgment
+            # continuation's "go local-only" must not bring the closing-review request back.
+            continue
+        if status in _NO_JUDGMENT_STATUSES and not newer_closing_attempt:
+            # The newest closing-review attempt on this state ended without a judgment. An
+            # older current review that succeeded still wins; a staled one no longer does.
+            no_judgment = True
+        newer_closing_attempt = True
     if newest_coordinator_failure:
-        return True, used, deferred, True
-    return False, used, deferred, False
+        return True, used, deferred, True, False
+    if no_judgment:
+        return True, used, deferred, False, True
+    return False, used, deferred, False, False
 
 
 def _acknowledged_obligation_ids(state: ProjectionState) -> tuple[ObligationId, ...]:
@@ -983,8 +1021,8 @@ def closure_readiness_facts(
     blocked_open = tuple(
         sorted({item for item in open_obligations if item in blocked}, key=str.encode)
     )
-    closing_current, review_used, review_deferred, coordinator_failure = _closing_review_facts(
-        state, records, limitations
+    closing_current, review_used, review_deferred, coordinator_failure, no_judgment = (
+        _closing_review_facts(state, records, limitations)
     )
     applicability, standing = _check_applicability(state, records)
     risky_pairs = acceptance_risk(
@@ -1033,6 +1071,7 @@ def closure_readiness_facts(
         undeclared_references=current_undeclared_references(state, records, applicability),
         acceptance_risk_obligation_ids=tuple(obligation for obligation, _reasons in risky_pairs),
         coordinator_failure_unchanged=coordinator_failure,
+        closing_review_no_judgment=no_judgment,
         closing_material_frontier=closing_material_frontier(state, records),
         # D1: the receipt's own coverage-limit set, walked without the status cap (R5).
         unresolved_acceptance_risk=unresolved_acceptance_risk(state, records, flagged=risky_pairs),
@@ -1301,6 +1340,11 @@ def derive_closure_readiness(
             # Not a coverage gap: the check recorded the failure. Status names it so the Stop
             # gate does not ask for the same closing review again.
             standing.add("semantic_coordinator_failure")
+        if facts.closing_review_no_judgment:
+            # Not a coverage gap either: the newest closing review returned no judgment, so the
+            # Stop gate does not ask for it again (n7 RC1). Its own semantic facts still disclose
+            # a required review as unmet.
+            standing.add("semantic_review_no_judgment")
     acknowledged: tuple[str, ...] = ()
     if facts is not None:
         acknowledged = tuple(

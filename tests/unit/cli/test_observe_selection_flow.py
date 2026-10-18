@@ -67,12 +67,12 @@ def setup_store(tmp_path: Path) -> tuple[LocalObservationStore, Path, Path, str,
     return store, root, workspace, commitment, session
 
 
-# Every shape a real host post can carry its proven success in. Codex states
-# its result under ``tool_response`` and Claude's native post hook may state no
-# outcome fact at all, so only the first row is the shape the top-level
-# structural copy ever retained (issue #753).
+# Every shape a Codex hook post can carry its proven success in: its result
+# under ``tool_response``, so only the last row is the shape the top-level
+# structural copy ever retained (issue #753). A Codex post that states no
+# outcome fact is not a success (it fires for a non-zero exit too, n7 RC1);
+# Claude Code's native post fallback is pinned by the classifier tests.
 NATIVE_POST_SUCCESS_SHAPES: dict[str, dict[str, JsonValue]] = {
-    "native_post_fallback": {},
     "nested_exit_code": {"tool_response": {"exit_code": 0}},
     "nested_is_error": {"tool_response": {"is_error": False}},
     "nested_status": {"tool_response": {"status": "ok"}},
@@ -253,6 +253,36 @@ def test_buffered_promotion_retains_native_identity_and_reports_missing_content(
         store.promote_buffered_observation(commitment, original.source_identity)["reason"]
         == "promotion_window_closed"
     )
+
+
+def test_promotion_beside_a_refused_buffered_success_demotes_it_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    """Review round 3: an input an older build buffered as a success may no longer summarize.
+
+    Promotion builds the rest of the lane the way the flush does: the refused group is delivered
+    demoted with its gap and counted as a refusal, and the promoted call is still queued.
+    """
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    hook(root, workspace, "PreToolUse", "older-read")
+    hook(root, workspace, "PostToolUse", "older-read")
+    poisoned = _poison_buffered_post(store, commitment)
+    hook(root, workspace, "PreToolUse", "promoted-read")
+    hook(root, workspace, "PostToolUse", "promoted-read")
+    inputs = store._load(commitment).admission_buffer.inputs
+    assert len(inputs) == 4
+    assert inputs[1].envelope == poisoned
+    target = inputs[-1].envelope
+    result = store.promote_buffered_observation(commitment, target.source_identity)
+    assert result["outcome"] == "queued_individual"
+    rows = store.list_pending_outbox_rows(commitment)
+    demoted = next(row for row in rows if row.envelope.source_identity == poisoned.source_identity)
+    assert ROUTINE_SUMMARY_INVALID_GAP in demoted.envelope.gap_codes
+    assert [refusal["reason"] for refusal in store.summary_refusals(commitment)] == [
+        "invalid_event_value_type"
+    ]
+    assert store.selection_accounting(commitment)["buffered_input_count"] == 0
 
 
 def test_loss_history_survives_recovery_without_retargeting_another_task(tmp_path: Path) -> None:
@@ -603,6 +633,25 @@ def test_every_proven_post_shape_buffers_and_flushes_repeatedly(tmp_path: Path, 
     assert store.selection_accounting(commitment)["buffered_input_count"] == 0
     assert store.summary_refusals(commitment) == ()
     assert ROUTINE_SUMMARY_INVALID_GAP not in store.status(ObservationStatusQuery(commitment)).gaps
+
+
+def test_a_codex_post_without_an_outcome_fact_is_not_buffered_as_a_success(
+    tmp_path: Path,
+) -> None:
+    """n7 RC1 (#1105): the bare Codex post event never proves a routine read."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    hook(root, workspace, "PreToolUse", "bare-read", outcome={})
+    hook(root, workspace, "PostToolUse", "bare-read", outcome={})
+    assert store.selection_accounting(commitment)["buffered_input_count"] == 0
+    posts = [
+        envelope
+        for envelope in store.list_envelopes(commitment)
+        if envelope.event_kind == "PostToolUse"
+    ]
+    assert len(posts) == 1
+    assert posts[0].structural_payload.get("action") != "routine_read"
+    assert "success" not in posts[0].structural_payload
 
 
 def _poison_buffered_post(store: LocalObservationStore, commitment: str) -> ObservationEnvelope:

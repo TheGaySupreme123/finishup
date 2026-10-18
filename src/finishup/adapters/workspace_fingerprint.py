@@ -12,8 +12,10 @@ reports one closed token:
 * ``unchanged`` - both snapshots were complete and no entry differs;
 * ``changed`` - an entry was added, removed or modified, or the root itself was replaced;
 * ``unavailable`` - FinishUP cannot vouch for the comparison: no pre-call snapshot, a workspace too
-  large or slow to walk within the bound, an unreadable directory, a call the host reports as still
-  running, or a damaged or foreign snapshot record. The kernel treats it like ``changed``.
+  large or slow to walk within the bound, an unreadable directory, a call the host has not reported
+  as ended (``call_incomplete``) or that launched a background process (``background_launch``), a
+  process still writing (``process_lingering``, ``workspace_unsettled``), or a damaged or foreign
+  snapshot record. The kernel treats it like ``changed``.
 
 **What the workspace covers.** Every directory entry beneath the hook's canonical workspace root:
 tracked and untracked files alike, without consulting Git or any ignore file. Honouring ignore
@@ -74,11 +76,12 @@ bytes unknown, which can only make the token ``changed``. One blocking read of a
 nothing that process started is still writing. Before it walks, the post-call pass asks
 ``adapters.process_lifetime`` whether a process of this user that started during the call window is
 still running with its working directory or a file open for writing inside the workspace; if so,
-the token is ``unavailable`` (``call_incomplete``); when the process table cannot be read it is
+the token is ``unavailable`` (``process_lingering``); when the process table cannot be read it is
 ``unavailable`` too (``process_table_unreadable``, diagnosed once in ``observe status``). After
 it walks, the pass re-reads the modification time of every directory it walked: one that changed
-during the walk means the workspace was still being written, and the token is ``unavailable`` as
-well. VCS metadata and bytecode caches are exempt from that re-read, as they are from the walk.
+during the walk means the workspace was still being written, and the token is ``unavailable``
+(``workspace_unsettled``). VCS metadata and bytecode caches are exempt from that re-read, as they
+are from the walk.
 
 **Host window** (round 6). A pre-call snapshot is published only when the whole capture finished
 before the host could stop waiting for the hook; the completion time and the host deadline are
@@ -92,6 +95,14 @@ the workspace commitment: one pending snapshot per open call and one cache of th
 and every content digest is a BLAKE2b value keyed by the installation's observation key, and each
 file carries an HMAC so a damaged or foreign file reads as unavailable. Pending snapshots expire;
 revoking observation for the workspace removes its directory.
+
+**Reading tally** (n7 RC1). Beside the snapshots, ``readings.json`` counts every post-call reading
+by its closed effect and reason (for all time, and for the current and previous clock hour) and
+keeps the last ``READING_RING`` readings with their time and, when it is already a closed token,
+the host's tool-call id. It holds no path, digest or command text and never exceeds
+``READING_FILE_BYTES``; a writer that cannot take its lock within ``_LOCK_WAIT_SECONDS`` drops the
+sample and counts the drop. ``observe status`` reports it (``reading_tally_summary``), so a call
+that stayed material can be attributed to its reason locally; nothing of it crosses the wire.
 """
 
 from __future__ import annotations
@@ -99,18 +110,21 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import hmac
+import json
 import os
+import re
 import shutil
 import stat
 import struct
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast, get_args
 
 from finishup.adapters.process_lifetime import lingering_process, process_clock_ns
-from finishup.config.paths import PathSafetyError, ensure_owner_only_dir
+from finishup.config.paths import PathSafetyError, ensure_owner_only_dir, existing_owner_only_dir
+from finishup.domain.values import JsonObject, JsonValue
 from finishup.domain.workspace_effect import (
     BYTECODE_CACHE_DIRECTORY,
     SHALLOW_DIRECTORY_NAMES,
@@ -124,16 +138,24 @@ from finishup.domain.workspace_effect import (
     vcs_bookkeeping_name,
 )
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - supported hook hosts are POSIX
+    fcntl = None  # type: ignore[assignment]
+
 __all__ = [
     "FINGERPRINT_DIRECTORY",
     "HASH_FILE_BYTES",
     "HASH_TOTAL_BYTES",
     "MAX_ENTRIES",
+    "READING_FILE_BYTES",
+    "READING_RING",
     "SHALLOW_DIRECTORY_NAMES",
     "SNAPSHOT_SECONDS",
     "UnavailableReason",
     "WorkspaceEffectReading",
     "WorkspaceFingerprintStore",
+    "reading_tally_summary",
     "workspace_fingerprint_dir",
 ]
 
@@ -158,6 +180,9 @@ _MODE_VCS_ROOT: Final = 4
 UnavailableReason = Literal[
     "no_pre_snapshot",
     "call_incomplete",
+    "background_launch",
+    "process_lingering",
+    "workspace_unsettled",
     "process_table_unreadable",
     "too_large",
     "timeout",
@@ -486,9 +511,14 @@ class WorkspaceFingerprintStore:
         *,
         deadline: float,
         call_complete: bool,
+        incomplete_reason: UnavailableReason = "call_incomplete",
         excluded: Iterable[str] = (),
     ) -> WorkspaceEffectReading:
-        """Compare *root* now with the call's pre-call snapshot; consumes that snapshot."""
+        """Compare *root* now with the call's pre-call snapshot; consumes that snapshot.
+
+        ``incomplete_reason`` is the reason an incomplete call reads as (``call_incomplete`` when
+        the host stated no completion, ``background_launch`` for a background launch).
+        """
 
         try:
             failed = self._take_failed(call_identity)
@@ -511,7 +541,7 @@ class WorkspaceFingerprintStore:
             if not call_complete:
                 # The host has not reported that the call ended (a background launch, a process
                 # still running behind a session id): later writes would be missed.
-                return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "call_incomplete")
+                return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, incomplete_reason)
             if _past(deadline):
                 raise _Unavailable("timeout", backoff=False)
             # The host's completion fact covers the process it started, not what that process
@@ -529,7 +559,7 @@ class WorkspaceFingerprintStore:
                     fresh=self._note_standing("process-table-unreadable"),
                 )
             if lingering:
-                return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "call_incomplete")
+                return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "process_lingering")
             after = self._walk(root, deadline=deadline, excluded=excluded)
             hasher = _Hasher(self._content_key, deadline)
             changed = (after.root_dev, after.root_ino) != (
@@ -560,7 +590,7 @@ class WorkspaceFingerprintStore:
                 if not self._settled(after.settle):
                     # A directory gained, lost or replaced an entry while it was being compared:
                     # the workspace was still being written, so this walk is not its final state.
-                    return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "call_incomplete")
+                    return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "workspace_unsettled")
                 if _past(deadline):
                     raise _Unavailable("timeout", backoff=False)
             if not _past(deadline):
@@ -582,6 +612,16 @@ class WorkspaceFingerprintStore:
             self._pending_path(call_identity).unlink()
         with contextlib.suppress(OSError, PathSafetyError, ValueError):
             self._mark_failed(call_identity, reason)
+
+    def note_reading(self, reading: WorkspaceEffectReading, call_token: str | None) -> bool:
+        """Count one post-call reading in this workspace's bounded tally. Never raises.
+
+        ``call_token`` is kept in the recent-reading ring only when it is already a closed token
+        (the pattern the envelope applies to a tool-call id); anything else is kept as ``null``.
+        Returns whether the sample was recorded (``False`` when it was dropped).
+        """
+
+        return _note_reading(self._directory, reading, call_token)
 
     def discard(self) -> None:
         """Remove this workspace's snapshots (observation revoked)."""
@@ -911,3 +951,381 @@ class WorkspaceFingerprintStore:
             captured_ns=captured,
             host_deadline_ns=host_deadline,
         )
+
+
+# -- reading tally (n7 RC1) -----------------------------------------------------------------------
+
+READING_RING: Final = 64
+READING_FILE_BYTES: Final = 16 * 1024
+_READING_FORMAT: Final = "finishup.workspace-effect-readings/1"
+_READING_NAME: Final = "readings.json"
+# Writers stage the next document here and rename it over the tally, so a reader never sees a
+# partial document and never needs the lock.
+_READING_STAGING: Final = ".readings.json.next"
+_READING_LOCK: Final = ".readings.lock"
+# One byte per sample dropped under lock contention, appended without the lock.
+_READING_DROPS: Final = ".readings.dropped"
+_MAX_DROP_BYTES: Final = 64 * 1024
+_LOCK_WAIT_SECONDS: Final = 0.1
+_LOCK_POLL_SECONDS: Final = 0.002
+_HOUR_MS: Final = 3_600_000
+_MAX_SAFE: Final = 2**53 - 1
+_MAX_EPOCH_MS: Final = 253_402_300_799_999
+_EFFECTS: Final = (WORKSPACE_UNCHANGED, WORKSPACE_CHANGED, WORKSPACE_UNAVAILABLE)
+_REASONS: Final = frozenset(get_args(UnavailableReason))
+# The tally's count keys: ``unchanged``, ``changed`` and ``unavailable:<reason>``.
+_COUNT_KEYS: Final = frozenset(
+    {WORKSPACE_UNCHANGED, WORKSPACE_CHANGED, *(f"{WORKSPACE_UNAVAILABLE}:{r}" for r in _REASONS)}
+)
+_CALL_TOKEN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+/-]{0,127}")
+_TALLY_KEYS: Final = frozenset({"format", "since_ms", "counts", "slots", "recent"})
+_RECENT_KEYS: Final = frozenset({"at_ms", "effect", "reason", "call"})
+_SLOT_KEYS: Final = frozenset({"hour", "counts"})
+
+
+def _count_key(reading: WorkspaceEffectReading) -> str | None:
+    if reading.effect == WORKSPACE_UNAVAILABLE:
+        return None if reading.reason is None else f"{WORKSPACE_UNAVAILABLE}:{reading.reason}"
+    return reading.effect if reading.effect in _COUNT_KEYS else None
+
+
+def _is_count(value: object) -> bool:
+    return type(value) is int and 0 <= value <= _MAX_SAFE
+
+
+def _valid_counts(raw: object) -> bool:
+    if type(raw) is not dict:
+        return False
+    counts = cast(dict[object, object], raw)
+    return all(
+        type(key) is str and key in _COUNT_KEYS and _is_count(value)
+        for key, value in counts.items()
+    )
+
+
+def _valid_recent(raw: object) -> bool:
+    if type(raw) is not dict or frozenset(cast(dict[str, object], raw)) != _RECENT_KEYS:
+        return False
+    item = cast(dict[str, object], raw)
+    effect, reason, call, moment = item["effect"], item["reason"], item["call"], item["at_ms"]
+    if type(effect) is not str or effect not in _EFFECTS:
+        return False
+    if not (type(moment) is int and 0 <= moment <= _MAX_EPOCH_MS):
+        return False
+    if effect == WORKSPACE_UNAVAILABLE:
+        if type(reason) is not str or reason not in _REASONS:
+            return False
+    elif reason is not None:
+        return False
+    return call is None or (type(call) is str and _CALL_TOKEN.fullmatch(call) is not None)
+
+
+def _valid_tally(raw: object) -> dict[str, object] | None:
+    """The tally document when every field is in its closed vocabulary, else ``None``."""
+
+    if type(raw) is not dict or frozenset(cast(dict[str, object], raw)) != _TALLY_KEYS:
+        return None
+    document = cast(dict[str, object], raw)
+    since, slots, recent = document["since_ms"], document["slots"], document["recent"]
+    if document["format"] != _READING_FORMAT or not (
+        type(since) is int and 0 <= since <= _MAX_EPOCH_MS
+    ):
+        return None
+    if not _valid_counts(document["counts"]) or type(slots) is not list or type(recent) is not list:
+        return None
+    slot_items = cast(list[object], slots)
+    if len(slot_items) > 2:
+        return None
+    hours: list[int] = []
+    for slot in slot_items:
+        if type(slot) is not dict or frozenset(cast(dict[str, object], slot)) != _SLOT_KEYS:
+            return None
+        hour = cast(dict[str, object], slot)["hour"]
+        if not _is_count(hour) or not _valid_counts(cast(dict[str, object], slot)["counts"]):
+            return None
+        hours.append(cast(int, hour))
+    recent_items = cast(list[object], recent)
+    if len(set(hours)) != len(hours) or len(recent_items) > READING_RING:
+        return None
+    if not all(_valid_recent(item) for item in recent_items):
+        return None
+    return document
+
+
+def _read_tally(path: Path) -> tuple[str, dict[str, object] | None]:
+    """``absent``, ``unreadable`` or ``retained`` plus the validated document."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return "absent", None
+    except OSError:
+        return "unreadable", None
+    try:
+        facts = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(facts.st_mode)
+            or facts.st_uid != os.geteuid()
+            or facts.st_mode & 0o077
+            or facts.st_size > READING_FILE_BYTES
+        ):
+            return "unreadable", None
+        raw = os.pread(descriptor, READING_FILE_BYTES + 1, 0)
+    except OSError:
+        return "unreadable", None
+    finally:
+        os.close(descriptor)
+    try:
+        document = _valid_tally(json.loads(raw))
+    except UnicodeError, ValueError, RecursionError:
+        document = None
+    return ("retained", document) if document is not None else ("unreadable", None)
+
+
+def _acquire_lock(descriptor: int) -> bool:
+    if fcntl is None:
+        return True
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_LOCK_POLL_SECONDS)
+
+
+def _count_drop(directory: Path) -> None:
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(
+            directory / _READING_DROPS, flags | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
+    except OSError:
+        return
+    try:
+        facts = os.fstat(descriptor)
+        if (
+            stat.S_ISREG(facts.st_mode)
+            and facts.st_uid == os.geteuid()
+            and facts.st_size < _MAX_DROP_BYTES
+        ):
+            os.write(descriptor, b".")
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _drop_count(directory: Path) -> int:
+    try:
+        facts = os.lstat(directory / _READING_DROPS)
+    except OSError:
+        return 0
+    if not stat.S_ISREG(facts.st_mode) or facts.st_uid != os.geteuid():
+        return 0
+    return min(facts.st_size, _MAX_DROP_BYTES)
+
+
+def _bump(counts: dict[str, int], key: str) -> None:
+    counts[key] = min(_MAX_SAFE, counts.get(key, 0) + 1)
+
+
+def _folded_tally(
+    document: dict[str, object] | None,
+    key: str,
+    reading: WorkspaceEffectReading,
+    call: str | None,
+    now_ms: int,
+) -> bytes:
+    """Fold one reading into *document* and encode it within ``READING_FILE_BYTES``."""
+
+    if document is None:
+        empty_counts: dict[str, int] = {}
+        empty_slots: list[dict[str, object]] = []
+        empty_recent: list[dict[str, object]] = []
+        document = {
+            "format": _READING_FORMAT,
+            "since_ms": now_ms,
+            "counts": empty_counts,
+            "slots": empty_slots,
+            "recent": empty_recent,
+        }
+    _bump(cast(dict[str, int], document["counts"]), key)
+    hour = now_ms // _HOUR_MS
+    # Only this clock hour and the one before it; a slot from the future (a clock stepped back)
+    # is dropped rather than trusted.
+    slots = [
+        slot
+        for slot in cast(list[dict[str, object]], document["slots"])
+        if hour - 1 <= cast(int, slot["hour"]) <= hour
+    ]
+    current: dict[str, object] | None = next((slot for slot in slots if slot["hour"] == hour), None)
+    if current is None:
+        fresh_counts: dict[str, int] = {}
+        current = {"hour": hour, "counts": fresh_counts}
+        slots.append(current)
+    _bump(cast(dict[str, int], current["counts"]), key)
+    document["slots"] = sorted(slots, key=lambda slot: cast(int, slot["hour"]))
+    recent = cast(list[dict[str, object]], document["recent"])
+    recent.append(
+        {
+            "at_ms": now_ms,
+            "effect": reading.effect,
+            "reason": reading.reason if reading.effect == WORKSPACE_UNAVAILABLE else None,
+            "call": call,
+        }
+    )
+    del recent[: max(0, len(recent) - READING_RING)]
+    while True:
+        encoded = json.dumps(document, separators=(",", ":"), sort_keys=True).encode("ascii")
+        if len(encoded) <= READING_FILE_BYTES or not recent:
+            return encoded
+        # Long call ids could push the ring past the byte bound: shed the oldest readings.
+        del recent[0]
+
+
+def _replace_tally(directory: Path, encoded: bytes) -> None:
+    staging = directory / _READING_STAGING
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(staging)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(staging, flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        try:
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short_write")
+                view = view[written:]
+        finally:
+            os.close(descriptor)
+        os.replace(staging, directory / _READING_NAME)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(staging)
+        raise
+
+
+def _note_reading(directory: Path, reading: WorkspaceEffectReading, call_token: str | None) -> bool:
+    key = _count_key(reading)
+    if key is None:
+        return False
+    call = (
+        call_token
+        if type(call_token) is str and _CALL_TOKEN.fullmatch(call_token) is not None
+        else None
+    )
+    now_ms = min(_MAX_EPOCH_MS, max(0, time.time_ns() // 1_000_000))
+    try:
+        ensure_owner_only_dir(directory)
+        lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        lock = os.open(directory / _READING_LOCK, lock_flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            if not _acquire_lock(lock):
+                _count_drop(directory)
+                return False
+            status, document = _read_tally(directory / _READING_NAME)
+            if status == "unreadable":
+                # A damaged or foreign tally restarts (with a new ``since``) rather than being
+                # trusted; one this user does not own is never replaced.
+                with contextlib.suppress(OSError):
+                    facts = os.lstat(directory / _READING_NAME)
+                    if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
+                        return False
+                with contextlib.suppress(OSError):
+                    # The drop count belongs to the tally it restarts; never through a link.
+                    os.close(
+                        os.open(
+                            directory / _READING_DROPS,
+                            os.O_WRONLY
+                            | os.O_TRUNC
+                            | getattr(os, "O_CLOEXEC", 0)
+                            | getattr(os, "O_NOFOLLOW", 0),
+                        )
+                    )
+            _replace_tally(directory, _folded_tally(document, key, reading, call, now_ms))
+        finally:
+            os.close(lock)
+    except OSError, PathSafetyError, ValueError:
+        return False
+    return True
+
+
+def _counts_json(counts: Mapping[str, int]) -> JsonObject:
+    unavailable = {
+        key.partition(":")[2]: value
+        for key, value in sorted(counts.items())
+        if key.startswith(f"{WORKSPACE_UNAVAILABLE}:")
+    }
+    return JsonObject(
+        {
+            WORKSPACE_UNCHANGED: counts.get(WORKSPACE_UNCHANGED, 0),
+            WORKSPACE_CHANGED: counts.get(WORKSPACE_CHANGED, 0),
+            WORKSPACE_UNAVAILABLE: sum(unavailable.values()),
+            "unavailable_reasons": JsonObject(dict(unavailable)),
+        }
+    )
+
+
+def _render_ms(epoch_ms: int) -> str:
+    seconds, millis = divmod(epoch_ms, 1000)
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(seconds)) + f".{millis:03d}Z"
+
+
+def reading_tally_summary(directory: Path | None) -> JsonObject:
+    """The bounded reading tally of one workspace's fingerprint directory, for ``observe status``.
+
+    A status read never creates the directory, the lock or the tally. Every value is a closed
+    token, a count, a time or a host tool-call id that already matched the closed token pattern.
+    """
+
+    status = "absent"
+    document: dict[str, object] | None = None
+    dropped = 0
+    if directory is not None:
+        try:
+            if existing_owner_only_dir(directory):
+                status, document = _read_tally(directory / _READING_NAME)
+                dropped = _drop_count(directory)
+        except OSError, PathSafetyError:
+            status, document = "unreadable", None
+    counts: Mapping[str, int] = (
+        {} if document is None else cast(Mapping[str, int], document["counts"])
+    )
+    hour = time.time_ns() // 1_000_000 // _HOUR_MS
+    recent_counts: dict[str, int] = {}
+    if document is not None:
+        for slot in cast(list[dict[str, object]], document["slots"]):
+            if hour - 1 <= cast(int, slot["hour"]) <= hour:
+                for key, value in cast(dict[str, int], slot["counts"]).items():
+                    recent_counts[key] = min(_MAX_SAFE, recent_counts.get(key, 0) + value)
+    recent: list[JsonValue] = []
+    if document is not None:
+        for item in cast(list[dict[str, object]], document["recent"]):
+            recent.append(
+                JsonObject(
+                    {
+                        "at": _render_ms(cast(int, item["at_ms"])),
+                        "effect": cast(str, item["effect"]),
+                        "reason": cast(str | None, item["reason"]),
+                        "call": cast(str | None, item["call"]),
+                    }
+                )
+            )
+    return JsonObject(
+        {
+            "status": status,
+            "since": None if document is None else _render_ms(cast(int, document["since_ms"])),
+            "all": _counts_json(counts),
+            "recent_window": "current_and_previous_clock_hour",
+            "recent_counts": _counts_json(recent_counts),
+            "ring_capacity": READING_RING,
+            "recent_readings": tuple(recent),
+            # Readings that could not take the lock within the bounded wait: a lower bound.
+            "dropped_sample_count": dropped,
+        }
+    )

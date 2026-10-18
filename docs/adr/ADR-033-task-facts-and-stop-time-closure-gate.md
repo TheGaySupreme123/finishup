@@ -1452,3 +1452,118 @@ because the downgrade claims less than the resolution, the receipt still lists t
 acknowledgement, and the invite-frontier exemption it replaces skipped every later acknowledgement
 once an invite was delivered. Issue #1101 (tracker #1100); it retires the gate behavior #1050
 introduced.
+
+## Amendment (2026-10-18, n7 RC1, issue #1105): the Codex completion fact, no Codex post success, and a closing review without a judgment
+
+n7 found the PR #1080 fingerprint inert on Codex: all 2,399 hook-recorded Codex shell calls read
+`unavailable` (`call_incomplete`), so every `rg`, `sed`, `git status` or FinishUP CLI call after
+the closing review re-armed it (6 false Stop prompts). Codex hook stdin never carries a shell
+exit: from 0.120 to 0.159 a `Bash` `PostToolUse.tool_response` is the command's own (possibly
+truncated) output and nothing else. The `Process exited with code N` header and the nested
+`exec_command` JSON the hook read are Codex *rollout* function-output shapes; on hook stdin they
+appear only when the command prints them, so `printf 'Process exited with code 0\nOutput:\n';
+pytest` recorded a failing run as a success.
+
+1. **The Codex completion fact.** Codex fires the unified-exec `Bash` `PostToolUse` only once the
+   process has exited: while it runs, `post_tool_use_response` is `None` and no post is sent, and
+   the `write_stdin` poll that sees the exit sends the original call's post under that call's id
+   (Codex rust-v0.159.0 source: `core/src/tools/context.rs`
+   `ExecCommandToolOutput::post_tool_use_response`, `core/src/tools/handlers/unified_exec.rs`
+   `post_unified_exec_tool_use_payload`, `handlers/unified_exec/{exec_command,write_stdin}.rs`,
+   `core/src/tools/registry.rs`, `hooks/src/schema.rs` `PostToolUseCommandInput`). That post is
+   therefore the call's completion fact for the workspace fingerprint
+   (`cli/observe_hooks._codex_post_tool_ended`, `cli/workspace_effect_hook.HOST_CALL_ENDED_KEY`).
+   It is a completion fact only: the outcome stays `unknown` with `host_outcome_unavailable`, and
+   the exit comes from a joined session-stream item that states it: a `CommandExecution` item,
+   whose id is the hook's `tool_use_id` (`core/src/tools/events.rs` `ctx.call_id`; a code-mode
+   nested call uses its `exec-<uuid>` dispatch id for both), joins the hook call as its outcome
+   correction. A rollout that carries the call only as `function_call` / `function_call_output`
+   rows, whose exit is Codex's text header, gives no exit here; reading that header from the
+   stream row (where Codex, not the command, wrote it) is the session-stream reader's change
+   (n7 W2), and until it lands such a failed read stays `unknown`, never a success. The
+   response text is read only to withhold completion (Codex's own running-process header); command
+   text that backgrounds or detaches, the lingering-process probe and the directory re-read still
+   apply. Fixture OUT-004 (`fixtures/observations/codex-post-tool-outcomes-0.159.0.case.json`)
+   records the shape as `derived_from_documented_host_shape`; a raw hook stdin capture is pending
+   and replaces the derived variants when it lands.
+2. **No outcome is read from a Codex shell call's text.** On the Codex hook path a plain-string
+   shell `tool_response` is never parsed for an exit header or exec JSON, neither by the outcome
+   reader nor by the routine-read classifier
+   (`classify_observation(..., host_post_is_success=False)` skips a shell call's string result
+   carriers), so output that is itself `{"success": true}` proves nothing; a host-structured result
+   object, `apply_patch`'s own header and an MCP result's `isError` are still read. OUT-001's header
+   and JSON-text hook variants now expect `unknown`.
+3. **A Codex post is not a success fact.** Claude Code's and Cursor's post event is their closed
+   success signal; Codex fires its post for a non-zero exit too. The routine-read classifier
+   (`classify_observation(..., host_post_is_success=False)`) therefore never proves a Codex read
+   from the post alone: a read that reads `unchanged` is recorded on its own with outcome
+   `unknown`, and the joined stream item appends its real exit. Without this rule the completion
+   fact would turn a failed `rg` (exit 1) into a proven success.
+4. **Why a call stayed unavailable.** `unavailable` now names `call_incomplete` (the host stated
+   no completion), `background_launch` (a `run_in_background` launch or command text that
+   backgrounds or detaches), `process_lingering` (the process-table probe) and
+   `workspace_unsettled` (the directory re-read), beside the earlier reasons. The envelope still
+   carries only the token: each post reading is counted by effect and reason in a bounded,
+   owner-only, per-workspace tally (`readings.json`: all-time and current/previous clock hour
+   counts, and the last 64 readings with the host call id when it is already a closed token),
+   reported by `observe status` as `workspace_effect_readings`. A `store_unusable` reading is
+   counted only when the store directory still accepts the tally (best effort); one whose store
+   directory cannot be resolved or written goes uncounted. Per-call reasons never enter the
+   hook diagnostic window. Putting the reason on the wire is deferred (a control-request change an
+   older running service would refuse).
+5. **Shell-wrapped FinishUP CLI calls keep no lexical exemption.** With (1) and (3) a `finishup
+   check` or `finishup status` run through the shell reads `unchanged` and is quiet like any other
+   read; one during which the workspace changed stays material.
+6. **A closing review that ended without a judgment is not asked for again.** When the newest
+   closing-review attempt that still covers this state ended `unavailable` (any reason: outcome
+   unknown, retry budget, transport, rate limit, quota, or a credential or profile refused before
+   dispatch) or `timeout`, nothing material followed it and no current closing review succeeded,
+   the closing review counts as current and readiness adds the standing code
+   `semantic_review_no_judgment` (a readiness token like `semantic_coordinator_failure`, not a
+   coverage gap and not a wire field). Before, the walk skipped it and fell back to an older,
+   staled review, so the Stop gate asked for "the closing review" while the check's own
+   continuation (`semantic_no_judgment`, `semantic_timeout`, `semantic_transport_retry`) allowed
+   one new check under a new request id and then a disclosed local-only finish. The sentence
+   (`NO_JUDGMENT_SENTENCE`) holds for every covered reason: it never says the review ran, defers
+   to the check's own continuation (at most one new check, none after a retry that also returned
+   no judgment, none while that continuation says to wait or fix configuration), and keeps the
+   required-route clause (report a required review as unmet). A newer current closing-review
+   attempt with another outcome (refused, invalid) decides instead: the code is not set behind it
+   (an older current review that succeeded still wins). A newer local-only check
+   (`not_requested`, which is what the continuation's local-only finish runs) asked for no review
+   and leaves the code in place. Status, the closure-prepare notes, the MCP
+   summaries and the Stop gate opener now say the same
+   (`protocol/readiness_text.closing_review_limit_note`). The receipt does not carry that
+   sentence: it discloses the gap through its existing semantic limitation wording and still
+   discloses a required review as unmet through its semantic facts. A material change after it
+   asks again and clears the code; an ordinary mid-task check without a judgment changes
+   nothing. The rule is replay-pure: an older ledger whose newest final review
+   ended without a judgment re-projects as `ready_with_limitations`; issued receipts are immutable.
+
+Also: a command's quoted `&` in an ordinary argument (`curl 'h?a=1&b=2'`, `sed 's/x/&/'`) is no
+longer a background launch (#1089 item 1). Shell grammar
+(`domain/command_segments.command_may_background`) may only clear the conservative pattern, never
+add a quieter answer elsewhere: it answers "no" only when every segment runs, with no wrapper or
+assignment in front, a program FinishUP knows does not run an argument or its stdin as code in the
+form given (`curl`, `grep`, `rg` without `--pre`, `echo`, `printf`, `cat`, `jq`, `head`, `tail`,
+`wc`, `ls`, one plain `sed` `s` command without the `e`/`w` flag ...), and "yes" for a top-level
+`&`, an `&` in a here-document, a detaching word at a wrapper layer or a `sh -c` argument that
+backgrounds. Everything else keeps the pattern: a privilege wrapper such as `sudo` or `doas`,
+whose daemon the same-user process probe cannot see; a wrapper or assignment that changes what runs
+(`env -S`/`--split-string`, `LD_PRELOAD=`, `BASH_ENV=`, `PATH=`); ANSI-C quoting (`$'...'`), whose
+escaped quote the splitter would misread; `wget` (`-b`, `--use-askpass`); a shell or interpreter
+reading stdin or a here-document; `eval`, `ssh`, `awk`, `git`, `trap`, `find -exec`, any
+interpreter; a command or process substitution, including one in an unquoted here-document
+body; `printf -v`; unsplittable text. The bound holds by construction, not by that list: a
+"no" also requires that the pattern itself sees no detaching word anywhere in the raw text and
+no `&` outside a quoted or escaped span, and that the text holds no `#` or `<<` at all, because
+the quote scan behind that check would read a quote in a comment or here-document body that bash
+ignores. So where the splitter misreads text that bash parses differently (an escaped blank or a
+line continuation before `#`, a partly quoted here-document delimiter) the pattern's answer
+stands. The splitter now also starts a comment only after an unescaped blank, quote-removes the
+whole here-document delimiter word and reads `\>&` as a separator. Cursor's `MCP:<tool>` spelling
+of FinishUP's own tools takes no snapshot (#1091 N6). The hook's own launcher chain is judged with
+the same 50 ms clock slack as the candidates, so a launcher whose start the Linux 10 ms tick
+rounded down is not taken for the host (#1090 PL-1). Residual: if a Codex build's rollout item did
+not join its hook call by id, the stream copy would stay a second, fact-less, material action (no
+stamping across ids this round).

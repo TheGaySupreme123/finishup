@@ -211,3 +211,24 @@ def test_python_module_runs_and_build_named_scripts(command: str, runner: str) -
     """tb4n2 interleaved S (P1-2): `python -m pytest` is a test run; `build_model.py` is not a build."""
 
     assert command_runner_class({"command": command}) == runner
+
+
+def test_a_codex_post_event_is_not_a_success_fact() -> None:
+    """n7 RC1: Codex fires ``PostToolUse`` for a non-zero exit, so the echo proves nothing."""
+
+    echoed: dict[str, JsonValue] = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "rg -n x ."},
+        "hook_event_name": "PostToolUse",
+    }
+    codex = classify_observation(echoed, "PostToolUse", host_post_is_success=False)
+    assert codex.routine_candidate is True
+    assert codex.proven_routine_success is False
+    assert "unknown" in codex.reason_tokens
+    # A closed exit the host states still proves it.
+    stated = classify_observation(
+        {**echoed, "exit_status": 0}, "PostToolUse", host_post_is_success=False
+    )
+    assert stated.proven_routine_success is True
+    # Claude Code and Cursor keep their post event as the closed success signal.
+    assert classify_observation(echoed, "PostToolUse").proven_routine_success is True

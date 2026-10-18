@@ -2915,7 +2915,8 @@ async def test_codex_code_mode_and_shell_edits_reach_the_packet(tmp_path: Path) 
 async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) -> None:
     """#910: Codex hook and rollout outcome facts become ledger results; none is invented.
 
-    Every OUT-001 hook shape runs through the real hook handler, outbox, coordinator and SQLite
+    A Bash text response states no outcome (n7 RC1): its exit comes from the rollout item. Every
+    OUT-001 hook shape runs through the real hook handler, outbox, coordinator and SQLite
     ledger. The rollout's completed tool items are handed to the coordinator directly, bypassing
     the reader's delivery gate (covered in ``test_codex_code_mode_replay``). One of them shares its
     id with an outcome-less hook call, the case that gate delivers in a hooked session, so the
@@ -3088,8 +3089,20 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
         assert (HOST_OUTCOME_UNAVAILABLE_GAP in gaps) is expected_gap, variant
         if hook_inputs[variant]["provenance"] != "constructed_control":
             folded.update(gaps)
-    # Every recorded shape states its outcome, so none of them carries the standing gap.
-    assert HOST_OUTCOME_UNAVAILABLE_GAP not in folded
+    # On hook stdin a recorded Bash text shape is the command's own output (n7 RC1, #1105), so it
+    # states no outcome and carries the standing gap; every other recorded shape states its own.
+    outcome_less = {
+        variant
+        for variant, facts in hook_expected.items()
+        if hook_inputs[variant]["provenance"] != "constructed_control"
+        and facts["host_outcome_unavailable"] is True
+    }
+    assert outcome_less
+    for variant in outcome_less:
+        hook_payload = cast(dict[str, object], hook_inputs[variant]["payload"])
+        assert hook_payload["tool_name"] == "Bash", variant
+        assert type(hook_payload["tool_response"]) is str, variant
+    assert HOST_OUTCOME_UNAVAILABLE_GAP in folded
 
     def stream_result(envelope: ObservationEnvelope) -> tuple[ResultOutcome, int | None]:
         recorded = ledger_result(envelope)

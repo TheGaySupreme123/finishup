@@ -703,6 +703,31 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   recorded ids and where request shapes live, and the guidance says that evidence `observed_at` is
   always required.
 
+- In Codex, a read-only command after the closing review (`rg`, `sed -n`, `cat`, `git status`,
+  `sha256sum`, or a FinishUP command such as `finishup check`) no longer asks for the closing
+  review again. Codex sends a shell command's output and no exit status to the hook, so every
+  command read as one whose effect could not be established. Codex sends that event only after the
+  command has ended, so FinishUP now compares the project's files across it; the result stays
+  unknown until a Codex session-record item that states the exit joins it (a command item does
+  today; reading the exit line of a function-output row is separate work), and a failed read is
+  never counted as a success. A command can no longer forge a success by printing
+  `Process exited with code 0` or `{"success": true}`. A quoted `&` in an argument of a program
+  FinishUP knows does not run its arguments as code in the form given (`curl 'h?a=1&b=2'`,
+  `sed 's/x/&/'`, `rg 'a&b'` without `--pre`) no longer counts as starting a background process;
+  `sudo`, `wget`, shells, interpreters, other programs that can run code, a wrapper or assignment in
+  front of the program (`env -S`, `LD_PRELOAD=`, `PATH=`), ANSI-C quoting (`$'...'`) and any `#`
+  or `<<` in the text (a quote in a comment or here-document body is one bash ignores) keep the
+  cautious reading, as does any text where a detaching word or an unquoted `&` appears anywhere,
+  so only a quoted `&` is ever cleared. Cursor's `MCP:<tool>` spelling of FinishUP's own tools
+  takes no snapshot.
+  `finishup observe status` counts how many commands were compared and why the others could not be
+  (`call_incomplete`, `background_launch`, `process_lingering`, `workspace_unsettled`, ...), keeping
+  the last 64 by call. A closing review that ended without a judgment (outcome unknown, timeout, a
+  provider or configuration that was unavailable) is not asked for again: readiness names
+  `semantic_review_no_judgment`, and the Stop text, status, closure-prepare notes and MCP summaries
+  point to the check's own advice (at most one new check, none after a retry that also returned no
+  judgment), otherwise a finish that reports a required review as unmet (#1105).
+
 - A non-root user can now use FinishUP in a project directory that root owns, as container images
   commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
   and MCP tools accept such a project root when no other account can write it, or when it is a

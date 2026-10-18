@@ -26,10 +26,13 @@ __all__ = [
     "awaiting_ruling_variants",
     "COORDINATOR_FAILURE_SENTENCE",
     "COORDINATOR_FAILURE_TOKEN",
+    "NO_JUDGMENT_SENTENCE",
+    "NO_JUDGMENT_TOKEN",
     "check_cause_sentence",
     "acceptance_risk_note",
     "acceptance_risk_rows",
     "closure_counts_variants",
+    "closing_review_limit_note",
     "coordinator_failure_note",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
@@ -79,6 +82,17 @@ COORDINATOR_FAILURE_TOKEN: Final = "semantic_coordinator_failure"
 COORDINATOR_FAILURE_SENTENCE: Final = (
     "The closing review stopped on an unchanged coordinator failure. That is a FinishUP limit;"
     " do not send the same check again."
+)
+# n7 RC1 (#1105): a closing review that ended without a judgment (``unavailable`` or ``timeout``,
+# whatever the reason, including one refused before dispatch) is not asked for again. The sentence
+# defers to that check's own continuation, which may allow one new check or none (wait for quota,
+# fix the configuration), and holds for every reason: it never says the review ran.
+NO_JUDGMENT_TOKEN: Final = "semantic_review_no_judgment"
+NO_JUDGMENT_SENTENCE: Final = (
+    "The closing review ended without a judgment, so FinishUP does not ask for it again. Follow"
+    " that check's own continuation: it allows at most one new check under a NEW request_id,"
+    " and none after a retry that also returned no judgment. Otherwise finish, report a required"
+    " review as unmet, and disclose that AI-powered review returned no judgment."
 )
 
 
@@ -179,16 +193,28 @@ def acceptance_risk_note(readiness: object, *, short: bool = False) -> str:
     )
 
 
-def coordinator_failure_note(readiness: object) -> str | None:
-    """The standing sentence when readiness names an unchanged coordinator failure.
+def closing_review_limit_note(readiness: object) -> str | None:
+    """The standing sentence when readiness stops asking for the closing review.
 
-    ``None`` when the token is absent, so a checklist without it keeps its exact text.
+    That is an unchanged coordinator failure (#1079) or a closing review that ended without a
+    judgment (n7 RC1). ``None`` when neither token is present, so a checklist without them keeps
+    its exact text.
     """
 
     raw = _field(readiness, "standing_limitations")
-    if isinstance(raw, (tuple, list)) and COORDINATOR_FAILURE_TOKEN in raw:
+    if not isinstance(raw, (tuple, list)):
+        return None
+    tokens = cast("tuple[object, ...] | list[object]", raw)
+    if COORDINATOR_FAILURE_TOKEN in tokens:
         return COORDINATOR_FAILURE_SENTENCE
+    if NO_JUDGMENT_TOKEN in tokens:
+        return NO_JUDGMENT_SENTENCE
     return None
+
+
+# The name every surface (CLI render, the closure-prepare notes, MCP summaries, the Stop gate)
+# already calls; it covers both closing-review limits.
+coordinator_failure_note = closing_review_limit_note
 
 
 def readiness_directive(state: str, *, standing: object = 0, acknowledged: object = 0) -> str:

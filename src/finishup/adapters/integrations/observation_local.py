@@ -44,6 +44,7 @@ from finishup.adapters.integrations.observation_admission import (
     admission_buffer_to_json,
     flush_admission,
     plan_admission,
+    summarize_or_demote,
 )
 from finishup.config.paths import PathSafetyError, ensure_owner_only_dir, state_dir
 from finishup.domain.finishup_tools import (
@@ -9981,7 +9982,20 @@ class LocalObservationStore:
             )
             deliveries: list[tuple[str, ObservationEnvelope]] = []
             successes: list[ObservationEnvelope] = []
+            refusals: list[SummaryRefusal] = []
             promoted_ids: list[str] = []
+
+            def summarize(host_session: str, fence: str) -> None:
+                # The way ``_flush_lane`` does it: a group the builder refuses (an input an
+                # older build buffered as a success) is delivered demoted, never an error.
+                delivered, refusal = summarize_or_demote(
+                    host_session, tuple(successes), fence, build_routine_read_summary
+                )
+                deliveries.extend(delivered)
+                if refusal is not None:
+                    refusals.append(refusal)
+                successes.clear()
+
             for item in lane:
                 item_call = item.envelope.structural_payload.get("tool_call_id") or (
                     item.envelope.structural_payload.get("correlation_id")
@@ -9989,13 +10003,7 @@ class LocalObservationStore:
                 promote = item is target or (call_id is not None and item_call == call_id)
                 if promote or item.kind == "pending":
                     if successes:
-                        deliveries.append(
-                            (
-                                item.host_session,
-                                build_routine_read_summary(tuple(successes), item.fence),
-                            )
-                        )
-                        successes.clear()
+                        summarize(item.host_session, item.fence)
                     envelope = item.envelope
                     if promote:
                         promoted_ids.append(envelope.source_identity)
@@ -10012,15 +10020,12 @@ class LocalObservationStore:
                 else:
                     successes.append(item.envelope)
             if successes:
-                deliveries.append(
-                    (
-                        target.host_session,
-                        build_routine_read_summary(tuple(successes), target.fence),
-                    )
-                )
+                summarize(target.host_session, target.fence)
             admitted = self.commit_selected_admission(
                 workspace,
-                AdmissionPlan(AdmissionBuffer(remaining), tuple(deliveries), False),
+                AdmissionPlan(
+                    AdmissionBuffer(remaining), tuple(deliveries), False, tuple(refusals)
+                ),
             )
             return JsonObject(
                 {

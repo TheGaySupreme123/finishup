@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -528,7 +529,7 @@ def test_a_child_left_running_in_the_workspace_makes_the_comparison_unavailable(
             )
         finally:
             release_worker(release_write, done_read)
-    assert (reading.effect, reading.reason) == ("unavailable", "call_incomplete")
+    assert (reading.effect, reading.reason) == ("unavailable", "process_lingering")
     # The child really did write after the post-call pass: "unchanged" would have been false.
     assert (root / "deliverable.txt").read_text() == "LATE UNREVIEWED"
 
@@ -568,7 +569,7 @@ def test_a_lingering_or_unknowable_process_table_is_unavailable(
         readings.append(
             store.effect_after(str(root), call, deadline=time.monotonic() + 10, call_complete=True)
         )
-    reason = "call_incomplete" if answer else "process_table_unreadable"
+    reason = "process_lingering" if answer else "process_table_unreadable"
     assert [(r.effect, r.reason) for r in readings] == [("unavailable", reason)] * 2
     # A lingering process is a per-call fact; an unreadable table is a standing condition that
     # is named once, then stays quiet in diagnostics while it lasts.
@@ -677,7 +678,7 @@ def test_an_in_place_rewrite_during_the_post_walk_is_judged_by_who_wrote_it(
         str(root), "call", deadline=time.monotonic() + 10, call_complete=True
     )
     if writer_started_in_call:
-        assert (reading.effect, reading.reason) == ("unavailable", "call_incomplete")
+        assert (reading.effect, reading.reason) == ("unavailable", "process_lingering")
         assert not done  # never reached: the lingering writer stopped the pass before the walk
     else:
         assert done and target.read_text() == "UNREVIEWED"
@@ -831,3 +832,109 @@ def test_real_git_bookkeeping_is_quiet_and_a_config_change_is_not(tmp_path: Path
     assert _around(store, root, lambda: git("branch", "side")) == "unchanged"
     assert _around(store, root, lambda: git("log", "--oneline")) == "unchanged"
     assert _around(store, root, lambda: git("config", "core.fsmonitor", "./x")) == "changed"
+
+
+# --- n7 RC1 (#1105): distinct reasons and the bounded per-call tally -------------------------
+
+
+def _tally(directory: Path | None) -> dict[str, Any]:
+    return cast(dict[str, Any], dict(fingerprint.reading_tally_summary(directory)))
+
+
+def _never_settled(_directories: object) -> bool:
+    return False
+
+
+def test_a_walk_that_did_not_settle_is_workspace_unsettled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _workspace(tmp_path)
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    monkeypatch.setattr(WorkspaceFingerprintStore, "_settled", staticmethod(_never_settled))
+    reading = store.effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert (reading.effect, reading.reason) == ("unavailable", "workspace_unsettled")
+
+
+@pytest.mark.parametrize("reason", ["call_incomplete", "background_launch"])
+def test_an_incomplete_call_reads_as_the_reason_its_caller_names(
+    tmp_path: Path, reason: fingerprint.UnavailableReason
+) -> None:
+    root = _workspace(tmp_path)
+    store = _store(tmp_path)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    reading = store.effect_after(
+        str(root),
+        "call",
+        deadline=time.monotonic() + 10,
+        call_complete=False,
+        incomplete_reason=reason,
+    )
+    assert (reading.effect, reading.reason) == ("unavailable", reason)
+
+
+def test_reading_tally_is_bounded_exact_and_payload_free(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    readings = [
+        fingerprint.WorkspaceEffectReading("unchanged"),
+        fingerprint.WorkspaceEffectReading("changed"),
+        fingerprint.WorkspaceEffectReading("unavailable", "process_lingering"),
+        fingerprint.WorkspaceEffectReading("unavailable", "background_launch"),
+    ]
+    for index in range(200):
+        # Long closed call ids push the ring against the byte bound; a path is never kept.
+        call = f"call_{index:04d}_" + "x" * 118 if index % 2 else "/home/user/secret path"
+        assert store.note_reading(readings[index % 4], call)
+    raw = (directory / "readings.json").read_bytes()
+    assert len(raw) <= fingerprint.READING_FILE_BYTES
+    assert b"/home/user" not in raw and b"secret" not in raw
+    summary = _tally(directory)
+    assert summary["status"] == "retained"
+    totals = summary["all"]
+    assert (totals["unchanged"], totals["changed"], totals["unavailable"]) == (50, 50, 100)
+    assert dict(totals["unavailable_reasons"]) == {
+        "background_launch": 50,
+        "process_lingering": 50,
+    }
+    assert summary["recent_counts"]["unavailable"] == 100
+    ring = summary["recent_readings"]
+    assert 0 < len(ring) <= fingerprint.READING_RING
+    assert ring[-1]["call"] is not None and ring[-1]["call"].startswith("call_0199_")
+    assert ring[-2]["call"] is None  # the path-shaped id is never kept
+    assert {item["reason"] for item in ring if item["effect"] != "unavailable"} == {None}
+    assert summary["dropped_sample_count"] == 0
+
+
+def test_reading_tally_drops_and_counts_a_sample_under_contention(tmp_path: Path) -> None:
+    import fcntl
+
+    store = _store(tmp_path)
+    directory = tmp_path / "state" / "fp"
+    assert store.note_reading(fingerprint.WorkspaceEffectReading("unchanged"), "call-1")
+    holder = os.open(directory / ".readings.lock", os.O_RDWR)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        assert not store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call-2")
+    finally:
+        os.close(holder)
+    summary = _tally(directory)
+    assert summary["all"]["unchanged"] == 1 and summary["all"]["changed"] == 0
+    assert summary["dropped_sample_count"] == 1
+
+
+def test_a_damaged_tally_restarts_and_a_status_read_creates_nothing(tmp_path: Path) -> None:
+    directory = tmp_path / "state" / "fp"
+    assert _tally(directory)["status"] == "absent"
+    assert _tally(None)["status"] == "absent"
+    assert not directory.exists()
+    store = _store(tmp_path)
+    assert store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call-1")
+    (directory / "readings.json").write_text('{"format": "something else"}')
+    assert _tally(directory)["status"] == "unreadable"
+    assert store.note_reading(fingerprint.WorkspaceEffectReading("unchanged"), "call-2")
+    summary = _tally(directory)
+    assert summary["status"] == "retained"
+    assert (summary["all"]["unchanged"], summary["all"]["changed"]) == (1, 0)

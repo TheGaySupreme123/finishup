@@ -105,8 +105,9 @@ from finishup.cli.runtime_facts import SHELL_APPLY_PATCH as _SHELL_APPLY_PATCH
 from finishup.cli.runtime_facts import finishup_owned_roots, runtime_structural_facts
 from finishup.cli.runtime_facts import shell_heredocs as _shell_heredocs
 from finishup.cli.workspace_effect_hook import (
+    HOST_CALL_ENDED_KEY,
     fingerprinted_tool,
-    host_call_complete,
+    host_call_incomplete_reason,
     owned_relative_paths,
     workspace_fingerprint_pass,
 )
@@ -120,6 +121,7 @@ from finishup.domain.compaction_recap import RECAP_CONTEXT_LIMIT, RecapFacts
 from finishup.domain.finishup_tools import (
     FINISHUP_SCOPED_TOOL_PREFIXES,
     FINISHUP_TOOL_SERVER_NAMES,
+    finishup_tool_spelling,
 )
 from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
@@ -1074,8 +1076,12 @@ def _extract_structural(
         # summarized as a proven success and refused later by the summary builder (#753).
         classification_payload = dict(payload)
         _merge_outcome_facts(classification_payload, host_outcome)
-        classification = classify_observation(classification_payload, event_name)
-    selected = classification or classify_observation(payload, event_name)
+        classification = classify_observation(
+            classification_payload, event_name, host_post_is_success=False
+        )
+    selected = classification or classify_observation(
+        payload, event_name, host_post_is_success=not codex_post
+    )
     if selected.routine_candidate and (
         event_name in {"PreToolUse", "preToolUse"} or selected.proven_routine_success
     ):
@@ -1091,10 +1097,11 @@ def _extract_structural(
         if flag is not None:
             fields[key] = flag
     if codex_post and host_outcome is not None:
-        # Codex 0.157.x states every tool outcome inside ``tool_response`` only: a nested
-        # ``exit_code``, an ``Exit code: N`` or ``Process exited with code N`` header, or MCP's
-        # ``isError``. Keep the closed facts so a shell, exec or patch result is not an
-        # outcome-less call (#883, #910); the result text itself is never copied here.
+        # Codex states a tool outcome inside ``tool_response`` only: a host-structured result
+        # object's ``exit_code``, ``apply_patch``'s ``Exit code: N`` header, or MCP's ``isError``
+        # (a shell call's text response is its own output and states nothing, n7 RC1). Keep the
+        # closed facts so such a result is not an outcome-less call (#883, #910); the result
+        # text itself is never copied here.
         _merge_outcome_facts(fields, host_outcome)
     # Classification can prove success from nested host result aliases (for example
     # tool_response.exit_code). Preserve that bounded fact beside the routine marker:
@@ -4816,7 +4823,7 @@ def _workspace_fingerprint_hook_pass(
         or live_locator is None
         or workspace is None
         or replayed_commitment is not None
-        or not fingerprinted_tool(tool, finishup_owned=finishup_mcp_tool(tool))
+        or not fingerprinted_tool(tool, finishup_owned=_finishup_owned_hook_tool(tool))
     ):
         return None
     started = monotonic()
@@ -4833,6 +4840,12 @@ def _workspace_fingerprint_hook_pass(
                 outcome_facts["tool_input"] = tool_input
         if source is ObservationSource.CODEX_HOOK and resolved_event == "PostToolUse":
             _merge_outcome_facts(outcome_facts, _codex_post_tool_outcome(payload))
+            if _codex_post_tool_ended(payload):
+                # This local copy only feeds the completion test; the outcome stays unknown.
+                outcome_facts[HOST_CALL_ENDED_KEY] = True
+        incomplete_reason = host_call_incomplete_reason(
+            cast(Mapping[str, DomainJsonValue], outcome_facts)
+        )
         reading = workspace_fingerprint_pass(
             resolved_event,
             call_identity=None
@@ -4842,7 +4855,9 @@ def _workspace_fingerprint_hook_pass(
             workspace_commitment=workspace_commitment,
             key_material=store.key_material(),
             observation_root=observation_dir(_state=_state),
-            complete=host_call_complete(cast(Mapping[str, DomainJsonValue], outcome_facts)),
+            complete=incomplete_reason is None,
+            incomplete_reason=incomplete_reason or "call_incomplete",
+            call_token=call,
             # FinishUP's own state (this pass's, too) changes on every hook pass.
             excluded=owned_relative_paths(
                 live_locator,
@@ -4872,14 +4887,39 @@ def _workspace_fingerprint_hook_pass(
     return None if resolved_event == "PreToolUse" else reading
 
 
+def _finishup_owned_hook_tool(tool: object) -> bool:
+    """Whether a hook's tool is FinishUP's own MCP tool, so it takes no workspace snapshot.
+
+    Cursor's ordinary profile spells every MCP call ``MCP:<tool>`` (#1091 N6); the kernel already
+    reads that spelling as FinishUP's own call. A bare tool name is no host's hook spelling and
+    stays fingerprinted.
+    """
+
+    return finishup_mcp_tool(tool) or finishup_tool_spelling(tool) in {
+        "server_scoped",
+        "server_prefixed",
+        "generic_mcp",
+    }
+
+
 def _classify_after_fingerprint(
-    payload: Mapping[str, JsonValue], event: str, reading: WorkspaceEffectReading | None
+    payload: Mapping[str, JsonValue],
+    event: str,
+    reading: WorkspaceEffectReading | None,
+    *,
+    source: ObservationSource,
 ) -> ObservationClassification:
     """Classify one observation; a read-shaped shell call joins a routine-read summary only when
     its fingerprint saw the workspace unchanged, otherwise it is recorded on its own with its
-    fact (PR #1080)."""
+    fact (PR #1080).
 
-    classification = classify_observation(payload, event)
+    A Codex post is not a success fact: Codex fires ``PostToolUse`` for a non-zero exit too, so
+    only a closed outcome it states can prove a routine read (n7 RC1).
+    """
+
+    classification = classify_observation(
+        payload, event, host_post_is_success=source is not ObservationSource.CODEX_HOOK
+    )
     if reading is None or reading.effect == WORKSPACE_UNCHANGED:
         return classification
     return without_routine_read(classification)
@@ -5524,7 +5564,7 @@ def handle_observe(
             if codex_outcome is not None:
                 _merge_outcome_facts(classification_payload, codex_outcome)
             classification = _classify_after_fingerprint(
-                classification_payload, resolved_event, workspace_reading
+                classification_payload, resolved_event, workspace_reading, source=source
             )
             pressure = store.update_selection_pressure(workspace_commitment, session_commitment)
             selected_focused = pressure.effective_mode is ObservationMode.FOCUSED
@@ -6871,12 +6911,17 @@ def _native_outcome_facts(
     return _NativeOutcomeFacts(None, denied, None, None)
 
 
-# Codex 0.157.x states a tool call's outcome only inside ``tool_response`` (#910). The closed
-# shapes read here come from recorded Codex 0.157.1 rollouts (fixture
-# ``observations/codex-post-tool-outcomes-0.157.1.case.json``): a nested ``tools.exec_command``
-# result object ``{chunk_id, wall_time_seconds, exit_code, original_token_count, output}``, as an
-# object or as JSON text; the freeform function-output header ``Exit code: N`` (``apply_patch`` and
-# the classic shell); and the unified-exec header ``Process exited with code N``.
+# Codex states a tool call's outcome only inside ``tool_response`` (#910). The closed shapes read
+# here: an MCP result's ``isError``; a host-structured result *object* with a closed exit field;
+# and ``apply_patch``'s own ``Exit code: N`` header (Codex's text, not a command's). The other
+# shapes come from Codex rollouts (fixture ``observations/codex-post-tool-outcomes-0.157.1.case.json``):
+# the nested ``tools.exec_command`` result as JSON text and the ``Process exited with code N`` /
+# ``Exit code: N`` headers. On hook stdin a shell call's ``tool_response`` is the command's output
+# and nothing else (every build from 0.120 to 0.159; fixture
+# ``observations/codex-post-tool-outcomes-0.159.0.case.json``), so such text there was printed by
+# the command and is never read as an outcome: ``printf 'Process exited with code 0\n'`` would
+# otherwise forge a success (n7 RC1). A shell exit comes from the session-stream item that joins
+# the call by id.
 _CODEX_TOP_LEVEL_FACT_KEYS: Final = ("exit_status", "success", "denied")
 # Codex's own shell tools, compared case-insensitively. The shared selection set also names
 # ``exec`` and ``command``; a code-mode ``exec`` cell's result is model-authored JSON, so it is
@@ -6895,6 +6940,7 @@ _CODEX_HEADER_FIELD: Final = re.compile(
     r"|Process running with session ID [0-9]{1,20}"
 )
 _CODEX_HEADER_MAX_LINES: Final = 12
+_CODEX_RUNNING_FIELD: Final = "Process running with session ID "
 
 
 def _unique_json_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -6953,36 +6999,58 @@ def _codex_result_object(
     return result
 
 
+def _codex_header_lines(text: str) -> tuple[str, ...]:
+    """The lines of a well-formed Codex function-output header, or ``()`` when there is none.
+
+    The header is a closed grammar that ends at the ``Output:`` line. An unrecognized line, or a
+    text with no terminator, is not Codex's header and yields nothing rather than a guess.
+    """
+
+    lines: list[str] = []
+    for raw_line in text.split("\n", _CODEX_HEADER_MAX_LINES)[:_CODEX_HEADER_MAX_LINES]:
+        line = raw_line.removesuffix("\r")
+        if line == "Output:":
+            return tuple(lines)
+        if (
+            _CODEX_HEADER_EXIT.fullmatch(line) is None
+            and _CODEX_HEADER_FIELD.fullmatch(line) is None
+        ):
+            return ()
+        lines.append(line)
+    return ()
+
+
 def _codex_header_exit_codes(text: str) -> tuple[int, ...]:
     """Read exit codes from a Codex function-output header, never from the output itself.
 
-    The header is a closed grammar that ends at the ``Output:`` line. An unrecognized line, or a
-    text with no terminator, is not Codex's header and yields no fact rather than a guess.
     ``Process running with session ID N`` is a process that has not exited: it states no exit.
     """
 
     codes: list[int] = []
-    for raw_line in text.split("\n", _CODEX_HEADER_MAX_LINES)[:_CODEX_HEADER_MAX_LINES]:
-        line = raw_line.removesuffix("\r")
-        if line == "Output:":
-            return tuple(codes)
+    for line in _codex_header_lines(text):
         exit_match = _CODEX_HEADER_EXIT.fullmatch(line)
         if exit_match is not None:
             codes.append(int(exit_match.group(1)))
-        elif _CODEX_HEADER_FIELD.fullmatch(line) is None:
-            return ()
-    return ()
+    return tuple(codes)
+
+
+def _codex_header_running(text: str) -> bool:
+    """Whether *text* opens with Codex's own header for a process that is still running."""
+
+    return any(line.startswith(_CODEX_RUNNING_FIELD) for line in _codex_header_lines(text))
 
 
 def _codex_post_tool_outcome(payload: Mapping[str, JsonValue]) -> _NativeOutcomeFacts:
     """Return the closed outcome Codex states for one ``PostToolUse`` (#910).
 
-    Codex sends no top-level outcome: a command's exit status is nested in ``tool_response``.
-    Only each tool family's closed facts are read: process exit codes for shell and patch tools,
-    and the protocol-level ``isError`` bit for MCP tools, whose result body is tool-domain data.
-    Output text is never searched for words such as ``FAILED`` and no fact means unknown; the
-    shared reducer resolves conflicting facts failure-first. Top-level ``exit_status``,
-    ``success`` and ``denied`` stay honored for a caller that already normalized its payload.
+    Codex sends no top-level outcome: a tool's outcome is nested in ``tool_response``. Only each
+    tool family's closed facts are read: process exit codes from a host-structured result object
+    for shell tools and from ``apply_patch``'s header, and the protocol-level ``isError`` bit for
+    MCP tools, whose result body is tool-domain data. A shell tool's *text* response is the
+    command's own output, so nothing in it is read, header or JSON alike. Output text is never
+    searched for words such as ``FAILED`` and no fact means unknown; the shared reducer resolves
+    conflicting facts failure-first. Top-level ``exit_status``, ``success`` and ``denied`` stay
+    honored for a caller that already normalized its payload.
     """
 
     facts: list[Mapping[str, JsonValue]] = []
@@ -6996,6 +7064,9 @@ def _codex_post_tool_outcome(payload: Mapping[str, JsonValue]) -> _NativeOutcome
             result = _codex_result_object(response, require_exec_marker=False)
             if result is not None:
                 facts.append({key: result[key] for key in _MCP_RESULT_FACT_KEYS if key in result})
+        elif tool.lower() in _CODEX_SHELL_OUTCOME_TOOLS and type(response) is str:
+            # The command's own output: whatever it printed first is not a host fact (Q5, n7).
+            pass
         elif tool.lower() in _CODEX_SHELL_OUTCOME_TOOLS or tool in _PATCH_TOOL_NAMES:
             result = _codex_result_object(response, require_exec_marker=type(response) is str)
             if result is not None:
@@ -7019,6 +7090,42 @@ def _codex_post_tool_outcome(payload: Mapping[str, JsonValue]) -> _NativeOutcome
                     codes = (int(legacy.group(1)),) if legacy is not None else ()
                 facts.extend({"exit_code": code} for code in codes)
     return _native_outcome_facts(payload, mappings=tuple(facts))
+
+
+# Codex ``Bash`` (unified exec, every build from 0.120 to 0.159) fires ``PostToolUse`` only once the
+# process has exited: while it runs, ``post_tool_use_response`` is ``None`` and no event is sent;
+# the ``write_stdin`` poll that sees the exit sends the original call's post (fixture
+# ``observations/codex-post-tool-outcomes-0.159.0.case.json``). The response is the command's own
+# output, so it states no exit: the event proves the call ended, never how.
+_CODEX_ENDED_TOOL: Final = "Bash"
+
+
+def _codex_post_tool_ended(payload: Mapping[str, JsonValue]) -> bool:
+    """Whether this Codex ``PostToolUse`` is itself the host's statement that the call ended.
+
+    Only the unified-exec ``Bash`` contract qualifies, with a string response and a string
+    command. The response text is read only to *withhold* completion: one that reads as Codex's
+    own running-process header, or as an exec result naming a live session or no exit, is never
+    ended (conservative for an older or future build). The outcome is not touched: success and
+    exit stay unknown, and the fingerprint's lingering-process and settle checks still apply.
+    """
+
+    if payload.get("tool_name") != _CODEX_ENDED_TOOL:
+        return False
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, Mapping):
+        return False
+    if type(cast(Mapping[str, JsonValue], tool_input).get("command")) is not str:
+        return False
+    response = payload.get("tool_response")
+    if type(response) is not str:
+        return False
+    result = _codex_result_object(response, require_exec_marker=True)
+    if result is not None and (
+        result.get("session_id") is not None or result.get("exit_code") is None
+    ):
+        return False
+    return not _codex_header_running(response)
 
 
 def _merge_outcome_facts(fields: dict[str, JsonValue], facts: _NativeOutcomeFacts) -> None:

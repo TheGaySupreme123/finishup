@@ -256,10 +256,12 @@ def _classification_token(value: object) -> str | None:
     return value
 
 
-def _bounded_result_mapping(value: object) -> Mapping[str, CanonicalJsonValue] | None:
+def _bounded_result_mapping(
+    value: object, *, text_is_output: bool = False
+) -> Mapping[str, CanonicalJsonValue] | None:
     if isinstance(value, Mapping):
         return cast(Mapping[str, CanonicalJsonValue], value)
-    if type(value) is not str or not value:
+    if type(value) is not str or not value or text_is_output:
         return None
     try:
         encoded = value.encode("utf-8")
@@ -275,25 +277,29 @@ def _bounded_result_mapping(value: object) -> Mapping[str, CanonicalJsonValue] |
 
 
 def _classification_result_mappings(
-    payload: Mapping[str, CanonicalJsonValue],
+    payload: Mapping[str, CanonicalJsonValue], *, text_is_output: bool = False
 ) -> tuple[Mapping[str, CanonicalJsonValue], ...]:
-    """Collect bounded result carriers without traversing arbitrary content."""
+    """Collect bounded result carriers without traversing arbitrary content.
+
+    ``text_is_output``: a string carrier is the command's own output, never a host-structured
+    result, so it is not parsed as JSON (a command printing ``{"success": true}`` states nothing).
+    """
 
     mappings: list[Mapping[str, CanonicalJsonValue]] = [payload]
     for key in ("tool_response", "tool_output", "result", "result_json"):
-        mapping = _bounded_result_mapping(payload.get(key))
+        mapping = _bounded_result_mapping(payload.get(key), text_is_output=text_is_output)
         if mapping is None:
             continue
         mappings.append(mapping)
         for nested_key in ("structuredContent", "structured_content", "data", "result"):
-            nested = _bounded_result_mapping(mapping.get(nested_key))
+            nested = _bounded_result_mapping(mapping.get(nested_key), text_is_output=text_is_output)
             if nested is not None:
                 mappings.append(nested)
     return tuple(mappings)
 
 
 def _classification_outcome(
-    payload: Mapping[str, CanonicalJsonValue], event_name: str
+    payload: Mapping[str, CanonicalJsonValue], event_name: str, host_post_is_success: bool = True
 ) -> _OutcomeFacts:
     """Reduce closed host outcome fields to one conservative state."""
 
@@ -315,7 +321,13 @@ def _classification_outcome(
     invalid_exit = False
     valid_exits: list[int] = []
 
-    for mapping in _classification_result_mappings(payload):
+    # A Codex shell call's string ``tool_response`` is the command's own output (Codex 0.159 sends
+    # no exit in it): text the command printed must never read as a host outcome (n7 RC1, Q5).
+    tool = _classification_token(payload.get("tool_name"))
+    text_is_output = (
+        not host_post_is_success and tool is not None and tool.casefold() in SHELL_TOOLS
+    )
+    for mapping in _classification_result_mappings(payload, text_is_output=text_is_output):
         for key in ("denied", "is_denied", "permission_denied"):
             if type(mapping.get(key)) is bool and mapping.get(key) is True:
                 denied = True
@@ -397,8 +409,9 @@ def _classification_outcome(
     # signal when no more specific result fact is present.  Require the
     # validated hook-event echo so an ordinary mapping call with no outcome is
     # still classified as unknown.  Explicit failure, partial, invalid, or
-    # unknown facts above always win over this fallback.
-    native_post_success = (
+    # unknown facts above always win over this fallback.  Codex fires its post
+    # for a non-zero exit too, so its caller turns the fallback off (n7 RC1).
+    native_post_success = host_post_is_success and (
         event_name in {"PostToolUse", "postToolUse"}
         and payload.get("hook_event_name") == event_name
     )
@@ -1148,13 +1161,21 @@ def _classification_phase(event_name: str) -> Literal["pre", "post", "other"]:
 
 
 def classify_observation(
-    payload: Mapping[str, CanonicalJsonValue], event_name: str
+    payload: Mapping[str, CanonicalJsonValue],
+    event_name: str,
+    *,
+    host_post_is_success: bool = True,
 ) -> ObservationClassification:
     """Classify one observation with deterministic, fail-closed rules.
 
     Host action labels and agent-facing names are never authority.  A
     pre-event keeps its pending identity, while only a post-event with a
     closed success fact can become an unprotected routine success.
+
+    ``host_post_is_success``: Claude Code's and Cursor's post event is their
+    closed success signal; Codex fires ``PostToolUse`` for a non-zero exit
+    too, so its caller passes ``False``.  With ``False`` a shell call's string
+    result is its command's output, so it is never parsed for outcome fields.
     """
 
     phase = _classification_phase(event_name)
@@ -1163,7 +1184,7 @@ def classify_observation(
         if phase in {"pre", "post"}
         else _RoutineFacts(False, "unknown_operation")
     )
-    outcome = _classification_outcome(payload, event_name)
+    outcome = _classification_outcome(payload, event_name, host_post_is_success)
     proven = phase == "post" and routine.candidate and outcome.state == "success"
     protected = phase != "post" or not proven
     reasons: list[str] = [routine.reason]
@@ -1257,7 +1278,10 @@ def is_routine_read_candidate(payload: Mapping[str, CanonicalJsonValue]) -> bool
 
 
 def envelope_outcome_state(
-    structural_payload: Mapping[str, CanonicalJsonValue], event_kind: str
+    structural_payload: Mapping[str, CanonicalJsonValue],
+    event_kind: str,
+    *,
+    host_post_is_success: bool = True,
 ) -> str | None:
     """Resolve an already-built envelope's outcome with the classifier's rules.
 
@@ -1274,13 +1298,15 @@ def envelope_outcome_state(
     ``hook_event_name`` echo so the native post fallback resolves identically.
     A stream envelope records no ``hook_name`` and therefore keeps needing an
     explicit outcome fact, exactly as its own classification did.
+    ``host_post_is_success`` is the classifier's own switch: ``False`` for a
+    Codex hook envelope, whose post is not a success fact (n7 RC1).
     """
 
     payload = dict(structural_payload)
     hook_name = payload.get("hook_name")
     if type(hook_name) is str and "hook_event_name" not in payload:
         payload["hook_event_name"] = hook_name
-    return _classification_outcome(payload, event_kind).state
+    return _classification_outcome(payload, event_kind, host_post_is_success).state
 
 
 __all__ = [

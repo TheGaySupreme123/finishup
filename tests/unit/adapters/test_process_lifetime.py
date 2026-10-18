@@ -71,6 +71,25 @@ def test_in_a_test_process_the_process_itself_is_the_host() -> None:
     assert list(_candidates(table, _WINDOW, owned)) == [52]
 
 
+def test_a_launcher_rounded_down_before_the_window_is_still_this_hooks_chain() -> None:
+    """#1090 PL-1: a hook launcher whose start the 10 ms tick rounded down is not the host.
+
+    Without the slack the walk stopped at the launcher, so the hook's own ``sh -c`` (working in
+    the workspace) became a candidate and a fast call read as lingering.
+    """
+
+    rounded = _WINDOW - 10_000_000
+    table = {
+        100: _Process(1, _WINDOW - 10**9, False),  # the host
+        200: _Process(100, rounded, False),  # sh -c hook, start rounded down one tick
+        300: _Process(200, rounded, False),  # this hook process
+        400: _Process(1, _WINDOW + 5, False),  # an escaped child
+    }
+    owned = _owned_roots(_chain(300, table, None), _WINDOW)
+    assert owned == frozenset({300, 200, 100})
+    assert list(_candidates(table, _WINDOW, owned)) == [400]
+
+
 def test_the_slack_counts_processes_started_just_before_the_window() -> None:
     table = {
         10: _Process(1, _WINDOW - 10**9, False),

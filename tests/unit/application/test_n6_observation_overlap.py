@@ -73,9 +73,13 @@ async def test_plain_bash_f1_capture_and_stream_overlap(tmp_path: Path, stream_f
         tool_use_id="call-n6-overlap",
         tool_input={"command": "pytest -q"},
     )
-    response = json.loads(cast(str, post["tool_response"]))
+    response = cast(dict[str, JsonValue], json.loads(cast(str, post["tool_response"])))
     response["output"] = "12 passed native-overlap-output"
-    post["tool_response"] = json.dumps(response)
+    # The hook states its exit through the host-structured result object: as text the response
+    # would be the command's own output, never an outcome (n7 RC1, #1105). The strict hook parser
+    # refuses a fractional number in an object, so the wall time is left out.
+    response.pop("wall_time_seconds", None)
+    post["tool_response"] = cast(JsonValue, response)
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
         return asyncio.run(factory())
