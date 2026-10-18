@@ -261,8 +261,13 @@ def _read_ends(
     owners: frozenset[int],
     head_limit: int,
     trust: _Trust | None,
+    recorded: str | None = None,
 ) -> tuple[bytes, bytes, int] | None:
-    """``read_ends_beneath``; with ``trust``, every directory and the file must also pass it."""
+    """``read_ends_beneath``; with ``trust``, every directory and the file must also pass it.
+
+    ``recorded`` is the absolute path the read will be reported under; after the read it must
+    still name the file read, so a renamed and replaced ancestor or root is refused too.
+    """
 
     parts = path.split(b"/")
     if not path or any(part in {b"", b".", b".."} for part in parts):
@@ -304,7 +309,11 @@ def _read_ends(
         # leads to that same file, so an ordinary replacement or permission change mid-read is
         # refused rather than kept. Not a defence against a hostile process of the same user.
         after = os.fstat(descriptor)
-        named = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+        named = (
+            os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+            if recorded is None
+            else os.stat(recorded, follow_symlinks=False)
+        )
         if (
             _identity(before) != _identity(after)
             or (named.st_dev, named.st_ino) != (after.st_dev, after.st_ino)
@@ -646,7 +655,12 @@ def _outside_files(
                     continue
                 seen.add(full)
                 ends = _read_ends(
-                    descriptor, file, owners=owners, head_limit=head_limit, trust=trust
+                    descriptor,
+                    file,
+                    owners=owners,
+                    head_limit=head_limit,
+                    trust=trust,
+                    recorded=full,
                 )
                 if ends is not None:
                     yielded += 1

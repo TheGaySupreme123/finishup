@@ -880,22 +880,33 @@ claim had no basis and is removed.
   read, keyed by its operation: the start's lifecycle event id, or the publication's request id.
   A replayed start or publication returns its stored result without reaching the capture; a
   start recovered after a crash, or a publication retried with the same request id, finds the
-  boundary reserved and reads nothing, so its copy or its gap stands. A late read is never
-  labelled as the start. Capture never fails the start or publication: a failure leaves a gap.
-- **Bounds.** Four whole text files of at most 256 KiB each, 1 MiB of content, at most 32 KiB of
-  paths, 16 candidates, five seconds per boundary and ten seconds per task. A reservation takes
-  all the capacity left in one ledger transaction, so two admissions in flight cannot both spend
-  it, and its completion records what was actually spent: files, bytes, every candidate
-  attempted (each member a declared directory expands to counts as one) and the time taken, even
-  when nothing was kept. A reservation whose completion never landed stays spent. The accounting
+  boundary reserved and reads nothing, so its copy or its gap stands. A start whose scope is
+  denied or unavailable (no admitted root, a review it cannot run, a scope lookup that failed)
+  still reserves its boundary, as a gap, without reading anything. A start recovered after its
+  lifecycle event already committed never captures, even when no reservation exists. A late read
+  is never labelled as the start. Capture never fails the start or publication: a failure leaves
+  a gap. A publication whose append fails after its capture still spends its boundary: the copy
+  or gap stays, a same-request retry reads nothing, and the capacity is not returned. This can
+  spend capacity on a declaration that never commits; the tradeoff is accepted so that a retry
+  never reopens mutable files, and an input without a copy keeps the missing-baseline label.
+- **Bounds.** Four whole text files of at most 256 KiB each, 1 MiB of content, 32 KiB of UTF-8
+  path bytes named across all of the task's sets, 16 candidates, five seconds per boundary and
+  ten seconds per task. A reservation takes all the capacity left in one ledger transaction, so
+  two admissions in flight cannot both spend it, and its completion records what was actually
+  spent: files, bytes, every candidate attempted (each member a declared directory expands to
+  counts as one), the time taken and the path bytes its set names, omission-only sets included,
+  even when nothing was kept. Past the path bytes left, a candidate is counted but not named; it
+  stays an input without a copy, so its gap remains disclosed. A reservation whose completion never landed stays spent. The accounting
   is structural, so an unreadable earlier copy stops further capture rather than refilling the
   budget. A file too large, binary or not UTF-8 text, unsafe, changed while read, or past the
   budget is recorded with a closed reason (`too_large`, `not_text`, `unreadable`, `budget`,
   `redaction_incomplete`) and no bytes; a partial read is never kept as an original. Copies are
   redacted before they are kept.
 - **Reading.** The reader is the trusted outside walk. After the bounded read the descriptor's
-  device, inode, size, mtime, ctime, mode, owner and link count must be unchanged and the name
-  must still lead to the same file; otherwise the candidate is `unreadable`. This detects an
+  device, inode, size, mtime, ctime, mode, owner and link count must be unchanged and the
+  recorded absolute path, resolved again from `/`, must still name the same device and inode, so
+  a renamed and replaced parent or admitted root is refused too; otherwise the candidate is
+  `unreadable`. This detects an
   ordinary replacement or permission change during the read; it is not an atomic snapshot and
   not a defence against a hostile process with the same user authority.
 - **Storage.** Each set is one encrypted `change_capture` object of media type
@@ -903,7 +914,8 @@ claim had no basis and is removed.
   (boundary, kept files, omitted candidates). The ledger seam
   `reserve_task_input_snapshot(key) -> SnapshotUsage | None`,
   `complete_task_input_snapshot(key, spent, ref | None)` and `load_task_input_snapshots()` keeps
-  one structural row per boundary (key, capacity granted, capacity spent, object pointer) in the
+  one structural row per boundary (key, capacity granted and spent as files, bytes, candidates,
+  milliseconds and path bytes, object pointer) in the
   `bundle_meta` key `task_input_snapshots` (at most 16 boundaries), inventorying the object in the
   completing transaction beside the task-start base. No path or content is structural. Task
   retention and removal handle the objects; there is no separate archive.

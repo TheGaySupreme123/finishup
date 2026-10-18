@@ -6,7 +6,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -35,6 +35,7 @@ from finishup.domain.privacy import (
     EgressChannel,
 )
 from finishup.ports.change_capture import (
+    MAX_SNAPSHOT_MANIFEST_BYTES,
     CheckChangeCapture,
     SnapshotFile,
     TaskInputFile,
@@ -43,6 +44,7 @@ from finishup.ports.change_capture import (
     decode_task_input_snapshot,
     encode_check_change,
     encode_task_input_snapshot,
+    snapshot_manifest_bytes,
 )
 from finishup.ports.privacy import EffectivePrivacyPolicy
 
@@ -419,11 +421,12 @@ async def test_concurrent_admissions_share_the_task_file_budget(
     assert await asyncio.to_thread(entered.wait, 30)
     second = await _record(runtime, 9201, values[4:], _scope(root, tmp_path / "repo"))
     release.set()
-    assert await first and second
+    # The pending first boundary holds the whole capacity left, its manifest bytes included, so
+    # the second keeps nothing and names nothing: its candidates stand as an unnamed gap.
+    assert await first and not second
 
     snapshots = await load_input_snapshots(runtime, None)
-    assert sum(len(s.files) for s in snapshots) == 4
-    assert {reason for s in snapshots for _path, reason in s.omitted} == {"budget"}
+    assert [len(s.files) for s in snapshots] == [4]
 
 
 @pytest.mark.anyio
@@ -642,3 +645,73 @@ async def test_a_kept_copy_is_redacted_and_the_ledger_row_is_structural(shared: 
         "SELECT value FROM bundle_meta WHERE key='task_input_snapshots'"
     ).fetchall()
     assert os.fspath(shared) not in str(rows) and "example-secret-value" not in str(rows)
+
+
+# Review R2-02, R2-03 (#1118 unit 1 fix round 2).
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ledger", ["memory", "sqlite"])
+async def test_the_manifest_bound_is_task_wide(tmp_path: Path, ledger: str) -> None:
+    """R2-02: every boundary's named paths, omission-only sets included, share one 32 KiB
+    task-wide UTF-8 allowance; a new request key never refills it."""
+
+    root = (tmp_path / "shared").resolve()
+    root.mkdir()
+    runtime = _runtime(ledger)
+    scope = InputSnapshotScope((os.fspath(root),), (), snapshot_outside_inputs)
+    for batch in range(15):
+        values = tuple(os.fspath(root / f"{batch:02d}_{i:02d}_{'x' * 180}") for i in range(16))
+        await _record(runtime, 9800 + batch, values, scope)
+
+    kept = await load_input_snapshots(runtime, None)
+    named = sum(
+        sum(snapshot_manifest_bytes(i.path, i.root) for i in s.files)
+        + sum(snapshot_manifest_bytes(path) for path, _ in s.omitted)
+        for s in kept
+    )
+    assert MAX_SNAPSHOT_MANIFEST_BYTES - 512 < named <= MAX_SNAPSHOT_MANIFEST_BYTES
+    grant = await runtime.ledger.reserve_task_input_snapshot(protocol_id("req_", 9899))
+    assert grant.candidates == 0 and grant.manifest == MAX_SNAPSHOT_MANIFEST_BYTES - named
+
+
+def test_the_manifest_bound_counts_utf8_bytes() -> None:
+    """R2-02: a set whose paths are under the bound in characters but over it in bytes is invalid."""
+
+    paths = tuple((f"/shared/{i}/{'א' * 1800}", "budget") for i in range(16))
+    assert sum(len(path) for path, _ in paths) <= MAX_SNAPSHOT_MANIFEST_BYTES
+    with pytest.raises(ValueError, match="change_capture_value_invalid"):
+        TaskInputSnapshotSet("admission_time", (), cast(Any, paths))
+
+
+@pytest.mark.parametrize("component", ["parent", "root"])
+def test_a_renamed_and_replaced_ancestor_is_not_kept(
+    shared: Path, monkeypatch: pytest.MonkeyPatch, component: str
+) -> None:
+    """R2-03: after the read, the recorded absolute path must still name the file read."""
+
+    import finishup.adapters.task_input_read as module  # noqa: PLC0415
+
+    parent = shared / "nested"
+    parent.mkdir()
+    spec = parent / "spec.md"
+    spec.write_bytes(_ORIGINAL)
+    original_read = os.read
+    mutated = False
+
+    def read_then_replace(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        content = original_read(descriptor, count)
+        if not mutated:
+            mutated = True
+            target = parent if component == "parent" else shared
+            target.rename(target.with_name(target.name + "_old"))
+            spec.parent.mkdir(parents=True)
+            spec.write_bytes(_REWRITTEN)
+        return content
+
+    monkeypatch.setattr(module.os, "read", read_then_replace)
+    rows = snapshot_outside_inputs(
+        (os.fspath(shared),), (os.fspath(spec),), limit=4, max_bytes=256 * 1024, seconds=5
+    )
+    assert [(row.text, row.reason) for row in rows] == [(None, "unreadable")]

@@ -162,19 +162,13 @@ def _object_pointer(ref: ObjectRef) -> dict[str, object]:
 
 
 def _usage_json(usage: SnapshotUsage) -> list[int]:
-    return [usage.files, usage.bytes, usage.candidates, usage.ms]
+    return [usage.files, usage.bytes, usage.candidates, usage.ms, usage.manifest]
 
 
 def _usage(value: object) -> SnapshotUsage:
-    if type(value) is not list or len(cast(list[object], value)) != 4:
+    if type(value) is not list or len(cast(list[object], value)) != 5:
         raise ValueError("task_input_snapshot_entry_invalid")
     return SnapshotUsage(*cast(list[int], value))
-
-
-def _entry_usage(entry: dict[str, object]) -> SnapshotUsage:
-    """What a boundary counts against the task: its spend once completed, else its grant."""
-
-    return _usage(entry.get("spent", entry["grant"]))
 
 
 def _snapshot_entries(value: object | None) -> list[dict[str, object]]:
@@ -193,7 +187,7 @@ def _snapshot_entries(value: object | None) -> list[dict[str, object]]:
             or ("pointer" in entry and "spent" not in entry)
         ):
             raise ValueError("task_input_snapshot_entry_invalid")
-        _entry_usage(entry)
+        _usage(entry.get("spent", entry["grant"]))
         _usage(entry["grant"])
     return entries
 
@@ -2798,19 +2792,19 @@ class SqliteLedger:
 
         if not snapshot_key_valid(key):
             raise ValueError("task_input_snapshot_invalid")
-        granted: list[SnapshotUsage | None] = []
+        granted: SnapshotUsage | None = None
 
         def reserve(existing: object | None) -> object | None:
+            nonlocal granted
             entries = _snapshot_entries(existing)
             if len(entries) >= MAX_SNAPSHOT_SETS or any(e["key"] == key for e in entries):
-                granted.append(None)
                 return None
-            grant = snapshot_grant([_entry_usage(entry) for entry in entries])
-            granted.append(grant)
-            return [*entries, {"grant": _usage_json(grant), "key": key}]
+            # A completed boundary counts what it spent; a pending one, its whole grant.
+            granted = snapshot_grant([_usage(e.get("spent", e["grant"])) for e in entries])
+            return [*entries, {"grant": _usage_json(granted), "key": key}]
 
         await self._update_meta(_TASK_INPUT_SNAPSHOTS_META_KEY, reserve)
-        return granted[0]
+        return granted
 
     async def complete_task_input_snapshot(
         self, key: str, spent: SnapshotUsage, ref: ObjectRef | None

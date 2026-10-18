@@ -1040,9 +1040,12 @@ async def _execute_standard_start(
             input_capture is not None
             and request.task_statement is not None
             and allocation.phase is StartPhase.BUNDLE_READY
+            and await task.ledger.lookup_operation(allocation.writer_id, request.request_id) is None
         ):
             # #1118 unit 1: before the lifecycle event and the result exist, so a replay never
-            # reaches here and a recovered attempt finds the boundary already reserved.
+            # reaches here and a recovered attempt finds the boundary already reserved. A
+            # recovery after the lifecycle append committed never captures: those bytes would
+            # postdate the admission they claim.
             opens = allocation.route_action == "created" or force_open
             await input_capture(
                 task, allocation.lifecycle_event_id, "task_start" if opens else "admission_time"

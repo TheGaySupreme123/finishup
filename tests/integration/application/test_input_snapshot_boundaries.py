@@ -215,3 +215,48 @@ async def test_a_declaration_retried_after_a_crash_or_replayed_rereads_nothing(
     assert await _kept(routed, started.session_id, started.writer_id) == [
         ("admission_time", [_ORIGINAL])
     ]
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+@pytest.mark.parametrize("gap", ["none", "error", "empty_roots"])
+async def test_committed_start_with_scope_gap_never_backdates_after_crash(
+    spec: Path, backend: Backend, gap: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-01: a start whose scope was denied or unavailable commits its lifecycle event, then
+    crashes before the catalog advances; recovery keeps the gap, never later bytes."""
+
+    reader = _Reader()
+    app, routed, _ = _build_app(ledger_backend=backend)
+    calls = 0
+
+    async def scope(_context: RepositoryPrivacyContext, _task_id: str) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1 and gap == "error":
+            raise OSError("simulated_scope_unavailable")
+        if calls == 1:
+            return None if gap == "none" else InputSnapshotScope((), (), reader)
+        return InputSnapshotScope((os.fspath(spec.parent),), (), reader)
+
+    app = replace(app, input_snapshot_scope=scope)
+    original = start_module._lifecycle_append  # pyright: ignore[reportPrivateUsage]
+    crashed = False
+
+    async def commit_then_crash(*args: Any, **kwargs: Any) -> Any:
+        nonlocal crashed
+        result = await original(*args, **kwargs)
+        if not crashed:
+            crashed = True
+            raise RuntimeError("after_lifecycle_commit")
+        return result
+
+    monkeypatch.setattr(start_module, "_lifecycle_append", commit_then_crash)
+    request = start_request(9741).model_copy(update={"task_statement": f"Use {spec}"})
+    with pytest.raises(RuntimeError, match="after_lifecycle_commit"):
+        await app.start(request, repository_privacy_context=_CONTEXT)
+    spec.write_bytes(_LATER)
+    cast(Any, app.clock).advance(61)
+    started = await app.start(request, repository_privacy_context=_CONTEXT)
+
+    assert reader.calls == 0
+    assert await _kept(routed, started.session_id, started.writer_id) == []

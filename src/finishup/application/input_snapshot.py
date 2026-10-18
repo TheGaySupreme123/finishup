@@ -9,10 +9,12 @@ edit off as the original (AIP-1).
 Each boundary is reserved in the task ledger, keyed by its operation id, before anything is read.
 The reservation takes the task-wide capacity left (4 files, 256 KiB each, 1 MiB, 16 candidates,
 10 s with at most 5 s per boundary) in one ledger transaction, and its completion records what was
-actually spent, even when nothing was kept. A retry of the same operation finds the reservation
-and rereads nothing: its copy or its gap stands. Copies are redacted before they are kept and are
-stored as encrypted ``change_capture`` objects. Nothing is read unless the effective policy could
-send a file to AI-powered review (``snapshot_roots``).
+actually spent, even when nothing was kept, including the UTF-8 bytes of the paths it names
+(32 KiB per task). A start whose scope is denied or unavailable still reserves its boundary, as a
+gap, without reading. A retry of the same operation finds the reservation and rereads nothing:
+its copy or its gap stands. Copies are redacted before they are kept and are stored as encrypted
+``change_capture`` objects. Nothing is read unless the effective policy could send a file to
+AI-powered review (``snapshot_roots``).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from finishup.ports.change_capture import (
     TaskInputSnapshotSet,
     decode_task_input_snapshot,
     encode_task_input_snapshot,
+    snapshot_manifest_bytes,
 )
 from finishup.ports.clock import ClockPort
 from finishup.ports.objects import ObjectRef
@@ -138,17 +141,19 @@ async def record_input_snapshot(
     runtime: TaskRuntime,
     key: str,
     values: tuple[str, ...],
-    scope: InputSnapshotScope,
+    scope: InputSnapshotScope | None,
     boundary: SnapshotBoundary,
     clock: ClockPort,
     request_id: str | None,
 ) -> bool:
     """Keep one snapshot set at boundary ``key`` for the outside ``values``; ``True`` when kept.
 
-    Reserves ``key`` first; an already reserved key reads nothing. A candidate that could not be
-    kept whole, including one past the capacity left, is recorded with its reason, never as a
-    partial original. A failure, including an unreadable earlier set, keeps nothing and leaves
-    the boundary spent; it never fails the start or publication that called it.
+    Reserves ``key`` first, even when ``scope`` is ``None`` or admits no root: that boundary reads
+    nothing and stands as a gap. An already reserved key reads nothing. A candidate that could not
+    be kept whole, including one past the capacity left, is recorded with its reason, never as a
+    partial original; past the task's manifest bytes it is counted but not named. A failure,
+    including an unreadable earlier set, keeps nothing and leaves the boundary spent; it never
+    fails the start or publication that called it.
     """
 
     ledger = cast(TaskChangeBaseStorePort, runtime.ledger)
@@ -159,11 +164,7 @@ async def record_input_snapshot(
             if value.startswith("/")
         )
     )
-    if (
-        not scope.roots
-        or not outside
-        or not callable(getattr(ledger, "reserve_task_input_snapshot", None))
-    ):
+    if not outside or not callable(getattr(ledger, "reserve_task_input_snapshot", None)):
         return False
     try:
         grant = await ledger.reserve_task_input_snapshot(key)
@@ -175,63 +176,82 @@ async def record_input_snapshot(
     if grant is None:
         return False
     files: list[SnapshotFile] = []
+    omitted: list[tuple[str, SnapshotOmissionReason]] = []
     attempted = 0
+    left = grant.manifest  # Task-wide path bytes this boundary may still name.
     started: float | None = None
     ref: ObjectRef | None = None
+
+    def omit(path: str, reason: SnapshotOmissionReason) -> None:
+        nonlocal left
+        if snapshot_manifest_bytes(path) <= left:
+            left -= snapshot_manifest_bytes(path)
+            omitted.append((path, reason))
+
     try:
-        prior = await _load_sets(runtime)
-        seen = {i.path for kept in prior for i in kept.files} | {
-            path for kept in prior for path, _reason in kept.omitted
-        }
-        wanted = tuple(v for v in outside if v.rstrip("/") not in seen)[:MAX_SNAPSHOT_CANDIDATES]
-        omitted: list[tuple[str, SnapshotOmissionReason]] = []
-        if wanted and grant.files and grant.candidates and grant.ms:
-            attempted = grant.candidates  # Until the reader returns, every candidate is spent.
-            started = time.monotonic()
-            reads = await asyncio.to_thread(
-                lambda: scope.reader(
-                    scope.roots,
-                    wanted,
-                    limit=grant.candidates,
-                    max_bytes=MAX_SNAPSHOT_FILE_BYTES,
-                    seconds=grant.ms / 1000,
-                    excluded=scope.excluded,
+        if scope is not None and scope.roots:
+            prior = await _load_sets(runtime)
+            seen = {i.path for kept in prior for i in kept.files} | {
+                path for kept in prior for path, _reason in kept.omitted
+            }
+            wanted = tuple(v for v in outside if v.rstrip("/") not in seen)
+            wanted = wanted[:MAX_SNAPSHOT_CANDIDATES]
+            if wanted and grant.files and grant.candidates and grant.ms:
+                attempted = grant.candidates  # Until the reader returns, every candidate is spent.
+                started = time.monotonic()
+                reads = await asyncio.to_thread(
+                    lambda: scope.reader(
+                        scope.roots,
+                        wanted,
+                        limit=grant.candidates,
+                        max_bytes=MAX_SNAPSHOT_FILE_BYTES,
+                        seconds=grant.ms / 1000,
+                        excluded=scope.excluded,
+                    )
                 )
-            )
-            attempted = min(len(reads), grant.candidates)
-            bytes_left = grant.bytes
-            for read in reads[:attempted]:
-                if read.path in seen:
-                    continue
-                seen.add(read.path)
-                if read.text is None:
-                    omitted.append((read.path, read.reason or "unreadable"))
-                elif len(files) >= grant.files or read.size > bytes_left:
-                    omitted.append((read.path, "budget"))
-                else:
-                    try:
-                        kept_text, redacted = _redacted_text(read.text)
-                    except Exception:
-                        omitted.append((read.path, "redaction_incomplete"))
+                attempted = min(len(reads), grant.candidates)
+                bytes_left = grant.bytes
+                for read in reads[:attempted]:
+                    if read.path in seen:
                         continue
-                    files.append(SnapshotFile(read.path, read.root, kept_text, read.size, redacted))
-                    bytes_left -= read.size
-        else:
-            omitted = [(value.rstrip("/"), "budget") for value in wanted]
+                    seen.add(read.path)
+                    cost = snapshot_manifest_bytes(read.path, read.root)
+                    if read.text is None:
+                        omit(read.path, read.reason or "unreadable")
+                    elif len(files) >= grant.files or read.size > bytes_left or cost > left:
+                        omit(read.path, "budget")
+                    else:
+                        try:
+                            kept_text, redacted = _redacted_text(read.text)
+                        except Exception:
+                            omit(read.path, "redaction_incomplete")
+                            continue
+                        files.append(
+                            SnapshotFile(read.path, read.root, kept_text, read.size, redacted)
+                        )
+                        bytes_left -= read.size
+                        left -= cost
+            else:
+                for value in wanted:
+                    omit(value.rstrip("/"), "budget")
         if files or omitted:
             snapshot = TaskInputSnapshotSet(boundary, tuple(files), tuple(omitted))
             ref = await _store(
                 runtime, encode_task_input_snapshot(snapshot), TASK_INPUT_SNAPSHOT_MEDIA_TYPE, clock
             )
     except Exception as exc:
-        files, ref = [], None
+        files, ref, left = [], None, grant.manifest
         record_unexpected_exception_without_raising(
             exc, component=_COMPONENT, operation="input_snapshot_failed", request_id=request_id
         )
     finally:
         elapsed = 0 if started is None else int((time.monotonic() - started) * 1000)
         spent = SnapshotUsage(
-            len(files), sum(i.size for i in files), attempted, min(3_600_000, elapsed)
+            len(files),
+            sum(i.size for i in files),
+            attempted,
+            min(3_600_000, elapsed),
+            grant.manifest - left,
         )
         try:
             await ledger.complete_task_input_snapshot(key, spent, ref)

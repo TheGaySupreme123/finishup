@@ -1168,34 +1168,33 @@ class Application:
 
         Called inside the admitting operation, before its event is appended. Best effort: a task
         without a copy still runs; its checks label outside inputs as current bytes and disclose
-        ``task_input_baseline_unavailable``.
+        ``task_input_baseline_unavailable``. A scope that is denied or unavailable still reserves
+        ``key`` as a gap, reading nothing, so a recovered attempt never captures later bytes.
         """
 
         source = self.input_snapshot_scope
-        if source is None or repository_privacy_context is None:
+        if source is None or not any(value.startswith("/") for value in values):
             return
-        if not any(value.startswith("/") for value in values):
-            return
-        try:
-            scope = await source(repository_privacy_context, task.task_id)
-        except Exception as exc:
-            record_unexpected_exception_without_raising(
-                exc,
-                component="start",
-                operation="input_snapshot_scope_failed",
-                request_id=request_id,
-            )
-            return
-        if scope is not None:
-            await record_input_snapshot(
-                runtime=task,
-                key=key,
-                values=values,
-                scope=scope,
-                boundary=boundary,
-                clock=self.clock,
-                request_id=request_id,
-            )
+        scope = None
+        if repository_privacy_context is not None:
+            try:
+                scope = await source(repository_privacy_context, task.task_id)
+            except Exception as exc:
+                record_unexpected_exception_without_raising(
+                    exc,
+                    component="start",
+                    operation="input_snapshot_scope_failed",
+                    request_id=request_id,
+                )
+        await record_input_snapshot(
+            runtime=task,
+            key=key,
+            values=values,
+            scope=scope,
+            boundary=boundary,
+            clock=self.clock,
+            request_id=request_id,
+        )
 
     async def _record_task_change_base(
         self,

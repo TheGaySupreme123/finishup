@@ -40,6 +40,7 @@ __all__ = [
     "change_capture_ref_valid",
     "snapshot_grant",
     "snapshot_key_valid",
+    "snapshot_manifest_bytes",
     "TASK_INPUT_SNAPSHOT_MEDIA_TYPE",
     "TaskInputSnapshotSet",
     "decode_task_input_snapshot",
@@ -779,16 +780,26 @@ SNAPSHOT_OMISSION_REASONS: Final = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class SnapshotUsage:
-    """Task-wide snapshot capacity: what one boundary reserved, then what it actually spent."""
+    """Task-wide snapshot capacity: what one boundary reserved, then what it actually spent.
+
+    ``manifest`` is the UTF-8 bytes of the paths and roots its kept set names.
+    """
 
     files: int = 0
     bytes: int = 0
     candidates: int = 0
     ms: int = 0
+    manifest: int = 0
 
     def __post_init__(self) -> None:
-        bounds = (MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_TOTAL_BYTES, MAX_SNAPSHOT_CANDIDATES, 3_600_000)
-        values = (self.files, self.bytes, self.candidates, self.ms)
+        bounds = (
+            MAX_SNAPSHOT_FILES,
+            MAX_SNAPSHOT_TOTAL_BYTES,
+            MAX_SNAPSHOT_CANDIDATES,
+            3_600_000,
+            MAX_SNAPSHOT_MANIFEST_BYTES,
+        )
+        values = (self.files, self.bytes, self.candidates, self.ms, self.manifest)
         if any(type(v) is not int or not 0 <= v <= b for v, b in zip(values, bounds, strict=True)):
             raise _invalid()
 
@@ -799,6 +810,7 @@ class SnapshotUsage:
             self.files <= grant.files
             and self.bytes <= grant.bytes
             and self.candidates <= grant.candidates
+            and self.manifest <= grant.manifest
         )
 
 
@@ -811,7 +823,14 @@ def snapshot_grant(spent: Sequence[SnapshotUsage]) -> SnapshotUsage:
         max(0, MAX_SNAPSHOT_TOTAL_BYTES - sum(u.bytes for u in spent)),
         max(0, MAX_SNAPSHOT_CANDIDATES - sum(u.candidates for u in spent)),
         max(0, min(MAX_SNAPSHOT_ADMISSION_MS, MAX_SNAPSHOT_MS - sum(u.ms for u in spent))),
+        max(0, MAX_SNAPSHOT_MANIFEST_BYTES - sum(u.manifest for u in spent)),
     )
+
+
+def snapshot_manifest_bytes(path: str, root: str = "") -> int:
+    """What naming ``path`` (and the ``root`` it was read beneath) costs the task's manifest."""
+
+    return len(path.encode("utf-8")) + len(root.encode("utf-8"))
 
 
 def snapshot_key_valid(key: object) -> bool:
@@ -854,8 +873,8 @@ class TaskInputSnapshotSet:
     """What one admission boundary kept: whole files, and the candidates it could not keep.
 
     ``boundary`` is ``task_start`` only when kept inside the creating start, before its lifecycle
-    event. The capacity it spent is accounted in the task ledger, not here. Paths are bounded by
-    ``MAX_SNAPSHOT_MANIFEST_BYTES``.
+    event. The capacity it spent, including its manifest bytes, is accounted task-wide in the task
+    ledger; one set alone never names more than ``MAX_SNAPSHOT_MANIFEST_BYTES`` of UTF-8 paths.
     """
 
     boundary: SnapshotBoundary
@@ -878,8 +897,8 @@ class TaskInputSnapshotSet:
                 or row[1] not in SNAPSHOT_OMISSION_REASONS
                 for row in self.omitted
             )
-            or sum(len(i.path) + len(i.root) for i in self.files)
-            + sum(len(path) for path, _ in self.omitted)
+            or sum(snapshot_manifest_bytes(i.path, i.root) for i in self.files)
+            + sum(snapshot_manifest_bytes(path) for path, _ in self.omitted)
             > MAX_SNAPSHOT_MANIFEST_BYTES
         ):
             raise _invalid()
