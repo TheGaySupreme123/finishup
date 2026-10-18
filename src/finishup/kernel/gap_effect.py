@@ -431,7 +431,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         d_route="D",
         review_route="D",
         changed=True,
-        codes=("task_input_outside_not_admitted",),
+        codes=("task_input_baseline_unavailable", "task_input_outside_not_admitted"),
     ),
     _Family(
         rule="G6",
@@ -867,6 +867,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "semantic_review_skipped_insufficient_packet",
         "semantic_review_snippet_invalid",
         "semantic_review_value_redacted",
+        "task_input_baseline_unavailable",
         "task_input_outside_not_admitted",
         "task_statement_not_authorized",
         "task_statement_not_supplied",

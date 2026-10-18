@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import Final, Literal, Protocol, cast
+from typing import Final, Literal, Protocol, TypedDict, cast
 
 import apsw
 
@@ -78,10 +78,11 @@ from finishup.adapters.sqlite.migrations import (
 from finishup.adapters.sqlite.project_operations import SqliteProjectOperationJournal
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
-from finishup.adapters.task_input_read import read_outside_inputs
+from finishup.adapters.task_input_read import read_outside_inputs, snapshot_outside_inputs
 from finishup.application.check import SEMANTIC_EVALUATION_GAPS, FinalSemanticEvaluation
 from finishup.application.check_change import (
     CheckChangeOutcome,
+    CurrentInputReader,
     OutsideInputReader,
     capture_check_time_change,
     check_change_shown_files,
@@ -106,6 +107,11 @@ from finishup.application.egress import (
     SemanticEgressSuccess,
     semantic_policy_refusal,
     semantic_preview_required,
+)
+from finishup.application.input_snapshot import (
+    InputSnapshotScope,
+    load_input_snapshots,
+    snapshot_roots,
 )
 from finishup.application.lineage import (
     LineageConfig,
@@ -262,6 +268,7 @@ from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP,
     SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+    TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     PolicyVersionEntry,
     ReceiptVersionSlice,
@@ -305,12 +312,16 @@ from finishup.observability.semantic_context import (
     semantic_progress_sink,
 )
 from finishup.ports.change_capture import (
+    MAX_SNAPSHOT_ADMISSION_SECONDS,
+    MAX_SNAPSHOT_FILE_BYTES,
     ChangeCapturePort,
+    CheckWorkspaceSource,
     TaskInputFile,
+    TaskInputSnapshotSet,
     current_check_workspace_source,
 )
 from finishup.ports.clock import ClockPort
-from finishup.ports.control import ControlError, ControlMethod
+from finishup.ports.control import ControlError, ControlMethod, RepositoryPrivacyContext
 from finishup.ports.diagnostics import (
     DiagnosticsPort,
     RuntimeCapability,
@@ -2655,6 +2666,69 @@ def _outside_input_reader(
         return read_outside_inputs(
             roots, values, limit=room, excluded=(workspace, *protected), space_cut=space_cut
         )
+
+    return read
+
+
+class _OutsideInputOptions(TypedDict):
+    outside_reader: OutsideInputReader | None
+    snapshots: tuple[TaskInputSnapshotSet, ...]
+    current_reader: CurrentInputReader | None
+
+
+async def _outside_input_options(
+    runtime: TaskRuntime,
+    policy: PrivacyPolicy,
+    selection: ReviewSelectionPolicy,
+    source: CheckWorkspaceSource,
+    protected: tuple[str, ...],
+    request_id: str,
+) -> _OutsideInputOptions:
+    """The check-time outside reads (issue #1082) and the task's kept copies (#1118 unit 1).
+
+    Nothing outside the workspace is read unless the owner admitted a root in this repository's
+    grant and the recipe carries task inputs; the workspace and ``protected`` never are.
+    """
+
+    roots = policy.admitted_input_roots
+    if not roots or not carries_task_inputs(selection):
+        return {"outside_reader": None, "snapshots": (), "current_reader": None}
+    return {
+        "outside_reader": _outside_input_reader(roots, protected),
+        "snapshots": await load_input_snapshots(runtime, request_id),
+        "current_reader": _current_input_reader(roots, (source.workspace, *protected)),
+    }
+
+
+def _with_baseline_gap(gaps: Sequence[str], outcome: CheckChangeOutcome) -> tuple[str, ...]:
+    """``gaps`` plus ``task_input_baseline_unavailable`` when an outside input is current bytes.
+
+    #1118 unit 1 (AIP-1): such an input reached review with no kept copy, so whether the agent
+    changed it is unknown; disclosed as a closed code with no path.
+    """
+
+    inputs = () if outcome.change is None else outcome.change.capture.inputs
+    if not any(i.origin == "outside_workspace" and i.baseline == "current" for i in inputs):
+        return tuple(gaps)
+    return tuple(sorted({*gaps, TASK_INPUT_BASELINE_UNAVAILABLE_GAP}, key=str.encode))
+
+
+def _current_input_reader(roots: tuple[str, ...], excluded: tuple[str, ...]) -> CurrentInputReader:
+    """Whole current bytes of snapshot paths, to say whether each still matches (#1118 unit 1)."""
+
+    def read(paths: tuple[str, ...]) -> dict[str, bytes | None]:
+        return {
+            row.path: row.text
+            for row in snapshot_outside_inputs(
+                roots,
+                paths,
+                limit=len(paths),
+                max_bytes=MAX_SNAPSHOT_FILE_BYTES,
+                seconds=MAX_SNAPSHOT_ADMISSION_SECONDS,
+                excluded=excluded,
+            )
+            if row.reason != "unreadable"
+        }
 
     return read
 
@@ -5250,13 +5324,17 @@ def _privacy_gated_semantic_evaluator(
                             verification_paths=review_inputs[1],
                             # Issue #1082: only roots the owner admitted in this repository's
                             # grant, and only where the recipe carries task inputs at all.
-                            outside_reader=(
-                                _outside_input_reader(
-                                    policy.admitted_input_roots, protected_directories
-                                )
-                                if policy.admitted_input_roots
-                                and carries_task_inputs(review_selection)
-                                else None
+                            # Issue #1082: only roots the owner admitted in this repository's
+                            # grant, and only where the recipe carries task inputs at all. #1118
+                            # unit 1: with the task's kept copies of named outside inputs, sent in
+                            # place of current bytes while their roots stay admitted.
+                            **await _outside_input_options(
+                                runtime,
+                                policy,
+                                review_selection,
+                                workspace_source,
+                                protected_directories,
+                                frozen.lease.operation_id,
                             ),
                             # Issue #1102: so the read can say a task-named outside input
                             # lies beneath none of them.
@@ -5298,6 +5376,7 @@ def _privacy_gated_semantic_evaluator(
             # object, so new and recovered jobs agree. A closed code beside the change's own; it
             # names no path and only the owner's trusted-terminal step can clear it.
             outside_not_admitted = _outside_not_admitted(check_change)
+            captured_content_gaps = _with_baseline_gap(captured_content_gaps, check_change)
             if outside_not_admitted:
                 captured_content_gaps = tuple(
                     sorted(
@@ -7860,6 +7939,30 @@ async def provide_service_ready_context(
             effective.policy.conversation_review is not None,
         )
 
+    async def input_snapshot_scope(
+        context: RepositoryPrivacyContext, task_id: str
+    ) -> InputSnapshotScope | None:
+        """What a task-input snapshot may read for this task now (#1118 unit 1).
+
+        Only roots the task's effective policy admits, only when AI-powered review could run
+        and its recipe carries task inputs, and never the workspace or this service's own
+        directories. ``None`` (nothing read) when any of those is not established.
+        """
+
+        locator = context.workspace_locator
+        if privacy_application is None or locator is None:
+            return None
+        scope = AuthorizationScope(
+            AuthorizationScopeKind.TASK, installation_id, context.commitment, task_id
+        )
+        policy = (await privacy_application.policy_store.effective_policy(scope)).policy
+        roots = snapshot_roots(policy, carries_task_inputs(review_selection_for_delivery(policy)))
+        if not roots:
+            return None
+        return InputSnapshotScope(
+            roots, (locator.path, str(paths.bundle), str(paths.state)), snapshot_outside_inputs
+        )
+
     return ServiceReadyContext(
         service_generation=service_generation,
         vault_generation=vault_generation,
@@ -7912,6 +8015,7 @@ async def provide_service_ready_context(
         host_lineage_registry=host_lineage_registry,
         reconcile_observation_losses=observation_coordinator.reconcile_task_selection_losses,
         change_capture=change_capture,
+        input_snapshot_scope=input_snapshot_scope,
         conversation_review_context=conversation_review_context,
     )
 

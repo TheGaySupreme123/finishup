@@ -78,7 +78,11 @@ from finishup.kernel.projections import (
     unanswered_finding_count,
 )
 from finishup.kernel.reducers import replay
-from finishup.ports.change_capture import TASK_CHANGE_BASE_MEDIA_TYPE
+from finishup.ports.change_capture import (
+    MAX_SNAPSHOT_SETS,
+    TASK_CHANGE_BASE_MEDIA_TYPE,
+    TASK_INPUT_SNAPSHOT_MEDIA_TYPE,
+)
 from finishup.ports.clock import ClockPort
 from finishup.ports.ids import IdPort
 from finishup.ports.ledger import (
@@ -140,6 +144,8 @@ __all__ = ["CheckpointReport", "SqliteLedger"]
 _GENESIS_DIGEST: Final = "genesis"
 # ``bundle_meta`` key of the task-start base pointer (ADR-031); the base itself is encrypted.
 _TASK_CHANGE_BASE_META_KEY: Final = "task_change_base"
+# #1118 unit 1: the task-input snapshot sets, an append-only list of object pointers.
+_TASK_INPUT_SNAPSHOTS_META_KEY: Final = "task_input_snapshots"
 _CAPTURE_TICKET_SCHEMA_VERSION: Final = 11
 
 
@@ -2781,6 +2787,98 @@ class SqliteLedger:
         except (TypeError, ValueError, UnicodeError) as exc:
             raise _public_error(PublicErrorCode.STORAGE_CORRUPT) from exc
         return ref
+
+    async def record_task_input_snapshot(self, ref: ObjectRef) -> bool:
+        """Append one task-input snapshot set (#1118 unit 1) as an inventoried root.
+
+        Same store as the task-start base: a pointer list in ``bundle_meta``, the object
+        inventoried in the same transaction. ``False`` once the task holds ``MAX_SNAPSHOT_SETS``.
+        """
+
+        if (
+            type(ref) is not ObjectRef
+            or ref.metadata.kind is not ObjectKind.CHANGE_CAPTURE
+            or ref.metadata.media_type != TASK_INPUT_SNAPSHOT_MEDIA_TYPE
+            or ref.metadata.task_id != self._task_id
+        ):
+            raise ValueError("task_input_snapshot_invalid")
+        pointer = {
+            "commitment": ref.commitment,
+            "envelope_digest": ref.envelope_digest,
+            "object_id": ref.object_id,
+        }
+        await self._ensure_recovered()
+        async with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._verify_owner()
+                row = self._db.execute(
+                    "SELECT value FROM bundle_meta WHERE key=?", (_TASK_INPUT_SNAPSHOTS_META_KEY,)
+                ).fetchone()
+                pointers = (
+                    []
+                    if row is None
+                    else cast(list[object], strict_json_parse(cast(str, row[0]).encode("ascii")))
+                )
+                kept = len(pointers) < MAX_SNAPSHOT_SETS
+                if kept:
+                    self._inventory_object(ref)
+                    self._db.execute(
+                        "INSERT OR REPLACE INTO bundle_meta(key, value) VALUES (?, ?)",
+                        (
+                            _TASK_INPUT_SNAPSHOTS_META_KEY,
+                            canonical_encode(cast(DomainJsonValue, [*pointers, pointer])).decode(
+                                "ascii"
+                            ),
+                        ),
+                    )
+                self._db.execute("COMMIT")
+            except BaseException:
+                if self._db.get_autocommit() is False:
+                    self._db.execute("ROLLBACK")
+                raise
+        return kept
+
+    async def load_task_input_snapshots(self) -> tuple[ObjectRef, ...]:
+        """The authenticated snapshot set objects, in the order they were kept."""
+
+        await self._ensure_recovered()
+        objects = self._objects
+        if objects is None:
+            return ()
+        async with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM bundle_meta WHERE key=?", (_TASK_INPUT_SNAPSHOTS_META_KEY,)
+            ).fetchone()
+        if row is None:
+            return ()
+        refs: list[ObjectRef] = []
+        try:
+            parsed = strict_json_parse(cast(str, row[0]).encode("ascii"))
+            if type(parsed) is not list or len(parsed) > MAX_SNAPSHOT_SETS:
+                raise ValueError("task_input_snapshot_pointer_invalid")
+            for item in cast(list[object], parsed):
+                if type(item) is not dict or set(cast(dict[str, object], item)) != {
+                    "commitment",
+                    "envelope_digest",
+                    "object_id",
+                }:
+                    raise ValueError("task_input_snapshot_pointer_invalid")
+                pointer = cast(dict[str, object], item)
+                ref = await objects.resolve_verified(
+                    cast(str, pointer["object_id"]), cast(str, pointer["envelope_digest"])
+                )
+                if (
+                    ref.commitment != pointer["commitment"]
+                    or ref.metadata.kind is not ObjectKind.CHANGE_CAPTURE
+                    or ref.metadata.media_type != TASK_INPUT_SNAPSHOT_MEDIA_TYPE
+                    or ref.metadata.task_id != self._task_id
+                ):
+                    raise ValueError("task_input_snapshot_pointer_invalid")
+                refs.append(ref)
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise _public_error(PublicErrorCode.STORAGE_CORRUPT) from exc
+        return tuple(refs)
 
     async def renew_leases(self, lease: OperationLease) -> OperationLease:
         await self._ensure_recovered()

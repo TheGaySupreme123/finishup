@@ -1704,7 +1704,18 @@ reports `repository_privacy_grant_missing`. The terminal interface shows
 holds; it reads with `read_outside_inputs(roots, values, limit=room, excluded=(workspace, bundle,
 state), space_cut=space_cut)`.
 `_with_outside_inputs` offers it only task-declared candidates (never `verification_paths`) and
-rechecks every returned path against the workspace, case-folded. The reader opens each root one
+rechecks every returned path against the workspace, case-folded. Each returned input carries
+`TaskInputFile.root`, the admitted root it was read beneath; the case keeps
+`SemanticCase.input_roots` (item id to root, not digest material) and the candidate projection
+sets `CandidateContextItem.input_root`, which `_semantic_decision` refuses once the deciding
+policy no longer admits that root (issue #1118 unit 1, E2E-2). Kept copies (ADR-031 #1118
+amendment) arrive as `snapshots` with a `current_reader` and are offered first, with
+`baseline` (`task_start` or `admission_time`) and `current_state` (`same`, `changed`,
+`unavailable`); an input from an older object without `root` is never offered. Snapshots are
+kept by `application.input_snapshot.record_input_snapshot` through
+`Application.input_snapshot_scope(context, task_id) -> InputSnapshotScope | None` (roots only
+under `snapshot_roots(policy, carries_task_inputs)`) and read with
+`task_input_read.snapshot_outside_inputs`. The reader opens each root one
 component at a time from `/`, trusts a directory or file only when the service user or root owns
 it and `writable_by_others` is false (a sticky directory excepted), and refuses the excluded
 directories by device and inode at every level (PR #1086 review R1-02, R1-03, R1-05, R1-07).
@@ -1859,6 +1870,11 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   be a different finding. The review still dispatches once with the other findings.
 - `task_statement_unavailable`, `task_statement_not_supplied`, `task_statement_not_authorized` —
   what the reviewer knew of the user's request (issue #908; see "Task statement" below).
+- `task_input_baseline_unavailable` — an outside input reached review as its current bytes and
+  FinishUP kept no copy of it from the task's start or from when the task first named it, so the
+  reviewer could not tell whether the agent changed it (issue #1118 unit 1, ADR-031 amendment;
+  `ready_composition._with_baseline_gap`). A closed disclosure code with no path; it is
+  classified like `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only).
 - `task_input_outside_not_admitted` — the recipe carries task inputs and the task itself names an
   absolute file or folder outside the workspace that no `admitted_input_roots` entry covers (not a
   declared output, not in a system, scratch, log, cache, output, package-state, `bin` or
@@ -4453,10 +4469,15 @@ its actual or `outcome_unknown` durable receipt.
 A consumed authorization ends in exactly one terminal receipt, cancellation included. The gateway
 owns that receipt because only it holds the exact final request body, its keyed
 `request_commitment`, and the authorization/registry binding a dispatch receipt must carry.
-Immediately after the consume CAS it builds the `transport_failed/outcome_unknown` receipt the
-attempt would owe and parks it through
-`PrivacyAuditPort.park_attempt_reconciliation(dispatch_id, receipt)`; parking asserts no outcome and
-leaves the row `receipt_pending`. `asyncio.CancelledError` inside that admitted window (a foreground
+Before the consume it builds the `transport_failed/outcome_unknown` receipt the attempt would owe
+and passes it as `PrivacyAuditPort.consume(authorization_id, dispatch_id, now, owed_receipt=)`,
+which parks it in the consume transaction itself (issue #1118 unit 1); parking asserts no outcome
+and leaves the row `receipt_pending`, and a failed consume parks nothing and dispatches nothing.
+`park_attempt_reconciliation(dispatch_id, receipt)` remains on the port but the gateway no longer
+calls it. At that consume, under the gateway lock policy mutation holds, the gateway refuses
+(`authorization_stale`) an `ApprovedOutboundCase` whose `input_roots` its current registry
+(`ProviderRegistry.admitted_input_roots`) no longer admits; `dispatch_local_semantic` makes the
+same check and runs `consume_local` under the same lock. `asyncio.CancelledError` inside that admitted window (a foreground
 runtime rebind yielding an advisory attempt) records the parked receipt through a shielded
 `complete_egress` and then re-raises, so cancellation still propagates promptly and no provider is
 re-entered. `PrivacyAuditPort.reconcile_started_attempts(consumed_before, limit) -> int` is the

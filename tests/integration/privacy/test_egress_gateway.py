@@ -331,11 +331,19 @@ class _FullPrivacyAudit:
         return self._authorization_state.get(authorization_id)
 
     async def consume(
-        self, authorization_id: str, dispatch_id: str, now: datetime
+        self,
+        authorization_id: str,
+        dispatch_id: str,
+        now: datetime,
+        *,
+        owed_receipt: EgressReceipt | None = None,
     ) -> ConsumedAuthorization:
         if self._authorization_state.get(authorization_id) != "authorized":
             raise ValueError("privacy_audit_authorization_unavailable")
         self._authorization_state[authorization_id] = "consumed"
+        # #1118 unit 1: the owed receipt is parked by the consume itself, atomically.
+        if owed_receipt is not None:
+            self.parked_receipts.append((dispatch_id, owed_receipt))
         return ConsumedAuthorization(self._authorizations[authorization_id], dispatch_id, now)
 
     async def complete_egress(self, dispatch_id: str, receipt: EgressReceipt) -> None:
@@ -996,11 +1004,18 @@ def test_revocation_after_consume_waits_for_admitted_attempt_boundary() -> None:
 
     class _BlockingAudit(_FullPrivacyAudit):
         async def consume(
-            self, authorization_id: str, dispatch_id: str, now: datetime
+            self,
+            authorization_id: str,
+            dispatch_id: str,
+            now: datetime,
+            *,
+            owed_receipt: EgressReceipt | None = None,
         ) -> ConsumedAuthorization:
             consume_entered.set()
             await allow_consume.wait()
-            return await super().consume(authorization_id, dispatch_id, now)
+            return await super().consume(
+                authorization_id, dispatch_id, now, owed_receipt=owed_receipt
+            )
 
     audit = _BlockingAudit()
     factory = _FakeExternalFactory(_script_factory)
@@ -1817,7 +1832,7 @@ def test_unregistered_endpoint_profile_reports_factory_unavailable_not_a_silent_
     ]
 
 
-@pytest.mark.parametrize("phase", ["parking", "parking_failure", "provider", "receipt"])
+@pytest.mark.parametrize("phase", ["consume_failure", "provider", "receipt"])
 @pytest.mark.parametrize("clock_delta", [30, -30])
 def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
     phase: str, clock_delta: int, monkeypatch: pytest.MonkeyPatch
@@ -1839,16 +1854,22 @@ def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
             entered.set()
             await asyncio.Event().wait()
 
-    park = audit.park_attempt_reconciliation
+    consume = audit.consume
     complete = audit.complete_egress
     build = factory.build_evaluator
 
-    async def parking(dispatch_id: str, receipt: EgressReceipt) -> None:
-        if phase == "parking_failure":
+    async def consuming(
+        authorization_id: str,
+        dispatch_id: str,
+        now: datetime,
+        *,
+        owed_receipt: EgressReceipt | None = None,
+    ) -> ConsumedAuthorization:
+        # #1118 unit 1: the owed receipt is parked inside the consume transaction, so a store
+        # failure there consumes nothing rather than stranding a consumed authorization.
+        if phase == "consume_failure":
             raise RuntimeError("reconciliation_store_unavailable")
-        if phase == "parking":
-            await pause_once()
-        await park(dispatch_id, receipt)
+        return await consume(authorization_id, dispatch_id, now, owed_receipt=owed_receipt)
 
     async def completing(dispatch_id: str, receipt: EgressReceipt) -> None:
         if phase == "receipt":
@@ -1868,11 +1889,11 @@ def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
         monkeypatch.setattr(evaluator, "evaluate", evaluating)
         return evaluator
 
-    monkeypatch.setattr(audit, "park_attempt_reconciliation", parking)
+    monkeypatch.setattr(audit, "consume", consuming)
     monkeypatch.setattr(audit, "complete_egress", completing)
     monkeypatch.setattr(factory, "build_evaluator", building)
 
-    async def run() -> None:
+    async def run() -> str | None:
         await _reconcile_repository(gateway, effective, human)
         authorization = _authorization(
             authorization_id="aut_60000000-0000-4000-8000-000000000097",
@@ -1888,30 +1909,216 @@ def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
         pending = asyncio.create_task(
             gateway.dispatch_external_semantic(case, authorization, _deadline(clock))
         )
-        if phase == "parking_failure":
-            with pytest.raises(RuntimeError, match="reconciliation_store_unavailable"):
-                await asyncio.wait_for(pending, 5)
+        if phase == "consume_failure":
+            result = await asyncio.wait_for(pending, 5)
+            assert type(result) is SemanticResultUnavailable
         else:
             await asyncio.wait_for(entered.wait(), 5)
             clock.utc += timedelta(seconds=clock_delta)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(pending, 5)
-        assert audit.authorization_state(authorization.authorization_id) == "consumed"
+        return audit.authorization_state(authorization.authorization_id)
 
-    asyncio.run(run())
+    state = asyncio.run(run())
+    evaluated = sum(item.evaluate_calls for item in factory.built)
+    if phase == "consume_failure":
+        # Nothing was consumed, nothing was sent, and no attempt receipt is owed.
+        assert state == "authorized"
+        assert evaluated == 0
+        assert audit.egress_receipts == [] and audit.parked_receipts == []
+        return
+    assert state == "consumed"
+    assert len(audit.parked_receipts) == 1
     assert len(audit.egress_receipts) == 1
     receipt = audit.egress_receipts[0][1]
     if phase != "receipt":
         assert receipt.outcome is PrivacyOutcome.TRANSPORT_FAILED
         assert receipt.safe_failure_reason is PrivacyReason.OUTCOME_UNKNOWN
-        expected_finished_at = (
-            _NOW if phase == "parking_failure" else _NOW + timedelta(seconds=max(0, clock_delta))
-        )
-        assert receipt.finished_at == expected_finished_at
+        assert receipt.finished_at == _NOW + timedelta(seconds=max(0, clock_delta))
     else:
         # The provider result already existed; cancellation preserves it instead of replacing it.
         assert receipt.outcome is not PrivacyOutcome.TRANSPORT_FAILED
-    assert sum(item.evaluate_calls for item in factory.built) <= (
-        0 if phase == "parking_failure" else 1
+    assert evaluated <= 1
+
+
+# -- #1118 unit 1: outside-root bindings are re-checked at consume (E2E-2) ----------------------
+
+
+def _local_gateway(
+    audit: _FullPrivacyAudit, clock: _Clock
+) -> tuple[PolicyEnforcingOutboundGateway, _LocalSocketHandle]:
+    binding = _local_binding()
+    profile = LocalModelEndpointProfile(
+        profile_id="local-profile",
+        profile_version="1.0.0",
+        endpoint_profile_id=binding.endpoint_profile_id,
+        endpoint_profile_version=binding.endpoint_profile_version,
+        model=binding.model_id,
+        protocol_version="1.0.0",
+        judgment_schema_version="1.0.0",
+        timeout_seconds=30,
+        expected_service_identity="local-svc",
+        expected_owner_uid=0,
+        expected_peer_uid=0,
+        expected_socket_mode=0o600,
+        release_resource_digest=_DIGEST,
+        capability_evidence_digest=_DIGEST,
     )
+    handle = _LocalSocketHandle(
+        1,
+        _DIGEST,
+        canonical_encode(
+            {
+                "conclusion": "no_material_discrepancy",
+                "review_summary": "No review summary recorded.",
+                "verified": [],
+                "reviewer_challenges": [],
+                "prior_finding_verdicts": [],
+            }
+        ),
+    )
+    gateway = _gateway(
+        audit=audit,
+        clock=clock,
+        local_registry=InstalledLocalModelProfileRegistry((profile,)),
+        local_resolver=_LocalResolver(handle),
+    )
+    return gateway, handle
+
+
+def _local_case(policy: PrivacyPolicy, input_roots: tuple[str, ...]) -> ApprovedLocalDisclosureCase:
+    payload = canonical_encode({"note": "hello"})
+    return ApprovedLocalDisclosureCase(
+        case_id="cas_60000000-0000-4000-8000-000000000180",
+        request_id=_REQUEST,
+        privacy_proposal_id=_PROPOSAL,
+        payload=payload,
+        media_type="application/json",
+        included_item_ids=("item-1",),
+        approved_categories=(DataCategory.TASK_DESCRIPTION,),
+        blocked_categories=(),
+        byte_count=len(payload),
+        token_count=8,
+        sink=LocalDisclosureSink.LOCAL_MODEL,
+        binding=_local_binding(),
+        purpose="local-check",
+        policy_digest=policy.policy_digest,
+        case_digest=_DIGEST,
+        input_roots=input_roots,
+    )
+
+
+@pytest.mark.parametrize("admitted", [(), ("/shared",)])
+def test_external_consume_refuses_bytes_from_a_root_no_longer_admitted(
+    admitted: tuple[str, ...],
+) -> None:
+    clock = _Clock()
+    audit = _FullPrivacyAudit()
+    factory = _FakeExternalFactory(_script_factory)
+    gateway = _gateway(audit=audit, clock=clock, external_factory=factory)
+    policy = replace(
+        _policy(external_enabled=True, local_enabled=False), admitted_input_roots=admitted
+    )
+    effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
+    human = _human_authority(available=True)
+
+    async def run() -> tuple[SemanticResult, str | None]:
+        await _reconcile_repository(gateway, effective, human)
+        authorization = _authorization(
+            authorization_id="aut_60000000-0000-4000-8000-000000000181",
+            policy_digest=policy.policy_digest,
+            service_generation=human.service_generation,
+        )
+        audit.seed_authorized(authorization)
+        case = replace(
+            _case(
+                case_id="cas_60000000-0000-4000-8000-000000000182",
+                authorization=authorization,
+                payload=canonical_encode({"note": "hello"}),
+            ),
+            input_roots=("/shared",),
+        )
+        result = await gateway.dispatch_external_semantic(case, authorization, _deadline(clock))
+        return result, audit.authorization_state(authorization.authorization_id)
+
+    result, state = asyncio.run(run())
+
+    if admitted:
+        assert type(result) is SemanticResultSuccess and state == "consumed"
+    else:
+        # Revocation wins: nothing consumed, nothing rendered for the provider, no attempt owed.
+        assert type(result) is SemanticResultUnavailable and state == "authorized"
+        assert sum(item.evaluate_calls for item in factory.built) == 0
+        assert audit.parked_receipts == []
+
+
+@pytest.mark.parametrize("admitted", [(), ("/shared",)])
+def test_local_consume_refuses_bytes_from_a_root_no_longer_admitted(
+    admitted: tuple[str, ...],
+) -> None:
+    clock = _Clock()
+    audit = _FullPrivacyAudit()
+    gateway, handle = _local_gateway(audit, clock)
+    policy = replace(
+        _policy(external_enabled=False, local_enabled=True), admitted_input_roots=admitted
+    )
+    effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
+    human = _human_authority(available=True)
+
+    async def run() -> SemanticResult:
+        await _reconcile_repository(gateway, effective, human)
+        audit.seed_local_reserved(_PROPOSAL)
+        return await gateway.dispatch_local_semantic(
+            _local_case(policy, ("/shared",)), _deadline(clock)
+        )
+
+    result = asyncio.run(run())
+
+    if admitted:
+        assert type(result) is SemanticResultSuccess and len(handle.sent) == 1
+    else:
+        assert type(result) is SemanticResultUnavailable
+        assert audit.consume_local_calls == [] and handle.sent == []
+
+
+def test_local_consume_and_revocation_are_linearized_by_the_mutation_fence() -> None:
+    """E2E-2 on the local route: a revocation cannot interleave with a local consume."""
+
+    clock = _Clock()
+    consume_entered = asyncio.Event()
+    allow_consume = asyncio.Event()
+
+    class _BlockingAudit(_FullPrivacyAudit):
+        async def consume_local(
+            self, reservation_id: str, approved_case_digest: str, now: datetime
+        ) -> ConsumedLocalDisclosure:
+            consume_entered.set()
+            await allow_consume.wait()
+            return await super().consume_local(reservation_id, approved_case_digest, now)
+
+    audit = _BlockingAudit()
+    gateway, _handle = _local_gateway(audit, clock)
+    policy = _policy(external_enabled=False, local_enabled=True)
+    effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
+    human = _human_authority(available=True)
+
+    async def run() -> tuple[SemanticResult, bool]:
+        await _reconcile_repository(gateway, effective, human)
+        audit.seed_local_reserved(_PROPOSAL)
+        dispatch = asyncio.create_task(
+            gateway.dispatch_local_semantic(_local_case(policy, ()), _deadline(clock))
+        )
+        await asyncio.wait_for(consume_entered.wait(), timeout=1)
+        revoke = asyncio.create_task(gateway.close_revoked(1))
+        await asyncio.sleep(0)
+        revoke_was_blocked = not revoke.done()
+        allow_consume.set()
+        result = await dispatch
+        await revoke
+        return result, revoke_was_blocked
+
+    result, revoke_was_blocked = asyncio.run(run())
+
+    assert revoke_was_blocked is True
+    assert type(result) is SemanticResultSuccess

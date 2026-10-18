@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, 
 from dataclasses import dataclass, replace
 from typing import Final, TypedDict, cast
 
+from finishup.adapters.task_input_read import task_input_from_bytes
 from finishup.application.semantic_case import CheckTimeChange, check_time_change_shown_record
 from finishup.domain.events import (
     MAX_CHECK_CHANGE_SHOWN_FILES,
@@ -60,7 +61,9 @@ from finishup.ports.change_capture import (
     CheckWorkspaceSource,
     RequestedPathProbe,
     TaskChangeBase,
+    TaskInputCurrentState,
     TaskInputFile,
+    TaskInputSnapshotSet,
     decode_check_change,
     decode_task_change_base,
     drop_space_cut_words,
@@ -74,11 +77,13 @@ from finishup.protocol.canonical import JsonValue
 
 __all__ = [
     "declared_output_paths",
+    "CurrentInputReader",
     "OutsideInputReader",
     "outside_input_candidates",
     "outside_inputs_not_admitted",
     "review_input_paths",
     "space_cut_input_paths",
+    "statement_input_paths",
     "task_input_paths",
     "verification_input_paths",
     "CheckChangeOutcome",
@@ -458,6 +463,66 @@ def _within(path: str, workspace: str) -> bool:
     return folded == root or folded.startswith(root + "/")
 
 
+def _snapshot_inputs(
+    snapshots: tuple[TaskInputSnapshotSet, ...],
+    outside: tuple[str, ...],
+    admitted_roots: tuple[str, ...],
+    current_reader: CurrentInputReader | None,
+    present: set[str],
+    room: int,
+) -> list[TaskInputFile]:
+    """The kept snapshot copies of outside files the task names, each beside its current state.
+
+    ``current_reader`` returns, per path it reached, the whole current file (``None`` when it is
+    no longer text within the snapshot bound); a path it did not reach is ``unavailable``.
+    """
+
+    wanted = tuple(os.path.normpath(value) for value in outside)
+    kept = [
+        (snapshot.boundary, item)
+        for snapshot in snapshots
+        for item in snapshot.files
+        if item.root in admitted_roots
+        and item.path not in present
+        and any(item.path == path or item.path.startswith(path + "/") for path in wanted)
+    ][:room]
+    if not kept:
+        return []
+    current: Mapping[str, bytes | None] = (
+        {} if current_reader is None else current_reader(tuple(i.path for _, i in kept))
+    )
+    added: list[TaskInputFile] = []
+    for boundary, item in kept:
+        state: TaskInputCurrentState = "unavailable"
+        if item.path in current:
+            now = current[item.path]
+            try:
+                same = now is not None and _redacted_text(now)[0] == item.text
+            except ChangeCaptureUnavailable:
+                same = False
+            state = "same" if same else "changed"
+        rendered = task_input_from_bytes(item.path, item.text, origin="outside_workspace")
+        if rendered is None:
+            continue
+        added.append(
+            replace(
+                rendered,
+                size=item.size,
+                redacted=item.redacted or rendered.redacted,
+                root=item.root,
+                baseline=boundary,
+                current_state=state,
+            )
+        )
+    return added
+
+
+# Reads the whole current bytes of outside paths beneath the admitted roots, for comparing a
+# snapshot with the file now (#1118 unit 1): path -> bytes, ``None`` when no longer whole text
+# within the snapshot bound; a path it could not reach is absent.
+type CurrentInputReader = Callable[[tuple[str, ...]], Mapping[str, bytes | None]]
+
+
 def _with_outside_inputs(
     capture: CheckChangeCapture,
     input_paths: tuple[str, ...],
@@ -466,6 +531,9 @@ def _with_outside_inputs(
     *,
     verification_paths: frozenset[str],
     space_cut_paths: frozenset[str] = frozenset(),
+    snapshots: tuple[TaskInputSnapshotSet, ...] = (),
+    admitted_roots: tuple[str, ...] = (),
+    current_reader: CurrentInputReader | None = None,
 ) -> CheckChangeCapture:
     """Add inputs the task names beneath an admitted outside root, in the room left (#1082).
 
@@ -499,7 +567,11 @@ def _with_outside_inputs(
     if reader is None or room < 1 or not outside:
         return capture
     present = {item.path for item in capture.inputs}
-    added: list[TaskInputFile] = []
+    # #1118 unit 1 (AIP-1): a kept snapshot of a file the task names is sent in place of its
+    # current bytes, so a later rewrite cannot pose as the original; only while its root is
+    # still admitted (E2E-2).
+    added = _snapshot_inputs(snapshots, outside, admitted_roots, current_reader, present, room)
+    present.update(item.path for item in added)
     for item in reader(outside, room, workspace, space_cut_paths & frozenset(outside)):
         if (
             item.origin != "outside_workspace"
@@ -542,6 +614,8 @@ def _capture_redacted(
     admitted_roots: tuple[str, ...] = (),
     task_started_at: float | None = None,
     space_cut_paths: frozenset[str] = frozenset(),
+    snapshots: tuple[TaskInputSnapshotSet, ...] = (),
+    current_reader: CurrentInputReader | None = None,
 ) -> CheckChangeCapture:
     # A port without deliverable ordering or task inputs (an embedded or test port) is called
     # exactly as before when neither is asked for.
@@ -567,6 +641,9 @@ def _capture_redacted(
             workspace,
             verification_paths=verification_paths,
             space_cut_paths=space_cut_paths,
+            snapshots=snapshots,
+            admitted_roots=admitted_roots,
+            current_reader=current_reader,
         )
     )
     # Issue #1102 (RC6f): decided once, here, against the root this read used, and frozen into
@@ -598,6 +675,8 @@ async def capture_check_time_change(
     outside_reader: OutsideInputReader | None = None,
     admitted_roots: tuple[str, ...] = (),
     space_cut_paths: frozenset[str] = frozenset(),
+    snapshots: tuple[TaskInputSnapshotSet, ...] = (),
+    current_reader: CurrentInputReader | None = None,
 ) -> CheckChangeOutcome:
     """Capture, redact and store one check's change; every failure is a disclosed absence.
 
@@ -646,6 +725,8 @@ async def capture_check_time_change(
             admitted_roots=admitted_roots,
             task_started_at=task_started_at,
             space_cut_paths=space_cut_paths,
+            snapshots=snapshots,
+            current_reader=current_reader,
         )
         ref = await _store(runtime, encode_check_change(capture), CHECK_CHANGE_MEDIA_TYPE, clock)
         return CheckChangeOutcome(CheckTimeChange(ref, capture))
@@ -1162,8 +1243,14 @@ def space_cut_input_paths(projection: ProjectionState, statement: str | None) ->
     return frozenset(cut - set(verification_input_paths(projection))) & named
 
 
+def statement_input_paths(statement: str | None) -> tuple[str, ...]:
+    """``task_input_paths`` for the statement alone, before the task records any obligation."""
+
+    return _task_input_candidates(None, statement)[0]
+
+
 def _task_input_candidates(
-    projection: ProjectionState, statement: str | None
+    projection: ProjectionState | None, statement: str | None
 ) -> tuple[tuple[str, ...], frozenset[str]]:
     """``task_input_paths``' candidates, and those only the spaces of a quoted value cut out."""
 
@@ -1192,7 +1279,8 @@ def _task_input_candidates(
             if _statement_directory(folder):
                 directories.append(folder)
                 (cut if split else alone).add(folder)
-    for obligation in effective_obligations(projection):
+    for obligation in () if projection is None else effective_obligations(projection):
+        assert projection is not None
         payload = projection.obligations[obligation].payload
         if payload is None:
             continue

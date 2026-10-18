@@ -3226,6 +3226,9 @@ def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None
         # A task-named outside input the owner has not admitted (issue #1102): AI-powered review
         # input only, so never a local veto; an AI-powered baseline like the task statement's.
         "task_input_outside_not_admitted": (False, True),
+        # #1118 unit 1: an outside input reviewed as current bytes with no kept copy; the same
+        # AI-powered-only baseline terms.
+        "task_input_baseline_unavailable": (False, True),
     }
     # Structural test-edit accounting (ADR-032, #961) is decided by kind rather than baseline: the
     # standing accounting limits bound only ``task_requirement_unmet``, while the actionable

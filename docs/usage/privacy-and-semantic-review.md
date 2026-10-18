@@ -218,6 +218,15 @@ is a file only a test command your agent ran mentions. Nothing is read unless yo
 Private and Metadata only send nothing from these folders. `finishup privacy show`, `/privacy`
 and the status command above show what is admitted.
 
+So that your agent cannot pass off its own edit as the original, FinishUP keeps a copy of each
+such file when the task starts, or when the task first names it as an input, and the reviewer
+receives that copy, told whether the file has changed since. FinishUP keeps up to four text files
+of at most 256 KiB each per task, locally and encrypted; a larger, binary or later file is not
+copied. A copy shows the file at that moment, not who wrote it. When the reviewer gets a file as it
+is now because no copy exists, the check and the receipt say so with
+`task_input_baseline_unavailable`. Removing a folder also stops its copies and any already-read
+bytes from being sent, including for a check already under way, unless they had already left.
+
 When the task names a file or folder outside your workspace that you have not admitted, and
 FinishUP can tell it is an input, the check and the receipt say so with
 `task_input_outside_not_admitted`: the reviewer judged the work without it. FinishUP can tell only

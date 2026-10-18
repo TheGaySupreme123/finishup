@@ -832,11 +832,36 @@ _TASK_INPUT_VERIFICATION_LABEL: Final = (
     "command, unchanged since the task started, read by the FinishUP service when this check ran; "
     "not the agent's work]\n"
 )
+# #1118 unit 1 (AIP-1): an outside file read at check time is its current bytes. Nothing proves
+# they are the task's original contents or that the agent did not write them, so the label says so.
 _TASK_INPUT_OUTSIDE_LABEL: Final = (
     "[FinishUP task input file {path} ({size} bytes{cut}): named by the task, outside the "
-    "workspace beneath a root the owner admitted, read by the FinishUP service when this check "
-    "ran; not the agent's work]\n"
+    "workspace beneath a root the owner admitted; its current bytes, read by the FinishUP service "
+    "when this check ran. FinishUP kept no earlier copy, so whether these are the original "
+    "contents, and who wrote them, is unverified]\n"
 )
+# A snapshot FinishUP kept (#1118 unit 1). It proves the bytes at that moment, not who wrote them:
+# the task statement that named the file is the agent's own transcription.
+_TASK_INPUT_SNAPSHOT_LABEL: Final = (
+    "[FinishUP task input file {path} ({size} bytes{cut}): named by the task, outside the "
+    "workspace beneath a root the owner admitted; the copy FinishUP kept {when}. {current} "
+    "This shows the bytes at that moment, not who wrote them]\n"
+)
+_SNAPSHOT_WHEN: Final = {
+    "task_start": "before the task's start returned",
+    "admission_time": (
+        "when the task first named it as an input, after the task started, so its contents at "
+        "the start are unknown"
+    ),
+}
+_SNAPSHOT_CURRENT: Final = {
+    "same": "The file read when this check ran still matches it.",
+    "changed": (
+        "The file has changed since that copy; its current bytes are not shown, and the change "
+        "may be the agent's."
+    ),
+    "unavailable": "The file could not be read when this check ran.",
+}
 _TASK_INPUT_SUMMARY_LABEL: Final = (
     "[FinishUP summary of task input file {path} ({size} bytes): FinishUP's own bounded "
     "description of a binary or data file it did not send whole; not the file itself and not the "
@@ -869,6 +894,10 @@ def _task_input_text(item: TaskInputFile) -> tuple[str, bool]:
         label = _TASK_INPUT_DIRECTORY_LABEL
     elif item.origin == "verification":
         label = _TASK_INPUT_VERIFICATION_LABEL
+    elif item.origin == "outside_workspace" and item.baseline != "current":
+        label = _TASK_INPUT_SNAPSHOT_LABEL.replace("{when}", _SNAPSHOT_WHEN[item.baseline]).replace(
+            "{current}", _SNAPSHOT_CURRENT[item.current_state or "unavailable"]
+        )
     elif item.origin == "outside_workspace":
         label = _TASK_INPUT_OUTSIDE_LABEL
     else:
@@ -7457,6 +7486,7 @@ def _build_semantic_case_once(
             )
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
+    task_input_roots: tuple[tuple[str, str], ...] = ()
     task_input_links: tuple[str, ...] = ()
     task_inputs_admitted: set[int] = set()
     # The inputs the first offer cut to the room it had, by index: the backfill offers each one
@@ -7472,7 +7502,19 @@ def _build_semantic_case_once(
             :MAX_SEMANTIC_ITEM_SUBJECT_REFS
         ]
         if task_input_links:
-            task_inputs = tuple(_task_input_text(item) for item in check_time_change.capture.inputs)
+            # E2E-2 (#1118 unit 1): an outside input with no root binding (read before bindings
+            # existed) is never offered; each bound one keeps its root beside its item id.
+            offered = tuple(
+                item
+                for item in check_time_change.capture.inputs
+                if item.origin != "outside_workspace" or item.root is not None
+            )
+            task_inputs = tuple(_task_input_text(item) for item in offered)
+            task_input_roots = tuple(
+                (f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}", item.root)
+                for index, item in enumerate(offered)
+                if item.root is not None
+            )
 
     task_input_limit = min(selection.max_excerpt_bytes, MAX_SEMANTIC_ITEM_BYTES)
 
@@ -8500,6 +8542,7 @@ def _build_semantic_case_once(
         excerpts_cut_for_case_bound=excerpts_cut_for_case_bound,
         excerpt_parts=excerpt_parts,
         follow_up_supplied_item_ids=follow_up_supplied,
+        input_roots=tuple(pair for pair in task_input_roots if pair[0] in carried_item_ids),
     )
 
 
@@ -11124,6 +11167,7 @@ def semantic_case_to_candidate_context(
         scope=scope,
         provider_binding=provider_binding,
         subject_digest=case.case_digest,
+        input_roots=dict(case.input_roots),
     )
 
 
@@ -11135,11 +11179,14 @@ def review_envelope_to_candidate_context(
     scope: AuthorizationScope,
     provider_binding: ProviderBinding,
     subject_digest: str,
+    input_roots: Mapping[str, str] | None = None,
 ) -> CandidateContext:
     """Offer a frozen review envelope and only its catalogued, classified content.
 
     Used by explicit checks and background advice; both feed the same approved-id filter.
+    ``input_roots`` binds each outside-input item to the root it was read beneath (E2E-2).
     """
+    roots: Mapping[str, str] = {} if input_roots is None else input_roots
     # The catalog is the authority for what the provider payload may carry, so an item bounding
     # removed from the catalog must not travel as a candidate item either. Offering content whose
     # catalog row is gone would get it approved by privacy and then silently discarded during
@@ -11165,6 +11212,7 @@ def review_envelope_to_candidate_context(
                 scope,
                 f"/case/{item.section}/{item.item_id}",
                 item.content,
+                input_root=roots.get(item.item_id),
             )
         )
     return CandidateContext(

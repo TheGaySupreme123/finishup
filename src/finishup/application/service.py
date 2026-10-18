@@ -13,12 +13,13 @@ from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel
 
-from finishup.application.check_change import record_task_change_base
+from finishup.application.check_change import record_task_change_base, statement_input_paths
 from finishup.application.coordination import (
     CoordinationParticipant,
     coordination_generation_superseded,
 )
 from finishup.application.egress import PrivacyCoordinator
+from finishup.application.input_snapshot import InputSnapshotScope, record_input_snapshot
 from finishup.application.lineage import LineageCoordinator, LineageSnapshot, LineageStatus
 from finishup.application.lineage_recovery import (
     append_abandonment,
@@ -51,6 +52,9 @@ from finishup.domain.events import (
     DelegationDeclaredPayload,
     EventSchema,
     EvidenceRecordedPayload,
+    ObligationPublishedPayload,
+    RequestedItemKind,
+    RequestedItemRole,
     ResultRecordedPayload,
     RuntimeProfile,
     WorkAbandonedPayload,
@@ -92,6 +96,7 @@ from finishup.observability.logging import (
 from finishup.ports.change_capture import (
     ChangeCapturePort,
     CheckWorkspaceSource,
+    SnapshotBoundary,
     check_workspace_source_scope,
 )
 from finishup.ports.clock import ClockPort
@@ -194,6 +199,35 @@ _LINEAGE_PUBLIC_LIFECYCLE_FAMILIES = frozenset(
         "work_written_off",
     }
 )
+
+
+def _declared_input_paths(request: PublishWorkRequest) -> tuple[str, ...]:
+    """The ``role: input`` file and directory values a batch's obligations declare (#1118)."""
+
+    values: list[str] = []
+    for draft in request.event_drafts:
+        if not isinstance(draft, Mapping):
+            continue
+        schema = draft.get("schema")
+        if not isinstance(schema, Mapping) or schema.get("name") != "obligation_published":
+            continue
+        version = schema.get("version")
+        try:
+            payload = decode_payload(
+                EventSchema("obligation_published", cast(str, version)),
+                cast(DomainJsonValue, draft.get("payload")),
+            )
+        except TypeError, ValueError:
+            continue
+        if type(payload) is not ObligationPublishedPayload:
+            continue
+        values.extend(
+            item.value
+            for item in payload.requested_items
+            if item.role is RequestedItemRole.INPUT
+            and item.item_kind in {RequestedItemKind.FILE, RequestedItemKind.DIRECTORY}
+        )
+    return tuple(dict.fromkeys(values))
 
 
 def _lineage_publication_payloads(request: PublishWorkRequest) -> tuple[object, ...]:
@@ -949,6 +983,12 @@ class Application:
     # Read-only repository access for the check-time change (ADR-031). ``None`` in embedded and
     # test compositions: tasks then record no start base and checks bind no workspace source.
     change_capture: ChangeCapturePort | None = field(default=None, repr=False, compare=False)
+    # #1118 unit 1: what a task-input snapshot may read for one repository task now, or ``None``
+    # when the policy admits no root or review carries no inputs. ``None`` in embedded and test
+    # compositions: tasks then keep no snapshots and checks label outside inputs as current.
+    input_snapshot_scope: (
+        Callable[[RepositoryPrivacyContext, str], Awaitable[InputSnapshotScope | None]] | None
+    ) = field(default=None, repr=False, compare=False)
     # ADR-049: reads the owner's conversation setting and review availability for one task.
     # ``None`` in embedded and test compositions: checks keep the released behaviour.
     conversation_review_reader: (
@@ -1104,7 +1144,69 @@ class Application:
                 )
             await self._maybe_birth_implicit_repository_project(repository_privacy_context)
             await self._record_task_change_base(result, repository_privacy_context)
+            if result.outcome in {"created", "delegated"}:
+                # #1118 unit 1: before the creator gets the result, so the copy is the start.
+                await self._record_input_snapshot(
+                    result.task_id,
+                    result.session_id,
+                    result.writer_id,
+                    statement_input_paths(request.task_statement),
+                    "task_start",
+                    repository_privacy_context,
+                    result.request_id,
+                )
             return result
+
+    async def _record_input_snapshot(
+        self,
+        task_id: str,
+        session_id: str,
+        writer_id: str,
+        values: tuple[str, ...],
+        boundary: SnapshotBoundary,
+        repository_privacy_context: RepositoryPrivacyContext | None,
+        request_id: str | None,
+    ) -> None:
+        """Keep copies of the outside inputs ``values`` names, at ``boundary`` (#1118 unit 1).
+
+        Best effort: a task without a copy still runs; its checks label outside inputs as current
+        bytes and disclose ``task_input_baseline_unavailable``. Never a backdated copy: a start
+        records ``task_start`` only here, and a later declaration records ``admission_time``.
+        """
+
+        source = self.input_snapshot_scope
+        if source is None or repository_privacy_context is None:
+            return
+        if not any(value.startswith("/") for value in values):
+            return
+        try:
+            scope = await source(repository_privacy_context, task_id)
+            if scope is None:
+                return
+            runtime = await self.runtime.route(
+                RouteCommand(
+                    session_id, writer_id, RouteAccess.WRITE, frozenset({RuntimeCapability.WRITE})
+                )
+            )
+        except Exception as exc:
+            record_unexpected_exception_without_raising(
+                exc,
+                component="start",
+                operation="input_snapshot_route_failed",
+                request_id=request_id,
+            )
+            return
+        try:
+            await record_input_snapshot(
+                runtime=runtime,
+                values=values,
+                scope=scope,
+                boundary=boundary,
+                clock=self.clock,
+                request_id=request_id,
+            )
+        finally:
+            await self.runtime.release(runtime)
 
     async def _record_task_change_base(
         self,
@@ -1892,6 +1994,18 @@ class Application:
             and getattr(result.root, "outcome", None) == "dry_run"
         ):
             await self._apply_coordination_dispositions(coordination_payloads)
+        if isinstance(result, PublishWorkInternalResult):
+            # #1118 unit 1: an outside input the task first names now is copied now, labelled
+            # with this admission rather than the task's start.
+            await self._record_input_snapshot(
+                result.task_id,
+                request.session_id,
+                request.writer_id,
+                _declared_input_paths(request),
+                "admission_time",
+                repository_privacy_context,
+                result.request_id,
+            )
         return result
 
     async def _sweep_project_coordination(self, result: object) -> None:
@@ -3342,6 +3456,9 @@ class ServiceReadyContext:
         default=None, repr=False, compare=False
     )
     change_capture: ChangeCapturePort | None = field(default=None, repr=False, compare=False)
+    input_snapshot_scope: (
+        Callable[[RepositoryPrivacyContext, str], Awaitable[InputSnapshotScope | None]] | None
+    ) = field(default=None, repr=False, compare=False)
     conversation_review_context: (
         Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]] | None
     ) = field(default=None, repr=False, compare=False)
@@ -3450,6 +3567,7 @@ class ReadyApplicationFactory:
                 host_lineage_registry=context.host_lineage_registry,
                 advice_semantic_supervisor=context.advice_semantic_supervisor,
                 change_capture=context.change_capture,
+                input_snapshot_scope=context.input_snapshot_scope,
                 conversation_review_reader=context.conversation_review_context,
             )
             if context.reconcile_started_egress_attempts is not None:

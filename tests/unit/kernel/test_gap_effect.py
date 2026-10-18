@@ -130,6 +130,9 @@ _CHANGED = frozenset(
         # #1102: a task-named outside input the owner has not admitted; a disclosure from the
         # start, never agent work and never a Stop-gate item.
         "task_input_outside_not_admitted",
+        # #1118 unit 1: an outside input sent as current bytes with no kept copy; a disclosure on
+        # the same terms.
+        "task_input_baseline_unavailable",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -141,8 +144,8 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # unsupported beside its G7 siblings; the #1044 follow-up added
     # deliverable_references_ambiguous_name; #1019 r2 added advice_semantic_preview_required)
     # + the #1079 unresolved verification limit + 3 readiness-only finding tokens + the #1102
-    # task_input_outside_not_admitted disclosure.
-    assert len(GAP_EFFECT_TABLE) == 223
+    # task_input_outside_not_admitted disclosure + the #1118 task_input_baseline_unavailable one.
+    assert len(GAP_EFFECT_TABLE) == 224
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -151,7 +154,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 42
+    assert len(changed) == 43
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])

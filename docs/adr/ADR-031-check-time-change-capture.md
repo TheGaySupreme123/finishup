@@ -858,3 +858,47 @@ its existing reservation. Each removed narrative or synthetic excerpt uses the s
 coverage and total-count disclosures; omission subjects remain valid linked ledger identities.
 MCP, CLI and hook-triggered reviews share this composer on Codex, Claude Code and Cursor. There is
 no reviewer fetch tool or capture-policy change in this repair.
+
+## Amendment (2026-10-18, issue #1118 unit 1): outside-input snapshots and honest labels
+
+AIP-1: an outside file read at check time is its current bytes. An agent that rewrote the
+specification beneath an admitted root got its version labelled "not the agent's work". That
+claim had no basis and is removed.
+
+- **Snapshots.** FinishUP keeps a whole copy of each outside input the task names (statement
+  paths or `role: input` file and directory items) beneath a root the task's effective policy
+  admits, only when AI-powered review can run (the external channel or the local model is on) and
+  its recipe carries task inputs. A local-only or no-file policy reads nothing ahead of time.
+- **When.** A creating `start` (`created` or `delegated`) keeps a `task_start` set before it
+  returns. A `publish_work` batch whose obligations first name an input keeps an
+  `admission_time` set before it returns. Attach and resume keep nothing. A late copy is never
+  relabelled as the start, and a failure leaves a gap rather than a backdated copy. Both are best
+  effort: neither call fails because a copy could not be kept.
+- **Bounds.** Four whole text files of at most 256 KiB each, 1 MiB of content, 16 candidates,
+  five seconds per admission and ten seconds per task, counted from the sets already kept, so no
+  retry, declaration or check replenishes them. A file too large, binary or not UTF-8 text, or
+  past the budget is recorded with a closed reason (`too_large`, `not_text`, `unreadable`,
+  `budget`, `redaction_incomplete`) and no bytes; a partial read is never kept as an original.
+  Copies are redacted before they are kept.
+- **Storage.** Each set is one encrypted `change_capture` object of media type
+  `application/vnd.finishup.task-input-snapshot+json`, schema `finishup.task-input-snapshot/1`.
+  The ledger seam `record_task_input_snapshot(ref) -> bool` appends its pointer to the
+  `bundle_meta` key `task_input_snapshots` (at most 16) and inventories the object in the same
+  transaction, beside the task-start base; `load_task_input_snapshots()` authenticates them.
+  Task retention and removal handle the objects; there is no separate archive.
+- **Check time.** A named outside input with a kept copy whose root is still admitted is sent
+  from the copy. The current file is read whole once to say whether it still matches (`same`,
+  `changed`, `unavailable`); its bytes are not sent. The label names the boundary ("the copy
+  FinishUP kept before the task's start returned", or "when the task first named it as an input,
+  after the task started"), the current state, and that a copy shows bytes at a moment, not who
+  wrote them. An input with no copy keeps its current bytes, labelled as such with its original
+  contents and authorship unverified, and the check discloses `task_input_baseline_unavailable`.
+- **Binding.** Every outside input carries the root it was read beneath
+  (`TaskInputFile.root`; the check-change object writes `root`, `baseline` and `current_state`
+  only when set, so older objects keep their bytes). An outside input from an older object has
+  no binding and is never offered. ADR-009 carries the binding through egress.
+- **Not covered.** Workspace inputs keep the Git task-start proof (ADR-031 #1045): only
+  unchanged files are sent and an agent's edit arrives in the change, but the original bytes of
+  an untracked workspace spec the agent edited are not kept. A root admitted after a declaration
+  does not trigger a copy at the admission; the next declaration does. Old tasks have no copies,
+  and none is invented.

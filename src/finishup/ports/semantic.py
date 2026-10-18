@@ -1414,8 +1414,16 @@ class SemanticCase:
     # check's first packet. Bound into the case digest and marked in the envelope catalog, so
     # the provider-bound manifest says ``supplied`` only through such an excerpt it carried.
     follow_up_supplied_item_ids: frozenset[str] = field(default=frozenset(), compare=False)
+    # #1118 unit 1 (E2E-2), local composition fact: ``(item_id, root)`` for each excerpt read
+    # beneath an owner-admitted outside root, so egress can refuse it once that root is removed.
+    input_roots: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
+        if type(self.input_roots) is not tuple or any(
+            type(pair) is not tuple or len(pair) != 2 or any(type(v) is not str for v in pair)
+            for pair in self.input_roots
+        ):
+            raise _invalid_case()
         if (
             type(self.omitted_reference_count) is not int
             or not 0 <= self.omitted_reference_count <= _MAX_SAFE_INTEGER

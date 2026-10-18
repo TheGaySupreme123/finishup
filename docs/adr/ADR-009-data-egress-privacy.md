@@ -879,6 +879,14 @@ attempt owes. Accordingly:
 The invariant is unchanged and now holds: a consumed authorization ends in exactly one terminal
 receipt. Local-sink (`local_disclosure_pending`) cancellation is not covered by this amendment.
 
+**Atomic consume (2026-10-18, issue #1118 unit 1).** Point 1 left a window between the consume CAS
+and the parking write: a crash there left a consumed row with no owed receipt. The gateway now
+builds the owed `transport_failed/outcome_unknown` receipt before the consume and passes it as
+`PrivacyAuditPort.consume(..., owed_receipt=)`; the catalog writes the `receipt_pending`
+transition and the parked receipt in one transaction. A failure of that transaction consumes
+nothing, so nothing is dispatched and no attempt receipt is owed. `park_attempt_reconciliation`
+remains for compatibility but the gateway no longer calls it. Recovery (point 3) is unchanged.
+
 ## Task statement review section amendment (2026-09-30, issue #908)
 
 The agent-transcribed task statement is different content from the agent's plan summary even
@@ -1400,6 +1408,17 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   - The bytes take the same redaction as every task input, leave as `repository_excerpt` items
     labelled "outside the workspace beneath a root the owner admitted", and pass the gateway and
     never-send scan. A channel that withholds `repository_excerpt` drops them.
+  - Removal wins over bytes already read (issue #1118 unit 1, E2E-2). Each outside item keeps the
+    root it was read beneath, from the capture (or the ADR-031 snapshot) through the case to the
+    privacy candidate (`CandidateContextItem.input_root`). The coordinator refuses an item whose
+    root the deciding policy no longer admits, so a root removed after capture but before
+    admission blocks that item in a fresh, recovered or cached case. The approved case carries
+    the included items' roots (`input_roots`), and the gateway checks them against its current
+    registry while holding the lock policy mutation holds, immediately before the consume, on the
+    external route and on the local-model route, whose consume now runs under that same lock.
+    A removal that commits first stops the dispatch; one that commits after the consume is
+    ordered after an admitted attempt that FinishUP cannot recall. Later reviewer reads and
+    continuation history must carry the same bindings through the same check.
 - **Captured bytes behind a digest-only row.** When an agent records a run's output as a
   digest-only evidence row, a hook already captured bytes with that exact SHA-256, and both rows
   record the same verification run (the same result of the same command identity), the capture's
