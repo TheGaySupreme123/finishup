@@ -505,7 +505,11 @@ def _stated_post(cell: Replay, call: str, exit_code: int) -> None:
         tool_name="Bash",
         tool_use_id=call,
         tool_input=tool_input,
-        tool_response={"chunk_id": "s1", "exit_code": exit_code, "output": "public synthetic output"},
+        tool_response={
+            "chunk_id": "s1",
+            "exit_code": exit_code,
+            "output": "public synthetic output",
+        },
     )
 
 
