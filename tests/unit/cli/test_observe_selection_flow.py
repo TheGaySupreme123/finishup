@@ -255,6 +255,36 @@ def test_buffered_promotion_retains_native_identity_and_reports_missing_content(
     )
 
 
+def test_promotion_beside_a_refused_buffered_success_demotes_it_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    """Review round 3: an input an older build buffered as a success may no longer summarize.
+
+    Promotion builds the rest of the lane the way the flush does: the refused group is delivered
+    demoted with its gap and counted as a refusal, and the promoted call is still queued.
+    """
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    hook(root, workspace, "PreToolUse", "older-read")
+    hook(root, workspace, "PostToolUse", "older-read")
+    poisoned = _poison_buffered_post(store, commitment)
+    hook(root, workspace, "PreToolUse", "promoted-read")
+    hook(root, workspace, "PostToolUse", "promoted-read")
+    inputs = store._load(commitment).admission_buffer.inputs
+    assert len(inputs) == 4
+    assert inputs[1].envelope == poisoned
+    target = inputs[-1].envelope
+    result = store.promote_buffered_observation(commitment, target.source_identity)
+    assert result["outcome"] == "queued_individual"
+    rows = store.list_pending_outbox_rows(commitment)
+    demoted = next(row for row in rows if row.envelope.source_identity == poisoned.source_identity)
+    assert ROUTINE_SUMMARY_INVALID_GAP in demoted.envelope.gap_codes
+    assert [refusal["reason"] for refusal in store.summary_refusals(commitment)] == [
+        "invalid_event_value_type"
+    ]
+    assert store.selection_accounting(commitment)["buffered_input_count"] == 0
+
+
 def test_loss_history_survives_recovery_without_retargeting_another_task(tmp_path: Path) -> None:
     store, root, workspace, commitment, _ = setup_store(tmp_path)
     hook(root, workspace, "PreToolUse", "original")

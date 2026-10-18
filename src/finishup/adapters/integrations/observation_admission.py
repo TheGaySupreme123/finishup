@@ -328,6 +328,30 @@ def _summary_refusal(members: tuple[ObservationEnvelope, ...], reason: str) -> S
     )
 
 
+def summarize_or_demote(
+    host_session: str,
+    members: tuple[ObservationEnvelope, ...],
+    fence: str,
+    summary_builder: SummaryBuilder,
+) -> tuple[tuple[tuple[str, ObservationEnvelope], ...], SummaryRefusal | None]:
+    """One success group as its summary, or, when the builder refuses it, each member demoted.
+
+    A refused group keeps its members as individual observations with the
+    ``routine_summary_invalid`` gap (issue #753), and the refusal is returned for the lane-level
+    account. An input buffered by an older build that this build no longer proves a success
+    (a Codex hook post with no exit, #1105) is refused here, never raised to the caller.
+    """
+
+    try:
+        summary = summary_builder(members, fence)
+    except ProtocolValueError as exc:
+        return (
+            tuple((host_session, _demoted(item)) for item in members),
+            _summary_refusal(members, exc.reason_code),
+        )
+    return ((host_session, summary),), None
+
+
 def _flush_lane(
     inputs: tuple[BufferedInput, ...], summary_builder: SummaryBuilder
 ) -> tuple[tuple[tuple[str, ObservationEnvelope], ...], tuple[SummaryRefusal, ...]]:
@@ -351,13 +375,12 @@ def _flush_lane(
             return
         members = tuple(successes)
         successes.clear()
-        try:
-            summary = summary_builder(members, previous.fence)
-        except ProtocolValueError as exc:
-            refusals.append(_summary_refusal(members, exc.reason_code))
-            deliveries.extend((previous.host_session, _demoted(item)) for item in members)
-            return
-        deliveries.append((previous.host_session, summary))
+        delivered, refusal = summarize_or_demote(
+            previous.host_session, members, previous.fence, summary_builder
+        )
+        deliveries.extend(delivered)
+        if refusal is not None:
+            refusals.append(refusal)
 
     for item in inputs:
         if previous is not None and (
