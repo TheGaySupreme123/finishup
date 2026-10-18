@@ -741,3 +741,41 @@ def test_observe_status_attributes_each_reading_to_its_reason(
     assert line.endswith("; last 64 calls kept")
     for private in ("npm", "rg ", "reviewed", str(workspace)):
         assert private not in line
+
+
+def test_a_store_failure_after_the_call_is_counted_best_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """goal-r1-8: a ``store_unusable`` post reading reaches the tally when the store still can."""
+
+    from finishup.adapters.workspace_fingerprint import WorkspaceFingerprintStore
+    from finishup.cli.workspace_effect_hook import workspace_fingerprint_pass
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    noted: list[tuple[str, str | None, str | None]] = []
+
+    def broken(self: WorkspaceFingerprintStore, *args: object, **kwargs: object) -> object:
+        raise OSError("disk went away")
+
+    def note(self: WorkspaceFingerprintStore, reading: object, call_token: str | None) -> bool:
+        noted.append((getattr(reading, "effect", ""), getattr(reading, "reason", None), call_token))
+        return True
+
+    monkeypatch.setattr(WorkspaceFingerprintStore, "effect_after", broken)
+    monkeypatch.setattr(WorkspaceFingerprintStore, "note_reading", note)
+    reading = workspace_fingerprint_pass(
+        "PostToolUse",
+        call_identity="codex\x00session\x00call_1",
+        workspace_locator=str(workspace),
+        workspace_commitment="hmac-sha256:" + "a" * 64,
+        key_material=b"k" * 32,
+        observation_root=tmp_path / "observation",
+        complete=True,
+        call_token="call_1",
+    )
+    assert reading is not None and (reading.effect, reading.reason) == (
+        "unavailable",
+        "store_unusable",
+    )
+    assert noted == [("unavailable", "store_unusable", "call_1")]

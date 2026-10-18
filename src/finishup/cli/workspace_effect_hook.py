@@ -242,9 +242,11 @@ def workspace_fingerprint_pass(
     a closed token.
     """
 
+    store: WorkspaceFingerprintStore | None = None
     try:
         directory = workspace_fingerprint_dir(observation_root, workspace_commitment)
         if directory is None:
+            # No store directory: nowhere to count this reading either.
             return WorkspaceEffectReading("unavailable", "store_unusable")
         store = WorkspaceFingerprintStore(directory, key_material)
         deadline = time.monotonic() + max(0.0, seconds)
@@ -283,5 +285,10 @@ def workspace_fingerprint_pass(
                 store.note_reading(reading, call_token)
             return reading
     except Exception:
-        return WorkspaceEffectReading("unavailable", "store_unusable")
+        failed = WorkspaceEffectReading("unavailable", "store_unusable")
+        if event == "PostToolUse" and store is not None:
+            # Counted best effort: a store too broken to compare may be too broken to count.
+            with contextlib.suppress(Exception):
+                store.note_reading(failed, call_token)
+        return failed
     return None
