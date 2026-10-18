@@ -169,7 +169,12 @@ from finishup.domain.task_fact_tokens import (
 )
 from finishup.domain.values import EventId, ObligationId, obligation_id
 from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
-from finishup.domain.write_scope import finishup_artifact_name, notes_artifact_name, scratch_overlap
+from finishup.domain.write_scope import (
+    docs_artifact_name,
+    finishup_artifact_name,
+    notes_artifact_name,
+    scratch_overlap,
+)
 from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.fact_lineage import (
     RULE_COMMAND_MATCH,
@@ -180,6 +185,7 @@ from finishup.kernel.fact_lineage import (
 from finishup.kernel.observed_failures import (
     NON_COUNTING_WRITE_TOKENS,
     SHELL_EDIT_TOKENS,
+    STALE_EXEMPT_WRITE_TOKENS,
     command_identity,
     command_segment_identities,
     observed_action_runner_class,
@@ -187,6 +193,7 @@ from finishup.kernel.observed_failures import (
     observed_edit_counts,
     observed_event_ids_from_records,
     observed_shell_write_counts,
+    observed_write_stales_verification,
 )
 from finishup.kernel.plan_scope import current_plan_scope
 from finishup.kernel.projections import ProjectionState
@@ -273,6 +280,7 @@ __all__ = [
     "task_fact_signals",
     "non_counting_edits_exempt",
     "passing_verification_observed",
+    "stale_exempt_write_tokens",
 ]
 
 BLOCKER_MARKER: Final = "finishup-blocker"
@@ -928,6 +936,9 @@ class _ObservedState:
     command_tokens: frozenset[str]
     acting: bool
     latest_edit_event: EventId | None = None
+    # A counting observed edit or shell write, whether or not it makes verification stale: a
+    # documentation edit is material work although it never advances ``latest_edit`` (n7 RC2).
+    material_edit: bool = False
 
 
 def cooperative_event_ids_from_records(records: Iterable[LedgerRecord]) -> frozenset[EventId]:
@@ -1290,6 +1301,28 @@ def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:
     return frozenset(exempt)
 
 
+def stale_exempt_write_tokens(projection: ProjectionState) -> frozenset[str]:
+    """The counting write tokens that never make an earlier verification stale (n7 RC2).
+
+    ``write docs`` (every path project documentation) is exempt unless the task declares a
+    non-input file with a documentation name, or any non-input directory (which may hold one):
+    a declared README or guide is the delivery, so editing it after a check makes the check
+    stale, as for any declared output. The same precedence rule as ``non_counting_edits_exempt``.
+    """
+
+    exempt = set(STALE_EXEMPT_WRITE_TOKENS)
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is None:
+            continue
+        for item in payload.requested_items:
+            if item.item_kind not in _DECLARED_OUTPUT_KINDS or item.role is RequestedItemRole.INPUT:
+                continue
+            if item.item_kind is RequestedItemKind.DIRECTORY or docs_artifact_name(item.value):
+                exempt.discard("write docs")
+    return frozenset(exempt)
+
+
 def _non_counting_edit(description: str, exempt: frozenset[str]) -> bool:
     """An observed edit whose every path was scratch or FinishUP-owned (ADR-042, tb4n2 R4).
 
@@ -1307,12 +1340,14 @@ def _observed_state(
     cooperative: frozenset[EventId],
 ) -> _ObservedState:
     exempt = non_counting_edits_exempt(projection)
+    stale_exempt = stale_exempt_write_tokens(projection)
     runs: list[_ObservedRun] = []
     latest_edit: int | None = None
     latest_edit_event: EventId | None = None
     edit_tokens: set[str] = set()
     command_tokens: set[str] = set()
     acting = False
+    material_edit = False
     edits_with_result: set[str] = set()
     commands_with_result: set[str] = set()
     for result in projection.results.values():
@@ -1327,10 +1362,12 @@ def _observed_state(
             edits_with_result.add(str(payload.action_id))
             if payload.outcome is ResultOutcome.FAILURE or _non_counting_edit(description, exempt):
                 continue
-            latest_edit = max(latest_edit or 0, result.source_frontier)
-            latest_edit_event = action.source_event_id
+            if observed_write_stales_verification(description, stale_exempt):
+                latest_edit = max(latest_edit or 0, result.source_frontier)
+                latest_edit_event = action.source_event_id
             edit_tokens.update(observed_action_runtime_tokens(description))
             acting = True
+            material_edit = True
         elif action.payload.action_kind is ActionKind.COMMAND:
             commands_with_result.add(str(payload.action_id))
             runner = observed_action_runner_class(description)
@@ -1342,11 +1379,14 @@ def _observed_state(
                 # ADR-045: a shell command that visibly wrote files (``cat > f``, ``sed -i``,
                 # ``cp a f``) changed the work as surely as an edit tool would, and it did so
                 # whatever its exit status (``: > f; false`` emptied ``f``). A write to the
-                # agent's notes counts only when the task declares a notes-like output.
-                latest_edit = max(latest_edit or 0, result.source_frontier)
-                latest_edit_event = action.source_event_id
+                # agent's notes counts only when the task declares a notes-like output. A write of
+                # only project documentation is material but leaves verification current.
+                if observed_write_stales_verification(description, stale_exempt):
+                    latest_edit = max(latest_edit or 0, result.source_frontier)
+                    latest_edit_event = action.source_event_id
                 edit_tokens.update(tokens & (SHELL_EDIT_TOKENS | NON_COUNTING_WRITE_TOKENS))
                 acting = True
+                material_edit = True
             runs.append(
                 _ObservedRun(
                     result.source_frontier,
@@ -1376,10 +1416,12 @@ def _observed_state(
                 continue
             # An observed edit whose outcome has not arrived yet still changed the state under
             # test as far as the observer can tell; a stated failure above never counts.
-            latest_edit = max(latest_edit or 0, action.source_frontier)
-            latest_edit_event = action.source_event_id
+            if observed_write_stales_verification(payload.description, stale_exempt):
+                latest_edit = max(latest_edit or 0, action.source_frontier)
+                latest_edit_event = action.source_event_id
             edit_tokens.update(observed_action_runtime_tokens(payload.description))
             acting = True
+            material_edit = True
         elif (
             payload.action_kind is ActionKind.COMMAND
             and str(action_ref) not in commands_with_result
@@ -1394,10 +1436,12 @@ def _observed_state(
                 # arrives counts like a pending edit. A Codex shell ``apply_patch <<EOF`` is
                 # always one: Codex applies the patch itself and fires only the pre-event
                 # (#1041), so its write token is the ledger's only record of the edit (#1046).
-                latest_edit = max(latest_edit or 0, action.source_frontier)
-                latest_edit_event = action.source_event_id
+                if observed_write_stales_verification(payload.description, stale_exempt):
+                    latest_edit = max(latest_edit or 0, action.source_frontier)
+                    latest_edit_event = action.source_event_id
                 edit_tokens.update(tokens & (SHELL_EDIT_TOKENS | NON_COUNTING_WRITE_TOKENS))
                 acting = True
+                material_edit = True
             runs.append(
                 _ObservedRun(
                     action.source_frontier,
@@ -1417,6 +1461,7 @@ def _observed_state(
         frozenset(command_tokens),
         acting,
         latest_edit_event,
+        material_edit,
     )
 
 
@@ -1499,12 +1544,13 @@ def material_edit_recorded(
     """Whether the prefix records a material edit of the work (issue #1046).
 
     An observed edit or shell write that counts (ADR-042: not only scratch or FinishUP-owned paths;
-    ADR-045: ``cat > f``, ``sed -i``), the same edits that make a later check stale, or an edit
-    action the agent published. Plans, reads, runs and FinishUP's own calls are not edits. The check's
-    workspace capture is the other half of the answer; callers combine the two.
+    ADR-045: ``cat > f``, ``sed -i``), a documentation edit included although it never makes a
+    verification stale (n7 RC2), or an edit action the agent published. Plans, reads, runs and
+    FinishUP's own calls are not edits. The check's workspace capture is the other half of the
+    answer; callers combine the two.
     """
 
-    if _observed_state(projection, observed, cooperative).latest_edit is not None:
+    if _observed_state(projection, observed, cooperative).material_edit:
         return True
     return any(
         row.payload is not None

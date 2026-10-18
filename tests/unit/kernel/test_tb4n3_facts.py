@@ -51,8 +51,10 @@ from finishup.kernel.task_facts import (
     PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
     PLANNED_VERIFICATION_STALE_GAP,
     RequestedOutputState,
+    acting_started,
     cooperative_event_ids_from_records,
     deliverable_path_identity,
+    material_edit_recorded,
     observed_event_ids_from_records,
     passing_verification_observed,
     register_command_identity_key,
@@ -496,3 +498,105 @@ def test_a_masked_success_is_not_a_passing_verification() -> None:
     assert passing("cd /app && pytest -q")
     assert not passing("pytest -q; true")
     assert not passing("pytest -q | tail -3")
+
+
+# --- n7 RC2(c): a documentation edit is real work but leaves verification current (#1106) -----
+
+
+def _docs_facts(ledger: ObservedLedger) -> tuple[set[str], bool, bool]:
+    state = replay(ledger.prefix)
+    observed = observed_event_ids_from_records(ledger.prefix)
+    cooperative = cooperative_event_ids_from_records(ledger.prefix)
+    return (
+        _codes(ledger),
+        acting_started(state, observed, cooperative),
+        material_edit_recorded(state, observed, cooperative),
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        *(pytest.param(tool, tool_input, id=name) for name, tool, tool_input in _EDIT_CALLS),
+        pytest.param(
+            "Bash", {"command": "cat > {path} <<'EOF'\n# Usage\nEOF"}, id="shell_heredoc_write"
+        ),
+    ],
+)
+def test_c2i_a_docs_edit_does_not_stale_verification_but_is_acting(
+    tool: str, tool_input: dict[str, JsonValue]
+) -> None:
+    """n7 RC2(c): code edit, passing test, README edit gave "edited after the last verification"
+    although the README changes nothing the test verified. Through each host's real hook chain
+    the README write is named ``docs``: the verification stays current, the edit still counts as
+    acting and as a material edit, and a planned verification is not stale."""
+
+    ledger = _ledger(RequestedItem(RequestedItemKind.COMMAND, "pytest -q"))
+    ledger.edit()
+    ledger.passes("pytest -q")
+    assert _hook_edit(ledger, tool, tool_input, "/app/README.md") == "docs"
+    codes, acting, material = _docs_facts(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in codes
+    assert PLANNED_VERIFICATION_STALE_GAP not in codes
+    assert acting and material
+    # A source edit after it still stales the verification.
+    assert _hook_edit(ledger, tool, tool_input, "/app/solve.py") in {None, "workspace"}
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_c2i_a_docs_only_edit_alone_is_still_a_material_edit() -> None:
+    ledger = _ledger()
+    ledger.edit(write_scope="docs")
+    codes, acting, material = _docs_facts(ledger)
+    assert acting and material
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in codes
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        pytest.param(_out("/app/README.md"), id="declared_readme"),
+        pytest.param(_out("docs/guide.md"), id="declared_relative_guide"),
+        pytest.param(
+            RequestedItem(RequestedItemKind.DIRECTORY, "/app/docs", role=RequestedItemRole.OUTPUT),
+            id="declared_directory",
+        ),
+    ],
+)
+def test_c2j_a_declared_docs_output_or_directory_still_stales(declared: RequestedItem) -> None:
+    """The delivery wins: a README the task asks for is the deliverable, and any declared
+    output directory may hold one, so editing it after the test makes the test stale."""
+
+    ledger = _ledger(declared)
+    ledger.passes("pytest -q")
+    assert (
+        _hook_edit(ledger, "Write", {"file_path": "{path}", "content": "x"}, "/app/README.md")
+        == "docs"
+    )
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    # An input declaration is not a delivery: the exemption stands.
+    inputs = _ledger(
+        RequestedItem(RequestedItemKind.FILE, "/app/README.md", role=RequestedItemRole.INPUT)
+    )
+    inputs.passes("pytest -q")
+    inputs.edit(write_scope="docs")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(inputs)
+
+
+def test_c2k_docs_and_code_in_one_shell_write_stale_verification() -> None:
+    command = "cat > README.md <<'EOF'\nx\nEOF\ncat > solve.py <<'EOF'\ny\nEOF"
+    assert shell_write_scope(command, workspace="/app", inside=lambda p: p.startswith("/app")) == (
+        "workspace"
+    )
+    assert (
+        shell_write_scope(
+            "cat > README.md <<'EOF'\nx\nEOF",
+            workspace="/app",
+            inside=lambda p: p.startswith("/app"),
+        )
+        == "docs"
+    )
+    ledger = _ledger()
+    ledger.passes("pytest -q")
+    ledger.run(command, ResultOutcome.SUCCESS, exit_status=0, write_scope="workspace")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)

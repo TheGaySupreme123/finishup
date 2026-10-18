@@ -1,6 +1,6 @@
 """Which observed writes change the work under test (tb4n2 R4, issue #1018, ADR-042).
 
-An observed edit is one of five classes:
+An observed edit is one of six classes:
 
 * ``deliverable`` — a file an obligation declares as its output (decided in the kernel from the
   declared delivered set, never here);
@@ -15,7 +15,14 @@ An observed edit is one of five classes:
 * ``notes`` — the agent's own working notes inside the workspace (``NOTES.md``, ``todo.txt``):
   conventional names that are not source, tests or data (ADR-045). A declared output with such a
   name is a deliverable and keeps counting; a ``.log`` file is never named by its extension, since
-  a workspace may itself sit under a temporary root and a log may be the deliverable.
+  a workspace may itself sit under a temporary root and a log may be the deliverable;
+* ``docs`` — project documentation inside the workspace (``README.md``, ``CHANGELOG``,
+  ``docs/guide.md``): conventional documentation names in any directory, and documentation
+  extensions (``.md``, ``.rst``, ``.adoc``) outside test, fixture, data, prompt and template
+  directories (n7 RC2, ADR-042 amendment). It is real work: it counts as acting and as material
+  for a later review, but it never makes an earlier verification of the code stale. A declared
+  output with such a name, or any declared output directory, keeps it stale-making. ``.txt`` is
+  never documentation by its extension (``requirements.txt`` is read by the build).
 
 A shell command that writes files (``> f``, ``tee f``, ``sed -i f``, ``cp a f``) is classified by
 the same rules; a command whose every write is in the workspace carries the scope ``workspace``
@@ -38,9 +45,11 @@ from typing import Final, Literal
 
 __all__ = [
     "NON_COUNTING_WRITE_SCOPES",
+    "STALE_EXEMPT_WRITE_SCOPES",
     "WRITE_SCOPES",
     "WriteClass",
     "classify_write_path",
+    "docs_artifact_name",
     "edit_write_scope",
     "notes_artifact_name",
     "scratch_overlap",
@@ -50,16 +59,19 @@ __all__ = [
 ]
 
 # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a recorded hook fact and wire enum value.
-WriteClass = Literal["workspace", "outside_workspace", "scratch", "yoetz_owned", "notes"]
+WriteClass = Literal["workspace", "outside_workspace", "scratch", "yoetz_owned", "notes", "docs"]
 # The hook's closed ``write_scope`` structural fact: absent for an edit-tool call that stays in
 # the workspace, otherwise the class every named path shares (``outside_workspace`` wins).
 # ``workspace`` appears only on a shell command whose attributable writes are in the workspace
 # (ADR-045); an edit tool never reports it.
 WRITE_SCOPES: Final = frozenset(
-    {"outside_workspace", "scratch", "yoetz_owned", "notes", "workspace"}
+    {"outside_workspace", "scratch", "yoetz_owned", "notes", "docs", "workspace"}
 )
 # Write scopes that never make an earlier verification stale and never count as acting.
 NON_COUNTING_WRITE_SCOPES: Final = frozenset({"scratch", "yoetz_owned", "notes"})
+# Write scopes that count as acting and as material, but never make an earlier verification of
+# the code stale: project documentation (n7 RC2).
+STALE_EXEMPT_WRITE_SCOPES: Final = frozenset({"docs"})
 
 # Scratch roots every supported OS reserves for temporary files (issue E6, tb4n1: 28 of 33
 # attempts flagged only `/tmp` logs). `/dev/` stays wholly exempt below for device targets.
@@ -88,6 +100,43 @@ _NOTES_NAME: Final = re.compile(
     r"^(?:notes?|todo|todos|scratch|scratchpad|worklog|work[-_]log|progress|journal)"
     r"(?:[-_.][a-z0-9]+)*\.(?:md|markdown|txt|text)$",
     re.IGNORECASE,
+)
+# Conventional project documentation names, in any directory, with an optional ``-``/``_``
+# suffix (``LICENSE-MIT``), an optional language tag (``README.ja.md``) and an optional
+# documentation extension; ``history.py`` or ``changes.json`` is not documentation.
+_DOCS_NAME: Final = re.compile(
+    r"^(?:readme|changelog|changes|history|news|authors|contributors|contributing|licen[cs]e"
+    r"|copying|notice|code[-_]of[-_]conduct|security)"
+    r"(?:[-_][a-z0-9]+)*(?:(?:\.[a-z]{2}(?:[-_][a-z]{2})?)?\.(?:md|markdown|rst|txt|adoc))?$",
+    re.IGNORECASE,
+)
+# Documentation extensions; never ``.txt`` (``requirements.txt`` is read by the build).
+_DOCS_EXTENSION: Final = re.compile(r"\.(?:md|markdown|rst|adoc|asciidoc)$", re.IGNORECASE)
+# Directories whose files a test or a program reads as data: a documentation extension there is
+# an input of the work (a fixture, a prompt, a template, a snapshot, an agent host's skill or
+# rule file), so it keeps counting.
+_DOCS_DATA_SEGMENTS: Final = frozenset(
+    {
+        ".agents",
+        ".claude",
+        ".codex",
+        ".cursor",
+        "skills",
+        "test",
+        "tests",
+        "testing",
+        "spec",
+        "specs",
+        "__tests__",
+        "fixtures",
+        "testdata",
+        "test_data",
+        "data",
+        "prompts",
+        "templates",
+        "snapshots",
+        "__snapshots__",
+    }
 )
 # Packaged FinishUP trees a host installation writes into a repository (generated, never the work).
 # The legacy ``yoetz`` trees an earlier install wrote stay owned until removed (ADR-048).
@@ -192,6 +241,22 @@ def _notes_name(normalized: str) -> bool:
     return _NOTES_NAME.match(posixpath.basename(normalized)) is not None
 
 
+def docs_artifact_name(path: str) -> bool:
+    """Whether a path names project documentation (pure; declared outputs override it)."""
+
+    return type(path) is str and bool(path) and _docs_path(_normalize(path))
+
+
+def _docs_path(normalized: str) -> bool:
+    name = posixpath.basename(normalized)
+    if _DOCS_NAME.match(name) is not None:
+        return True
+    if _DOCS_EXTENSION.search(name) is None:
+        return False
+    directories = normalized.split("/")[:-1]
+    return not any(part.casefold() in _DOCS_DATA_SEGMENTS for part in directories)
+
+
 def scratch_overlap(path: str) -> bool:
     """Whether a declared absolute path lies under, or contains, a fixed temporary root (pure)."""
 
@@ -239,8 +304,11 @@ def classify_write_path(
         # Inside the workspace (or unknown: no workspace root to compare with) a write counts,
         # except the agent's own conventional notes and logs (``notes``; the kernel lets a
         # declared output with such a name override the class). A workspace may itself sit under
-        # a temporary root, so location alone never exempts.
-        return "notes" if _notes_name(normalized) else "workspace"
+        # a temporary root, so location alone never exempts. Project documentation (``docs``)
+        # counts too, but never makes a verification of the code stale; notes win over docs.
+        if _notes_name(normalized):
+            return "notes"
+        return "docs" if _docs_path(normalized) else "workspace"
     if scratch_path(normalized, workspace, environment=False):
         return "scratch"
     if scratch_path(normalized, workspace):

@@ -967,7 +967,8 @@ def shell_write_scope(
     a real write outside the workspace wins; a write into the workspace that is not the agent's
     own notes or log, not scratch and not FinishUP-owned makes the command an edit
     (``workspace``); a command that writes only one non-counting class (notes, FinishUP material)
-    carries that scope, and one that writes nothing visible, or only scratch, claims nothing. A
+    or only project documentation (``docs``, n7 RC2) carries that scope, and one that writes
+    nothing visible, or only scratch, claims nothing. A
     command that writes two non-counting classes (``: > NOTES.md; : > finishup_receipt.md``) counts as
     an edit, as a mixed edit-tool call does: one token cannot carry both classes' declared-output
     overrides, and a declared output of either class must keep counting. A directory destination
@@ -1010,10 +1011,11 @@ def shell_write_scope(
         return "outside_workspace"
     if "workspace" in classes or len(classes) > 1:
         return "workspace"
-    # Only the agent's notes or FinishUP's own material: the same closed token an edit tool carries,
-    # so a declared output of that kind keeps counting (``non_counting_edits_exempt``).
+    # Only the agent's notes, FinishUP's own material or project documentation: the same closed
+    # token an edit tool carries, so a declared output of that kind keeps counting
+    # (``non_counting_edits_exempt``, ``stale_exempt_write_tokens``).
     # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is the recorded write-scope token.
-    for scope in ("notes", "yoetz_owned"):
+    for scope in ("notes", "yoetz_owned", "docs"):
         if scope in classes:
             return scope
     return None

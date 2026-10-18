@@ -13,6 +13,7 @@ from finishup.application.observation_materialize import (
 from finishup.domain.events import ActionKind
 from finishup.domain.write_scope import (
     classify_write_path,
+    docs_artifact_name,
     edit_write_scope,
     finishup_artifact_name,
     finishup_tree_overlap,
@@ -28,7 +29,9 @@ def _inside(path: str) -> bool:
     [
         ("/app/solve.py", "workspace"),
         ("/app/output/flight_plan.json", "workspace"),
-        ("/app/DATA_RECOVERY.md", "workspace"),
+        # n7 RC2: a Markdown file outside test and data directories is project documentation;
+        # a declared output with that name keeps counting in the kernel (``task_facts``).
+        ("/app/DATA_RECOVERY.md", "docs"),
         ("relative/x.py", "workspace"),
         ("/tmp/solve_remap.py", "scratch"),
         ("/var/tmp/x", "scratch"),
@@ -136,3 +139,87 @@ def test_only_fixed_temp_roots_are_scratch(monkeypatch: pytest.MonkeyPatch) -> N
         classify_write_path("/scratch-tmp/out.json", workspace="/app", inside=False) == "workspace"
     )
     assert classify_write_path("/tmp/x.py", workspace="/app", inside=False) == "scratch"
+
+
+# --- n7 RC2(c): project documentation is its own class (#1106) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/app/README.md",
+        "README",
+        "docs/guide.md",
+        "CHANGELOG",
+        "CHANGES.rst",
+        "api.rst",
+        "pkg/README.md",
+        "README.ja.md",
+        "LICENSE-MIT",
+        "CONTRIBUTING.md",
+        "docs/index.adoc",
+        "tests/README.md",  # a conventional name is documentation in any directory
+    ],
+)
+def test_project_docs_are_docs(path: str) -> None:
+    inside = _inside(path) if path.startswith("/") else None
+    assert docs_artifact_name(path)
+    assert classify_write_path(path, workspace="/app", inside=inside) == "docs"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/fixtures/a.md",
+        "prompts/system.md",
+        "data/x.md",
+        "src/app/templates/email.md",
+        "__snapshots__/view.md",
+        ".agents/skills/project/SKILL.md",
+        ".claude/commands/review.md",
+        "spec/expected.md",
+    ],
+)
+def test_doc_extensions_under_test_or_data_dirs_count(path: str) -> None:
+    assert not docs_artifact_name(path)
+    assert classify_write_path(path, workspace="/app", inside=None) == "workspace"
+
+
+@pytest.mark.parametrize(
+    "path", ["requirements.txt", "notes.txt.py", "history.py", "news.py", "changes.json", "x.txt"]
+)
+def test_txt_and_code_are_never_docs_by_name_or_extension(path: str) -> None:
+    assert not docs_artifact_name(path)
+    assert classify_write_path(path, workspace="/app", inside=None) == "workspace"
+
+
+def test_notes_win_over_docs_and_outside_stays_outside() -> None:
+    assert classify_write_path("/app/NOTES.md", workspace="/app", inside=True) == "notes"
+    assert classify_write_path("/app/todo.md", workspace="/app", inside=True) == "notes"
+    assert (
+        classify_write_path("/opt/lib/README.md", workspace="/app", inside=False)
+        == "outside_workspace"
+    )
+    assert classify_write_path("/tmp/README.md", workspace="/app", inside=False) == "scratch"
+
+
+@pytest.mark.parametrize(
+    ("classes", "scope"),
+    [
+        (("docs",), "docs"),
+        (("docs", "docs"), "docs"),
+        (("docs", "workspace"), None),
+        (("docs", "notes"), None),
+        (("docs", "outside_workspace"), "outside_workspace"),
+    ],
+)
+def test_edit_write_scope_names_docs_only_alone(
+    classes: tuple[str, ...], scope: str | None
+) -> None:
+    assert edit_write_scope(classes) == scope  # type: ignore[arg-type]
+
+
+def test_codex_stream_file_change_names_docs() -> None:
+    assert _file_change_write_scope({"README.md": {"type": "update"}}) == "docs"
+    assert _file_change_write_scope([{"path": "docs/a.md"}, {"path": "CHANGELOG.md"}]) == "docs"
+    assert _file_change_write_scope({"README.md": {}, "src/a.py": {}}) is None

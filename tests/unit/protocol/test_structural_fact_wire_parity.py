@@ -208,3 +208,30 @@ def test_the_wire_admits_exactly_the_workspace_effects_the_hook_emits() -> None:
         _frame(refused)
     with pytest.raises(ProtocolValueError):
         observation_ingest_request_from_json(refused)
+
+
+def test_an_edited_write_scope_enum_cannot_reach_an_older_service() -> None:
+    """n7 RC2 (#1106): ``docs`` was added to the unreleased 2.9.0 enum in place. A new hook can
+    never send it to an older running service, whose enum would refuse it (the #1039 shape):
+    the schema manifest pins the 2.9.0 bytes, both handshake sides compare the whole manifest
+    digest before any request frame, and a peer built from other bytes is refused as
+    ``manifest_mismatch`` (the hook keeps its rows for the superseding service; an MCP bridge or
+    ``finishup service restart`` supersedes the stale holder through its lock stamp)."""
+
+    import hashlib
+    import json
+
+    from finishup.protocol.schemas import _read_resource, _schema_root, schema_manifest_digest
+
+    root = _schema_root()
+    manifest = json.loads(_read_resource(root.joinpath("manifest.json"), "missing"))
+    member = next(
+        item
+        for item in manifest["members"]
+        if item["path"] == "service/control-request-2.9.0.schema.json"
+    )
+    body = _read_resource(root.joinpath(member["path"]), "missing")
+    assert member["sha256"] == "sha256:" + hashlib.sha256(body).hexdigest()
+    assert "docs" in _wire_structural_fields()["write_scope"]["enum"]
+    manifest_bytes = _read_resource(root.joinpath("manifest.json"), "missing")
+    assert schema_manifest_digest() == "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()

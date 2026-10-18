@@ -397,3 +397,32 @@ def test_codex_intercepts_only_a_sole_shell_apply_patch(command: str, intercepte
     """Codex 0.159 ``invocation.rs``: only a script that is that one statement is intercepted."""
 
     assert shell_writes.codex_intercepts_shell_apply_patch(command) is intercepted
+
+
+# --- n7 RC2(c): a shell write of only project documentation is ``docs`` (#1106) ----------------
+
+
+@pytest.mark.parametrize(
+    ("command", "scope"),
+    [
+        ("cat > README.md <<'EOF'\n# Title\nEOF", "docs"),
+        ("echo '- fix' >> CHANGELOG.md", "docs"),
+        ("sed -i 's/a/b/' docs/guide.md", "docs"),
+        ("cat > README.md <<'EOF'\nx\nEOF\necho y > src/app.py", "workspace"),
+        ("echo x > README.md; echo y > NOTES.md", "workspace"),
+        ("cp a.md docs/", "workspace"),  # a directory destination is classified by location
+        ("echo x > tests/fixtures/expected.md", "workspace"),
+    ],
+)
+def test_a_shell_write_of_only_docs_is_docs(command: str, scope: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == scope
+
+
+def test_a_heredoc_patch_of_only_docs_is_docs() -> None:
+    command = "git apply <<'EOF'\n--- a/README.md\n+++ b/README.md\n@@\n-a\n+it's\nEOF"
+    assert shell_write_scope(
+        command,
+        workspace="/app",
+        inside=_inside,
+        also_written=shell_writes.heredoc_patch_paths(command),
+    ) == ("docs")

@@ -360,6 +360,7 @@ def _claim(
 def _corroboration_case(
     *,
     edits: tuple[int, ...] = (),
+    docs_edits: tuple[int, ...] = (),
     commands: tuple[tuple[int, str | None, ResultOutcome], ...] = (),
     cooperative_result: int | None = None,
     claim: ClaimRecordedPayloadV1_1,
@@ -370,6 +371,12 @@ def _corroboration_case(
     actions = {act(number): record(_observed_edit(number), number) for number in edits}
     results: dict[ResultId, ProjectionRecord[ResultRecordedPayload]] = {}
     observed: set[FindingBasisRef] = {evt(number) for number in edits}
+    for number in docs_edits:
+        actions[act(number)] = record(
+            ActionRecordedPayload(act(number), ActionKind.EDIT, "Edit (tool Write) (write docs)"),
+            number,
+        )
+        observed.add(evt(number))
     for number, runner, outcome in commands:
         actions[act(number)] = record(_observed_command(number, runner), number)
         results[res(number)] = record(_result(number, outcome), number + 1)
@@ -712,3 +719,20 @@ def test_observed_commands_never_mark_an_obligation_acted_on() -> None:
     )
     whole = replace(scoped, obligation_refs=())
     assert reportable_absent_outputs(case_with({clm(1): claim_record(whole, 90)}), absent) == absent
+
+
+def test_a_docs_edit_after_the_cited_run_does_not_uncorroborate_the_claim() -> None:
+    """n7 RC2(c, #1106): a README edit after the cited test changes nothing that test verified;
+    a source edit there still does."""
+
+    with_docs = _corroboration_case(
+        edits=(20,),
+        docs_edits=(70,),
+        commands=((30, "test", ResultOutcome.SUCCESS),),
+        claim=_claim(res(30)),
+    )
+    assert _uncorroborated(with_docs) == []
+    source_edit = _corroboration_case(
+        edits=(20, 70), commands=((30, "test", ResultOutcome.SUCCESS),), claim=_claim(res(30))
+    )
+    assert len(_uncorroborated(source_edit)) == 1

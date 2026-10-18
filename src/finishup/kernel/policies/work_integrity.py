@@ -62,6 +62,7 @@ from finishup.kernel.observed_failures import (
     observed_event_ids_from_coverage,
     observed_failure_states,
     observed_shell_write_counts,
+    observed_write_stales_verification,
 )
 from finishup.kernel.plan_scope import current_plan_scope
 from finishup.kernel.policies.response_support import (
@@ -76,6 +77,7 @@ from finishup.kernel.task_facts import (
     cooperative_event_ids_from_coverage,
     non_counting_edits_exempt,
     observed_planned_commands,
+    stale_exempt_write_tokens,
     superseded_unnamed_outputs,
 )
 from finishup.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
@@ -597,6 +599,7 @@ def _observed_verification_facts(
 
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     exempt = non_counting_edits_exempt(case.projection)
+    stale_exempt = stale_exempt_write_tokens(case.projection)
     latest_edit: int | None = None
     for action in case.projection.actions.values():
         payload = action.payload
@@ -605,7 +608,9 @@ def _observed_verification_facts(
             and action.source_event_id in observed
             # A scratch or FinishUP-owned write (a saved receipt) changes nothing a claim's
             # verification covered (ADR-042, tb4n2 R4: cad S, lake D). A shell write counts
-            # as an edit under the same rule task_facts uses (ADR-045).
+            # as an edit under the same rule task_facts uses (ADR-045). A documentation-only
+            # edit is real work but leaves that verification current (n7 RC2).
+            and observed_write_stales_verification(payload.description, stale_exempt)
             and (
                 (
                     payload.action_kind is ActionKind.EDIT

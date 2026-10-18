@@ -66,6 +66,7 @@ from finishup.domain.shell_writes import heredoc_patch_paths, shell_write_scope
 from finishup.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
 from finishup.domain.write_scope import (
     NON_COUNTING_WRITE_SCOPES,
+    STALE_EXEMPT_WRITE_SCOPES,
     classify_write_path,
     edit_write_scope,
 )
@@ -677,7 +678,8 @@ def _file_change_paths(changes: object) -> Iterator[str]:
 
 
 def _file_change_write_scope(changes: object) -> str | None:
-    """The ``write_scope`` of a ``FileChange`` only when every path is scratch or FinishUP-owned."""
+    """The ``write_scope`` of a ``FileChange`` only when every path is FinishUP-owned, notes or
+    project documentation (named by the path alone, so no workspace root is needed)."""
 
     paths = tuple(_file_change_paths(changes))
     if not paths:
@@ -685,7 +687,7 @@ def _file_change_write_scope(changes: object) -> str | None:
     scope = edit_write_scope(
         classify_write_path(path, workspace=None, inside=None) for path in paths
     )
-    return scope if scope in NON_COUNTING_WRITE_SCOPES else None
+    return scope if scope in NON_COUNTING_WRITE_SCOPES | STALE_EXEMPT_WRITE_SCOPES else None
 
 
 def _completed_tool_item(record: CodexParsedRecord) -> bool:
