@@ -8864,13 +8864,24 @@ order: `verdict`, `agent_next` (optional), `overall_next` (optional), `missing_f
 `semantic_status`, `semantic_reason`, `semantic_conclusion` (optional) and `result_frontier`, in
 the exact shapes check-result 1.5.0 gives them. They are rebuilt exactly as a same-id replay of the
 check rebuilds them (`LedgerPort.load_check_result`, then `application.check.replayed_check_view`
-and `check_internal_json`), so the page and a resend agree byte for byte; a check an older build
-recorded projects with its stored missing items (none on 1.2.0) and an `overall_next` derived at its
-result frontier. Like a replay's, `overall_next` and `agent_next` are derived at the check's result
-frontier and are omitted when the ledger no longer re-reads that prefix as a receipt basis (a later
-record other than an observation-authored one or `receipt_recorded`, such as the `session_resumed`
-a same-task attach appends; ADR-046); the verdict, missing items, review status and frontier are
-always carried. The page-level `outcome`, frontiers and events keep the non-publish completion rule.
+and `check_internal_json`), so the page and a resend read by the same session agree byte for byte; a
+check an older build recorded projects with its stored missing items (none on 1.2.0) and an
+`overall_next` derived at its result frontier. Like a replay's, `overall_next` and `agent_next` need
+the closure basis at the check's result frontier, which FinishUP takes from a process-local memo of
+recent frontiers (keyed on the reading session, at most eight) or re-reads from the ledger; the
+ledger refuses that re-read once a later record other than an observation-authored one or
+`receipt_recorded` exists (such as the `session_resumed` a same-task attach appends; ADR-046). When
+the basis is unavailable and the stored check names an `agent_suppliable` item, both are rebuilt
+from the stored missing items alone: `overall_next` is `supply_missing_input` with the same targets
+and no `predicted_conclusion`, and `agent_next` its lead, so the per-kind instruction survives an
+attach or a restart. Otherwise both are omitted. Their presence and the predicted-conclusion clause
+therefore depend on that process-local memo, not on ledger state alone: after an attach the original
+writer's resend can still carry the prediction (or a non-supply continuation) while the successor's
+page does not; after a restart (or eight newer frontiers) with a later record in place, both are
+rebuilt from the stored rows and agree. The verdict, missing
+items, review status and frontier are always carried. Persisting the continuation with the stored
+check, so it no longer depends on the memo, is a storage change left as a follow-up (owned by
+#1100). The page-level `outcome`, frontiers and events keep the non-publish completion rule.
 Best effort: any failure omits the object and records the bounded diagnostic
 `status_check_outcome_unavailable`; recovery never fails on it. The CLI (`Check outcome:` and
 `Next:` lines plus the missing rows), the terminal interface (through the same renderer) and the MCP

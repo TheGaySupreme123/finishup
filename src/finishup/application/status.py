@@ -1114,7 +1114,9 @@ async def _operation_check_outcome(
     """A completed check's verdict and continuation for its operation page (W6); best effort.
 
     Rebuilt exactly as a same-id replay rebuilds it (``replayed_check_view``), so the page and a
-    resend agree on ``overall_next`` and ``agent_next``. A check an older build recorded projects
+    resend read by the same session agree on ``overall_next`` and ``agent_next``. Both need the
+    closure basis at the result frontier (a process-local memo, or a prefix the ledger may refuse
+    to re-read); without it only a stored agent_suppliable request still yields them (W6). A check an older build recorded projects
     too: its missing items default to none and ``overall_next`` is derived at its result frontier.
     Any failure omits the outcome with a bounded diagnostic and never fails recovery.
     """

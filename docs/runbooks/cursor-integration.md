@@ -2703,7 +2703,10 @@ recorded for this change; native Windows is not claimed.
 (sorted keys), so a check result's `agent_next` (ADR-043 amendment) sorts first or second, after
 `advisory_notes` when that is present; the structured result carries the same field ahead of the
 bulky ones. `status view=operation` for a finished check returns `check_outcome` with the same
-verdict, lead, `overall_next` and missing items a same-id resend returns. The captured output of a
+verdict, lead, `overall_next` and missing items a same-id resend from the same session returns;
+after an attach or a service restart it keeps only a `supply_missing_input` lead rebuilt from the
+stored missing items and omits any other continuation (same gap as Codex, storage follow-up owned
+by #1100). The captured output of a
 shell re-run of the target's exact command the Cursor hook observed after the request counts as
 supplying a targeted `verification_output` (or `other`) item once the reviewer was sent it (ADR-006
 amendment).

@@ -2617,7 +2617,9 @@ counts as supplied rides in `agent_next`. Claude Code's MCP output limit is far 
 (`agent_next`, `overall_next`, `missing_for_assessment` before findings) costs nothing here.
 `isError` results are unchanged. `status view=operation` for a finished check returns
 `check_outcome`, and its text summary adds `check outcome: <verdict>; next: <action>;` and the lead
-when room remains. The captured output of a Bash re-run of the target's exact command the PostToolUse
+when room remains. Same gap as Codex: after an attach or a service restart the page keeps only a
+`supply_missing_input` lead rebuilt from the stored missing items and omits any other continuation
+(storage follow-up owned by #1100). The captured output of a Bash re-run of the target's exact command the PostToolUse
 hook observed after the request counts as supplying a targeted `verification_output` (or `other`)
 item once the reviewer was sent it (ADR-006 amendment). That path exists only on the ordinary-work observation
 profile: the default structural profile observes no generic `Bash` calls, so there the agent

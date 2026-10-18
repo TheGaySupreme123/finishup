@@ -3638,11 +3638,15 @@ supply it and what counts, within 2,048 bytes, so it always lands inside the 6,0
 `overall_next` and `missing_for_assessment` follow it, ahead of findings and every bulky field. A
 lost or cut result is recovered with `status view=operation` for the check's `request_id`: the page
 now carries `check_outcome` with the same verdict, `agent_next`, `overall_next` and missing items a
-same-id resend returns, so an agent never replays the check through the CLI to read them. Gap:
-after a later material record (a same-task attach's `session_resumed`, or any further publish) the
-page, like a resend, omits `agent_next` and `overall_next`, because both are derived at the check's
-result frontier and the ledger no longer re-reads that prefix (ADR-046); the verdict and missing
-items still come back. Follow-up owned by #1107.
+same-id resend from the same session returns, so an agent never replays the check through the CLI
+to read them. Gap: both need the closure basis at the check's result frontier, which the service
+holds in a process-local memo per reading session (eight frontiers) and otherwise re-reads from the
+ledger, which refuses once a later material record exists (ADR-046). So a successor writer after a
+same-task attach (its `session_resumed`), or any reader after a service restart once later work is
+recorded, cannot rebuild it. The page then rebuilds a `supply_missing_input` lead from the stored missing items
+when one is `agent_suppliable` (each item, how to supply it and what counts, without the predicted
+receipt conclusion) and omits any other continuation; the verdict and missing items always come
+back. Persisting the continuation with the stored check is a storage follow-up owned by #1100.
 
 **Supply on Codex.** The captured output of a shell re-run of the target's exact command that
 FinishUP observed after the request counts as supplying a targeted `verification_output` (or

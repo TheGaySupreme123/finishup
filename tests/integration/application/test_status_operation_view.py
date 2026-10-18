@@ -32,6 +32,7 @@ from builders.start_application import (
 )
 from finishup.adapters.memory.ledger import MemoryLedgerAdapter
 from finishup.application.check import check_internal_json
+from finishup.application.closure_basis import clear_closure_basis_memo
 from finishup.application.egress import PrivacyCoordinator
 from finishup.application.publish_work import Application as PublishApplication
 from finishup.application.publish_work import execute_publish_work
@@ -39,7 +40,7 @@ from finishup.application.service import Application, ControlProjectionBinding, 
 from finishup.application.start import StartInternalResult
 from finishup.application.status import Application as StatusApplication
 from finishup.application.status import execute_status
-from finishup.domain.events import RuntimeProfile
+from finishup.domain.events import MissingForAssessmentItem, RuntimeProfile
 from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
@@ -1176,13 +1177,89 @@ async def test_status_view_operation_outcome_survives_writer_rotation() -> None:
     for name in ("verdict", "semantic_status", "semantic_reason", "result_frontier"):
         assert _thaw(wire.get(name)) == _thaw(replayed.get(name)), name
     assert outcome.missing_for_assessment == () and "missing_for_assessment" not in replayed
-    # The continuation is derived at the check's result frontier, like a same-id replay's. The
-    # attach appended ``session_resumed``, so the ledger no longer re-reads that prefix as a
-    # receipt basis (ADR-046); the page then omits the lead and next action rather than derive
-    # them at a later frontier, and never states a different one.
-    assert type(replayed.get("agent_next")) is str
-    for name in ("agent_next", "overall_next"):
-        assert wire.get(name) is None or _thaw(wire[name]) == _thaw(replayed.get(name)), name
+    # What happens today: the continuation needs the closure basis at the check's result
+    # frontier. The attach appended ``session_resumed``, so the successor's read cannot rebuild it
+    # (its memo is keyed on the reading session) and, with no agent_suppliable item stored, the
+    # page omits the lead and next action rather than derive them at a later frontier. The
+    # original writer's resend still has them from its warm memo, so the two differ here.
+    assert type(replayed.get("agent_next")) is str and "overall_next" in replayed
+    assert "agent_next" not in wire and "overall_next" not in wire
+
+
+def _with_stored_missing_item(runtime: _WorkflowRuntime, task_id: str, key: tuple[str, str]) -> str:
+    """Give the stored check one agent_suppliable verification_output item; return its target."""
+
+    target = protocol_id("res_", 1999)
+    ledger, _objects = runtime.resources[task_id]
+    stored = ledger._state.check_results[key]  # pyright: ignore[reportPrivateUsage]
+    ledger._state.check_results[key] = replace(  # pyright: ignore[reportPrivateUsage]
+        stored,
+        missing_for_assessment=(
+            MissingForAssessmentItem("verification_output", (target,), "agent_suppliable"),
+        ),
+    )
+    return target
+
+
+async def test_a_rotated_or_cold_read_still_leads_with_the_stored_supply_request() -> None:
+    """An agent_suppliable item keeps its lead and how-to from the stored rows alone (W6)."""
+
+    app, runtime, context, check_req_id = await _finished_check(1860, refs=True)
+    started, check = cast(tuple[StartInternalResult, CheckRequest], context)
+    target = _with_stored_missing_item(runtime, started.task_id, (started.writer_id, check_req_id))
+    replay = await app.check(check)
+    assert type(replay) is CheckCommitResult
+    replayed = check_internal_json(replay)
+    warm = cast(Mapping[str, object], _thaw(replayed["overall_next"]))
+    assert warm["action"] == "supply_missing_input" and "predicted_conclusion" in warm
+
+    attached = await app.start(start_request(1870, title="Operation view check outcome", refs=True))
+    assert attached.outcome == "attached" and attached.task_id == started.task_id
+    status = await app.status(
+        _status_operation_request(
+            session_id=attached.session_id,
+            writer_id=attached.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1905,
+        )
+    )
+    outcome = cast(StatusOperationPageModel, status.page).check_outcome
+    assert outcome is not None
+    # The missing rows survive rotation, and the supply continuation is rebuilt from them; only
+    # the predicted conclusion (which needs the closure basis) is left out, never guessed.
+    assert [
+        (item.kind, tuple(item.target_refs), item.availability)
+        for item in outcome.missing_for_assessment
+    ] == [("verification_output", (target,), "agent_suppliable")]
+    wire = cast(Mapping[str, object], outcome.model_dump(mode="json", exclude_none=True))
+    assert _thaw(wire["overall_next"]) == {
+        key: value for key, value in warm.items() if key != "predicted_conclusion"
+    }
+    lead = outcome.agent_next
+    assert lead is not None and lead.startswith("Next: supply_missing_input (action_required).")
+    assert f"verification_output for {target}." in lead and "How: " in lead
+
+    # A cold closure-basis memo (a service restart) after the attach's later record: the resend and
+    # the page are both rebuilt from the stored rows, so they agree byte for byte.
+    clear_closure_basis_memo()
+    resend = await app.check(check)
+    assert type(resend) is CheckCommitResult
+    resent = check_internal_json(resend)
+    clear_closure_basis_memo()
+    cold = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1906,
+        )
+    )
+    cold_outcome = cast(StatusOperationPageModel, cold.page).check_outcome
+    assert cold_outcome is not None
+    cold_wire = cast(Mapping[str, object], cold_outcome.model_dump(mode="json", exclude_none=True))
+    for name in ("agent_next", "overall_next", "missing_for_assessment"):
+        assert _thaw(cold_wire[name]) == _thaw(resent[name]), name
+    assert cold_outcome.agent_next == lead
 
 
 async def test_status_view_operation_outcome_for_a_check_recorded_by_an_older_build() -> None:

@@ -197,10 +197,15 @@ per-kind "publish exactly" instruction reached only the text channel, which Code
 - `status view=operation` returns a finished check's `check_outcome` (status-result 1.4.0, extended
   in place): the verdict, `agent_next`, `overall_next`, `missing_for_assessment`, the AI-powered
   review status, reason and conclusion and the result frontier, rebuilt exactly as a same-id replay
-  rebuilds them (`ledger.load_check_result`, then `check.replayed_check_view`), so `agent_next` and
-  `overall_next` are omitted, like a replay's, once a later material record (such as an attach's
-  `session_resumed`) stops the ledger re-reading the check's prefix. It is the recovery
-  read for a lost or cut check result; a failure omits it with the bounded diagnostic
+  rebuilds them (`ledger.load_check_result`, then `check.replayed_check_view`). Like a replay's,
+  `agent_next` and `overall_next` need the closure basis at the check's result frontier, read from
+  a process-local memo (per reading session, eight frontiers) or re-read from a prefix the ledger
+  stops re-reading once a later material record (such as an attach's `session_resumed`) exists.
+  Without it, a stored `agent_suppliable` item still yields `supply_missing_input` and its lead
+  from the stored rows alone (no predicted conclusion); any other continuation is omitted. So
+  presence depends on that memo, and after an attach the original writer's resend and the
+  successor's page can differ; persisting the continuation with the stored check is a storage
+  follow-up (#1100). It is the recovery read for a lost or cut check result; a failure omits it with the bounded diagnostic
   `status_check_outcome_unavailable` and never fails recovery.
 - A remedy that exists only on the text channel does not reach a Codex model; anything an agent
   must act on goes in the structured result.

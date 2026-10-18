@@ -1540,6 +1540,49 @@ def build_finding_checklist(
     )
 
 
+def _supply_overall_next(
+    result: CheckCommitResult, predicted_conclusion: str | None
+) -> CheckOverallNext | None:
+    """``supply_missing_input`` when the stored check names an agent_suppliable item.
+
+    The first branch of ``build_overall_next``: it reads only the recorded missing items, never
+    the finding list or the closure basis, so a replay or a status recovery read can rebuild it
+    from the stored check alone (W6) when the basis at its result frontier is no longer readable.
+    """
+
+    actionable_missing = tuple(
+        item for item in result.missing_for_assessment if item.availability == "agent_suppliable"
+    )
+    if not actionable_missing:
+        return None
+    return CheckOverallNext(
+        status="action_required",
+        action="supply_missing_input",
+        # A global missing input is actionable even when the reviewer could not attach a
+        # subject id.  The empty target list is the honest representation of that request.
+        target_refs=_bounded_overall_refs(
+            ref for item in actionable_missing for ref in item.target_refs
+        ),
+        predicted_conclusion=predicted_conclusion,
+    )
+
+
+def _with_stored_supply_next(result: CheckCommitResult) -> CheckCommitResult:
+    """The check with the supply continuation its stored missing items alone determine (W6).
+
+    Used when the finding list and closure basis cannot be read at the result frontier (a later
+    material record on a cold closure-basis memo, or a successor writer after a same-task attach):
+    an agent_suppliable request then still leads with what to supply and how, from durable rows.
+    The predicted conclusion needs the basis, so it is omitted, never guessed; every other
+    continuation needs the finding list, so it stays omitted too.
+    """
+
+    if result.overall_next is not None:
+        return result
+    supply = _supply_overall_next(result, None)
+    return result if supply is None else replace(result, overall_next=supply)
+
+
 def build_overall_next(
     result: CheckCommitResult,
     checklist: CheckFindingChecklist | None,
@@ -1562,20 +1605,9 @@ def build_overall_next(
         # fabricated. The structured continuation is therefore omitted and the caller keeps the
         # existing coverage/result fields.
         return None
-    actionable_missing = tuple(
-        item for item in result.missing_for_assessment if item.availability == "agent_suppliable"
-    )
-    if actionable_missing:
-        return CheckOverallNext(
-            status="action_required",
-            action="supply_missing_input",
-            # A global missing input is actionable even when the reviewer could not attach a
-            # subject id.  The empty target list is the honest representation of that request.
-            target_refs=_bounded_overall_refs(
-                ref for item in actionable_missing for ref in item.target_refs
-            ),
-            predicted_conclusion=predicted_conclusion,
-        )
+    supply = _supply_overall_next(result, predicted_conclusion)
+    if supply is not None:
+        return supply
     # A limitation request nobody answered yet is agent work that asks for a disclosure, not a
     # repair: alone it is ``disclose_limitations``; beside real work it rides in the same
     # ``work_open_findings`` target list (the text names both). The agent's own criterion is
@@ -2000,7 +2032,8 @@ async def _attach_finding_checklist(
     Like project advice this is current projection context beside the frozen check: it never
     changes the recorded event or its verdict. It reads only the adapter-owned projection at the
     result frontier (never a replay or a status page); when that is unavailable, or anything
-    fails, the check is returned without the list rather than stranded after its commit.
+    fails, the check is returned without the list rather than stranded after its commit, keeping
+    only the supply continuation its stored missing items determine (``_with_stored_supply_next``).
 
     The list holds the current actionable items (the newest row per issue, in rank order, at most
     100); the counts and the ``next`` token are computed over all of them. Coverage limitations
@@ -2017,7 +2050,7 @@ async def _attach_finding_checklist(
             runtime.ledger, result.session_id, result.result_frontier
         )
         if projection is None:
-            return result
+            return _with_stored_supply_next(result)
         # ADR-046: the receipt's own context at the result frontier gives the predicted
         # conclusion and the records the classes need. A read that fails omits the prediction
         # (never guesses one) and leaves a bounded diagnostic.
@@ -2033,7 +2066,7 @@ async def _attach_finding_checklist(
             # obligations are emptied or blocked). Without it any class would be a guess that
             # status, reading the real basis, could contradict; the check is returned without the
             # list, like every other failed read here (the diagnostic above is the trace).
-            return result
+            return _with_stored_supply_next(result)
         checklist = build_finding_checklist(
             projection, attempt_budget=budget, records=loaded.records
         )
@@ -2056,7 +2089,7 @@ async def _attach_finding_checklist(
             component="check",
             operation="finding_checklist_read",
         )
-        return result
+        return _with_stored_supply_next(result)
 
 
 async def _attach_current_project_advisory_notes(

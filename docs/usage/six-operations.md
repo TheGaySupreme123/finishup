@@ -26,8 +26,9 @@ has an unknown outcome, never a known failure.** Reuse the same `request_id` to 
 original body. A `complete` publish returns stored frontiers and accepted event ids; other states
 report only what is honest for that state (`pending`/`quarantined`/`absent`/non-publish). A
 `complete` check's page also carries `check_outcome`: its verdict, `agent_next`, next action and
-missing items, the same a same-id resend returns, so a lost or cut check result needs no re-run. An
-`absent` check page may add an `admission` stage when FinishUP refused or is still admitting it.
+missing items, the same a same-id resend from the same session returns, so a lost or cut check
+result needs no re-run. An `absent` check page may add an `admission` stage when FinishUP refused
+or is still admitting it.
 
 Field-level shapes live in [`docs/INTERFACES.md`](../INTERFACES.md); the JSON Schemas under
 [`schemas/`](../../schemas/) and the golden vectors under [`fixtures/`](../../fixtures/) are the
@@ -285,8 +286,10 @@ same-task attach that rotates the active session and writer, but never crosses i
 bundle. Stored outcome, frontiers, and accepted event ids are present only when the operation is a
 complete `publish_work`; other states omit them rather than invent detail. A complete check's page
 also carries `check_outcome`: its verdict, `agent_next`, next action and missing items, the same a
-same-id resend returns, so a lost or cut check result needs no re-run. Once later work is recorded
-(including a resumed session), the lead and next action may be left out; the verdict and missing
+same-id resend from the same session returns, so a lost or cut check result needs no re-run. After a
+resumed session or a service restart, the page may leave out the next action, or, when the reviewer
+asked for input you can supply, give only what to supply and how, without the predicted receipt
+conclusion; a resend from the original session can then still show more. The verdict and missing
 items are always there.
 `view=obligations` includes each requested item and its exact unattempted subset, subject to the
 existing obligation-text projection policy, and its text states how to resolve an obligation:
