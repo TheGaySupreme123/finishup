@@ -677,7 +677,7 @@ async def test_live_upgrade_finds_legacy_mapping_under_legacy_writer(tmp_path: P
         replay_draft_role_sets=(replay_roles,),
     )
 
-    assert recovered is not None
+    assert isinstance(recovered, tuple)
     operation_id, digest, _append_result, mapping_version, roles = recovered
     assert operation_id == expected_operation_id
     assert digest == legacy_digest
@@ -784,7 +784,7 @@ async def test_existing_operation_reconstructs_frontier_motion_metadata(tmp_path
         batch,
     )
 
-    assert recovered is not None
+    assert isinstance(recovered, tuple)
     _operation_id, digest, append_result, mapping_version, roles = recovered
     assert digest == committed_digest
     assert mapping_version == MATERIALIZATION_MAPPING_VERSION
@@ -6068,7 +6068,7 @@ async def test_truncated_route_history_uses_claim_or_rejects_without_reminting(
         replay_required=True,
         replay_claims=(claim,),
     )
-    assert recovered is not None
+    assert isinstance(recovered, tuple)
     assert recovered[0] == operation_id_for_claim
     assert recovered[1] == digest
     assert recovered[3] == mapping_version
