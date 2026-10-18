@@ -27,17 +27,23 @@ from finishup.ports.clock import ClockPort
 from finishup.ports.semantic import (
     Deadline,
     ProviderAttemptProvenance,
+    ReviewerReplySchemas,
     SemanticJudgment,
     SemanticResult,
     SemanticResultInvalid,
+    SemanticResultReply,
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    decode_reviewer_exchange,
+    reviewer_exchange_mode,
+    with_reviewer_digests,
 )
-from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.models import SemanticStatus
 
 __all__ = [
+    "LOCAL_REVIEWER_COMPLETION_PROTOCOL",
     "InstalledLocalModelProfileRegistry",
     "LocalModelEndpointProfile",
     "LocalModelEvaluator",
@@ -50,6 +56,12 @@ _IDENTITY_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$", re.ASCII)
 _MODEL_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$", re.ASCII)
 _MAX_LOCAL_RESPONSE_BYTES: Final = 1_048_576
 _MAX_LOCAL_OUTPUT_TOKENS: Final = 2_048
+# The versioned reviewer-loop completion contract (#1118 unit 3). A daemon whose installed profile
+# names it receives one canonical frame per exchange, ``{"messages": <approved history>,
+# "protocol": ..., "reply_schema": ...}``, and answers one JSON reply object; it executes no
+# action. Profiles naming any other protocol keep the one-payload, one-judgment exchange, and the
+# two never mix.
+LOCAL_REVIEWER_COMPLETION_PROTOCOL: Final = "finishup-reviewer-completion-1"
 
 
 def _identity(value: object) -> str:
@@ -220,6 +232,7 @@ def normalize_local_response(
     *,
     policy_digest: str,
     latency_ms: int,
+    reviewer: bool = False,
 ) -> SemanticResult:
     """Parse and validate one bounded local-model response into a closed AI-powered review result.
 
@@ -243,9 +256,13 @@ def normalize_local_response(
             ),
             raw_size=len(raw) if type(raw) is bytes else 0,
         )
+    succeeded = _provenance(
+        profile, SemanticStatus.SUCCEEDED, policy_digest=policy_digest, latency_ms=latency_ms
+    )
     try:
-        parsed = strict_json_parse(raw)
-        judgment = _judgment_from_json(parsed)
+        if reviewer:
+            return SemanticResultReply.parse(raw, succeeded)
+        judgment = _judgment_from_json(strict_json_parse(raw))
     except ValueError, TypeError, LookupError:
         return SemanticResultInvalid(
             _provenance(
@@ -257,15 +274,7 @@ def normalize_local_response(
             ),
             raw_size=len(raw),
         )
-    return SemanticResultSuccess(
-        judgment,
-        _provenance(
-            profile,
-            SemanticStatus.SUCCEEDED,
-            policy_digest=policy_digest,
-            latency_ms=latency_ms,
-        ),
-    )
+    return SemanticResultSuccess(judgment, succeeded)
 
 
 class LocalModelEvaluator:
@@ -278,13 +287,15 @@ class LocalModelEvaluator:
     package/model download, and no external fallback.
     """
 
-    __slots__ = ("_clock", "_handle", "_profile")
+    __slots__ = ("_clock", "_handle", "_profile", "_reply_schemas")
 
     def __init__(
         self,
         profile: LocalModelEndpointProfile,
         handle: LocalModelSocketHandle,
         clock: ClockPort,
+        *,
+        reply_schemas: ReviewerReplySchemas | None = None,
     ) -> None:
         if type(profile) is not LocalModelEndpointProfile:
             raise TypeError("local_model_profile_invalid")
@@ -293,6 +304,7 @@ class LocalModelEvaluator:
         self._profile = profile
         self._handle = handle
         self._clock = clock
+        self._reply_schemas = reply_schemas
 
     async def evaluate(self, case: ApprovedProviderCase, deadline: Deadline) -> SemanticResult:
         if type(case) is not ApprovedLocalDisclosureCase or case.sink is not (
@@ -317,8 +329,32 @@ class LocalModelEvaluator:
                 )
             )
 
+        mode = reviewer_exchange_mode(case.media_type)
+        completion = self._profile.protocol_version == LOCAL_REVIEWER_COMPLETION_PROTOCOL
+        if completion != (mode is not None) or (mode is not None and self._reply_schemas is None):
+            return SemanticResultUnavailable(
+                _provenance(
+                    self._profile,
+                    SemanticStatus.UNAVAILABLE,
+                    policy_digest=case.policy_digest,
+                    latency_ms=0,
+                    failure_class=SemanticFailureClass.UNSUPPORTED_PROFILE,
+                )
+            )
+        request = case.payload
+        if mode is not None and self._reply_schemas is not None:
+            request = canonical_encode(
+                {
+                    "messages": [
+                        {"content": text, "role": role}
+                        for role, text in decode_reviewer_exchange(case.payload)
+                    ],
+                    "protocol": LOCAL_REVIEWER_COMPLETION_PROTOCOL,
+                    "reply_schema": self._reply_schemas.for_mode(mode),
+                }
+            )
         try:
-            await self._handle.send(case.payload)
+            await self._handle.send(request)
             raw = await self._handle.receive(_MAX_LOCAL_RESPONSE_BYTES)
         except Exception:  # noqa: BLE001 - bounded transport failures never leak native text
             elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
@@ -333,6 +369,13 @@ class LocalModelEvaluator:
             )
 
         latency_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
-        return normalize_local_response(
-            raw, self._profile, policy_digest=case.policy_digest, latency_ms=latency_ms
+        result = normalize_local_response(
+            raw,
+            self._profile,
+            policy_digest=case.policy_digest,
+            latency_ms=latency_ms,
+            reviewer=mode is not None,
         )
+        if mode is None or self._reply_schemas is None:
+            return result
+        return with_reviewer_digests(result, case.payload, self._reply_schemas.for_mode(mode))

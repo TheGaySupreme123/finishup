@@ -2381,3 +2381,31 @@ excerpt budget and final packet ceiling (a clipped first part keeps its bounded 
 their smaller excerpt budget. If the remaining protected material cannot fit, egress still refuses
 the packet; a reduced floor is not used to manufacture a successful dispatch. This is packet
 coverage, not proof that the specification is complete or the verification establishes correctness.
+
+## Amendment: reviewer-loop provider completions (2026-10-19, issue #1118 unit 3)
+
+The reviewer loop asks the model for one structured reply per turn; every route serves it as an
+ordinary completion, never as a provider function call. Each completion is a separate gateway
+dispatch, so each continuation gets its own exact-body admission, consume and one-use transport;
+a consumed handle is never reused. The approved payload is the whole linear history and appears
+verbatim in every rendered body. Responses keeps `store:false` and sends no tools. Chat Completions
+sends plain messages; a `prompt_only` endpoint cannot constrain the reply branch and is refused, not
+relabelled. The local daemon contract is versioned (`finishup-reviewer-completion-1`); the old
+one-payload protocol cannot serve the loop.
+
+Codex is used as the model only. Capability profile v3 applies to every Codex session:
+`initialize` opts into the experimental API solely to send `thread/start.environments: []`, which
+disables environment access, so shell, patch and file tools have no environment to register or
+read from; `[tools.update_plan]` and `[tools.experimental_request_user_input]` are disabled in the
+isolated config and launch overrides; the protocol subset is generated with `--experimental` and
+must carry `ThreadStartParams.environments`. `features.stable_environment_tools` is not set, because
+releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
+to expose. A reviewer session keeps one ephemeral thread, sends only the new admitted input, and
+sends the reply `outputSchema` on every turn. Plan or compaction events, server requests, native
+warnings, reroutes and tool items end it. No dynamic tools, MCP server, `turn/steer`, resume or
+fork is used. The session is cleaned up at the end of the review, at its deadline, or when a policy
+change replaces the provider registry. Only release 0.162.1, whose source was reviewed, runs the
+loop until an authorized native capability cell shows `environments: []` persists across turns.
+This is not proof that no internal Codex utility can execute; an absolute guarantee still needs
+stronger upstream suppression. A route that cannot serve the loop fails closed. Nothing falls back
+to a separately billed API.

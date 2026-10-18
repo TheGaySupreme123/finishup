@@ -43,13 +43,18 @@ from finishup.ports.clock import ClockPort
 from finishup.ports.semantic import (
     Deadline,
     ProviderAttemptProvenance,
+    ReviewerReplySchemas,
     SemanticResult,
     SemanticResultInvalid,
     SemanticResultLate,
     SemanticResultRefused,
+    SemanticResultReply,
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    decode_reviewer_exchange,
+    reviewer_exchange_mode,
+    with_reviewer_digests,
 )
 from finishup.protocol.canonical import (
     JsonValue,
@@ -200,8 +205,31 @@ class RenderedChatCompletionsRequest:
 
 
 def _build_body_object(
-    case: ApprovedOutboundCase, profile: ChatCompletionsProfile
+    case: ApprovedOutboundCase,
+    profile: ChatCompletionsProfile,
+    reply_schemas: ReviewerReplySchemas | None = None,
 ) -> dict[str, JsonValue]:
+    mode = reviewer_exchange_mode(case.media_type)
+    if mode is not None:
+        # One reviewer-loop exchange (#1118 unit 3): ordinary system/user/assistant messages, the
+        # approved history verbatim, no functions or tool calls. A prompt-only endpoint cannot
+        # constrain the reply branch, so it is refused rather than relabelled as enforced.
+        if reply_schemas is None or profile.structured_output_enforcement != "provider_enforced":
+            raise ValueError("chat_completions_reviewer_schema_unavailable")
+        decode_reviewer_exchange(case.payload)
+        return {
+            "model": case.provider_binding.model_id,
+            "messages": strict_json_parse(case.payload),
+            "max_tokens": OPENAI_MAX_OUTPUT_TOKENS,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "finishup_reviewer_reply",
+                    "strict": True,
+                    "schema": reply_schemas.for_mode(mode),
+                },
+            },
+        }
     try:
         payload_text = case.payload.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -235,7 +263,9 @@ def _build_body_object(
 
 
 def render_case(
-    case: ApprovedOutboundCase, profile: ChatCompletionsProfile
+    case: ApprovedOutboundCase,
+    profile: ChatCompletionsProfile,
+    reply_schemas: ReviewerReplySchemas | None = None,
 ) -> RenderedChatCompletionsRequest:
     """Deterministically convert an approved external case into a rendered request.
 
@@ -252,7 +282,7 @@ def render_case(
     if case.provider_binding.transport != "external":
         raise ValueError("chat_completions_case_binding_invalid")
 
-    body = canonical_encode(_build_body_object(case, profile))
+    body = canonical_encode(_build_body_object(case, profile, reply_schemas))
     if len(body) > OPENAI_MAX_RESPONSE_BODY_BYTES:
         raise ValueError("chat_completions_rendered_body_too_large")
 
@@ -320,6 +350,7 @@ def normalize_response(
     policy_digest: str,
     latency_ms: int,
     late: bool = False,
+    reviewer: bool = False,
 ) -> SemanticResult:
     """Classify one provider response into the closed AI-powered review result union.
 
@@ -406,8 +437,21 @@ def normalize_response(
             ),
             raw_size=OPENAI_MAX_RESPONSE_BODY_BYTES + 1,
         )
+    succeeded = _provenance(
+        profile,
+        SemanticStatus.SUCCEEDED,
+        policy_digest=policy_digest,
+        latency_ms=latency_ms,
+        provider_request_id=provider_request_id,
+    )
     try:
-        judgment = normalize_judgment(strict_json_parse(raw_bytes), require_part2=True)
+        result: SemanticResult = (
+            SemanticResultReply.parse(raw_bytes, succeeded)
+            if reviewer
+            else SemanticResultSuccess(
+                normalize_judgment(strict_json_parse(raw_bytes), require_part2=True), succeeded
+            )
+        )
     except ValueError, TypeError, LookupError:
         return SemanticResultInvalid(
             _provenance(
@@ -431,16 +475,7 @@ def normalize_response(
                 provider_request_id=provider_request_id,
             )
         )
-    return SemanticResultSuccess(
-        judgment,
-        _provenance(
-            profile,
-            SemanticStatus.SUCCEEDED,
-            policy_digest=policy_digest,
-            latency_ms=latency_ms,
-            provider_request_id=provider_request_id,
-        ),
-    )
+    return result
 
 
 def classify_provider_failure(
@@ -508,7 +543,7 @@ class ChatCompletionsEvaluator:
     internal retry, and no credential in any reusable client, header, log, or exception.
     """
 
-    __slots__ = ("_clock", "_profile", "_safety_margin_seconds", "_transport")
+    __slots__ = ("_clock", "_profile", "_reply_schemas", "_safety_margin_seconds", "_transport")
 
     def __init__(
         self,
@@ -517,6 +552,7 @@ class ChatCompletionsEvaluator:
         clock: ClockPort,
         *,
         safety_margin_seconds: float = 0.0,
+        reply_schemas: ReviewerReplySchemas | None = None,
     ) -> None:
         if type(profile) is not ChatCompletionsProfile:
             raise TypeError("chat_completions_profile_invalid")
@@ -528,6 +564,7 @@ class ChatCompletionsEvaluator:
         self._transport = transport
         self._clock = clock
         self._safety_margin_seconds = safety_margin_seconds
+        self._reply_schemas = reply_schemas
 
     async def evaluate(self, case: ApprovedProviderCase, deadline: Deadline) -> SemanticResult:
         if type(case) is not ApprovedOutboundCase:
@@ -548,7 +585,7 @@ class ChatCompletionsEvaluator:
                 )
             )
 
-        body_object = _build_body_object(case, self._profile)
+        body_object = _build_body_object(case, self._profile, self._reply_schemas)
 
         try:
             openai_module = importlib.import_module("openai")
@@ -585,6 +622,14 @@ class ChatCompletionsEvaluator:
             await http_client.aclose()
 
         elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
-        return normalize_response(
-            response, self._profile, policy_digest=case.policy_digest, latency_ms=elapsed_ms
+        mode = reviewer_exchange_mode(case.media_type)
+        result = normalize_response(
+            response,
+            self._profile,
+            policy_digest=case.policy_digest,
+            latency_ms=elapsed_ms,
+            reviewer=mode is not None,
         )
+        if mode is None or self._reply_schemas is None:
+            return result
+        return with_reviewer_digests(result, case.payload, self._reply_schemas.for_mode(mode))

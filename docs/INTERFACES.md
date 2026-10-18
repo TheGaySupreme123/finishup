@@ -7477,7 +7477,8 @@ still reports the credential connected. A `ready` binding on a host installation
 
 The evaluator is admitted by capability, not by one pinned build (ADR-006 capability amendment,
 2026-10-13): any stable Codex release at or above `0.157.1` whose retained bytes pass the check
-(profile `codex-evaluator/capability/v2`). A passed check commits
+(profile `codex-evaluator/capability/v3`; v3 adds the experimental `thread/start.environments`
+subset fact and the plan/user-input utility disables, #1118 unit 3). A passed check commits
 `yoetz.codex-evaluator-capability/1` (`capability.json`) beside the retained runtime:
 `capability_profile`, `runtime_floor`, `runtime_version`, `source_identity`,
 `platform` (`os`, `architecture`), `executable_sha256`, `code_mode_host_sha256`,
@@ -11656,3 +11657,32 @@ recorded verification-limit decision retain the derived `unresolved_verification
 check/readiness gap (`closure_readiness.acceptance_risk` names them). The receipt and MCP summary
 explicitly name the affected obligations ("Acceptance provenance not established for ..."). The
 receipt remains coverage-bounded; Stop is never blocked on it.
+
+### Reviewer completion exchanges (issue #1118 unit 3, ADR-006)
+
+One reviewer-loop completion is one ordinary gateway dispatch with its own admission, rendered-body
+scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
+payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of
+`{"content", "role"}` messages, `system` first, then `user`/`assistant` alternating, ending with
+`user`, at most 11 messages. `ApprovedOutboundCase.media_type` (or the local case's media type)
+selects the reply schema: `application/vnd.finishup.reviewer-turn+json` (every reply branch) or
+`application/vnd.finishup.reviewer-final+json` (final judgment only). Composition installs both
+provider-wire schemas as `ReviewerReplySchemas`; without them a route refuses the exchange.
+
+| Route | Request | Refusal |
+|---|---|---|
+| Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
+| Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls | `prompt_only` endpoints (unavailable, never relabelled) |
+| Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
+| Codex subscription | one ephemeral thread per review; each later turn sends only the new user message, with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), an unknown continuation (`case_invalid`), plan/compaction/tool/request/warning events |
+
+A completed turn returns `SemanticResultReply(reply, text, provenance)`: the parsed reply object,
+its canonical text (the assistant message the next exchange must carry), and provenance whose
+prompt and schema digests name the exchange's own instruction and reply schema. Branch and argument
+validation stay with the reply decoder. The gateway records it as `completed`. An action turn on
+Codex reports `runtime_evidence.process_cleanup = "retained"`; the exchange that ends the session
+reports the real cleanup. That value is domain-only until exchange evidence is persisted, which
+needs a `runtime-attempt-evidence` schema bump. `ReviewerExchangeModel.complete(history, mode,
+deadline=)` is bound to one provider binding; a bare judgment or a reply from another endpoint
+profile or model raises `reviewer_exchange_route_mismatch`, so a review never moves to another,
+separately billed route.

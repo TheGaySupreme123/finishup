@@ -38,15 +38,20 @@ from finishup.ports.semantic import (
     PriorFindingVerdict,
     ProviderAttemptProvenance,
     ReviewerChallenge,
+    ReviewerReplySchemas,
     SemanticJudgment,
     SemanticResult,
     SemanticResultInvalid,
     SemanticResultLate,
     SemanticResultRefused,
+    SemanticResultReply,
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
     VerifiedReviewItem,
+    decode_reviewer_exchange,
+    reviewer_exchange_mode,
+    with_reviewer_digests,
 )
 from finishup.protocol.canonical import (
     JsonValue,
@@ -1597,13 +1602,35 @@ class RenderedOpenAIRequest:
         validate_sha256_digest(self.schema_digest)
 
 
-def _build_body_object(case: ApprovedOutboundCase) -> dict[str, JsonValue]:
+def _build_body_object(
+    case: ApprovedOutboundCase, reply_schemas: ReviewerReplySchemas | None = None
+) -> dict[str, JsonValue]:
     try:
         payload_value = strict_json_parse(case.payload)
     except Exception as exc:
         raise ValueError("openai_case_payload_invalid") from exc
-    if case.purpose == "credential-probe":
+    mode = reviewer_exchange_mode(case.media_type)
+    if mode is not None:
+        # One reviewer-loop exchange (#1118 unit 3): the approved history is the input verbatim
+        # and the reply schema is plain structured output. No tools of any kind are sent.
+        if reply_schemas is None:
+            raise ValueError("openai_reviewer_schema_unavailable")
+        decode_reviewer_exchange(case.payload)
         body: dict[str, JsonValue] = {
+            "model": case.provider_binding.model_id,
+            "input": payload_value,
+            "max_output_tokens": OPENAI_MAX_OUTPUT_TOKENS,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "finishup_reviewer_reply",
+                    "strict": True,
+                    "schema": reply_schemas.for_mode(mode),
+                }
+            },
+        }
+    elif case.purpose == "credential-probe":
+        body = {
             "model": case.provider_binding.model_id,
             "input": payload_value,
             "max_output_tokens": 1,
@@ -1637,7 +1664,9 @@ _PROMPT_DIGEST: Final = "sha256:" + hashlib.sha256(_SYSTEM_INSTRUCTION.encode("u
 _SCHEMA_DIGEST: Final = canonical_digest(STRICT_JUDGMENT_JSON_SCHEMA)
 
 
-def render_case(case: ApprovedOutboundCase) -> RenderedOpenAIRequest:
+def render_case(
+    case: ApprovedOutboundCase, reply_schemas: ReviewerReplySchemas | None = None
+) -> RenderedOpenAIRequest:
     """Deterministically convert an approved external case into a rendered request.
 
     Only the already-approved canonical payload bytes are copied into the request; this function
@@ -1651,7 +1680,7 @@ def render_case(case: ApprovedOutboundCase) -> RenderedOpenAIRequest:
     if case.provider_binding.transport != "external":
         raise ValueError("openai_case_binding_invalid")
 
-    body_object = _build_body_object(case)
+    body_object = _build_body_object(case, reply_schemas)
     body = canonical_encode(body_object)
     if len(body) > OPENAI_MAX_RESPONSE_BODY_BYTES:
         raise ValueError("openai_rendered_body_too_large")
@@ -1955,6 +1984,7 @@ def normalize_response(
     policy_digest: str,
     latency_ms: int,
     late: bool = False,
+    reviewer: bool = False,
 ) -> SemanticResult:
     """Classify one provider response into the closed AI-powered review result union.
 
@@ -2038,9 +2068,22 @@ def normalize_response(
             ),
             raw_size=OPENAI_MAX_RESPONSE_BODY_BYTES + 1,
         )
+    succeeded = _provenance(
+        profile,
+        SemanticStatus.SUCCEEDED,
+        policy_digest=policy_digest,
+        latency_ms=latency_ms,
+        provider_request_id=provider_request_id,
+    )
     try:
-        parsed = strict_json_parse(raw_bytes)
-        judgment = normalize_judgment(parsed, require_part2=True)
+        # A reviewer turn returns the parsed reply; its branch is decoded by the loop.
+        result: SemanticResult = (
+            SemanticResultReply.parse(raw_bytes, succeeded)
+            if reviewer
+            else SemanticResultSuccess(
+                normalize_judgment(strict_json_parse(raw_bytes), require_part2=True), succeeded
+            )
+        )
     except ValueError, TypeError, LookupError:
         return SemanticResultInvalid(
             _provenance(
@@ -2064,16 +2107,7 @@ def normalize_response(
                 provider_request_id=provider_request_id,
             )
         )
-    return SemanticResultSuccess(
-        judgment,
-        _provenance(
-            profile,
-            SemanticStatus.SUCCEEDED,
-            policy_digest=policy_digest,
-            latency_ms=latency_ms,
-            provider_request_id=provider_request_id,
-        ),
-    )
+    return result
 
 
 def classify_provider_failure(
@@ -2295,7 +2329,7 @@ class OpenAIResponsesEvaluator:
     makes exactly one physical provider call per :meth:`evaluate` invocation and never retries.
     """
 
-    __slots__ = ("_clock", "_profile", "_safety_margin_seconds", "_transport")
+    __slots__ = ("_clock", "_profile", "_reply_schemas", "_safety_margin_seconds", "_transport")
 
     def __init__(
         self,
@@ -2304,6 +2338,7 @@ class OpenAIResponsesEvaluator:
         clock: ClockPort,
         *,
         safety_margin_seconds: float = 0.0,
+        reply_schemas: ReviewerReplySchemas | None = None,
     ) -> None:
         if type(profile) is not OpenAIProfile:
             raise TypeError("openai_profile_invalid")
@@ -2315,6 +2350,7 @@ class OpenAIResponsesEvaluator:
         self._transport = transport
         self._clock = clock
         self._safety_margin_seconds = safety_margin_seconds
+        self._reply_schemas = reply_schemas
 
     async def evaluate(self, case: ApprovedProviderCase, deadline: Deadline) -> SemanticResult:
         if type(case) is not ApprovedOutboundCase:
@@ -2340,7 +2376,7 @@ class OpenAIResponsesEvaluator:
         # preserve a different insertion order from the canonical rendering, which
         # correctly fails closed as a body mismatch before credential injection.
         # Decode the canonical rendering and pass that mapping through unchanged.
-        rendered_body = strict_json_parse(render_case(case).body)
+        rendered_body = strict_json_parse(render_case(case, self._reply_schemas).body)
         if type(rendered_body) is not dict:
             raise ValueError("openai_rendered_body_invalid")
         body_object = cast(dict[str, Any], rendered_body)
@@ -2378,6 +2414,14 @@ class OpenAIResponsesEvaluator:
             await http_client.aclose()
 
         elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
-        return normalize_response(
-            response, self._profile, policy_digest=case.policy_digest, latency_ms=elapsed_ms
+        mode = reviewer_exchange_mode(case.media_type)
+        result = normalize_response(
+            response,
+            self._profile,
+            policy_digest=case.policy_digest,
+            latency_ms=elapsed_ms,
+            reviewer=mode is not None,
         )
+        if mode is None or self._reply_schemas is None:
+            return result
+        return with_reviewer_digests(result, case.payload, self._reply_schemas.for_mode(mode))

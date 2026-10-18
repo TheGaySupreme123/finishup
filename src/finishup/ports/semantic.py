@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
@@ -41,6 +41,12 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.policies.research_evidence import RESEARCH_EVIDENCE_FACT_CODES
 from finishup.kernel.policies.work_integrity import WORK_INTEGRITY_FACT_CODES
+from finishup.protocol.canonical import (
+    JsonValue,
+    canonical_digest,
+    canonical_encode,
+    strict_json_parse,
+)
 from finishup.protocol.coverage import Coverage, EvidenceImmutability
 from finishup.protocol.errors import ProtocolValueError
 from finishup.protocol.ids import IdKind, validate_id
@@ -88,6 +94,15 @@ __all__ = [
     "Deadline",
     "ExcerptDigestProvenance",
     "ProviderAttemptProvenance",
+    "REVIEWER_EXCHANGE_MEDIA_TYPES",
+    "ReviewerExchangeMode",
+    "ReviewerMessage",
+    "ReviewerReplySchemas",
+    "SemanticResultReply",
+    "decode_reviewer_exchange",
+    "encode_reviewer_exchange",
+    "reviewer_exchange_mode",
+    "with_reviewer_digests",
     "ExternalRuntimeAuthority",
     "MissingForAssessment",
     "RuntimeAttemptEvidence",
@@ -2075,6 +2090,99 @@ class SemanticResultUnavailable:
         )
 
 
+# -- reviewer completion exchanges (#1118 unit 3, ADR-006) ----------------------------------------
+# One reviewer-loop completion is one ordinary gateway dispatch. Its approved payload is the whole
+# canonical linear history: a JSON array of ``{"content", "role"}`` messages, a system message
+# first, then user/assistant turns alternating and ending with user. The case media type names
+# which reply schema the provider must enforce: every branch, or the final judgment only.
+type ReviewerExchangeMode = Literal["turn", "final"]
+type ReviewerMessage = tuple[Literal["system", "user", "assistant"], str]
+REVIEWER_EXCHANGE_MEDIA_TYPES: Final[dict[ReviewerExchangeMode, str]] = {
+    "turn": "application/vnd.finishup.reviewer-turn+json",
+    "final": "application/vnd.finishup.reviewer-final+json",
+}
+_MAX_REVIEWER_MESSAGES: Final = 1 + 2 * 5
+
+
+def reviewer_exchange_mode(media_type: str) -> ReviewerExchangeMode | None:
+    for mode, value in REVIEWER_EXCHANGE_MEDIA_TYPES.items():
+        if media_type == value:
+            return mode
+    return None
+
+
+def encode_reviewer_exchange(history: tuple[ReviewerMessage, ...]) -> bytes:
+    payload = canonical_encode([{"content": text, "role": role} for role, text in history])
+    decode_reviewer_exchange(payload)
+    return payload
+
+
+def decode_reviewer_exchange(payload: bytes) -> tuple[ReviewerMessage, ...]:
+    """The validated history; anything but the closed alternating shape is refused."""
+
+    error = ValueError("reviewer_exchange_invalid")
+    try:
+        raw = strict_json_parse(payload)
+    except ProtocolValueError, ValueError:
+        raise error from None
+    if type(raw) is not list or not 2 <= len(raw) <= _MAX_REVIEWER_MESSAGES or len(raw) % 2:
+        raise error
+    messages: list[ReviewerMessage] = []
+    for index, item in enumerate(cast(list[JsonValue], raw)):
+        expected: Literal["system", "user", "assistant"] = (
+            "system" if index == 0 else ("user" if index % 2 else "assistant")
+        )
+        if type(item) is not dict:
+            raise error
+        fields = cast(dict[str, JsonValue], item)
+        text = fields.get("content")
+        if set(fields) != {"content", "role"} or fields["role"] != expected:
+            raise error
+        if type(text) is not str or not text:
+            raise error
+        messages.append((expected, text))
+    return tuple(messages)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerReplySchemas:
+    """The two provider-wire reply schemas composition installs (owned by the reply contract)."""
+
+    turn: dict[str, JsonValue]
+    final: dict[str, JsonValue]
+
+    def for_mode(self, mode: ReviewerExchangeMode) -> dict[str, JsonValue]:
+        return self.turn if mode == "turn" else self.final
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticResultReply:
+    """One completed reviewer turn: the parsed structured reply, not yet decoded.
+
+    ``text`` is its canonical encoding, the assistant message the next exchange must carry.
+    Branch and argument validation belong to the reply decoder; nothing here is executable.
+    """
+
+    reply: dict[str, JsonValue]
+    text: str
+    provenance: ProviderAttemptProvenance
+
+    def __post_init__(self) -> None:
+        if type(self.reply) is not dict or canonical_encode(self.reply).decode() != self.text:
+            raise ValueError("reviewer_reply_invalid")
+        _validate_result_provenance(
+            self.provenance, SemanticStatus.SUCCEEDED, SemanticReason.SEMANTIC_COMPLETED
+        )
+
+    @classmethod
+    def parse(cls, raw: bytes, provenance: ProviderAttemptProvenance) -> SemanticResultReply:
+        parsed = strict_json_parse(raw)
+        if type(parsed) is not dict:
+            raise ValueError("reviewer_reply_not_object")
+        reply = cast(dict[str, JsonValue], parsed)
+        return cls(reply, canonical_encode(reply).decode(), provenance)
+
+
 type SemanticResult = (
     SemanticResultSuccess
     | SemanticResultRefused
@@ -2082,7 +2190,22 @@ type SemanticResult = (
     | SemanticResultInvalid
     | SemanticResultLate
     | SemanticResultUnavailable
+    | SemanticResultReply
 )
+
+
+def with_reviewer_digests(
+    result: SemanticResult, payload: bytes, schema: dict[str, JsonValue]
+) -> SemanticResult:
+    """Bind an exchange's provenance to the instruction and reply schema it actually carried."""
+
+    instruction = decode_reviewer_exchange(payload)[0][1]
+    provenance = replace(
+        result.provenance,
+        prompt_digest="sha256:" + hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
+        schema_digest=canonical_digest(schema),
+    )
+    return replace(result, provenance=provenance)
 
 
 class SemanticEvaluatorPort(Protocol):
