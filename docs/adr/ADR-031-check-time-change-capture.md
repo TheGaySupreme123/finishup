@@ -683,27 +683,31 @@ floor instead of a lead:
    room, with the elision marked, while the room is at least 2 KiB; it is disclosed as truncated
    (`caller_evidence` `partial`, `truncated_payload`). When inputs are offered, the rounding of
    the change's share up to its first part never takes the room the first input needs (the whole
-   input, at most that 2 KiB floor) or the decisive hold: the change keeps at least its half, and
-   its first part is cut to the room as a narrowed case already allows (#983). The floor is the
+   input, at most that 2 KiB floor) when the eighth can hold that need: the change keeps at least
+   its half, and its first part is cut to the room as a narrowed case already allows (#983). That
+   room is never held back for the run. The decisive hold limits the inputs only, never the
+   change, whether or not the task names an input (#1108 review R3). The floor is the
    first input's: later inputs take what the eighth leaves and otherwise wait for the backfill.
    Their slots are bounded as before: those the change's admitted parts and two per decisive run
    leave; with none left, every input waits for the backfill.
 3. **The rest is unchanged, except that a cut first part and a cut input grow back.** The change's
    remaining parts take the room the reserved excerpt classes leave, ahead of older hunks and
-   general output (#983). A first change part the first offer cut is then offered the room the
-   packet has left, ahead of the backfill: whole when it fits, so the parts after it may follow,
-   else a longer cut (#1108 review R2). The change then backfills, and the inputs not yet carried
+   general output (#983). A first change part the first offer cut is offered, at that same rank and
+   before its later parts, the room the reserved classes left: whole when it fits, so the parts
+   after it may follow, else a longer cut (#1108 reviews R2 and R3). When no lower rank is offered
+   it is offered the room left ahead of the backfill instead. The change then backfills, and the inputs not yet carried
    backfill last. An input the first offer cut is then offered the room the packet has left, so
    one that fits whole arrives whole, as it did when it waited for the backfill. The task
    statement is its own item, never an excerpt, so no excerpt budget can drop it.
 
 At the full Expanded budget a ~102 KB change with two 16 KB specifications is now carried whole with
-one specification beside it. Under a narrowed budget, the change keeps its half and the first
-specification at least its head and tail whenever that budget leaves 2 KiB beside the change's half
-and the decisive hold (an excerpt budget of about 5.3 KiB or more) and the recipe leaves the inputs
-a slot; below that the input is listed as not carried. A small input costs the change no more than
-its own bytes: a one-part change that arrived whole beside a few-hundred-byte specification before
-#1108 still does. Primary material also leads the item order now (ADR-006 n7 amendment), so
+one specification beside it. Under a narrowed budget, the change keeps its half, and the recipe
+leaving the inputs a slot, the first specification travels at its first offer whole when it fits the
+eighth, or at least as its head and tail when the eighth holds 2 KiB (an excerpt budget of 16 KiB or
+more); otherwise it waits for the backfill and is listed as not carried when no room is left. A
+small input costs the change no more than its own bytes (rounded to whole diff lines), with or
+without a recorded run: a one-part change that arrived whole beside a few-hundred-byte
+specification before #1108 still does. Primary material also leads the item order now (ADR-006 n7 amendment), so
 envelope bounding drops the timeline and the agent's account before any change part.
 
 What this amendment does not remove, left as follow-ups for the workstream issue #1108:

@@ -2235,8 +2235,10 @@ result, an import report) carry their own labels; the agent's disclosures travel
 inputs and observed output before the agent's account. Nothing is captured from Cursor beyond what
 its profile already captures, and no host step changes. The label's run clause (command action,
 host-reported outcome, exit status) appears only when the hook recorded both the action and its
-result with a keyed `omitted:hmac-sha256:` command identity equal to the capture's. The run clause
-has no Cursor host-payload test yet: the native capture test proves the label for Cursor tool
+result with a keyed `omitted:hmac-sha256:` command identity equal to the capture's. That identity
+comes from the post-tool command context the hook keeps only for runs FinishUP classifies as test,
+build, lint or typecheck, as on Codex; any other command's output gets the bare label, without the
+run clause. The run clause has no Cursor host-payload test yet: the native capture test proves the label for Cursor tool
 output, and a hook-recorded run with the keyed identity takes the same service path as on Codex, but
 that parity is unproven. Open follow-up, owned by the workstream issue #1108: a Cursor host-payload
 test of the run clause.

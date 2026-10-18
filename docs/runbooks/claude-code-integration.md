@@ -2146,8 +2146,10 @@ one `agent-disclosures` row marked as its assertion; and the packet lists the ta
 inputs and observed output before the agent's account. Nothing is captured from Claude Code beyond
 what its profile already captures, and no host step changes. The label's run clause (command action,
 host-reported outcome, exit status) appears only when the hook recorded both the action and its
-result with a keyed `omitted:hmac-sha256:` command identity equal to the capture's. The run clause
-has no Claude Code host-payload test yet: the native capture test proves the label for Claude Code
+result with a keyed `omitted:hmac-sha256:` command identity equal to the capture's. That identity
+comes from the post-tool command context the hook keeps only for runs FinishUP classifies as test,
+build, lint or typecheck, as on Codex; any other command's output gets the bare label, without the
+run clause. The run clause has no Claude Code host-payload test yet: the native capture test proves the label for Claude Code
 tool output, and a hook-recorded run with the keyed identity takes the same service path as on
 Codex, but that parity is unproven. Open follow-up, owned by the workstream issue #1108: a Claude
 Code host-payload test of the run clause.

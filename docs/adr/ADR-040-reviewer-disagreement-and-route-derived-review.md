@@ -720,7 +720,10 @@ scoped request; this amends Q4 in placement and reading only.
    cut. Ids and closed tokens only, so no user-controlled text enters the row. It sorts first in its
    section, so the 16-decision cap never drops it; a decision row it displaces from the 16 slots is
    recorded as a `not_selected` omission, never dropped silently. It is emitted only when the
-   obligations section is carried and at least one disclosure exists. The settled-finding row
+   obligations section is carried and at least one disclosure exists, and then in the decision
+   section even when the selection leaves decisions out: the facts rode in the obligation rows
+   before, so leaving the row out with the decisions would drop them, and the instruction names
+   the row by its id. The settled-finding row
    (`limitation_already_disclosed`) is unchanged.
 2. **One reading.** The instruction says the row is the agent's assertion: a disclosed caveat is
    not support, a disclosed limit is judged like any claim against what the packet shows, and the
@@ -735,6 +738,8 @@ loop (being asked to disclose a limit again) stays closed. That holds under enve
 (#1108 review R2): bounding drops catalog rows from the tail of the case order, where the
 `agent-disclosures` row sits after the claims and obligations, so `_drop_catalog_row` passes over
 that row while any obligation row remains and drops it only after the last obligation; every dropped
-row is counted in `selection_accounting.catalog_dropped_count`. No event, projection or schema
+row is counted in `selection_accounting.catalog_dropped_count`. The row is built before bounding, so
+once bounding has dropped obligation rows it can still name those obligations; that count discloses
+the drop (#1108 review R3). No event, projection or schema
 changes; packets built before and after differ in item placement only (plus the omission row for a
 displaced decision), and a review recovered across the upgrade ends `coordinator_failure` (ADR-006).

@@ -2100,7 +2100,8 @@ admission:
 
 ### Hook-captured verification output in a follow-up packet (2026-10-15, issue #1079)
 
-Hook-captured tool output never counts as supplied, and `supplied_since` still skips it. Separately,
+Hook-captured tool output never counts as supplied, and `supplied_since` still skips it (until the
+n7 counting change of tracker issue #1100 lands; see the 2026-10-18 n7 amendment). Separately,
 when the reviewer asks for verification output, the follow-up packet may include the newest
 hook-captured output of a command that request names, under ADR-009: the repository-excerpt gate,
 the existing excerpt limits, Private sends nothing, labelled observed rather than agent-published.
@@ -2175,7 +2176,14 @@ from primary material.
   or corner (U+23A1 and the rest); the name compares as its letters alone (marks stripped,
   punctuation and separators dropped, so `Finish-UP` matches), with `0`, `1`, `5` and `|` read as
   the letters they imitate and a Latin, Greek, Cyrillic, Armenian, Cherokee or Coptic letter that
-  does not fold to ASCII matching any letter (a Cyrillic i, a Greek Rho). Over-marking is safe, so
+  does not fold to ASCII matching any letter (a Cyrillic i, a Greek Rho). #1108 review R3 drops
+  the script list: any letter that does not fold to ASCII matches any letter, since Lisu,
+  Canadian syllabics and Tifinagh have Latin lookalikes too; a whole ANSI escape sequence (CSI,
+  OSC and the other `ESC` forms, and their C1 introducers) leading the bracket counts as invisible,
+  the line also read with `ESC` alone skipped; and the prefix now reads `(not a FinishUP label) `
+  instead of `(agent text) `, because the fence also marks lines of a task input the user wrote
+  and of output a host hook captured. The instruction calls a prefixed line the text of the
+  excerpt's own source, as its label and source kind say, never FinishUP's. Over-marking is safe, so
   the match errs toward a label; an ordinary bracketed line that does not spell the name (`[INFO]`,
   `[Finished in 2.1s]`) is left as it was. The neutraliser runs before a head-and-tail cut, and
   the elision marker ends on a newline, so the tail's first bytes start a line even when they sat

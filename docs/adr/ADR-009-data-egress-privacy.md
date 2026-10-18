@@ -1331,8 +1331,9 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   stopping smaller ones; it still backfills after every other excerpt. *Amended 2026-10-18 (n7
   RC6e, issue #1108; ADR-031 amendment of that date): the change now takes its reserved share of
   the packet's own budget first, and the inputs then take at most an eighth of it, never the bytes
-  held back for the decisive verification output; an input larger than the room left arrives as
-  its head and tail, disclosed as truncated. Shares and order change inside the same budget; no
+  held back for the decisive verification output beyond the first input's own need; an input
+  larger than the room left arrives as its head and tail, disclosed as truncated, while at least
+  2 KiB of that room remains, and otherwise waits for the backfill. Shares and order change inside the same budget; no
   category, selection or ceiling changes.*
 - **The oracle.** A file a recorded verification command names (a test, a fixture, a harness
   script) is a candidate task input. The same repository rule decides whether it is read: inside

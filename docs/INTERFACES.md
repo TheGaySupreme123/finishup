@@ -9262,15 +9262,19 @@ row while any obligation row remains (#1108 review R2). A hook-captured tool out
 with `_OBSERVED_OUTPUT_LABEL`, `[FinishUP: observed output captured by a host hook (evidence
 <evd_>)`, then `; run of command action <act_>, host-reported outcome <outcome>[, exit status <n>]`
 only when that action and its result are hook-observed records whose keyed command identity is the
-one the capture was resolved under, then `; not an agent-published result]` and a newline; its part
+one the capture was resolved under (a post-tool identity the hook keeps only for runs
+`command_runner_class` calls test, build, lint or typecheck, on every host; other runs get the bare
+label), then `; not an agent-published result]` and a newline; its part
 keys stay placed in the capture's own bytes. `_service_record_labels` yields the full label, then
 the bare label without the run clause; the excerpt takes the first that leaves more than two
 head-and-tail sides of room within the per-excerpt limit, and when neither does the excerpt is left
 out as a `not_selected` omission, with the `content_unselected` gap for a capture, so it never
 travels unlabelled. Agent text is fenced by `_neutralised_agent_text`: a line that begins, after
 characters a reader cannot see, with an opening bracket (categories Ps and Pi, `<`, or a listed
-bracket piece) and spells `FinishUP` or `Yoetz` as a reader sees it (`_label_skeleton`) is prefixed
-`(agent text) `. `_head_tail_kept` fences the tail's cut edge again after every head-and-tail cut,
+bracket piece) and spells `FinishUP` or `Yoetz` as a reader sees it (`_label_skeleton`: any letter
+that does not fold to ASCII matches any letter; a whole ANSI escape sequence may lead the bracket)
+is prefixed `(not a FinishUP label) ` (`_LABEL_IMITATION_PREFIX`; it names no author, since task
+inputs and host-observed output are fenced too). `_head_tail_kept` fences the tail's cut edge again after every head-and-tail cut,
 recutting with room for that prefix. An excerpt may carry `latest_for` (`path`: the
 newest applied or unconfirmed captured edit of each changed path; `command`: the newest recorded
 output of a command identity) or `superseded_by` (the source refs of the newer edit or run). The
@@ -9322,19 +9326,21 @@ newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`
 #1082 and n7 amendments) are admitted after the check-time change's reservation
 (`_check_time_change_reservation(selection, first_part_bytes, budget)`: half the recipe's count and
 half this packet's excerpt budget, rounded up to the first part; when task inputs have first-offer
-slots that rounding is capped at the budget less the decisive hold and the first input's need,
-`min(_MIN_TASK_INPUT_CLIP_BYTES, its size)`, never below the half), within an eighth of the
-packet's excerpt budget (`_TASK_INPUT_SHARE_DIVISOR`), never the bytes held for the decisive
-verification output (`_DECISIVE_RUN_HOLD_DIVISOR`: an eighth of the budget, at most one excerpt,
+slots that rounding is capped at the budget less the first input's need,
+`min(_MIN_TASK_INPUT_CLIP_BYTES, its size)`, when the eighth holds that need, never below the
+half), within an eighth of the packet's excerpt budget (`_TASK_INPUT_SHARE_DIVISOR`), never the
+bytes held for the decisive verification output beyond that need (the hold limits the inputs, never
+the change) (`_DECISIVE_RUN_HOLD_DIVISOR`: an eighth of the budget, at most one excerpt,
 held only when `_has_verification_output` finds a readable command result, command or test
 output, or hook-captured output, or a follow-up asks for a run), and within
 `_first_task_input_slots` (the recipe's count less the excerpts already admitted and two slots per
 decisive verification run: the latest, or each run a follow-up asked for). An input larger than the
 room left is clipped head and tail to it while the room is at least `_MIN_TASK_INPUT_CLIP_BYTES`
-(2 KiB) and listed as truncated; otherwise it is skipped and waits for the backfill. After the
-recorded excerpts, `regrow_cut_check_time_change` gives a first change part the reservation cut the
-room the packet has left (whole when it fits, so later parts may follow); the change's remaining
-parts then backfill, inputs not yet carried backfill last, and `regrow_clipped_task_inputs` gives
+(2 KiB) and listed as truncated; otherwise it is skipped and waits for the backfill. At the
+change's lower rank (`lower_rank_room`, before older hunks and general output),
+`regrow_cut_check_time_change` gives a first change part the reservation cut the room the reserved
+classes left (whole when it fits, so later parts may follow), and again after the recorded excerpts
+when no lower rank was offered; the change's remaining parts then backfill, inputs not yet carried backfill last, and `regrow_clipped_task_inputs` gives
 each input the first offer clipped the room still left (whole when it fits, its truncation then
 cleared). `TaskInputFile.origin`
 (`task`, `verification`, `outside_workspace`) and `TaskInputFile.summary` choose the label; both are
@@ -9445,8 +9451,8 @@ at <path> (evidence <evd>); it was not sent and its content is not assessable fr
 (an observed image has no path: `[FinishUP: an image was observed (evidence <evd>); it was not sent
 and its content is not assessable from this packet]`). The path keeps only ASCII letters, digits,
 space and `._/+@~=,-` (others become `_`) and at most 160 characters. Agent-authored excerpt text
-never begins a line like a label: such a line is prefixed `(agent text) `, and the reviewer
-trusts a label only as an excerpt's first line naming that excerpt's own `source_ref`. The newest 16 (`MAX_BINARY_NOTICES` in
+never begins a line like a label: such a line is prefixed `(not a FinishUP label) `, and the
+reviewer trusts a label only as an excerpt's first line naming that excerpt's own `source_ref`. The newest 16 (`MAX_BINARY_NOTICES` in
 `application.semantic_case`) are reserved excerpt room. A row whose `reference` names such a file
 and which carries text (`command_output`, `test_result`, `other` or captured output) is labelled
 `[FinishUP: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`. Both

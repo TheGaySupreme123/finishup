@@ -25,7 +25,8 @@ uv run pytest tests/unit/application/test_semantic_case.py \
   tests/unit/application/test_semantic_case_check_change.py \
   tests/unit/application/test_semantic_case_prior_findings.py \
   tests/unit/application/test_review_packet_row_contract.py \
-  tests/unit/application/test_native_verification_follow_up.py -q
+  tests/unit/application/test_native_verification_follow_up.py \
+  tests/unit/application/test_review_follow_up.py -q
 ```
 
 It fails when:
