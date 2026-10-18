@@ -234,7 +234,11 @@ def test_cursor_red_green_rerun_is_clean_and_different_command_is_not(tmp_path: 
 
 
 def _codex_exec(emit: _Emit, call: str, command: str, *, exit_code: int) -> None:
-    """A code-mode ``tools.exec_command`` hook pair in the recorded 0.157.1 shape (OUT-001)."""
+    """A code-mode ``tools.exec_command`` hook pair whose post states its exit (OUT-001).
+
+    It sends the host-structured result object: a shell call's text response is its own output
+    and never an outcome (n7 RC1, #1105).
+    """
 
     base = {"session_id": "codex-909-910", "turn_id": "turn-1", "tool_name": "Bash"}
     tool_input = {"command": command}
@@ -250,10 +254,12 @@ def _codex_exec(emit: _Emit, call: str, command: str, *, exit_code: int) -> None
             "tool_use_id": call,
             "tool_input": tool_input,
             # The exit is stated only inside tool_response; no top-level exit_status (#910).
-            "tool_response": (
-                '{"chunk_id":"d74c6f","wall_time_seconds":23.226037979,'
-                f'"exit_code":{exit_code},"original_token_count":1919,"output":"{_CANARY}"}}'
-            ),
+            "tool_response": {
+                "chunk_id": "d74c6f",
+                "exit_code": exit_code,
+                "original_token_count": 1919,
+                "output": _CANARY,
+            },
         },
     )
 

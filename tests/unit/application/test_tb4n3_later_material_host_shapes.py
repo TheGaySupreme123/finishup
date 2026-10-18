@@ -184,9 +184,16 @@ _CODEX_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
     ),
     (
         # PR #1080: without a completion fact the call may still be running, so FinishUP cannot
-        # establish that it left the workspace unchanged.
-        "codex cat with no stated exit (unavailable, so not proven read-only)",
-        _codex("Bash", "call_x2", {"command": "cat results.json"}, '{"exit_code":0,"output":"{}"}'),
+        # establish that it left the workspace unchanged. A Codex ``Bash`` post is itself that
+        # fact (n7 RC1), unless the response reads as Codex's own running-process header.
+        "codex cat still running (unavailable, so not proven read-only)",
+        _codex(
+            "Bash",
+            "call_x2",
+            {"command": "cat results.json"},
+            "Chunk ID: a2\nWall time: 10.0021 seconds\nProcess running with session ID 3\n"
+            "Original token count: 0\nOutput:\n",
+        ),
         _C.OTHER,
     ),
     (
