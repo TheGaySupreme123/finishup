@@ -184,6 +184,8 @@ from finishup.domain.workspace_effect import (
     WORKSPACE_EFFECT_KEY,
     WORKSPACE_EFFECTS,
     workspace_effect_from_result_summary,
+    workspace_write_scopes,
+    workspace_write_scopes_from_summary,
 )
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
 from finishup.observability.logging import record_unexpected_exception_without_raising
@@ -4541,6 +4543,8 @@ class ObservationCoordinator:
             recorded is not None
             and recorded.payload is not None
             and workspace_effect_from_result_summary(recorded.payload.summary) == effect
+            and workspace_write_scopes_from_summary(recorded.payload.summary)
+            == workspace_write_scopes(envelope.structural_payload.get("workspace_write_scopes"))
         ):
             return
         target_action = (

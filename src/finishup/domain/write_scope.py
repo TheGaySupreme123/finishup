@@ -14,8 +14,8 @@ An observed edit is one of six classes:
   stay recognized (ADR-048);
 * ``notes`` — the agent's own working notes inside the workspace (``NOTES.md``, ``todo.txt``):
   conventional names that are not source, tests or data (ADR-045). A declared output with such a
-  name is a deliverable and keeps counting; a ``.log`` file is never named by its extension, since
-  a workspace may itself sit under a temporary root and a log may be the deliverable;
+  name is a deliverable and keeps counting. Owner decision E also exempts conventional logs,
+  scratch, cache and build-output paths outside fixture/data directories; declared outputs win;
 * ``docs`` — project documentation inside the workspace (``README.md``, ``CHANGELOG``,
   ``docs/guide.md``): conventional documentation names and documentation extensions (``.md``,
   ``.rst``, ``.adoc``) outside test, fixture, data, golden, resource, prompt and template
@@ -75,6 +75,31 @@ NON_COUNTING_WRITE_SCOPES: Final = frozenset({"scratch", "yoetz_owned", "notes"}
 # Write scopes that count as acting and as material, but never make an earlier verification of
 # the code stale: project documentation (n7 RC2).
 STALE_EXEMPT_WRITE_SCOPES: Final = frozenset({"docs"})
+NON_CODE_DIRECTORY_NAMES: Final = frozenset(
+    {
+        "scratch",
+        "scratchpad",
+        "tmp",
+        "temp",
+        "logs",
+        ".cache",
+        "cache",
+        "build",
+        "dist",
+        "coverage",
+        "htmlcov",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".tox",
+        ".nox",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".hypothesis",
+    }
+)
 
 # Scratch roots every supported OS reserves for temporary files (issue E6, tb4n1: 28 of 33
 # attempts flagged only `/tmp` logs). `/dev/` stays wholly exempt below for device targets.
@@ -260,7 +285,14 @@ def finishup_tree_overlap(path: str) -> bool:
 def notes_artifact_name(path: str) -> bool:
     """Whether a path has a conventional notes or log name (pure; declared outputs override it)."""
 
-    return type(path) is str and bool(path) and _notes_name(_normalize(path))
+    if type(path) is not str or not path:
+        return False
+    normalized = _normalize(path).casefold()
+    return (
+        _notes_name(normalized)
+        or normalized.endswith(".log")
+        or bool(set(normalized.split("/")[:-1]) & NON_CODE_DIRECTORY_NAMES)
+    )
 
 
 def _notes_name(normalized: str) -> bool:
@@ -373,7 +405,22 @@ def classify_write_path(
         # declared output with such a name override the class). A workspace may itself sit under
         # a temporary root, so location alone never exempts. Project documentation (``docs``)
         # counts too, but never makes a verification of the code stale; notes win over docs.
-        if _notes_name(normalized):
+        relative = normalized
+        if absolute and workspace and _under(normalized, _normalize(workspace)):
+            relative = normalized[len(_normalize(workspace).rstrip("/")) + 1 :]
+        directories = {part.casefold() for part in relative.split("/")[:-1]}
+        source_directories = _PROGRAM_SEGMENTS | {"src", "source", "lib", "app"}
+        churn_location = bool(directories & NON_CODE_DIRECTORY_NAMES) and (
+            relative.split("/", 1)[0].casefold() in NON_CODE_DIRECTORY_NAMES
+            or not directories & source_directories
+        )
+        placed = not absolute or bool(workspace and _under(normalized, _normalize(workspace)))
+        churn = (
+            placed
+            and not directories & _DOCS_DATA_SEGMENTS
+            and (churn_location or normalized.casefold().endswith(".log"))
+        )
+        if _notes_name(normalized) or churn:
             return "notes"
         return "docs" if _docs_path(normalized, workspace) else "workspace"
     if scratch_path(normalized, workspace, environment=False):

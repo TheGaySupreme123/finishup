@@ -1180,6 +1180,18 @@ unverified)`; the kernel reads it back only from service-stamped observation res
 (`kernel/later_material.workspace_effects`). A host payload cannot supply the key, and an
 agent-published result carrying the suffix is ignored.
 
+**Verification freshness (DET-2, 2026-10-18).** These observed workspace facts also establish
+changes that lexical shell-write detection cannot see, such as a script rewriting source. The
+hook may add `workspace_write_scopes`, a bounded set of existing closed write classes for actual
+added, changed and deleted entries, without paths or content. ADR-042's exemptions and
+declared-output precedence decide whether those changes stale verification. Code/workspace
+changes do; only completely classified, exempt documentation or conventional notes, scratch,
+logs, caches and build output do not. A changed comparison without classes, an unavailable
+comparison or a changed effect with unknown classes conservatively stales earlier verification. Task facts and
+completion corroboration use the same provenance-checked results and duplicate annotations.
+Stop, status and receipts retain the existing `edited_after_last_verification` and
+`planned_verification_stale` gaps: rerun tests or the requested verification after the change.
+
 *One call, several deliveries (round 6).* A Codex session-stream copy carries no fingerprint, and a
 hook pass may repeat; both mint the call-keyed result id the first delivery committed, so the later
 one appends no result. Its fact is not dropped: when it states a fact the recorded result does not,

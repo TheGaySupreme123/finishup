@@ -1439,6 +1439,7 @@ def materialize_observation_envelope(
                     summary=result_summary_with_workspace_effect(
                         f"Observed result status={outcome.value}",
                         structural.get(WORKSPACE_EFFECT_KEY),
+                        structural.get("workspace_write_scopes"),
                     ),
                     evidence_refs=tuple(evidence_id(value) for value in captured_refs),
                 ),
@@ -1847,10 +1848,12 @@ def materialize_workspace_effect_annotation(
     structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
     coverage = _coverage_for(envelope, gaps=())
     channel = PublicationChannel.HOOK_OBSERVED
-    description = workspace_effect_annotation(effect)
+    description = workspace_effect_annotation(effect, structural.get("workspace_write_scopes"))
     if description is None or structural.get(WORKSPACE_EFFECT_KEY) != effect:
         return MaterializedObservationBatch((), coverage, channel, (), "no_workspace_effect")
     source = f"workspace-effect:{recorded_result_id}:{effect}"
+    if structural.get("workspace_write_scopes") is not None:
+        source += f":{description}"
     role = f"workspace_effect_{effect}"
     evidence = stable_observation_id(
         kind=IdKind.EVIDENCE,

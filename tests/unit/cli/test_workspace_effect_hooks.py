@@ -1025,3 +1025,85 @@ def test_a_consent_re_check_that_fails_records_nothing_but_is_diagnosed(
     ] == ["PreToolUse", "PostToolUse"]
     tally = cast(dict[str, object], _readings(state, commitment)["all"])
     assert (tally["unchanged"], tally["unavailable"]) == (1, 0)
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor"])
+@pytest.mark.parametrize(
+    "target,stale", [("app.py", True), ("README.md", False), ("run.log", False)]
+)
+def test_indirect_script_effect_reaches_freshness_stop_and_receipts(
+    tmp_path: Path, host: str, target: str, stale: bool
+) -> None:
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, observed_receipt
+    from finishup.cli.closure_gate import closure_gate_from_readiness
+    from finishup.domain.events import EventPayload
+    from finishup.domain.receipts import receipt_document_to_json, render_receipt_human
+    from finishup.kernel.reducers import replay
+    from finishup.kernel.task_facts import register_command_identity_key, task_fact_signals
+
+    workspace, state, commitment = _setup(tmp_path)
+    (workspace / "app.py").write_text("def answer(): return 42\n")
+    (workspace / "test_app.py").write_text(
+        "import unittest\nfrom app import answer\nclass TestAnswer(unittest.TestCase):\n"
+        " def test_answer(self): self.assertEqual(answer(),42)\n"
+    )
+    (workspace / "modify.py").write_text(
+        f"from pathlib import Path\nPath({target!r}).write_text('def answer(): return 0\\n')\n"
+    )
+    assert (
+        subprocess.run(
+            [sys.executable, "-B", "-m", "unittest", "-q"], cwd=workspace, capture_output=True
+        ).returncode
+        == 0
+    )
+    emit, pre, post, shape = _host(host, workspace, state)
+    emit(pre, shape(pre, "indirect", "python modify.py"))
+    assert (
+        subprocess.run(
+            [sys.executable, "-B", "modify.py"], cwd=workspace, capture_output=True
+        ).returncode
+        == 0
+    )
+    emit(post, shape(post, "indirect", "python modify.py"))
+    (envelope,) = _posts(state, commitment)
+    assert envelope.structural_payload["workspace_write_scopes"] == (
+        ("workspace",) if stale else ("docs",) if target.endswith(".md") else ("notes",)
+    )
+    batch = materialize_observation_envelope(envelope, task_id=_TASK)
+    register_command_identity_key(INSTALLATION_KEY)
+    try:
+        ledger = ObservedLedger()
+        ledger.plan("python -m unittest -q")
+        ledger.passes("python -m unittest -q")
+        for item in batch.drafts:
+            ledger.append(item.draft.schema, cast(EventPayload, item.draft.payload), observed=True)
+        facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+        assert ("edited_after_last_verification" in facts.codes) is stale
+        gate = closure_gate_from_readiness(
+            SimpleNamespace(
+                state="action_required",
+                agent_actionable=facts.codes,
+                open_obligation_count="0",
+                receipt_blocking_finding_count="0",
+            ),
+            frontier_sequence="7",
+            frontier_digest="sha256:" + "a" * 64,
+            observation_pending=False,
+        )
+        assert (gate is not None) is stale
+        if gate:
+            assert "Run each planned verification after your last edit" in gate.text
+        receipt = observed_receipt(ledger, extra_gaps=facts.codes)
+        rendered = [
+            json.dumps(receipt_document_to_json(receipt)),
+            render_receipt_human(receipt, markdown=True),
+            render_receipt_human(receipt, markdown=False),
+        ]
+        for text in rendered:
+            assert ("edited_after_last_verification" in text) is stale
+    finally:
+        register_command_identity_key(None)

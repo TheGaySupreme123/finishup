@@ -210,6 +210,50 @@ def test_the_wire_admits_exactly_the_workspace_effects_the_hook_emits() -> None:
         observation_ingest_request_from_json(refused)
 
 
+def test_actual_workspace_write_classes_are_optional_bounded_and_closed() -> None:
+    fields = _wire_structural_fields()["workspace_write_scopes"]
+    assert fields["type"] == "array"
+    assert fields["maxItems"] == len(WRITE_SCOPES)
+    assert fields["uniqueItems"] is True
+    assert set(fields["items"]["enum"]) == set(WRITE_SCOPES)
+    assert "workspace_write_scopes" not in _send(_shell_write_post()).envelope.structural_payload
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [[], ["docs"], ["notes", "docs"], sorted(WRITE_SCOPES)],
+)
+def test_actual_workspace_write_classes_cross_the_control_wire(scopes: list[str]) -> None:
+    received = _send(_shell_write_post(workspace_effect="changed", workspace_write_scopes=scopes))
+    assert received.envelope.structural_payload["workspace_write_scopes"] == tuple(scopes)
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        None,
+        "workspace",
+        {"scope": "docs"},
+        ["deliverable"],
+        ["/private/customer/source.py"],
+        ["docs", "docs"],
+        ["workspace"] * (len(WRITE_SCOPES) + 1),
+        [1],
+        [True],
+        [["docs"]],
+    ],
+)
+def test_invalid_actual_workspace_write_classes_are_refused_by_domain_and_wire(scopes: Any) -> None:
+    refused = cast(
+        JsonObject,
+        freeze_json(_shell_write_post(workspace_effect="changed", workspace_write_scopes=scopes)),
+    )
+    with pytest.raises(ControlProtocolError, match="frame_invalid"):
+        _frame(refused)
+    with pytest.raises(ProtocolValueError):
+        observation_ingest_request_from_json(refused)
+
+
 def test_an_edited_write_scope_enum_cannot_reach_an_older_service() -> None:
     """n7 RC2 (#1106): ``docs`` was added to the unreleased 2.9.0 enum in place. A new hook can
     never send it to an older running service, whose enum would refuse it (the #1039 shape):

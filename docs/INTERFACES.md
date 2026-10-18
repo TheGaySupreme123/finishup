@@ -11259,6 +11259,13 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   which never advances the latest edit or counts as acting (ADR-042). The Codex session stream
   names a `FileChange` item's `write_scope` from its own paths (never `outside_workspace`). A FinishUP
   MCP tool (`mcp__finishup__*`, `mcp__plugin_finishup_*__*`) always materializes as action kind `other`.
+  `workspace_write_scopes` (DET-2) is optional bounded structural metadata accompanying the
+  locally computed workspace effect: a set of existing `write_scope` classes for entries actually
+  added, changed or deleted, with no paths or content. It is never copied from host payloads.
+  The shared path classifier recognizes conventional logs, scratch, caches and build outputs
+  while preserving source, test, fixture and data paths. ADR-042's per-class exemptions and
+  declared-output precedence apply. Unavailable effects, and changed effects without
+  usable classes, conservatively stale earlier verification.
   `domain/write_scope.py`: `classify_write_path(path, *, workspace, inside, owned_roots) ->
   workspace|outside_workspace|scratch|yoetz_owned|notes|docs`, `edit_write_scope(classes) -> str |
   None`, `scratch_overlap(path)`, `finishup_artifact_name(path)`, `docs_artifact_name(path)`,
@@ -11374,6 +11381,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   the recorded result id and the token, causal parent the call's action event, no known gaps);
   `ObservationCoordinator._reconcile_workspace_effect` appends it after an ingest whose delivery
   carried a fact that the call's recorded result does not state.
+  The same observed result and duplicate-annotation facts preserve `workspace_write_scopes` for
+  task facts and completion-evidence freshness; only service-stamped facts establish an
+  exemption. Existing `edited_after_last_verification` and `planned_verification_stale` gaps
+  reach Stop, status, CLI/MCP and receipt JSON, markdown and text without a separate verdict.
   `kernel/later_material`: `WorkspaceEffects(quiet, changed, annotations)`, `workspace_effects(records,
   projection)` (folds result suffixes and annotations per action; `changed`/`unavailable` win; no
   action is quiet when `kernel/task_facts.declared_path_beyond_fingerprint(projection, *,

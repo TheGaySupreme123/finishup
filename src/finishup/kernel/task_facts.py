@@ -70,6 +70,7 @@ from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     DecisionRecordedPayload,
+    EvidenceRecordedPayload,
     LedgerRecord,
     ObligationChangeKind,
     ObligationStatus,
@@ -77,6 +78,7 @@ from finishup.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
     ResultOutcome,
+    ResultRecordedPayload,
     SessionOpenedPayload,
     is_observation_authored,
 )
@@ -169,8 +171,13 @@ from finishup.domain.task_fact_tokens import (
 from finishup.domain.task_fact_tokens import (
     WRITE_OUTSIDE_WORKSPACE_GAP as WRITE_OUTSIDE_WORKSPACE_GAP,
 )
-from finishup.domain.values import EventId, ObligationId, obligation_id
-from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
+from finishup.domain.values import ActionId, EventId, ObligationId, obligation_id
+from finishup.domain.workspace_effect import (
+    path_beyond_workspace_fingerprint,
+    workspace_effect_from_annotation,
+    workspace_effect_from_result_summary,
+    workspace_write_scopes_from_summary,
+)
 from finishup.domain.write_scope import (
     docs_artifact_name,
     finishup_artifact_name,
@@ -1172,7 +1179,9 @@ def agent_linked_run_events(
 
     prefix = tuple(records)
     observed = observed_event_ids_from_records(prefix)
-    state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
+    state = _observed_state(
+        projection, observed, cooperative_event_ids_from_records(prefix), prefix
+    )
     linked = _agent_linked_runs(projection, prefix, state, observed)
     if not linked:
         return frozenset()
@@ -1221,7 +1230,9 @@ def requested_verification_run_events(
         return None
     prefix = tuple(records)
     observed = observed_event_ids_from_records(prefix)
-    state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
+    state = _observed_state(
+        projection, observed, cooperative_event_ids_from_records(prefix), prefix
+    )
     keyed = [run for run in state.runs if run.identity is not None and run.action_event]
     linked = _agent_linked_runs(projection, prefix, state, observed)
     events: set[EventId] = set()
@@ -1364,10 +1375,70 @@ def _non_counting_edit(description: str, exempt: frozenset[str]) -> bool:
     return not observed_edit_counts(description, exempt)
 
 
+def workspace_verification_edits(
+    projection: ProjectionState,
+    observed: frozenset[EventId],
+    records: Iterable[LedgerRecord] = (),
+) -> tuple[tuple[int, EventId], ...]:
+    """Trusted changed/unverified calls that stale verification, at the call's result frontier.
+
+    Only complete, known exempt classes grant freshness. Duplicate deliveries bind to exactly
+    one observed action; a delayed annotation does not move that call past a newer verification.
+    """
+
+    exempt = non_counting_edits_exempt(projection) | stale_exempt_write_tokens(projection)
+    actions = {row.source_event_id: key for key, row in projection.actions.items()}
+    result_positions: dict[ActionId, int] = {}
+    for row in sorted(projection.results.values(), key=lambda row: row.source_frontier):
+        if row.payload is not None and row.source_event_id in observed:
+            result_positions.setdefault(row.payload.action_id, row.source_frontier)
+    edits: set[tuple[int, EventId]] = set()
+
+    def note(action_id: ActionId, effect: str | None, summary: str | None) -> None:
+        position = result_positions.get(action_id)
+        action = projection.actions.get(action_id)
+        if position is None or action is None or action.source_event_id not in observed:
+            return
+        scopes = workspace_write_scopes_from_summary(summary)
+        if effect == "unavailable" or (
+            effect == "changed"
+            and (scopes is None or any(f"write {scope}" not in exempt for scope in scopes))
+        ):
+            edits.add((position, action.source_event_id))
+
+    for row in projection.results.values():
+        if row.source_event_id not in observed:
+            continue
+        payload = row.payload
+        if type(payload) is ResultRecordedPayload:
+            note(
+                payload.action_id,
+                workspace_effect_from_result_summary(payload.summary),
+                payload.summary,
+            )
+    for record in records:
+        if record.ledger.ingestion_sequence > projection.frontier or not is_observation_authored(
+            record
+        ):
+            continue
+        payload = record.payload
+        if type(payload) is not EvidenceRecordedPayload:
+            continue
+        parents = {actions[parent] for parent in record.causal_parents if parent in actions}
+        if len(parents) == 1:
+            note(
+                next(iter(parents)),
+                workspace_effect_from_annotation(payload.description),
+                payload.description,
+            )
+    return tuple(sorted(edits))
+
+
 def _observed_state(
     projection: ProjectionState,
     observed: frozenset[EventId],
     cooperative: frozenset[EventId],
+    records: Iterable[LedgerRecord] = (),
 ) -> _ObservedState:
     exempt = non_counting_edits_exempt(projection)
     stale_exempt = stale_exempt_write_tokens(projection)
@@ -1483,6 +1554,11 @@ def _observed_state(
                     action.source_event_id,
                 )
             )
+    for position, event in workspace_verification_edits(projection, observed, records):
+        if position > (latest_edit or 0):
+            latest_edit, latest_edit_event = position, event
+        acting = True
+        material_edit = True
     runs.sort(key=lambda run: run.position)
     return _ObservedState(
         tuple(runs),
@@ -1752,7 +1828,9 @@ def task_fact_signals(
         raise TypeError("task_facts_projection_invalid")
     prefix = tuple(records)
     observed = observed_event_ids_from_records(prefix)
-    state = _observed_state(projection, observed, cooperative_event_ids_from_records(prefix))
+    state = _observed_state(
+        projection, observed, cooperative_event_ids_from_records(prefix), prefix
+    )
     batches = decision_batches(prefix)
     blocked = blocked_obligations(projection, batches)
     acknowledged = acknowledged_obligation_ids(projection)

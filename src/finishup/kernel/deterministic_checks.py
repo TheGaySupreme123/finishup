@@ -1167,8 +1167,14 @@ class DeterministicCase:
     # is an envelope fact (the operation id) the projection does not keep; the action/result rule
     # needs it so a sibling action in the same batch is never "subsequent unrelated work".
     action_batches: tuple[tuple[EventId, ...], ...] = ()
+    workspace_verification_edit_frontier: int = 0
 
     def __post_init__(self) -> None:
+        if (
+            type(self.workspace_verification_edit_frontier) is not int
+            or not 0 <= self.workspace_verification_edit_frontier <= self.projection.frontier
+        ):
+            raise _invalid_case()
         if type(self.action_batches) is not tuple or any(
             type(group) is not tuple for group in self.action_batches
         ):
@@ -1561,6 +1567,11 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
             else {}
         ),
         **(
+            {"workspace_verification_edit_frontier": case.workspace_verification_edit_frontier}
+            if case.workspace_verification_edit_frontier
+            else {}
+        ),
+        **(
             {
                 _ACTION_BATCHES_CASE_JSON_KEY: [
                     [str(member) for member in group] for group in case.action_batches
@@ -1579,6 +1590,8 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
         frozen = freeze_json(value)
         source = _case_json_object(frozen)
         source_keys = frozenset(source)
+        workspace_edit = source.get("workspace_verification_edit_frontier", 0)
+        source_keys -= {"workspace_verification_edit_frontier"}
         action_batches: tuple[tuple[EventId, ...], ...] = ()
         if _ACTION_BATCHES_CASE_JSON_KEY in source_keys:
             source_keys = source_keys - {_ACTION_BATCHES_CASE_JSON_KEY}
@@ -1740,6 +1753,7 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             task_statement=task_statement,
             task_title=task_title,
             action_batches=action_batches,
+            workspace_verification_edit_frontier=cast(int, workspace_edit),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _invalid_case() from exc
@@ -2131,7 +2145,11 @@ def build_deterministic_case(
 
     # Task facts (#977): what hook observations and the ledger establish about the task's own
     # work. Frozen with the case so a resumed check and a receipt replay disclose the same facts.
-    from finishup.kernel.task_facts import task_fact_signals
+    from finishup.kernel.task_facts import (
+        observed_event_ids_from_records,
+        task_fact_signals,
+        workspace_verification_edits,
+    )
 
     for code, obligation in task_fact_signals(projection, accepted_prefix).markers:
         if obligation is None:
@@ -2454,6 +2472,15 @@ def build_deterministic_case(
         task_statement=task_statement,
         task_title=recorded_task_title(accepted_prefix),
         action_batches=_cooperative_action_batches(projection, accepted_prefix),
+        workspace_verification_edit_frontier=max(
+            (
+                position
+                for position, _ in workspace_verification_edits(
+                    projection, observed_event_ids_from_records(accepted_prefix), accepted_prefix
+                )
+            ),
+            default=0,
+        ),
     )
 
 

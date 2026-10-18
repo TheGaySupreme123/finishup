@@ -8358,6 +8358,12 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "enum": cast(list[JsonValue], sorted(WORKSPACE_EFFECTS)),
             "type": "string",
         }
+        fields["workspace_write_scopes"] = {
+            "type": "array",
+            "items": {"type": "string", "enum": cast(list[JsonValue], sorted(WRITE_SCOPES))},
+            "maxItems": len(WRITE_SCOPES),
+            "uniqueItems": True,
+        }
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013): the
         # decoded image's SHA-256 and byte count, a sniffed media type, and header dimensions.
         # No pixel crosses the wire; the domain envelope admits exactly this shape.

@@ -149,6 +149,7 @@ from finishup.domain.workspace_effect import (
     saved_artifact_name,
     vcs_bookkeeping_name,
 )
+from finishup.domain.write_scope import WRITE_SCOPES, classify_write_path
 
 try:
     import fcntl
@@ -206,7 +207,9 @@ UnavailableReason = Literal[
 
 # Version 2 adds the call window start (process clock), the capture completion time and the host
 # deadline (both monotonic, 0 when absent) to the authenticated header.
-_MAGIC: Final = b"FUWF\x02"
+# Version 3 retains closed write-class bits per keyed entry, including deleted entries.
+_MAGIC: Final = b"FUWF\x03"
+_WRITE_CLASSES: Final[tuple[str, ...]] = tuple(sorted(WRITE_SCOPES))
 _HEADER: Final = struct.Struct("<5sQQqqQQI")
 _ENTRY: Final = struct.Struct("<16sBIQqqQQB16s")
 _MAC_BYTES: Final = 32
@@ -257,6 +260,7 @@ class WorkspaceEffectReading:
     effect: str
     reason: UnavailableReason | None = None
     fresh: bool = True
+    write_scopes: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True)
@@ -270,6 +274,7 @@ class _Entry:
     dev: int
     digest: bytes | None = None
     racy: bool = False
+    write_class: str | None = None
 
     def same_metadata(self, other: _Entry) -> bool:
         if self.kind != other.kind or self.mode != other.mode:
@@ -620,21 +625,27 @@ class WorkspaceFingerprintStore:
                 return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "process_lingering")
             after = self._walk(root, deadline=deadline, excluded=excluded)
             hasher = _Hasher(self._content_key, deadline)
-            changed = (after.root_dev, after.root_ino) != (
+            replaced_root = (after.root_dev, after.root_ino) != (
                 before.root_dev,
                 before.root_ino,
-            ) or bool(before.entries.keys() - after.entries.keys())
+            )
+            removed = before.entries.keys() - after.entries.keys()
+            changed = replaced_root or bool(removed)
+            scopes = {before.entries[key].write_class for key in removed}
             for key, entry in after.entries.items():
                 prior = before.entries.get(key)
                 if prior is None:
                     changed = True
+                    scopes.add(entry.write_class)
                     entry.digest = hasher.digest(root, after.paths[key], entry)
                     continue
                 if prior.same_metadata(entry) and not prior.racy:
                     entry.digest = prior.digest
                     continue
                 if entry.kind not in {_KIND_FILE, _KIND_LINK} or prior.kind != entry.kind:
-                    changed = changed or not prior.same_metadata(entry)
+                    if not prior.same_metadata(entry):
+                        changed = True
+                        scopes.update((prior.write_class, entry.write_class))
                     continue
                 entry.digest = hasher.digest(root, after.paths[key], entry)
                 if (
@@ -644,6 +655,7 @@ class WorkspaceFingerprintStore:
                     or prior.mode != entry.mode
                 ):
                     changed = True
+                    scopes.update((prior.write_class, entry.write_class))
             if not changed:
                 if not self._settled(after.settle):
                     # A directory gained, lost or replaced an entry while it was being compared:
@@ -654,7 +666,12 @@ class WorkspaceFingerprintStore:
             if not _past(deadline):
                 with contextlib.suppress(OSError, PathSafetyError, ValueError):
                     self._store(self._cache_path(), after)
-            return WorkspaceEffectReading(WORKSPACE_CHANGED if changed else WORKSPACE_UNCHANGED)
+            return WorkspaceEffectReading(
+                WORKSPACE_CHANGED if changed else WORKSPACE_UNCHANGED,
+                write_scopes=None
+                if replaced_root
+                else tuple(sorted(scope for scope in scopes if scope)),
+            )
         except _Unavailable as failure:
             with contextlib.suppress(OSError, PathSafetyError, ValueError):
                 if failure.backoff and failure.reason in _BACKOFF_SECONDS:
@@ -774,6 +791,10 @@ class WorkspaceFingerprintStore:
                         entry.racy = kind in {_KIND_FILE, _KIND_LINK} and (
                             max(info.st_mtime_ns, info.st_ctime_ns) >= racy_from
                         )
+                        if kind != _KIND_DIR:
+                            entry.write_class = classify_write_path(
+                                relative, workspace=root, inside=True
+                            )
                         key = self._key(relative)
                         entries[key] = entry
                         paths[key] = relative
@@ -931,6 +952,8 @@ class WorkspaceFingerprintStore:
         )
         for key, entry in snapshot.entries.items():
             flags = (_HAS_DIGEST if entry.digest is not None else 0) | (_RACY if entry.racy else 0)
+            if entry.write_class is not None:
+                flags |= (_WRITE_CLASSES.index(entry.write_class) + 1) << 2
             body += _ENTRY.pack(
                 key,
                 entry.kind,
@@ -995,6 +1018,9 @@ class WorkspaceFingerprintStore:
             key, kind, mode, size, mtime, ctime, ino, dev, flags, digest = _ENTRY.unpack_from(
                 body, offset
             )
+            scope_code = int(flags) >> 2
+            if scope_code > len(_WRITE_CLASSES):
+                return None
             entries[key] = _Entry(
                 kind,
                 mode,
@@ -1005,6 +1031,7 @@ class WorkspaceFingerprintStore:
                 dev,
                 digest if flags & _HAS_DIGEST else None,
                 bool(flags & _RACY),
+                _WRITE_CLASSES[scope_code - 1] if scope_code else None,
             )
         return _Snapshot(
             root_dev,

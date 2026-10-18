@@ -29,6 +29,9 @@ def _inside(path: str) -> bool:
     ("path", "expected"),
     [
         ("/app/solve.py", "workspace"),
+        ("/app/src/cache/engine.py", "workspace"),
+        ("/app/build/lib/generated.py", "notes"),
+        ("/app/tests/fixtures/run.log", "workspace"),
         ("/app/output/flight_plan.json", "workspace"),
         # n7 RC2: a Markdown file outside test and data directories is project documentation;
         # a declared output with that name keeps counting in the kernel (``task_facts``).
@@ -36,8 +39,8 @@ def _inside(path: str) -> bool:
         ("relative/x.py", "workspace"),
         ("/tmp/solve_remap.py", "scratch"),
         ("/var/tmp/x", "scratch"),
-        # A log inside the workspace may be a deliverable: it counts (Codex review round 1).
-        ("/app/run.log", "workspace"),
+        # Owner E: logs are notes; an explicitly declared output still overrides the exemption.
+        ("/app/run.log", "notes"),
         ("/app/finishup_exporter.py", "workspace"),
         ("/app/finishup_receipt.md", "yoetz_owned"),
         ("/app/output/finishup_receipt.json", "yoetz_owned"),
@@ -79,7 +82,7 @@ def test_legacy_trees_overlap_like_the_finishup_trees() -> None:
 
 def test_a_workspace_under_a_temporary_root_is_still_the_workspace() -> None:
     assert classify_write_path("/tmp/work/a.py", workspace="/tmp/work", inside=True) == "workspace"
-    assert classify_write_path("/tmp/work/a.log", workspace="/tmp/work", inside=True) == "workspace"
+    assert classify_write_path("/tmp/work/a.log", workspace="/tmp/work", inside=True) == "notes"
     # Without a workspace root nothing is scratch: `/tmp/project` may be the workspace itself.
     assert classify_write_path("/tmp/project/core.py", workspace=None, inside=None) == "workspace"
 
