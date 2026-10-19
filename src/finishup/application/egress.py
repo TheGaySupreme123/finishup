@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -2121,6 +2121,9 @@ class PrivacyCoordinator:
                 proposal.prepared_case_digest,
                 minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
+                input_roots=_included_input_roots(
+                    candidate, minimized.included_item_ids or proposal.included_item_ids
+                ),
             )
             if not await self._semantic_dispatch_is_current():
                 return SemanticEgressBlocked(
@@ -2237,6 +2240,7 @@ class PrivacyCoordinator:
             minimized.withheld_item_ids,
             redacted_span_count=minimized.redacted_span_count,
             credential_heuristic=external_review_credential_heuristic(effective.policy, binding),
+            input_roots=_included_input_roots(candidate, minimized.included_item_ids),
         )
         if not await self._semantic_dispatch_is_current():
             return SemanticEgressBlocked(
@@ -2431,6 +2435,12 @@ class PrivacyCoordinator:
             and item.data_class is not DataClass.SECRET_OR_CRYPTOGRAPHIC
             and item.scope_valid
             and not item.forbidden_findings
+            # E2E-2 (#1118 unit 1): bytes read beneath an outside root this policy no longer
+            # admits are refused, however long ago they were read; revocation wins.
+            and (
+                item.candidate.input_root is None
+                or item.candidate.input_root in policy.admitted_input_roots
+            )
         )
         blocked = tuple(
             {
@@ -3116,3 +3126,17 @@ def _omissions(
             key=lambda item: item.json_pointer.encode(),
         )
     )
+
+
+def _included_input_roots(
+    candidate: CandidateContext, included_item_ids: Iterable[str]
+) -> tuple[str, ...]:
+    """The outside roots the included items were read beneath, for the consume fence (#1118)."""
+
+    included = set(included_item_ids)
+    roots = {
+        item.input_root
+        for item in candidate.items
+        if item.item_id in included and item.input_root is not None
+    }
+    return tuple(sorted(roots, key=str.encode))

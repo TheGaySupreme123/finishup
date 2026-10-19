@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import Protocol
 
 from finishup.adapters.privacy.catalog import _scope_digest  # pyright: ignore[reportPrivateUsage]
 from finishup.adapters.privacy.local_enforcer import SecretScanRuleset
@@ -206,8 +206,13 @@ class ProviderRegistry:
     external: Mapping[ProviderBinding, ExternalProviderFactory]
     local_model: tuple[ProviderBinding, SemanticEvaluatorPort] | None
     require_current_provider_data_use_evidence: bool = False
+    # The outside-workspace roots the same policy admits (#1118 unit 1): a case whose inputs were
+    # read beneath a root not listed here is refused at consume.
+    admitted_input_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.admitted_input_roots) is not tuple:
+            raise TypeError("provider_registry_input_roots_invalid")
         if self.repository_privacy_commitment is not None:
             validate_commitment(self.repository_privacy_commitment)
         validate_sha256_digest(self.authority_digest)
@@ -485,6 +490,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 MappingProxyType(fenced_external),
                 fenced_local,
                 policy.policy.require_current_provider_data_use_evidence,
+                policy.policy.admitted_input_roots,
             )
             self._registry = phase_registry
 
@@ -614,6 +620,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 MappingProxyType(new_external),
                 new_local,
                 policy.policy.require_current_provider_data_use_evidence,
+                policy.policy.admitted_input_roots,
             )
         return ProviderReconciliation(
             policy.generation, activated, deactivated, tuple(sorted(unavailable))
@@ -751,31 +758,12 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         final_authority_epoch = await self._validated_repository_authority_epoch(
             authorization.scope, registry.authority_digest
         )
-        admission_failure: PrivacyReason | None = None
-        async with self._lock:
-            if (
-                final_authority_epoch is None
-                or self._closed
-                or self._current_registry() is not registry
-                or final_authority_epoch != self._authority_epoch
-            ):
-                admission_failure = PrivacyReason.AUTHORIZATION_STALE
-            else:
-                try:
-                    await self._audit.consume(authorization.authorization_id, dispatch_id, now_utc)
-                except Exception:  # noqa: BLE001 - a lost consume race is bounded here
-                    admission_failure = PrivacyReason.AUTHORIZATION_REUSED
-        if admission_failure is not None:
-            return await self._preconsume_failure(case, authorization, admission_failure)
-
-        # From here on the physical attempt is admitted: no failure below can restore authority,
-        # only its actual terminal or `outcome_unknown` receipt is produced.
-        dispatch_started_at = self._clock.now_utc()
         # This gateway is the only holder of the exact final request body, its keyed commitment,
         # and the authorization/registry binding a dispatch receipt must carry, and the audit
-        # deliberately retains no plaintext. Build the receipt this admitted attempt owes on an
-        # unknown outcome now and park it beside the `receipt_pending` row, so a crash between
-        # consume and the real receipt leaves recoverable material instead of a stranded row.
+        # deliberately retains no plaintext. Build the receipt this attempt owes on an unknown
+        # outcome before consume; the audit parks it in the consume transaction itself (#1118
+        # unit 1), so no crash leaves a consumed authorization without its owed receipt.
+        dispatch_started_at = self._clock.now_utc()
         unknown_receipt = self._attempt_receipt(
             case,
             authorization,
@@ -788,9 +776,33 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             PrivacyOutcome.TRANSPORT_FAILED,
             PrivacyReason.OUTCOME_UNKNOWN,
         )
+        admission_failure: PrivacyReason | None = None
+        async with self._lock:
+            if (
+                final_authority_epoch is None
+                or self._closed
+                or self._current_registry() is not registry
+                or final_authority_epoch != self._authority_epoch
+                or not _roots_admitted(case.input_roots, registry)
+            ):
+                admission_failure = PrivacyReason.AUTHORIZATION_STALE
+            else:
+                try:
+                    await self._audit.consume(
+                        authorization.authorization_id,
+                        dispatch_id,
+                        now_utc,
+                        owed_receipt=unknown_receipt,
+                    )
+                except Exception:  # noqa: BLE001 - a lost consume race is bounded here
+                    admission_failure = PrivacyReason.AUTHORIZATION_REUSED
+        if admission_failure is not None:
+            return await self._preconsume_failure(case, authorization, admission_failure)
+
+        # From here on the physical attempt is admitted: no failure below can restore authority,
+        # only its actual terminal or `outcome_unknown` receipt is produced.
         receipt: EgressReceipt | None = None
         try:
-            await self._park_attempt_reconciliation(dispatch_id, unknown_receipt)
             # Structural progress only (issue #571 A2). A runtime-backed evaluator reports its own
             # launch, validation, and sampling phases; a direct request samples immediately.
             await report_semantic_progress(SemanticProgressPhase.CASE_ADMITTED)
@@ -989,18 +1001,6 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             )
         return _preconsume_result(case, reason)
 
-    async def _park_attempt_reconciliation(self, dispatch_id: str, receipt: EgressReceipt) -> None:
-        """Persist recovery material before an admitted physical attempt can dispatch."""
-
-        park = getattr(self._audit, "park_attempt_reconciliation", None)
-        if not callable(park):
-            raise RuntimeError("privacy_audit_reconciliation_parking_unavailable")
-        typed_park = cast(
-            Callable[[str, EgressReceipt], Awaitable[None]],
-            park,
-        )
-        await typed_park(dispatch_id, receipt)
-
     async def _shielded_receipt(self, dispatch_id: str, receipt: EgressReceipt) -> None:
         """Keep ownership of the local receipt write through repeated cancellation."""
 
@@ -1124,10 +1124,19 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             )
 
         now = self._clock.now_utc()
-        try:
-            await self._audit.consume_local(case.privacy_proposal_id, case.case_digest, now)
-        except Exception:  # noqa: BLE001 - a lost consume race is bounded here
-            return _local_unavailable_result(case)
+        # Consume under the same lock policy mutation holds (#1118 unit 1, E2E-2): a root removal
+        # or tightening that commits first clears this registry, so the consume sees it.
+        async with self._lock:
+            if (
+                self._closed
+                or self._current_registry() is not registry
+                or not _roots_admitted(case.input_roots, registry)
+            ):
+                return _local_unavailable_result(case)
+            try:
+                await self._audit.consume_local(case.privacy_proposal_id, case.case_digest, now)
+            except Exception:  # noqa: BLE001 - a lost consume race is bounded here
+                return _local_unavailable_result(case)
 
         await report_semantic_progress(SemanticProgressPhase.CASE_ADMITTED)
         await report_semantic_progress(SemanticProgressPhase.PROVIDER_SAMPLING)
@@ -1177,6 +1186,12 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 self._close_task = asyncio.create_task(_close_registry(registry))
             task = self._close_task
         await task
+
+
+def _roots_admitted(roots: tuple[str, ...], registry: ProviderRegistry) -> bool:
+    """Whether every outside root a case's inputs were read beneath is still admitted (E2E-2)."""
+
+    return set(roots) <= set(registry.admitted_input_roots)
 
 
 def _binding_digest(binding: ProviderBinding) -> str:

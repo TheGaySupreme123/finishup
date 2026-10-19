@@ -35,7 +35,8 @@ import os
 import posixpath
 import stat
 import time
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, replace
 from typing import Final, Literal
 
 from finishup.adapters.input_summary import declared_binary_format, summarize_task_input
@@ -55,6 +56,8 @@ __all__ = [
     "MAX_TASK_INPUT_READ_BYTES",
     "read_ends_beneath",
     "read_outside_inputs",
+    "OutsideSnapshotRead",
+    "snapshot_outside_inputs",
     "task_input_from_bytes",
     "task_input_from_ends",
 ]
@@ -258,8 +261,13 @@ def _read_ends(
     owners: frozenset[int],
     head_limit: int,
     trust: _Trust | None,
+    recorded: str | None = None,
 ) -> tuple[bytes, bytes, int] | None:
-    """``read_ends_beneath``; with ``trust``, every directory and the file must also pass it."""
+    """``read_ends_beneath``; with ``trust``, every directory and the file must also pass it.
+
+    ``recorded`` is the absolute path the read will be reported under; after the read it must
+    still name the file read, so a renamed and replaced ancestor or root is refused too.
+    """
 
     parts = path.split(b"/")
     if not path or any(part in {b"", b".", b".."} for part in parts):
@@ -297,12 +305,20 @@ def _read_ends(
         if size > head_limit:
             span = _TAIL_BYTES + _CUT_SCAN_WINDOW
             tail = os.pread(descriptor, span, max(0, size - span))
+        # Drift and identity (#1118 R6): the descriptor's facts are unchanged and the name still
+        # leads to that same file, so an ordinary replacement or permission change mid-read is
+        # refused rather than kept. Not a defence against a hostile process of the same user.
         after = os.fstat(descriptor)
-        if (before.st_size, before.st_mtime_ns, before.st_ino) != (
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ino,
-        ) or read != min(size, head_limit):
+        named = (
+            os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+            if recorded is None
+            else os.stat(recorded, follow_symlinks=False)
+        )
+        if (
+            _identity(before) != _identity(after)
+            or (named.st_dev, named.st_ino) != (after.st_dev, after.st_ino)
+            or read != min(size, head_limit)
+        ):
             return None
         return head, tail, size
     except OSError:
@@ -311,6 +327,19 @@ def _read_ends(
     finally:
         for descriptor in reversed(opened):
             os.close(descriptor)
+
+
+def _identity(facts: os.stat_result) -> tuple[int, ...]:
+    return (
+        facts.st_dev,
+        facts.st_ino,
+        facts.st_size,
+        facts.st_mtime_ns,
+        facts.st_ctime_ns,
+        facts.st_mode,
+        facts.st_uid,
+        facts.st_nlink,
+    )
 
 
 def _folded_inside(path: str, folded_directories: tuple[str, ...]) -> bool:
@@ -457,21 +486,127 @@ def read_outside_inputs(
     within five seconds; a file that fails any test is skipped silently. ``space_cut`` are the
     values only the spaces of a quoted spaced value cut out (``space_cut_input_paths``): when
     that value names something beneath a root, they are not read (``drop_space_cut_words``).
+    Each input keeps the root it was read beneath (``TaskInputFile.root``, #1118 unit 1).
     """
+
+    inputs: list[TaskInputFile] = []
+    for root, full, ends in _outside_files(
+        roots,
+        values,
+        limit=limit,
+        excluded=excluded,
+        space_cut=space_cut,
+        head_limit=MAX_TASK_INPUT_READ_BYTES,
+        seconds=_OUTSIDE_READ_SECONDS,
+    ):
+        if ends is None:
+            continue
+        head, tail, size = ends
+        item = (
+            task_input_from_bytes(full, head, origin="outside_workspace")
+            if size <= MAX_TASK_INPUT_READ_BYTES
+            else task_input_from_ends(full, head, tail, size, origin="outside_workspace")
+        )
+        if item is not None:
+            inputs.append(replace(item, root=root))
+            if len(inputs) >= limit:
+                break
+    return tuple(inputs)
+
+
+@dataclass(frozen=True, slots=True)
+class OutsideSnapshotRead:
+    """One snapshot candidate the outside read reached (#1118 unit 1).
+
+    ``text`` is the whole file when it is UTF-8 text of at most ``max_bytes``; otherwise
+    ``None`` and ``reason`` is the closed code for why no full original was kept.
+    """
+
+    root: str
+    path: str
+    size: int
+    text: bytes | None
+    reason: Literal["too_large", "not_text", "unreadable"] | None
+
+
+def snapshot_outside_inputs(
+    roots: tuple[str, ...],
+    values: tuple[str, ...],
+    *,
+    limit: int,
+    max_bytes: int,
+    seconds: float,
+    excluded: tuple[str, ...] = (),
+) -> tuple[OutsideSnapshotRead, ...]:
+    """Whole-file reads of task-named outside inputs for a snapshot (#1118 unit 1), bounded.
+
+    The same trusted walk as ``read_outside_inputs``: the same roots, exclusions and file
+    tests, at most ``limit`` candidates within ``seconds``. A file is kept whole only when it is text
+    of at most ``max_bytes``; a larger, binary or undecodable file is reported with its reason
+    and no bytes, so no partial read is ever kept as an original.
+    """
+
+    reads: list[OutsideSnapshotRead] = []
+    # ``limit`` bounds the candidates attempted, readable or not, directory members included:
+    # the walk is lazy, so stopping here stops it before the next member is opened.
+    for root, full, ends in _outside_files(
+        roots,
+        values,
+        limit=limit,
+        excluded=excluded,
+        space_cut=frozenset(),
+        head_limit=max_bytes,
+        seconds=seconds,
+    ):
+        reads.append(_snapshot_row(root, full, ends, max_bytes))
+        if len(reads) >= limit:
+            break
+    return tuple(reads)
+
+
+def _snapshot_row(
+    root: str, full: str, ends: tuple[bytes, bytes, int] | None, max_bytes: int
+) -> OutsideSnapshotRead:
+    if ends is None:
+        return OutsideSnapshotRead(root, full, 0, None, "unreadable")
+    head, _tail, size = ends
+    if size > max_bytes:
+        return OutsideSnapshotRead(root, full, size, None, "too_large")
+    try:
+        head.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return OutsideSnapshotRead(root, full, size, None, "not_text")
+    if _binary(head):
+        return OutsideSnapshotRead(root, full, size, None, "not_text")
+    return OutsideSnapshotRead(root, full, size, head, None)
+
+
+def _outside_files(
+    roots: tuple[str, ...],
+    values: tuple[str, ...],
+    *,
+    limit: int,
+    excluded: tuple[str, ...],
+    space_cut: frozenset[str],
+    head_limit: int,
+    seconds: float,
+) -> Iterator[tuple[str, str, tuple[bytes, bytes, int] | None]]:
+    """``(root, path, ends)`` per file the trusted outside walk reaches; ``ends`` ``None`` when
+    the file failed a test. At most ``limit`` files and 16 candidates, within ``seconds``."""
 
     usable = tuple(root for root in roots if admitted_input_root_valid(root))
     if not usable or not values or limit < 1:
-        return ()
+        return
     identities = _excluded_identities(excluded)
     if identities is None:
-        return ()
+        return
     folded = tuple(posixpath.normpath(path).casefold() for path in excluded if path.startswith("/"))
-    deadline = time.monotonic() + _OUTSIDE_READ_SECONDS
+    deadline = time.monotonic() + seconds
     owners = frozenset({0, os.geteuid() if hasattr(os, "geteuid") else os.getuid()})
     trust = _Trust(owners, identities)
     descriptors: dict[str, int | None] = {}
-    inputs: list[TaskInputFile] = []
     seen: set[str] = set()
+    yielded = 0
 
     def located_open(value: str) -> tuple[str, bytes, int] | None:
         if _folded_inside(value, folded):
@@ -497,7 +632,7 @@ def read_outside_inputs(
         # out (``drop_space_cut_words``): ``/shared/legacy`` is never read for ``legacy app``.
         candidates = values[:_MAX_OUTSIDE_CANDIDATES]
         for value in drop_space_cut_words(candidates, names_something, space_cut):
-            if len(inputs) >= limit or time.monotonic() > deadline:
+            if yielded >= limit or time.monotonic() > deadline:
                 break
             opened = located_open(value)
             if opened is None:
@@ -506,14 +641,14 @@ def read_outside_inputs(
             # Issue #1102 (RC6d): a directory named without its trailing ``/`` ("the legacy app
             # in /shared/legacy_app") is listed like one named with it.
             files = (
-                _listed_files(descriptor, relative, limit - len(inputs), trust)
+                _listed_files(descriptor, relative, limit - yielded, trust)
                 if value.endswith("/")
                 or not relative
                 or _is_directory_beneath(descriptor, relative, trust)
                 else [relative]
             )
             for file in files:
-                if len(inputs) >= limit or time.monotonic() > deadline:
+                if yielded >= limit or time.monotonic() > deadline:
                     break
                 full = posixpath.join(root, file.decode("utf-8"))
                 if full in seen or _folded_inside(full, folded):
@@ -523,24 +658,17 @@ def read_outside_inputs(
                     descriptor,
                     file,
                     owners=owners,
-                    head_limit=MAX_TASK_INPUT_READ_BYTES,
+                    head_limit=head_limit,
                     trust=trust,
+                    recorded=full,
                 )
-                if ends is None:
-                    continue
-                head, tail, size = ends
-                item = (
-                    task_input_from_bytes(full, head, origin="outside_workspace")
-                    if size <= MAX_TASK_INPUT_READ_BYTES
-                    else task_input_from_ends(full, head, tail, size, origin="outside_workspace")
-                )
-                if item is not None:
-                    inputs.append(item)
+                if ends is not None:
+                    yielded += 1
+                yield root, full, ends
     finally:
         for descriptor in descriptors.values():
             if descriptor is not None:
                 os.close(descriptor)
-    return tuple(inputs)
 
 
 def _is_directory_beneath(root_descriptor: int, path: bytes, trust: _Trust) -> bool:

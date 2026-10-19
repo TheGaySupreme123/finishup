@@ -12,6 +12,7 @@ from typing import Literal, cast
 import pytest
 
 import finishup.application.check as check_module
+import finishup.application.service as service_module
 from builders.ledger_adapters import FixedClock, MemoryObjects, append_command, memory_adapter
 from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
 from finishup.adapters.memory.ledger import MemoryLedgerAdapter
@@ -213,3 +214,77 @@ async def test_a_base_that_cannot_be_recorded_never_fails_the_start(tmp_path: Pa
     await record(app, _start_result("created", runtime), _context(os.fspath(tmp_path)))
 
     assert await adapter.load_task_change_base() is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("admitted", [True, False])
+async def test_a_start_keeps_its_named_outside_input_only_where_the_scope_allows(
+    tmp_path: Path, admitted: bool
+) -> None:
+    """#1118 unit 1: the admitting operation keeps a copy in the runtime it holds; with no
+    admitted root (or no review), it reads nothing."""
+
+    from finishup.adapters.task_input_read import snapshot_outside_inputs  # noqa: PLC0415
+    from finishup.application.input_snapshot import (  # noqa: PLC0415
+        InputSnapshotScope,
+        load_input_snapshots,
+    )
+
+    shared = (tmp_path / "shared").resolve()
+    shared.mkdir()
+    (shared / "spec.md").write_text("ORIGINAL\n", encoding="utf-8")
+    runtime, _adapter = _runtime()
+    scopes: list[str] = []
+
+    async def scope(context: RepositoryPrivacyContext, task_id: str) -> InputSnapshotScope | None:
+        scopes.append(task_id)
+        if not admitted:
+            return None
+        return InputSnapshotScope(
+            (os.fspath(shared),), (os.fspath(tmp_path / "repo"),), snapshot_outside_inputs
+        )
+
+    app = replace(
+        _application(_Catalog(_route())),
+        clock=FixedClock(),  # pyright: ignore[reportArgumentType]
+        input_snapshot_scope=scope,
+    )
+    capture = getattr(Application, "_capture_inputs")
+
+    await capture(
+        app,
+        runtime,
+        "evt_00000000-0000-4000-8000-000000000001",
+        (os.fspath(shared / "spec.md"),),
+        "task_start",
+        _context(os.fspath(tmp_path / "repo")),
+        "req_00000000-0000-4000-8000-000000000001",
+    )
+
+    kept = await load_input_snapshots(runtime, None)
+    assert scopes == [runtime.task_id]
+    assert [s.boundary for s in kept] == (["task_start"] if admitted else [])
+
+
+def test_a_publish_batch_names_only_its_role_input_files_and_directories() -> None:
+    declared = getattr(service_module, "_declared_input_paths")
+    obligation = {
+        "schema": {"name": "obligation_published", "version": "1.1.0"},
+        "payload": {
+            "obligation_id": "obl_00000000-0000-4000-8000-000000000001",
+            "description": "Port the form.",
+            "evidence_expectation": "A test run.",
+            "status": "open",
+            "requested_items": [
+                {"item_kind": "file", "value": "/shared/spec.md", "role": "input"},
+                {"item_kind": "directory", "value": "/shared/forms/", "role": "input"},
+                {"item_kind": "file", "value": "/app/out.md", "role": "output"},
+                {"item_kind": "command", "value": "pytest -q"},
+            ],
+        },
+    }
+    other = {"schema": {"name": "plan_published", "version": "1.0.0"}, "payload": {}}
+
+    request = SimpleNamespace(event_drafts=[other, obligation])
+
+    assert declared(request) == ("/shared/spec.md", "/shared/forms/")

@@ -22,11 +22,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
+from finishup.domain.privacy import admitted_input_root_valid
 from finishup.domain.values import validate_commitment
-from finishup.ports.objects import ObjectRef
+from finishup.ports.objects import ObjectKind, ObjectRef
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
 __all__ = [
+    "MAX_SNAPSHOT_ADMISSION_SECONDS",
+    "MAX_SNAPSHOT_CANDIDATES",
+    "MAX_SNAPSHOT_FILES",
+    "MAX_SNAPSHOT_FILE_BYTES",
+    "MAX_SNAPSHOT_MANIFEST_BYTES",
+    "MAX_SNAPSHOT_SETS",
+    "MAX_SNAPSHOT_TOTAL_BYTES",
+    "SnapshotFile",
+    "SnapshotUsage",
+    "change_capture_ref_valid",
+    "snapshot_grant",
+    "snapshot_key_valid",
+    "snapshot_manifest_bytes",
+    "TASK_INPUT_SNAPSHOT_MEDIA_TYPE",
+    "TaskInputSnapshotSet",
+    "decode_task_input_snapshot",
+    "encode_task_input_snapshot",
     "CHANGE_CAPTURE_UNAVAILABLE_REASONS",
     "CHECK_CHANGE_MEDIA_TYPE",
     "MAX_CHECK_CHANGE_TEXT_BYTES",
@@ -58,6 +76,8 @@ __all__ = [
     "MAX_TASK_INPUT_TEXT_BYTES",
     "NestedUntrackedBaseline",
     "TASK_INPUT_ORIGINS",
+    "TASK_INPUT_BASELINES",
+    "TaskInputBaseline",
     "TaskInputFile",
     "TaskInputOrigin",
     "UntrackedBaselineFile",
@@ -290,6 +310,10 @@ class TaskChangeBase:
 
 
 type TaskInputOrigin = Literal["task", "verification", "outside_workspace", "task_directory"]
+type TaskInputBaseline = Literal["current", "task_start", "admission_time"]
+type TaskInputCurrentState = Literal["same", "changed", "unavailable"]
+TASK_INPUT_BASELINES: Final = frozenset({"current", "task_start", "admission_time"})
+TASK_INPUT_CURRENT_STATES: Final = frozenset({"same", "changed", "unavailable"})
 TASK_INPUT_ORIGINS: Final[frozenset[str]] = frozenset(
     {"task", "verification", "outside_workspace", "task_directory"}
 )
@@ -363,9 +387,33 @@ class TaskInputFile:
     # ``task`` summary whose path ends in ``/`` is FinishUP's own listing of the unchanged files
     # beneath a directory the task names (``./`` for the workspace root).
     summary: bool = False
+    # #1118 unit 1 (E2E-2): the owner-admitted root an ``outside_workspace`` input was read
+    # beneath, kept so egress can refuse it once that root is removed. ``None`` on an input read
+    # before bindings existed: such an input is never sent.
+    root: str | None = field(default=None, repr=False)
+    # #1118 unit 1 (AIP-1): which bytes these are. ``current``: read at check time, so whether
+    # they are the task's original contents is unknown. ``task_start``/``admission_time``: the
+    # snapshot FinishUP kept when the task started or first admitted the input; ``current_state``
+    # then says whether the file read at check time still matched it.
+    baseline: TaskInputBaseline = "current"
+    current_state: TaskInputCurrentState | None = None
 
     def __post_init__(self) -> None:
         if self.origin not in TASK_INPUT_ORIGINS or type(self.summary) is not bool:
+            raise _invalid()
+        if self.baseline not in TASK_INPUT_BASELINES or (
+            (self.baseline == "current") != (self.current_state is None)
+        ):
+            raise _invalid()
+        if self.current_state is not None and self.current_state not in TASK_INPUT_CURRENT_STATES:
+            raise _invalid()
+        if self.root is not None and (
+            self.origin != "outside_workspace"
+            or not admitted_input_root_valid(self.root)
+            or not (self.path == self.root or self.path.startswith(self.root.rstrip("/") + "/"))
+        ):
+            raise _invalid()
+        if self.baseline != "current" and (self.origin != "outside_workspace" or self.root is None):
             raise _invalid()
         if self.origin == "outside_workspace":
             if not self.path.startswith("/") or not _json_path(self.path.lstrip("/")):
@@ -705,6 +753,236 @@ class ChangeLineCounts:
             raise _invalid()
 
 
+# #1118 unit 1 (AIP-1): bounded snapshots of task-named outside inputs, kept at task start or
+# when the task first names an input. Task-wide bounds, never replenished by a check.
+TASK_INPUT_SNAPSHOT_MEDIA_TYPE: Final = "application/vnd.finishup.task-input-snapshot+json"
+_TASK_INPUT_SNAPSHOT_SCHEMA: Final = "finishup.task-input-snapshot/2"
+MAX_SNAPSHOT_FILES: Final = 4
+MAX_SNAPSHOT_FILE_BYTES: Final = 256 * 1024
+MAX_SNAPSHOT_TOTAL_BYTES: Final = 1024 * 1024
+MAX_SNAPSHOT_MANIFEST_BYTES: Final = 32 * 1024
+MAX_SNAPSHOT_CANDIDATES: Final = 16
+MAX_SNAPSHOT_SETS: Final = 16
+MAX_SNAPSHOT_MS: Final = 10_000
+MAX_SNAPSHOT_ADMISSION_MS: Final = 5_000
+MAX_SNAPSHOT_ADMISSION_SECONDS: Final = MAX_SNAPSHOT_ADMISSION_MS / 1000
+_SNAPSHOT_KEY: Final = re.compile(
+    r"^(evt|req)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+type SnapshotBoundary = Literal["task_start", "admission_time"]
+type SnapshotOmissionReason = Literal[
+    "too_large", "not_text", "unreadable", "budget", "redaction_incomplete"
+]
+SNAPSHOT_OMISSION_REASONS: Final = frozenset(
+    {"too_large", "not_text", "unreadable", "budget", "redaction_incomplete"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotUsage:
+    """Task-wide snapshot capacity: what one boundary reserved, then what it actually spent.
+
+    ``manifest`` is the UTF-8 bytes of the paths and roots its kept set names.
+    """
+
+    files: int = 0
+    bytes: int = 0
+    candidates: int = 0
+    ms: int = 0
+    manifest: int = 0
+
+    def __post_init__(self) -> None:
+        bounds = (
+            MAX_SNAPSHOT_FILES,
+            MAX_SNAPSHOT_TOTAL_BYTES,
+            MAX_SNAPSHOT_CANDIDATES,
+            3_600_000,
+            MAX_SNAPSHOT_MANIFEST_BYTES,
+        )
+        values = (self.files, self.bytes, self.candidates, self.ms, self.manifest)
+        if any(type(v) is not int or not 0 <= v <= b for v, b in zip(values, bounds, strict=True)):
+            raise _invalid()
+
+    def within(self, grant: SnapshotUsage) -> bool:
+        """Whether this spend fits ``grant``; time may overrun, since a read is stopped late."""
+
+        return (
+            self.files <= grant.files
+            and self.bytes <= grant.bytes
+            and self.candidates <= grant.candidates
+            and self.manifest <= grant.manifest
+        )
+
+
+def snapshot_grant(spent: Sequence[SnapshotUsage]) -> SnapshotUsage:
+    """What a new boundary may reserve after ``spent``: every earlier boundary's actual spend,
+    or its whole grant while it is still reserved."""
+
+    return SnapshotUsage(
+        max(0, MAX_SNAPSHOT_FILES - sum(u.files for u in spent)),
+        max(0, MAX_SNAPSHOT_TOTAL_BYTES - sum(u.bytes for u in spent)),
+        max(0, MAX_SNAPSHOT_CANDIDATES - sum(u.candidates for u in spent)),
+        max(0, min(MAX_SNAPSHOT_ADMISSION_MS, MAX_SNAPSHOT_MS - sum(u.ms for u in spent))),
+        max(0, MAX_SNAPSHOT_MANIFEST_BYTES - sum(u.manifest for u in spent)),
+    )
+
+
+def snapshot_manifest_bytes(path: str, root: str = "") -> int:
+    """What naming ``path`` (and the ``root`` it was read beneath) costs the task's manifest."""
+
+    return len(path.encode("utf-8")) + len(root.encode("utf-8"))
+
+
+def snapshot_key_valid(key: object) -> bool:
+    """A boundary key is the service id of the operation that admits it: a lifecycle event id
+    or a publication request id, never content."""
+
+    return type(key) is str and _SNAPSHOT_KEY.fullmatch(key) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotFile:
+    """One whole text file kept by a snapshot, after redaction, with the root it was read beneath."""
+
+    path: str = field(repr=False)
+    root: str = field(repr=False)
+    text: bytes = field(repr=False)
+    size: int
+    redacted: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            not admitted_input_root_valid(self.root)
+            or not self.path.startswith(self.root.rstrip("/") + "/")
+            or not _json_path(self.path.lstrip("/"))
+            or type(self.text) is not bytes
+            or len(self.text) > MAX_SNAPSHOT_FILE_BYTES + 4096
+            or type(self.size) is not int
+            or not 0 < self.size <= MAX_SNAPSHOT_FILE_BYTES
+            or type(self.redacted) is not bool
+        ):
+            raise _invalid()
+        try:
+            self.text.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise _invalid() from exc
+
+
+@dataclass(frozen=True, slots=True)
+class TaskInputSnapshotSet:
+    """What one admission boundary kept: whole files, and the candidates it could not keep.
+
+    ``boundary`` is ``task_start`` only when kept inside the creating start, before its lifecycle
+    event. The capacity it spent, including its manifest bytes, is accounted task-wide in the task
+    ledger; one set alone never names more than ``MAX_SNAPSHOT_MANIFEST_BYTES`` of UTF-8 paths.
+    """
+
+    boundary: SnapshotBoundary
+    files: tuple[SnapshotFile, ...]
+    omitted: tuple[tuple[str, SnapshotOmissionReason], ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            self.boundary not in {"task_start", "admission_time"}
+            or type(self.files) is not tuple
+            or len(self.files) > MAX_SNAPSHOT_FILES
+            or any(type(item) is not SnapshotFile for item in self.files)
+            or type(self.omitted) is not tuple
+            or len(self.omitted) > MAX_SNAPSHOT_CANDIDATES
+            or any(
+                type(row) is not tuple
+                or len(row) != 2
+                or type(row[0]) is not str
+                or not _json_path(row[0].lstrip("/"))
+                or row[1] not in SNAPSHOT_OMISSION_REASONS
+                for row in self.omitted
+            )
+            or sum(snapshot_manifest_bytes(i.path, i.root) for i in self.files)
+            + sum(snapshot_manifest_bytes(path) for path, _ in self.omitted)
+            > MAX_SNAPSHOT_MANIFEST_BYTES
+        ):
+            raise _invalid()
+
+
+def encode_task_input_snapshot(snapshot: TaskInputSnapshotSet) -> bytes:
+    if type(snapshot) is not TaskInputSnapshotSet:
+        raise _invalid()
+    body: dict[str, JsonValue] = {
+        "boundary": snapshot.boundary,
+        "files": [
+            {
+                "path": item.path,
+                "redacted": item.redacted,
+                "root": item.root,
+                "size": item.size,
+                "text": item.text.decode("utf-8"),
+            }
+            for item in snapshot.files
+        ],
+        "omitted": [[path, reason] for path, reason in snapshot.omitted],
+        "schema": _TASK_INPUT_SNAPSHOT_SCHEMA,
+    }
+    return canonical_encode(cast(JsonValue, body))
+
+
+def decode_task_input_snapshot(data: bytes) -> TaskInputSnapshotSet:
+    parsed = strict_json_parse(data)
+    if canonical_encode(parsed) != data or type(parsed) is not dict:
+        raise _invalid()
+    source = cast(dict[str, object], parsed)
+    if set(source) != {"boundary", "files", "omitted", "schema"}:
+        raise _invalid()
+    if source["schema"] != _TASK_INPUT_SNAPSHOT_SCHEMA:
+        raise _invalid()
+    files_raw, omitted_raw = source["files"], source["omitted"]
+    if type(files_raw) is not list or type(omitted_raw) is not list:
+        raise _invalid()
+    files: list[SnapshotFile] = []
+    for row in cast(list[object], files_raw):
+        if type(row) is not dict or set(cast(dict[str, object], row)) != {
+            "path",
+            "redacted",
+            "root",
+            "size",
+            "text",
+        }:
+            raise _invalid()
+        fields = cast(dict[str, object], row)
+        if type(fields["text"]) is not str:
+            raise _invalid()
+        files.append(
+            SnapshotFile(
+                cast(str, fields["path"]),
+                cast(str, fields["root"]),
+                fields["text"].encode("utf-8"),
+                cast(int, fields["size"]),
+                cast(bool, fields["redacted"]),
+            )
+        )
+    omitted: list[tuple[str, SnapshotOmissionReason]] = []
+    for row in cast(list[object], omitted_raw):
+        if type(row) is not list:
+            raise _invalid()
+        pair = cast(list[object], row)
+        if len(pair) != 2 or type(pair[0]) is not str:
+            raise _invalid()
+        omitted.append((pair[0], cast(SnapshotOmissionReason, pair[1])))
+    return TaskInputSnapshotSet(
+        cast(SnapshotBoundary, source["boundary"]), tuple(files), tuple(omitted)
+    )
+
+
+def change_capture_ref_valid(ref: object, media_type: str, task_id: str) -> bool:
+    """Whether ``ref`` is this task's ``CHANGE_CAPTURE`` object of ``media_type``."""
+
+    return (
+        type(ref) is ObjectRef
+        and ref.metadata.kind is ObjectKind.CHANGE_CAPTURE
+        and ref.metadata.media_type == media_type
+        and ref.metadata.task_id == task_id
+    )
+
+
 class TaskChangeBaseStorePort(Protocol):
     """Optional task-ledger seam that keeps the task-start base object as a durable root."""
 
@@ -713,6 +991,25 @@ class TaskChangeBaseStorePort(Protocol):
         ...
 
     async def load_task_change_base(self) -> ObjectRef | None: ...
+
+    async def reserve_task_input_snapshot(self, key: str) -> SnapshotUsage | None:
+        """Reserve boundary ``key`` (#1118 unit 1) in one ledger transaction.
+
+        Returns the capacity granted from what every earlier boundary reserved or spent, or
+        ``None`` when ``key`` was already reserved, its copy or gap standing, or when the task holds
+        ``MAX_SNAPSHOT_SETS`` boundaries: nothing is read.
+        """
+        ...
+
+    async def complete_task_input_snapshot(
+        self, key: str, spent: SnapshotUsage, ref: ObjectRef | None
+    ) -> None:
+        """Record what reserved boundary ``key`` spent and the set it kept, if any; once."""
+        ...
+
+    async def load_task_input_snapshots(self) -> tuple[ObjectRef, ...]:
+        """The kept sets, oldest first; raises when the accounting cannot be read."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -888,6 +1185,10 @@ def encode_check_change(capture: CheckChangeCapture) -> bytes:
                 "text": item.text.decode("utf-8"),
                 **({"origin": item.origin} if item.origin != "task" else {}),
                 **({"summary": True} if item.summary else {}),
+                # #1118 unit 1: written only when set, so an older input keeps its bytes.
+                **({"root": item.root} if item.root is not None else {}),
+                **({"baseline": item.baseline} if item.baseline != "current" else {}),
+                **({"current_state": item.current_state} if item.current_state else {}),
             }
             for item in capture.inputs
         ]
@@ -927,10 +1228,12 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
             raise _invalid()
         fields = cast(dict[str, object], row)
         if (
-            set(fields) - {"origin", "summary"} != {"path", "redacted", "size", "text"}
+            set(fields) - {"origin", "summary", "root", "baseline", "current_state"}
+            != {"path", "redacted", "size", "text"}
             or type(fields["text"]) is not str
             or fields.get("origin", "verification") == "task"
             or fields.get("summary", True) is not True
+            or fields.get("baseline", "task_start") == "current"
         ):
             # A default value is never written, so a present default is not canonical.
             raise _invalid()
@@ -942,6 +1245,9 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
                 cast(bool, fields["redacted"]),
                 cast(TaskInputOrigin, fields.get("origin", "task")),
                 fields.get("summary", False) is True,
+                cast(str | None, fields.get("root")),
+                cast(TaskInputBaseline, fields.get("baseline", "current")),
+                cast(TaskInputCurrentState | None, fields.get("current_state")),
             )
         )
     return CheckChangeCapture(

@@ -188,6 +188,7 @@ __all__ = [
     "recorded_semantic_outcome_gap_code",
     "check_time_change_gap_sentence",
     "TASK_FACT_GAP_SENTENCES",
+    "TASK_INPUT_BASELINE_UNAVAILABLE_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE",
     "check_time_change_unavailable_reason_gap",
@@ -476,6 +477,10 @@ CHECK_TIME_CHANGE_GAPS: Final = frozenset(
 # no path, disclosed and never agent work: it is not a member of ``CHECK_TIME_CHANGE_GAPS``, never
 # bounds the receipt's conclusion and never becomes a Stop-gate item or a continuation.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP: Final = "task_input_outside_not_admitted"
+# #1118 unit 1 (AIP-1): an outside input reached review as its current bytes, and FinishUP kept no
+# copy from the task's start or from when the task first named it, so whether the agent changed it
+# is unknown. A closed disclosure code with no path, on the same terms as the one above.
+TASK_INPUT_BASELINE_UNAVAILABLE_GAP: Final = "task_input_baseline_unavailable"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
     "Review lacked a task-named file or folder outside the workspace; only the owner can admit"
@@ -512,6 +517,12 @@ def check_time_change_gap_sentence(code: str) -> str | None:
             " read, so the reviewer judged the work without it. Only the owner can let review"
             " read it, with `finishup privacy input-roots add <folder>` on a trusted terminal; an"
             " agent cannot, and copying it into the workspace does not help."
+        )
+    if code == TASK_INPUT_BASELINE_UNAVAILABLE_GAP:
+        return (
+            "Review read a task-named file outside the workspace as it is now. FinishUP kept no"
+            " copy from when the task started or first named it, so the reviewer could not tell"
+            " whether the agent changed it."
         )
     if code == CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP:
         return (

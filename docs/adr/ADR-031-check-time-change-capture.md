@@ -858,3 +858,84 @@ its existing reservation. Each removed narrative or synthetic excerpt uses the s
 coverage and total-count disclosures; omission subjects remain valid linked ledger identities.
 MCP, CLI and hook-triggered reviews share this composer on Codex, Claude Code and Cursor. There is
 no reviewer fetch tool or capture-policy change in this repair.
+
+## Amendment (2026-10-18, issue #1118 unit 1): outside-input snapshots and honest labels
+
+AIP-1: an outside file read at check time is its current bytes. An agent that rewrote the
+specification beneath an admitted root got its version labelled "not the agent's work". That
+claim had no basis and is removed.
+
+- **Snapshots.** FinishUP keeps a whole copy of each outside input the task names (statement
+  paths or `role: input` file and directory items) beneath a root the task's effective policy
+  admits, only when a file could reach AI-powered review: the recipe carries task inputs, the
+  owner's conversation setting is not `local_only`, and the external inference channel, or the
+  separately enabled local model, admits `repository_excerpt` items of ordinary content
+  (`snapshot_roots`). Under any other policy nothing is read ahead of time.
+- **When.** Inside the operation that admits the input, before its event is appended. A start
+  whose lifecycle event opens the session (a new task, or a delegated child's first attach)
+  keeps a `task_start` set. A start that reattaches with a statement, and a `publish_work` batch
+  whose obligations name an input, keep an `admission_time` set; a path already kept or recorded
+  is not copied again, so an earlier copy is never overwritten. A dry run keeps nothing.
+- **One read per boundary.** Each boundary is reserved in the task ledger before anything is
+  read, keyed by its operation: the start's lifecycle event id, or the publication's request id.
+  A replayed start or publication returns its stored result without reaching the capture; a
+  start recovered after a crash, or a publication retried with the same request id, finds the
+  boundary reserved and reads nothing, so its copy or its gap stands. A start whose scope is
+  denied or unavailable (no admitted root, a review it cannot run, a scope lookup that failed)
+  still reserves its boundary, as a gap, without reading anything. A start recovered after its
+  lifecycle event already committed never captures, even when no reservation exists. A late read
+  is never labelled as the start. Capture never fails the start or publication: a failure leaves
+  a gap. A publication whose append fails after its capture still spends its boundary: the copy
+  or gap stays, a same-request retry reads nothing, and the capacity is not returned. This can
+  spend capacity on a declaration that never commits; the tradeoff is accepted so that a retry
+  never reopens mutable files, and an input without a copy keeps the missing-baseline label.
+- **Bounds.** Four whole text files of at most 256 KiB each, 1 MiB of content, 32 KiB of UTF-8
+  path bytes named across all of the task's sets, 16 candidates, five seconds per boundary and
+  ten seconds per task. A reservation takes all the capacity left in one ledger transaction, so
+  two admissions in flight cannot both spend it, and its completion records what was actually
+  spent: files, bytes, every candidate attempted (each member a declared directory expands to
+  counts as one), the time taken and the path bytes its set names, omission-only sets included,
+  even when nothing was kept. Past the path bytes left, a candidate is counted but not named; it
+  stays an input without a copy, so its gap remains disclosed. A reservation whose completion never landed stays spent. The accounting
+  is structural, so an unreadable earlier copy stops further capture rather than refilling the
+  budget. A file too large, binary or not UTF-8 text, unsafe, changed while read, or past the
+  budget is recorded with a closed reason (`too_large`, `not_text`, `unreadable`, `budget`,
+  `redaction_incomplete`) and no bytes; a partial read is never kept as an original. Copies are
+  redacted before they are kept.
+- **Reading.** The reader is the trusted outside walk. After the bounded read the descriptor's
+  device, inode, size, mtime, ctime, mode, owner and link count must be unchanged and the
+  recorded absolute path, resolved again from `/`, must still name the same device and inode, so
+  a renamed and replaced parent or admitted root is refused too; otherwise the candidate is
+  `unreadable`. This detects an
+  ordinary replacement or permission change during the read; it is not an atomic snapshot and
+  not a defence against a hostile process with the same user authority.
+- **Storage.** Each set is one encrypted `change_capture` object of media type
+  `application/vnd.finishup.task-input-snapshot+json`, schema `finishup.task-input-snapshot/2`
+  (boundary, kept files, omitted candidates). The ledger seam
+  `reserve_task_input_snapshot(key) -> SnapshotUsage | None`,
+  `complete_task_input_snapshot(key, spent, ref | None)` and `load_task_input_snapshots()` keeps
+  one structural row per boundary (key, capacity granted and spent as files, bytes, candidates,
+  milliseconds and path bytes, object pointer) in the
+  `bundle_meta` key `task_input_snapshots` (at most 16 boundaries), inventorying the object in the
+  completing transaction beside the task-start base. No path or content is structural. Task
+  retention and removal handle the objects; there is no separate archive.
+- **Check time.** A named outside input with a kept copy whose root is still admitted is sent
+  from the copy. The current file is read whole once to say whether it still matches (`same`,
+  `changed`, `unavailable`); its bytes are not sent. The comparison is of redacted bytes: when
+  the copy itself was redacted, `same` means the file matches outside its redacted values and
+  the label says whether those values changed is unknown; a current file whose redaction changed
+  it never matches an unredacted copy. The label names the boundary ("the copy FinishUP kept
+  before the task's start returned", or "when the task first named it as an input, after the
+  task started"), says when values were redacted from the copy, gives the current state, and says
+  that a copy shows bytes at a moment, not who wrote them. An input with no copy keeps its current bytes, labelled as such with its original
+  contents and authorship unverified, and the check discloses `task_input_baseline_unavailable`.
+- **Binding.** Every outside input carries the root it was read beneath
+  (`TaskInputFile.root`; the check-change object writes `root`, `baseline` and `current_state`
+  only when set, so older objects keep their bytes). An outside input from an older object has
+  no binding and is never offered. ADR-009 carries the binding through egress.
+- **Not covered.** Workspace inputs keep the Git task-start proof (ADR-031 #1045): only
+  unchanged files are sent and an agent's edit arrives in the change, but the original bytes of
+  an untracked workspace spec the agent edited are not kept. A root admitted, or a review policy
+  widened, after a declaration does not trigger a copy at that grant: the next admitting
+  operation that names the input does, labelled `admission_time`. Both are open scope decisions
+  on issue #1118, not implemented behaviour. Old tasks have no copies, and none is invented.

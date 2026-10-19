@@ -3204,8 +3204,19 @@ class CatalogPrivacyAudit:
         return authorization
 
     async def consume(
-        self, authorization_id: str, dispatch_id: str, now: datetime
+        self,
+        authorization_id: str,
+        dispatch_id: str,
+        now: datetime,
+        *,
+        owed_receipt: EgressReceipt | None = None,
     ) -> ConsumedAuthorization:
+        if owed_receipt is not None and type(owed_receipt) is not EgressReceipt:
+            raise TypeError("privacy_egress_receipt_invalid")
+        # The owed ``outcome_unknown`` receipt is parked by the same UPDATE that consumes the
+        # authorization (#1118 unit 1), so no crash leaves a consumed row without it.
+        owed = None if owed_receipt is None else _receipt_bytes(owed_receipt)
+        owed_digest = None if owed is None else canonical_digest(strict_json_parse(owed))
         async with self._lock:
             with _transaction(self._db):
                 row = self._db.execute(
@@ -3255,7 +3266,9 @@ class CatalogPrivacyAudit:
                     self._db.execute(
                         """UPDATE privacy_audit_records
                            SET state = 'receipt_pending', dispatch_id = ?,
-                               dispatch_started_at = ?, consumed_at = ?, updated_at = ?
+                               dispatch_started_at = ?, consumed_at = ?, updated_at = ?,
+                               attempt_result_structural_canonical = ?,
+                               attempt_result_commitment = ?
                            WHERE authorization_id = ? AND state = 'authorized'
                              AND dispatch_id IS NULL""",
                         (
@@ -3263,6 +3276,8 @@ class CatalogPrivacyAudit:
                             format_rfc3339_millis(now),
                             format_rfc3339_millis(now),
                             format_rfc3339_millis(now),
+                            owed,
+                            owed_digest,
                             authorization_id,
                         ),
                     )
@@ -3312,34 +3327,6 @@ class CatalogPrivacyAudit:
                 )
                 if changed != 1:
                     raise ValueError("privacy_egress_receipt_conflict")
-
-    async def park_attempt_reconciliation(self, dispatch_id: str, receipt: EgressReceipt) -> None:
-        """Park the ``outcome_unknown`` receipt an admitted attempt owes if nothing better lands.
-
-        The consume CAS is the last authority transition: from that point the physical attempt
-        owes exactly one terminal receipt, and only the gateway holds the exact final request
-        body, its keyed commitment, and the authorization/registry binding that receipt must
-        carry.  Parking that pre-built receipt beside the ``receipt_pending`` row keeps the
-        recovery material durable across a crash without asserting any outcome: the row stays
-        nonterminal until ``complete_egress`` records the real result or
-        ``reconcile_started_attempts`` terminalizes the parked unknown.
-        """
-
-        if type(receipt) is not EgressReceipt:
-            raise TypeError("privacy_egress_receipt_invalid")
-        canonical = _receipt_bytes(receipt)
-        digest = canonical_digest(strict_json_parse(canonical))
-        now = self._clock.now_utc()
-        async with self._lock:
-            with _transaction(self._db):
-                self._db.execute(
-                    """UPDATE privacy_audit_records
-                       SET attempt_result_structural_canonical = ?,
-                           attempt_result_commitment = ?, updated_at = ?
-                       WHERE dispatch_id = ? AND state = 'receipt_pending'
-                         AND receipt_id IS NULL""",
-                    (canonical, digest, format_rfc3339_millis(now), dispatch_id),
-                )
 
     async def reconcile_started_attempts(self, consumed_before: datetime, limit: int) -> int:
         """Terminalize parked ``receipt_pending`` attempts that outlived their dispatcher.

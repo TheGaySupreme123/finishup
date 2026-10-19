@@ -89,6 +89,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+    TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
@@ -418,6 +419,8 @@ SEMANTIC_CASE_CONTENT_GAPS: Final = frozenset(
         "preexisting_test_edit_unjustified",
         # Issue #1102: a task-named input outside the workspace no admitted root covers.
         TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
+        # #1118 unit 1: an outside input sent as current bytes with no kept copy.
+        TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     }
 )
 # Every packet gap an evaluation may report: the content gaps above plus the codes whose resolution

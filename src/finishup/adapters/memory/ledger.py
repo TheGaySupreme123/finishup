@@ -146,7 +146,15 @@ from finishup.kernel.reducers import (
 )
 from finishup.kernel.task_facts import effective_obligations, task_fact_signals
 from finishup.observability.logging import record_unexpected_exception_without_raising
-from finishup.ports.change_capture import TASK_CHANGE_BASE_MEDIA_TYPE
+from finishup.ports.change_capture import (
+    MAX_SNAPSHOT_SETS,
+    TASK_CHANGE_BASE_MEDIA_TYPE,
+    TASK_INPUT_SNAPSHOT_MEDIA_TYPE,
+    SnapshotUsage,
+    change_capture_ref_valid,
+    snapshot_grant,
+    snapshot_key_valid,
+)
 from finishup.ports.clock import ClockPort
 from finishup.ports.ids import IdPort
 from finishup.ports.ledger import (
@@ -490,6 +498,10 @@ class MemoryLedgerState:
     object_refs: dict[str, ObjectRef] = field(default_factory=lambda: {})
     # The task-start base object of the check-time change (ADR-031); kept once per task.
     task_change_base: ObjectRef | None = None
+    # #1118 unit 1: snapshot boundaries by key: (granted, spent once completed, kept set).
+    task_input_snapshots: dict[
+        str, tuple[SnapshotUsage, SnapshotUsage | None, ObjectRef | None]
+    ] = field(default_factory=lambda: {})
     # Keyed by job_id: the last non-terminal structural progress row (issue #571 A2). The
     # terminal phase is derived from the job row itself, never stored here.
     semantic_progress: dict[str, SemanticProgressRecord] = field(default_factory=lambda: {})
@@ -3827,12 +3839,7 @@ class MemoryLedgerAdapter:
     async def record_task_change_base(self, ref: ObjectRef) -> bool:
         """Keep the first task-start base object (ADR-031) as an inventoried root."""
 
-        if (
-            type(ref) is not ObjectRef
-            or ref.metadata.kind is not ObjectKind.CHANGE_CAPTURE
-            or ref.metadata.media_type != TASK_CHANGE_BASE_MEDIA_TYPE
-            or ref.metadata.task_id != self._task_id
-        ):
+        if not change_capture_ref_valid(ref, TASK_CHANGE_BASE_MEDIA_TYPE, self._task_id):
             raise ValueError("task_change_base_invalid")
         async with self._lock:
             if self._state.task_change_base is not None:
@@ -3844,6 +3851,40 @@ class MemoryLedgerAdapter:
     async def load_task_change_base(self) -> ObjectRef | None:
         async with self._lock:
             return self._state.task_change_base
+
+    async def reserve_task_input_snapshot(self, key: str) -> SnapshotUsage | None:
+        """Reserve one snapshot boundary (#1118 unit 1); ``None`` when already reserved."""
+
+        if not snapshot_key_valid(key):
+            raise ValueError("task_input_snapshot_invalid")
+        async with self._lock:
+            entries = self._state.task_input_snapshots
+            if key in entries or len(entries) >= MAX_SNAPSHOT_SETS:
+                return None
+            grant = snapshot_grant([spent or grant for grant, spent, _ in entries.values()])
+            entries[key] = (grant, None, None)
+            return grant
+
+    async def complete_task_input_snapshot(
+        self, key: str, spent: SnapshotUsage, ref: ObjectRef | None
+    ) -> None:
+        if ref is not None and not change_capture_ref_valid(
+            ref, TASK_INPUT_SNAPSHOT_MEDIA_TYPE, self._task_id
+        ):
+            raise ValueError("task_input_snapshot_invalid")
+        async with self._lock:
+            entry = self._state.task_input_snapshots.get(key)
+            if entry is None or entry[1] is not None or not spent.within(entry[0]):
+                raise ValueError("task_input_snapshot_invalid")
+            self._state.task_input_snapshots[key] = (entry[0], spent, ref)
+            if ref is not None:
+                self._state.object_refs[ref.object_id] = ref
+
+    async def load_task_input_snapshots(self) -> tuple[ObjectRef, ...]:
+        async with self._lock:
+            return tuple(
+                ref for _, _, ref in self._state.task_input_snapshots.values() if ref is not None
+            )
 
     async def load_semantic_job(
         self, writer_id: str, operation_id: str, case_digest: str | None = None

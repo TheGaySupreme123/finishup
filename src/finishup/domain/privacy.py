@@ -1859,11 +1859,17 @@ class CandidateContextItem:
     # Trusted producer restriction, never caller authority. False keeps a source-side denial
     # inside the normal disclosure audit without loading the denied source plaintext.
     source_disclosure_permitted: bool = True
+    # #1118 unit 1 (E2E-2): the owner-admitted outside root this item's bytes were read beneath.
+    # Trusted producer binding kept in process only; egress refuses the item once the effective
+    # policy no longer admits that root, however long ago the bytes were read.
+    input_root: str | None = None
 
     def __post_init__(self) -> None:
         _text(self.item_id, _OPAQUE)
         _enum(self.category, DataCategory)
         if type(self.source_scope) is not AuthorizationScope:
+            raise _invalid()
+        if self.input_root is not None and not admitted_input_root_valid(self.input_root):
             raise _invalid()
         _origin_ref(self.origin_ref)
         if type(self.plaintext) is not bytes or len(self.plaintext) > _envelope_item_limit(
@@ -2519,6 +2525,10 @@ class ApprovedOutboundCase:
     # the gateway's final rendered-body scan honours exactly this value.
     credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
+    # #1118 unit 1 (E2E-2): the outside roots the included items were read beneath; the gateway
+    # refuses consume unless its current registry still admits every one.
+    input_roots: tuple[str, ...] = ()
+
     def __post_init__(self) -> None:
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
         validate_id(IdKind.REQUEST, self.request_id)
@@ -2550,6 +2560,8 @@ class ApprovedOutboundCase:
             raise _invalid()
         _nonnegative(self.redacted_span_count)
         _enum(self.credential_heuristic, CredentialHeuristic)
+        if validate_admitted_input_roots(self.input_roots) != self.input_roots:
+            raise _invalid()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2574,6 +2586,10 @@ class ApprovedLocalDisclosureCase:
     # The owner policy's credential-heuristic setting the case was prepared under (issue #982);
     # the gateway's final rendered-body scan honours exactly this value.
     credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
+
+    # #1118 unit 1 (E2E-2): the outside roots the included items were read beneath; the gateway
+    # refuses consume unless its current registry still admits every one.
+    input_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
@@ -2606,6 +2622,8 @@ class ApprovedLocalDisclosureCase:
             raise _invalid()
         _nonnegative(self.redacted_span_count)
         _enum(self.credential_heuristic, CredentialHeuristic)
+        if validate_admitted_input_roots(self.input_roots) != self.input_roots:
+            raise _invalid()
 
 
 type ApprovedProviderCase = ApprovedOutboundCase | ApprovedLocalDisclosureCase

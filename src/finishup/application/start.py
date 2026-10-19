@@ -55,6 +55,7 @@ from finishup.domain.values import (
     task_id,
     timestamp_from_datetime,
 )
+from finishup.ports.change_capture import SnapshotBoundary
 from finishup.ports.clock import ClockPort
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
@@ -150,6 +151,11 @@ class _StartApplication(Protocol):
 
     @property
     def lineage(self) -> LineageCoordinator | None: ...
+
+
+# #1118 unit 1: keeps copies of the outside inputs the start's statement names, inside the start
+# and before its lifecycle event, keyed by that event's id. ``None`` keeps none.
+type StartInputCapture = Callable[[TaskRuntime, str, SnapshotBoundary], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -987,6 +993,7 @@ async def _execute_standard_start(
     lineage_snapshot: LineageSnapshot | None = None,
     provision_mode: BundleProvisionMode | None = None,
     sync_lineage: bool = True,
+    input_capture: StartInputCapture | None = None,
 ) -> StartInternalResult:
     """Execute one seven-step start operation against service-owned ports."""
 
@@ -1029,6 +1036,20 @@ async def _execute_standard_start(
                 StartPhase.BUNDLE_READY,
             )
 
+        if (
+            input_capture is not None
+            and request.task_statement is not None
+            and allocation.phase is StartPhase.BUNDLE_READY
+            and await task.ledger.lookup_operation(allocation.writer_id, request.request_id) is None
+        ):
+            # #1118 unit 1: before the lifecycle event and the result exist, so a replay never
+            # reaches here and a recovered attempt finds the boundary already reserved. A
+            # recovery after the lifecycle append committed never captures: those bytes would
+            # postdate the admission they claim.
+            opens = allocation.route_action == "created" or force_open
+            await input_capture(
+                task, allocation.lifecycle_event_id, "task_start" if opens else "admission_time"
+            )
         appended = await _lifecycle_append(
             app,
             request,
@@ -1311,6 +1332,7 @@ async def _execute_handle_attach(
     app: _StartApplication,
     request: StartRequest,
     repository_privacy_commitment: str | None,
+    input_capture: StartInputCapture | None = None,
 ) -> StartInternalResult:
     lineage = _lineage_for(app)
     attach_model = request.attach_handle
@@ -1426,6 +1448,7 @@ async def _execute_handle_attach(
             # operation completes.  Calling the projection synchronizer here would re-enter the
             # coordinator lock and would also create a split window between route and handle.
             sync_lineage=False,
+            input_capture=input_capture,
         )
 
     result, snapshot = await lineage.attach_with_operation(
@@ -1443,6 +1466,7 @@ async def _execute_self_registration(
     app: _StartApplication,
     request: StartRequest,
     repository_privacy_commitment: str | None,
+    input_capture: StartInputCapture | None = None,
 ) -> StartInternalResult:
     lineage = _lineage_for(app)
     parent_session_id = request.parent_session_id
@@ -1494,6 +1518,7 @@ async def _execute_self_registration(
         force_open=True,
         lineage_snapshot=child,
         provision_mode=BundleProvisionMode.CREATED,
+        input_capture=input_capture,
     )
     await _merge_host_annotation(
         app,
@@ -2031,17 +2056,23 @@ async def execute_start(
     request: StartRequest,
     *,
     repository_privacy_commitment: str | None = None,
+    input_capture: StartInputCapture | None = None,
 ) -> StartInternalResult:
     """Route ordinary starts and the lineage admission paths through one facade."""
 
     if request.mode == "delegate":
         return await _execute_delegation(app, request, repository_privacy_commitment)
     if request.attach_handle is not None:
-        return await _execute_handle_attach(app, request, repository_privacy_commitment)
+        return await _execute_handle_attach(
+            app, request, repository_privacy_commitment, input_capture
+        )
     if request.parent_session_id is not None:
-        return await _execute_self_registration(app, request, repository_privacy_commitment)
+        return await _execute_self_registration(
+            app, request, repository_privacy_commitment, input_capture
+        )
     return await _execute_standard_start(
         app,
         request,
         repository_privacy_commitment=repository_privacy_commitment,
+        input_capture=input_capture,
     )
