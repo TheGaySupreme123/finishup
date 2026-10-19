@@ -16,6 +16,7 @@ from typing import cast
 
 import pytest
 
+from builders.process_reaping import not_a_child_subreaper
 from finishup.adapters.integrations.observation_local import LocalObservationStore
 from finishup.application.observation_materialize import materialize_observation_envelope
 from finishup.cli import observe_hooks
@@ -400,12 +401,13 @@ def test_a_launcher_whose_child_outlives_it_is_unavailable(tmp_path: Path, host:
     command = f"{shlex.quote(sys.executable)} launch.py 5 6"
     emit, pre, post, shape = _host(host, workspace, state)
     emit(pre, shape(pre, f"{host}-launch", command))
-    release_write, done_read = launch_lingering_worker(workspace)
-    try:
-        emit(post, shape(post, f"{host}-launch", command))
-        before_release = (workspace / "deliverable.txt").read_text()
-    finally:
-        release_worker(release_write, done_read)
+    with not_a_child_subreaper():
+        release_write, done_read = launch_lingering_worker(workspace)
+        try:
+            emit(post, shape(post, f"{host}-launch", command))
+            before_release = (workspace / "deliverable.txt").read_text()
+        finally:
+            release_worker(release_write, done_read)
     (envelope,) = _posts(state, commitment)
     assert envelope.structural_payload["workspace_effect"] == "unavailable"
     assert before_release == "reviewed\n"

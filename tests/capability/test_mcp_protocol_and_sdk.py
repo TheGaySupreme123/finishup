@@ -161,6 +161,19 @@ def test_pinned_sdk_protocol_negotiation_and_validation_authority(tmp_path: Path
 
     installed = importlib.metadata.version("mcp")
     assert installed == _PINNED_MCP
+    candidate_sdk = subprocess.run(
+        [
+            (os.environ.get("FINISHUP_CANDIDATE_PYTHON", "").strip() or sys.executable),
+            "-I",
+            "-c",
+            "from importlib.metadata import version; print(version('mcp'))",
+        ],
+        capture_output=True,
+        check=True,
+        env=child_environment(tmp_path),
+        timeout=5,
+    )
+    assert candidate_sdk.stdout.decode("ascii").strip() == _PINNED_MCP
     assert types.LATEST_PROTOCOL_VERSION == _PROTOCOL
     assert _PROTOCOL in SUPPORTED_PROTOCOL_VERSIONS
 
@@ -223,7 +236,7 @@ def test_pinned_sdk_protocol_negotiation_and_validation_authority(tmp_path: Path
             Observation("protocol_negotiated", boolean_value=True),
             Observation("sdk_version_matched", boolean_value=True),
             Observation("stdout_cap_bound", integer_value=MAX_JSON_FRAME_BYTES),
-            Observation("tool_inventory_exact", integer_value=7),
+            Observation("tool_inventory_exact", integer_value=len(tools)),
             Observation("transcript_digest", digest_value=transcript_digest),
             Observation("unsupported_protocol_falls_back", boolean_value=True),
             Observation("finishup_validation_authority", boolean_value=True),
