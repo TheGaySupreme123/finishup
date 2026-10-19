@@ -157,11 +157,14 @@ class ReviewerLoop:
         )
         self.n_calls += 1
         self.reads_offered = reads
-        return await self.model.complete(
+        parsed = await self.model.complete(
             tuple(self.messages),
             reviewer_reply_schema(reads_allowed=reads, strict=True),
             deadline=self.deadline,
         )
+        if self.deadline.expired(self.clock()):
+            raise _Exit("deadline")  # an answer that arrives after the deadline is not used
+        return parsed
 
     async def execute_actions(self, parsed: JsonValue) -> SemanticJudgment | None:
         """Decode the one reply; run a read and append its observation, or finish."""

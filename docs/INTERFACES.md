@@ -11704,22 +11704,37 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 | Route | Request | Refusal |
 |---|---|---|
 | Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
-| Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls | `prompt_only` endpoints (unavailable, never relabelled) |
+| Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
-| Codex subscription | one ephemeral thread per review; each later turn sends only the new user message, with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), an unknown continuation (`case_invalid`), plan/compaction/tool/request/warning events |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; each later turn sends only the new user message, with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 
-A completed turn returns `SemanticResultReply(reply, text, provenance)`: the parsed reply object,
-its canonical text (the assistant message the next exchange must carry), and provenance whose
-prompt and schema digests name the exchange's own instruction and reply schema. Branch and argument
-validation stay with the reply decoder. The gateway records it as `completed`. An action turn on
-Codex reports `runtime_evidence.process_cleanup = "retained"`; the exchange that ends the session
-reports the real cleanup. A Codex session stays open after a read action, and after a completed turn
-whose output was malformed (for the loop's one repair); a valid final judgment or any other failure
-closes it. That value is domain-only until exchange evidence is persisted, which
-needs a `runtime-attempt-evidence` schema bump. `ReviewerExchangeModel` is the loop's
-`ReviewerModel`: `complete(history, schema, deadline=)` returns the reply object, raises the
-decoder's `ReviewerReplyInvalid("output_not_json")` for an invalid turn (the one repair), and
-`ReviewerModelError` for any other failed, refused, late or uncertain turn. It is bound to one
-provider binding; a reply from another endpoint profile or model raises
+A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
+yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,
+reply schema, and instruction and schema digests once per dispatch; the rendered request and every
+outcome, early failures included, carry those digests. Branch and argument validation stay with the
+reply decoder. The gateway records a reply as `completed`. Each route bounds the whole exchange,
+local send and receive included, by the original deadline, and an answer that completes after it is
+never a reply: Responses and Chat return `late`, local returns `timeout`, and Codex reports the
+post-acknowledgement `deadline_expired` stage. The loop also discards an answer that returns after
+the deadline.
+
+A review owns one `ReviewerSession(review_id, deadline)`. `ReviewerExchangeModel(binding, dispatch,
+session)` is the loop's `ReviewerModel`, used as `async with`: every dispatch runs with the session
+in `CURRENT_REVIEWER_SESSION` (the gateway must evaluate in that context), and leaving the block
+closes the session on every exit. The Codex adapter keeps its thread only in that session. It
+continues only when the history extends exactly what the thread holds, on the same profile and
+deadline; transcript content never selects a session. An exchange holds the session lock, a closed
+session admits no exchange and retains nothing, and `aclose` waits for the exchange in flight before
+cleaning up. A completed Codex turn reports `runtime_evidence.process_cleanup = "retained"`, and
+`ReviewerSession.aclose()` returns the closing cleanup outcome. That value is domain-only until
+exchange evidence is persisted, which needs a `runtime-attempt-evidence` schema bump.
+
+`complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
+`ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
+(API `response_schema`, Codex `output_not_json` or `output_empty`): the one repair. Truncation,
+output limits and every other failed, refused, late or uncertain turn raise `ReviewerModelError`
+with the closed stage, failure class or status (for example
+`reviewer_exchange_response_content` or `reviewer_exchange_output_oversize`). The model is bound to
+one provider binding; a reply from another endpoint profile or model raises
 `reviewer_exchange_route_mismatch`, so a review never moves to another, separately billed route.
 The loop appends each reply to the history exactly as the model returned it (canonical JSON).

@@ -130,7 +130,6 @@ class OpenAIResponsesExternalFactory:
     profile: OpenAIProfile
     clock: ClockPort
     credential_authority: str = "finishup_vault_api_credential"
-    # Reviewer-loop reply schemas (#1118 unit 3); without them a reviewer exchange is refused.
     reply_schemas: ReviewerReplySchemas | None = None
 
     def __post_init__(self) -> None:

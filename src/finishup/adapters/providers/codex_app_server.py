@@ -70,10 +70,13 @@ from finishup.observability.semantic_context import report_semantic_progress
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding
 from finishup.ports.semantic import (
+    CURRENT_REVIEWER_SESSION,
     Deadline,
     ExternalRuntimeAuthority,
     ProviderAttemptProvenance,
+    ReviewerMessage,
     ReviewerReplySchemas,
+    ReviewerSession,
     SemanticEvaluatorPort,
     SemanticResult,
     SemanticResultInvalid,
@@ -82,8 +85,7 @@ from finishup.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
-    decode_reviewer_exchange,
-    reviewer_exchange_mode,
+    reviewer_exchange,
 )
 from finishup.ports.semantic_budget import (
     LEGACY_SEMANTIC_BUDGET_PROFILE,
@@ -399,10 +401,8 @@ _LAUNCH_OVERRIDES: Final = (
     "tools.update_plan.enabled=false",
     'web_search="disabled"',
 )
-# Codex releases whose multi-turn reviewer-loop session was reviewed from source (#1118 unit 3):
-# successive ``turn/start`` calls on one ephemeral thread with ``environments: []`` and the
-# utility disables above. Any other admitted release keeps one-shot review only; a reviewer
-# exchange on it fails closed, never falls back to another route. Extend after a capability cell.
+# Releases whose multi-turn reviewer session was reviewed from source (#1118 unit 3); any other
+# refuses a reviewer exchange (never falls back). Extend only after a capability cell.
 REVIEWER_LOOP_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
 # A reviewer turn may produce only these items: a plan or a context compaction would replace or
 # extend the known linear history with something FinishUP never inspected, so either ends it.
@@ -1120,7 +1120,9 @@ async def _require_model(
     raise ValueError("codex_model_unavailable")
 
 
-async def _initialize(runtime: _CodexProcess, profile: CodexAppServerProfile) -> None:
+async def _initialize(
+    runtime: _CodexProcess, profile: CodexAppServerProfile, timeout: float = 10.0
+) -> None:
     result = await runtime.request(
         0,
         "initialize",
@@ -1136,7 +1138,7 @@ async def _initialize(runtime: _CodexProcess, profile: CodexAppServerProfile) ->
                 "requestAttestation": False,
             },
         },
-        10.0,
+        timeout,
     )
     _validate_initialize(profile, result)
     await runtime.send({"method": "initialized"})
@@ -1199,10 +1201,8 @@ def _thread_start_params(
 ) -> dict[str, object]:
     """The one isolated, ephemeral, read-only thread request a review and its probe both send.
 
-    ``environments: []`` is the upstream experimental restriction that disables environment
-    access, so no environment-backed native tool (shell, patch, file) can be registered or read
-    before a refusal (#1118 unit 3, ADR-006). It is why ``initialize`` opts into the experimental
-    API; no dynamic tool, MCP server or other experimental field is sent.
+    ``environments: []`` (experimental, hence ``experimentalApi``) leaves no environment for shell,
+    patch or file tools (#1118 unit 3, ADR-006).
     """
 
     return {
@@ -2046,6 +2046,7 @@ _FAILURE_STAGE_BY_TOKEN: Final[Mapping[str, str]] = {
     "codex_app_server_remote_control_not_disabled": "predisclosure_event_forbidden",
     "codex_runtime_case_invalid": "case_invalid",
     "codex_reviewer_runtime_unreviewed": "capability_evidence_stale",
+    "reviewer_schema_unavailable": "capability_evidence_stale",
     "codex_reviewer_session_unknown": "case_invalid",
     "reviewer_exchange_invalid": "case_invalid",
     "reviewer_reply_not_object": "output_not_json",
@@ -2145,87 +2146,20 @@ def _classify_runtime_exception(
     )
 
 
-@dataclass(slots=True)
-class _ReviewerSession:
+@dataclass(eq=False, slots=True)
+class _ReviewerThread:
+    """The Codex thread one review holds between exchanges, in its ``ReviewerSession`` only."""
+
+    profile: CodexAppServerProfile
     runtime: _CodexProcess
     thread_id: str
     auth_mode: Literal["chatgpt"] | None
     plan_type: str | None
     token_usage: RuntimeTokenUsage | None
-    keys: tuple[str, ...] = ()
-    expiry: asyncio.TimerHandle | None = None
+    transcript: tuple[ReviewerMessage, ...]  # what the thread holds, its answer included
 
-
-def _transcript_key(history: tuple[tuple[str, str], ...]) -> str:
-    return canonical_digest([[role, text] for role, text in history])
-
-
-def _reviewer_turn_continues(reply: dict[str, JsonValue] | None) -> bool:
-    """Whether the loop can send another turn: anything but a valid final judgment.
-
-    A read action continues; so may a malformed reply, through the loop's one format repair.
-    """
-
-    inner = None if reply is None else reply.get("reply")
-    if type(inner) is dict and set(cast(dict[str, JsonValue], inner)) == {"final_judgment"}:
-        try:
-            normalize_judgment(
-                cast(dict[str, JsonValue], inner)["final_judgment"], require_part2=True
-            )
-        except ValueError, TypeError, LookupError:
-            return True
-        return False
-    return True
-
-
-class _ReviewerSessions:
-    """Live scoped reviewer sessions, keyed by the exact transcript each thread already holds.
-
-    A continuation finds its session only when its history is that transcript plus one new user
-    message, so the adapter sends the new input alone and never a divergent prefix. A session is
-    cleaned up when its review ends, at the review deadline, or when the factory closes (a policy
-    tightening swaps the registry and closes it); nothing resumes or restarts a session.
-    """
-
-    def __init__(self) -> None:
-        self._live: dict[str, _ReviewerSession] = {}
-        self._tasks: set[asyncio.Task[object]] = set()
-
-    def take(self, key: str) -> _ReviewerSession | None:
-        session = self._live.get(key)
-        if session is not None:
-            self._drop(session)
-        return session
-
-    def keep(self, keys: tuple[str, ...], session: _ReviewerSession, seconds: float) -> None:
-        # Two continuations are possible: the loop appends the reply and an observation, or (after
-        # a malformed reply, which the loop never echoes) only its format-repair notice.
-        session.keys = keys
-        session.expiry = asyncio.get_running_loop().call_later(seconds, self._expire, keys[0])
-        for key in keys:
-            self._live[key] = session
-
-    def _drop(self, session: _ReviewerSession) -> None:
-        for key in session.keys:
-            self._live.pop(key, None)
-        if session.expiry is not None:
-            session.expiry.cancel()
-
-    def _expire(self, key: str) -> None:
-        session = self._live.get(key)
-        if session is not None:
-            self._drop(session)
-            task = asyncio.ensure_future(_cleanup_guaranteed(session.runtime))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
-
-    async def aclose(self) -> None:
-        sessions = {id(session): session for session in self._live.values()}.values()
-        self._live.clear()
-        for session in sessions:
-            if session.expiry is not None:
-                session.expiry.cancel()
-            await _cleanup_guaranteed(session.runtime)
+    async def aclose(self) -> str:
+        return await _cleanup_guaranteed(self.runtime)
 
 
 @dataclass(slots=True)
@@ -2237,9 +2171,19 @@ class CodexAppServerEvaluator:
     # ``None`` is the legacy single-effort selection (the final profile).
     budget: CodexReviewBudget | None = None
     reply_schemas: ReviewerReplySchemas | None = None
-    sessions: _ReviewerSessions | None = None
 
     async def evaluate(self, case: ApprovedProviderCase, deadline: Deadline) -> SemanticResult:
+        """One attempt; a reviewer exchange runs under its review's session lock (#1118 unit 3)."""
+
+        session = CURRENT_REVIEWER_SESSION.get()
+        if session is None:
+            return await self._evaluate(case, deadline, None)
+        async with session.lock:
+            return await self._evaluate(case, deadline, session)
+
+    async def _evaluate(
+        self, case: ApprovedProviderCase, deadline: Deadline, session: ReviewerSession | None
+    ) -> SemanticResult:
         if (
             type(case) is not ApprovedOutboundCase
             or type(deadline) is not Deadline
@@ -2276,9 +2220,8 @@ class CodexAppServerEvaluator:
         failure_class = SemanticFailureClass.UNSUPPORTED_PROFILE
         failure_stage: str | None = None
         raw_size = 0
-        mode = reviewer_exchange_mode(case.media_type)
-        history: tuple[tuple[str, str], ...] | None = None
-        session: _ReviewerSession | None = None
+        exchange = None
+        held: _ReviewerThread | None = None
         reply: dict[str, JsonValue] | None = None
         instruction_sha256 = _INSTRUCTION_SHA256
         output_schema = _CODEX_JUDGMENT_JSON_SCHEMA
@@ -2286,51 +2229,41 @@ class CodexAppServerEvaluator:
         turn_text: str | None = None
         turn_completed = False
         try:
-            self.profile.verify_capability_evidence(self.clock.now_utc())
-            if mode is not None:
+            exchange = reviewer_exchange(case.media_type, case.payload, self.reply_schemas)
+            if exchange is not None:
                 # One reviewer-loop exchange (#1118 unit 3). Only a reviewed release runs it.
-                if (
-                    self.reply_schemas is None
-                    or self.sessions is None
-                    or self.profile.runtime_version not in REVIEWER_LOOP_REVIEWED_RELEASES
-                ):
-                    raise ValueError("codex_reviewer_runtime_unreviewed")
-                history = decode_reviewer_exchange(case.payload)
-                instructions, turn_text = history[0][1], history[-1][1]
-                instruction_sha256 = _sha256_bytes(instructions.encode("utf-8"))
+                instructions, turn_text = exchange.history[0][1], exchange.history[-1][1]
+                instruction_sha256 = exchange.prompt_digest
                 output_schema = cast(
-                    dict[str, JsonValue],
-                    _codex_output_schema(cast(JsonValue, self.reply_schemas.for_mode(mode))),
+                    dict[str, JsonValue], _codex_output_schema(cast(JsonValue, exchange.schema))
                 )
-                if len(history) > 2:
-                    session = self.sessions.take(_transcript_key(history[:-1]))
-                    if session is None:
-                        raise ValueError("codex_reviewer_session_unknown")
-                    runtime, thread_id = session.runtime, session.thread_id
-                    auth_mode, plan_type = session.auth_mode, session.plan_type
-                    token_usage = session.token_usage
-            if session is None:
+            self.profile.verify_capability_evidence(self.clock.now_utc())
+            if exchange is not None:
+                if self.profile.runtime_version not in REVIEWER_LOOP_REVIEWED_RELEASES:
+                    raise ValueError("codex_reviewer_runtime_unreviewed")
+                # The review's own session, never transcript content, selects the thread; the
+                # history must extend exactly what that thread holds, on the same profile.
+                held_any = None if session is None else session.held
+                held = held_any if isinstance(held_any, _ReviewerThread) else None
+                if (
+                    session is None
+                    or session.closed
+                    or session.deadline != deadline
+                    or held is not held_any
+                    or (held is None) != (len(exchange.history) == 2)
+                    or (held is not None and held.profile != self.profile)
+                    or (held is not None and held.transcript != exchange.history[:-1])
+                ):
+                    raise ValueError("codex_reviewer_session_unknown")
+                if held is not None:
+                    session.held = None  # this turn owns the runtime until it retains it again
+                    runtime, thread_id = held.runtime, held.thread_id
+                    auth_mode, plan_type = held.auth_mode, held.plan_type
+                    token_usage = held.token_usage
+            if held is None:
                 await report_semantic_progress(SemanticProgressPhase.RUNTIME_STARTING)
                 runtime = await _launch(self.profile)
-                initialize = await runtime.request(
-                    0,
-                    "initialize",
-                    {
-                        "clientInfo": {
-                            "name": "finishup_semantic_evaluator",
-                            "title": "FinishUP bounded AI-powered evaluator",
-                            "version": "0.1.0",
-                        },
-                        "capabilities": {
-                            "experimentalApi": True,
-                            "mcpServerOpenaiFormElicitation": False,
-                            "requestAttestation": False,
-                        },
-                    },
-                    _remaining(deadline, self.clock),
-                )
-                _validate_initialize(self.profile, initialize)
-                await runtime.send({"method": "initialized"})
+                await _initialize(runtime, self.profile, _remaining(deadline, self.clock))
                 await report_semantic_progress(SemanticProgressPhase.ACCOUNT_MODEL_VALIDATION)
                 account_result = await runtime.request(
                     1,
@@ -2364,7 +2297,7 @@ class CodexAppServerEvaluator:
             strict_json_parse(case.payload)
             case_disclosed = True
             turn_result = await runtime.request(
-                31 if session is None or history is None else 100 + len(history),
+                31 if exchange is None else 100 + len(exchange.history),
                 "turn/start",
                 {
                     "approvalPolicy": "never",
@@ -2406,7 +2339,7 @@ class CodexAppServerEvaluator:
                 method = message.get("method")
                 if type(method) is not str or method not in _ALLOWED_NOTIFICATION_METHODS:
                     raise ValueError("codex_app_server_event_forbidden")
-                if mode is not None and method in _REVIEWER_FORBIDDEN_METHODS:
+                if exchange is not None and method in _REVIEWER_FORBIDDEN_METHODS:
                     raise ValueError("codex_app_server_event_forbidden")
                 if method == "account/rateLimits/updated":
                     try:
@@ -2477,7 +2410,7 @@ class CodexAppServerEvaluator:
                     item_type, text, phase = _notification_item(message)
                     if item_type not in _ALLOWED_ITEM_TYPES:
                         raise ValueError("codex_app_server_tool_event_forbidden")
-                    if mode is not None and item_type not in _REVIEWER_ITEM_TYPES:
+                    if exchange is not None and item_type not in _REVIEWER_ITEM_TYPES:
                         raise ValueError("codex_app_server_event_forbidden")
                     if method == "item/completed" and item_type == "agentMessage":
                         if phase is not None and phase not in _AGENT_MESSAGE_PHASES:
@@ -2497,6 +2430,8 @@ class CodexAppServerEvaluator:
                 if completed.get("status") != "completed" or completed.get("error") is not None:
                     raise _turn_failure(completed.get("error"))
                 turn_completed = True
+                if deadline.expired(self.clock.monotonic_seconds()):
+                    raise TimeoutError  # an answer after the review's deadline is never used
                 candidates = final_texts if final_texts else untagged_texts
                 if len(candidates) != 1:
                     raise ValueError("codex_app_server_agent_message_count")
@@ -2506,7 +2441,7 @@ class CodexAppServerEvaluator:
                     raise ValueError("codex_app_server_output_oversize")
                 raw_bytes = raw.encode("utf-8")
                 final_output_sha256 = _sha256_bytes(raw_bytes)
-                if mode is None:
+                if exchange is None:
                     judgment = normalize_judgment(strict_json_parse(raw_bytes), require_part2=True)
                 else:
                     # Only the completed final message is a reply; the loop decodes its branch.
@@ -2525,32 +2460,22 @@ class CodexAppServerEvaluator:
                 error, turn_acknowledged=turn_acknowledged, launched=runtime is not None
             )
         finally:
-            retained = False
-            remaining = deadline.monotonic_deadline - self.clock.monotonic_seconds()
             if (
-                history is not None
-                and self.sessions is not None
+                exchange is not None
+                and session is not None
+                and not session.closed
                 and runtime is not None
                 and thread_id is not None
-                and remaining > 0.0
-                and (
-                    (failure is None and _reviewer_turn_continues(reply))
-                    or (failure == "invalid" and turn_completed)
-                )
+                and (failure is None or (failure == "invalid" and turn_completed))
             ):
-                # A turn the loop can continue keeps the scoped session for the next exchange,
-                # bounded by the review deadline; a valid final judgment or any failure closes it.
-                keys = (_transcript_key(history),)
+                # A completed turn keeps the thread in its review's session for the next exchange;
+                # the session closes it when the review ends, on every exit.
+                transcript: tuple[ReviewerMessage, ...] = exchange.history
                 if reply is not None:
-                    answer = ("assistant", canonical_encode(reply).decode())
-                    keys = (_transcript_key((*history, answer)), *keys)
-                self.sessions.keep(
-                    keys,
-                    _ReviewerSession(runtime, thread_id, auth_mode, plan_type, token_usage),
-                    remaining,
+                    transcript = (*transcript, ("assistant", canonical_encode(reply).decode()))
+                session.held = _ReviewerThread(
+                    self.profile, runtime, thread_id, auth_mode, plan_type, token_usage, transcript
                 )
-                retained = True
-            if retained:
                 cleanup = "retained"
             else:
                 try:
@@ -2636,7 +2561,7 @@ class CodexAppServerEvaluator:
             runtime_evidence=evidence,
         )
         if failure is None and reply is not None:
-            return SemanticResultReply(reply, canonical_encode(reply).decode(), provenance)
+            return SemanticResultReply(reply, provenance)
         if failure is None:
             assert judgment is not None
             return SemanticResultSuccess(judgment, provenance)
@@ -2654,18 +2579,11 @@ class CodexAppServerExternalFactory:
     profile: CodexAppServerProfile
     clock: ClockPort
     credential_authority: Literal["external_runtime_oauth"] = "external_runtime_oauth"
-    # Reviewer-loop reply schemas (#1118 unit 3); without them a reviewer exchange is refused.
     reply_schemas: ReviewerReplySchemas | None = None
 
     def __post_init__(self) -> None:
         self._last_case_digest: str | None = None
-        self._sessions = _ReviewerSessions()
         self.profile.verify_local_binding()
-
-    async def aclose(self) -> None:
-        """Close every live reviewer session; the registry calls this when policy is replaced."""
-
-        await self._sessions.aclose()
 
     def render(self, case: ApprovedOutboundCase) -> bytes:
         if type(case) is not ApprovedOutboundCase:
@@ -2704,7 +2622,6 @@ class CodexAppServerExternalFactory:
             self.clock,
             budget,
             reply_schemas=self.reply_schemas,
-            sessions=self._sessions,
         )
 
 

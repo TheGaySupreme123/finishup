@@ -2444,9 +2444,12 @@ releases below 0.162.1 do not define it under `--strict-config`; with no environ
 to expose. A reviewer session keeps one ephemeral thread, sends only the new admitted input, and
 sends the reply `outputSchema` on every turn. Plan or compaction events, server requests, native
 warnings, reroutes and tool items end it. No dynamic tools, MCP server, `turn/steer`, resume or
-fork is used. The session is cleaned up at the end of the review, at its deadline, or when a policy
-change replaces the provider registry. Only release 0.162.1, whose source was reviewed, runs the
-loop until an authorized native capability cell shows `environments: []` persists across turns.
+fork is used. The thread belongs to the review's `ReviewerSession`, keyed by the review's identity
+rather than by transcript content. The reviewer facade closes it on every exit of the review, and a
+close waits for the turn in flight. A policy change ends the review at the loop's per-continuation
+admission recheck, which closes the session. Every exchange, on every route, ends at the review's
+original deadline, and a late answer is never used. Only release 0.162.1, whose source was
+reviewed, runs the loop until an authorized native capability cell shows `environments: []` persists across turns.
 This is not proof that no internal Codex utility can execute; an absolute guarantee still needs
 stronger upstream suppression. A route that cannot serve the loop fails closed. Nothing falls back
 to a separately billed API.

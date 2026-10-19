@@ -30,9 +30,10 @@ environment for shell, patch or file tools; the isolated config and launch overr
 `update_plan` and `experimental_request_user_input` utilities. A reviewer-loop session reuses one
 ephemeral thread across `turn/start` calls, sends only the new admitted input, and supplies the
 reply `outputSchema` on every turn. Any plan or compaction event, server request, native warning,
-reroute or tool item ends the turn and cleans up the process. The session is cleaned up when the
-review ends, at its deadline, or when a policy change replaces the provider registry; it is never
-resumed. Not established yet: an authorized native cell proving `environments: []` persists
+reroute or tool item ends the turn and cleans up the process. The thread lives only in the review's
+own session, and the review closes it on every exit, including a deadline, a revoked admission or a
+second malformed answer; a close waits for the turn in flight. It is never resumed. A turn that
+completes after the review's deadline is not used (`deadline_expired`). Not established yet: an authorized native cell proving `environments: []` persists
 across turns and that no non-environment utility runs internally. Until that cell passes for a
 release, only `0.162.1` (source-reviewed) runs the loop, and other releases refuse reviewer
 exchanges with `capability_evidence_stale` instead of falling back to another route.

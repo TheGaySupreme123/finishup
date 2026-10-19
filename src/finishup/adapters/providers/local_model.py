@@ -12,6 +12,7 @@ material subject to the same strict post-validation as any external adapter.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Final, Protocol
@@ -25,8 +26,10 @@ from finishup.domain.privacy import (
 from finishup.domain.values import validate_sha256_digest
 from finishup.ports.clock import ClockPort
 from finishup.ports.semantic import (
+    REVIEWER_EXCHANGE_MEDIA_TYPES,
     Deadline,
     ProviderAttemptProvenance,
+    ReviewerExchange,
     ReviewerReplySchemas,
     SemanticJudgment,
     SemanticResult,
@@ -35,9 +38,7 @@ from finishup.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
-    decode_reviewer_exchange,
-    reviewer_exchange_mode,
-    with_reviewer_digests,
+    reviewer_exchange,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.models import SemanticStatus
@@ -56,11 +57,8 @@ _IDENTITY_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$", re.ASCII)
 _MODEL_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$", re.ASCII)
 _MAX_LOCAL_RESPONSE_BYTES: Final = 1_048_576
 _MAX_LOCAL_OUTPUT_TOKENS: Final = 2_048
-# The versioned reviewer-loop completion contract (#1118 unit 3). A daemon whose installed profile
-# names it receives one canonical frame per exchange, ``{"messages": <approved history>,
-# "protocol": ..., "reply_schema": ...}``, and answers one JSON reply object; it executes no
-# action. Profiles naming any other protocol keep the one-payload, one-judgment exchange, and the
-# two never mix.
+# The versioned reviewer-loop contract (#1118 unit 3): one frame ``{"messages", "protocol",
+# "reply_schema"}`` per exchange, one JSON reply back. Other protocols keep one-shot review only.
 LOCAL_REVIEWER_COMPLETION_PROTOCOL: Final = "finishup-reviewer-completion-1"
 
 
@@ -200,15 +198,17 @@ def _provenance(
     policy_digest: str,
     latency_ms: int,
     failure_class: SemanticFailureClass | None = None,
+    exchange: ReviewerExchange | None = None,
 ) -> ProviderAttemptProvenance:
+    evidence = profile.capability_evidence_digest
     return ProviderAttemptProvenance(
         provider=profile.expected_service_identity,
         endpoint_profile_id=profile.endpoint_profile_id,
         endpoint_profile_version=profile.endpoint_profile_version,
         model=profile.model,
         sdk_version=profile.protocol_version,
-        prompt_digest=profile.capability_evidence_digest,
-        schema_digest=profile.capability_evidence_digest,
+        prompt_digest=evidence if exchange is None else exchange.prompt_digest,
+        schema_digest=evidence if exchange is None else exchange.schema_digest,
         policy_digest=policy_digest,
         privacy_policy_digest=policy_digest,
         sampling_params=SamplingParams(_MAX_LOCAL_OUTPUT_TOKENS),
@@ -232,7 +232,7 @@ def normalize_local_response(
     *,
     policy_digest: str,
     latency_ms: int,
-    reviewer: bool = False,
+    exchange: ReviewerExchange | None = None,
 ) -> SemanticResult:
     """Parse and validate one bounded local-model response into a closed AI-powered review result.
 
@@ -251,16 +251,24 @@ def normalize_local_response(
                 profile,
                 SemanticStatus.INVALID,
                 policy_digest=policy_digest,
+                exchange=exchange,
                 latency_ms=latency_ms,
-                failure_class=SemanticFailureClass.RESPONSE_SCHEMA,
+                # A reply over the receive bound was cut: truncation, not a malformed answer.
+                failure_class=SemanticFailureClass.RESPONSE_CONTENT
+                if type(raw) is bytes and raw
+                else SemanticFailureClass.RESPONSE_SCHEMA,
             ),
             raw_size=len(raw) if type(raw) is bytes else 0,
         )
     succeeded = _provenance(
-        profile, SemanticStatus.SUCCEEDED, policy_digest=policy_digest, latency_ms=latency_ms
+        profile,
+        SemanticStatus.SUCCEEDED,
+        policy_digest=policy_digest,
+        latency_ms=latency_ms,
+        exchange=exchange,
     )
     try:
-        if reviewer:
+        if exchange is not None:
             return SemanticResultReply.parse(raw, succeeded)
         judgment = _judgment_from_json(strict_json_parse(raw))
     except ValueError, TypeError, LookupError:
@@ -269,6 +277,7 @@ def normalize_local_response(
                 profile,
                 SemanticStatus.INVALID,
                 policy_digest=policy_digest,
+                exchange=exchange,
                 latency_ms=latency_ms,
                 failure_class=SemanticFailureClass.RESPONSE_SCHEMA,
             ),
@@ -318,6 +327,10 @@ class LocalModelEvaluator:
         if type(deadline) is not Deadline:
             raise TypeError("local_model_deadline_invalid")
 
+        reviewer = case.media_type in REVIEWER_EXCHANGE_MEDIA_TYPES.values()
+        completion = self._profile.protocol_version == LOCAL_REVIEWER_COMPLETION_PROTOCOL
+        schemas = self._reply_schemas
+        exchange = reviewer_exchange(case.media_type, case.payload, schemas) if schemas else None
         now_monotonic = self._clock.monotonic_seconds()
         if deadline.expired(now_monotonic):
             return SemanticResultTimeout(
@@ -326,12 +339,11 @@ class LocalModelEvaluator:
                     SemanticStatus.TIMEOUT,
                     policy_digest=case.policy_digest,
                     latency_ms=0,
+                    exchange=exchange,
                 )
             )
 
-        mode = reviewer_exchange_mode(case.media_type)
-        completion = self._profile.protocol_version == LOCAL_REVIEWER_COMPLETION_PROTOCOL
-        if completion != (mode is not None) or (mode is not None and self._reply_schemas is None):
+        if completion != reviewer or (reviewer and exchange is None):
             return SemanticResultUnavailable(
                 _provenance(
                     self._profile,
@@ -339,25 +351,39 @@ class LocalModelEvaluator:
                     policy_digest=case.policy_digest,
                     latency_ms=0,
                     failure_class=SemanticFailureClass.UNSUPPORTED_PROFILE,
+                    exchange=exchange,
                 )
             )
         request = case.payload
-        if mode is not None and self._reply_schemas is not None:
+        if exchange is not None:
             request = canonical_encode(
                 {
                     "messages": [
-                        {"content": text, "role": role}
-                        for role, text in decode_reviewer_exchange(case.payload)
+                        {"content": text, "role": role} for role, text in exchange.history
                     ],
                     "protocol": LOCAL_REVIEWER_COMPLETION_PROTOCOL,
-                    "reply_schema": self._reply_schemas.for_mode(mode),
+                    "reply_schema": exchange.schema,
                 }
             )
         try:
-            await self._handle.send(request)
-            raw = await self._handle.receive(_MAX_LOCAL_RESPONSE_BYTES)
-        except Exception:  # noqa: BLE001 - bounded transport failures never leak native text
+            # Send and receive together end at the original deadline; a late reply is not used.
+            async with asyncio.timeout(deadline.remaining_seconds(now_monotonic)):
+                await self._handle.send(request)
+                raw = await self._handle.receive(_MAX_LOCAL_RESPONSE_BYTES)
+            if deadline.expired(self._clock.monotonic_seconds()):
+                raise TimeoutError
+        except Exception as error:  # noqa: BLE001 - bounded failures never leak native text
             elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
+            if isinstance(error, TimeoutError):
+                return SemanticResultTimeout(
+                    _provenance(
+                        self._profile,
+                        SemanticStatus.TIMEOUT,
+                        policy_digest=case.policy_digest,
+                        latency_ms=elapsed_ms,
+                        exchange=exchange,
+                    )
+                )
             return SemanticResultUnavailable(
                 _provenance(
                     self._profile,
@@ -365,17 +391,15 @@ class LocalModelEvaluator:
                     policy_digest=case.policy_digest,
                     latency_ms=elapsed_ms,
                     failure_class=SemanticFailureClass.TRANSPORT,
+                    exchange=exchange,
                 )
             )
 
         latency_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
-        result = normalize_local_response(
+        return normalize_local_response(
             raw,
             self._profile,
             policy_digest=case.policy_digest,
             latency_ms=latency_ms,
-            reviewer=mode is not None,
+            exchange=exchange,
         )
-        if mode is None or self._reply_schemas is None:
-            return result
-        return with_reviewer_digests(result, case.payload, self._reply_schemas.for_mode(mode))

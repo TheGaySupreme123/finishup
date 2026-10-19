@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import time
 from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
+import httpx
 import pytest
 
 from builders.codex_capability import profile_for, record_for
@@ -18,16 +22,26 @@ from finishup.adapters.providers.local_model import (
     LocalModelEndpointProfile,
     LocalModelEvaluator,
 )
-from finishup.adapters.providers.openai_chat_completions import ChatCompletionsProfile
+from finishup.adapters.providers.openai_chat_completions import (
+    ChatCompletionsEvaluator,
+    ChatCompletionsProfile,
+)
 from finishup.adapters.providers.openai_chat_completions import render_case as render_chat
 from finishup.adapters.providers.openai_responses import (
+    OneAttemptCredentialTransport,
     OpenAIProfile,
+    OpenAIResponsesEvaluator,
     normalize_response,
     owner_declared_data_use_profile,
 )
 from finishup.adapters.providers.openai_responses import render_case as render_responses
 from finishup.application.reviewer_exchange import REVIEWER_REPLY_SCHEMAS, ReviewerExchangeModel
-from finishup.application.reviewer_loop import ReviewerModelError, Turn
+from finishup.application.reviewer_loop import (
+    ReviewerLoop,
+    ReviewerModelError,
+    ReviewOutcome,
+    Turn,
+)
 from finishup.domain.privacy import (
     ApprovedLocalDisclosureCase,
     ApprovedOutboundCase,
@@ -38,17 +52,23 @@ from finishup.domain.privacy import (
 )
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding
 from finishup.ports.semantic import (
+    CURRENT_REVIEWER_SESSION,
     REVIEWER_EXCHANGE_MEDIA_TYPES,
     Deadline,
     ExternalRuntimeAuthority,
     ReviewerMessage,
     ReviewerReplySchemas,
+    ReviewerSession,
     SemanticResult,
     SemanticResultInvalid,
+    SemanticResultLate,
     SemanticResultReply,
+    SemanticResultSuccess,
+    SemanticResultTimeout,
     SemanticResultUnavailable,
     decode_reviewer_exchange,
     encode_reviewer_exchange,
+    reviewer_exchange,
 )
 from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
 
@@ -65,8 +85,13 @@ _FINAL = (
     '{"reply":{"final_judgment":{"conclusion":"no_material_discrepancy","prior_finding_verdicts":[],'
     '"review_summary":"The supplied packet was reviewed.","reviewer_challenges":[],"verified":[]}}}'
 )
+_DEADLINE = Deadline(_NOW + timedelta(seconds=30), 30.0)
+_JUDGMENT = _FINAL[len('{"reply":{"final_judgment":') : -2]
 _FIRST: tuple[ReviewerMessage, ...] = (("system", "Review it."), ("user", "packet"))
 _SECOND: tuple[ReviewerMessage, ...] = (*_FIRST, ("assistant", _ACTION), ("user", "observation"))
+
+
+_PAYLOAD = encode_reviewer_exchange(_FIRST)
 
 
 def _case(history: tuple[ReviewerMessage, ...], binding: ProviderBinding, mode: str = "turn"):
@@ -122,7 +147,7 @@ def test_responses_exchange_sends_history_verbatim_with_schema_and_no_tools() ->
         assert body["store"] is False and "tools" not in body
     # Each exchange is its own exact body, so each needs its own one-use transport.
     assert bodies[0].body_sha256 != bodies[1].body_sha256
-    with pytest.raises(ValueError, match="openai_reviewer_schema_unavailable"):
+    with pytest.raises(ValueError, match="reviewer_schema_unavailable"):
         render_responses(first)
 
 
@@ -144,16 +169,19 @@ def test_responses_reply_is_parsed_not_decoded_and_non_objects_are_invalid() -> 
     def response(text: str) -> object:
         return type("R", (), {"output_text": text, "status": "completed", "id": "resp_1"})()
 
+    exchange = reviewer_exchange(REVIEWER_EXCHANGE_MEDIA_TYPES["turn"], _PAYLOAD, _SCHEMAS)
     result = normalize_response(
-        response(_ACTION), profile, policy_digest=_DIGEST, latency_ms=1, reviewer=True
+        response(_ACTION), profile, policy_digest=_DIGEST, latency_ms=1, exchange=exchange
     )
-    assert type(result) is SemanticResultReply and result.text == _ACTION
+    assert type(result) is SemanticResultReply and result.reply == strict_json_parse(
+        _ACTION.encode()
+    )
     assert gateway._result_outcome(result) == (  # pyright: ignore[reportPrivateUsage]
         PrivacyOutcome.COMPLETED,
         None,
     )
     invalid = normalize_response(
-        response("[1]"), profile, policy_digest=_DIGEST, latency_ms=1, reviewer=True
+        response("[1]"), profile, policy_digest=_DIGEST, latency_ms=1, exchange=exchange
     )
     assert type(invalid) is SemanticResultInvalid
 
@@ -240,7 +268,7 @@ async def test_local_exchange_needs_the_versioned_completion_contract(protocol: 
         "semantic-review", _DIGEST, _DIGEST,
     )  # fmt: skip
     evaluator = LocalModelEvaluator(profile, socket, _Clock(), reply_schemas=_SCHEMAS)
-    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+    result = await evaluator.evaluate(case, _DEADLINE)
     if protocol != LOCAL_REVIEWER_COMPLETION_PROTOCOL:
         assert type(result) is SemanticResultUnavailable and socket.sent == []
         return
@@ -300,9 +328,10 @@ class _CodexRuntime:
 async def _codex_exchange(
     monkeypatch: pytest.MonkeyPatch,
     runtime: _CodexRuntime,
-    sessions: object,
+    session: ReviewerSession | None,
     history: tuple[ReviewerMessage, ...],
     cleanups: list[object],
+    clock: _Clock | None = None,
 ) -> SemanticResult:
     async def launch(profile: object) -> _CodexRuntime:
         return runtime
@@ -327,10 +356,13 @@ async def _codex_exchange(
         auth.dispatch_id, digest, "hmac-sha256:" + "a" * 64, 1, 30.0
     )
     evaluator = codex.CodexAppServerEvaluator(
-        runtime.profile, auth, authority, _Clock(), None, reply_schemas=_SCHEMAS,
-        sessions=cast(codex._ReviewerSessions, sessions),  # pyright: ignore[reportPrivateUsage]
-    )  # fmt: skip
-    return await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+        runtime.profile, auth, authority, clock or _Clock(), None, reply_schemas=_SCHEMAS
+    )
+    token = CURRENT_REVIEWER_SESSION.set(session)
+    try:
+        return await evaluator.evaluate(case, _DEADLINE)
+    finally:
+        CURRENT_REVIEWER_SESSION.reset(token)
 
 
 async def test_codex_keeps_one_thread_sends_only_new_input_and_cleans_up_at_the_end(
@@ -339,11 +371,11 @@ async def test_codex_keeps_one_thread_sends_only_new_input_and_cleans_up_at_the_
     runtime = _CodexRuntime(
         profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION, _FINAL]
     )
-    sessions = codex._ReviewerSessions()  # pyright: ignore[reportPrivateUsage]
+    session = ReviewerSession("review-a", _DEADLINE)
     cleanups: list[object] = []
 
-    first = await _codex_exchange(monkeypatch, runtime, sessions, _FIRST, cleanups)
-    assert type(first) is SemanticResultReply and first.text == _ACTION
+    first = await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups)
+    assert type(first) is SemanticResultReply and first.reply == strict_json_parse(_ACTION.encode())
     assert first.provenance.runtime_evidence is not None
     assert first.provenance.runtime_evidence.process_cleanup == "retained" and cleanups == []
     init = dict(runtime.requests)["initialize"]
@@ -353,22 +385,26 @@ async def test_codex_keeps_one_thread_sends_only_new_input_and_cleans_up_at_the_
     assert "dynamicTools" not in thread
 
     runtime.requests.clear()
-    second = await _codex_exchange(monkeypatch, runtime, sessions, _SECOND, cleanups)
-    assert type(second) is SemanticResultReply and second.text == _FINAL
+    second = await _codex_exchange(monkeypatch, runtime, session, _SECOND, cleanups)
+    assert type(second) is SemanticResultReply and second.reply == strict_json_parse(
+        _FINAL.encode()
+    )
     # The same thread: no launch, no new thread, only the observation, the schema every turn.
     assert [method for method, _ in runtime.requests] == ["turn/start"]
     turn = runtime.requests[0][1]
     assert turn["input"] == [{"type": "text", "text": "observation"}]
     assert turn["threadId"] == "thr1" and turn["outputSchema"] == _SCHEMAS.turn
-    assert cleanups == [runtime]
+    # The review's session, not the adapter, ends the thread: on every exit of the review.
+    assert cleanups == []
+    assert await session.aclose() == "terminated" and cleanups == [runtime]
 
 
 async def test_codex_continuation_without_its_session_fails_before_disclosure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), [_FINAL])
-    sessions = codex._ReviewerSessions()  # pyright: ignore[reportPrivateUsage]
-    result = await _codex_exchange(monkeypatch, runtime, sessions, _SECOND, [])
+    session = ReviewerSession("review-a", _DEADLINE)
+    result = await _codex_exchange(monkeypatch, runtime, session, _SECOND, [])
     assert type(result) is SemanticResultUnavailable and runtime.requests == []
     evidence = result.provenance.runtime_evidence
     assert evidence is not None and not evidence.case_disclosed
@@ -396,9 +432,9 @@ async def test_codex_reviewer_turn_aborts_on_utility_compaction_request_or_warni
 ) -> None:
     runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION])
     runtime.extra_event = event
-    sessions = codex._ReviewerSessions()  # pyright: ignore[reportPrivateUsage]
+    session = ReviewerSession("review-a", _DEADLINE)
     cleanups: list[object] = []
-    result = await _codex_exchange(monkeypatch, runtime, sessions, _FIRST, cleanups)
+    result = await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups)
     assert type(result) is not SemanticResultReply and cleanups == [runtime]
     evidence = result.provenance.runtime_evidence
     assert evidence is not None and evidence.failure_stage == stage
@@ -408,20 +444,24 @@ async def test_codex_reviewer_loop_refuses_an_unreviewed_release_before_launch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.159.0")), [_ACTION])
-    sessions = codex._ReviewerSessions()  # pyright: ignore[reportPrivateUsage]
-    result = await _codex_exchange(monkeypatch, runtime, sessions, _FIRST, [])
+    session = ReviewerSession("review-a", _DEADLINE)
+    result = await _codex_exchange(monkeypatch, runtime, session, _FIRST, [])
     assert type(result) is SemanticResultUnavailable and runtime.requests == []
 
 
-async def test_closing_the_sessions_cleans_up_a_retained_runtime(
+async def test_closing_the_session_cleans_up_a_retained_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION])
-    sessions = codex._ReviewerSessions()  # pyright: ignore[reportPrivateUsage]
+    session = ReviewerSession("review-a", _DEADLINE)
     cleanups: list[object] = []
-    await _codex_exchange(monkeypatch, runtime, sessions, _FIRST, cleanups)
-    await sessions.aclose()
-    assert cleanups == [runtime]
+    await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups)
+    await session.aclose()
+    assert cleanups == [runtime] and session.held is None
+    # A closed session admits no further exchange: nothing is launched or sent.
+    runtime.requests.clear()
+    late = await _codex_exchange(monkeypatch, runtime, session, _SECOND, cleanups)
+    assert type(late) is SemanticResultUnavailable and runtime.requests == []
 
 
 async def test_facade_refuses_a_reply_from_another_route() -> None:
@@ -447,19 +487,19 @@ async def test_facade_refuses_a_reply_from_another_route() -> None:
             ),  # fmt: skip
             policy_digest=_DIGEST,
             latency_ms=1,
-            reviewer=True,
+            exchange=reviewer_exchange(media_type, payload, _SCHEMAS),
         )
         return reply
 
-    model = ReviewerExchangeModel(binding, dispatch)
-    deadline = Deadline(_NOW + timedelta(seconds=30), 30.0)
+    model = ReviewerExchangeModel(binding, dispatch, ReviewerSession("review-a", _DEADLINE))
+    deadline = _DEADLINE
     turns = [Turn(role, text) for role, text in _FIRST]
     final_schema = REVIEWER_REPLY_SCHEMAS.final
     with pytest.raises(ReviewerModelError, match="reviewer_exchange_route_mismatch"):
         await model.complete(turns, final_schema, deadline=deadline)
     assert seen == [REVIEWER_EXCHANGE_MEDIA_TYPES["final"]]
-    same = ReviewerExchangeModel(
-        replace(binding, endpoint_profile_id="openai-responses", model_id="gpt"), dispatch
+    same = replace(
+        model, binding=replace(binding, endpoint_profile_id="openai-responses", model_id="gpt")
     )
     assert await same.complete(turns, final_schema, deadline=deadline) == strict_json_parse(
         _FINAL.encode()
@@ -474,12 +514,400 @@ async def test_codex_keeps_a_malformed_turn_for_the_one_format_repair(
     runtime = _CodexRuntime(
         profile_for(record_for(b"c", b"h", version="0.162.1")), ["not json", _FINAL]
     )
-    sessions = codex._ReviewerSessions()  # pyright: ignore[reportPrivateUsage]
+    session = ReviewerSession("review-a", _DEADLINE)
     cleanups: list[object] = []
-    first = await _codex_exchange(monkeypatch, runtime, sessions, _FIRST, cleanups)
+    first = await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups)
     assert type(first) is SemanticResultInvalid and cleanups == []
     runtime.requests.clear()
     repair: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", "format_error: output_not_json."))
-    second = await _codex_exchange(monkeypatch, runtime, sessions, repair, cleanups)
-    assert type(second) is SemanticResultReply and cleanups == [runtime]
+    second = await _codex_exchange(monkeypatch, runtime, session, repair, cleanups)
+    assert type(second) is SemanticResultReply and cleanups == []
     assert [method for method, _ in runtime.requests] == ["turn/start"]
+
+
+# -- review round 1 regressions (R1-R6) ------------------------------------------------------------
+
+
+def _api_profile(route: str) -> OpenAIProfile | ChatCompletionsProfile:
+    data_use = owner_declared_data_use_profile(
+        reviewed_at=_NOW, expires_at=_NOW + timedelta(days=30), evidence_digest=_DIGEST
+    )
+    if route == "responses":
+        return OpenAIProfile(
+            provider_id="fireworks", model="m", endpoint_profile_id="fireworks-responses",
+            endpoint_profile_version="1.0.0", timeout_seconds=60, data_use_profile=data_use,
+            host="api.fireworks.ai", base_path_prefix="/inference/v1",
+            supports_structured_outputs=True,
+        )  # fmt: skip
+    return ChatCompletionsProfile(
+        provider_id="openrouter", model="m", endpoint_profile_id="openrouter-openai-chat-completions",
+        endpoint_profile_version="1.0.0", timeout_seconds=60, data_use_profile=data_use,
+        host="openrouter.ai", base_path_prefix="/api/v1",
+        structured_output_enforcement="provider_enforced",
+    )  # fmt: skip
+
+
+def _api_binding(profile: OpenAIProfile | ChatCompletionsProfile) -> ProviderBinding:
+    return ProviderBinding(
+        profile.provider_id, profile.model, profile.endpoint_profile_id, "1.0.0", "external"
+    )
+
+
+class _Capture(httpx.AsyncBaseTransport):
+    """An in-memory provider: records each request body; may advance the clock or fail."""
+
+    def __init__(
+        self, route: str, clock: _Clock | None = None, fail: bool = False, judgment: bool = False
+    ) -> None:
+        self.route, self.clock, self.fail = route, clock, fail
+        self.text = _JUDGMENT if judgment else _FINAL
+        self.bodies: list[bytes] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.bodies.append(await request.aread())
+        if self.clock is not None:
+            self.clock.monotonic = 31.0  # the answer arrives after the deadline
+        if self.fail:
+            raise httpx.ReadTimeout("scripted timeout")
+        message = {"type": "message", "content": [{"type": "output_text", "text": self.text}]}
+        reply = {"role": "assistant", "content": self.text}
+        choice = {"index": 0, "finish_reason": "stop", "message": reply}
+        payload = (
+            {"id": "resp_1", "status": "completed", "output": [message]}
+            if self.route == "responses"
+            else {"id": "chatcmpl_1", "choices": [choice]}
+        )
+        return httpx.Response(200, request=request, json=payload)
+
+
+class _Credential:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def authorize_attempt(self, binding: object, callback: Any) -> object:
+        self.calls += 1
+        return await callback.inject_and_start(memoryview(b"nonsecret-review-fixture"))
+
+
+async def _api_evaluate(
+    route: str, history: tuple[ReviewerMessage, ...] | None, capture: _Capture, clock: _Clock
+) -> tuple[SemanticResult, bytes, _Credential, OneAttemptCredentialTransport]:
+    """One exchange (``None``: a one-shot case) through the real pinned SDK, offline."""
+
+    profile = _api_profile(route)
+    case = _case(_FIRST if history is None else history, _api_binding(profile))
+    if history is None:
+        case = replace(case, payload=b'{"case":1}', media_type="application/json", byte_count=10)
+    rendered = (
+        render_responses(case, REVIEWER_REPLY_SCHEMAS)
+        if isinstance(profile, OpenAIProfile)
+        else render_chat(case, profile, REVIEWER_REPLY_SCHEMAS)
+    )
+    credential = _Credential()
+    binding = ProviderAttemptAuthBinding(
+        profile.provider_id, profile.model, profile.endpoint_profile_id, "1.0.0",
+        "semantic-review", _DIGEST, canonical_digest({"purpose": "semantic-review"}),
+        "dsp_70000000-0000-4000-8000-000000000001", rendered.body_sha256, 1, 30.0,
+    )  # fmt: skip
+    transport = OneAttemptCredentialTransport(
+        rendered=rendered, credential=cast(Any, credential), binding=binding,
+        host=profile.host, port=profile.port, path=profile.path,
+    )  # fmt: skip
+    inner = cast(Any, transport)
+    await inner._inner.aclose()
+    inner._inner = capture  # only the network hop is replaced; the exact-body guard stays
+    evaluator = (
+        OpenAIResponsesEvaluator(profile, transport, clock, reply_schemas=REVIEWER_REPLY_SCHEMAS)
+        if isinstance(profile, OpenAIProfile)
+        else ChatCompletionsEvaluator(
+            profile, transport, clock, reply_schemas=REVIEWER_REPLY_SCHEMAS
+        )
+    )
+    return await evaluator.evaluate(case, _DEADLINE), rendered.body, credential, transport
+
+
+@pytest.mark.parametrize("route", ["responses", "chat"])
+@pytest.mark.parametrize("history", [_FIRST, _SECOND, None], ids=["initial", "next", "one-shot"])
+async def test_r1_real_sdk_sends_the_audited_body_once(
+    route: str, history: tuple[ReviewerMessage, ...] | None
+) -> None:
+    capture = _Capture(route, judgment=history is None)
+    result, body, credential, transport = await _api_evaluate(route, history, capture, _Clock())
+    assert type(result) is (SemanticResultSuccess if history is None else SemanticResultReply)
+    assert credential.calls == 1 and capture.bodies == [body]
+    with pytest.raises(RuntimeError, match="already_consumed"):
+        await transport.handle_async_request(httpx.Request("POST", "https://x/y", content=body))
+
+
+async def test_r2_identical_reviews_keep_their_own_threads(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = profile_for(record_for(b"c", b"h", version="0.162.1"))
+    a, b = _CodexRuntime(profile, [_ACTION, _FINAL]), _CodexRuntime(profile, [_ACTION, _FINAL])
+    review_a, review_b = (
+        ReviewerSession("review-a", _DEADLINE),
+        ReviewerSession("review-b", _DEADLINE),
+    )
+    cleanups: list[object] = []
+    await _codex_exchange(monkeypatch, a, review_a, _FIRST, cleanups)
+    await _codex_exchange(monkeypatch, b, review_b, _FIRST, cleanups)
+    a.requests.clear()
+    b.requests.clear()
+    result = await _codex_exchange(monkeypatch, a, review_a, _SECOND, cleanups)
+    assert type(result) is SemanticResultReply
+    assert [method for method, _ in a.requests] == ["turn/start"] and b.requests == []
+    await review_a.aclose()
+    await review_b.aclose()
+    assert cleanups == [a, b]
+
+
+async def test_r3_close_drains_an_inflight_turn_and_retains_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class _Held(_CodexRuntime):
+        async def read(self, timeout: float) -> dict[str, object]:
+            entered.set()
+            await release.wait()
+            return await super().read(timeout)
+
+    runtime = _Held(profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION])
+    session = ReviewerSession("review-a", _DEADLINE)
+    cleanups: list[object] = []
+    turn = asyncio.create_task(_codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups))
+    await asyncio.wait_for(entered.wait(), 5)
+    observed: list[int] = []
+
+    async def close() -> None:
+        await session.aclose()
+        observed.append(len(cleanups))  # cleanup is done when close returns
+
+    closing = asyncio.create_task(close())
+    release.set()
+    result = await turn
+    await closing
+    assert cleanups == [runtime] and observed == [1] and session.held is None
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.process_cleanup == "terminated"
+
+
+@pytest.mark.parametrize("route", ["responses", "chat"])
+async def test_r4_api_answer_after_the_deadline_is_late(route: str) -> None:
+    clock = _Clock()
+    result, *_ = await _api_evaluate(route, _FIRST, _Capture(route, clock), clock)
+    assert type(result) is SemanticResultLate
+
+
+def _local(protocol: str = LOCAL_REVIEWER_COMPLETION_PROTOCOL) -> LocalModelEndpointProfile:
+    return LocalModelEndpointProfile(
+        "local-test", "1.0.0", "local-test-endpoint", "1.0.0", "local-model", protocol, "1.2.0",
+        30, "local-test-service", 0, 0, 0o600, _DIGEST, _DIGEST,
+    )  # fmt: skip
+
+
+def _local_case() -> ApprovedLocalDisclosureCase:
+    binding = ProviderBinding(
+        "local", "local-model", "local-test-endpoint", "1.0.0", "local_af_unix"
+    )
+    return ApprovedLocalDisclosureCase(
+        "cas_70000000-0000-4000-8000-000000000003", "req_70000000-0000-4000-8000-000000000003",
+        "ppr_70000000-0000-4000-8000-000000000003", _PAYLOAD, REVIEWER_EXCHANGE_MEDIA_TYPES["turn"],
+        ("reviewer-exchange",), (), (), len(_PAYLOAD), 8, LocalDisclosureSink.LOCAL_MODEL, binding,
+        "semantic-review", _DIGEST, _DIGEST,
+    )  # fmt: skip
+
+
+async def test_r4_local_answer_after_the_deadline_is_not_used() -> None:
+    clock = _Clock()
+
+    class _Late(_Socket):
+        async def receive(self, max_bytes: int) -> bytes:
+            clock.monotonic = 31.0
+            return self.answer
+
+    evaluator = LocalModelEvaluator(_local(), _Late(_FINAL.encode()), clock, reply_schemas=_SCHEMAS)
+    result = await evaluator.evaluate(_local_case(), _DEADLINE)
+    assert type(result) is SemanticResultTimeout
+    assert result.provenance.schema_digest == canonical_digest(_SCHEMAS.turn)
+
+
+async def test_r4_local_receive_ends_at_the_original_deadline() -> None:
+    class _RealClock(_Clock):
+        def monotonic_seconds(self) -> float:
+            return time.monotonic()
+
+    class _Silent(_Socket):
+        async def receive(self, max_bytes: int) -> bytes:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    evaluator = LocalModelEvaluator(_local(), _Silent(b""), _RealClock(), reply_schemas=_SCHEMAS)
+    deadline = Deadline(_NOW + timedelta(seconds=0.05), time.monotonic() + 0.05)
+    # The outer bound only keeps a regression from hanging the suite; the result is observed.
+    result = await asyncio.wait_for(evaluator.evaluate(_local_case(), deadline), 5)
+    assert type(result) is SemanticResultTimeout
+
+
+async def test_r4_codex_answer_after_the_deadline_is_not_a_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+
+    class _Late(_CodexRuntime):
+        async def read(self, timeout: float) -> dict[str, object]:
+            message = await super().read(timeout)
+            if message.get("method") == "turn/completed":
+                clock.monotonic = 31.0
+            return message
+
+    runtime = _Late(profile_for(record_for(b"c", b"h", version="0.162.1")), [_FINAL])
+    session = ReviewerSession("review-a", _DEADLINE)
+    cleanups: list[object] = []
+    result = await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups, clock)
+    assert type(result) is not SemanticResultReply and session.held is None
+    evidence = result.provenance.runtime_evidence
+    assert evidence is not None and evidence.failure_stage == "deadline_expired"
+    assert cleanups == [runtime]
+
+
+class _NoReads:
+    history_roots = ()
+
+    def reads_allowed(self) -> bool:
+        return False
+
+
+async def _loop(dispatch: Any, clock: _Clock) -> ReviewOutcome:
+    profile = _api_profile("responses")
+    model = ReviewerExchangeModel(
+        _api_binding(profile), dispatch, ReviewerSession("review-a", _DEADLINE)
+    )
+
+    async def admissible(roots: frozenset[str]) -> bool:
+        return True
+
+    async with model:
+        return await ReviewerLoop(
+            model, cast(Any, _NoReads()), instruction="Review it.", packet="packet",
+            deadline=_DEADLINE, history_admissible=admissible, clock=clock.monotonic_seconds,
+        ).run()  # fmt: skip
+
+
+async def test_r4_loop_does_not_accept_a_final_after_the_deadline() -> None:
+    profile, clock = _api_profile("responses"), _Clock()
+    assert isinstance(profile, OpenAIProfile)
+
+    async def dispatch(payload: bytes, media_type: str, deadline: Deadline) -> SemanticResult:
+        clock.monotonic = 31.0
+        response = type("R", (), {"output_text": _FINAL, "status": "completed", "id": "r"})()
+        exchange = reviewer_exchange(media_type, payload, REVIEWER_REPLY_SCHEMAS)
+        return normalize_response(
+            response, profile, policy_digest=_DIGEST, latency_ms=1, exchange=exchange
+        )
+
+    outcome = await _loop(dispatch, clock)
+    assert outcome.status == "incomplete" and outcome.reason == "deadline"
+
+
+async def test_r5_truncated_answer_ends_without_another_inference() -> None:
+    profile, seen = _api_profile("responses"), list[bytes]()
+    assert isinstance(profile, OpenAIProfile)
+
+    async def dispatch(payload: bytes, media_type: str, deadline: Deadline) -> SemanticResult:
+        seen.append(payload)
+        details = type("D", (), {"reason": "max_output_tokens"})()
+        fields = {"output_text": "", "status": "incomplete", "id": "r1"}
+        response = type("R", (), {**fields, "incomplete_details": details})()
+        exchange = reviewer_exchange(media_type, payload, REVIEWER_REPLY_SCHEMAS)
+        return normalize_response(
+            response, profile, policy_digest=_DIGEST, latency_ms=1, exchange=exchange
+        )
+
+    outcome = await _loop(dispatch, _Clock())
+    assert outcome.status == "incomplete" and len(seen) == 1
+    assert outcome.reason == "reviewer_exchange_response_content"
+
+
+async def test_r5_codex_output_limit_gets_no_format_repair(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), [_FINAL])
+    usage = {
+        "inputTokens": 1, "cachedInputTokens": 0, "cacheWriteInputTokens": 0,
+        "outputTokens": 999_999, "reasoningOutputTokens": 0, "totalTokens": 1_000_000,
+    }  # fmt: skip
+    params = {"threadId": "thr1", "turnId": "turn1", "tokenUsage": {"last": usage, "total": usage}}
+    runtime.extra_event = {"method": "thread/tokenUsage/updated", "params": params}
+    session = ReviewerSession("review-a", _DEADLINE)
+    result = await _codex_exchange(monkeypatch, runtime, session, _FIRST, [])
+    assert type(result) is SemanticResultInvalid
+
+    async def dispatch(payload: bytes, media_type: str, deadline: Deadline) -> SemanticResult:
+        return result
+
+    binding = ProviderBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0", "external"
+    )
+    model = ReviewerExchangeModel(binding, dispatch, session)
+    turns = [Turn(role, text) for role, text in _FIRST]
+    with pytest.raises(ReviewerModelError, match="reviewer_exchange_output_oversize"):
+        await model.complete(turns, REVIEWER_REPLY_SCHEMAS.turn, deadline=_DEADLINE)
+    await session.aclose()
+
+
+@pytest.mark.parametrize("route", ["responses", "chat"])
+@pytest.mark.parametrize("mode", ["turn", "final"])
+def test_r6_rendered_digests_name_the_exchange(route: str, mode: str) -> None:
+    profile = _api_profile(route)
+    case = _case(_FIRST, _api_binding(profile), mode)
+    if isinstance(profile, OpenAIProfile):
+        rendered = render_responses(case, REVIEWER_REPLY_SCHEMAS)
+        sent = cast(Any, strict_json_parse(rendered.body))["text"]["format"]["schema"]
+    else:
+        rendered = render_chat(case, profile, REVIEWER_REPLY_SCHEMAS)
+        sent = cast(Any, strict_json_parse(rendered.body))["response_format"]["json_schema"]
+        sent = sent["schema"]
+    assert rendered.schema_digest == canonical_digest(sent)
+    assert rendered.prompt_digest == "sha256:" + hashlib.sha256(b"Review it.").hexdigest()
+
+
+@pytest.mark.parametrize("route", ["responses", "chat"])
+async def test_r6_early_failures_name_the_exchange(route: str) -> None:
+    result, *_ = await _api_evaluate(route, _FIRST, _Capture(route, fail=True), _Clock())
+    assert type(result) is not SemanticResultReply
+    assert result.provenance.schema_digest == canonical_digest(REVIEWER_REPLY_SCHEMAS.turn)
+
+
+async def test_r3_review_exit_closes_the_thread_when_admission_is_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION])
+    cleanups: list[object] = []
+
+    async def dispatch(payload: bytes, media_type: str, deadline: Deadline) -> SemanticResult:
+        history = decode_reviewer_exchange(payload)
+        session = CURRENT_REVIEWER_SESSION.get()  # the facade binds its review's session
+        return await _codex_exchange(monkeypatch, runtime, session, history, cleanups)
+
+    class _Reads(_NoReads):
+        def reads_allowed(self) -> bool:
+            return True
+
+        async def execute(self, action: object) -> str:
+            return "observation"
+
+    admissions = iter([True, False])  # policy tightens before the continuation
+
+    async def admissible(roots: frozenset[str]) -> bool:
+        return next(admissions)
+
+    binding = ProviderBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0", "external"
+    )
+    async with ReviewerExchangeModel(
+        binding, dispatch, ReviewerSession("review-a", _DEADLINE)
+    ) as model:
+        outcome = await ReviewerLoop(
+            model, cast(Any, _Reads()), instruction="Review it.", packet="packet",
+            deadline=_DEADLINE, history_admissible=admissible, clock=_Clock().monotonic_seconds,
+            final_reserve_seconds=0.0,
+        ).run()  # fmt: skip
+        assert outcome.reason == "authorization_changed" and cleanups == []
+    assert cleanups == [runtime]

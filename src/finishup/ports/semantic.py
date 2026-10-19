@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import re
-from dataclasses import dataclass, field, replace
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
@@ -94,15 +96,17 @@ __all__ = [
     "Deadline",
     "ExcerptDigestProvenance",
     "ProviderAttemptProvenance",
+    "CURRENT_REVIEWER_SESSION",
     "REVIEWER_EXCHANGE_MEDIA_TYPES",
-    "ReviewerExchangeMode",
+    "ReviewerExchange",
     "ReviewerMessage",
     "ReviewerReplySchemas",
+    "ReviewerSession",
+    "ReviewerSessionHold",
     "SemanticResultReply",
     "decode_reviewer_exchange",
     "encode_reviewer_exchange",
-    "reviewer_exchange_mode",
-    "with_reviewer_digests",
+    "reviewer_exchange",
     "ExternalRuntimeAuthority",
     "MissingForAssessment",
     "RuntimeAttemptEvidence",
@@ -2094,24 +2098,17 @@ class SemanticResultUnavailable:
 # One reviewer-loop completion is one ordinary gateway dispatch. Its approved payload is the whole
 # canonical linear history: a JSON array of ``{"content", "role"}`` messages, a system message
 # first, then user and assistant turns ending with user. Two user turns may follow each other (the
-# loop's format-repair notice never echoes the malformed reply); two assistant turns may not. The case media type names
-# which reply schema the provider must enforce: every branch, or the final judgment only.
-type ReviewerExchangeMode = Literal["turn", "final"]
+# loop's format-repair notice never echoes the malformed reply); two assistant turns may not. The
+# case media type names which reply schema the provider must enforce: every branch, or the final
+# judgment only.
 type ReviewerMessage = tuple[Literal["system", "user", "assistant"], str]
-REVIEWER_EXCHANGE_MEDIA_TYPES: Final[dict[ReviewerExchangeMode, str]] = {
+REVIEWER_EXCHANGE_MEDIA_TYPES: Final = {
     "turn": "application/vnd.finishup.reviewer-turn+json",
     "final": "application/vnd.finishup.reviewer-final+json",
 }
 # System, packet, three action/observation pairs, and one format-repair notice (plus, at most,
 # the malformed turn's own pair when a route keeps it).
 _MAX_REVIEWER_MESSAGES: Final = 12
-
-
-def reviewer_exchange_mode(media_type: str) -> ReviewerExchangeMode | None:
-    for mode, value in REVIEWER_EXCHANGE_MEDIA_TYPES.items():
-        if media_type == value:
-            return mode
-    return None
 
 
 def encode_reviewer_exchange(history: tuple[ReviewerMessage, ...]) -> bytes:
@@ -2158,24 +2155,85 @@ class ReviewerReplySchemas:
     turn: dict[str, JsonValue]
     final: dict[str, JsonValue]
 
-    def for_mode(self, mode: ReviewerExchangeMode) -> dict[str, JsonValue]:
-        return self.turn if mode == "turn" else self.final
+
+@dataclass(frozen=True, slots=True)
+class ReviewerExchange:
+    """One exchange's history, reply schema and their digests, computed once per dispatch."""
+
+    history: tuple[ReviewerMessage, ...]
+    schema: dict[str, JsonValue]
+    prompt_digest: str
+    schema_digest: str
+
+
+def reviewer_exchange(
+    media_type: str, payload: bytes, schemas: ReviewerReplySchemas | None
+) -> ReviewerExchange | None:
+    """The reviewer exchange a case carries, or ``None`` for a one-shot case.
+
+    Rendering and every outcome, early failures included, name this instruction and schema.
+    """
+
+    if media_type not in REVIEWER_EXCHANGE_MEDIA_TYPES.values():
+        return None
+    if schemas is None:
+        raise ValueError("reviewer_schema_unavailable")
+    history = decode_reviewer_exchange(payload)
+    schema = schemas.turn if media_type == REVIEWER_EXCHANGE_MEDIA_TYPES["turn"] else schemas.final
+    instruction = history[0][1].encode("utf-8")
+    prompt_digest = "sha256:" + hashlib.sha256(instruction).hexdigest()
+    return ReviewerExchange(history, schema, prompt_digest, canonical_digest(schema))
+
+
+class ReviewerSessionHold(Protocol):
+    """Provider state one review keeps between exchanges (a Codex thread)."""
+
+    async def aclose(self) -> str: ...
+
+
+class ReviewerSession:
+    """One review's provider session, owned by its immutable review identity.
+
+    The reviewer facade binds it to every dispatch of its review through
+    ``CURRENT_REVIEWER_SESSION`` and closes it on every exit. An exchange runs under ``lock``; a
+    closed session admits no exchange and retains nothing, and ``aclose`` waits for the exchange
+    in flight before it cleans up the held state. Transcript content never selects a session.
+    """
+
+    __slots__ = ("closed", "deadline", "held", "lock", "review_id")
+
+    def __init__(self, review_id: str, deadline: Deadline) -> None:
+        self.review_id, self.deadline = review_id, deadline
+        self.held: ReviewerSessionHold | None = None
+        self.closed = False
+        self.lock = asyncio.Lock()
+
+    async def aclose(self) -> str | None:
+        """Close the session; the held state's cleanup outcome, if any was held."""
+
+        self.closed = True
+        async with self.lock:
+            held, self.held = self.held, None
+            return None if held is None else await held.aclose()
+
+
+CURRENT_REVIEWER_SESSION: Final[ContextVar[ReviewerSession | None]] = ContextVar(
+    "finishup_reviewer_session", default=None
+)
 
 
 @dataclass(frozen=True, slots=True)
 class SemanticResultReply:
     """One completed reviewer turn: the parsed structured reply, not yet decoded.
 
-    ``text`` is its canonical encoding, the assistant message the next exchange must carry.
     Branch and argument validation belong to the reply decoder; nothing here is executable.
     """
 
     reply: dict[str, JsonValue]
-    text: str
     provenance: ProviderAttemptProvenance
 
     def __post_init__(self) -> None:
-        if type(self.reply) is not dict or canonical_encode(self.reply).decode() != self.text:
+        if type(self.reply) is not dict:
             raise ValueError("reviewer_reply_invalid")
         _validate_result_provenance(
             self.provenance, SemanticStatus.SUCCEEDED, SemanticReason.SEMANTIC_COMPLETED
@@ -2186,8 +2244,7 @@ class SemanticResultReply:
         parsed = strict_json_parse(raw)
         if type(parsed) is not dict:
             raise ValueError("reviewer_reply_not_object")
-        reply = cast(dict[str, JsonValue], parsed)
-        return cls(reply, canonical_encode(reply).decode(), provenance)
+        return cls(cast(dict[str, JsonValue], parsed), provenance)
 
 
 type SemanticResult = (
@@ -2199,20 +2256,6 @@ type SemanticResult = (
     | SemanticResultUnavailable
     | SemanticResultReply
 )
-
-
-def with_reviewer_digests(
-    result: SemanticResult, payload: bytes, schema: dict[str, JsonValue]
-) -> SemanticResult:
-    """Bind an exchange's provenance to the instruction and reply schema it actually carried."""
-
-    instruction = decode_reviewer_exchange(payload)[0][1]
-    provenance = replace(
-        result.provenance,
-        prompt_digest="sha256:" + hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
-        schema_digest=canonical_digest(schema),
-    )
-    return replace(result, provenance=provenance)
 
 
 class SemanticEvaluatorPort(Protocol):

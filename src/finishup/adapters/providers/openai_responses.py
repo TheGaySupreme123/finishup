@@ -12,6 +12,7 @@ attempt, only inside :meth:`OpenAIResponsesEvaluator.evaluate`.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import re
@@ -38,6 +39,7 @@ from finishup.ports.semantic import (
     PriorFindingVerdict,
     ProviderAttemptProvenance,
     ReviewerChallenge,
+    ReviewerExchange,
     ReviewerReplySchemas,
     SemanticJudgment,
     SemanticResult,
@@ -49,9 +51,7 @@ from finishup.ports.semantic import (
     SemanticResultTimeout,
     SemanticResultUnavailable,
     VerifiedReviewItem,
-    decode_reviewer_exchange,
-    reviewer_exchange_mode,
-    with_reviewer_digests,
+    reviewer_exchange,
 )
 from finishup.protocol.canonical import (
     JsonValue,
@@ -1603,19 +1603,15 @@ class RenderedOpenAIRequest:
 
 
 def _build_body_object(
-    case: ApprovedOutboundCase, reply_schemas: ReviewerReplySchemas | None = None
+    case: ApprovedOutboundCase, exchange: ReviewerExchange | None = None
 ) -> dict[str, JsonValue]:
     try:
         payload_value = strict_json_parse(case.payload)
     except Exception as exc:
         raise ValueError("openai_case_payload_invalid") from exc
-    mode = reviewer_exchange_mode(case.media_type)
-    if mode is not None:
+    if exchange is not None:
         # One reviewer-loop exchange (#1118 unit 3): the approved history is the input verbatim
         # and the reply schema is plain structured output. No tools of any kind are sent.
-        if reply_schemas is None:
-            raise ValueError("openai_reviewer_schema_unavailable")
-        decode_reviewer_exchange(case.payload)
         body: dict[str, JsonValue] = {
             "model": case.provider_binding.model_id,
             "input": payload_value,
@@ -1625,7 +1621,7 @@ def _build_body_object(
                     "type": "json_schema",
                     "name": "finishup_reviewer_reply",
                     "strict": True,
-                    "schema": reply_schemas.for_mode(mode),
+                    "schema": exchange.schema,
                 }
             },
         }
@@ -1677,25 +1673,23 @@ def render_case(
 
     if type(case) is not ApprovedOutboundCase:
         raise TypeError("openai_case_invalid")
+    return _render(case, reviewer_exchange(case.media_type, case.payload, reply_schemas))
+
+
+def _render(case: ApprovedOutboundCase, exchange: ReviewerExchange | None) -> RenderedOpenAIRequest:
     if case.provider_binding.transport != "external":
         raise ValueError("openai_case_binding_invalid")
 
-    body_object = _build_body_object(case, reply_schemas)
+    body_object = _build_body_object(case, exchange)
     body = canonical_encode(body_object)
     if len(body) > OPENAI_MAX_RESPONSE_BODY_BYTES:
         raise ValueError("openai_rendered_body_too_large")
     body_digest = "sha256:" + hashlib.sha256(body).hexdigest()
 
-    prompt_digest = (
-        "sha256:" + hashlib.sha256(case.payload).hexdigest()
-        if case.purpose == "credential-probe"
-        else _PROMPT_DIGEST
-    )
-    schema_digest = (
-        canonical_digest({"kind": "credential-probe", "version": 1})
-        if case.purpose == "credential-probe"
-        else _SCHEMA_DIGEST
-    )
+    prompt_digest, schema_digest = _digests(exchange)
+    if case.purpose == "credential-probe":
+        prompt_digest = "sha256:" + hashlib.sha256(case.payload).hexdigest()
+        schema_digest = canonical_digest({"kind": "credential-probe", "version": 1})
     return RenderedOpenAIRequest(
         body=body,
         body_sha256=body_digest,
@@ -1708,6 +1702,12 @@ def render_case(
     )
 
 
+def _digests(exchange: ReviewerExchange | None) -> tuple[str, str]:
+    if exchange is None:
+        return _PROMPT_DIGEST, _SCHEMA_DIGEST
+    return exchange.prompt_digest, exchange.schema_digest
+
+
 def _provenance(
     profile: OpenAIProfile,
     status: SemanticStatus,
@@ -1716,15 +1716,17 @@ def _provenance(
     latency_ms: int,
     provider_request_id: str | None = None,
     failure_class: SemanticFailureClass | None = None,
+    exchange: ReviewerExchange | None = None,
 ) -> ProviderAttemptProvenance:
+    prompt_digest, schema_digest = _digests(exchange)
     return ProviderAttemptProvenance(
         provider=profile.provider_id,
         endpoint_profile_id=profile.endpoint_profile_id,
         endpoint_profile_version=profile.endpoint_profile_version,
         model=profile.model,
         sdk_version="2.46.0",
-        prompt_digest=_PROMPT_DIGEST,
-        schema_digest=_SCHEMA_DIGEST,
+        prompt_digest=prompt_digest,
+        schema_digest=schema_digest,
         policy_digest=policy_digest,
         privacy_policy_digest=policy_digest,
         sampling_params=SamplingParams(OPENAI_MAX_OUTPUT_TOKENS),
@@ -1984,7 +1986,7 @@ def normalize_response(
     policy_digest: str,
     latency_ms: int,
     late: bool = False,
-    reviewer: bool = False,
+    exchange: ReviewerExchange | None = None,
 ) -> SemanticResult:
     """Classify one provider response into the closed AI-powered review result union.
 
@@ -2000,30 +2002,27 @@ def normalize_response(
     if type(provider_request_id) is not str:
         provider_request_id = None
 
+    def prov(
+        status: SemanticStatus, failure: SemanticFailureClass | None = None
+    ) -> ProviderAttemptProvenance:
+        return _provenance(
+            profile,
+            status,
+            policy_digest=policy_digest,
+            latency_ms=latency_ms,
+            provider_request_id=provider_request_id,
+            failure_class=failure,
+            exchange=exchange,
+        )
+
     refusal = getattr(response, "refusal", None)
     if type(refusal) is str and refusal:
-        return SemanticResultRefused(
-            _provenance(
-                profile,
-                SemanticStatus.REFUSED,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-            )
-        )
+        return SemanticResultRefused(prov(SemanticStatus.REFUSED))
 
     status = getattr(response, "status", None)
     if status == "cancelled":
         # Provider/client cancellation is not a transport deadline timeout.
-        return SemanticResultRefused(
-            _provenance(
-                profile,
-                SemanticStatus.REFUSED,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-            )
-        )
+        return SemanticResultRefused(prov(SemanticStatus.REFUSED))
     if status == "incomplete":
         # Output-limit truncation (hard max_output_tokens) is content invalidity, not timeout.
         incomplete_text = getattr(response, "output_text", None)
@@ -2031,96 +2030,60 @@ def normalize_response(
             len(incomplete_text.encode("utf-8")) if type(incomplete_text) is str else 0
         )
         return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_CONTENT,
-            ),
+            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_CONTENT),
             raw_size=incomplete_size,
         )
 
     raw_text = getattr(response, "output_text", None)
     if type(raw_text) is not str or not raw_text:
         return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_SCHEMA,
-            ),
+            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA),
             raw_size=len(raw_text) if type(raw_text) is str else 0,
         )
     raw_bytes = raw_text.encode("utf-8")
     if len(raw_bytes) > OPENAI_MAX_RESPONSE_BODY_BYTES:
         return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_CONTENT,
-            ),
+            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_CONTENT),
             raw_size=OPENAI_MAX_RESPONSE_BODY_BYTES + 1,
         )
-    succeeded = _provenance(
-        profile,
-        SemanticStatus.SUCCEEDED,
-        policy_digest=policy_digest,
-        latency_ms=latency_ms,
-        provider_request_id=provider_request_id,
-    )
+    succeeded = prov(SemanticStatus.SUCCEEDED)
     try:
         # A reviewer turn returns the parsed reply; its branch is decoded by the loop.
         result: SemanticResult = (
             SemanticResultReply.parse(raw_bytes, succeeded)
-            if reviewer
+            if exchange is not None
             else SemanticResultSuccess(
                 normalize_judgment(strict_json_parse(raw_bytes), require_part2=True), succeeded
             )
         )
     except ValueError, TypeError, LookupError:
         return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_SCHEMA,
-            ),
+            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA),
             raw_size=len(raw_bytes),
         )
 
     if late:
-        return SemanticResultLate(
-            _provenance(
-                profile,
-                SemanticStatus.LATE,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-            )
-        )
+        return SemanticResultLate(prov(SemanticStatus.LATE))
     return result
 
 
 def classify_provider_failure(
-    error: BaseException, profile: OpenAIProfile, *, policy_digest: str, latency_ms: int
+    error: BaseException,
+    profile: OpenAIProfile,
+    *,
+    policy_digest: str,
+    latency_ms: int,
+    exchange: ReviewerExchange | None = None,
 ) -> SemanticResult:
     """Map a native provider/transport failure to the public taxonomy without leaking its text."""
 
-    if isinstance(error, httpx.TimeoutException):
+    if isinstance(error, httpx.TimeoutException | TimeoutError):
         return SemanticResultTimeout(
             _provenance(
                 profile,
                 SemanticStatus.TIMEOUT,
                 policy_digest=policy_digest,
+                exchange=exchange,
                 latency_ms=latency_ms,
                 failure_class=SemanticFailureClass.TIMEOUT,
             )
@@ -2131,6 +2094,7 @@ def classify_provider_failure(
                 profile,
                 SemanticStatus.UNAVAILABLE,
                 policy_digest=policy_digest,
+                exchange=exchange,
                 latency_ms=latency_ms,
                 failure_class=SemanticFailureClass.TRANSPORT,
             )
@@ -2156,6 +2120,7 @@ def classify_provider_failure(
             profile,
             SemanticStatus.UNAVAILABLE,
             policy_digest=policy_digest,
+            exchange=exchange,
             latency_ms=latency_ms,
             failure_class=failure_class,
         )
@@ -2358,6 +2323,7 @@ class OpenAIResponsesEvaluator:
         if type(deadline) is not Deadline:
             raise TypeError("openai_deadline_invalid")
 
+        exchange = reviewer_exchange(case.media_type, case.payload, self._reply_schemas)
         now_monotonic = self._clock.monotonic_seconds()
         remaining = deadline.remaining_seconds(now_monotonic) - self._safety_margin_seconds
         if deadline.expired(now_monotonic) or remaining <= 0.0:
@@ -2368,6 +2334,7 @@ class OpenAIResponsesEvaluator:
                     policy_digest=case.policy_digest,
                     latency_ms=0,
                     failure_class=SemanticFailureClass.TIMEOUT,
+                    exchange=exchange,
                 )
             )
 
@@ -2376,7 +2343,7 @@ class OpenAIResponsesEvaluator:
         # preserve a different insertion order from the canonical rendering, which
         # correctly fails closed as a body mismatch before credential injection.
         # Decode the canonical rendering and pass that mapping through unchanged.
-        rendered_body = strict_json_parse(render_case(case, self._reply_schemas).body)
+        rendered_body = strict_json_parse(_render(case, exchange).body)
         if type(rendered_body) is not dict:
             raise ValueError("openai_rendered_body_invalid")
         body_object = cast(dict[str, Any], rendered_body)
@@ -2391,6 +2358,7 @@ class OpenAIResponsesEvaluator:
                     policy_digest=case.policy_digest,
                     latency_ms=0,
                     failure_class=SemanticFailureClass.UNSUPPORTED_PROFILE,
+                    exchange=exchange,
                 )
             )
 
@@ -2403,25 +2371,27 @@ class OpenAIResponsesEvaluator:
             http_client=http_client,
         )
         try:
-            response = await client.responses.create(**body_object)
+            # The whole exchange, not only each HTTP operation, ends at the original deadline.
+            response = await asyncio.wait_for(client.responses.create(**body_object), remaining)
         except Exception as exc:  # noqa: BLE001 - classified below, never re-raised raw
             elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
             return classify_provider_failure(
-                exc, self._profile, policy_digest=case.policy_digest, latency_ms=elapsed_ms
+                exc,
+                self._profile,
+                policy_digest=case.policy_digest,
+                latency_ms=elapsed_ms,
+                exchange=exchange,
             )
         finally:
             await client.close()
             await http_client.aclose()
 
-        elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
-        mode = reviewer_exchange_mode(case.media_type)
-        result = normalize_response(
+        finished = self._clock.monotonic_seconds()
+        return normalize_response(
             response,
             self._profile,
             policy_digest=case.policy_digest,
-            latency_ms=elapsed_ms,
-            reviewer=mode is not None,
+            latency_ms=max(0, int((finished - now_monotonic) * 1_000)),
+            late=deadline.expired(finished),
+            exchange=exchange,
         )
-        if mode is None or self._reply_schemas is None:
-            return result
-        return with_reviewer_digests(result, case.payload, self._reply_schemas.for_mode(mode))
